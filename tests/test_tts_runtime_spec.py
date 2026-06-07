@@ -62,14 +62,12 @@ def test_runtime_cache_key_distinguishes_provider_only() -> None:
         "bf16",
         model="Kokoro-82M",
         provider="mlx",
-        device="cuda:0",
     )
     cuda_spec = TTSRuntimeSpec(
         provider="cuda",
         engine="kokoro",
         model="Kokoro-82M",
         quantization="bf16",
-        device="cuda:0",
     )
 
     assert mlx_spec.cache_key() != cuda_spec.cache_key()
@@ -279,19 +277,66 @@ def test_runtime_spec_round_trips_through_serialized_payload() -> None:
     assert restored.cache_key() == spec.cache_key()
 
 
-def test_from_legacy_rejects_cuda_kokoro_at_spec_birth() -> None:
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
+def test_from_legacy_preserves_cuda_kokoro_identity_until_runtime_load() -> None:
+    spec = TTSRuntimeSpec.from_legacy(
+        "kokoro",
+        "fp16",
+        model="Kokoro-82M",
+        provider="cuda",
+        device="cuda:0",
+        options={"dtype": "fp16", "device_id": "1", "use_tf32": "true"},
+    )
+    restored = TTSRuntimeSpec.from_dict(spec.to_dict())
+
+    assert spec.provider == "cuda"
+    assert spec.device == "cuda:0"
+    assert restored == spec
+    assert restored.cache_key() == spec.cache_key()
+    assert dict(restored.runtime_options) == {
+        "device_id": 1,
+        "dtype": "fp16",
+        "use_tf32": True,
+    }
+
+
+def test_from_dict_preserves_cuda_kokoro_identity_until_runtime_load() -> None:
+    spec = TTSRuntimeSpec.from_dict(
+        {
+            "provider": "cuda",
+            "engine": "kokoro",
+            "model": "Kokoro-82M",
+            "quantization": "bf16",
+            "device": "cuda:0",
+        }
+    )
+
+    assert spec.provider == "cuda"
+    assert spec.device == "cuda:0"
+
+
+def test_runtime_spec_rejects_invalid_cuda_device_shape() -> None:
+    with pytest.raises(ValueError, match="CUDA device"):
         TTSRuntimeSpec.from_legacy(
             "kokoro",
             "bf16",
-            model="Kokoro-82M",
             provider="cuda",
-            device="cuda:0",
+            device="mps",
+        )
+
+    with pytest.raises(ValueError, match="CUDA device"):
+        TTSRuntimeSpec.from_dict(
+            {
+                "provider": "cuda",
+                "engine": "kokoro",
+                "model": "Kokoro-82M",
+                "quantization": "bf16",
+                "device": "mps",
+            }
         )
 
 
-def test_from_dict_rejects_cuda_kokoro_at_spec_birth() -> None:
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
+def test_from_dict_rejects_conflicting_legacy_and_runtime_options() -> None:
+    with pytest.raises(ValueError, match="options and runtime_options"):
         TTSRuntimeSpec.from_dict(
             {
                 "provider": "cuda",
@@ -299,6 +344,8 @@ def test_from_dict_rejects_cuda_kokoro_at_spec_birth() -> None:
                 "model": "Kokoro-82M",
                 "quantization": "bf16",
                 "device": "cuda:0",
+                "options": {"dtype": "fp16"},
+                "runtime_options": {"dtype": "bf16"},
             }
         )
 
