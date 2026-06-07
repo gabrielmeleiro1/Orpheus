@@ -1,0 +1,233 @@
+.drop-zone {
+  align-items: center;
+  background: var(--panel-deep);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  display: grid;
+  gap: var(--density-panel-gap);
+  grid-template-columns: 40px minmax(0, 1fr);
+  margin: 0 0 12px;
+  min-height: 104px;
+  padding: 14px 16px;
+}
+
+.drop-zone-icon {
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  color: var(--text-muted);
+  display: grid;
+  height: 40px;
+  justify-items: center;
+  width: 40px;
+}
+
+.drop-zone-icon svg {
+  fill: none;
+  height: 20px;
+  stroke: currentColor;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 1.8;
+  width: 20px;
+}
+
+.drop-zone-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.drop-zone-copy strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.drop-zone-copy span {
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.drop-zone-hint {
+  grid-column: 2;
+}
+
+.drop-zone:hover .drop-zone-icon,
+.drop-zone.drag-over .drop-zone-icon {
+  border-color: var(--text-muted);
+  color: var(--text);
+}
+
+.source-file-label {
+  display: block;
+  margin-bottom: 10px;
+}
+
+.paste-panel,
+.queue-panel,
+.preflight-card,
+.config-panel-section {
+  margin-bottom: 12px;
+  padding: var(--density-panel-pad);
+}
+
+.paste-header,
+.queue-header,
+.preflight-title {
+  align-items: center;
+  color: var(--text-muted);
+  display: flex;
+  font-size: 11px;
+  gap: 10px;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.paste-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.paste-textarea {
+  line-height: 1.5;
+  min-height: 118px;
+  resize: vertical;
+}
+
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.queue-row {
+  align-items: center;
+  background: var(--panel-deep);
+  border: 1px solid var(--border);
+  display: grid;
+  gap: var(--density-panel-gap);
+  grid-template-columns: minmax(0, 1fr) max-content;
+  min-height: 38px;
+  padding: 7px 9px;
+}
+
+.queue-row.is-selected {
+  border-color: var(--border-strong);
+}
+
+.queue-item-main,
+.chapter-main {
+  background: transparent;
+  border: 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: grid;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  gap: 6px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.chapter-main {
+  align-items: center;
+  grid-template-columns: 42px minmax(0, 1fr) 54px;
+}
+
+.queue-row.is-selected .queue-item-title,
+.chapter-row.is-current .chapter-title {
+  color: var(--accent);
+}
+
+.queue-item-title,
+.queue-item-status,
+.chapter-title {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-item-status,
+.chapter-number,
+.chapter-duration {
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.chapter-duration {
+  text-align: right;
+}
+
+.voice-suggest-actions,
+.queue-item-actions,
+.maintenance-actions,
+.action-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 12px;
+}
+
+.voice-suggest-output,
+.preflight-sample {
+  background: var(--panel-deep);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 8px 0 10px;
+  overflow-wrap: anywhere;
+  padding: var(--density-panel-pad);
+  white-space: pre-wrap;
+}
+
+.voice-preview-audio {
+  display: none;
+}
+
+.advanced-settings,
+.book-detail-toggle {
+  margin-top: 12px;
+}
+
+.advanced-settings summary,
+.book-detail-toggle summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 11px;
+  list-style: none;
+  padding: 10px 0;
+  user-select: none;
+}
+
+.advanced-settings summary {
+  border: 1px solid var(--border);
+  display: inline-flex;
+  min-height: 38px;
+  padding: 10px 14px;
+}
+
+.advanced-settings summary::-webkit-details-marker,
+.book-detail-toggle summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-panel {
+  margin-bottom: 12px;
+}
+
+.config-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (max-width: 800px) {
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
+}

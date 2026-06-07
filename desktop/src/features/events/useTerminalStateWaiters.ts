@@ -1,0 +1,161 @@
+import { useCallback, useEffect, useRef } from "react";
+
+import type { ApiClient } from "../../api/client";
+import type {
+  ConversionJobTerminalEvent,
+  DesktopEventPayload,
+} from "../../types/api";
+import { normalizeTerminalStatus } from "./eventStreamModel";
+
+const TERMINAL_POLL_MS = 1500;
+
+interface UseTerminalStateWaitersArgs {
+  apiClient: ApiClient | null;
+  onTerminalStatus: (payload: DesktopEventPayload) => void;
+}
+
+interface TerminalWaiter {
+  finish: (event: ConversionJobTerminalEvent) => void;
+}
+
+function normalizeString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function useTerminalStateWaiters({
+  apiClient,
+  onTerminalStatus,
+}: UseTerminalStateWaitersArgs) {
+  const terminalEventsRef = useRef<Map<string, ConversionJobTerminalEvent>>(new Map());
+  const terminalWaitersRef = useRef<Map<string, TerminalWaiter[]>>(new Map());
+
+  const resolveTerminalState = useCallback((event: ConversionJobTerminalEvent) => {
+    terminalEventsRef.current.set(event.jobId, event);
+    const waiters = terminalWaitersRef.current.get(event.jobId) ?? [];
+    terminalWaitersRef.current.delete(event.jobId);
+    for (const waiter of waiters) {
+      waiter.finish(event);
+    }
+  }, []);
+
+  const waitForTerminalState = useCallback(
+    (jobId: string): Promise<ConversionJobTerminalEvent> => {
+      const normalizedJobId = normalizeString(jobId);
+      if (!normalizedJobId) {
+        return Promise.resolve({
+          jobId: "",
+          status: "unknown",
+          message: "missing job id",
+        });
+      }
+
+      const cached = terminalEventsRef.current.get(normalizedJobId);
+      if (cached) {
+        return Promise.resolve(cached);
+      }
+
+      return new Promise((resolve) => {
+        let settled = false;
+        let timeoutId: number | undefined;
+        let pollId: number | undefined;
+
+        const removeWaiter = (waiter: TerminalWaiter) => {
+          const waiters = terminalWaitersRef.current.get(normalizedJobId) ?? [];
+          const remaining = waiters.filter((item) => item !== waiter);
+          if (remaining.length > 0) {
+            terminalWaitersRef.current.set(normalizedJobId, remaining);
+          } else {
+            terminalWaitersRef.current.delete(normalizedJobId);
+          }
+        };
+
+        const cleanup = () => {
+          if (timeoutId !== undefined) {
+            window.clearTimeout(timeoutId);
+          }
+          if (pollId !== undefined) {
+            window.clearInterval(pollId);
+          }
+        };
+
+        const waiter: TerminalWaiter = {
+          finish: (event: ConversionJobTerminalEvent) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            cleanup();
+            removeWaiter(waiter);
+            resolve(event);
+          },
+        };
+
+        const pollTerminalState = async () => {
+          if (!apiClient || settled) {
+            return;
+          }
+          try {
+            const response = await apiClient.getActiveConversion();
+            if (settled) {
+              return;
+            }
+            const activeJob = response.job;
+            if (!activeJob || activeJob.id !== normalizedJobId) {
+              return;
+            }
+            const terminalStatus = normalizeTerminalStatus(activeJob.status);
+            if (!terminalStatus) {
+              return;
+            }
+            onTerminalStatus({
+              event_type: "state",
+              job_id: normalizedJobId,
+              state: terminalStatus,
+              message: activeJob.error || `conversion ${terminalStatus}`,
+            });
+          } catch {
+            // SSE remains the primary path; this is only a resilience fallback.
+          }
+        };
+
+        timeoutId = window.setTimeout(() => {
+          waiter.finish({
+            jobId: normalizedJobId,
+            status: "unknown",
+            message: "terminal event timed out",
+          });
+        }, 30 * 60 * 1000);
+
+        const waiters = terminalWaitersRef.current.get(normalizedJobId) ?? [];
+        terminalWaitersRef.current.set(normalizedJobId, [...waiters, waiter]);
+        pollId = window.setInterval(() => {
+          void pollTerminalState();
+        }, TERMINAL_POLL_MS);
+        void pollTerminalState();
+      });
+    },
+    [apiClient, onTerminalStatus],
+  );
+
+  useEffect(
+    () => () => {
+      const pendingWaiters = Array.from(terminalWaitersRef.current.entries());
+      for (const [jobId, waiters] of pendingWaiters) {
+        for (const waiter of waiters) {
+          waiter.finish({
+            jobId,
+            status: "unknown",
+            message: "terminal wait cancelled",
+          });
+        }
+      }
+      terminalWaitersRef.current.clear();
+    },
+    [],
+  );
+
+  return {
+    resolveTerminalState,
+    waitForTerminalState,
+  };
+}

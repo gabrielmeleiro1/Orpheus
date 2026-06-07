@@ -1,0 +1,79 @@
+.term-select {
+  position: relative;
+  width: 100%;
+}
+
+.term-select-btn {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  justify-content: space-between;
+  text-align: left;
+}
+
+.term-select-arrow {
+  align-items: center;
+  color: var(--text-muted);
+  display: grid;
+  height: 14px;
+  margin-left: 8px;
+  width: 14px;
+}
+
+.term-select-arrow svg {
+  fill: none;
+  height: 14px;
+  stroke: currentColor;
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+  stroke-width: 1.8;
+  width: 14px;
+}
+
+.term-select-menu {
+  background: var(--panel-deep);
+  border: 1px solid var(--border-strong);
+  left: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  position: absolute;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 200;
+}
+
+.term-select-option {
+  align-items: center;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: grid;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  gap: 8px;
+  grid-template-columns: 8px minmax(0, 1fr);
+  overflow: hidden;
+  padding: 6px 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-select-option-mark {
+  background: transparent;
+  height: 7px;
+  width: 7px;
+}
+
+.term-select-option.is-active .term-select-option-mark {
+  background: currentColor;
+}
+
+.term-select-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.term-select-option:hover,
+.term-select-option.is-active {
+  background: var(--hover);
+  color: var(--text);
+}

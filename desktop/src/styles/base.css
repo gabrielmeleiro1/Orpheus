@@ -1,0 +1,116 @@
+:root {
+  --industrial-bg: #1a1d19;
+  --industrial-rail: #151812;
+  --industrial-panel: #20241d;
+  --industrial-panel-deep: #14170f;
+  --industrial-panel-soft: #2a2e25;
+  --industrial-border: #3b4137;
+  --industrial-border-strong: #626a5c;
+  --industrial-text: #eceee7;
+  --industrial-text-dim: #d5dacd;
+  --industrial-text-muted: #aeb6a4;
+  --industrial-text-soft: #7e8777;
+  --industrial-text-faint: #596151;
+  --industrial-rust: #9b4328;
+  --density-rail-width: 216px;
+  --density-status-height: 70px;
+  --density-page-x: 20px;
+  --density-page-y: 12px;
+  --density-panel-gap: 10px;
+  --density-panel-pad: 10px;
+  --density-control-height: 30px;
+  --bg: var(--industrial-bg);
+  --rail: var(--industrial-rail);
+  --panel: var(--industrial-panel);
+  --panel-deep: var(--industrial-panel-deep);
+  --panel-soft: var(--industrial-panel-soft);
+  --border: var(--industrial-border);
+  --border-strong: var(--industrial-border-strong);
+  --text: var(--industrial-text);
+  --text-dim: var(--industrial-text-dim);
+  --text-muted: var(--industrial-text-muted);
+  --text-soft: var(--industrial-text-soft);
+  --text-faint: var(--industrial-text-faint);
+  --hover: #252b21;
+  --accent: var(--industrial-rust);
+  --accent-soft: rgba(155, 67, 40, 0.72);
+  --error: #c76556;
+  --warn: #c5a65d;
+  --scroll-track: #12150f;
+  --scroll-thumb: #495040;
+  --scroll-thumb-hover: #6b735f;
+}
+
+body[data-theme="light"] {
+  --bg: #e6e2d3;
+  --rail: #d7d1be;
+  --panel: #eee9d8;
+  --panel-deep: #f8f3e2;
+  --panel-soft: #ded8c5;
+  --border: #b9b19d;
+  --border-strong: #89806e;
+  --text: #161912;
+  --text-dim: #2f3329;
+  --text-muted: #5a604f;
+  --text-soft: #7a806d;
+  --text-faint: #9b9f8e;
+  --hover: #d4cdb9;
+  --accent: #8f3c24;
+  --accent-soft: rgba(143, 60, 36, 0.68);
+  --scroll-track: #e8e1ce;
+  --scroll-thumb: #b4ad99;
+  --scroll-thumb-hover: #867d69;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+[hidden],
+[x-cloak] {
+  display: none !important;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  letter-spacing: 0;
+}
+
+::-webkit-scrollbar {
+  height: 4px;
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--scroll-track);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+}
+
+details {
+  border-radius: 0;
+}
