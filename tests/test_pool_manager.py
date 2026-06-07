@@ -539,15 +539,18 @@ def test_shared_pool_shutdown_wait_is_bounded() -> None:
             "blocking-shutdown",
             worker_init_config={"voice": "af_bella"},
         )
+        shutdown_timeout = 0.05
         started_at = time.perf_counter()
         try:
-            finished = manager.shutdown(timeout_seconds=0.05)
+            finished = manager.shutdown(timeout_seconds=shutdown_timeout)
         finally:
             elapsed = time.perf_counter() - started_at
             _BlockingShutdownExecutor.release_shutdown.set()
 
     assert finished is False
-    assert elapsed < 0.5
+    # Bounded shutdown waits for the primary timeout plus the secondary join in
+    # pool_manager._shutdown_executor_bounded; allow CI scheduling slack.
+    assert elapsed < shutdown_timeout + 0.25 + 0.35
     assert _BlockingShutdownExecutor.shutdown_entered.is_set()
     assert manager.snapshot()["running"] is False
 
