@@ -1,0 +1,668 @@
+"""
+Conversion Pipeline Orchestrator
+=================================
+Coordinates all modules for audiobook conversion:
+Ingest → Chunker → TTS → Audio Processor → M4B Packager
+
+Supports both sequential and parallel processing modes:
+- Sequential: Better for single-chapter books, debugging
+- Parallel: Process multiple chapters concurrently with VRAM management
+"""
+
+from __future__ import annotations
+
+import logging
+import shutil
+import time
+from pathlib import Path
+from typing import Optional, Callable, Union, Any
+
+from .book_workspace import initialize_book_workspace
+from .chapter_dispatch import ChapterDispatchContext, dispatch_chapters
+from .conversion_lifecycle import (
+    begin_conversion_run,
+    cancelled_result,
+    finish_conversion_run,
+)
+from .models import (
+    ChapterProgressCallback as ChapterProgressCallback,
+    ChapterResult as ChapterResult,
+    ConversionResult,
+    PipelineConfig,
+    PipelineStage,
+    ProgressCallback,
+    RepairedChapterUpdate as RepairedChapterUpdate,
+    RepairPlan,
+    RepairResult,
+    VerboseCallback,
+)
+from .progress import PipelineProgressTracker
+from .pipeline_stages import PipelineStages
+from .result_validation import (
+    summarize_incomplete_chapters,
+    validate_conversion_success_artifacts,
+    validate_chapter_result_structure,
+)
+from .worker_config import (
+    build_shared_pool_fingerprint,
+    build_worker_init_config,
+)
+from .runtime import PipelineRunState, PipelineRuntime
+
+# Import parallel processing modules
+try:
+    from .parallel import (
+        ParallelConfig,
+        create_parallel_config,
+        _detect_available_ram_gb,
+        get_worker_cached_config,
+        get_worker_cached_models,
+    )
+
+    PARALLEL_AVAILABLE = True
+except ImportError:
+    PARALLEL_AVAILABLE = False
+
+    def _detect_available_ram_gb() -> float:
+        return 8.0
+
+    def get_worker_cached_models() -> tuple[Any, Any]:
+        return None, None
+
+    def get_worker_cached_config() -> Any:
+        return None
+
+
+logger = logging.getLogger(__name__)
+
+
+class _RunStateField:
+    """Compatibility descriptor for legacy private-field tests and callers."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        coerce: Callable[[Any], Any] | None = None,
+    ) -> None:
+        self.name = name
+        self.coerce = coerce
+
+    def __get__(self, instance: Any, owner: Any) -> Any:
+        if instance is None:
+            return self
+        return getattr(instance._run_state, self.name)
+
+    def __set__(self, instance: Any, value: Any) -> None:
+        if self.coerce is not None:
+            value = self.coerce(value)
+        setattr(instance._run_state, self.name, value)
+
+
+def _coerce_int(value: Any) -> int:
+    return int(value or 0)
+
+
+def _coerce_float(value: Any) -> float:
+    return float(value or 0.0)
+
+
+def _coerce_bool(value: Any) -> bool:
+    return bool(value)
+
+
+def _coerce_worker_count(value: Any) -> int:
+    return max(1, int(value or 1))
+
+
+
+class ConversionPipeline:
+    """
+    Orchestrates the full audiobook conversion pipeline.
+
+    Supports both sequential and parallel processing:
+    - Sequential: Process chapters one by one (good for single-chapter books)
+    - Parallel: Process multiple chapters concurrently with VRAM management
+
+    Stages:
+        1. INGESTING - Parse PDF/EPUB, extract chapters
+        2. CHUNKING - Split text into TTS-sized chunks
+        3. CLEANING - LLM-based text normalization
+        4. SYNTHESIZING - Generate audio per chunk
+        5. ENCODING - Normalize and encode to MP3
+        6. PACKAGING - Create M4B with chapters
+    """
+
+    _stage = _RunStateField("stage")
+    _cancelled = _RunStateField("cancelled", coerce=_coerce_bool)
+    _start_time = _RunStateField("start_time")
+    _chars_processed = _RunStateField("chars_processed", coerce=_coerce_int)
+    _total_chars = _RunStateField("total_chars", coerce=_coerce_int)
+    _tts_engine = _RunStateField("tts_engine")
+    _text_cleaner = _RunStateField("text_cleaner")
+    _tts_idle_timer = _RunStateField("tts_idle_timer")
+    _tts_idle_lock = _RunStateField("tts_idle_lock")
+    _parallel_execution_active = _RunStateField(
+        "parallel_execution_active",
+        coerce=_coerce_bool,
+    )
+    _selected_parallel_chapters = _RunStateField(
+        "selected_parallel_chapters",
+        coerce=_coerce_worker_count,
+    )
+    _selected_parallel_worker_count_reason = _RunStateField(
+        "selected_parallel_worker_count_reason",
+    )
+    _performance_active_chapters = _RunStateField("performance_active_chapters")
+    _performance_completed_chapters = _RunStateField(
+        "performance_completed_chapters",
+        coerce=_coerce_int,
+    )
+    _performance_failed_chapters = _RunStateField(
+        "performance_failed_chapters",
+        coerce=_coerce_int,
+    )
+    _performance_tts_chars = _RunStateField(
+        "performance_tts_chars",
+        coerce=_coerce_int,
+    )
+    _performance_tts_seconds = _RunStateField(
+        "performance_tts_seconds",
+        coerce=_coerce_float,
+    )
+    _performance_encode_chapters = _RunStateField(
+        "performance_encode_chapters",
+        coerce=_coerce_int,
+    )
+    _performance_encode_seconds = _RunStateField(
+        "performance_encode_seconds",
+        coerce=_coerce_float,
+    )
+    _temp_cleanup_paths = _RunStateField("temp_cleanup_paths")
+
+    def __init__(
+        self,
+        config: Optional[PipelineConfig] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+        verbose_callback: Optional[VerboseCallback] = None,
+    ):
+        """
+        Initialize the pipeline.
+
+        Args:
+            config: Pipeline configuration
+            progress_callback: Called on progress updates
+            verbose_callback: Called on detailed log updates
+        """
+        self.config = config or PipelineConfig()
+        self.progress_callback = progress_callback
+        self.verbose_callback = verbose_callback
+
+        # Initialize parallel processing if available
+        self._parallel_config: Optional[ParallelConfig] = None
+        worker_plan = self.config.worker_plan
+
+        if PARALLEL_AVAILABLE and worker_plan.enable_parallel:
+            self._parallel_config = create_parallel_config(
+                max_workers=worker_plan.max_workers,
+                total_vram_gb=self.config.total_vram_gb,
+                enforce_vram_budget=worker_plan.enforce_vram_budget,
+            )
+            self._parallel_config.worker_init_config = self._build_worker_init_config()
+
+        # Ensure directories exist
+        self.config.output_dir.mkdir(parents=True, exist_ok=True)
+        self.config.temp_dir.mkdir(parents=True, exist_ok=True)
+
+        initial_parallel_chapters = max(
+            1,
+            int(
+                self._parallel_config.max_workers
+                if self._parallel_config is not None
+                else worker_plan.max_workers
+                or 1
+            ),
+        )
+        self._run_state = PipelineRunState(
+            selected_parallel_chapters=initial_parallel_chapters
+        )
+        self._progress = PipelineProgressTracker(self._run_state)
+        self._runtime = PipelineRuntime(
+            config=self.config,
+            state=self._run_state,
+            progress=self._progress,
+            get_progress_callback=lambda: self.progress_callback,
+            get_verbose_callback=lambda: self.verbose_callback,
+            is_parallel_enabled=lambda: PARALLEL_AVAILABLE
+            and self.config.worker_plan.enable_parallel,
+            parallel_config_provider=lambda: self._parallel_config,
+            shared_pool_fingerprint_builder=self._shared_pool_fingerprint,
+            worker_init_config_builder=self._build_worker_init_config,
+        )
+        self._stages = PipelineStages(self._runtime)
+        self.dispatch_context = ChapterDispatchContext(
+            runtime=self._runtime,
+            runner=self._stages,
+        )
+
+    @property
+    def stage(self) -> PipelineStage:
+        """Current pipeline stage."""
+        return self._run_state.stage
+
+    @stage.setter
+    def stage(self, value: PipelineStage) -> None:
+        self._run_state.stage = value
+
+    @property
+    def is_running(self) -> bool:
+        """Check if pipeline is currently running."""
+        return self._runtime.is_running
+
+    @property
+    def is_parallel(self) -> bool:
+        """Check if parallel processing is enabled and available."""
+        return self._runtime.is_parallel
+
+    def cancel(self):
+        """Request pipeline cancellation."""
+        self._run_state.cancelled = True
+
+    def _check_cancelled(self) -> bool:
+        """Check if cancellation was requested."""
+        return self._runtime.check_cancelled()
+
+    def _begin_conversion_run(self) -> None:
+        """Reset per-run lifecycle state before conversion starts."""
+        begin_conversion_run(self._runtime)
+
+    def _finish_conversion_run(self) -> None:
+        """Release per-run resources after conversion exits."""
+        finish_conversion_run(
+            self._runtime,
+            cleanup_models=self.stages.cleanup_models,
+            cleanup_temp=self._cleanup_temp,
+        )
+
+    @staticmethod
+    def _cancelled_result(
+        title: str = "",
+        author: Optional[str] = None,
+    ) -> ConversionResult:
+        """Build the standard cancelled conversion result."""
+        return cancelled_result(title=title, author=author)
+
+    def _notify_progress(
+        self,
+        chapter_idx: int = 0,
+        total_chapters: int = 0,
+        chunk_idx: int = 0,
+        total_chunks: int = 0,
+        message: str = "",
+        performance: Optional[dict[str, Any]] = None,
+    ):
+        """Send progress update via callback."""
+        self._runtime.notify_progress(
+            chapter_idx=chapter_idx,
+            total_chapters=total_chapters,
+            chunk_idx=chunk_idx,
+            total_chunks=total_chunks,
+            message=message,
+            performance=performance,
+        )
+
+    def _performance_snapshot(
+        self,
+        performance: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Build a lightweight runtime snapshot for progress events."""
+        return self._runtime.performance_snapshot(performance)
+
+    def estimate_eta(self) -> Optional[float]:
+        """
+        Estimate remaining time in seconds.
+
+        Returns:
+            Estimated seconds remaining, or None if not enough data
+        """
+        return self._progress.estimate_eta()
+
+    def _build_worker_init_config(self) -> dict[str, Any]:
+        """Serialize worker model settings used for per-process load and warm-up."""
+        return build_worker_init_config(self.config)
+
+    def _shared_pool_fingerprint(self) -> tuple[Any, ...]:
+        """Stable fingerprint for shared worker-pool reuse decisions."""
+        max_workers = (
+            self._run_state.selected_parallel_chapters
+            if self._parallel_config is not None
+            else self.config.worker_plan.max_workers
+        )
+        return build_shared_pool_fingerprint(self.config, max_workers=max_workers)
+
+    def convert(
+        self,
+        source_path: Union[Path, str],
+        title: Optional[str] = None,
+        author: Optional[str] = None,
+    ) -> ConversionResult:
+        """
+        Run the full conversion pipeline.
+
+        Automatically selects parallel or sequential processing based on:
+        - Configuration settings
+        - Number of chapters
+        - Available VRAM
+
+        Args:
+            source_path: Path to PDF or EPUB file
+            title: Override book title
+            author: Override author name
+
+        Returns:
+            ConversionResult with output paths and status
+        """
+        pipeline_start = time.time()
+        source_path = Path(source_path)
+        self._begin_conversion_run()
+        try:
+            if self._check_cancelled():
+                return self._cancelled_result()
+
+            # Stage 1: Ingest
+            self._runtime.set_stage(PipelineStage.INGESTING)
+            self._notify_progress(message=f"Parsing {source_path.name}...")
+
+            document = self.stages.ingest(source_path)
+            if self.config.chapter_limit is not None:
+                document.chapters = document.chapters[
+                    : max(1, int(self.config.chapter_limit))
+                ]
+            if self._check_cancelled():
+                return self._cancelled_result()
+
+            # Use provided or parsed title/author
+            book_title = title or document.title
+            book_author = author or getattr(document, "author", None)
+
+            # Calculate total characters for ETA
+            self._progress.set_total_chars(
+                sum(len(ch.content) for ch in document.chapters)
+            )
+
+            workspace = initialize_book_workspace(self, document, book_title)
+            book_output_dir = workspace.output_dir
+            chapters_dir = workspace.chapters_dir
+
+            total_chapters = len(document.chapters)
+            chapter_results = dispatch_chapters(
+                self.dispatch_context,
+                document.chapters,
+                chapters_dir,
+            )
+
+            if self._check_cancelled():
+                return self._cancelled_result(title=book_title, author=book_author)
+
+            chapter_results, structural_mismatch_notes = (
+                validate_chapter_result_structure(
+                    document.chapters,
+                    chapter_results,
+                )
+            )
+            if structural_mismatch_notes:
+                failure_summary = "; ".join(structural_mismatch_notes[:3])
+                if len(structural_mismatch_notes) > 3:
+                    failure_summary += (
+                        f"; ... (+{len(structural_mismatch_notes) - 3} more)"
+                    )
+                self._log_verbose(
+                    "[STATUS] Chapter result structural mismatch before packaging: "
+                    f"{failure_summary}",
+                    "error",
+                )
+                self._runtime.set_stage(PipelineStage.ERROR)
+                processing_time = time.time() - pipeline_start
+                return ConversionResult(
+                    success=False,
+                    title=book_title,
+                    author=book_author,
+                    chapters=chapter_results,
+                    total_duration_ms=sum(r.duration_ms for r in chapter_results),
+                    error=f"Structural mismatch; packaging skipped. {failure_summary}",
+                    processing_time_seconds=processing_time,
+                )
+
+            incomplete_chapter_notes = summarize_incomplete_chapters(chapter_results)
+            if incomplete_chapter_notes:
+                failure_summary = "; ".join(incomplete_chapter_notes[:3])
+                if len(incomplete_chapter_notes) > 3:
+                    failure_summary += (
+                        f"; ... (+{len(incomplete_chapter_notes) - 3} more)"
+                    )
+                self._log_verbose(
+                    f"[STATUS] {len(incomplete_chapter_notes)}/{len(chapter_results)} chapters incomplete before packaging: "
+                    f"{failure_summary}",
+                    "error",
+                )
+                self._runtime.set_stage(PipelineStage.ERROR)
+                processing_time = time.time() - pipeline_start
+                return ConversionResult(
+                    success=False,
+                    title=book_title,
+                    author=book_author,
+                    chapters=chapter_results,
+                    total_duration_ms=sum(r.duration_ms for r in chapter_results),
+                    error=f"Incomplete conversion; packaging skipped. {failure_summary}",
+                    processing_time_seconds=processing_time,
+                )
+
+            # Stage 5: Package final audio artifact
+            self._runtime.set_stage(PipelineStage.PACKAGING)
+            final_format = (
+                "M4A document audio"
+                if self.config.conversion_mode == "document_audio"
+                else "M4B audiobook"
+            )
+            self._notify_progress(
+                chapter_idx=total_chapters,
+                total_chapters=total_chapters,
+                message=f"Creating {final_format}...",
+            )
+
+            final_output_path = self.stages.package(
+                chapter_results=chapter_results,
+                title=book_title,
+                author=book_author,
+                output_dir=book_output_dir,
+            )
+            total_duration = sum(r.duration_ms for r in chapter_results)
+            success_result = ConversionResult(
+                success=True,
+                title=book_title,
+                author=book_author,
+                output_path=final_output_path,
+                chapters=chapter_results,
+                total_duration_ms=total_duration,
+                processing_time_seconds=time.time() - pipeline_start,
+            )
+            artifact_validation = validate_conversion_success_artifacts(
+                success_result,
+                emit_chapter_mp3_artifacts=self.config.emit_chapter_mp3_artifacts,
+                require_packaged_output=True,
+            )
+            if not artifact_validation.is_valid:
+                failure_notes = list(artifact_validation.chapter_notes)
+                if artifact_validation.packaged_output_note is not None:
+                    failure_notes.insert(0, artifact_validation.packaged_output_note)
+                failure_summary = "; ".join(failure_notes[:3])
+                if len(failure_notes) > 3:
+                    failure_summary += f"; ... (+{len(failure_notes) - 3} more)"
+                self._runtime.set_stage(PipelineStage.ERROR)
+                processing_time = time.time() - pipeline_start
+                return ConversionResult(
+                    success=False,
+                    title=book_title,
+                    author=book_author,
+                    chapters=chapter_results,
+                    total_duration_ms=total_duration,
+                    error=f"Invalid conversion artifacts. {failure_summary}",
+                    processing_time_seconds=processing_time,
+                )
+
+            # Complete
+            self._runtime.set_stage(PipelineStage.COMPLETE)
+            self._notify_progress(
+                chapter_idx=total_chapters,
+                total_chapters=total_chapters,
+                message="Conversion complete!",
+            )
+
+            return success_result
+
+        except Exception as e:
+            self._runtime.set_stage(PipelineStage.ERROR)
+            logger.exception("Pipeline conversion failed")
+            return ConversionResult(
+                success=False,
+                title=title or "",
+                author=author,
+                error=str(e),
+            )
+        finally:
+            self._finish_conversion_run()
+
+    def repair(
+        self,
+        plan: RepairPlan | None = None,
+        *,
+        source_path: Union[Path, str] | None = None,
+        stored_chapters: list[Any] | None = None,
+        title: str | None = None,
+        author: Optional[str] = None,
+        output_dir: Path | None = None,
+        chapters_dir: Path | None = None,
+        resolve_chapter_audio: Callable[[Any], Optional[Path]] | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> RepairResult:
+        """Repair missing chapter audio and repackage through the pipeline layer."""
+        from .repair import RepairRuntime, execute_repair_plan
+
+        if plan is None:
+            if (
+                source_path is None
+                or stored_chapters is None
+                or title is None
+                or output_dir is None
+                or chapters_dir is None
+                or resolve_chapter_audio is None
+            ):
+                raise ValueError("Repair requires a RepairPlan or complete repair inputs")
+            plan = RepairPlan(
+                source_path=Path(source_path),
+                stored_chapters=stored_chapters,
+                title=title,
+                author=author,
+                output_dir=output_dir,
+                chapters_dir=chapters_dir,
+                resolve_chapter_audio=resolve_chapter_audio,
+                cancel_requested=cancel_requested,
+            )
+
+        def set_stage(stage: PipelineStage) -> None:
+            self._runtime.set_stage(stage)
+
+        def set_total_chars(total_chars: int) -> None:
+            self._progress.set_total_chars(max(0, int(total_chars or 0)))
+
+        runtime = RepairRuntime(
+            begin_run=self._begin_conversion_run,
+            finish_run=self._finish_conversion_run,
+            check_cancelled=self._check_cancelled,
+            set_stage=set_stage,
+            set_total_chars=set_total_chars,
+            ingest_source=self.stages.ingest,
+            process_missing_chapters=lambda chapters, output_dir, total_chapters: dispatch_chapters(
+                self.dispatch_context,
+                chapters,
+                output_dir,
+            ),
+            package_results=lambda chapter_results, package_title, package_author, package_output_dir: self.stages.package(
+                chapter_results=chapter_results,
+                title=package_title,
+                author=package_author,
+                output_dir=package_output_dir,
+            ),
+            cancel=self.cancel,
+        )
+        return execute_repair_plan(runtime, plan)
+
+    @property
+    def stages(self):
+        """Pipeline stage execution collaborator."""
+        return self._stages
+
+    def _memory_policy_reason(self) -> Optional[str]:
+        """Return active memory safe-mode reason for progress metadata."""
+        memory_policy = self.config.memory_policy
+        if memory_policy is None:
+            return None
+        reason = getattr(memory_policy, "safe_mode_reason", None)
+        manual_worker_mode = self.config.worker_plan.worker_mode == "manual"
+        if manual_worker_mode and reason != "memory pressure error":
+            return None
+        return str(reason) if reason else None
+
+    def _track_temp_cleanup_path(self, path: Path) -> None:
+        """Track a temp artifact created by this pipeline run."""
+        self._runtime.track_temp_cleanup_path(path)
+
+    def _cleanup_temp(self):
+        """Clean up temporary files."""
+        try:
+            if self._run_state.temp_cleanup_paths:
+                for item in sorted(
+                    self._run_state.temp_cleanup_paths,
+                    key=lambda candidate: len(candidate.parts),
+                    reverse=True,
+                ):
+                    try:
+                        if item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                        elif item.is_file():
+                            item.unlink()
+                    except Exception:
+                        pass
+                self._run_state.temp_cleanup_paths.clear()
+                return
+
+            if self.config.temp_dir.exists():
+                for item in self.config.temp_dir.iterdir():
+                    if item.is_dir() and (
+                        item.name.startswith("ch_") or item.name == "chapter_masters"
+                    ):
+                        try:
+                            shutil.rmtree(item, ignore_errors=True)
+                        except Exception:
+                            pass
+                        continue
+
+                    if not item.is_file():
+                        continue
+
+                    if (
+                        item.name.startswith("chapter_")
+                        and item.suffix.lower() == ".wav"
+                    ):
+                        try:
+                            item.unlink()
+                        except Exception:
+                            pass
+        except Exception:
+            pass  # Best effort cleanup
+        finally:
+            self._run_state.temp_cleanup_paths.clear()
+
+    def _log_verbose(self, message: str, log_type: str = "info"):
+        """Emit verbose log if callback present."""
+        self._runtime.log_verbose(message, log_type)
