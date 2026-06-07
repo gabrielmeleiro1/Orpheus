@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "created_at": "2026-05-10T10:00:00Z",
+    "source_path": "/fixtures/book.epub",
+    "command": ["benchmark_nagel_repeated.py", "/fixtures/book.epub"],
+    "environment": {
+      "python_version": "3.12.0",
+      "platform": "macOS-15-test",
+      "executable": "/usr/bin/python3"
+    }
+  },
+  "cases": [
+    {"name": "default", "settings": {"chunk_size": 700, "enable_chunk_overlap": false}},
+    {"name": "overlap", "settings": {"chunk_size": 700, "enable_chunk_overlap": true}},
+    {"settings": {"chunk_size": 900, "enable_chunk_overlap": false}}
+  ],
+  "runs": [
+    {
+      "case_name": "default",
+      "success": true,
+      "metrics": {"wall_time_seconds": 10.0},
+      "artifacts": {
+        "metrics_path": {"path": "baseline/default/r1/benchmark_summary.json", "exists": true}
+      }
+    },
+    {
+      "case_name": "overlap",
+      "success": true,
+      "metrics": {"wall_time_seconds": 20.0},
+      "artifacts": {
+        "metrics_path": {"path": "baseline/overlap/r1/benchmark_summary.json", "exists": true}
+      }
+    }
+  ],
+  "case_summaries": [
+    {
+      "name": "default",
+      "settings": {"chunk_size": 700, "enable_chunk_overlap": false},
+      "runs": 2,
+      "status": "pass",
+      "metrics": {
+        "wall_time_seconds": {
+          "median": 10.0,
+          "min": 9.5,
+          "max": 10.5,
+          "mean": 10.0,
+          "stdev": 0.7,
+          "spread": 1.0,
+          "spread_pct_of_median": 10.0,
+          "threshold": {"max": 12.0},
+          "status": "pass"
+        },
+        "parse_seconds": {
+          "median": 2.0,
+          "min": 1.9,
+          "max": 2.1,
+          "mean": 2.0,
+          "stdev": 0.1,
+          "spread": 0.2,
+          "spread_pct_of_median": 10.0,
+          "threshold": null,
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "name": "overlap",
+      "settings": {"chunk_size": 700, "enable_chunk_overlap": true},
+      "runs": 2,
+      "status": "pass",
+      "metrics": {
+        "wall_time_seconds": {
+          "median": 20.0,
+          "min": 19.5,
+          "max": 20.5,
+          "mean": 20.0,
+          "stdev": 0.7,
+          "spread": 1.0,
+          "spread_pct_of_median": 5.0,
+          "threshold": {"max": 25.0},
+          "status": "pass"
+        },
+        "total_duration_ms": {
+          "median": 20000.0,
+          "min": 19800.0,
+          "max": 20200.0,
+          "mean": 20000.0,
+          "stdev": 282.8,
+          "spread": 400.0,
+          "spread_pct_of_median": 2.0,
+          "threshold": null,
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "settings": {"chunk_size": 900, "enable_chunk_overlap": false},
+      "runs": 1,
+      "status": "pass",
+      "metrics": {
+        "wall_time_seconds": {
+          "median": 30.0,
+          "min": 30.0,
+          "max": 30.0,
+          "mean": 30.0,
+          "stdev": 0.0,
+          "spread": 0.0,
+          "spread_pct_of_median": 0.0,
+          "threshold": null,
+          "status": "pass"
+        }
+      }
+    }
+  ]
+}

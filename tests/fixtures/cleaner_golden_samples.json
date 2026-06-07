@@ -1,0 +1,44 @@
+[
+  {
+    "description": "Header and dropped leading character on trading floor opening",
+    "dirty": "### **THE TRADING FLOOR** alking onto a trading floor is a special experience.",
+    "rule_based": "THE TRADING FLOOR alking onto a trading floor is a special experience.",
+    "expected_clean": "THE TRADING FLOOR Walking onto a trading floor is a special experience.",
+    "keywords": ["trading", "floor"]
+  },
+  {
+    "description": "Mid-sentence hash artifact around orphaned letter",
+    "dirty": "This took place on the # **W** trading floor of Handelsbanken.",
+    "rule_based": "This took place on the # W trading floor of Handelsbanken.",
+    "expected_clean": "This took place on the W trading floor of Handelsbanken.",
+    "keywords": ["W", "Handelsbanken", "trading"]
+  },
+  {
+    "description": "Markdown heading markers collapsed into plain heading",
+    "dirty": "#### **NO MEMORY OF THE GREAT** **TRADERS**",
+    "rule_based": "NO MEMORY OF THE GREAT TRADERS",
+    "expected_clean": "NO MEMORY OF THE GREAT TRADERS",
+    "keywords": ["MEMORY", "TRADERS"]
+  },
+  {
+    "description": "Missing hyphen in risk-to-reward phrase",
+    "dirty": "You will often hear traders talk about riskto-reward ratio.",
+    "rule_based": "You will often hear traders talk about riskto-reward ratio.",
+    "expected_clean": "You will often hear traders talk about risk-to-reward ratio.",
+    "keywords": ["traders", "risk", "reward"]
+  },
+  {
+    "description": "Bracketed ordinal artifact in numeric phrase",
+    "dirty": "Ignoring my inability to be polite for the 450 [th] time.",
+    "rule_based": "Ignoring my inability to be polite for the 450 [th] time.",
+    "expected_clean": "Ignoring my inability to be polite for the 450th time.",
+    "keywords": ["450th", "polite"]
+  },
+  {
+    "description": "Missing hyphen in less-than-happy phrase",
+    "dirty": "Some less-thanhappy traders confronted me in my live trading room.",
+    "rule_based": "Some less-thanhappy traders confronted me in my live trading room.",
+    "expected_clean": "Some less-than-happy traders confronted me in my live trading room.",
+    "keywords": ["less-than-happy", "traders", "trading"]
+  }
+]

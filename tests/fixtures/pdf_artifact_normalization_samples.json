@@ -1,0 +1,144 @@
+[
+  {
+    "name": "jstor_cover_page",
+    "pages": [
+      {
+        "text": "Philosophical Review\nWhat Is It Like to Be a Bat?\nAuthor(s): Thomas Nagel\nStable URL: http://www.jstor.org/stable/2183914\nYour use of the JSTOR archive indicates your acceptance of the Terms & Conditions of Use.\nJSTOR is a not-for-profit service that helps scholars and researchers."
+      },
+      {
+        "text": "Actual article body should start here."
+      }
+    ],
+    "expected_texts": [
+      "",
+      "Actual article body should start here."
+    ]
+  },
+  {
+    "name": "boundary_noise_and_page_numbers",
+    "pages": [
+      {
+        "text": "RUNNING HEADER\nPage one body stays here.\n101\nThis content downloaded from 127.0.0.1 on Tue, 28 Apr 2026 10:00:00 UTC\nAll use subject to http://about.jstor.org/terms"
+      },
+      {
+        "text": "RUNNING HEADER\nPage two body stays here.\n102\nThis content downloaded from 127.0.0.1 on Tue, 28 Apr 2026 10:00:00 UTC\nAll use subject to http://about.jstor.org/terms"
+      },
+      {
+        "text": "RUNNING HEADER\nPage three body stays here.\n103\nThis content downloaded from 127.0.0.1 on Tue, 28 Apr 2026 10:00:00 UTC\nAll use subject to http://about.jstor.org/terms"
+      }
+    ],
+    "expected_texts": [
+      "Page one body stays here.",
+      "Page two body stays here.",
+      "Page three body stays here."
+    ]
+  },
+  {
+    "name": "line_break_hyphenation_and_residue",
+    "pages": [
+      {
+        "text": "The essence of expe-\n rience is something it is like.\nMind and body-\n why this matters should keep the dash.\n44I\n\nBut if experience does not have an objective nature that can be apprehended from\nI The problem I am going to raise should not remain\nwithin a larger human point of view.\n\nmany different points of view, then how can it be supposed?"
+      }
+    ],
+    "expected_texts": [
+      "The essence of experience is something it is like.\nMind and body-\n why this matters should keep the dash.\n\nBut if experience does not have an objective nature that can be apprehended from\nmany different points of view, then how can it be supposed?"
+    ]
+  },
+  {
+    "name": "trailing_reference_block",
+    "pages": [
+      {
+        "text": "This is body text with inline marker.15\n\n13. The concept of design space was proposed.\n14. Throughout the text the term paradigm appears.\n15. Chandler (1977) pp. 281-3."
+      }
+    ],
+    "expected_texts": [
+      "This is body text with inline marker.15"
+    ]
+  },
+  {
+    "name": "single_page_numbered_section_preserved",
+    "pages": [
+      {
+        "text": "1\nA numbered section heading should remain in a one-page text extraction."
+      }
+    ],
+    "expected_texts": [
+      "1\nA numbered section heading should remain in a one-page text extraction."
+    ]
+  },
+  {
+    "name": "non_front_matter_jstor_quotation_preserved",
+    "pages": [
+      {
+        "text": "Actual article body starts here."
+      },
+      {
+        "text": "The appendix quotes a platform notice: Stable URL: http://www.jstor.org/stable/2183914. Your use of the JSTOR archive indicates your acceptance of the Terms & Conditions of Use. JSTOR is a not-for-profit service."
+      }
+    ],
+    "expected_texts": [
+      "Actual article body starts here.",
+      "The appendix quotes a platform notice: Stable URL: http://www.jstor.org/stable/2183914. Your use of the JSTOR archive indicates your acceptance of the Terms & Conditions of Use. JSTOR is a not-for-profit service."
+    ]
+  },
+  {
+    "name": "two_page_repeated_header_removed",
+    "pages": [
+      {
+        "text": "RUNNING HEADER\nPage one body."
+      },
+      {
+        "text": "RUNNING HEADER\nPage two body."
+      }
+    ],
+    "expected_texts": [
+      "Page one body.",
+      "Page two body."
+    ]
+  },
+  {
+    "name": "front_matter_toc_and_copyright_pages_removed",
+    "pages": [
+      {
+        "text": "Oxford Sample Book\n\nCopyright 2013 by Sample Press\nAll rights reserved. No part of this publication may be reproduced.\nISBN 978-0-00-000000-0"
+      },
+      {
+        "text": "Contents\n\nIntroduction ........ 1\n1. First Chapter ........ 19\n2. Second Chapter ........ 43\nSubject Index ........ 100"
+      },
+      {
+        "text": "Introduction\n\nActual body text starts here and should remain."
+      }
+    ],
+    "expected_texts": [
+      "",
+      "",
+      "Introduction\n\nActual body text starts here and should remain."
+    ]
+  },
+  {
+    "name": "image_caption_lines_removed",
+    "pages": [
+      {
+        "text": "The paragraph before the image remains.\nFigure 2.1 Portrait of the author, public domain.\nImage caption: Decorative printer mark.\nThe paragraph after the image remains."
+      }
+    ],
+    "expected_texts": [
+      "The paragraph before the image remains.\nThe paragraph after the image remains."
+    ]
+  },
+  {
+    "name": "bibliography_and_endnotes_sections_removed",
+    "pages": [
+      {
+        "text": "Final paragraph of the essay remains.\n\nEndnotes\n1. This note should be removed.\n2. This note should also be removed."
+      },
+      {
+        "text": "Another final paragraph remains.\n\nBibliography\nNietzsche, Friedrich. Beyond Good and Evil.\nKaufmann, Walter. Nietzsche."
+      }
+    ],
+    "expected_texts": [
+      "Final paragraph of the essay remains.",
+      "Another final paragraph remains."
+    ]
+  }
+]

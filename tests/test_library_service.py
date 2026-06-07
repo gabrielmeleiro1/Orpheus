@@ -1,0 +1,937 @@
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+from types import SimpleNamespace
+
+from modules.app.config import AppConfig
+from modules.app import controller as app_controller_module
+from modules.app.services.library_service import LibraryService
+from modules.storage.models import Book, Chapter, ConversionMode, PlaybackStatus, SourceType
+
+
+class _RepositoryStub:
+    def __init__(self) -> None:
+        self.detail_calls: list[int] = []
+
+    def get_book(self, book_id: int):  # pragma: no cover - should never be called
+        raise AssertionError(f"get_book() should not be called for {book_id}")
+
+    def get_chapters(self, book_id: int):  # pragma: no cover - should never be called
+        raise AssertionError(f"get_chapters() should not be called for {book_id}")
+
+    def get_book_with_chapters(self, book_id: int):
+        self.detail_calls.append(book_id)
+        return (
+            Book(
+                id=book_id,
+                title="Detail Book",
+                author="Tester",
+                source_path="/tmp/source.epub",
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.DOCUMENT_AUDIO,
+                total_chapters=1,
+                playback_path="output/Detail Book/Detail Book.m4a",
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=32.5,
+                created_at=datetime(2026, 3, 22, 10, 0, 0),
+                updated_at=datetime(2026, 3, 22, 10, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=11,
+                    book_id=book_id,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path="output/Detail Book/chapters/01.mp3",
+                )
+            ],
+        )
+
+
+def test_library_service_get_book_uses_combined_repository_detail_call():
+    repository = _RepositoryStub()
+    service = LibraryService(repository)
+
+    payload = service.get_book(7)
+
+    assert repository.detail_calls == [7]
+    assert payload is not None
+    assert payload["playback_path"] == "output/Detail Book/Detail Book.m4a"
+    assert payload["playback_status"] == PlaybackStatus.PACKAGED.value
+    assert payload["conversion_mode"] == ConversionMode.DOCUMENT_AUDIO.value
+    assert payload["tags"] == ""
+    assert payload["favorite"] is False
+    assert payload["source_available"] is False
+    assert payload["chapters"][0]["number"] == 1
+
+
+def test_library_service_updates_book_organization_metadata(tmp_path):
+    class _UpdateRepositoryStub(_RepositoryStub):
+        def __init__(self) -> None:
+            super().__init__()
+            self.updates = []
+
+        def update_book(self, book_id: int, **updates):  # noqa: ANN003
+            self.updates.append((book_id, updates))
+            return Book(
+                id=book_id,
+                title=updates.get("title", "Updated"),
+                author=updates.get("author"),
+                source_path=str(tmp_path / "source.md"),
+                source_type=SourceType.MD,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.MISSING,
+                playback_position_sec=0.0,
+                tags=updates.get("tags", ""),
+                favorite=bool(updates.get("favorite", False)),
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            )
+
+    repository = _UpdateRepositoryStub()
+    service = LibraryService(repository)
+
+    payload = service.update_book_metadata(
+        7,
+        title="Updated",
+        author="New Author",
+        tags="fiction, favorite",
+        favorite=True,
+    )
+
+    assert repository.updates == [
+        (7, {"title": "Updated", "author": "New Author", "tags": "fiction, favorite", "favorite": True})
+    ]
+    assert payload is not None
+    assert payload["title"] == "Updated"
+    assert payload["favorite"] is True
+
+
+class _ListCleanupRepositoryStub:
+    def __init__(self, books) -> None:
+        self.books = list(books)
+        self.deleted_ids: list[int] = []
+
+    def list_books(self, filters):  # noqa: ANN001
+        return list(self.books)
+
+    def delete_book(self, book_id: int) -> bool:
+        self.deleted_ids.append(book_id)
+        self.books = [book for book in self.books if book.id != book_id]
+        return True
+
+
+def test_library_service_keeps_books_when_source_file_missing(tmp_path):
+    existing_source = tmp_path / "keep.epub"
+    existing_source.write_text("ok", encoding="utf-8")
+
+    repository = _ListCleanupRepositoryStub(
+        [
+            SimpleNamespace(
+                id=1,
+                title="Keep",
+                author="Tester",
+                total_chapters=1,
+                completed_chapters=1,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                source_path=str(existing_source),
+            ),
+            SimpleNamespace(
+                id=2,
+                title="Remove",
+                author="Tester",
+                total_chapters=1,
+                completed_chapters=1,
+                created_at=datetime(2026, 4, 1, 9, 1, 0),
+                source_path=str(tmp_path / "missing.epub"),
+            ),
+        ]
+    )
+
+    service = LibraryService(repository, output_dir=tmp_path / "output")
+
+    books = service.get_library_books()
+
+    assert [book.id for book in books] == [1, 2]
+    assert repository.deleted_ids == []
+
+
+class _DeleteRepositoryStub:
+    def __init__(self, detail) -> None:
+        self.detail = detail
+        self.deleted_ids: list[int] = []
+
+    def get_book_with_chapters(self, book_id: int):
+        if self.detail is None:
+            return None
+        book, chapters = self.detail
+        if book.id != book_id:
+            return None
+        return book, list(chapters)
+
+    def delete_book(self, book_id: int) -> bool:
+        if self.detail is None or self.detail[0].id != book_id:
+            return False
+        self.deleted_ids.append(book_id)
+        self.detail = None
+        return True
+
+
+def test_library_service_delete_book_preserves_external_source_and_removes_output_artifacts(tmp_path):
+    source_path = tmp_path / "library" / "source.epub"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("source", encoding="utf-8")
+
+    output_root = tmp_path / "output"
+    book_dir = output_root / "Delete Me"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    (book_dir / "Delete Me.m4b").write_text("audio", encoding="utf-8")
+    (chapters_dir / "01.mp3").write_text("chapter", encoding="utf-8")
+    (book_dir / "source.md").write_text("notes", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=7,
+                title="Delete Me",
+                author="Tester",
+                source_path=str(source_path),
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path="output/Delete Me/Delete Me.m4b",
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=11,
+                    book_id=7,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path="output/Delete Me/chapters/01.mp3",
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root)
+
+    deleted = service.delete_book(7)
+
+    assert deleted is True
+    assert repository.deleted_ids == [7]
+    assert source_path.exists()
+    assert not book_dir.exists()
+
+
+def test_library_service_reads_chapter_cleaning_preview(tmp_path):
+    output_root = tmp_path / "output"
+    chapters_dir = output_root / "Clean Book" / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    chapter_audio = chapters_dir / "01_chapter.mp3"
+    chapter_audio.write_text("audio", encoding="utf-8")
+    (chapters_dir / "chapter_01_before_cleaning.md").write_text("# Chapter 1\n\nraw text", encoding="utf-8")
+    (chapters_dir / "chapter_01_llm_input.md").write_text("# Chapter 1\n\nrule text", encoding="utf-8")
+    (chapters_dir / "chapter_01_cleaned.md").write_text("# Chapter 1\n\nclean text", encoding="utf-8")
+    (chapters_dir / "chapter_01_cleaning_trace.jsonl").write_text(
+        '{"chunk_index": 1, "original_text": "raw", "cleaned_text": "clean"}\n',
+        encoding="utf-8",
+    )
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=12,
+                title="Clean Book",
+                author="Tester",
+                source_path=str(tmp_path / "source.md"),
+                source_type=SourceType.MD,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.CHAPTER_AUDIO,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=21,
+                    book_id=12,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path=str(chapter_audio),
+                )
+            ],
+        )
+    )
+    service = LibraryService(repository, output_dir=output_root)
+
+    preview = service.get_chapter_cleaning_preview(12, 1)
+
+    assert preview is not None
+    assert preview["available"] is True
+    assert "raw text" in preview["before_text"]
+    assert "rule text" in preview["llm_input_text"]
+    assert "clean text" in preview["cleaned_text"]
+    assert preview["trace_rows"][0]["chunk_index"] == 1
+
+
+def test_library_service_delete_book_removes_uploaded_source_copy(tmp_path):
+    temp_dir = tmp_path / "temp"
+    source_path = temp_dir / "web_uploads" / "uploaded.epub"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("source", encoding="utf-8")
+
+    output_root = tmp_path / "output"
+    book_dir = output_root / "Uploaded"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    (chapters_dir / "01.mp3").write_text("chapter", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=8,
+                title="Uploaded",
+                author="Tester",
+                source_path="temp/web_uploads/uploaded.epub",
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.CHAPTER_AUDIO,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=12,
+                    book_id=8,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path="output/Uploaded/chapters/01.mp3",
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root, temp_dir=temp_dir)
+
+    deleted = service.delete_book(8)
+
+    assert deleted is True
+    assert repository.deleted_ids == [8]
+    assert not source_path.exists()
+    assert not book_dir.exists()
+
+
+def test_library_service_delete_book_removes_legacy_uploaded_source_copy(tmp_path):
+    legacy_source_path = tmp_path / "old-checkout" / "temp" / "web_uploads" / "legacy.epub"
+    legacy_source_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_source_path.write_text("source", encoding="utf-8")
+
+    output_root = tmp_path / "app-support" / "output"
+    temp_root = tmp_path / "app-support" / "temp"
+    book_dir = output_root / "Legacy Upload"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    (chapters_dir / "01.mp3").write_text("chapter", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=18,
+                title="Legacy Upload",
+                author="Tester",
+                source_path=str(legacy_source_path),
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.CHAPTER_AUDIO,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=18,
+                    book_id=18,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path=str(chapters_dir / "01.mp3"),
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root, temp_dir=temp_root)
+
+    deleted = service.delete_book(18)
+
+    assert deleted is True
+    assert repository.deleted_ids == [18]
+    assert not legacy_source_path.exists()
+    assert not book_dir.exists()
+
+
+def test_library_service_delete_book_removes_loose_artifacts_without_deleting_output_root(tmp_path):
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    sibling_dir = output_root / "Other Book"
+    sibling_dir.mkdir()
+    sibling_file = sibling_dir / "keep.m4a"
+    sibling_file.write_text("keep", encoding="utf-8")
+
+    loose_playback = output_root / "loose-book.m4a"
+    loose_chapter = output_root / "loose-chapter.mp3"
+    loose_before = output_root / "chapter_01_before_cleaning.md"
+    loose_input = output_root / "chapter_01_llm_input.md"
+    loose_cleaned = output_root / "chapter_01_cleaned.md"
+    loose_trace = output_root / "chapter_01_cleaning_trace.jsonl"
+    for artifact in (loose_playback, loose_chapter, loose_before, loose_input, loose_cleaned, loose_trace):
+        artifact.write_text("artifact", encoding="utf-8")
+
+    source_path = tmp_path / "imports" / "source.md"
+    source_path.parent.mkdir()
+    source_path.write_text("external source", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=19,
+                title="Loose Book",
+                author="Tester",
+                source_path=str(source_path),
+                source_type=SourceType.MD,
+                conversion_mode=ConversionMode.DOCUMENT_AUDIO,
+                total_chapters=1,
+                playback_path=str(loose_playback),
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=19,
+                    book_id=19,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path=str(loose_chapter),
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root)
+
+    deleted = service.delete_book(19)
+
+    assert deleted is True
+    assert repository.deleted_ids == [19]
+    assert output_root.exists()
+    assert sibling_file.exists()
+    assert source_path.exists()
+    for artifact in (loose_playback, loose_chapter, loose_before, loose_input, loose_cleaned, loose_trace):
+        assert not artifact.exists()
+
+
+def test_library_service_delete_book_preserves_external_source_inside_output_root(tmp_path):
+    output_root = tmp_path / "output"
+    source_path = output_root / "user-imports" / "source.epub"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("external source", encoding="utf-8")
+
+    book_dir = output_root / "Generated Book"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    (book_dir / "Generated Book.m4b").write_text("audio", encoding="utf-8")
+    (chapters_dir / "01.mp3").write_text("chapter", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=10,
+                title="Generated Book",
+                author="Tester",
+                source_path=str(source_path),
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path="output/Generated Book/Generated Book.m4b",
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=13,
+                    book_id=10,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path="output/Generated Book/chapters/01.mp3",
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root)
+
+    deleted = service.delete_book(10)
+
+    assert deleted is True
+    assert source_path.exists()
+    assert not book_dir.exists()
+
+
+def test_library_service_open_book_folder_prefers_output_folder(tmp_path):
+    source_path = tmp_path / "imports" / "folder-book.pdf"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("source", encoding="utf-8")
+    output_root = tmp_path / "output"
+    output_book_dir = output_root / "Folder Book"
+    output_book_dir.mkdir(parents=True, exist_ok=True)
+    (output_book_dir / "Folder Book.m4b").write_text("audio", encoding="utf-8")
+
+    opened_paths: list[Path] = []
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=9,
+                title="Folder Book",
+                author="Tester",
+                source_path=str(source_path),
+                source_type=SourceType.PDF,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path="output/Folder Book/Folder Book.m4b",
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [],
+        )
+    )
+
+    service = LibraryService(
+        repository,
+        output_dir=output_root,
+        folder_opener=lambda folder: opened_paths.append(folder),
+    )
+
+    opened_folder = service.open_book_folder(9)
+
+    assert opened_folder == output_book_dir
+    assert opened_paths == [output_book_dir]
+
+
+def test_library_service_open_book_folder_falls_back_to_source_parent_when_output_missing(tmp_path):
+    source_path = tmp_path / "imports" / "folder-book.pdf"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("source", encoding="utf-8")
+
+    opened_paths: list[Path] = []
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=9,
+                title="Folder Book",
+                author="Tester",
+                source_path=str(source_path),
+                source_type=SourceType.PDF,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.MISSING,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [],
+        )
+    )
+
+    service = LibraryService(
+        repository,
+        output_dir=tmp_path / "output",
+        folder_opener=lambda folder: opened_paths.append(folder),
+    )
+
+    opened_folder = service.open_book_folder(9)
+
+    assert opened_folder == source_path.parent
+    assert opened_paths == [source_path.parent]
+
+
+def test_library_service_open_book_folder_creates_output_folder_when_artifacts_and_source_missing(tmp_path):
+    output_root = tmp_path / "output"
+    expected_output_dir = output_root / "Missing Source Book"
+
+    opened_paths: list[Path] = []
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=9,
+                title="Missing Source Book",
+                author="Tester",
+                source_path=str(tmp_path / "imports" / "missing.epub"),
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.MISSING,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [],
+        )
+    )
+
+    service = LibraryService(
+        repository,
+        output_dir=output_root,
+        folder_opener=lambda folder: opened_paths.append(folder),
+    )
+
+    opened_folder = service.open_book_folder(9)
+
+    assert opened_folder == expected_output_dir
+    assert expected_output_dir.is_dir()
+    assert opened_paths == [expected_output_dir]
+
+
+def test_library_service_open_book_folder_routes_managed_uploads_to_app_output(tmp_path):
+    legacy_source_path = tmp_path / "old-codebase" / "temp" / "web_uploads" / "folder-book.pdf"
+    legacy_source_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_source_path.write_text("source", encoding="utf-8")
+
+    app_output_root = tmp_path / "app-support" / "output"
+    app_temp_root = tmp_path / "app-support" / "temp"
+    expected_output_dir = app_output_root / "Folder Book"
+
+    opened_paths: list[Path] = []
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=9,
+                title="Folder Book",
+                author="Tester",
+                source_path=str(legacy_source_path),
+                source_type=SourceType.PDF,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.MISSING,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [],
+        )
+    )
+
+    service = LibraryService(
+        repository,
+        output_dir=app_output_root,
+        temp_dir=app_temp_root,
+        folder_opener=lambda folder: opened_paths.append(folder),
+    )
+
+    opened_folder = service.open_book_folder(9)
+
+    assert opened_folder == expected_output_dir
+    assert expected_output_dir.is_dir()
+    assert opened_paths == [expected_output_dir]
+    assert opened_folder != legacy_source_path.parent
+
+
+def test_app_controller_threads_configured_output_dir_into_library_service(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    class _FakeLibraryService:
+        def __init__(
+            self,
+            repository,
+            output_dir="__missing__",
+            temp_dir="__missing__",
+            storage_root="__missing__",
+            folder_opener=None,
+        ):
+            captured["repository"] = repository
+            captured["output_dir"] = output_dir
+            captured["temp_dir"] = temp_dir
+            captured["storage_root"] = storage_root
+            captured["folder_opener"] = folder_opener
+
+    class _FakeVoiceService:
+        def __init__(self, config, tts_factory=None):
+            self.config = config
+            self.tts_factory = tts_factory
+
+        def validate_tts_runtime(self, *args, **kwargs):
+            return None
+
+        def cleanup(self):
+            return None
+
+    class _FakeConversionService:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def cancel_conversion(self):
+            return False
+
+    class _FakeRuntimeCapabilityService:
+        def get_system_runtime_snapshot(self):
+            return {"tts": {"available": False}, "cleaner": {"available": False}}
+
+    class _FakeSharedWorkerPoolManager:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+            self.shutdown_called = False
+
+        def snapshot(self):
+            return {"reuse_hits": 0, "restarts": 0}
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    class _FakeGlobalAPILimiter:
+        def __init__(self, concurrency):
+            self.concurrency = concurrency
+            self.shutdown_called = False
+
+        def snapshot(self):
+            return {"wait_count": 0, "wait_ms_total": 0.0}
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    class _FakeSQLiteRepository:
+        def __init__(self, db_path, *, output_dir=None, temp_dir=None):
+            self.db_path = db_path
+            self.output_dir = output_dir
+            self.temp_dir = temp_dir
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(app_controller_module, "LibraryService", _FakeLibraryService)
+    monkeypatch.setattr(app_controller_module, "VoiceService", _FakeVoiceService)
+    monkeypatch.setattr(app_controller_module, "ConversionService", _FakeConversionService)
+    monkeypatch.setattr(app_controller_module, "RuntimeCapabilityService", _FakeRuntimeCapabilityService)
+    monkeypatch.setattr(app_controller_module, "SharedWorkerPoolManager", _FakeSharedWorkerPoolManager)
+    monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
+    monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
+
+    repository = SimpleNamespace()
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "audiobooks.db",
+    )
+
+    app_controller_module.AppController(config=config, repository=repository)
+
+    assert captured["repository"] is repository
+    assert captured["output_dir"] == config.output_dir
+    assert captured["temp_dir"] == config.temp_dir
+    assert captured["storage_root"] == tmp_path
+
+
+def test_app_controller_cleans_up_owned_repository_connection(monkeypatch, tmp_path):
+    class _FakeLibraryService:
+        def __init__(
+            self,
+            repository,
+            output_dir="__missing__",
+            temp_dir="__missing__",
+            storage_root="__missing__",
+            folder_opener=None,
+        ):
+            self.repository = repository
+            self.output_dir = output_dir
+            self.temp_dir = temp_dir
+            self.storage_root = storage_root
+
+    class _FakeVoiceService:
+        def __init__(self, config, tts_factory=None):
+            self.config = config
+
+        def validate_tts_runtime(self, *args, **kwargs):
+            return None
+
+        def cleanup(self):
+            return None
+
+    class _FakeConversionService:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def cancel_conversion(self):
+            return False
+
+    class _FakeRuntimeCapabilityService:
+        def get_system_runtime_snapshot(self):
+            return {"tts": {"available": False}, "cleaner": {"available": False}}
+
+    class _FakeSharedWorkerPoolManager:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+            self.shutdown_called = False
+
+        def snapshot(self):
+            return {"reuse_hits": 0, "restarts": 0}
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    class _FakeGlobalAPILimiter:
+        def __init__(self, concurrency):
+            self.concurrency = concurrency
+            self.shutdown_called = False
+
+        def snapshot(self):
+            return {"wait_count": 0, "wait_ms_total": 0.0}
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    class _FakeSQLiteRepository:
+        def __init__(self, db_path, *, output_dir=None, temp_dir=None):
+            self.db_path = db_path
+            self.output_dir = output_dir
+            self.temp_dir = temp_dir
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(app_controller_module, "LibraryService", _FakeLibraryService)
+    monkeypatch.setattr(app_controller_module, "VoiceService", _FakeVoiceService)
+    monkeypatch.setattr(app_controller_module, "ConversionService", _FakeConversionService)
+    monkeypatch.setattr(app_controller_module, "RuntimeCapabilityService", _FakeRuntimeCapabilityService)
+    monkeypatch.setattr(app_controller_module, "SharedWorkerPoolManager", _FakeSharedWorkerPoolManager)
+    monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
+    monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
+
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "audiobooks.db",
+    )
+
+    controller = app_controller_module.AppController(config=config)
+    controller.cleanup()
+
+    assert isinstance(controller.repository, _FakeSQLiteRepository)
+    assert controller.repository.closed is True
+
+
+def test_app_controller_cleanup_bounds_conversion_and_worker_shutdown(monkeypatch, tmp_path):
+    calls: list[tuple[str, float | None]] = []
+
+    class _FakeLibraryService:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            _ = args, kwargs
+
+    class _FakeVoiceService:
+        def __init__(self, config, tts_factory=None):  # noqa: ANN001, ARG002
+            self.cleaned = False
+
+        def validate_tts_runtime(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            return None
+
+        def cleanup(self):
+            self.cleaned = True
+
+    class _FakeConversionService:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            _ = kwargs
+
+        def cancel_active_job(self, timeout_seconds=None):  # noqa: ANN001
+            calls.append(("cancel", timeout_seconds))
+            return False
+
+    class _FakeRuntimeCapabilityService:
+        def get_system_runtime_snapshot(self):
+            return {"tts": {"available": False}, "cleaner": {"available": False}}
+
+    class _FakeSharedWorkerPoolManager:
+        def __init__(self, max_workers):  # noqa: ANN001
+            self.max_workers = max_workers
+
+        def snapshot(self):
+            return {"reuse_hits": 0, "restarts": 0}
+
+        def shutdown(self, *, timeout_seconds=None):  # noqa: ANN001
+            calls.append(("worker_shutdown", timeout_seconds))
+            return False
+
+    class _FakeGlobalAPILimiter:
+        def __init__(self, concurrency):  # noqa: ANN001
+            self.concurrency = concurrency
+
+        def snapshot(self):
+            return {"wait_count": 0, "wait_ms_total": 0.0}
+
+        def shutdown(self):
+            calls.append(("limiter_shutdown", None))
+
+    class _FakeSQLiteRepository:
+        def __init__(self, db_path, *, output_dir=None, temp_dir=None):  # noqa: ANN001
+            self.db_path = db_path
+            self.output_dir = output_dir
+            self.temp_dir = temp_dir
+
+        def close(self):
+            calls.append(("repo_close", None))
+
+    monkeypatch.setattr(app_controller_module, "LibraryService", _FakeLibraryService)
+    monkeypatch.setattr(app_controller_module, "VoiceService", _FakeVoiceService)
+    monkeypatch.setattr(app_controller_module, "ConversionService", _FakeConversionService)
+    monkeypatch.setattr(app_controller_module, "RuntimeCapabilityService", _FakeRuntimeCapabilityService)
+    monkeypatch.setattr(app_controller_module, "SharedWorkerPoolManager", _FakeSharedWorkerPoolManager)
+    monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
+    monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
+
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "audiobooks.db",
+    )
+    controller = app_controller_module.AppController(config=config)
+
+    controller.cleanup()
+
+    assert calls[:3] == [
+        ("cancel", 2.0),
+        ("worker_shutdown", 2.0),
+        ("cancel", 0.5),
+    ]
+    assert ("limiter_shutdown", None) in calls
+    assert ("repo_close", None) in calls

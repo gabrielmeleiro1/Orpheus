@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "created_at": "2026-05-10T11:00:00Z",
+    "source_path": "/fixtures/book.epub",
+    "command": ["benchmark_nagel_repeated.py", "/fixtures/book.epub"],
+    "environment": {
+      "python_version": "3.12.0",
+      "platform": "macOS-15-test",
+      "executable": "/usr/bin/python3"
+    }
+  },
+  "cases": [
+    {"name": "default", "settings": {"chunk_size": 700, "enable_chunk_overlap": false}},
+    {"name": "overlap", "settings": {"chunk_size": 700, "enable_chunk_overlap": true}},
+    {"settings": {"chunk_size": 900, "enable_chunk_overlap": false}},
+    {"name": "metadata_gap", "settings": null}
+  ],
+  "runs": [
+    {
+      "case_name": "default",
+      "success": true,
+      "metrics": {"wall_time_seconds": 10.8},
+      "artifacts": {
+        "metrics_path": {"path": "current/default/r1/benchmark_summary.json", "exists": true},
+        "tts_chunk_profile": {"path": "current/default/r1/missing_profile.jsonl", "exists": false}
+      }
+    },
+    {
+      "case_name": "overlap",
+      "success": true,
+      "metrics": {"wall_time_seconds": 19.0},
+      "artifacts": {
+        "metrics_path": {"path": "current/overlap/r1/benchmark_summary.json", "exists": true}
+      }
+    },
+    {
+      "case_name": null,
+      "success": true,
+      "metrics": {"wall_time_seconds": 30.0},
+      "artifacts": {
+        "metrics_path": {"path": null, "exists": false}
+      }
+    },
+    {
+      "case_name": "metadata_gap",
+      "success": false,
+      "metrics": {"wall_time_seconds": 5.0},
+      "artifacts": {}
+    }
+  ],
+  "case_summaries": [
+    {
+      "name": "default",
+      "settings": {"chunk_size": 700, "enable_chunk_overlap": false},
+      "runs": 2,
+      "status": "fail",
+      "metrics": {
+        "wall_time_seconds": {
+          "median": 10.8,
+          "min": 10.6,
+          "max": 11.0,
+          "mean": 10.8,
+          "stdev": 0.28,
+          "spread": 0.4,
+          "spread_pct_of_median": 3.7,
+          "threshold": {"max": 10.0},
+          "status": "fail"
+        },
+        "parse_seconds": {
+          "median": 1.8,
+          "min": 1.7,
+          "max": 1.9,
+          "mean": 1.8,
+          "stdev": 0.1,
+          "spread": 0.2,
+          "spread_pct_of_median": 11.1,
+          "threshold": null,
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "name": "overlap",
+      "settings": {"chunk_size": 700, "enable_chunk_overlap": true},
+      "runs": 2,
+      "status": "pass",
+      "metrics": {
+        "wall_time_seconds": {
+          "median": 19.0,
+          "min": 18.8,
+          "max": 19.2,
+          "mean": 19.0,
+          "stdev": 0.28,
+          "spread": 0.4,
+          "spread_pct_of_median": 2.1,
+          "threshold": {"max": 25.0},
+          "status": "pass"
+        },
+        "total_duration_ms": {
+          "median": 19000.0,
+          "min": 18800.0,
+          "max": 19200.0,
+          "mean": 19000.0,
+          "stdev": 282.8,
+          "spread": 400.0,
+          "spread_pct_of_median": 2.1,
+          "threshold": null,
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "name": null,
+      "settings": {"chunk_size": 900, "enable_chunk_overlap": false},
+      "runs": 1,
+      "status": "pass",
+      "metrics": {
+        "wall_time_seconds": {
+          "median": 31.0,
+          "min": 31.0,
+          "max": 31.0,
+          "mean": 31.0,
+          "stdev": 0.0,
+          "spread": 0.0,
+          "spread_pct_of_median": 0.0,
+          "threshold": null,
+          "status": "pass"
+        }
+      }
+    },
+    {
+      "name": "metadata_gap",
+      "settings": null,
+      "runs": 1,
+      "status": "fail",
+      "metrics": {
+        "wall_time_seconds": {
+          "median": 5.0,
+          "min": 5.0,
+          "max": 5.0,
+          "mean": 5.0,
+          "stdev": 0.0,
+          "spread": 0.0,
+          "spread_pct_of_median": 0.0,
+          "threshold": null,
+          "status": "pass"
+        }
+      }
+    }
+  ]
+}

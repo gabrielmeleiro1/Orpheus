@@ -1,0 +1,1368 @@
+"""Script-style tests for the desktop backend API surface."""
+
+import sys
+import json
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+# Add project root to path
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
+
+
+def _make_client():
+    from fastapi.testclient import TestClient
+    from modules.web.server import create_app
+
+    return TestClient(create_app())
+
+
+def _make_client_with_controller(controller):
+    from fastapi.testclient import TestClient
+    from modules.web.server import create_app
+
+    return TestClient(create_app(controller=controller))
+
+
+def test_openai_model_list_route_fetches_models_with_pasted_key(monkeypatch):
+    from modules.tts import cleaner_api as cleaner_api_module
+
+    captured = {"url": None, "authorization": None}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            _ = (exc_type, exc_val, exc_tb)
+            return False
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "data": [
+                        {"id": "gpt-5-nano"},
+                        {"id": "gpt-4o-mini"},
+                        {"id": ""},
+                        {"object": "model"},
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request_obj, timeout=0, context=None):
+        _ = (timeout, context)
+        captured["url"] = request_obj.full_url
+        captured["authorization"] = request_obj.get_header("Authorization")
+        return _FakeResponse()
+
+    monkeypatch.setattr(cleaner_api_module.urlrequest, "urlopen", fake_urlopen)
+
+    client = _make_client_with_controller(SimpleNamespace())
+    response = client.post("/api/options/openai/models", json={"api_key": "sk-test"})
+
+    assert response.status_code == 200
+    assert response.json()["provider"] == "openai"
+    assert response.json()["base_url"] == "https://api.openai.com/v1"
+    assert response.json()["models"] == ["gpt-5-nano", "gpt-4o-mini"]
+    assert captured["url"] == "https://api.openai.com/v1/models"
+    assert captured["authorization"] == "Bearer sk-test"
+
+
+def test_conversion_routes_forward_cleaner_api_key_on_start_and_repair():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.start_kwargs = None
+            self.repair_kwargs = None
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_kwargs = kwargs
+            return _Job()
+
+        def repair_conversion(self, **kwargs):  # noqa: ANN003
+            self.repair_kwargs = kwargs
+            job = _Job()
+            job.book_id = kwargs["book_id"]
+            return job
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    start = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/book.pdf",
+            "cleaner_backend": "api",
+            "cleaner_api_model": "gpt-5-nano",
+            "cleaner_api_key": "sk-start",
+        },
+    )
+    repair = client.post(
+        "/api/conversions/repair/42",
+        json={
+            "cleaner_backend": "api",
+            "cleaner_api_model": "gpt-5-nano",
+            "cleaner_api_key": "sk-repair",
+        },
+    )
+
+    assert start.status_code == 200
+    assert repair.status_code == 200
+    assert controller.start_kwargs["runtime_options"].cleaner_api_key == "sk-start"
+    assert controller.repair_kwargs["runtime_options"].cleaner_api_key == "sk-repair"
+
+
+def test_conversion_routes_forward_parallel_worker_options_on_start_and_repair():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.start_kwargs = None
+            self.repair_kwargs = None
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_kwargs = kwargs
+            return _Job()
+
+        def repair_conversion(self, **kwargs):  # noqa: ANN003
+            self.repair_kwargs = kwargs
+            job = _Job()
+            job.book_id = kwargs["book_id"]
+            return job
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    start = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/book.pdf",
+            "parallel_worker_mode": "manual",
+            "enable_parallel": True,
+            "max_parallel_chapters": 3,
+        },
+    )
+    repair = client.post(
+        "/api/conversions/repair/42",
+        json={
+            "parallel_worker_mode": "auto",
+            "enable_parallel": True,
+            "max_parallel_chapters": 4,
+        },
+    )
+
+    assert start.status_code == 200
+    assert repair.status_code == 200
+    assert controller.start_kwargs["runtime_options"].parallel_worker_mode == "manual"
+    assert controller.start_kwargs["runtime_options"].enable_parallel is True
+    assert controller.start_kwargs["runtime_options"].max_parallel_chapters == 3
+    assert controller.repair_kwargs["runtime_options"].parallel_worker_mode == "auto"
+    assert controller.repair_kwargs["runtime_options"].enable_parallel is True
+    assert controller.repair_kwargs["runtime_options"].max_parallel_chapters == 4
+
+
+def test_start_conversion_rejects_overlong_title_before_controller_call():
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.called = False
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.called = True
+            return SimpleNamespace(
+                id="job-1", book_id=None, status=SimpleNamespace(value="running"), error=None
+            )
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    response = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/book.pdf",
+            "title": "A" * 300,
+        },
+    )
+
+    assert response.status_code == 422
+    assert controller.called is False
+
+
+def test_conversion_routes_forward_full_frontend_selection_payloads_on_start_and_repair():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.start_kwargs = None
+            self.repair_kwargs = None
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_kwargs = kwargs
+            return _Job()
+
+        def repair_conversion(self, **kwargs):  # noqa: ANN003
+            self.repair_kwargs = kwargs
+            job = _Job()
+            job.book_id = kwargs["book_id"]
+            return job
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+    frontend_payload = {
+        "source_path": "/tmp/frontend-contract.epub",
+        "conversion_mode": "document_audio",
+        "title": "Frontend Contract Book",
+        "author": "Contract Author",
+        "voice": "af_bella",
+        "speed": 1.35,
+        "tts_engine": "kokoro",
+        "tts_quantization": "bf16",
+        "cleaner_backend": "api",
+        "cleaner_model": None,
+        "cleaner_api_model": "gpt-5-nano",
+        "cleaner_api_key": "sk-contract",
+        "tts_options": {"quantization": "bf16"},
+        "parallel_worker_mode": "manual",
+        "enable_parallel": True,
+        "max_parallel_chapters": 3,
+    }
+
+    start = client.post("/api/conversions", json=frontend_payload)
+    repair = client.post(
+        "/api/conversions/repair/42",
+        json={k: v for k, v in frontend_payload.items() if k != "source_path"},
+    )
+
+    assert start.status_code == 200
+    assert repair.status_code == 200
+    assert str(controller.start_kwargs["source_path"]) == frontend_payload["source_path"]
+    assert controller.start_kwargs["conversion_mode"] == frontend_payload["conversion_mode"]
+    assert controller.start_kwargs["title"] == frontend_payload["title"]
+    assert controller.start_kwargs["author"] == frontend_payload["author"]
+    for key, value in frontend_payload.items():
+        if key in {"source_path", "conversion_mode", "title", "author"}:
+            continue
+        assert getattr(controller.start_kwargs["runtime_options"], key) == value
+        assert getattr(controller.repair_kwargs["runtime_options"], key) == value
+
+
+def test_conversion_routes_forward_grouped_runtime_options_on_start_and_repair():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.start_kwargs = None
+            self.repair_kwargs = None
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_kwargs = kwargs
+            return _Job()
+
+        def repair_conversion(self, **kwargs):  # noqa: ANN003
+            self.repair_kwargs = kwargs
+            job = _Job()
+            job.book_id = kwargs["book_id"]
+            return job
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+    runtime_options = {
+        "tts_engine": "kokoro",
+        "tts_quantization": "bf16",
+        "cleaner_backend": "api",
+        "cleaner_model": None,
+        "cleaner_api_model": "gpt-5-nano",
+        "cleaner_api_key": "sk-contract",
+        "tts_options": {"quantization": "bf16"},
+        "parallel_worker_mode": "manual",
+        "enable_parallel": True,
+        "max_parallel_chapters": 3,
+    }
+
+    start = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/frontend-contract.epub",
+            "conversion_mode": "document_audio",
+            "title": "Frontend Contract Book",
+            "author": "Contract Author",
+            "voice": "af_bella",
+            "speed": 1.35,
+            "runtime_options": runtime_options,
+        },
+    )
+    repair = client.post(
+        "/api/conversions/repair/42",
+        json={
+            "voice": "af_bella",
+            "speed": 1.35,
+            "runtime_options": runtime_options,
+        },
+    )
+
+    assert start.status_code == 200
+    assert repair.status_code == 200
+    assert controller.start_kwargs["runtime_options"].tts_engine == "kokoro"
+    assert controller.start_kwargs["runtime_options"].tts_options == {"quantization": "bf16"}
+    assert controller.start_kwargs["runtime_options"].parallel_worker_mode == "manual"
+    assert controller.start_kwargs["runtime_options"].max_parallel_chapters == 3
+    assert controller.repair_kwargs["runtime_options"].tts_engine == "kokoro"
+    assert controller.repair_kwargs["runtime_options"].enable_parallel is True
+
+
+def test_conversion_routes_do_not_require_flat_voice_and_speed_with_grouped_runtime_options():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+
+        def start_conversion(
+            self,
+            *,
+            source_path,
+            voice="am_adam",
+            speed=1.0,
+            runtime_options,
+            **kwargs,
+        ):  # noqa: ANN001, ANN003
+            _ = (source_path, voice, speed, runtime_options, kwargs)
+            return _Job()
+
+        def repair_conversion(
+            self,
+            *,
+            book_id,
+            voice="am_adam",
+            speed=1.0,
+            runtime_options,
+            **kwargs,
+        ):  # noqa: ANN001, ANN003
+            _ = (voice, speed, runtime_options, kwargs)
+            job = _Job()
+            job.book_id = book_id
+            return job
+
+    client = _make_client_with_controller(_Controller())
+
+    start = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/book.pdf",
+            "runtime_options": {"voice": "af_bella", "speed": 1.25, "tts_engine": "kokoro"},
+        },
+    )
+    repair = client.post(
+        "/api/conversions/repair/42",
+        json={"runtime_options": {"voice": "af_bella", "speed": 1.25, "tts_engine": "kokoro"}},
+    )
+
+    assert start.status_code == 200
+    assert repair.status_code == 200
+
+
+def test_conversion_routes_merge_partial_grouped_runtime_options_with_flat_legacy_values():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.start_kwargs = None
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_kwargs = kwargs
+            return _Job()
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    response = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/book.pdf",
+            "voice": "af_bella",
+            "speed": 1.35,
+            "parallel_worker_mode": "manual",
+            "max_parallel_chapters": 3,
+            "runtime_options": {"tts_engine": "kokoro"},
+        },
+    )
+
+    assert response.status_code == 200
+    runtime_options = controller.start_kwargs["runtime_options"]
+    assert runtime_options.voice == "af_bella"
+    assert runtime_options.speed == 1.35
+    assert runtime_options.tts_engine == "kokoro"
+    assert runtime_options.parallel_worker_mode == "manual"
+    assert runtime_options.max_parallel_chapters == 3
+
+
+def test_start_conversion_rejects_invalid_conversion_mode():
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.start_called = False
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_called = True
+            return kwargs
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    response = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/book.pdf",
+            "conversion_mode": "document",
+        },
+    )
+
+    assert response.status_code == 422
+    assert controller.start_called is False
+
+
+def test_voice_preview_route_forwards_runtime_selection_payload(tmp_path):
+    preview_path = tmp_path / "preview.wav"
+    preview_path.write_bytes(b"RIFF$\x00\x00\x00WAVEfmt ")
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.preview_kwargs = None
+
+        def generate_voice_preview(self, **kwargs):  # noqa: ANN003
+            self.preview_kwargs = kwargs
+            return preview_path
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    response = client.post(
+        "/api/voices/preview",
+        json={
+            "voice": "af_bella",
+            "speed": 1.35,
+            "text": "Preview the selected voice.",
+            "tts_engine": "kokoro",
+            "tts_quantization": "bf16",
+            "tts_provider": "cuda",
+            "tts_device": "cuda:0",
+            "tts_options": {"quantization": "bf16", "dtype": "fp16"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert controller.preview_kwargs == {
+        "voice": "af_bella",
+        "speed": 1.35,
+        "text": "Preview the selected voice.",
+        "engine_name": "kokoro",
+        "tts_quantization": "bf16",
+        "tts_provider": "cuda",
+        "tts_device": "cuda:0",
+        "tts_options": {"quantization": "bf16", "dtype": "fp16"},
+    }
+
+
+def test_system_capabilities_include_parallel_worker_recommendation(monkeypatch):
+    from modules.pipeline.memory_policy import MemorySnapshot
+    from modules.pipeline import worker_recommendation
+
+    monkeypatch.setattr(
+        worker_recommendation,
+        "sample_memory_snapshot",
+        lambda: MemorySnapshot(
+            total_bytes=16 * 1024**3,
+            available_bytes=12 * 1024**3,
+            process_rss_bytes=1024**3,
+        ),
+    )
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(
+                temp_dir=Path("temp"),
+                output_dir=Path("output"),
+                enable_parallel=False,
+                max_parallel_chapters=1,
+            )
+
+        def get_system_capabilities(self):
+            return {
+                "parallel_worker_recommendation": worker_recommendation.build_parallel_worker_recommendation(
+                    requested_max=4
+                )
+            }
+
+    client = _make_client_with_controller(_Controller())
+    response = client.get("/api/system/capabilities")
+
+    assert response.status_code == 200
+    recommendation = response.json()["parallel_worker_recommendation"]
+    assert recommendation["total_memory_bytes"] == 16 * 1024**3
+    assert recommendation["available_memory_bytes"] == 12 * 1024**3
+    assert recommendation["reserved_memory_bytes"] == 4 * 1024**3
+    assert recommendation["static_estimated_worker_bytes"] == 4 * 1024**3
+    assert recommendation["max_safe_parallel_chapters"] == 3
+    assert recommendation["recommended_parallel_chapters"] == 3
+    assert "available - reserved" in recommendation["calculation"]
+
+
+def test_parallel_warmup_route_forwards_worker_recommendation_payload():
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.warmup_kwargs = None
+
+        def warmup_parallel_worker_recommendation(self, **kwargs):  # noqa: ANN003
+            self.warmup_kwargs = kwargs
+            return {
+                "memory_measurement_available": True,
+                "requested_parallel_chapters": kwargs["max_parallel_chapters"],
+                "max_safe_parallel_chapters": 3,
+                "recommended_parallel_chapters": 3,
+                "estimated_per_worker_memory_bytes": 2 * 1024**3,
+            }
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    response = client.post(
+        "/api/options/parallel/warmup",
+        json={
+            "voice": "af_bella",
+            "speed": 1.25,
+            "tts_engine": "kokoro",
+            "tts_quantization": "bf16",
+            "cleaner_backend": "api",
+            "cleaner_api_model": "gpt-5-nano",
+            "cleaner_api_key": "sk-test",
+            "max_parallel_chapters": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["recommended_parallel_chapters"] == 3
+    assert controller.warmup_kwargs == {
+        "voice": "af_bella",
+        "speed": 1.25,
+        "tts_engine": "kokoro",
+        "tts_quantization": "bf16",
+        "cleaner_model": None,
+        "cleaner_backend": "api",
+        "cleaner_api_model": "gpt-5-nano",
+        "cleaner_api_key": "sk-test",
+        "max_parallel_chapters": 4,
+    }
+
+
+def test_model_options_expose_kokoro_conversion_capabilities():
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+
+        def get_available_tts_engines(self):
+            return [
+                {
+                    "id": "kokoro",
+                    "display_name": "Kokoro",
+                    "available_for_conversion": True,
+                    "capabilities": {
+                        "provider": "mlx-audio",
+                        "worker_auto_mode": "sequential",
+                        "process_safe": False,
+                        "supports_conversion": True,
+                    },
+                    "supported_quantizations": ["bf16"],
+                    "options_schema": {"quantization": {"type": "string"}},
+                    "voices": [],
+                },
+            ]
+
+        def get_available_cleaner_models(self):
+            return ["qwen"]
+
+        def get_available_api_cleaner_models(self):
+            return ["gpt-5-nano"]
+
+    client = _make_client_with_controller(_Controller())
+    response = client.get("/api/options/models")
+
+    assert response.status_code == 200
+    engines = {engine["id"]: engine for engine in response.json()["tts_engines"]}
+    assert list(engines) == ["kokoro"]
+    assert engines["kokoro"]["available_for_conversion"] is True
+    assert engines["kokoro"]["capabilities"]["worker_auto_mode"] == "sequential"
+    assert engines["kokoro"]["capabilities"]["process_safe"] is False
+
+
+def test_web_api() -> bool:
+    print("\n" + "=" * 50)
+    print("WEB API TEST SUITE")
+    print("=" * 50 + "\n")
+
+    client = _make_client()
+
+    root = client.get("/")
+    assert root.status_code == 404
+    print("✓ retired legacy dashboard route is absent")
+
+    health = client.get("/health")
+    assert health.status_code == 200
+    assert health.json().get("status") == "ok"
+    print("✓ /health")
+
+    from fastapi.testclient import TestClient
+    import modules.web.server as web_server
+    from modules.app.events import make_progress_event
+    from modules.web.events import normalize_event
+
+    created_controllers = []
+
+    class _LifecycleController:
+        def __init__(self):
+            self.cleaned = False
+            self.config = type(
+                "Config",
+                (),
+                {"output_dir": Path("output"), "temp_dir": Path("temp")},
+            )()
+            created_controllers.append(self)
+
+        def cleanup(self):
+            self.cleaned = True
+
+    with patch.object(web_server, "AppController", _LifecycleController):
+        lifecycle_app = web_server.create_app()
+        assert created_controllers == []
+
+        with TestClient(lifecycle_app) as lifecycle_client:
+            lifecycle_health = lifecycle_client.get("/health")
+            assert lifecycle_health.status_code == 200
+            assert len(created_controllers) == 1
+            assert created_controllers[0].cleaned is False
+
+        assert created_controllers[0].cleaned is True
+    print("✓ create_app defers controller construction to lifespan and cleans it up")
+
+    progress_payload = normalize_event(
+        make_progress_event(
+            stage="synthesizing",
+            progress=0.42,
+            message="chunk done",
+        )
+    )
+    assert progress_payload["event_type"] == "progress"
+    assert progress_payload["stage"] == "synthesizing"
+    assert progress_payload["progress"] == progress_payload["overall_progress"]
+    assert progress_payload["stage_progress"] == 0.42
+    assert "eta" in progress_payload
+    print("✓ progress payload exposes explicit dashboard progress fields")
+
+    bad_upload = client.post(
+        "/api/uploads/source",
+        files={
+            "file": (
+                "notes.docx",
+                b"word",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert bad_upload.status_code == 400
+    print("✓ /api/uploads/source rejects unsupported types")
+
+    library = client.get("/api/library")
+    assert library.status_code == 200
+    payload = library.json()
+    assert isinstance(payload, dict)
+    assert "items" in payload
+    assert isinstance(payload["items"], list)
+    print("✓ /api/library")
+
+    models = client.get("/api/options/models")
+    assert models.status_code == 200
+    data = models.json()
+    assert isinstance(data.get("tts_engines"), list)
+    if data.get("tts_engines"):
+        first_engine = data["tts_engines"][0]
+        assert "capabilities" in first_engine
+        assert "batching_mode" in first_engine["capabilities"]
+        assert "supports_batching" in first_engine["capabilities"]
+        assert "supported_quantizations" in first_engine
+    assert isinstance(data.get("cleaner_models"), list)
+    assert isinstance(data.get("api_cleaner_models"), list)
+    print("✓ /api/options/models")
+
+    class _Status:
+        def __init__(self, value: str):
+            self.value = value
+
+    class _FakeJob:
+        def __init__(self, job_id: str):
+            self.id = job_id
+            self.book_id = None
+            self.status = _Status("running")
+            self.error = None
+
+        def is_active(self) -> bool:
+            return self.status.value == "running"
+
+    class _FakeController:
+        def __init__(self, *, temp_dir: Path | None = None, output_dir: Path | None = None):
+            self.job = None
+            self.start_kwargs = None
+            self.library_searches = []
+            self.audio_path = "/tmp/fake-audio.m4b"
+            self.preview_path = None
+            self.voice_suggestion_kwargs = None
+            self.playback_position_updates = []
+            self.open_folder_calls = []
+            self.deleted_book_ids = []
+            self.cleanup_requests = []
+            self.config = SimpleNamespace(
+                temp_dir=temp_dir or Path("temp"),
+                output_dir=output_dir or Path("output"),
+                db_path=(temp_dir or Path("temp")).parent / "data" / "audiobooks.db",
+            )
+            from modules.app.services.library_service import LibraryService
+
+            self._library_service = LibraryService(
+                object(),
+                output_dir=self.config.output_dir,
+                temp_dir=self.config.temp_dir,
+                storage_root=Path(self.config.db_path).parent.parent,
+            )
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_kwargs = kwargs
+            self.job = _FakeJob("conv_test_1")
+            return self.job
+
+        def get_active_job(self):
+            return self.job
+
+        def cancel_conversion(self) -> bool:
+            if not self.job:
+                return False
+            self.job.status = _Status("cancelled")
+            return True
+
+        def get_library_books(self, search=None, limit=200, conversion_mode=None, favorite=None):
+            self.library_searches.append((search, limit, conversion_mode, favorite))
+
+            class _BookSummary:
+                def __init__(self):
+                    self.id = 1
+                    self.title = "Wind-Up Bird"
+                    self.author = "Murakami"
+                    self.total_chapters = 3
+                    self.completed_chapters = 3
+                    self.created_at = None
+
+            return [_BookSummary()]
+
+        def get_book(self, book_id):
+            if book_id != 1:
+                return None
+            playback_status = (
+                "packaged"
+                if Path(self.audio_path).suffix.lower() in {".m4b", ".m4a"}
+                else "chapter_audio"
+            )
+            return {
+                "id": 1,
+                "title": "Wind-Up Bird",
+                "author": "Murakami",
+                "source_path": "/tmp/sample.pdf",
+                "source_type": "pdf",
+                "conversion_mode": "document_audio",
+                "total_chapters": 3,
+                "playback_path": self.audio_path,
+                "playback_status": playback_status,
+                "playback_position_sec": 91.5,
+                "created_at": None,
+                "chapters": [
+                    {
+                        "id": 11,
+                        "number": 1,
+                        "title": "Chapter 1",
+                        "duration_ms": 1000,
+                        "mp3_path": None,
+                    }
+                ],
+            }
+
+        def upload_source(self, *, filename, file_obj, max_bytes):  # noqa: ANN001
+            return self._library_service.upload_source(
+                filename=filename,
+                file_obj=file_obj,
+                max_bytes=max_bytes,
+            )
+
+        def upload_text_source(self, *, text, title, max_bytes):  # noqa: ANN001
+            return self._library_service.upload_text_source(
+                text=text,
+                title=title,
+                max_bytes=max_bytes,
+            )
+
+        def preflight_source(self, source_path):
+            return self._library_service.preflight_source(source_path)
+
+        def get_book_playback_file(self, book_id):
+            if book_id != 1:
+                return None
+            audio_path = Path(self.audio_path)
+            if not audio_path.exists() or not audio_path.is_file():
+                return None
+            return audio_path
+
+        def update_book_metadata(self, book_id, title=None, author=None, tags=None, favorite=None):
+            if book_id != 1:
+                return None
+            return {
+                **self.get_book(book_id),
+                "title": title or "Wind-Up Bird",
+                "author": author,
+                "tags": tags or "",
+                "favorite": bool(favorite),
+                "source_available": True,
+            }
+
+        def get_chapter_cleaning_preview(self, book_id, chapter_number):
+            if book_id != 1 or chapter_number != 1:
+                return None
+            return {
+                "book_id": book_id,
+                "chapter_number": chapter_number,
+                "title": "Chapter 1",
+                "available": True,
+                "before_text": "raw",
+                "llm_input_text": "rule",
+                "cleaned_text": "clean",
+                "trace_rows": [{"chunk_index": 1}],
+            }
+
+        def update_book_playback_position(self, book_id, position_sec):
+            self.playback_position_updates.append((book_id, position_sec))
+            if book_id != 1:
+                return None
+            return position_sec
+
+        def open_book_folder(self, book_id):
+            self.open_folder_calls.append(book_id)
+            if book_id != 1:
+                return None
+            return Path("/tmp")
+
+        def delete_book(self, book_id):
+            self.deleted_book_ids.append(book_id)
+            return book_id == 1
+
+        def repair_conversion(self, **kwargs):  # noqa: ANN003
+            self.job = _FakeJob("repair_test_1")
+            self.job.book_id = kwargs["book_id"]
+            return self.job
+
+        def get_storage_diagnostics(self):
+            return {
+                "database_path": str(self.config.db_path),
+                "output_path": str(self.config.output_dir),
+                "temp_path": str(self.config.temp_dir),
+                "app_data_path": str(Path(self.config.db_path).parent.parent),
+                "audit": {
+                    "row_counts": {"books": 1, "chapters": 1},
+                    "stale_book_sources": [],
+                    "orphan_output_dirs": [],
+                    "stale_temp_uploads": [],
+                    "stale_temp_stage_dirs": [],
+                },
+            }
+
+        def backup_database(self):
+            return Path("/tmp/audiobooks-backup.db")
+
+        def cleanup_storage(self, *, confirm):  # noqa: ANN003
+            self.cleanup_requests.append(confirm)
+            if confirm != "cleanup":
+                raise ValueError("Cleanup requires confirm='cleanup'")
+            return {
+                "backup_path": "/tmp/audiobooks-backup.db",
+                "actions": {"deleted_output_dirs": []},
+            }
+
+        def get_available_tts_engines(self):
+            return [
+                {
+                    "id": "kokoro",
+                    "name": "Kokoro",
+                    "voices": [{"id": "af_bella", "name": "Bella", "language": "en"}],
+                    "available_for_conversion": True,
+                    "capabilities": {"supports_batching": True, "batching_mode": "threaded"},
+                    "supported_quantizations": ["bf16"],
+                    "options_schema": {"quantization": {"type": "string"}},
+                }
+            ]
+
+        def get_available_voices(self, engine_name=None):
+            _ = engine_name
+            return [{"id": "af_bella", "name": "Bella", "language": "en-US", "locale": "en-US"}]
+
+        def get_available_cleaner_models(self):
+            return ["qwen"]
+
+        def get_available_api_cleaner_models(self):
+            return ["moonshot-v1-8k"]
+
+        def get_system_capabilities(self):
+            return {
+                "primary_runtime": "mlx",
+                "mlx_runtime_available": True,
+                "mlx_cleaner_runtime_available": False,
+                "runtime_probe": {
+                    "mode": "import",
+                    "cache_ttl_seconds": 60,
+                    "cache_hit": True,
+                    "state": "fresh",
+                    "refresh_in_progress": False,
+                    "tts": {"available": True, "latency_ms": 10.5, "error": None},
+                    "cleaner": {"available": False, "latency_ms": 4010.0, "error": "timeout"},
+                },
+                "available_tts_engines": ["kokoro"],
+                "metrics": {},
+            }
+
+        def generate_voice_preview(
+            self,
+            voice,
+            speed=1.0,
+            text=None,
+            engine_name=None,
+            tts_quantization=None,
+            tts_options=None,
+        ):
+            _ = (voice, speed, text, engine_name, tts_quantization, tts_options)
+            if not self.preview_path:
+                raise ValueError("preview not available")
+            return Path(self.preview_path)
+
+        def suggest_voice_for_book(self, source_path, engine_name=None):
+            self.voice_suggestion_kwargs = {
+                "source_path": source_path,
+                "engine_name": engine_name,
+            }
+            return {
+                "engine": engine_name or "kokoro",
+                "source_path": str(source_path),
+                "book_sample": {
+                    "unit": "pages",
+                    "units_analyzed": 3,
+                    "total_units": 240,
+                    "excerpt": "War had settled over the valley by dusk.",
+                },
+                "book_profile": {
+                    "book_type": "war novel",
+                    "tone": "serious",
+                },
+                "voice_suggestion": {
+                    "recommended_voice_id": "af_bella",
+                    "recommended_voice_style": "warm but steady",
+                    "reasoning": "Balances gravity with clarity for long-form narration.",
+                },
+                "available_voice_count": 1,
+            }
+
+    with (
+        tempfile.TemporaryDirectory(prefix="web-api-temp-") as temp_dir,
+        tempfile.TemporaryDirectory(prefix="web-api-output-") as output_dir,
+    ):
+        fake_controller = _FakeController(temp_dir=Path(temp_dir), output_dir=Path(output_dir))
+        fake_client = _make_client_with_controller(fake_controller)
+
+        accepted_uploads = [
+            ("sample.pdf", b"%PDF-1.4\n% test", "application/pdf"),
+            ("book.epub", b"PK\x03\x04epub", "application/epub+zip"),
+            ("notes.txt", b"plain text", "text/plain"),
+            ("guide.md", b"# Guide\n\nText", "text/markdown"),
+        ]
+        upload_root = Path(fake_controller.config.temp_dir) / "web_uploads"
+        uploaded_handle = None
+        for filename, payload_bytes, content_type in accepted_uploads:
+            upload = fake_client.post(
+                "/api/uploads/source",
+                files={"file": (filename, payload_bytes, content_type)},
+            )
+            assert upload.status_code == 200
+            upload_payload = upload.json()
+            assert upload_payload["original_name"] == filename
+            assert "stored_path" not in upload_payload
+            assert "source_handle" in upload_payload
+            assert upload_payload["source_handle"].startswith("upload:")
+            stored_path = upload_root / upload_payload["source_handle"].removeprefix("upload:")
+            assert stored_path.exists()
+            assert stored_path.suffix.lower() == Path(filename).suffix.lower()
+            assert upload_payload["preflight"]["source_type"] == Path(
+                filename
+            ).suffix.lower().lstrip(".")
+            assert "sample" in upload_payload["preflight"]
+            if uploaded_handle is None:
+                uploaded_handle = upload_payload["source_handle"]
+        print("✓ /api/uploads/source returns opaque handles")
+
+        preflight = fake_client.post(
+            "/api/sources/preflight",
+            json={"source_path": uploaded_handle},
+        )
+        assert preflight.status_code == 200
+        preflight_payload = preflight.json()
+        assert preflight_payload["source_type"] == "pdf"
+        assert preflight_payload["title"]
+        assert "chapter_count" in preflight_payload
+        assert "sample" in preflight_payload
+        print("✓ POST /api/sources/preflight resolves upload handles")
+
+        pasted_upload = fake_client.post(
+            "/api/uploads/text",
+            json={"title": "Pasted Notes", "text": "Copied from the web.\n\nSecond paragraph."},
+        )
+        assert pasted_upload.status_code == 200
+        pasted_payload = pasted_upload.json()
+        assert pasted_payload["source_handle"].startswith("upload:")
+        assert pasted_payload["original_name"].endswith(".md")
+        assert pasted_payload["preflight"]["source_type"] == "md"
+        assert pasted_payload["preflight"]["title"] == "Pasted Notes"
+        pasted_path = upload_root / pasted_payload["source_handle"].removeprefix("upload:")
+        assert pasted_path.read_text(encoding="utf-8").startswith(
+            "# Pasted Notes\n\nCopied from the web."
+        )
+        print("✓ POST /api/uploads/text stores pasted markdown source")
+
+        handle_start = fake_client.post(
+            "/api/conversions",
+            json={
+                "source_path": uploaded_handle,
+                "voice": "af_bella",
+                "speed": 1.25,
+                "conversion_mode": "document_audio",
+                "title": "Custom Title",
+                "author": "Custom Author",
+                "tts_engine": "kokoro",
+                "tts_quantization": "bf16",
+                "cleaner_model": "qwen",
+                "cleaner_backend": "api",
+                "cleaner_api_model": "moonshot-v1-8k",
+                "tts_options": {"quantization": "bf16"},
+            },
+        )
+        assert handle_start.status_code == 200
+        assert handle_start.json()["job_id"] == "conv_test_1"
+        handle_start_path = Path(fake_controller.start_kwargs["source_path"])
+        assert handle_start_path == upload_root / uploaded_handle.removeprefix("upload:")
+        runtime_options = fake_controller.start_kwargs["runtime_options"]
+        assert runtime_options.voice == "af_bella"
+        assert runtime_options.speed == 1.25
+        assert fake_controller.start_kwargs["conversion_mode"] == "document_audio"
+        assert fake_controller.start_kwargs["title"] == "Custom Title"
+        assert fake_controller.start_kwargs["author"] == "Custom Author"
+        assert runtime_options.tts_engine == "kokoro"
+        assert runtime_options.tts_quantization == "bf16"
+        assert runtime_options.cleaner_model == "qwen"
+        assert runtime_options.cleaner_backend == "api"
+        assert runtime_options.cleaner_api_model == "moonshot-v1-8k"
+        assert runtime_options.tts_options == {"quantization": "bf16"}
+        print("✓ POST /api/conversions resolves upload handles")
+
+        filtered = fake_client.get("/api/library", params={"search": "murakami", "limit": 10})
+        assert filtered.status_code == 200
+        assert fake_controller.library_searches[-1] == ("murakami", 10, None, None)
+        print("✓ /api/library search passthrough")
+
+        voice_options = fake_client.get("/api/options/voices", params={"engine": "kokoro"})
+        assert voice_options.status_code == 200
+        assert voice_options.json()["engine"] == "kokoro"
+        assert voice_options.json()["voices"][0]["id"] == "af_bella"
+        print("✓ /api/options/voices")
+
+        suggestion = fake_client.post(
+            "/api/voices/suggest",
+            json={
+                "source_path": uploaded_handle,
+                "tts_engine": "kokoro",
+            },
+        )
+        assert suggestion.status_code == 200
+        suggestion_payload = suggestion.json()
+        assert suggestion_payload["voice_suggestion"]["recommended_voice_id"] == "af_bella"
+        assert suggestion_payload["book_profile"]["tone"] == "serious"
+        assert fake_controller.voice_suggestion_kwargs == {
+            "source_path": upload_root / uploaded_handle.removeprefix("upload:"),
+            "engine_name": "kokoro",
+        }
+        print("✓ POST /api/voices/suggest resolves upload handles")
+
+        start = fake_client.post(
+            "/api/conversions",
+            json={
+                "source_path": "/tmp/sample.pdf",
+                "voice": "af_bella",
+                "speed": 1.25,
+                "conversion_mode": "document_audio",
+                "title": "Custom Title",
+                "author": "Custom Author",
+                "tts_engine": "kokoro",
+                "tts_quantization": "bf16",
+                "cleaner_model": "qwen",
+                "cleaner_backend": "api",
+                "cleaner_api_model": "moonshot-v1-8k",
+                "tts_options": {"quantization": "bf16"},
+            },
+        )
+        assert start.status_code == 200
+        assert start.json()["job_id"] == "conv_test_1"
+        runtime_options = fake_controller.start_kwargs["runtime_options"]
+        assert runtime_options.voice == "af_bella"
+        assert runtime_options.speed == 1.25
+        assert fake_controller.start_kwargs["conversion_mode"] == "document_audio"
+        assert fake_controller.start_kwargs["title"] == "Custom Title"
+        assert fake_controller.start_kwargs["author"] == "Custom Author"
+        assert runtime_options.tts_engine == "kokoro"
+        assert runtime_options.tts_quantization == "bf16"
+        assert runtime_options.cleaner_model == "qwen"
+        assert runtime_options.cleaner_backend == "api"
+        assert runtime_options.cleaner_api_model == "moonshot-v1-8k"
+        assert runtime_options.tts_options == {"quantization": "bf16"}
+        assert fake_controller.start_kwargs["source_path"] == Path("/tmp/sample.pdf")
+        print("✓ POST /api/conversions")
+
+        filtered = fake_client.get(
+            "/api/library",
+            params={
+                "search": "murakami",
+                "limit": 10,
+                "conversion_mode": "audiobook",
+                "favorite": "true",
+            },
+        )
+        assert filtered.status_code == 200
+        assert fake_controller.library_searches[-1] == ("murakami", 10, "audiobook", True)
+        print("✓ /api/library filters passthrough")
+
+        update_book = fake_client.patch(
+            "/api/library/1",
+            json={"title": "Updated", "author": "New Author", "tags": "favorite", "favorite": True},
+        )
+        assert update_book.status_code == 200
+        assert update_book.json()["title"] == "Updated"
+        assert update_book.json()["favorite"] is True
+        print("✓ PATCH /api/library/{book_id}")
+
+        cleaning_preview = fake_client.get("/api/library/1/chapters/1/cleaning-preview")
+        assert cleaning_preview.status_code == 200
+        assert cleaning_preview.json()["cleaned_text"] == "clean"
+        print("✓ GET /api/library/{book_id}/chapters/{chapter_number}/cleaning-preview")
+
+        voice_options = fake_client.get("/api/options/voices", params={"engine": "kokoro"})
+        assert voice_options.status_code == 200
+        assert voice_options.json()["engine"] == "kokoro"
+        assert voice_options.json()["voices"][0]["id"] == "af_bella"
+        print("✓ /api/options/voices")
+
+        suggestion = fake_client.post(
+            "/api/voices/suggest",
+            json={
+                "source_path": "/tmp/sample.md",
+                "tts_engine": "kokoro",
+            },
+        )
+        assert suggestion.status_code == 200
+        suggestion_payload = suggestion.json()
+        assert suggestion_payload["voice_suggestion"]["recommended_voice_id"] == "af_bella"
+        assert suggestion_payload["book_profile"]["tone"] == "serious"
+        assert fake_controller.voice_suggestion_kwargs == {
+            "source_path": Path("/tmp/sample.md"),
+            "engine_name": "kokoro",
+        }
+        print("✓ POST /api/voices/suggest")
+
+        capabilities = fake_client.get("/api/system/capabilities")
+        assert capabilities.status_code == 200
+        assert capabilities.json()["primary_runtime"] == "mlx"
+        assert capabilities.json()["mlx_runtime_available"] is True
+        assert capabilities.json()["mlx_cleaner_runtime_available"] is False
+        assert capabilities.json()["runtime_probe"]["mode"] == "import"
+        assert capabilities.json()["runtime_probe"]["state"] == "fresh"
+        assert capabilities.json()["runtime_probe"]["refresh_in_progress"] is False
+        print("✓ /api/system/capabilities")
+
+        diagnostics = fake_client.get("/api/maintenance/diagnostics")
+        assert diagnostics.status_code == 200
+        assert diagnostics.json()["audit"]["row_counts"]["books"] == 1
+        print("✓ GET /api/maintenance/diagnostics")
+
+        backup = fake_client.post("/api/maintenance/backup")
+        assert backup.status_code == 200
+        assert backup.json()["backup_path"] == "/tmp/audiobooks-backup.db"
+        print("✓ POST /api/maintenance/backup")
+
+        cleanup_rejected = fake_client.post("/api/maintenance/cleanup", json={"confirm": "nope"})
+        assert cleanup_rejected.status_code == 400
+
+        cleanup = fake_client.post("/api/maintenance/cleanup", json={"confirm": "cleanup"})
+        assert cleanup.status_code == 200
+        assert fake_controller.cleanup_requests[-1] == "cleanup"
+        print("✓ POST /api/maintenance/cleanup requires confirmation")
+
+    detail = fake_client.get("/api/library/1")
+    assert detail.status_code == 200
+    assert detail.json()["title"] == "Wind-Up Bird"
+    assert detail.json()["playback_status"] == "packaged"
+    assert detail.json()["conversion_mode"] == "document_audio"
+    assert detail.json()["playback_position_sec"] == 91.5
+    print("✓ /api/library/{book_id} detail")
+
+    missing = fake_client.get("/api/library/99")
+    assert missing.status_code == 404
+    print("✓ /api/library/{book_id} not found")
+
+    playback_position = fake_client.put(
+        "/api/library/1/playback-position",
+        json={"position_sec": 123.75},
+    )
+    assert playback_position.status_code == 200
+    assert playback_position.json() == {"book_id": 1, "position_sec": 123.75}
+    assert fake_controller.playback_position_updates[-1] == (1, 123.75)
+    print("✓ PUT /api/library/{book_id}/playback-position")
+
+    open_folder = fake_client.post("/api/library/1/open-folder")
+    assert open_folder.status_code == 200
+    assert open_folder.json() == {"book_id": 1, "folder_path": "/tmp"}
+    assert fake_controller.open_folder_calls[-1] == 1
+    print("✓ POST /api/library/{book_id}/open-folder")
+
+    temp_audio_path = None
+    temp_preview_path = None
+    try:
+        output_audio_dir = Path(fake_controller.config.output_dir)
+        output_audio_dir.mkdir(parents=True, exist_ok=True)
+        temp_audio_path = str(output_audio_dir / "test-audio.mp3")
+        Path(temp_audio_path).write_bytes(b"ID3test-audio")
+        fake_controller.audio_path = temp_audio_path
+
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as handle:
+            handle.write(b"RIFF....WAVEfmt ")
+            temp_preview_path = handle.name
+            fake_controller.preview_path = temp_preview_path
+
+        audio = fake_client.get("/api/library/1/audio")
+        assert audio.status_code == 200
+        assert audio.content.startswith(b"ID3test-audio")
+
+        preview = fake_client.post(
+            "/api/voices/preview",
+            json={
+                "voice": "af_bella",
+                "speed": 1.1,
+                "text": "hello preview",
+                "tts_engine": "kokoro",
+                "tts_quantization": "bf16",
+                "tts_options": {"quantization": "bf16"},
+            },
+        )
+        assert preview.status_code == 200
+        assert preview.headers["content-type"].startswith("audio/wav")
+        assert preview.content.startswith(b"RIFF")
+    finally:
+        if temp_audio_path:
+            Path(temp_audio_path).unlink(missing_ok=True)
+        if temp_preview_path:
+            Path(temp_preview_path).unlink(missing_ok=True)
+    print("✓ /api/library/{book_id}/audio playback stream")
+    print("✓ POST /api/voices/preview")
+
+    active = fake_client.get("/api/conversions/active")
+    assert active.status_code == 200
+    active_payload = active.json()
+    assert active_payload["active"] is True
+    assert active_payload["job"]["id"] == "conv_test_1"
+    print("✓ GET /api/conversions/active")
+
+    repair = fake_client.post(
+        "/api/conversions/repair/1",
+        json={"voice": "af_bella", "speed": 1.0, "tts_engine": "kokoro"},
+    )
+    assert repair.status_code == 200
+    assert repair.json()["job_id"] == "repair_test_1"
+    assert repair.json()["book_id"] == 1
+    print("✓ POST /api/conversions/repair/{book_id}")
+
+    cancel = fake_client.post("/api/conversions/repair_test_1/cancel")
+    assert cancel.status_code == 200
+    assert cancel.json()["cancelled"] is True
+    print("✓ POST /api/conversions/{job_id}/cancel")
+
+    delete_response = fake_client.delete("/api/library/1")
+    assert delete_response.status_code == 200
+    assert delete_response.json() == {"book_id": 1, "deleted": True}
+    assert fake_controller.deleted_book_ids[-1] == 1
+    print("✓ DELETE /api/library/{book_id}")
+
+    print("\n" + "=" * 50)
+    print("ALL WEB API TESTS PASSED ✓")
+    print("=" * 50 + "\n")
+    return True
+
+
+if __name__ == "__main__":
+    success = test_web_api()
+    sys.exit(0 if success else 1)

@@ -1,0 +1,38 @@
+[
+  {
+    "chapter": "chapter_05",
+    "description": "missing leading letter with |## noise",
+    "dirty": "### **DEAR MARKETS** |## rom the moment I first came across you, I have been fascinated by you.",
+    "expected_rule_based": "DEAR MARKETS ## rom the moment I first came across you, I have been fascinated by you.",
+    "expected_clean": "DEAR MARKETS From the moment I first came across you, I have been fascinated by you.",
+    "must_not_contain_after": ["##", "|"],
+    "required_fragments": ["DEAR MARKETS", "From the moment"]
+  },
+  {
+    "chapter": "chapter_09",
+    "description": "trading floor missing letter and hash marker",
+    "dirty": "### **THE TRADING FLOOR** |## alking onto a trading floor is a special experience. This took place on the # **W** trading floor of Handelsbanken.",
+    "expected_rule_based": "THE TRADING FLOOR ## alking onto a trading floor is a special experience. This took place on the # W trading floor of Handelsbanken.",
+    "expected_clean": "THE TRADING FLOOR Walking onto a trading floor is a special experience. This took place on the W trading floor of Handelsbanken.",
+    "must_not_contain_after": ["##", "# W", "|"],
+    "required_fragments": ["THE TRADING FLOOR", "Walking onto", "W trading floor", "Handelsbanken"]
+  },
+  {
+    "chapter": "chapter_12",
+    "description": "W hat split with markdown/header noise",
+    "dirty": "### **FIGHTING MY HUMANNESS** |## **W** hat is normal behaviour amongst retail traders?",
+    "expected_rule_based": "FIGHTING MY HUMANNESS ## W hat is normal behaviour amongst retail traders?",
+    "expected_clean": "FIGHTING MY HUMANNESS What is normal behaviour amongst retail traders?",
+    "must_not_contain_after": ["##", "W hat", "|"],
+    "required_fragments": ["FIGHTING MY HUMANNESS", "What is normal behaviour"]
+  },
+  {
+    "chapter": "chapter_17",
+    "description": "he prefix split and orphaned # T marker",
+    "dirty": "### **BEST LOSER WINS** |## he time has come to get more specific. We can decide to get down to the business of creating a # **T** finely tuned trading mind.",
+    "expected_rule_based": "BEST LOSER WINS ## he time has come to get more specific. We can decide to get down to the business of creating a # T finely tuned trading mind.",
+    "expected_clean": "BEST LOSER WINS the time has come to get more specific. We can decide to get down to the business of creating a finely tuned trading mind.",
+    "must_not_contain_after": ["##", "# T", "|", "## he"],
+    "required_fragments": ["BEST LOSER WINS", "the time has come", "finely tuned trading mind"]
+  }
+]
