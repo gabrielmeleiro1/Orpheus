@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterator
 
+import numpy as np
+
 from modules.tts.engine_config import TTSConfig as EngineConfig
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 from modules.tts.runtimes.kokoro_base import KokoroRuntimeConfig, KokoroRuntimeFactory
@@ -21,7 +23,6 @@ class MLXKokoroRuntime:
     provider = "mlx"
 
     def __init__(self, config: KokoroRuntimeConfig) -> None:
-        self._config = config
         self._engine = self._create_engine(config)
 
     @staticmethod
@@ -96,7 +97,7 @@ class MLXKokoroRuntime:
         voice: str,
         speed: float = 1.0,
         output_path: Path | None = None,
-    ):
+    ) -> np.ndarray:
         return self._engine.synthesize(
             text=text,
             voice=voice,
@@ -118,4 +119,6 @@ class MLXKokoroRuntime:
         return self._engine.get_metrics()
 
 
-KokoroRuntimeFactory.register("mlx", "kokoro", MLXKokoroRuntime)
+def register_default_kokoro_runtimes() -> None:
+    """Register built-in Kokoro runtime implementations."""
+    KokoroRuntimeFactory.register("mlx", "kokoro", MLXKokoroRuntime)

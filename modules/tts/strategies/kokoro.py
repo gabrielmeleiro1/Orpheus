@@ -30,6 +30,7 @@ class KokoroConfig(TTSConfig):
     """Configuration specific to Kokoro TTS."""
 
     model_name: str = "mlx-community/Kokoro-82M"
+    default_voice: str = "am_adam"
     enable_streaming: bool = True
     stream_buffer_size: int = 8192
     runtime_options: Optional[dict[str, object]] = None
@@ -167,6 +168,8 @@ class KokoroTTSStrategy(TTSStrategy):
             return
 
         runtime_config = KokoroRuntimeConfig.from_strategy_config(self._config)
+        if self._config.runtime_spec is None:
+            self._config.runtime_spec = runtime_config.runtime_spec
         runtime_factory = self._runtime_factory or KokoroRuntimeFactory()
         self._runtime = runtime_factory.create_runtime(runtime_config)
         self._runtime.load()
