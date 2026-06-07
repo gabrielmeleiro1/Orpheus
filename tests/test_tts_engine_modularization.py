@@ -6,11 +6,13 @@ import importlib
 import sys
 import threading
 import time
+import builtins
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from modules.app.controller import AppController
 from modules.pipeline.model_lifecycle import _tts_strategy_kwargs
@@ -21,6 +23,7 @@ from modules.tts import mlx_compat
 from modules.tts import model_cache
 from modules.tts.runtime_options import TTSRuntimeOptions
 from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 
 
 def test_model_cache_wrappers_delegate_to_backend() -> None:
@@ -92,6 +95,43 @@ def test_model_lifecycle_strategy_kwargs_pass_spec_runtime_options_dict() -> Non
     assert kwargs["runtime_options"] == {"dtype": "fp16"}
     assert isinstance(kwargs["runtime_options"], dict)
     assert kwargs["model_name"] == "Kokoro-82M"
+
+
+def test_kokoro_strategy_import_does_not_import_mlx_engine(monkeypatch) -> None:
+    sys.modules.pop("modules.tts.strategies.kokoro", None)
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
+        if name == "modules.tts.engine":
+            raise AssertionError("Kokoro strategy import crossed into MLX engine")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    module = importlib.import_module("modules.tts.strategies.kokoro")
+
+    assert module.KokoroTTSStrategy().capabilities.provider == "mlx"
+
+
+def test_mlx_runtime_import_failure_is_deferred_until_load(monkeypatch) -> None:
+    kokoro = importlib.import_module("modules.tts.strategies.kokoro")
+    strategy = kokoro.KokoroTTSStrategy()
+    real_import = builtins.__import__
+
+    assert strategy.supported_voices
+    assert strategy.capabilities.provider == "mlx"
+
+    sys.modules.pop("modules.tts.engine", None)
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
+        if name == "modules.tts.engine":
+            raise ImportError("missing mlx runtime")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    with pytest.raises(TTSRuntimeUnavailable, match="MLX Kokoro runtime"):
+        strategy.load()
 
 
 def test_model_cache_evicts_least_recently_used_model() -> None:
