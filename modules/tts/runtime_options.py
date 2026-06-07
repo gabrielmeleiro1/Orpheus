@@ -126,32 +126,6 @@ def validate_quantization_for_provider(
     validate_quantization(provider, quantization)
 
 
-def validate_runtime_spec_provider_compatibility(spec: TTSRuntimeSpec) -> None:
-    """Reject engine/provider pairings that no registered runtime can satisfy."""
-    from modules.tts.factory import TTSEngineFactory
-
-    try:
-        capabilities = TTSEngineFactory.get_engine_capabilities(spec.engine)
-    except ValueError:
-        return
-
-    supported_provider = capabilities.get("provider")
-    if not isinstance(supported_provider, str):
-        return
-
-    normalized_supported_provider = canonical_provider(supported_provider)
-    if normalized_supported_provider is None:
-        return
-    if spec.provider == normalized_supported_provider:
-        return
-
-    display_engine = "Kokoro" if spec.engine == "kokoro" else spec.engine
-    raise ValueError(
-        f"{display_engine} provider '{spec.provider}' is not supported. "
-        f"Supported provider: {normalized_supported_provider}"
-    )
-
-
 def validate_device(provider: str | None, device: str | None) -> None:
     """Validate provider/device shape without probing hardware."""
     normalized_provider = canonical_provider(provider)
@@ -160,6 +134,11 @@ def validate_device(provider: str | None, device: str | None) -> None:
         return
     if normalized_provider == "cuda" and not re.fullmatch(r"cuda(?::\d+)?", normalized_device):
         raise ValueError("CUDA device must be 'cuda' or 'cuda:<index>'.")
+    if normalized_provider is not None and normalized_provider != "cuda":
+        if re.fullmatch(r"cuda(?::\d+)?", normalized_device):
+            raise ValueError(
+                f"{normalized_provider} provider cannot use CUDA device '{normalized_device}'."
+            )
 
 
 def _provider_from_provider_options(
@@ -195,13 +174,21 @@ def validate_provider_options(
 ) -> None:
     """Validate provider-specific option names."""
     normalized_provider = canonical_provider(provider)
-    if normalized_provider != "cuda" or not options:
+    if not options:
         return
     keys = (
         [key for key, _value in options]
         if isinstance(options, tuple)
         else [str(key).strip() for key in options]
     )
+    if normalized_provider != "cuda":
+        for key in keys:
+            if key in CUDA_PROVIDER_OPTION_KEYS:
+                scope = normalized_provider or "unspecified"
+                raise ValueError(
+                    f"CUDA provider option '{key}' is not supported for {scope} provider."
+                )
+        return
     for key in keys:
         if key not in CUDA_PROVIDER_OPTION_KEYS:
             raise ValueError(f"Unsupported CUDA provider option '{key}'.")
@@ -269,7 +256,6 @@ class TTSRuntimeOptions:
         runtime_provider_options = TTSRuntimeSpec.canonicalize_runtime_options(
             provider_options_payload
         )
-        validate_provider_options(provider, runtime_provider_options)
         device = _payload_value(payload, "device")
         quantization = _payload_value(payload, "quantization")
         validate_device(provider, device)
@@ -304,6 +290,11 @@ class TTSRuntimeOptions:
             or parsed.provider
             or getattr(config, "tts_provider", None)
         )
+        if parsed.provider is not None and provider is not None and parsed.provider != provider:
+            raise ValueError(
+                "Conflicting TTS provider values across provider, device, "
+                "and provider_options."
+            )
         device = (
             _text(getattr(runtime_options, "tts_device", None))
             or parsed.device
@@ -314,9 +305,6 @@ class TTSRuntimeOptions:
             or parsed.quantization
             or _text(getattr(config, "tts_quantization", None))
         )
-        validate_device(provider, device)
-        validate_quantization(provider, quantization)
-        validate_provider_options(provider, parsed.provider_options)
         resolved = cls(
             model_name=parsed.model_name,
             quantization=quantization,
@@ -457,6 +445,14 @@ def _runtime_option_conflicts(
         conflicts.append("device")
     if runtime_options.model_name is not None and runtime_options.model_name != runtime_spec.model:
         conflicts.append("model_name")
+    runtime_option_tuples = TTSRuntimeSpec.canonicalize_runtime_options(
+        runtime_options._spec_options()
+    )
+    spec_option_tuples = TTSRuntimeSpec.canonicalize_runtime_options(
+        dict(runtime_spec.runtime_options)
+    )
+    if runtime_option_tuples != spec_option_tuples:
+        conflicts.append("runtime_options")
     return conflicts
 
 
