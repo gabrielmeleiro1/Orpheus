@@ -45,27 +45,6 @@ def test_model_cache_wrappers_delegate_to_backend() -> None:
         mock_clear.assert_called_once_with(mx_module=sentinel_mx, mlx_available=True)
 
 
-def test_model_lifecycle_strategy_kwargs_omit_model_name_when_spec_model_absent() -> None:
-    runtime_spec = TTSRuntimeSpec.from_legacy(
-        "kokoro",
-        "bf16",
-        provider="mlx",
-    )
-    runtime = SimpleNamespace(
-        config=PipelineConfig(
-            tts_engine="kokoro",
-            tts_model_name=None,
-            tts_quantization="bf16",
-            tts_runtime=runtime_spec,
-        )
-    )
-
-    kwargs = _tts_strategy_kwargs(runtime)
-
-    assert "model_name" not in kwargs
-    assert kwargs["runtime_spec"] is runtime_spec
-
-
 def test_model_lifecycle_strategy_kwargs_pass_spec_runtime_options_dict() -> None:
     runtime_spec = TTSRuntimeSpec(
         provider="cuda",

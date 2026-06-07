@@ -48,7 +48,6 @@ class KokoroRuntimeConfig:
                 else None
             ),
         )
-        config.runtime_spec = runtime_spec
         runtime_options = (
             dict(config.runtime_options)
             if isinstance(config.runtime_options, dict)
@@ -59,7 +58,7 @@ class KokoroRuntimeConfig:
             model_name=config.model_name,
             quantization=config.quantization,
             sample_rate=config.sample_rate,
-            default_voice="am_adam",
+            default_voice=getattr(config, "default_voice", None) or "am_adam",
             max_chunk_tokens=config.max_chunk_tokens,
             batch_size=config.batch_size,
             use_batching=config.use_batching,
@@ -134,11 +133,15 @@ class KokoroRuntimeFactory:
 
     def create_runtime(self, config: KokoroRuntimeConfig) -> KokoroRuntime:
         runtime_spec = config.runtime_spec
-        key = (runtime_spec.provider, runtime_spec.engine)
+        key = (
+            runtime_spec.provider.strip().lower(),
+            runtime_spec.engine.strip().lower(),
+        )
         try:
             builder = self._registry[key]
         except KeyError as exc:
             raise TTSRuntimeUnavailable(
-                f"Kokoro provider '{runtime_spec.provider}' is not supported"
+                f"Kokoro runtime (provider={runtime_spec.provider!r}, "
+                f"engine={runtime_spec.engine!r}) is not supported"
             ) from exc
         return builder(config)

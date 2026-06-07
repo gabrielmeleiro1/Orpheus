@@ -10,10 +10,9 @@ from modules.tts.runtimes.kokoro_base import (
     KokoroRuntimeConfig,
     KokoroRuntimeFactory,
 )
+from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime, register_default_kokoro_runtimes
 
-# Import for registry side effect. TTSEngine import is deferred until a concrete
-# MLX runtime instance is created.
-from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime
+register_default_kokoro_runtimes()
 
 __all__ = [
     "KokoroRuntime",
@@ -23,4 +22,5 @@ __all__ = [
     "TTSRuntimeInitializationError",
     "TTSRuntimeMemoryError",
     "TTSRuntimeUnavailable",
+    "register_default_kokoro_runtimes",
 ]
