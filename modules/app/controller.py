@@ -38,7 +38,9 @@ from modules.storage.repository import IBookRepository
 from modules.storage.sqlite_repo import SQLiteRepository
 from modules.tts.api_rate_limit import GlobalAPILimiter
 from modules.tts.cleaner_config import list_cleaner_backends
+from modules.tts.device_memory import get_device_memory_policy
 from modules.tts.factory import TTSEngineFactory
+from modules.tts.runtime_spec import TTSRuntimeSpec
 
 
 class JobStatus(Enum):
@@ -445,6 +447,11 @@ class AppController:
             }
         )
 
+        default_tts_runtime = TTSRuntimeSpec.from_legacy(
+            self.config.tts_engine,
+            self.config.tts_quantization,
+        )
+
         return {
             "primary_runtime": "mlx",
             "mlx_runtime_available": mlx_runtime_available,
@@ -463,6 +470,7 @@ class AppController:
                     4,
                     int(getattr(self.config, "max_parallel_chapters", 1) or 1),
                 ),
+                device_memory_policy=get_device_memory_policy(default_tts_runtime),
             ),
             "metrics": metrics,
         }
@@ -524,6 +532,7 @@ class AppController:
                     "selected_worker_count_reason",
                     None,
                 ),
+                device_memory_policy=pipeline.config.device_memory_policy,
             )
         finally:
             pipeline.stages.cleanup_models(force=True)

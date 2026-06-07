@@ -22,6 +22,23 @@ class _Chapter:
     content: str = "content"
 
 
+def test_shared_pool_rejects_conflicting_memory_aliases() -> None:
+    with pytest.raises(ValueError, match="Pass only one"):
+        SharedWorkerPoolManager(
+            max_workers=2,
+            available_vram_gb=4.0,
+            available_device_memory_gb=10.0,
+        )
+
+    manager = SharedWorkerPoolManager(max_workers=2)
+    with pytest.raises(ValueError, match="Pass only one"):
+        manager.ensure_started(
+            "same",
+            available_vram_gb=4.0,
+            available_device_memory_gb=10.0,
+        )
+
+
 class _FakeExecutor:
     created = 0
 
@@ -237,6 +254,34 @@ def test_shared_pool_restarts_when_fingerprint_changes() -> None:
         manager.shutdown()
 
     assert _FakeExecutor.created == 2
+    assert snapshot["restarts"] >= 1
+
+
+def test_shared_pool_restarts_when_device_memory_budget_changes() -> None:
+    _FakeExecutor.created = 0
+    chapters = [_Chapter(number=1, title="One")]
+
+    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _FakeExecutor):
+        manager = SharedWorkerPoolManager(max_workers=1)
+        manager.run_parallel(
+            chapters=chapters,
+            process_func=_process,
+            config_fingerprint="same",
+            available_device_memory_gb=12.0,
+            worker_init_config={"voice": "af_bella"},
+        )
+        manager.run_parallel(
+            chapters=chapters,
+            process_func=_process,
+            config_fingerprint="same",
+            available_device_memory_gb=6.0,
+            worker_init_config={"voice": "af_bella"},
+        )
+        snapshot = manager.snapshot()
+        manager.shutdown()
+
+    assert _FakeExecutor.created == 2
+    assert snapshot["reuse_hits"] == 0
     assert snapshot["restarts"] >= 1
 
 
