@@ -1,45 +1,32 @@
 # Commit Workflow
 
-Use small commits that are easy to review and easy to undo. Stage files
-explicitly and check the diff before committing.
+Keep Git history simple. Work on a branch, make small commits, review what is
+staged, and run the checks that match the change.
 
-## First Commit Order
+## Branches
 
-Use this order for the initial repository history:
+Start from the latest `main`:
 
-1. `chore: add project metadata`
-   - `LICENSE`
-   - `.gitignore`
-   - `.env.example`
-   - package manifests and lockfiles
-   - test and lint config
+```bash
+git switch main
+git pull
+```
 
-2. `docs: add project documentation`
-   - `README.md`
-   - `docs/`
-   - `data/README.md`
+Create a branch with a short, descriptive name:
 
-3. `feat: add core backend`
-   - `modules/`
-   - `apps/`
+```bash
+git switch -c feature/library-filters
+git switch -c fix/source-preflight
+git switch -c docs/testing-notes
+```
 
-4. `feat: add desktop app`
-   - `desktop/src/`
-   - `desktop/src-tauri/src/`
-   - committed app icons and Tauri config
+Use prefixes when helpful:
 
-5. `test: add test suite`
-   - `tests/`
-   - `run_tests.py`
-
-6. `chore: add scripts and benchmarks`
-   - `scripts/`
-   - `tools/`
-   - `benchmarks/`
-   - `vulture_whitelist.py`
-
-7. `ci: add validation workflow`
-   - `.github/workflows/`
+- `feature/`
+- `fix/`
+- `refactor/`
+- `docs/`
+- `ci/`
 
 ## Commit Messages
 
@@ -63,22 +50,38 @@ Common types:
 Examples:
 
 ```text
-docs: add setup instructions
-feat: add conversion pipeline
+feat: add library filters
 fix: handle missing source files
-test: add storage migration tests
+refactor: split conversion runtime options
+test: add storage migration coverage
+docs: update setup instructions
 ci: add validation workflow
 ```
 
-Keep subjects short and specific. Avoid vague messages like `updates`,
+Keep the message short and specific. Avoid vague messages like `updates`,
 `cleanup`, or `misc`.
 
-## Before Committing
+## Staging
 
-Check status:
+Check the working tree:
 
 ```bash
 git status --short --ignored
+```
+
+Stage explicit paths:
+
+```bash
+git add README.md docs/
+git add modules/ tests/test_storage_repository.py
+git add desktop/src desktop/src-tauri/src
+```
+
+Review what will be committed:
+
+```bash
+git diff --cached --stat
+git diff --cached
 ```
 
 Do not commit local state or generated files:
@@ -93,30 +96,24 @@ Do not commit local state or generated files:
 - `desktop/src-tauri/target/`
 - caches, bytecode, coverage files, and OS metadata
 
-Stage explicit paths:
+## Checks
 
-```bash
-git add README.md docs/
-git add modules/ apps/
-git add desktop/src desktop/src-tauri/src
-```
-
-Review the staged diff:
-
-```bash
-git diff --cached --stat
-git diff --cached
-```
-
-Run checks that match the change. For broad changes:
+Run checks that match the change. For broad Python changes:
 
 ```bash
 python run_tests.py --contract
 python -m ruff check .
-cd desktop && npm ci && npm run typecheck
 ```
 
-When touching Rust/Tauri code:
+For frontend changes:
+
+```bash
+cd desktop
+npm ci
+npm run typecheck
+```
+
+For Rust/Tauri changes:
 
 ```bash
 cd desktop/src-tauri
@@ -125,3 +122,13 @@ cargo check
 ```
 
 If a check is skipped, note why in the commit body.
+
+## Push
+
+Push the branch:
+
+```bash
+git push -u origin feature/library-filters
+```
+
+Open a pull request when the branch is ready for review.
