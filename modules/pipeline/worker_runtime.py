@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 from typing import Any, Optional
 
@@ -22,28 +23,29 @@ def _runtime_spec_from_worker_config(worker_init_config: dict[str, Any]):
     serialized_runtime = worker_init_config.get("tts_runtime")
     if serialized_runtime is None:
         raise ValueError("worker_init_config must include serialized tts_runtime")
-    return TTSRuntimeSpec.from_serialized(serialized_runtime, validate_birth=False)
+    return TTSRuntimeSpec.from_serialized(serialized_runtime)
 
 
-def _configure_mlx_worker_memory(
+def _worker_environment_from_config(
+    worker_init_config: dict[str, Any],
     *,
     available_vram_gb: float,
     active_workers: int,
-) -> None:
-    try:
-        import mlx.core as mx
+) -> dict[str, str]:
+    from modules.tts.device_memory import device_memory_policy_from_serialized
 
-        _ = mx
-        safe_worker_count = max(1, int(active_workers))
-        worker_vram = available_vram_gb / safe_worker_count
-
-        import os
-
-        os.environ["MLX_METAL_MEMORY"] = str(
-            int(worker_vram * 0.9 * 1024 * 1024 * 1024)
+    worker_environment: dict[str, str] = {}
+    device_policy = device_memory_policy_from_serialized(
+        worker_init_config.get("device_memory_policy")
+    )
+    if device_policy is not None:
+        worker_environment.update(
+            device_policy.configure_worker_environment(
+                available_bytes=max(0, int(float(available_vram_gb) * 1024**3)),
+                active_workers=max(1, int(active_workers or 1)),
+            )
         )
-    except ImportError:
-        pass
+    return worker_environment
 
 
 def _init_worker(
@@ -81,11 +83,13 @@ def _init_worker(
 
             tts_warmup_error: Optional[str] = None
             runtime_spec = _runtime_spec_from_worker_config(worker_init_config)
-            if runtime_spec.provider == "mlx":
-                _configure_mlx_worker_memory(
-                    available_vram_gb=available_vram_gb,
-                    active_workers=active_workers,
-                )
+            worker_environment = _worker_environment_from_config(
+                worker_init_config,
+                available_vram_gb=available_vram_gb,
+                active_workers=active_workers,
+            )
+            for key, value in worker_environment.items():
+                os.environ[str(key)] = str(value)
             tts_engine_name = runtime_spec.engine
             tts_kwargs = runtime_spec.factory_kwargs()
             tts_kwargs.update(
@@ -144,7 +148,7 @@ def _init_worker(
         )
 
     logger.debug(
-        "Worker initialized with VRAM share: %.2fGB",
+        "Worker initialized with device memory share: %.2fGB",
         available_vram_gb / max(1, int(active_workers)),
     )
 

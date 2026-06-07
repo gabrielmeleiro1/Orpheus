@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from modules.app.config import AppConfig
-from modules.pipeline.memory_policy import SafeMemoryPolicy, sample_memory_snapshot
+from modules.pipeline.memory_policy import MemorySnapshot, SafeMemoryPolicy
 from modules.pipeline.models import PipelineConfig
 from modules.pipeline.worker_recommendation import detect_cpu_core_workers
 from modules.storage.models import ConversionMode
@@ -14,6 +14,23 @@ from modules.tts.api_rate_limit import GlobalAPILimiter
 from modules.tts.cleaner_config import normalize_cleaner_backend
 from modules.tts.runtime_options import TTSRuntimeOptions, resolve_tts_runtime
 from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.device_memory import DeviceMemoryPolicy, get_device_memory_policy
+
+
+def _memory_snapshot_from_device_policy(
+    device_memory_policy: DeviceMemoryPolicy,
+) -> MemorySnapshot | None:
+    snapshot = device_memory_policy.sample()
+    if snapshot is None:
+        return None
+    return MemorySnapshot(
+        total_bytes=snapshot.total_bytes,
+        available_bytes=snapshot.available_bytes,
+        process_rss_bytes=snapshot.process_rss_bytes,
+        mlx_active_bytes=snapshot.active_bytes,
+        mlx_cache_bytes=snapshot.cache_bytes,
+        mlx_peak_bytes=snapshot.peak_bytes,
+    )
 
 
 @dataclass(frozen=True)
@@ -55,6 +72,7 @@ class NormalizedConversionRuntimeOptions:
     worker_auto_mode: str
     process_safe: bool
     memory_policy: Optional[SafeMemoryPolicy]
+    device_memory_policy: DeviceMemoryPolicy
 
 
 class RuntimeOptionsResolver:
@@ -197,11 +215,21 @@ class RuntimeOptionsResolver:
             requested_enable_parallel = False
 
         memory_policy = None
+        device_memory_policy = get_device_memory_policy(tts_runtime)
         if requested_enable_parallel and worker_auto_mode != "cpu_cores":
+            estimated_worker_bytes = device_memory_policy.estimated_worker_bytes(
+                tts_runtime,
+            )
             memory_policy = SafeMemoryPolicy(
-                memory_sampler=sample_memory_snapshot,
-                estimated_worker_bytes=4 * 1024**3,
+                memory_sampler=lambda: _memory_snapshot_from_device_policy(
+                    device_memory_policy,
+                ),
+                estimated_worker_bytes=estimated_worker_bytes,
                 enable_warmup_calibration=normalized_worker_mode == "auto",
+                unavailable_reason=(
+                    device_memory_policy.sampling_unavailable_reason
+                    or "memory measurement unavailable"
+                ),
             )
 
         return NormalizedConversionRuntimeOptions(
@@ -226,6 +254,7 @@ class RuntimeOptionsResolver:
             worker_auto_mode=worker_auto_mode,
             process_safe=process_safe,
             memory_policy=memory_policy,
+            device_memory_policy=device_memory_policy,
         )
 
     def create_pipeline_config(
@@ -285,6 +314,7 @@ class RuntimeOptionsResolver:
             tts_worker_auto_mode=normalized_options.worker_auto_mode,
             tts_process_safe=normalized_options.process_safe,
             memory_policy=normalized_options.memory_policy,
+            device_memory_policy=normalized_options.device_memory_policy,
         )
 
     @staticmethod
@@ -299,4 +329,3 @@ class RuntimeOptionsResolver:
             f"TTS engine '{tts_engine}' is not available for MLX conversion. "
             f"Available engines: {available}"
         )
-
