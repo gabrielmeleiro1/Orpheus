@@ -100,6 +100,7 @@ def test_mlx_runtime_import_failure_is_deferred_until_load(monkeypatch) -> None:
     assert strategy.supported_voices
     assert strategy.capabilities.provider == "mlx"
 
+    preserved_engine = sys.modules.get("modules.tts.engine")
     sys.modules.pop("modules.tts.engine", None)
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
@@ -109,8 +110,12 @@ def test_mlx_runtime_import_failure_is_deferred_until_load(monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "__import__", guarded_import)
 
-    with pytest.raises(TTSRuntimeUnavailable, match="MLX Kokoro runtime"):
-        strategy.load()
+    try:
+        with pytest.raises(TTSRuntimeUnavailable, match="MLX Kokoro runtime"):
+            strategy.load()
+    finally:
+        if preserved_engine is not None:
+            sys.modules["modules.tts.engine"] = preserved_engine
 
 
 def test_model_cache_evicts_least_recently_used_model() -> None:
