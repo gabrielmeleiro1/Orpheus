@@ -10,11 +10,31 @@ import pytest
 
 from modules.pipeline.model_lifecycle import _create_tts_strategy, _tts_strategy_kwargs
 from modules.pipeline.models import PipelineConfig
-from modules.tts.runtime_provider import MLXKokoroRuntimeProvider
 from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.runtimes import KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.strategies.kokoro import KokoroConfig, KokoroTTSStrategy
+
+
+def test_runtime_boundary_modules_are_the_strategy_contract() -> None:
+    from modules.tts.runtimes.kokoro_base import (
+        KokoroRuntime,
+        KokoroRuntimeConfig,
+        KokoroRuntimeFactory,
+    )
+    from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime
+
+    assert KokoroRuntime is not None
+    assert KokoroRuntimeConfig is not None
+    assert KokoroRuntimeFactory is not None
+    assert MLXKokoroRuntime.provider == "mlx"
+
+
+def test_kokoro_strategy_does_not_import_legacy_runtime_provider() -> None:
+    source = Path("modules/tts/strategies/kokoro.py").read_text()
+
+    assert "modules.tts.runtime_provider" not in source
 
 
 class _FakeRuntime:
@@ -157,7 +177,9 @@ def test_mlx_runtime_engine_config_identity_prefers_runtime_spec() -> None:
     )
 
     with patch("modules.tts.engine.TTSEngine") as mock_engine:
-        MLXKokoroRuntimeProvider().create_runtime(config)
+        KokoroRuntimeFactory().create_runtime(
+            KokoroRuntimeConfig.from_strategy_config(config)
+        )
 
     engine_config = mock_engine.call_args.args[0]
     assert engine_config.model_name == "local/spec-kokoro"
@@ -178,7 +200,9 @@ def test_mlx_runtime_engine_config_uses_resolved_kokoro_default_when_model_absen
     )
 
     with patch("modules.tts.engine.TTSEngine") as mock_engine:
-        MLXKokoroRuntimeProvider().create_runtime(config)
+        KokoroRuntimeFactory().create_runtime(
+            KokoroRuntimeConfig.from_strategy_config(config)
+        )
 
     engine_config = mock_engine.call_args.args[0]
     assert engine_config.model_name == "mlx-community/Kokoro-82M"
