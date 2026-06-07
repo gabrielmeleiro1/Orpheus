@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import ast
+import builtins
+import importlib
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -10,11 +15,118 @@ import pytest
 
 from modules.pipeline.model_lifecycle import _create_tts_strategy, _tts_strategy_kwargs
 from modules.pipeline.models import PipelineConfig
-from modules.tts.runtime_provider import MLXKokoroRuntimeProvider
 from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.runtimes import KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
+from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.strategies.kokoro import KokoroConfig, KokoroTTSStrategy
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _imports_runtime_provider(module_path: Path) -> bool:
+    tree = ast.parse(module_path.read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "modules.tts.runtime_provider":
+                    return True
+        elif isinstance(node, ast.ImportFrom) and node.module == "modules.tts.runtime_provider":
+            return True
+    return False
+
+
+def test_runtime_boundary_registry_registers_mlx_kokoro() -> None:
+    assert ("mlx", "kokoro") in KokoroRuntimeFactory.registered_keys()
+
+    config = KokoroRuntimeConfig(
+        runtime_spec=TTSRuntimeSpec(
+            provider="mlx",
+            engine="kokoro",
+            model="mlx-community/Kokoro-82M",
+            quantization="bf16",
+        ),
+        model_name="mlx-community/Kokoro-82M",
+        quantization="bf16",
+        sample_rate=24000,
+    )
+
+    sentinel = object()
+    calls: list[KokoroRuntimeConfig] = []
+
+    def fake_builder(runtime_config: KokoroRuntimeConfig) -> object:
+        calls.append(runtime_config)
+        return sentinel
+
+    key = ("mlx", "kokoro")
+    original = KokoroRuntimeFactory._registry[key]
+    KokoroRuntimeFactory._registry[key] = fake_builder
+    try:
+        runtime = KokoroRuntimeFactory().create_runtime(config)
+    finally:
+        KokoroRuntimeFactory._registry[key] = original
+
+    assert runtime is sentinel
+    assert calls == [config]
+
+
+def test_kokoro_strategy_does_not_import_legacy_runtime_provider() -> None:
+    kokoro_path = REPO_ROOT / "modules" / "tts" / "strategies" / "kokoro.py"
+
+    assert not _imports_runtime_provider(kokoro_path)
+
+
+def test_runtimes_package_import_does_not_load_engine(monkeypatch) -> None:
+    sys.modules.pop("modules.tts.runtimes", None)
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):  # noqa: ANN001
+        if name == "modules.tts.engine":
+            raise AssertionError("runtimes package import crossed into MLX engine")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    importlib.import_module("modules.tts.runtimes")
+
+
+def test_normalized_registry_lookup_accepts_mixed_case_provider_engine() -> None:
+    runtime_spec = TTSRuntimeSpec(
+        provider="MLX",
+        engine="kokoro",
+        model="mlx-community/Kokoro-82M",
+        quantization="bf16",
+    )
+    config = KokoroRuntimeConfig(
+        runtime_spec=runtime_spec,
+        model_name="mlx-community/Kokoro-82M",
+        quantization="bf16",
+        sample_rate=24000,
+    )
+
+    sentinel = object()
+    dispatched: list[tuple[str, str]] = []
+
+    def fake_builder(runtime_config: KokoroRuntimeConfig) -> object:
+        dispatched.append(
+            (
+                runtime_config.runtime_spec.provider,
+                runtime_config.runtime_spec.engine,
+            )
+        )
+        return sentinel
+
+    key = ("mlx", "kokoro")
+    original = KokoroRuntimeFactory._registry[key]
+    KokoroRuntimeFactory._registry[key] = fake_builder
+    try:
+        runtime = KokoroRuntimeFactory().create_runtime(config)
+    finally:
+        KokoroRuntimeFactory._registry[key] = original
+
+    assert runtime is sentinel
+    assert dispatched == [("MLX", "kokoro")]
 
 
 class _FakeRuntime:
@@ -74,9 +186,9 @@ class _FakeRuntime:
 class _FakeRuntimeFactory:
     def __init__(self, runtime: _FakeRuntime) -> None:
         self.runtime = runtime
-        self.configs: list[KokoroConfig] = []
+        self.configs: list[KokoroRuntimeConfig] = []
 
-    def create_runtime(self, config: KokoroConfig) -> _FakeRuntime:
+    def create_runtime(self, config: KokoroRuntimeConfig) -> _FakeRuntime:
         self.configs.append(config)
         return self.runtime
 
@@ -157,7 +269,9 @@ def test_mlx_runtime_engine_config_identity_prefers_runtime_spec() -> None:
     )
 
     with patch("modules.tts.engine.TTSEngine") as mock_engine:
-        MLXKokoroRuntimeProvider().create_runtime(config)
+        KokoroRuntimeFactory().create_runtime(
+            KokoroRuntimeConfig.from_strategy_config(config)
+        )
 
     engine_config = mock_engine.call_args.args[0]
     assert engine_config.model_name == "local/spec-kokoro"
@@ -178,7 +292,9 @@ def test_mlx_runtime_engine_config_uses_resolved_kokoro_default_when_model_absen
     )
 
     with patch("modules.tts.engine.TTSEngine") as mock_engine:
-        MLXKokoroRuntimeProvider().create_runtime(config)
+        KokoroRuntimeFactory().create_runtime(
+            KokoroRuntimeConfig.from_strategy_config(config)
+        )
 
     engine_config = mock_engine.call_args.args[0]
     assert engine_config.model_name == "mlx-community/Kokoro-82M"
@@ -192,18 +308,14 @@ def test_pipeline_strategy_kwargs_keep_kokoro_default_when_spec_model_absent() -
         "bf16",
         provider="mlx",
     )
-    runtime = type(
-        "Runtime",
-        (),
-        {
-            "config": PipelineConfig(
-                tts_engine="kokoro",
-                tts_model_name=None,
-                tts_quantization="bf16",
-                tts_runtime=runtime_spec,
-            )
-        },
-    )()
+    runtime = SimpleNamespace(
+        config=PipelineConfig(
+            tts_engine="kokoro",
+            tts_model_name=None,
+            tts_quantization="bf16",
+            tts_runtime=runtime_spec,
+        )
+    )
 
     kwargs = _tts_strategy_kwargs(runtime)
     strategy = _create_tts_strategy(runtime)
@@ -211,3 +323,42 @@ def test_pipeline_strategy_kwargs_keep_kokoro_default_when_spec_model_absent() -
     assert "model_name" not in kwargs
     assert strategy.config.model_name == "mlx-community/Kokoro-82M"
     assert strategy.config.runtime_spec is runtime_spec
+
+
+def test_pipeline_default_voice_threads_into_runtime_config() -> None:
+    runtime_spec = TTSRuntimeSpec.from_legacy(
+        "kokoro",
+        "bf16",
+        provider="mlx",
+    )
+    runtime = SimpleNamespace(
+        config=PipelineConfig(
+            tts_engine="kokoro",
+            tts_model_name=None,
+            tts_quantization="bf16",
+            tts_runtime=runtime_spec,
+            voice="af_bella",
+        )
+    )
+
+    kwargs = _tts_strategy_kwargs(runtime)
+    strategy = _create_tts_strategy(runtime)
+    runtime_config = KokoroRuntimeConfig.from_strategy_config(strategy.config)
+
+    assert kwargs["default_voice"] == "af_bella"
+    assert strategy.config.default_voice == "af_bella"
+    assert runtime_config.default_voice == "af_bella"
+
+
+def test_mlx_runtime_uses_default_voice_from_runtime_config() -> None:
+    runtime_spec = TTSRuntimeSpec.from_legacy("kokoro", "bf16", provider="mlx")
+    config = KokoroConfig(
+        default_voice="af_bella",
+        runtime_spec=runtime_spec,
+    )
+
+    with patch("modules.tts.engine.TTSEngine") as mock_engine:
+        MLXKokoroRuntime(KokoroRuntimeConfig.from_strategy_config(config))
+
+    engine_config = mock_engine.call_args.args[0]
+    assert engine_config.default_voice == "af_bella"

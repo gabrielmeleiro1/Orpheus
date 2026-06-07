@@ -5,9 +5,22 @@ from modules.tts.runtimes.errors import (
     TTSRuntimeMemoryError,
     TTSRuntimeUnavailable,
 )
+from modules.tts.runtimes.kokoro_base import (
+    KokoroRuntime,
+    KokoroRuntimeConfig,
+    KokoroRuntimeFactory,
+)
+from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime, register_default_kokoro_runtimes
+
+register_default_kokoro_runtimes()
 
 __all__ = [
+    "KokoroRuntime",
+    "KokoroRuntimeConfig",
+    "KokoroRuntimeFactory",
+    "MLXKokoroRuntime",
     "TTSRuntimeInitializationError",
     "TTSRuntimeMemoryError",
     "TTSRuntimeUnavailable",
+    "register_default_kokoro_runtimes",
 ]

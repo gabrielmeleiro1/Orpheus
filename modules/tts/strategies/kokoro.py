@@ -12,8 +12,7 @@ from typing import Iterator, Optional
 
 import numpy as np
 
-from modules.tts.runtime_provider import KokoroRuntime, create_kokoro_runtime_provider
-from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.runtimes import KokoroRuntime, KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.strategies.base import (
     SynthesisItem,
     SynthesisProgressCallback,
@@ -31,6 +30,7 @@ class KokoroConfig(TTSConfig):
     """Configuration specific to Kokoro TTS."""
 
     model_name: str = "mlx-community/Kokoro-82M"
+    default_voice: str = "am_adam"
     enable_streaming: bool = True
     stream_buffer_size: int = 8192
     runtime_options: Optional[dict[str, object]] = None
@@ -52,7 +52,7 @@ class KokoroTTSStrategy(TTSStrategy):
         self,
         config: Optional[KokoroConfig] = None,
         *,
-        runtime_factory=None,  # noqa: ANN001
+        runtime_factory: Optional[KokoroRuntimeFactory] = None,
     ):
         """
         Initialize Kokoro TTS strategy.
@@ -167,20 +167,11 @@ class KokoroTTSStrategy(TTSStrategy):
         if self._is_loaded and self._runtime is not None:
             return
 
-        runtime_spec = self._config.runtime_spec or TTSRuntimeSpec.from_legacy(
-            "kokoro",
-            self._config.quantization,
-            model=self._config.model_name,
-            provider="mlx",
-            options=(
-                self._config.runtime_options
-                if isinstance(self._config.runtime_options, dict)
-                else None
-            ),
-        )
-        self._config.runtime_spec = runtime_spec
-        runtime_factory = self._runtime_factory or create_kokoro_runtime_provider(runtime_spec)
-        self._runtime = runtime_factory.create_runtime(self._config)
+        runtime_config = KokoroRuntimeConfig.from_strategy_config(self._config)
+        if self._config.runtime_spec is None:
+            self._config.runtime_spec = runtime_config.runtime_spec
+        runtime_factory = self._runtime_factory or KokoroRuntimeFactory()
+        self._runtime = runtime_factory.create_runtime(runtime_config)
         self._runtime.load()
         self._is_loaded = True
 
