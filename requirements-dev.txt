@@ -1,0 +1,18 @@
+# Orpheus - Development Dependencies
+# Installs runtime dependencies plus test/lint tooling.
+
+-r requirements.txt
+
+# Testing
+pytest==7.4.0
+pytest-cov==4.1.0
+pytest-asyncio==0.21.0
+hypothesis==6.92.0
+
+# Formatting and static analysis
+black==23.12.0
+ruff==0.15.1
+vulture==2.16
+
+# Desktop sidecar packaging
+pyinstaller==6.20.0

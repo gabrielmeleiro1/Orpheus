@@ -1,0 +1,49 @@
+# OS metadata
+.DS_Store
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Virtual environments and local env files
+venv/
+.env
+.env.*
+.env.local
+!.env.example
+
+# Local tool state
+.artifacts/
+
+# Coverage and test output
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+desktop/dist/
+desktop/node_modules/
+desktop/src-tauri/binaries/
+desktop/src-tauri/target/
+*.tsbuildinfo
+*-crop-check.png
+*.log
+tests/data/*.db
+tests/data/*.db-shm
+tests/data/*.db-wal
+
+# Local runtime state
+data/*.db
+data/*.db-shm
+data/*.db-wal
+output/
+temp/
+desktop/release/
+
+# Generated media and local source corpora
+*.m4b
+*.mp3
+test_books/
