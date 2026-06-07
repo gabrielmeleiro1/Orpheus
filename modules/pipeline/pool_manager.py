@@ -30,6 +30,14 @@ class _PoolState:
     worker_init_config: Optional[dict[str, Any]] = None
     use_processes: bool = True
 
+    @property
+    def available_device_memory_gb(self) -> float:
+        return self.available_vram_gb
+
+    @available_device_memory_gb.setter
+    def available_device_memory_gb(self, value: float) -> None:
+        self.available_vram_gb = value
+
 
 class SharedWorkerPoolManager:
     """
@@ -43,13 +51,23 @@ class SharedWorkerPoolManager:
         self,
         max_workers: int = 2,
         available_vram_gb: float = 8.0,
+        available_device_memory_gb: Optional[float] = None,
         shutdown_timeout_seconds: float = 2.0,
     ) -> None:
+        if available_device_memory_gb is not None and float(available_vram_gb) != 8.0:
+            raise ValueError(
+                "Pass only one of available_vram_gb or available_device_memory_gb."
+            )
+        resolved_available_memory_gb = (
+            available_vram_gb
+            if available_device_memory_gb is None
+            else available_device_memory_gb
+        )
         self._state = _PoolState(
             executor=None,
             config_fingerprint=None,
             max_workers=max(1, int(max_workers)),
-            available_vram_gb=float(available_vram_gb),
+            available_vram_gb=float(resolved_available_memory_gb),
             worker_init_config=None,
         )
         self._lock = threading.RLock()
@@ -287,6 +305,7 @@ class SharedWorkerPoolManager:
         *,
         max_workers: Optional[int] = None,
         available_vram_gb: Optional[float] = None,
+        available_device_memory_gb: Optional[float] = None,
         worker_init_config: Optional[dict[str, Any]] = None,
     ) -> None:
         """
@@ -295,9 +314,18 @@ class SharedWorkerPoolManager:
         Restarts the pool when fingerprint or worker count changes.
         """
         requested_workers = max(1, int(max_workers or self._state.max_workers or 1))
+        if available_vram_gb is not None and available_device_memory_gb is not None:
+            raise ValueError(
+                "Pass only one of available_vram_gb or available_device_memory_gb."
+            )
+        requested_memory_gb = (
+            available_device_memory_gb
+            if available_device_memory_gb is not None
+            else available_vram_gb
+        )
         requested_vram = float(
-            available_vram_gb
-            if available_vram_gb is not None
+            requested_memory_gb
+            if requested_memory_gb is not None
             else self._state.available_vram_gb
         )
         requested_init = dict(worker_init_config or {})
@@ -307,6 +335,7 @@ class SharedWorkerPoolManager:
                 self._state.executor is not None
                 and self._state.config_fingerprint == config_fingerprint
                 and self._state.max_workers == requested_workers
+                and self._state.available_vram_gb == requested_vram
                 and (self._state.worker_init_config or {}) == requested_init
                 and self._state.use_processes == self._use_processes
             )
@@ -341,6 +370,7 @@ class SharedWorkerPoolManager:
         config_fingerprint: Any,
         max_workers: Optional[int] = None,
         available_vram_gb: Optional[float] = None,
+        available_device_memory_gb: Optional[float] = None,
         worker_init_config: Optional[dict[str, Any]] = None,
         memory_policy: Optional[Any] = None,
     ) -> list[ChapterResult]:
@@ -349,6 +379,7 @@ class SharedWorkerPoolManager:
             config_fingerprint,
             max_workers=max_workers,
             available_vram_gb=available_vram_gb,
+            available_device_memory_gb=available_device_memory_gb,
             worker_init_config=worker_init_config,
         )
 

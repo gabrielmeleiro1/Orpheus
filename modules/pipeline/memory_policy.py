@@ -29,6 +29,7 @@ class SafeMemoryPolicy:
         warmup_safety_multiplier: float = 1.5,
         warmup_floor_bytes: int = 1024**3,
         enable_warmup_calibration: bool = True,
+        unavailable_reason: str = "memory measurement unavailable",
     ) -> None:
         self._memory_sampler = memory_sampler
         self._reserve_fraction = reserve_fraction
@@ -47,6 +48,7 @@ class SafeMemoryPolicy:
         self._force_sequential = False
         self.safe_mode_reason: Optional[str] = None
         self.selected_worker_count_reason: Optional[str] = None
+        self._unavailable_reason = str(unavailable_reason or "memory measurement unavailable")
 
     @property
     def estimated_per_worker_memory_bytes(self) -> Optional[int]:
@@ -130,8 +132,8 @@ class SafeMemoryPolicy:
             return 1
         snapshot = self._memory_sampler()
         if snapshot is None:
-            self.safe_mode_reason = "memory headroom unknown"
-            self.selected_worker_count_reason = "memory measurement unavailable"
+            self.safe_mode_reason = self._unavailable_reason
+            self.selected_worker_count_reason = self._unavailable_reason
             return 1
         if snapshot.available_bytes <= self.reserve_bytes(snapshot):
             self.safe_mode_reason = "memory headroom below safe reserve"
@@ -175,7 +177,7 @@ class SafeMemoryPolicy:
 
         snapshot = self._memory_sampler()
         if snapshot is None:
-            self.safe_mode_reason = "memory headroom unknown"
+            self.safe_mode_reason = self._unavailable_reason
             return active_workers < 1
         if snapshot.available_bytes <= self.reserve_bytes(snapshot):
             self.safe_mode_reason = "memory headroom below safe reserve"
@@ -267,14 +269,6 @@ def sample_memory_snapshot(
                 process_rss_bytes = max(0, int(process.memory_info().rss))
         except Exception:
             process_rss_bytes = 0
-
-    if mlx_core is None:
-        try:
-            import mlx.core as detected_mlx_core
-
-            mlx_core = detected_mlx_core
-        except Exception:
-            mlx_core = False
 
     mlx_active_bytes, mlx_cache_bytes, mlx_peak_bytes = _mlx_memory_bytes(mlx_core)
     return MemorySnapshot(

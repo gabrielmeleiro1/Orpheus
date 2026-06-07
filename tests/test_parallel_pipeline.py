@@ -342,6 +342,7 @@ class TestVRAMBudget:
 
         # Available VRAM should be total - reserved - margin
         assert budget.available_vram_gb == 29.0
+        assert budget.available_device_memory_gb == 29.0
 
         # Max concurrent chapters calculation
         # Per chapter: ~0.5GB (TTS) + ~1.5GB (Cleaner) = ~2GB
@@ -369,16 +370,14 @@ class TestVRAMBudget:
 
         # Should be reduced based on VRAM
         assert config.max_workers <= 4
+        assert config.vram_budget.total_device_memory_gb == config.vram_budget.total_vram_gb
 
     def test_worker_init_uses_active_worker_count_for_mlx_vram_split(self, monkeypatch):
-        """MLX worker memory split should use active workers, not host CPU count."""
-        fake_mlx = types.ModuleType("mlx")
-        fake_mlx_core = types.ModuleType("mlx.core")
-        monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
-        monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
+        """Worker memory env should come from serialized provider policy output."""
         monkeypatch.delenv("MLX_METAL_MEMORY", raising=False)
         fake_engine = MagicMock()
         fake_cleaner = MagicMock()
+        expected = int((12.0 / 3) * 0.9 * 1024 * 1024 * 1024)
 
         with (
             patch("modules.tts.factory.TTSEngineFactory.create", return_value=fake_engine),
@@ -401,17 +400,18 @@ class TestVRAMBudget:
                     "cleaner_api_model": "gpt-5-nano",
                     "cleaner_api_global_concurrency": 6,
                     "cleaner_api_global_limiter": None,
+                    "device_memory_policy": {
+                        "provider": "mlx",
+                        "device": None,
+                    },
                 },
             )
 
-        expected = int((12.0 / 3) * 0.9 * 1024 * 1024 * 1024)
         assert os.environ["MLX_METAL_MEMORY"] == str(expected)
 
-    def test_worker_init_skips_mlx_memory_setup_for_non_mlx_tts_runtime(self, monkeypatch):
-        fake_mlx = types.ModuleType("mlx")
-        fake_mlx_core = types.ModuleType("mlx.core")
-        monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
-        monkeypatch.setitem(sys.modules, "mlx.core", fake_mlx_core)
+    def test_worker_init_cuda_policy_does_not_import_mlx(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "mlx", None)
+        monkeypatch.setitem(sys.modules, "mlx.core", None)
         monkeypatch.delenv("MLX_METAL_MEMORY", raising=False)
         fake_engine = MagicMock()
         fake_cleaner = MagicMock()
@@ -439,6 +439,10 @@ class TestVRAMBudget:
                     "cleaner_api_model": "gpt-5-nano",
                     "cleaner_api_global_concurrency": 6,
                     "cleaner_api_global_limiter": None,
+                    "device_memory_policy": {
+                        "provider": "cuda",
+                        "device": "cuda:0",
+                    },
                 },
             )
 
@@ -844,9 +848,18 @@ class TestParallelOrchestratorFacade:
         created: list[SharedWorkerPoolManager] = []
 
         class _OwnedManager:
-            def __init__(self, max_workers: int, available_vram_gb: float):
+            def __init__(
+                self,
+                max_workers: int,
+                available_vram_gb: float | None = None,
+                available_device_memory_gb: float | None = None,
+            ):
                 self.max_workers = max_workers
-                self.available_vram_gb = available_vram_gb
+                self.available_vram_gb = (
+                    available_device_memory_gb
+                    if available_device_memory_gb is not None
+                    else available_vram_gb
+                )
                 self.run_calls = []
                 self.shutdown_calls = 0
                 created.append(self)
@@ -1592,18 +1605,39 @@ class TestWorkerProgressTotals:
         worker_config = build_worker_pipeline_config(worker_init_config["pipeline_config"])
 
         assert worker_init_config["tts_runtime"] == runtime_spec.to_dict()
+        assert "worker_environment" not in worker_init_config
         assert "tts_runtime_cache_key" not in worker_init_config
         assert worker_init_config["pipeline_config"]["tts_runtime"] == runtime_spec.to_dict()
+        assert worker_init_config["pipeline_config"]["device_memory_policy"] == {
+            "provider": "cuda",
+            "device": "cuda:0",
+        }
         assert "tts_runtime_cache_key" not in worker_init_config["pipeline_config"]
         derived_cache_key = TTSRuntimeSpec.from_serialized(
             worker_init_config["tts_runtime"],
-            validate_birth=False,
         ).cache_key()
         assert derived_cache_key == runtime_spec.cache_key()
         assert worker_config.tts_runtime == runtime_spec
         assert worker_config.tts_engine == "kokoro"
         assert worker_config.tts_model_name == "Kokoro-82M"
         assert worker_config.tts_quantization == "bf16"
+        assert worker_config.device_memory_policy.provider == "cuda"
+
+    def test_worker_init_config_serializes_mlx_device_memory_policy(self, tmp_path):
+        config = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            total_vram_gb=16.0,
+        )
+        pipeline = ConversionPipeline(config)
+
+        worker_init_config = pipeline._build_worker_init_config()  # noqa: SLF001
+
+        assert "worker_environment" not in worker_init_config
+        assert worker_init_config["pipeline_config"]["device_memory_policy"] == {
+            "provider": "mlx",
+            "device": None,
+        }
 
     def test_worker_init_config_preserves_typed_tts_runtime_options(self, tmp_path):
         options = {
@@ -1733,7 +1767,7 @@ class TestWorkerProgressTotals:
             "bf16",
             model="Kokoro-82M",
             provider="mlx",
-            device="cuda:0",
+            device="mps",
             options={"dtype": "fp16"},
         )
         first_config = PipelineConfig(
