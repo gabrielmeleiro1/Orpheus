@@ -227,14 +227,16 @@ def test_kokoro_strategy_delegates_lifecycle_and_synthesis_to_injected_runtime()
     assert runtime.unload_flags == [False]
 
 
-def test_unsupported_cuda_runtime_provider_fails_at_spec_birth() -> None:
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        TTSRuntimeSpec.from_legacy(
-            "kokoro",
-            "bf16",
-            provider="cuda",
-            device="cuda:0",
-        )
+def test_unsupported_cuda_runtime_provider_builds_spec_until_runtime_load() -> None:
+    spec = TTSRuntimeSpec.from_legacy(
+        "kokoro",
+        "bf16",
+        provider="cuda",
+        device="cuda:0",
+    )
+
+    assert spec.provider == "cuda"
+    assert spec.device == "cuda:0"
 
 
 def test_unsupported_cuda_runtime_provider_fails_with_runtime_unavailable() -> None:
@@ -252,6 +254,26 @@ def test_unsupported_cuda_runtime_provider_fails_with_runtime_unavailable() -> N
 
     with pytest.raises(TTSRuntimeUnavailable, match="cuda"):
         strategy.load()
+
+
+@pytest.mark.parametrize("strategy_runtime_options", [None, {}])
+def test_runtime_config_inherits_options_from_runtime_spec_when_strategy_options_absent(
+    strategy_runtime_options,
+) -> None:
+    runtime_spec = TTSRuntimeSpec(
+        provider="cuda",
+        engine="kokoro",
+        model="Kokoro-82M",
+        quantization="bf16",
+        device="cuda:0",
+        runtime_options=TTSRuntimeSpec.canonicalize_runtime_options({"dtype": "fp16"}),
+    )
+
+    runtime_config = KokoroRuntimeConfig.from_strategy_config(
+        KokoroConfig(runtime_spec=runtime_spec, runtime_options=strategy_runtime_options)
+    )
+
+    assert runtime_config.runtime_options == {"dtype": "fp16"}
 
 
 def test_mlx_runtime_engine_config_identity_prefers_runtime_spec() -> None:

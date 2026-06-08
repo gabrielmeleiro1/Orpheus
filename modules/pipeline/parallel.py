@@ -78,9 +78,23 @@ class VRAMBudget:
     safety_margin_gb: float = 1.0
 
     @property
+    def total_device_memory_gb(self) -> float:
+        """Compatibility-safe device-memory name for the old VRAM budget."""
+        return self.total_vram_gb
+
+    @total_device_memory_gb.setter
+    def total_device_memory_gb(self, value: float) -> None:
+        self.total_vram_gb = value
+
+    @property
     def available_vram_gb(self) -> float:
         """Calculate available VRAM for processing."""
         return self.total_vram_gb - self.reserved_vram_gb - self.safety_margin_gb
+
+    @property
+    def available_device_memory_gb(self) -> float:
+        """Calculate available device memory for processing."""
+        return self.available_vram_gb
 
     @property
     def max_concurrent_chapters(self) -> int:
@@ -109,7 +123,7 @@ class ParallelConfig:
         if self.max_workers > max_vram_workers:
             logger.warning(
                 f"Reducing max_workers from {self.max_workers} to {max_vram_workers} "
-                f"due to VRAM constraints"
+                f"due to device memory constraints"
             )
             self.max_workers = max_vram_workers
 
@@ -152,21 +166,37 @@ class ParallelPipelineOrchestrator:
         if self._pool_manager is None:
             self._pool_manager = SharedWorkerPoolManager(
                 max_workers=self.config.max_workers,
-                available_vram_gb=self.config.vram_budget.available_vram_gb,
+                available_vram_gb=self.config.vram_budget.available_device_memory_gb,
             )
         setattr(self._pool_manager, "_use_processes", self.config.use_processes)
         return self._pool_manager
+
+    def _effective_cancel_requested(
+        self,
+        cancel_requested: Callable[[], bool] | None,
+    ) -> Callable[[], bool]:
+        def _check() -> bool:
+            if self._cancelled:
+                return True
+            if cancel_requested is None:
+                return False
+            return bool(cancel_requested())
+
+        return _check
 
     def process_chapters_parallel(
         self,
         chapters: list[Any],
         process_func: Callable[[Any, int, Any], Any],
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> list[ChapterResult]:
         """
         Process chapters in parallel with VRAM-aware scheduling.
         """
-        if self._cancelled:
+        if self._cancelled or (
+            cancel_requested is not None and bool(cancel_requested())
+        ):
             return []
 
         pool_manager = self._get_pool_manager()
@@ -180,9 +210,10 @@ class ParallelPipelineOrchestrator:
                 progress_callback=progress_callback,
                 config_fingerprint=self._config_fingerprint,
                 max_workers=self.config.max_workers,
-                available_vram_gb=self.config.vram_budget.available_vram_gb,
+                available_device_memory_gb=self.config.vram_budget.available_device_memory_gb,
                 worker_init_config=self._worker_init_config,
                 memory_policy=self._memory_policy,
+                cancel_requested=self._effective_cancel_requested(cancel_requested),
             )
         finally:
             if self._owns_pool_manager and self._pool_manager is not None:

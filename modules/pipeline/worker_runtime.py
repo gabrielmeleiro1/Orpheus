@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 from typing import Any, Optional
 
 from modules.pipeline.worker_config import build_worker_pipeline_config
+from modules.pipeline.worker_errors import (
+    WorkerStartupStatus,
+    classify_worker_startup_error,
+    is_warmup_failure_non_fatal,
+    startup_status_from_failure,
+)
 
 logger = logging.getLogger(__name__)
 
 _WORKER_TTS_ENGINE: Any = None
 _WORKER_TEXT_CLEANER: Any = None
 _WORKER_PIPELINE_CONFIG: Any = None
-_WORKER_INIT_ERROR: Optional[str] = None
+_WORKER_INIT_STATUS: Optional[WorkerStartupStatus] = None
+_WORKER_PROVIDER: str = "unknown"
+_WORKER_DEVICE: Optional[str] = None
 
 
 def _runtime_spec_from_worker_config(worker_init_config: dict[str, Any]):
@@ -22,28 +31,46 @@ def _runtime_spec_from_worker_config(worker_init_config: dict[str, Any]):
     serialized_runtime = worker_init_config.get("tts_runtime")
     if serialized_runtime is None:
         raise ValueError("worker_init_config must include serialized tts_runtime")
-    return TTSRuntimeSpec.from_serialized(serialized_runtime, validate_birth=False)
+    return TTSRuntimeSpec.from_serialized(serialized_runtime)
 
 
-def _configure_mlx_worker_memory(
+def _worker_environment_from_config(
+    worker_init_config: dict[str, Any],
     *,
     available_vram_gb: float,
     active_workers: int,
-) -> None:
-    try:
-        import mlx.core as mx
+) -> dict[str, str]:
+    from modules.tts.device_memory import device_memory_policy_from_serialized
 
-        _ = mx
-        safe_worker_count = max(1, int(active_workers))
-        worker_vram = available_vram_gb / safe_worker_count
-
-        import os
-
-        os.environ["MLX_METAL_MEMORY"] = str(
-            int(worker_vram * 0.9 * 1024 * 1024 * 1024)
+    worker_environment: dict[str, str] = {}
+    device_policy = device_memory_policy_from_serialized(
+        worker_init_config.get("device_memory_policy")
+    )
+    if device_policy is not None:
+        worker_environment.update(
+            device_policy.configure_worker_environment(
+                available_bytes=max(0, int(float(available_vram_gb) * 1024**3)),
+                active_workers=max(1, int(active_workers or 1)),
+            )
         )
-    except ImportError:
-        pass
+    return worker_environment
+
+
+def _record_worker_init_failure(
+    exc: BaseException,
+    *,
+    provider: str,
+    device: Optional[str],
+    phase: str,
+) -> None:
+    global _WORKER_INIT_STATUS
+
+    _WORKER_INIT_STATUS = classify_worker_startup_error(
+        exc,
+        provider=provider,
+        device=device,
+        phase=phase,
+    )
 
 
 def _init_worker(
@@ -60,7 +87,9 @@ def _init_worker(
         _WORKER_TTS_ENGINE, \
         _WORKER_TEXT_CLEANER, \
         _WORKER_PIPELINE_CONFIG, \
-        _WORKER_INIT_ERROR
+        _WORKER_INIT_STATUS, \
+        _WORKER_PROVIDER, \
+        _WORKER_DEVICE
 
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -72,20 +101,26 @@ def _init_worker(
     _WORKER_TTS_ENGINE = None
     _WORKER_TEXT_CLEANER = None
     _WORKER_PIPELINE_CONFIG = None
-    _WORKER_INIT_ERROR = None
+    _WORKER_INIT_STATUS = None
+    _WORKER_PROVIDER = "unknown"
+    _WORKER_DEVICE = None
 
     if worker_init_config:
+        runtime_spec = _runtime_spec_from_worker_config(worker_init_config)
+        _WORKER_PROVIDER = runtime_spec.provider
+        _WORKER_DEVICE = runtime_spec.device
         try:
             from modules.tts.cleaner import CleanerConfig, TextCleaner
             from modules.tts.factory import TTSEngineFactory
 
-            tts_warmup_error: Optional[str] = None
-            runtime_spec = _runtime_spec_from_worker_config(worker_init_config)
-            if runtime_spec.provider == "mlx":
-                _configure_mlx_worker_memory(
-                    available_vram_gb=available_vram_gb,
-                    active_workers=active_workers,
-                )
+            tts_warmup_failed = False
+            worker_environment = _worker_environment_from_config(
+                worker_init_config,
+                available_vram_gb=available_vram_gb,
+                active_workers=active_workers,
+            )
+            for key, value in worker_environment.items():
+                os.environ[str(key)] = str(value)
             tts_engine_name = runtime_spec.engine
             tts_kwargs = runtime_spec.factory_kwargs()
             tts_kwargs.update(
@@ -94,48 +129,88 @@ def _init_worker(
                 }
             )
 
-            _WORKER_TTS_ENGINE = TTSEngineFactory.create(
-                tts_engine_name,
-                **tts_kwargs,
-            )
-            _WORKER_TTS_ENGINE.load()
             try:
-                _WORKER_TTS_ENGINE.warmup(voice=worker_init_config["voice"])
+                _WORKER_TTS_ENGINE = TTSEngineFactory.create(
+                    tts_engine_name,
+                    **tts_kwargs,
+                )
+                _WORKER_TTS_ENGINE.load()
             except Exception as exc:
-                tts_warmup_error = str(exc)
-                _WORKER_INIT_ERROR = tts_warmup_error
-                logger.warning("Worker TTS warm-up failed: %s", exc)
-
-            _WORKER_TEXT_CLEANER = TextCleaner(
-                config=CleanerConfig(
-                    model_name=worker_init_config["cleaner_model_name"],
-                    backend=worker_init_config["cleaner_backend"],
-                    api_base_url=worker_init_config["cleaner_api_base_url"],
-                    api_key_env=worker_init_config["cleaner_api_key_env"],
-                    api_key=worker_init_config.get("cleaner_api_key"),
-                    api_model=worker_init_config["cleaner_api_model"],
-                    api_batch_concurrency=worker_init_config.get(
-                        "cleaner_api_global_concurrency", 4
-                    ),
-                    api_global_limiter=worker_init_config.get(
-                        "cleaner_api_global_limiter"
-                    ),
-                    skip_llm_when_not_needed=worker_init_config.get(
-                        "cleaner_skip_llm_when_not_needed", True
-                    ),
-                    cache_model=True,
+                _WORKER_TTS_ENGINE = None
+                _record_worker_init_failure(
+                    exc,
+                    provider=runtime_spec.provider,
+                    device=runtime_spec.device,
+                    phase="tts_load",
                 )
-            )
-            _WORKER_TEXT_CLEANER.load()
-            if tts_warmup_error is None:
-                logger.info("Worker warmed TTS model and loaded cleaner model")
+                logger.warning("Worker TTS model load failed: %s", exc)
             else:
-                logger.info(
-                    "Worker loaded TTS and cleaner models without TTS probe warm-up"
-                )
+                try:
+                    _WORKER_TTS_ENGINE.warmup(voice=worker_init_config["voice"])
+                except Exception as exc:
+                    if is_warmup_failure_non_fatal(
+                        exc,
+                        provider=runtime_spec.provider,
+                    ):
+                        tts_warmup_failed = True
+                        logger.warning("Worker TTS warm-up failed: %s", exc)
+                    else:
+                        _record_worker_init_failure(
+                            exc,
+                            provider=runtime_spec.provider,
+                            device=runtime_spec.device,
+                            phase="tts_warmup",
+                        )
+                        logger.warning("Worker TTS warm-up failed fatally: %s", exc)
+
+                if _WORKER_INIT_STATUS is None:
+                    try:
+                        _WORKER_TEXT_CLEANER = TextCleaner(
+                            config=CleanerConfig(
+                                model_name=worker_init_config["cleaner_model_name"],
+                                backend=worker_init_config["cleaner_backend"],
+                                api_base_url=worker_init_config["cleaner_api_base_url"],
+                                api_key_env=worker_init_config["cleaner_api_key_env"],
+                                api_key=worker_init_config.get("cleaner_api_key"),
+                                api_model=worker_init_config["cleaner_api_model"],
+                                api_batch_concurrency=worker_init_config.get(
+                                    "cleaner_api_global_concurrency", 4
+                                ),
+                                api_global_limiter=worker_init_config.get(
+                                    "cleaner_api_global_limiter"
+                                ),
+                                skip_llm_when_not_needed=worker_init_config.get(
+                                    "cleaner_skip_llm_when_not_needed", True
+                                ),
+                                cache_model=True,
+                            )
+                        )
+                        _WORKER_TEXT_CLEANER.load()
+                    except Exception as exc:
+                        _record_worker_init_failure(
+                            exc,
+                            provider=runtime_spec.provider,
+                            device=runtime_spec.device,
+                            phase="cleaner_load",
+                        )
+                        logger.warning("Worker cleaner model load failed: %s", exc)
+
+                if _WORKER_INIT_STATUS is None:
+                    if not tts_warmup_failed:
+                        logger.info("Worker warmed TTS model and loaded cleaner model")
+                    else:
+                        logger.info(
+                            "Worker loaded TTS and cleaner models without TTS probe warm-up"
+                        )
         except Exception as exc:
-            _WORKER_INIT_ERROR = str(exc)
-            logger.warning(f"Worker model initialization failed: {exc}")
+            if _WORKER_INIT_STATUS is None:
+                _record_worker_init_failure(
+                    exc,
+                    provider=_WORKER_PROVIDER,
+                    device=_WORKER_DEVICE,
+                    phase="worker_init",
+                )
+                logger.warning("Worker model initialization failed: %s", exc)
 
     # Store full pipeline config for reuse across chapter submissions.
     if worker_init_config and "pipeline_config" in worker_init_config:
@@ -144,7 +219,7 @@ def _init_worker(
         )
 
     logger.debug(
-        "Worker initialized with VRAM share: %.2fGB",
+        "Worker initialized with device memory share: %.2fGB",
         available_vram_gb / max(1, int(active_workers)),
     )
 
@@ -159,6 +234,21 @@ def get_worker_cached_config() -> Any:
     return _WORKER_PIPELINE_CONFIG
 
 
+def get_worker_startup_status() -> WorkerStartupStatus:
+    """Return the worker startup status for startup probes."""
+    if _WORKER_INIT_STATUS is None:
+        return WorkerStartupStatus(
+            success=True,
+            provider=_WORKER_PROVIDER,
+            device=_WORKER_DEVICE,
+            error_type=None,
+            message=None,
+        )
+    return startup_status_from_failure(_WORKER_INIT_STATUS)
+
+
 def get_worker_init_error() -> Optional[str]:
-    """Return worker initialization error if worker load or warm-up failed."""
-    return _WORKER_INIT_ERROR
+    """Return worker initialization error message if worker load or warm-up failed."""
+    if _WORKER_INIT_STATUS is None:
+        return None
+    return _WORKER_INIT_STATUS.message

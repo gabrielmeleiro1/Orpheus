@@ -89,7 +89,7 @@ class _RunStateField:
         self.name = name
         self.coerce = coerce
 
-    def __get__(self, instance: Any, owner: Any) -> Any:
+    def __get__(self, instance: Any, _owner: Any) -> Any:
         if instance is None:
             return self
         return getattr(instance._run_state, self.name)

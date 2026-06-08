@@ -320,16 +320,16 @@ def test_validate_tts_runtime_legacy_params_accept_provider_device_and_options(
     factory = _RuntimeSpecValidationFactory(state)
     service = VoiceService(_build_config(tmp_path), tts_factory=factory)
 
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        service.validate_tts_runtime(
-            "kokoro",
-            "bf16",
-            tts_provider="cuda",
-            tts_device="cuda:0",
-            tts_options={"dtype": "fp16", "model_name": "Kokoro-82M"},
-        )
+    service.validate_tts_runtime(
+        "kokoro",
+        "bf16",
+        tts_provider="cuda",
+        tts_device="cuda:0",
+        tts_options={"dtype": "fp16", "model_name": "Kokoro-82M"},
+    )
 
-    assert factory.runtime_specs == []
+    assert len(factory.runtime_specs) == 1
+    assert factory.runtime_specs[0].provider == "cuda"
 
 
 def test_create_tts_strategy_reraises_factory_type_error(
@@ -544,16 +544,24 @@ def test_ensure_preview_engine_legacy_params_accept_provider_device_and_options(
     factory = _PreviewRuntimeSpecFactory(state)
     service = VoiceService(_build_config(tmp_path), tts_factory=factory)
 
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        service.ensure_preview_engine(
-            "kokoro",
-            "bf16",
-            tts_provider="cuda",
-            tts_device="cuda:0",
-            tts_options={"dtype": "fp16", "model_name": "Kokoro-82M"},
-        )
+    service.ensure_preview_engine(
+        "kokoro",
+        "bf16",
+        tts_provider="cuda",
+        tts_device="cuda:0",
+        tts_options={"dtype": "fp16", "model_name": "Kokoro-82M"},
+    )
 
-    assert factory.runtime_keys == []
+    assert factory.runtime_keys == [
+        TTSRuntimeSpec(
+            provider="cuda",
+            engine="kokoro",
+            model="Kokoro-82M",
+            quantization="bf16",
+            device="cuda:0",
+            runtime_options=TTSRuntimeSpec.canonicalize_runtime_options({"dtype": "fp16"}),
+        ).cache_key()
+    ]
 
 
 def test_voice_preview_closes_temp_file_handle_before_writing(monkeypatch, tmp_path: Path) -> None:

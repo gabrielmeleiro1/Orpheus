@@ -21,7 +21,7 @@ def test_tts_engine_session_cache_key_uses_runtime_spec_identity(tmp_path) -> No
         "bf16",
         model="Kokoro-82M",
         provider="mlx",
-        device="cuda:0",
+        device="mps",
         options={"dtype": "fp16"},
     )
     first_config = PipelineConfig(

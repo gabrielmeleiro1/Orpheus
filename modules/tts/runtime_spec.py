@@ -86,14 +86,13 @@ class TTSRuntimeSpec:
             model=_normalize_text(model),
             quantization=normalized_quantization,
             device=_normalize_text(device),
-            runtime_options=cls.canonicalize_runtime_options(options),
+            runtime_options=cls.canonicalize_runtime_options(
+                cls.coerce_legacy_runtime_options(options)
+            ),
         )
-        from modules.tts.runtime_options import (
-            validate_quantization,
-            validate_runtime_spec_provider_compatibility,
-        )
+        from modules.tts.runtime_options import validate_device, validate_quantization
 
-        validate_runtime_spec_provider_compatibility(spec)
+        validate_device(spec.provider, spec.device)
         validate_quantization(spec.provider, spec.quantization)
         return spec
 
@@ -263,19 +262,21 @@ class TTSRuntimeSpec:
     def from_dict(
         cls,
         payload: Mapping[str, object],
-        *,
-        validate_birth: bool = True,
     ) -> "TTSRuntimeSpec":
-        """Rehydrate a runtime spec from a serialized payload.
-
-        ``validate_birth=False`` is for internal rehydration of specs that were
-        already validated when the parent ``PipelineConfig`` was constructed.
-        """
+        """Rehydrate a runtime spec from a serialized payload."""
         options = payload.get("options")
         option_mapping = options if isinstance(options, Mapping) else None
         runtime_options = payload.get("runtime_options")
         if isinstance(runtime_options, Mapping):
             runtime_option_mapping = runtime_options
+            if option_mapping is not None:
+                legacy_options = cls.canonicalize_options(option_mapping)
+                current_options = cls.canonicalize_options(runtime_option_mapping)
+                if legacy_options != current_options:
+                    raise ValueError(
+                        "Serialized TTS runtime options disagree across "
+                        "options and runtime_options."
+                    )
         elif option_mapping is not None:
             runtime_option_mapping = cls.coerce_legacy_runtime_options(option_mapping)
         else:
@@ -292,32 +293,22 @@ class TTSRuntimeSpec:
             device=_normalize_text(payload.get("device")),
             runtime_options=cls.canonicalize_runtime_options(runtime_option_mapping),
         )
-        from modules.tts.runtime_options import (
-            validate_quantization,
-            validate_runtime_spec_provider_compatibility,
-        )
+        from modules.tts.runtime_options import validate_device, validate_quantization
 
-        if validate_birth:
-            validate_runtime_spec_provider_compatibility(spec)
-        validate_quantization(spec.provider, spec.quantization, engine=spec.engine)
+        validate_device(spec.provider, spec.device)
+        validate_quantization(spec.provider, spec.quantization)
         return spec
 
     @classmethod
     def from_serialized(
         cls,
         value: object,
-        *,
-        validate_birth: bool = True,
     ) -> "TTSRuntimeSpec":
-        """Accept either an existing spec or a serialized mapping.
-
-        ``validate_birth=False`` is for internal rehydration of specs that were
-        already validated when the parent ``PipelineConfig`` was constructed.
-        """
+        """Accept either an existing spec or a serialized mapping."""
         if isinstance(value, cls):
             return value
         if isinstance(value, Mapping):
-            return cls.from_dict(value, validate_birth=validate_birth)
+            return cls.from_dict(value)
         raise TypeError(f"Cannot build TTSRuntimeSpec from {type(value).__name__}")
 
     def factory_kwargs(self) -> dict[str, object]:

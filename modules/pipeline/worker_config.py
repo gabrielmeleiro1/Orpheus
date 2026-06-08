@@ -20,9 +20,15 @@ def _serialize_worker_model_fields(config: PipelineConfig) -> dict[str, Any]:
         if config.tts_runtime_options is not None
         else None
     )
+    serialized_device_memory_policy = (
+        config.device_memory_policy.to_dict()
+        if config.device_memory_policy is not None
+        else None
+    )
     return {
         "tts_runtime": serialized_tts_runtime,
         "tts_runtime_options": serialized_tts_runtime_options,
+        "device_memory_policy": serialized_device_memory_policy,
         "tts_engine": config.tts_engine,
         "tts_model_name": config.tts_model_name,
         "tts_quantization": config.tts_quantization,
@@ -84,7 +90,7 @@ def build_worker_pipeline_config(
 
     serialized_tts_runtime = serialized_config.get("tts_runtime")
     tts_runtime = (
-        TTSRuntimeSpec.from_serialized(serialized_tts_runtime, validate_birth=False)
+        TTSRuntimeSpec.from_serialized(serialized_tts_runtime)
         if serialized_tts_runtime is not None
         else None
     )
@@ -94,12 +100,18 @@ def build_worker_pipeline_config(
         if serialized_tts_runtime_options is not None
         else None
     )
+    from modules.tts.device_memory import device_memory_policy_from_serialized
+
+    device_memory_policy = device_memory_policy_from_serialized(
+        serialized_config.get("device_memory_policy")
+    )
     return PipelineConfig(
         tts_engine=serialized_config["tts_engine"],
         tts_model_name=serialized_config["tts_model_name"],
         tts_quantization=serialized_config["tts_quantization"],
         tts_runtime=tts_runtime,
         tts_runtime_options=tts_runtime_options,
+        device_memory_policy=device_memory_policy,
         cleaner_model_name=serialized_config["cleaner_model_name"],
         cleaner_backend=serialized_config["cleaner_backend"],
         cleaner_api_base_url=serialized_config["cleaner_api_base_url"],

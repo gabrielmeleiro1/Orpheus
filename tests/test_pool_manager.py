@@ -5,14 +5,33 @@ from __future__ import annotations
 from concurrent.futures import Future
 from dataclasses import dataclass
 import os
+from pathlib import Path
+import sys
 import threading
 import time
 from unittest.mock import patch
 
 import pytest
 
+TESTS_DIR = Path(__file__).parent
+sys.path.insert(0, str(TESTS_DIR))
+
 from modules.pipeline.models import ChapterResult
-from modules.pipeline.pool_manager import SharedWorkerPoolManager
+from modules.pipeline.pool_manager import (
+    SharedWorkerPoolManager,
+    _health_ping,
+    _worker_startup_probe,
+)
+from modules.pipeline.worker_errors import WorkerStartupError
+from worker_pool_test_helpers import (
+    FakeExecutor as _FakeExecutor,
+    NeverCompletingChapterExecutor,
+    assert_pending_futures_cancelled,
+    make_failing_probe_executor,
+    make_startup_status,
+    reset_executor_class_state,
+    wait_for_executor_chapter_submits,
+)
 
 
 @dataclass
@@ -22,33 +41,34 @@ class _Chapter:
     content: str = "content"
 
 
-class _FakeExecutor:
-    created = 0
+def test_shared_pool_rejects_conflicting_memory_aliases() -> None:
+    with pytest.raises(ValueError, match="Pass only one"):
+        SharedWorkerPoolManager(
+            max_workers=2,
+            available_vram_gb=4.0,
+            available_device_memory_gb=10.0,
+        )
 
-    def __init__(self, *args, **kwargs):  # noqa: ANN003
-        _ = args, kwargs
-        _FakeExecutor.created += 1
-
-    def submit(self, fn, *args, **kwargs):  # noqa: ANN003
-        future: Future = Future()
-        try:
-            future.set_result(fn(*args, **kwargs))
-        except Exception as exc:  # pragma: no cover - defensive
-            future.set_exception(exc)
-        return future
-
-    def shutdown(self, wait: bool = True, _cancel_futures: bool = False):  # noqa: ARG002
-        return None
+    manager = SharedWorkerPoolManager(max_workers=2)
+    with pytest.raises(ValueError, match="Pass only one"):
+        manager.ensure_started(
+            "same",
+            available_vram_gb=4.0,
+            available_device_memory_gb=10.0,
+        )
 
 
 class _SelectiveSubmitFailureExecutor(_FakeExecutor):
     def __init__(self, *args, **kwargs):  # noqa: ANN003
         super().__init__(*args, **kwargs)
-        self._submit_calls = 0
+        self._chapter_submit_calls = 0
 
     def submit(self, fn, *args, **kwargs):  # noqa: ANN003
-        self._submit_calls += 1
-        if self._submit_calls == 2:
+        if fn in (_worker_startup_probe, _health_ping):
+            return super().submit(fn, *args, **kwargs)
+
+        self._chapter_submit_calls += 1
+        if self._chapter_submit_calls == 2:
             raise RuntimeError("submit boom")
         return super().submit(fn, *args, **kwargs)
 
@@ -56,12 +76,15 @@ class _SelectiveSubmitFailureExecutor(_FakeExecutor):
 class _SelectiveResultFailureExecutor(_FakeExecutor):
     def __init__(self, *args, **kwargs):  # noqa: ANN003
         super().__init__(*args, **kwargs)
-        self._submit_calls = 0
+        self._chapter_submit_calls = 0
 
     def submit(self, fn, *args, **kwargs):  # noqa: ANN003
-        self._submit_calls += 1
+        if fn in (_worker_startup_probe, _health_ping):
+            return super().submit(fn, *args, **kwargs)
+
+        self._chapter_submit_calls += 1
         future: Future = Future()
-        if self._submit_calls == 2:
+        if self._chapter_submit_calls == 2:
             future.set_exception(RuntimeError("result boom"))
             return future
         return super().submit(fn, *args, **kwargs)
@@ -122,12 +145,17 @@ class _AsyncTrackingExecutor(_FakeExecutor):
         self.in_flight = 0
         self.max_in_flight = 0
         self.submit_calls = 0
+        self.chapter_submit_calls = 0
         type(self).instances.append(self)
 
     def submit(self, fn, *args, **kwargs):  # noqa: ANN003
+        if fn in (_worker_startup_probe, _health_ping):
+            return super().submit(fn, *args, **kwargs)
+
         future: Future = Future()
         with self._lock:
             self.submit_calls += 1
+            self.chapter_submit_calls += 1
             self.in_flight += 1
             self.max_in_flight = max(self.max_in_flight, self.in_flight)
 
@@ -237,6 +265,34 @@ def test_shared_pool_restarts_when_fingerprint_changes() -> None:
         manager.shutdown()
 
     assert _FakeExecutor.created == 2
+    assert snapshot["restarts"] >= 1
+
+
+def test_shared_pool_restarts_when_device_memory_budget_changes() -> None:
+    _FakeExecutor.created = 0
+    chapters = [_Chapter(number=1, title="One")]
+
+    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _FakeExecutor):
+        manager = SharedWorkerPoolManager(max_workers=1)
+        manager.run_parallel(
+            chapters=chapters,
+            process_func=_process,
+            config_fingerprint="same",
+            available_device_memory_gb=12.0,
+            worker_init_config={"voice": "af_bella"},
+        )
+        manager.run_parallel(
+            chapters=chapters,
+            process_func=_process,
+            config_fingerprint="same",
+            available_device_memory_gb=6.0,
+            worker_init_config={"voice": "af_bella"},
+        )
+        snapshot = manager.snapshot()
+        manager.shutdown()
+
+    assert _FakeExecutor.created == 2
+    assert snapshot["reuse_hits"] == 0
     assert snapshot["restarts"] >= 1
 
 
@@ -376,14 +432,14 @@ def test_shared_pool_bounds_in_flight_futures_to_worker_count() -> None:
     while time.perf_counter() < deadline:
         if _AsyncTrackingExecutor.instances:
             executor = _AsyncTrackingExecutor.instances[0]
-            if executor.submit_calls == 2:
+            if executor.chapter_submit_calls == 2:
                 break
         time.sleep(0.01)
     else:
         raise AssertionError("manager did not submit the initial bounded work")
 
     executor = _AsyncTrackingExecutor.instances[0]
-    assert executor.submit_calls == 2
+    assert executor.chapter_submit_calls == 2
     assert executor.max_in_flight <= 2
 
     executor.release.set()
@@ -391,7 +447,7 @@ def test_shared_pool_bounds_in_flight_futures_to_worker_count() -> None:
 
     assert not thread.is_alive()
     assert len(results) == len(chapters)
-    assert executor.submit_calls == len(chapters)
+    assert executor.chapter_submit_calls == len(chapters)
     assert executor.max_in_flight <= 2
 
 
@@ -447,7 +503,7 @@ def test_shared_pool_memory_backpressure_waits_before_submitting_more() -> None:
     while time.perf_counter() < deadline:
         if _InspectableAsyncExecutor.instances:
             executor = _InspectableAsyncExecutor.instances[0]
-            if executor.submit_calls == 1:
+            if executor.chapter_submit_calls == 1:
                 break
         time.sleep(0.01)
     else:
@@ -455,7 +511,7 @@ def test_shared_pool_memory_backpressure_waits_before_submitting_more() -> None:
 
     executor = _InspectableAsyncExecutor.instances[0]
     time.sleep(0.05)
-    assert executor.submit_calls == 1
+    assert executor.chapter_submit_calls == 1
     assert executor.max_in_flight == 1
 
     executor.release.set()
@@ -463,7 +519,7 @@ def test_shared_pool_memory_backpressure_waits_before_submitting_more() -> None:
 
     assert not thread.is_alive()
     assert len(results) == len(chapters)
-    assert executor.submit_calls == len(chapters)
+    assert executor.chapter_submit_calls == len(chapters)
     assert executor.max_in_flight == 1
 
 
@@ -494,17 +550,71 @@ def test_shared_pool_shutdown_wait_is_bounded() -> None:
             "blocking-shutdown",
             worker_init_config={"voice": "af_bella"},
         )
+        shutdown_timeout = 0.05
         started_at = time.perf_counter()
         try:
-            finished = manager.shutdown(timeout_seconds=0.05)
+            finished = manager.shutdown(timeout_seconds=shutdown_timeout)
         finally:
             elapsed = time.perf_counter() - started_at
             _BlockingShutdownExecutor.release_shutdown.set()
 
     assert finished is False
-    assert elapsed < 0.5
+    # Bounded shutdown waits for the primary timeout plus the secondary join in
+    # pool_manager._shutdown_executor_bounded; allow CI scheduling slack.
+    assert elapsed < shutdown_timeout + 0.25 + 0.35
     assert _BlockingShutdownExecutor.shutdown_entered.is_set()
     assert manager.snapshot()["running"] is False
+
+
+def test_shared_pool_cancellation_interrupts_blocking_wait_loop() -> None:
+    reset_executor_class_state(NeverCompletingChapterExecutor)
+    chapters = [
+        _Chapter(number=1, title="One"),
+        _Chapter(number=2, title="Two"),
+        _Chapter(number=3, title="Three"),
+    ]
+    cancel_flag = threading.Event()
+    progress_messages: list[str] = []
+    results: list[ChapterResult] = []
+
+    def _cancel_requested() -> bool:
+        return cancel_flag.is_set()
+
+    def _progress(_current: int, _total: int, message: str, *_args) -> None:
+        progress_messages.append(message)
+
+    def _run_manager() -> None:
+        with patch(
+            "modules.pipeline.pool_manager.ProcessPoolExecutor",
+            NeverCompletingChapterExecutor,
+        ):
+            manager = SharedWorkerPoolManager(max_workers=2)
+            try:
+                results.extend(
+                    manager.run_parallel(
+                        chapters=chapters,
+                        process_func=_process,
+                        progress_callback=_progress,
+                        config_fingerprint="cancel-wait",
+                        worker_init_config={"voice": "af_bella"},
+                        cancel_requested=_cancel_requested,
+                    )
+                )
+            finally:
+                manager.shutdown()
+
+    thread = threading.Thread(target=_run_manager)
+    thread.start()
+
+    executor = wait_for_executor_chapter_submits(NeverCompletingChapterExecutor)
+
+    cancel_flag.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert results == []
+    assert any("Parallel processing cancelled" in message for message in progress_messages)
+    assert_pending_futures_cancelled(executor)
 
 
 def test_shared_pool_zero_timeout_terminates_workers_even_if_shutdown_clears_processes() -> None:
@@ -524,3 +634,90 @@ def test_shared_pool_zero_timeout_terminates_workers_even_if_shutdown_clears_pro
     assert worker.terminated is True
     assert worker.join_calls >= 1
     assert manager.snapshot()["running"] is False
+
+
+def test_shared_pool_snapshot_records_startup_failure() -> None:
+    chapters = [_Chapter(number=1, title="One")]
+    failure_status = make_startup_status(
+        error_type="WorkerRuntimeUnavailableError",
+        message="cuda driver unavailable",
+        provider="cuda",
+        device="cuda:0",
+    )
+    failing_executor = make_failing_probe_executor(failure_status)
+
+    with patch(
+        "modules.pipeline.pool_manager.ProcessPoolExecutor",
+        failing_executor,
+    ):
+        manager = SharedWorkerPoolManager(max_workers=2)
+        with pytest.raises(WorkerStartupError):
+            manager.run_parallel(
+                chapters=chapters,
+                process_func=_process,
+                config_fingerprint="startup-observability",
+                worker_init_config={"voice": "af_bella"},
+            )
+        snapshot = manager.snapshot()
+
+    assert snapshot["startup_failures"] == 1
+    assert snapshot["last_startup_error"] == (
+        "cuda/cuda:0 [WorkerRuntimeUnavailableError]: cuda driver unavailable"
+    )
+    assert snapshot["running"] is False
+    assert snapshot["cancelled_jobs"] == 0
+
+
+def test_shared_pool_snapshot_exposes_observability_counters() -> None:
+    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _FakeExecutor):
+        manager = SharedWorkerPoolManager(max_workers=2)
+        snapshot = manager.snapshot()
+        manager.shutdown()
+
+    assert snapshot["startup_failures"] == 0
+    assert snapshot["last_startup_error"] is None
+    assert snapshot["cancelled_jobs"] == 0
+    assert snapshot["reuse_hits"] == 0
+    assert snapshot["running"] is False
+
+
+def test_shared_pool_snapshot_records_cancellation() -> None:
+    reset_executor_class_state(NeverCompletingChapterExecutor)
+    chapters = [_Chapter(number=1, title="One")]
+    cancel_flag = threading.Event()
+
+    def _cancel_requested() -> bool:
+        return cancel_flag.is_set()
+
+    def _run_manager() -> None:
+        with patch(
+            "modules.pipeline.pool_manager.ProcessPoolExecutor",
+            NeverCompletingChapterExecutor,
+        ):
+            manager = SharedWorkerPoolManager(max_workers=1)
+            try:
+                manager.run_parallel(
+                    chapters=chapters,
+                    process_func=_process,
+                    config_fingerprint="cancel-observability",
+                    worker_init_config={"voice": "af_bella"},
+                    cancel_requested=_cancel_requested,
+                )
+            finally:
+                snapshot_holder.append(manager.snapshot())
+                manager.shutdown()
+
+    snapshot_holder: list[dict] = []
+    thread = threading.Thread(target=_run_manager)
+    thread.start()
+
+    executor = wait_for_executor_chapter_submits(NeverCompletingChapterExecutor)
+
+    cancel_flag.set()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    snapshot = snapshot_holder[0]
+    assert snapshot["cancelled_jobs"] == 1
+    assert snapshot["startup_failures"] == 0
+    assert_pending_futures_cancelled(executor)
