@@ -12,6 +12,7 @@ from typing import Any, Optional
 
 from .chapter_processor import ChapterProcessor
 from .models import ChapterResult
+from .result_validation import format_failure_notes
 from .runtime import PipelineRuntimeProtocol
 
 PARALLEL_AVAILABLE = importlib.util.find_spec(f"{__package__}.parallel") is not None
@@ -217,10 +218,7 @@ class ParallelChapterRunner:
         errors = [str(result.error) for result in results if result.error]
         if not errors:
             return "no worker error details"
-        summary = "; ".join(errors[:3])
-        if len(errors) > 3:
-            summary += f"; ... (+{len(errors) - 3} more)"
-        return summary
+        return format_failure_notes(errors)
 
     def _parallel_fallback(
         self,

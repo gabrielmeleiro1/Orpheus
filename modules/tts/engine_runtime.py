@@ -8,6 +8,7 @@ from typing import Optional
 
 from . import mlx_compat as mlx_compat_backend
 from . import model_cache as model_cache_backend
+from .quantization import normalize_quantization
 
 logger = logging.getLogger(__name__)
 
@@ -20,17 +21,6 @@ def _get_cached_model(model_path: str):
 def _set_cached_model(model_path: str, model: object) -> None:
     """Cache a model for reuse."""
     model_cache_backend.set_cached_model(model_path, model)
-
-
-def normalize_quantization(value: Optional[str]) -> str:
-    """Normalize UI/API quantization aliases to engine-supported values."""
-    normalized = str(value or "").strip().lower()
-    aliases = {
-        "q8": "8bit",
-        "q4": "4bit",
-        "full": "bf16",
-    }
-    return aliases.get(normalized, normalized or "bf16")
 
 
 def get_model_path(config) -> str:  # noqa: ANN001

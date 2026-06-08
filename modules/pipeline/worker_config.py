@@ -10,8 +10,8 @@ from modules.tts.runtime_options import TTSRuntimeOptions
 from .models import PipelineConfig
 
 
-def build_worker_init_config(config: PipelineConfig) -> dict[str, Any]:
-    """Serialize worker model settings used for per-process load and warm-up."""
+def _serialize_worker_model_fields(config: PipelineConfig) -> dict[str, Any]:
+    """Serialize top-level TTS/cleaner fields shared with nested pipeline_config."""
     serialized_tts_runtime = (
         config.tts_runtime.to_dict() if config.tts_runtime is not None else None
     )
@@ -36,44 +36,42 @@ def build_worker_init_config(config: PipelineConfig) -> dict[str, Any]:
         "cleaner_api_global_concurrency": config.cleaner_api_global_concurrency,
         "cleaner_api_global_limiter": config.cleaner_api_global_limiter,
         "cleaner_skip_llm_when_not_needed": config.cleaner_skip_llm_when_not_needed,
-        "pipeline_config": {
-            "tts_runtime": serialized_tts_runtime,
-            "tts_runtime_options": serialized_tts_runtime_options,
-            "tts_engine": config.tts_engine,
-            "tts_model_name": config.tts_model_name,
-            "tts_quantization": config.tts_quantization,
-            "cleaner_model_name": config.cleaner_model_name,
-            "cleaner_backend": config.cleaner_backend,
-            "cleaner_api_base_url": config.cleaner_api_base_url,
-            "cleaner_api_key_env": config.cleaner_api_key_env,
-            "cleaner_api_key": config.cleaner_api_key,
-            "cleaner_api_model": config.cleaner_api_model,
-            "cleaner_skip_llm_when_not_needed": config.cleaner_skip_llm_when_not_needed,
-            "save_cleaning_debug": config.save_cleaning_debug,
-            "voice": config.voice,
-            "speed": config.speed,
-            "output_dir": config.output_dir,
-            "temp_dir": config.temp_dir,
-            "mp3_bitrate": config.mp3_bitrate,
-            "emit_chapter_mp3_artifacts": config.emit_chapter_mp3_artifacts,
-            "normalize_volume": config.normalize_volume,
-            "target_dbfs": config.target_dbfs,
-            "chunk_size": config.chunk_size,
-            "enable_pipelining": config.enable_pipelining,
-            "enable_chunk_overlap": config.enable_chunk_overlap,
-            "enable_tts_file_batch_results": config.enable_tts_file_batch_results,
-            "tts_file_batch_results_auto_threshold_chunks": (
-                config.tts_file_batch_results_auto_threshold_chunks
-            ),
-            "keep_tts_engine_warm": False,
-            "tts_idle_timeout_seconds": config.tts_idle_timeout_seconds,
-            "chapter_limit": config.chapter_limit,
-            "cleaner_api_global_concurrency": config.cleaner_api_global_concurrency,
-            "cleaner_api_global_limiter": config.cleaner_api_global_limiter,
-            "pre_chunk_document_cleanup": config.pre_chunk_document_cleanup,
-            "artifact_gated_cleaning": config.artifact_gated_cleaning,
-            "speech_normalization": config.speech_normalization,
-        },
+    }
+
+
+def _serialize_pipeline_config_dict(config: PipelineConfig) -> dict[str, Any]:
+    """Serialize the nested pipeline_config block for worker-local execution."""
+    return {
+        **_serialize_worker_model_fields(config),
+        "save_cleaning_debug": config.save_cleaning_debug,
+        "speed": config.speed,
+        "output_dir": config.output_dir,
+        "temp_dir": config.temp_dir,
+        "mp3_bitrate": config.mp3_bitrate,
+        "emit_chapter_mp3_artifacts": config.emit_chapter_mp3_artifacts,
+        "normalize_volume": config.normalize_volume,
+        "target_dbfs": config.target_dbfs,
+        "chunk_size": config.chunk_size,
+        "enable_pipelining": config.enable_pipelining,
+        "enable_chunk_overlap": config.enable_chunk_overlap,
+        "enable_tts_file_batch_results": config.enable_tts_file_batch_results,
+        "tts_file_batch_results_auto_threshold_chunks": (
+            config.tts_file_batch_results_auto_threshold_chunks
+        ),
+        "keep_tts_engine_warm": False,
+        "tts_idle_timeout_seconds": config.tts_idle_timeout_seconds,
+        "chapter_limit": config.chapter_limit,
+        "pre_chunk_document_cleanup": config.pre_chunk_document_cleanup,
+        "artifact_gated_cleaning": config.artifact_gated_cleaning,
+        "speech_normalization": config.speech_normalization,
+    }
+
+
+def build_worker_init_config(config: PipelineConfig) -> dict[str, Any]:
+    """Serialize worker model settings used for per-process load and warm-up."""
+    return {
+        **_serialize_worker_model_fields(config),
+        "pipeline_config": _serialize_pipeline_config_dict(config),
     }
 
 
