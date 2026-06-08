@@ -15,6 +15,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig
 from modules.pipeline.retry import is_infrastructure_runtime_error
+from modules.pipeline.worker_errors import (
+    classify_worker_startup_error,
+    is_infrastructure_startup_status,
+    is_runtime_unavailable_error,
+    is_warmup_failure_non_fatal,
+)
+from modules.pipeline.retry import is_memory_pressure_error
 from modules.tts.engine import BatchItem, BatchResult
 
 
@@ -57,6 +64,44 @@ def _make_pipeline() -> ConversionPipeline:
             enable_parallel=False,
         )
         return ConversionPipeline(config=cfg)
+
+
+def test_worker_startup_error_classification() -> None:
+    memory_status = classify_worker_startup_error(
+        RuntimeError("MLX out of memory while allocating Metal buffer"),
+        provider="mlx",
+        device=None,
+        phase="tts_load",
+    )
+    assert memory_status.error_type == "WorkerRuntimeMemoryError"
+    assert is_memory_pressure_error(memory_status.message or "")
+
+    unavailable_status = classify_worker_startup_error(
+        RuntimeError("cuda driver unavailable for device cuda:0"),
+        provider="cuda",
+        device="cuda:0",
+        phase="tts_load",
+    )
+    assert unavailable_status.error_type == "WorkerRuntimeUnavailableError"
+    assert is_runtime_unavailable_error(unavailable_status.message or "")
+
+    infrastructure_status = classify_worker_startup_error(
+        RuntimeError("bad value(s) in fds_to_keep"),
+        provider="mlx",
+        device=None,
+        phase="worker_init",
+    )
+    assert infrastructure_status.error_type == "WorkerInfrastructureError"
+    assert is_infrastructure_startup_status(infrastructure_status)
+
+    assert not is_warmup_failure_non_fatal(
+        RuntimeError("CUDA out of memory during warmup"),
+        provider="cuda",
+    )
+    assert is_warmup_failure_non_fatal(
+        RuntimeError("probe warmup failed"),
+        provider="mlx",
+    )
 
 
 def _test_infrastructure_marker_detection() -> None:
