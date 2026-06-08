@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,6 +23,22 @@ from modules.pipeline.orchestrator import (
     PipelineConfig,
 )
 from modules.pipeline.parallel import ParallelPipelineOrchestrator, ParallelConfig
+from modules.pipeline.pool_manager import SharedWorkerPoolManager
+from modules.pipeline.worker_errors import (
+    WorkerRuntimeLoadError,
+    WorkerRuntimeMemoryError,
+    WorkerRuntimeUnavailableError,
+)
+from tests.worker_pool_test_helpers import (
+    NeverCompletingChapterExecutor,
+    ProgressCapture,
+    RecordMemoryPolicy,
+    assert_pending_futures_cancelled,
+    make_failing_probe_executor,
+    make_startup_status,
+    reset_executor_class_state,
+    wait_for_executor_chapter_submits,
+)
 
 
 @dataclass
@@ -358,7 +375,15 @@ def _test_parallel_path_forwards_total_chapters_to_worker_partial() -> None:
             _Chapter(number=2, title="Two", content="beta"),
         ]
 
-        def fake_process_parallel(self, *, chapters, process_func, progress_callback):  # noqa: ANN001, ARG001
+        def fake_process_parallel(  # noqa: ANN001, ARG001
+            self,
+            *,
+            chapters,
+            process_func,
+            progress_callback,
+            cancel_requested=None,
+        ):
+            _ = cancel_requested
             assert process_func.keywords["total_chapters"] == 2
             assert len(chapters) == 2
             progress_callback(1, 2, "fake progress")
@@ -410,7 +435,15 @@ def test_parallel_progress_forwards_worker_performance_snapshot() -> None:
             _Chapter(number=2, title="Two", content="beta"),
         ]
 
-        def fake_process_parallel(self, *, chapters, process_func, progress_callback):  # noqa: ANN001, ARG001
+        def fake_process_parallel(  # noqa: ANN001, ARG001
+            self,
+            *,
+            chapters,
+            process_func,
+            progress_callback,
+            cancel_requested=None,
+        ):
+            _ = cancel_requested
             progress_callback(
                 1,
                 len(chapters),
@@ -542,6 +575,54 @@ def _test_shared_manager_all_errors_retry_sequential_mode() -> None:
     print("✓ shared manager all-error results retry sequential mode")
 
 
+def test_parallel_cancellation_interrupts_long_running_pool_wait() -> None:
+    reset_executor_class_state(NeverCompletingChapterExecutor)
+    fallback_progress: list[dict] = []
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        cfg = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            enable_parallel=True,
+            max_parallel_chapters=2,
+            memory_policy=_PermissiveMemoryPolicy(),
+            shared_worker_pool_manager=SharedWorkerPoolManager(max_workers=2),
+        )
+        pipeline = _SharedManagerProbePipeline(config=cfg)
+        pipeline._notify_progress = lambda **kwargs: fallback_progress.append(kwargs)  # noqa: SLF001
+        chapters = [
+            _Chapter(number=1, title="One", content="alpha"),
+            _Chapter(number=2, title="Two", content="beta"),
+            _Chapter(number=3, title="Three", content="gamma"),
+        ]
+        results: list[ChapterResult] = []
+
+        def _run_pipeline() -> None:
+            with patch(
+                "modules.pipeline.pool_manager.ProcessPoolExecutor",
+                NeverCompletingChapterExecutor,
+            ):
+                results.extend(
+                    pipeline.stages.process_chapters_parallel(chapters, cfg.output_dir)
+                )
+
+        thread = threading.Thread(target=_run_pipeline)
+        thread.start()
+
+        executor = wait_for_executor_chapter_submits(NeverCompletingChapterExecutor)
+
+        pipeline.cancel()
+        thread.join(timeout=2)
+        cfg.shared_worker_pool_manager.shutdown(timeout_seconds=0.0)
+
+    assert not thread.is_alive()
+    assert results == []
+    assert pipeline.runtime_flags_seen == []
+    assert fallback_progress == []
+    assert_pending_futures_cancelled(executor)
+
+
 def test_cancelled_parallel_results_do_not_retry_sequential_mode() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -609,36 +690,189 @@ def test_all_worker_failure_emits_fallback_performance_snapshot() -> None:
     )
 
 
+def _startup_probe_chapters() -> list[_Chapter]:
+    return [
+        _Chapter(number=1, title="One", content="alpha"),
+        _Chapter(number=2, title="Two", content="beta"),
+    ]
+
+
+def _make_startup_probe_pipeline(
+    failure_status,
+    *,
+    memory_policy=None,
+    config_kwargs: dict | None = None,
+    progress: ProgressCapture | None = None,
+):
+    config_kwargs = dict(config_kwargs or {})
+    tmp_path_ctx = tempfile.TemporaryDirectory()
+    tmp_path = Path(tmp_path_ctx.name)
+    cfg = PipelineConfig(
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        enable_parallel=True,
+        max_parallel_chapters=2,
+        memory_policy=memory_policy or _PermissiveMemoryPolicy(),
+        shared_worker_pool_manager=SharedWorkerPoolManager(max_workers=2),
+        **config_kwargs,
+    )
+    pipeline = _SharedManagerProbePipeline(config=cfg)
+    if progress is not None:
+        pipeline.progress_callback = progress.callback
+    chapters = _startup_probe_chapters()
+    failing_executor = make_failing_probe_executor(failure_status)
+    return tmp_path_ctx, cfg, pipeline, chapters, failing_executor
+
+
+def _run_parallel_with_failing_startup_probe(
+    failure_status,
+    *,
+    memory_policy=None,
+    config_kwargs: dict | None = None,
+    progress: ProgressCapture | None = None,
+):
+    tmp_path_ctx, cfg, pipeline, chapters, failing_executor = _make_startup_probe_pipeline(
+        failure_status,
+        memory_policy=memory_policy,
+        config_kwargs=config_kwargs,
+        progress=progress,
+    )
+    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", failing_executor):
+        results = pipeline.stages.process_chapters_parallel(chapters, cfg.output_dir)
+
+    cfg.shared_worker_pool_manager.shutdown()
+    tmp_path_ctx.cleanup()
+    return pipeline, results
+
+
+@pytest.mark.parametrize(
+    ("failure_status", "expected_exception", "match"),
+    [
+        pytest.param(
+            make_startup_status(
+                error_type="WorkerRuntimeUnavailableError",
+                message="cuda driver unavailable",
+                provider="cuda",
+                device="cuda:0",
+            ),
+            WorkerRuntimeUnavailableError,
+            "cuda/cuda:0",
+            id="unavailable",
+        ),
+        pytest.param(
+            make_startup_status(
+                error_type="WorkerRuntimeLoadError",
+                message="kokoro runtime load failed",
+                provider="mlx",
+                device=None,
+            ),
+            WorkerRuntimeLoadError,
+            "mlx",
+            id="load",
+        ),
+        pytest.param(
+            make_startup_status(
+                error_type="WorkerRuntimeMemoryError",
+                message="CUDA out of memory during startup",
+                provider="cuda",
+                device="cuda:0",
+            ),
+            WorkerRuntimeMemoryError,
+            "cuda/cuda:0",
+            id="memory_manual_mode",
+        ),
+    ],
+)
+def test_worker_startup_fail_fast_via_real_probes(
+    failure_status,
+    expected_exception,
+    match: str,
+) -> None:
+    progress = ProgressCapture()
+    config_kwargs = (
+        {"parallel_worker_mode": "manual"}
+        if failure_status.error_type == "WorkerRuntimeMemoryError"
+        else {}
+    )
+    tmp_path_ctx, cfg, pipeline, chapters, failing_executor = _make_startup_probe_pipeline(
+        failure_status,
+        config_kwargs=config_kwargs,
+        progress=progress,
+    )
+
+    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", failing_executor):
+        with pytest.raises(expected_exception, match=match):
+            pipeline.stages.process_chapters_parallel(chapters, cfg.output_dir)
+
+    cfg.shared_worker_pool_manager.shutdown()
+    tmp_path_ctx.cleanup()
+
+    assert pipeline.runtime_flags_seen == []
+    progress.assert_fail_fast_startup_observability(
+        provider=failure_status.provider,
+        device=failure_status.device,
+        error_type=failure_status.error_type or "",
+    )
+
+
+def test_worker_startup_memory_error_degrades_via_real_probes() -> None:
+    progress = ProgressCapture()
+    memory_policy = RecordMemoryPolicy()
+    failure_status = make_startup_status(
+        error_type="WorkerRuntimeMemoryError",
+        message="MLX out of memory while allocating Metal buffer",
+        provider="mlx",
+        device=None,
+    )
+
+    pipeline, results = _run_parallel_with_failing_startup_probe(
+        failure_status,
+        memory_policy=memory_policy,
+        config_kwargs={"tts_engine": "other", "cleaner_backend": "api"},
+        progress=progress,
+    )
+
+    assert memory_policy.errors_recorded == 1
+    assert pipeline._selected_parallel_chapters == 1  # noqa: SLF001
+    assert len(results) == 2
+    assert all(result.error is None for result in results)
+    assert pipeline.runtime_flags_seen == [False, False]
+    assert any(
+        payload.get("fallback_reason") == "memory_pressure"
+        for payload in progress.payloads
+    )
+
+
+def test_worker_startup_infrastructure_error_retries_via_real_probes() -> None:
+    progress = ProgressCapture()
+    failure_status = make_startup_status(
+        error_type="WorkerInfrastructureError",
+        message="bad value(s) in fds_to_keep",
+        provider="mlx",
+        device=None,
+        phase="worker_init",
+    )
+
+    pipeline, results = _run_parallel_with_failing_startup_probe(
+        failure_status,
+        progress=progress,
+    )
+
+    assert len(results) == 2
+    assert all(result.error is None for result in results)
+    assert pipeline.runtime_flags_seen == [False, False]
+    assert any(
+        payload.get("fallback_reason") == "worker_infrastructure_error"
+        for payload in progress.payloads
+    )
+
+
 def test_memory_error_degrades_to_sequential() -> None:
-    class MemoryPolicy:
-        def __init__(self) -> None:
-            self.errors_recorded = 0
-
-        def allowed_workers(self, requested_max: int) -> int:
-            return requested_max
-
-        def record_memory_error(self) -> None:
-            self.errors_recorded += 1
-
-    progress_payloads = []
-
-    def _progress_callback(
-        stage,  # noqa: ANN001
-        chapter_idx: int,
-        total_chapters: int,
-        chunk_idx: int,
-        total_chunks: int,
-        message: str,
-        eta: float | None,
-        performance: dict | None = None,
-    ) -> None:
-        _ = stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, eta
-        if performance:
-            progress_payloads.append(performance)
+    memory_policy = RecordMemoryPolicy()
+    progress = ProgressCapture()
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        memory_policy = MemoryPolicy()
         cfg = PipelineConfig(
             output_dir=tmp_path / "output",
             temp_dir=tmp_path / "temp",
@@ -650,7 +884,7 @@ def test_memory_error_degrades_to_sequential() -> None:
             cleaner_backend="api",
         )
         pipeline = _SharedManagerProbePipeline(config=cfg)
-        pipeline.progress_callback = _progress_callback
+        pipeline.progress_callback = progress.callback
         chapters = [
             _Chapter(number=1, title="One", content="alpha"),
             _Chapter(number=2, title="Two", content="beta"),
@@ -669,7 +903,7 @@ def test_memory_error_degrades_to_sequential() -> None:
     assert pipeline.runtime_flags_seen == [False, False]
     assert any(
         payload.get("fallback_reason") == "memory_pressure"
-        for payload in progress_payloads
+        for payload in progress.payloads
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import sqlite3
+from concurrent.futures import Future
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from modules.pipeline.orchestrator import (
 )
 from modules.pipeline.book_workspace import prepare_book_workspace
 from modules.pipeline.pool_manager import SharedWorkerPoolManager
+from modules.pipeline.worker_errors import WorkerStartupStatus
 from modules.storage.models import Book, Chapter, ConversionMode, PlaybackStatus, SourceType
 from modules.storage.sqlite_repo import SQLiteRepository
 
@@ -1578,6 +1580,20 @@ def test_conversion_service_cancel_terminates_workers_when_executor_clears_proce
             self.worker = _FakeWorkerProcess()
             self._processes = {1: self.worker}
             type(self).instances.append(self)
+
+        def submit(self, fn, *args, **kwargs):  # noqa: ANN003
+            _ = fn, args, kwargs
+            future: Future = Future()
+            future.set_result(
+                WorkerStartupStatus(
+                    success=True,
+                    provider="unknown",
+                    device=None,
+                    error_type=None,
+                    message=None,
+                )
+            )
+            return future
 
         def shutdown(self, wait: bool = True, cancel_futures: bool = True):  # noqa: ARG002
             self._processes = None
