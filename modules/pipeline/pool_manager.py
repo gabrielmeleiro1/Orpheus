@@ -11,14 +11,22 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .models import ChapterResult
-from .worker_runtime import _init_worker
+from .worker_errors import WorkerStartupError, WorkerStartupStatus
+from .worker_runtime import _init_worker, get_worker_startup_status
 
 logger = logging.getLogger(__name__)
+
+_WAIT_POLL_TIMEOUT_SECONDS = 0.25
 
 
 def _health_ping() -> bool:
     """Top-level no-op used for worker liveness checks."""
     return True
+
+
+def _worker_startup_probe() -> WorkerStartupStatus:
+    """Validate that the worker process completed model initialization."""
+    return get_worker_startup_status()
 
 
 @dataclass
@@ -53,6 +61,7 @@ class SharedWorkerPoolManager:
         available_vram_gb: float = 8.0,
         available_device_memory_gb: Optional[float] = None,
         shutdown_timeout_seconds: float = 2.0,
+        startup_probe_timeout_seconds: float = 30.0,
     ) -> None:
         if available_device_memory_gb is not None and float(available_vram_gb) != 8.0:
             raise ValueError(
@@ -84,6 +93,10 @@ class SharedWorkerPoolManager:
         self._current_chapter_titles: dict[int, str] = {}
         self._use_processes = True
         self._shutdown_timeout_seconds = max(0.0, float(shutdown_timeout_seconds))
+        self._startup_probe_timeout_seconds = max(0.0, float(startup_probe_timeout_seconds))
+        self._startup_failures = 0
+        self._last_startup_error: Optional[str] = None
+        self._cancelled_jobs = 0
 
     @staticmethod
     def _call_executor_shutdown(
@@ -259,6 +272,32 @@ class SharedWorkerPoolManager:
                 raise original_error
 
     @staticmethod
+    def _is_cancel_requested(cancel_requested: Callable[[], bool] | None) -> bool:
+        if cancel_requested is None:
+            return False
+        return bool(cancel_requested())
+
+    def _abort_parallel_run(
+        self,
+        *,
+        submitted: dict[Any, int],
+        progress_callback: Callable[..., None] | None,
+        completed: int,
+        total: int,
+    ) -> list[ChapterResult]:
+        for future in list(submitted):
+            future.cancel()
+        submitted.clear()
+        self._cancelled_jobs += 1
+        self._emit_progress(
+            progress_callback,
+            completed,
+            total,
+            "Parallel processing cancelled",
+        )
+        return []
+
+    @staticmethod
     def _result_has_error(result: ChapterResult) -> bool:
         return bool(result.error)
 
@@ -298,6 +337,72 @@ class SharedWorkerPoolManager:
         self._state.worker_init_config = dict(worker_init_config or {})
         self._state.use_processes = self._use_processes
         self._last_start_ms = round(time.time() * 1000, 2)
+
+    @staticmethod
+    def _normalize_startup_status(result: Any) -> WorkerStartupStatus:
+        if isinstance(result, WorkerStartupStatus):
+            return result
+        if isinstance(result, dict):
+            return WorkerStartupStatus.from_dict(result)
+        return WorkerStartupStatus(
+            success=False,
+            provider="unknown",
+            device=None,
+            error_type=type(result).__name__,
+            message=f"unexpected startup probe result: {result!r}",
+        )
+
+    def _run_startup_probes_locked(self) -> None:
+        executor = self._state.executor
+        if executor is None:  # pragma: no cover - defensive guard
+            raise RuntimeError("Cannot probe workers without an executor")
+
+        probe_count = 1 if not self._state.use_processes else max(
+            1, int(self._state.max_workers or 1)
+        )
+        futures = [
+            executor.submit(_worker_startup_probe) for _ in range(probe_count)
+        ]
+        failures: list[WorkerStartupStatus] = []
+
+        for future in futures:
+            try:
+                status = self._normalize_startup_status(
+                    future.result(timeout=self._startup_probe_timeout_seconds)
+                )
+            except Exception as exc:
+                failures.append(
+                    WorkerStartupStatus(
+                        success=False,
+                        provider="unknown",
+                        device=None,
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                    )
+                )
+                continue
+
+            if not status.success:
+                failures.append(status)
+
+        if not failures:
+            return
+
+        self._startup_failures += 1
+        primary = failures[0]
+        self._last_startup_error = primary.format_failure()
+        executor_to_shutdown = self._state.executor
+        self._state.executor = None
+        self._state.config_fingerprint = None
+        self._shutdown_executor_bounded(
+            executor_to_shutdown,
+            timeout_seconds=self._shutdown_timeout_seconds,
+            cancel_futures=True,
+        )
+        raise WorkerStartupError(
+            self._last_startup_error,
+            statuses=failures,
+        )
 
     def ensure_started(
         self,
@@ -360,6 +465,7 @@ class SharedWorkerPoolManager:
                 available_vram_gb=requested_vram,
                 worker_init_config=requested_init,
             )
+            self._run_startup_probes_locked()
 
     def run_parallel(
         self,
@@ -373,6 +479,7 @@ class SharedWorkerPoolManager:
         available_device_memory_gb: Optional[float] = None,
         worker_init_config: Optional[dict[str, Any]] = None,
         memory_policy: Optional[Any] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> list[ChapterResult]:
         """Run chapter processing using the shared process pool."""
         self.ensure_started(
@@ -401,6 +508,9 @@ class SharedWorkerPoolManager:
 
         def submit_next_available() -> bool:
             nonlocal completed, next_idx
+
+            if self._is_cancel_requested(cancel_requested):
+                return False
 
             if memory_policy is not None:
                 should_submit_more = getattr(memory_policy, "should_submit_more", None)
@@ -445,7 +555,29 @@ class SharedWorkerPoolManager:
             pass
 
         while submitted:
-            done, _pending = wait(tuple(submitted), return_when=FIRST_COMPLETED)
+            if self._is_cancel_requested(cancel_requested):
+                return self._abort_parallel_run(
+                    submitted=submitted,
+                    progress_callback=progress_callback,
+                    completed=completed,
+                    total=total,
+                )
+
+            done, _pending = wait(
+                tuple(submitted),
+                timeout=_WAIT_POLL_TIMEOUT_SECONDS,
+                return_when=FIRST_COMPLETED,
+            )
+            if not done:
+                if self._is_cancel_requested(cancel_requested):
+                    return self._abort_parallel_run(
+                        submitted=submitted,
+                        progress_callback=progress_callback,
+                        completed=completed,
+                        total=total,
+                    )
+                continue
+
             for future in done:
                 idx = submitted.pop(future)
                 try:
@@ -552,5 +684,8 @@ class SharedWorkerPoolManager:
             "jobs_run": self._jobs_run,
             "chapters_run": self._chapters_run,
             "last_start_ms": self._last_start_ms,
+            "startup_failures": self._startup_failures,
+            "last_startup_error": self._last_startup_error,
+            "cancelled_jobs": self._cancelled_jobs,
             **current_performance,
         }

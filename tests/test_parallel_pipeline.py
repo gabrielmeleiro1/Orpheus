@@ -832,17 +832,52 @@ class TestParallelOrchestratorFacade:
             config_fingerprint="borrowed-fingerprint",
             worker_init_config={"voice": "af_bella"},
         )
+        cancel_predicate = lambda: False  # noqa: E731
 
         results = orchestrator.process_chapters_parallel(
             chapters=[MockChapter(1, "One", "alpha")],
             process_func=lambda ch, idx, _fm: {"idx": idx},  # noqa: ARG005
+            cancel_requested=cancel_predicate,
         )
 
         assert results == ["borrowed-result"]
         assert len(manager.run_calls) == 1
         assert manager.run_calls[0]["config_fingerprint"] == "borrowed-fingerprint"
         assert manager.run_calls[0]["worker_init_config"] == {"voice": "af_bella"}
+        assert manager.run_calls[0]["cancel_requested"] is not None
+        assert manager.run_calls[0]["cancel_requested"]() is False
         assert manager.shutdown_calls == 0
+
+    def test_orchestrator_forwards_external_cancellation_predicate(self):
+        class _BorrowedManager:
+            def run_parallel(self, **kwargs):
+                cancel_requested = kwargs["cancel_requested"]
+                assert cancel_requested() is False
+                return ["before-cancel"]
+
+            def shutdown(self):
+                return None
+
+        orchestrator = ParallelPipelineOrchestrator(
+            ParallelConfig(max_workers=1, use_processes=False),
+            pool_manager=_BorrowedManager(),
+        )
+        cancelled = {"value": False}
+
+        results = orchestrator.process_chapters_parallel(
+            chapters=[MockChapter(1, "One", "alpha")],
+            process_func=lambda ch, idx, _fm: {"idx": idx},  # noqa: ARG005
+            cancel_requested=lambda: cancelled["value"],
+        )
+
+        assert results == ["before-cancel"]
+
+        cancelled["value"] = True
+        assert orchestrator.process_chapters_parallel(
+            chapters=[MockChapter(1, "One", "alpha")],
+            process_func=lambda ch, idx, _fm: {"idx": idx},  # noqa: ARG005
+            cancel_requested=lambda: cancelled["value"],
+        ) == []
 
     def test_orchestrator_creates_and_shuts_down_owned_manager(self):
         created: list[SharedWorkerPoolManager] = []

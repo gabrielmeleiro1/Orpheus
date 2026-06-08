@@ -289,7 +289,11 @@ def needs_llm_cleaning(text: str) -> bool:
     if has_joined_first_person_leakage(normalized):
         return True
 
-    if len(normalized) >= 12 and re.search(r"\b[A-Z]{2,}\b", normalized):
+    if (
+        len(normalized) >= 12
+        and re.search(r"[a-z]", normalized)
+        and re.search(r"\b[A-Z]{3,}\b", normalized)
+    ):
         return True
 
     return False
@@ -319,7 +323,11 @@ def describe_llm_cleaning_reason(text: str) -> str:
     if has_joined_first_person_leakage(normalized):
         return "possible joined first-person word extraction artifact"
 
-    if len(normalized) >= 12 and re.search(r"\b[A-Z]{2,}\b", normalized):
+    if (
+        len(normalized) >= 12
+        and re.search(r"[a-z]", normalized)
+        and re.search(r"\b[A-Z]{3,}\b", normalized)
+    ):
         return "uppercase token that may be OCR/casing artifact"
 
     return "default conservative cleanup pass"
