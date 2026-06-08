@@ -37,6 +37,17 @@ class ConversionArtifactValidation:
         )
 
 
+def format_failure_notes(notes: list[str], *, limit: int = 3) -> str:
+    """Join failure notes for display, truncating with an overflow suffix."""
+    if not notes:
+        return ""
+    summary = "; ".join(notes[:limit])
+    overflow = len(notes) - limit
+    if overflow > 0:
+        summary += f"; ... (+{overflow} more)"
+    return summary
+
+
 def _path_exists(path: Any) -> bool:
     exists = getattr(path, "exists", None)
     if not callable(exists) or not bool(exists()):
@@ -208,6 +219,107 @@ def validate_conversion_success_artifacts(
         packaged_output_note=packaged_output_note,
         chapters_completed=chapters_completed,
     )
+
+
+_CHAPTER_SET_CONTEXT_LABELS: dict[str, tuple[str, str]] = {
+    "repair": ("source", "stored"),
+}
+
+
+def _normalize_chapter_title(title: Any) -> str:
+    return " ".join(str(title or "").split()).casefold()
+
+
+def _repair_expected_number(chapter: Any, index: int) -> int:
+    return int(getattr(chapter, "number", index + 1))
+
+
+def _repair_actual_number(chapter: Any, _index: int) -> int:
+    return int(getattr(chapter, "chapter_number", getattr(chapter, "number", 0)))
+
+
+def validate_chapter_sets(
+    expected: list[Any],
+    actual: list[Any],
+    *,
+    context: str,
+) -> list[str]:
+    """
+    Validate that two chapter collections align by number and title.
+
+    For ``context="repair"``, ``expected`` is the ingested source document and
+    ``actual`` is the persisted library chapter set. Returns human-readable
+    mismatch notes; an empty list means the sets are structurally compatible.
+    """
+    if context not in _CHAPTER_SET_CONTEXT_LABELS:
+        raise ValueError(f"unsupported chapter-set context: {context!r}")
+
+    expected_label, actual_label = _CHAPTER_SET_CONTEXT_LABELS[context]
+    if context == "repair":
+        expected_number = _repair_expected_number
+        actual_number = _repair_actual_number
+    else:
+        raise ValueError(f"unsupported chapter-set context: {context!r}")
+
+    expected_by_number: dict[int, Any] = {}
+    duplicate_expected_numbers: list[int] = []
+    for index, chapter in enumerate(expected):
+        chapter_number = expected_number(chapter, index)
+        if chapter_number in expected_by_number:
+            duplicate_expected_numbers.append(chapter_number)
+        expected_by_number[chapter_number] = chapter
+
+    actual_numbers: set[int] = set()
+    duplicate_actual_numbers: list[int] = []
+    for index, chapter in enumerate(actual):
+        chapter_number = actual_number(chapter, index)
+        if chapter_number in actual_numbers:
+            duplicate_actual_numbers.append(chapter_number)
+        actual_numbers.add(chapter_number)
+
+    expected_numbers = set(expected_by_number)
+    errors: list[str] = []
+    if duplicate_expected_numbers:
+        duplicate_numbers = ", ".join(
+            str(number) for number in sorted(set(duplicate_expected_numbers))
+        )
+        errors.append(f"duplicate {expected_label} chapter rows: {duplicate_numbers}")
+    if duplicate_actual_numbers:
+        duplicate_numbers = ", ".join(
+            str(number) for number in sorted(set(duplicate_actual_numbers))
+        )
+        errors.append(f"duplicate {actual_label} chapter rows: {duplicate_numbers}")
+
+    missing_actual_numbers = sorted(expected_numbers - actual_numbers)
+    if missing_actual_numbers:
+        missing_numbers = ", ".join(str(number) for number in missing_actual_numbers)
+        errors.append(
+            f"missing {actual_label} chapter rows for {expected_label} chapters: {missing_numbers}"
+        )
+
+    missing_expected_numbers = sorted(actual_numbers - expected_numbers)
+    if missing_expected_numbers:
+        missing_numbers = ", ".join(str(number) for number in missing_expected_numbers)
+        errors.append(
+            f"missing {expected_label} chapter rows for {actual_label} chapters: {missing_numbers}"
+        )
+
+    for index, chapter in enumerate(actual):
+        chapter_number = actual_number(chapter, index)
+        expected_chapter = expected_by_number.get(chapter_number)
+        if expected_chapter is None:
+            continue
+        actual_title = _normalize_chapter_title(getattr(chapter, "title", ""))
+        expected_title = _normalize_chapter_title(getattr(expected_chapter, "title", ""))
+        if not actual_title or not expected_title or actual_title == expected_title:
+            continue
+        errors.append(
+            "title mismatch for chapter "
+            f"{chapter_number}: expected {getattr(chapter, 'title', '')!r}, "
+            f"got {getattr(expected_chapter, 'title', '')!r}"
+        )
+
+    return errors
 
 
 def validate_chapter_result_structure(

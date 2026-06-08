@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from modules.tts.quantization import CANONICAL_QUANTIZATIONS, QUANTIZATION_ALIASES
 from modules.tts.runtime_spec import (
     CUDA_PROVIDER_OPTION_KEYS,
     TTSRuntimeSpec,
@@ -26,9 +27,10 @@ _TOP_LEVEL_KEYS = {
     "provider_options",
 }
 
-GENERIC_TTS_QUANTIZATIONS = frozenset({"bf16", "full", "q4", "4bit", "q8", "8bit", "6bit"})
-CUDA_TTS_QUANTIZATIONS = frozenset(
-    {"bf16", "fp16", "fp32", "q4", "q8", "full", "8bit", "4bit"}
+_QUANTIZATION_ALIASES = frozenset(QUANTIZATION_ALIASES)
+GENERIC_TTS_QUANTIZATIONS = CANONICAL_QUANTIZATIONS | _QUANTIZATION_ALIASES
+CUDA_TTS_QUANTIZATIONS = (
+    (CANONICAL_QUANTIZATIONS - {"6bit"}) | _QUANTIZATION_ALIASES | frozenset({"fp16", "fp32"})
 )
 
 PROVIDER_QUANTIZATIONS: dict[str, frozenset[str]] = {
