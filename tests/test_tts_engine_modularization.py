@@ -811,7 +811,10 @@ def test_worker_init_records_warmup_failure_without_dropping_loaded_engine() -> 
     fake_engine.load.assert_called_once_with()
     fake_engine.warmup.assert_called_once_with(voice="af_bella")
     fake_cleaner.load.assert_called_once_with()
-    assert worker_runtime.get_worker_init_error() == "probe warmup failed"
+    assert worker_runtime.get_worker_init_error() is None
+    startup_status = worker_runtime.get_worker_startup_status()
+    assert startup_status.success is True
+    assert startup_status.provider == "mlx"
     assert worker_runtime.get_worker_cached_models()[0] is fake_engine
     mock_warning.assert_called_once()
     assert "warm" in mock_warning.call_args.args[0].lower()
