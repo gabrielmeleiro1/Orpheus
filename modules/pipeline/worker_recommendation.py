@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 from typing import Any, Optional
 
-from .memory_policy import MemorySnapshot, SafeMemoryPolicy, sample_memory_snapshot
+from modules.tts.device_memory import DeviceMemoryPolicy, HostMemoryPolicy
+
+from .memory_policy import MemorySnapshot, SafeMemoryPolicy
 
 STATIC_WORKER_ESTIMATE_BYTES = 4 * 1024**3
 DEFAULT_REQUESTED_WORKER_CAP = 4
@@ -48,6 +50,29 @@ def _gib(value: int) -> float:
     return round(max(0, int(value)) / 1024**3, 2)
 
 
+def _memory_snapshot_from_device_policy(
+    device_memory_policy: DeviceMemoryPolicy,
+) -> Optional[MemorySnapshot]:
+    snapshot = device_memory_policy.sample()
+    if snapshot is None:
+        return None
+    return MemorySnapshot(
+        total_bytes=snapshot.total_bytes,
+        available_bytes=snapshot.available_bytes,
+        process_rss_bytes=snapshot.process_rss_bytes,
+        mlx_active_bytes=snapshot.active_bytes,
+        mlx_cache_bytes=snapshot.cache_bytes,
+        mlx_peak_bytes=snapshot.peak_bytes,
+    )
+
+
+def sample_memory_snapshot(
+    device_memory_policy: DeviceMemoryPolicy | None = None,
+) -> Optional[MemorySnapshot]:
+    """Sample memory through the selected device policy."""
+    return _memory_snapshot_from_device_policy(device_memory_policy or HostMemoryPolicy())
+
+
 def build_parallel_worker_recommendation(
     *,
     requested_max: int = DEFAULT_REQUESTED_WORKER_CAP,
@@ -55,12 +80,22 @@ def build_parallel_worker_recommendation(
     estimated_worker_bytes: Optional[int] = None,
     warmup_delta_bytes: Optional[int] = None,
     selected_worker_count_reason: Optional[str] = None,
+    device_memory_policy: DeviceMemoryPolicy | None = None,
 ) -> dict[str, Any]:
     """Return UI-safe worker recommendation details from the memory policy."""
     requested_max = max(1, int(requested_max or 1))
-    snapshot = snapshot if snapshot is not None else sample_memory_snapshot()
+    if snapshot is None:
+        try:
+            snapshot = sample_memory_snapshot(device_memory_policy=device_memory_policy)
+        except TypeError:
+            snapshot = sample_memory_snapshot()
     static_estimate = STATIC_WORKER_ESTIMATE_BYTES
     worker_estimate = max(1, int(estimated_worker_bytes or static_estimate))
+    unavailable_reason = (
+        device_memory_policy.sampling_unavailable_reason
+        if device_memory_policy is not None
+        else None
+    ) or "memory measurement unavailable"
 
     if snapshot is None:
         return {
@@ -75,7 +110,7 @@ def build_parallel_worker_recommendation(
             "requested_parallel_chapters": requested_max,
             "max_safe_parallel_chapters": 1,
             "recommended_parallel_chapters": 1,
-            "reason": "memory measurement unavailable",
+            "reason": unavailable_reason,
             "calculation": "memory unavailable -> 1 worker",
         }
 
@@ -83,6 +118,7 @@ def build_parallel_worker_recommendation(
         memory_sampler=lambda: snapshot,
         estimated_worker_bytes=worker_estimate,
         enable_warmup_calibration=False,
+        unavailable_reason=unavailable_reason,
     )
     if warmup_delta_bytes is not None:
         policy.measured_warmup_delta_bytes = max(0, int(warmup_delta_bytes))

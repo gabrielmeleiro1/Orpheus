@@ -16,11 +16,12 @@ from modules.app.services.conversion_runtime import (
 from modules.tts.runtime_options import (
     PROVIDER_QUANTIZATIONS,
     TTSRuntimeOptions,
+    resolve_tts_runtime,
     validate_device,
     validate_provider_options,
     validate_quantization,
-    validate_runtime_spec_provider_compatibility,
 )
+from modules.tts.runtime_spec import TTSRuntimeSpec
 
 
 def test_legacy_payload_quantization_resolves_quantization() -> None:
@@ -142,7 +143,7 @@ def test_from_payload_defers_quantization_validation_until_runtime_options() -> 
     assert options.quantization == "fp16"
 
 
-def test_from_runtime_options_rejects_cuda_precision_after_precedence(tmp_path) -> None:
+def test_from_runtime_options_preserves_cuda_precision_after_precedence(tmp_path) -> None:
     config = AppConfig(
         data_dir=tmp_path / "data",
         output_dir=tmp_path / "output",
@@ -151,35 +152,22 @@ def test_from_runtime_options_rejects_cuda_precision_after_precedence(tmp_path) 
         tts_quantization="bf16",
     )
 
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        TTSRuntimeOptions.from_runtime_options(
-            ConversionRuntimeOptions(
-                tts_quantization="fp16",
-                tts_provider="cuda",
-                tts_options={"quantization": "bf16", "provider": "mlx"},
-            ),
-            config,
-        ).to_runtime_spec("kokoro", config)
+    spec = TTSRuntimeOptions.from_runtime_options(
+        ConversionRuntimeOptions(
+            tts_quantization="fp16",
+            tts_provider="cuda",
+            tts_options={"quantization": "bf16", "provider": "cuda"},
+        ),
+        config,
+    ).to_runtime_spec("kokoro", config)
+
+    assert spec.provider == "cuda"
+    assert spec.quantization == "fp16"
 
 
 def test_provider_quantizations_include_cuda_fp16_and_fp32() -> None:
     assert "fp16" in PROVIDER_QUANTIZATIONS["cuda"]
     assert "fp32" in PROVIDER_QUANTIZATIONS["cuda"]
-
-
-def test_validate_runtime_spec_provider_compatibility_rejects_cuda_kokoro() -> None:
-    from modules.tts.runtime_spec import TTSRuntimeSpec
-
-    spec = TTSRuntimeSpec(
-        provider="cuda",
-        engine="kokoro",
-        model="Kokoro-82M",
-        quantization="bf16",
-        device="cuda:0",
-    )
-
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        validate_runtime_spec_provider_compatibility(spec)
 
 
 def test_provider_only_in_provider_options_resolves_cuda_spec() -> None:
@@ -195,8 +183,10 @@ def test_provider_only_in_provider_options_resolves_cuda_spec() -> None:
     assert options.device == "cuda:0"
     assert "provider" not in dict(options.provider_options)
 
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
+    spec = options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
+    assert spec.provider == "cuda"
+    assert spec.device == "cuda:0"
+    assert dict(spec.runtime_options)["device_id"] == 0
 
 
 def test_device_cuda_infers_provider_without_explicit_provider() -> None:
@@ -205,8 +195,82 @@ def test_device_cuda_infers_provider_without_explicit_provider() -> None:
     assert options.provider == "cuda"
     assert options.device == "cuda:0"
 
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
+    spec = options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
+    assert spec.provider == "cuda"
+    assert spec.device == "cuda:0"
+
+
+def test_from_runtime_options_infers_cuda_before_validating_precision(tmp_path) -> None:
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+        tts_quantization="bf16",
+    )
+
+    options = TTSRuntimeOptions.from_runtime_options(
+        ConversionRuntimeOptions(tts_quantization="fp16", tts_device="cuda:0"),
+        config,
+    )
+
+    assert options.provider == "cuda"
+    assert options.quantization == "fp16"
+
+
+def test_from_runtime_options_rejects_conflicting_provider_sources(tmp_path) -> None:
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+        tts_quantization="bf16",
+    )
+
+    with pytest.raises(ValueError, match="Conflicting TTS provider"):
+        TTSRuntimeOptions.from_runtime_options(
+            ConversionRuntimeOptions(
+                tts_provider="mlx",
+                tts_options={"provider": "cuda", "device": "cuda:0"},
+            ),
+            config,
+        )
+
+
+def test_runtime_options_reject_non_cuda_provider_with_cuda_shape() -> None:
+    with pytest.raises(ValueError, match="cannot use CUDA device"):
+        TTSRuntimeOptions.from_payload({"provider": "mlx", "device": "cuda:0"})
+
+    with pytest.raises(ValueError, match="CUDA provider option"):
+        TTSRuntimeOptions.from_payload(
+            {"provider": "mlx", "provider_options": {"enable_cuda_graph": True}}
+        )
+
+
+def test_resolve_tts_runtime_rejects_spec_and_options_runtime_option_conflicts() -> None:
+    spec = TTSRuntimeSpec.from_legacy(
+        "kokoro",
+        "bf16",
+        provider="cuda",
+        device="cuda:0",
+        options={"dtype": "fp16"},
+    )
+    options = TTSRuntimeOptions(
+        model_name=spec.model,
+        quantization=spec.quantization,
+        provider=spec.provider,
+        device=spec.device,
+        dtype="bf16",
+    )
+
+    with pytest.raises(ValueError, match="runtime_options"):
+        resolve_tts_runtime(
+            tts_engine="kokoro",
+            tts_model_name=spec.model,
+            tts_quantization=spec.quantization,
+            tts_runtime=spec,
+            tts_runtime_options=options,
+        )
 
 
 def test_uninferable_device_without_provider_fails() -> None:
@@ -216,8 +280,8 @@ def test_uninferable_device_without_provider_fails() -> None:
 
 def test_spec_options_preserves_typed_runtime_provider_options() -> None:
     options = TTSRuntimeOptions(
-        provider="mlx",
-        device="mps",
+        provider="cuda",
+        device="cuda:0",
         dtype="fp16",
         runtime_provider_options=(("device_id", 1), ("use_tf32", True)),
     )

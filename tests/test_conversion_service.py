@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import sqlite3
+from concurrent.futures import Future
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from modules.pipeline.orchestrator import (
 )
 from modules.pipeline.book_workspace import prepare_book_workspace
 from modules.pipeline.pool_manager import SharedWorkerPoolManager
+from modules.pipeline.worker_errors import WorkerStartupStatus
 from modules.storage.models import Book, Chapter, ConversionMode, PlaybackStatus, SourceType
 from modules.storage.sqlite_repo import SQLiteRepository
 
@@ -389,7 +391,10 @@ def test_conversion_service_manual_worker_selection_uses_static_memory_policy(tm
     assert config.enable_parallel is True
     assert config.max_parallel_chapters == 3
     assert config.memory_policy is not None
+    assert config.device_memory_policy is not None
+    assert config.device_memory_policy.provider == "mlx"
     assert config.memory_policy.enable_warmup_calibration is False
+    assert config.memory_policy.estimated_per_worker_memory_bytes == 4 * 1024**3
 
 
 def test_conversion_service_auto_worker_selection_enables_warmup_policy(tmp_path):
@@ -408,6 +413,8 @@ def test_conversion_service_auto_worker_selection_enables_warmup_policy(tmp_path
     assert config.enable_parallel is True
     assert config.max_parallel_chapters == 4
     assert config.memory_policy is not None
+    assert config.device_memory_policy is not None
+    assert config.device_memory_policy.provider == "mlx"
     assert config.memory_policy.enable_warmup_calibration is True
 
 
@@ -1574,6 +1581,20 @@ def test_conversion_service_cancel_terminates_workers_when_executor_clears_proce
             self._processes = {1: self.worker}
             type(self).instances.append(self)
 
+        def submit(self, fn, *args, **kwargs):  # noqa: ANN003
+            _ = fn, args, kwargs
+            future: Future = Future()
+            future.set_result(
+                WorkerStartupStatus(
+                    success=True,
+                    provider="unknown",
+                    device=None,
+                    error_type=None,
+                    message=None,
+                )
+            )
+            return future
+
         def shutdown(self, wait: bool = True, cancel_futures: bool = True):  # noqa: ARG002
             self._processes = None
 
@@ -1879,40 +1900,32 @@ def test_conversion_service_passes_canonical_runtime_spec_to_validation_and_conf
     ]
 
 
-def test_conversion_service_rejects_unsupported_kokoro_cuda_before_runtime_load(tmp_path):
-    source_path = tmp_path / "book.epub"
-    source_path.write_text("dummy")
+def test_conversion_service_preserves_unsupported_kokoro_cuda_until_runtime_load(tmp_path):
     runtime_specs = []
-    pipeline_inits = []
 
     def _validator(engine: str, quantization: str | None, *, runtime_spec=None) -> None:
         runtime_specs.append((engine, quantization, runtime_spec))
 
-    class _RecordingPipeline(_PipelineStub):
-        def __init__(self, result: PipelineConversionResult, **kwargs) -> None:  # noqa: ANN003
-            pipeline_inits.append(kwargs)
-            super().__init__(result, **kwargs)
-
-    service = _make_service(
-        tmp_path,
-        _RecordingPipeline,
-    )
+    service = _make_service(tmp_path, _PipelineStub)
     service._runtime_options_resolver._runtime_validator = _validator  # noqa: SLF001
+    runtime_options = ConversionRuntimeOptions(
+        tts_engine="kokoro",
+        tts_quantization="bf16",
+        tts_provider="cuda",
+        tts_device="cuda:0",
+        tts_options={"model_name": "Kokoro-82M"},
+    )
 
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        service.start_conversion(
-            source_path=source_path,
-            runtime_options=ConversionRuntimeOptions(
-                tts_engine="kokoro",
-                tts_quantization="bf16",
-                tts_provider="cuda",
-                tts_device="cuda:0",
-                tts_options={"model_name": "Kokoro-82M"},
-            ),
-        )
+    service._validate_requested_tts_runtime(runtime_options=runtime_options)  # noqa: SLF001
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001
+        runtime_options=runtime_options,
+    )
 
-    assert runtime_specs == []
-    assert pipeline_inits == []
+    assert len(runtime_specs) == 1
+    assert runtime_specs[0][2].provider == "cuda"
+    assert runtime_specs[0][2].device == "cuda:0"
+    assert pipeline_config.tts_runtime.provider == "cuda"
+    assert pipeline_config.tts_runtime.device == "cuda:0"
 
 
 def test_conversion_service_validation_distinguishes_supported_provider_and_device(tmp_path):
@@ -1950,7 +1963,7 @@ def test_conversion_service_validation_distinguishes_supported_provider_and_devi
 
 
 @pytest.mark.parametrize("quantization", ["fp16", "fp32"])
-def test_conversion_service_rejects_cuda_precision_quantization_by_provider_before_quantization(
+def test_conversion_service_preserves_cuda_precision_quantization_for_runtime_validation(
     tmp_path,
     quantization,
 ):
@@ -1961,18 +1974,19 @@ def test_conversion_service_rejects_cuda_precision_quantization_by_provider_befo
 
     service = _make_service_with_validator(tmp_path, _validator)
 
-    with pytest.raises(ValueError, match="Kokoro provider 'cuda' is not supported"):
-        service._validate_requested_tts_runtime(  # noqa: SLF001
-            runtime_options=ConversionRuntimeOptions(
-                tts_engine="kokoro",
-                tts_quantization=quantization,
-                tts_provider="cuda",
-                tts_device="cuda:0",
-                tts_options={"model_name": "Kokoro-82M"},
-            )
+    service._validate_requested_tts_runtime(  # noqa: SLF001
+        runtime_options=ConversionRuntimeOptions(
+            tts_engine="kokoro",
+            tts_quantization=quantization,
+            tts_provider="cuda",
+            tts_device="cuda:0",
+            tts_options={"model_name": "Kokoro-82M"},
         )
+    )
 
-    assert runtime_specs == []
+    assert len(runtime_specs) == 1
+    assert runtime_specs[0][2].provider == "cuda"
+    assert runtime_specs[0][2].quantization == quantization
 
 
 def test_app_controller_generate_voice_preview_forwards_runtime_spec(tmp_path):

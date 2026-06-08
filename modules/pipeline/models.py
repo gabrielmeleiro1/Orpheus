@@ -9,6 +9,11 @@ from typing import Any, Callable, Optional
 
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtime_options import TTSRuntimeOptions, resolve_tts_runtime
+from modules.tts.device_memory import (
+    DeviceMemoryPolicy,
+    device_memory_policy_from_serialized,
+    get_device_memory_policy,
+)
 
 
 def _detect_available_ram_gb() -> float:
@@ -160,6 +165,7 @@ class PipelineConfig:
     cleaner_api_global_limiter: Optional[Any] = None
     shared_worker_pool_manager: Optional[Any] = None
     memory_policy: Optional[Any] = None
+    device_memory_policy: Optional[DeviceMemoryPolicy] = None
     chapter_limit: Optional[int] = None
     pre_chunk_document_cleanup: bool = True
     artifact_gated_cleaning: bool = True
@@ -177,6 +183,13 @@ class PipelineConfig:
         self.tts_engine = self.tts_runtime.engine
         self.tts_model_name = self.tts_runtime.resolved_model()
         self.tts_quantization = self.tts_runtime.quantization
+        device_memory_policy = device_memory_policy_from_serialized(
+            self.device_memory_policy
+        )
+        runtime_provider = self.tts_runtime.provider.strip().lower()
+        if device_memory_policy is None or device_memory_policy.provider != runtime_provider:
+            device_memory_policy = get_device_memory_policy(self.tts_runtime)
+        self.device_memory_policy = device_memory_policy
         self.max_parallel_chapters = max(1, int(self.max_parallel_chapters or 1))
         if self.requested_parallel_chapters is None:
             self.requested_parallel_chapters = self.max_parallel_chapters

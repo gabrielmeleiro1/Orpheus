@@ -48,11 +48,12 @@ class KokoroRuntimeConfig:
                 else None
             ),
         )
-        runtime_options = (
-            dict(config.runtime_options)
-            if isinstance(config.runtime_options, dict)
-            else None
-        )
+        if isinstance(config.runtime_options, dict) and config.runtime_options:
+            runtime_options = dict(config.runtime_options)
+        elif runtime_spec.runtime_options:
+            runtime_options = dict(runtime_spec.runtime_options)
+        else:
+            runtime_options = None
         return cls(
             runtime_spec=runtime_spec,
             model_name=config.model_name,

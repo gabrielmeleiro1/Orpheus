@@ -14,6 +14,15 @@ from .chapter_processor import ChapterProcessor
 from .models import ChapterResult
 from .result_validation import format_failure_notes
 from .runtime import PipelineRuntimeProtocol
+from .worker_errors import (
+    WorkerRuntimeLoadError,
+    WorkerRuntimeMemoryError,
+    WorkerRuntimeUnavailableError,
+    WorkerStartupError,
+    WorkerStartupStatus,
+    StartupFailureAction,
+    resolve_startup_failure_action,
+)
 
 PARALLEL_AVAILABLE = importlib.util.find_spec(f"{__package__}.parallel") is not None
 
@@ -213,6 +222,30 @@ class ParallelChapterRunner:
     ) -> None:
         self._processor._record_parallel_stage_throughput(results, chapters)
 
+    def _notify_worker_startup_failure(
+        self,
+        *,
+        total_chapters: int,
+        message: str,
+        status: WorkerStartupStatus | None = None,
+        reason: str = "worker_startup_failure",
+    ) -> None:
+        performance: dict[str, Any] = {
+            "pipeline_mode": "parallel",
+            "startup_failure": True,
+            "fallback_reason": reason,
+        }
+        if status is not None:
+            performance["startup_provider"] = status.provider
+            performance["startup_device"] = status.device
+            performance["startup_error_type"] = status.error_type
+        self.runtime.notify_progress(
+            chapter_idx=0,
+            total_chapters=total_chapters,
+            message=message,
+            performance=performance,
+        )
+
     @staticmethod
     def _summarize_parallel_worker_errors(results: list[ChapterResult]) -> str:
         errors = [str(result.error) for result in results if result.error]
@@ -345,6 +378,7 @@ class ParallelChapterRunner:
                     total_chapters=total_chapters,
                 ),
                 progress_callback=chapter_progress,
+                cancel_requested=self.runtime.check_cancelled,
             )
             if self.runtime.check_cancelled():
                 return []
@@ -433,6 +467,15 @@ class ParallelChapterRunner:
                     self.runtime.set_parallel_execution_active(previous_parallel_active)
 
             return processed_results
+        except WorkerStartupError as startup_exc:
+            if self.runtime.check_cancelled():
+                return []
+            return self._handle_worker_startup_failure(
+                startup_exc,
+                chapters,
+                output_dir,
+                total_chapters=total_chapters,
+            )
         except Exception as e:
             if self.runtime.check_cancelled():
                 return []
@@ -448,6 +491,122 @@ class ParallelChapterRunner:
                 log_message=f"[PARALLEL] Failed ({e}); falling back to sequential mode",
                 failed_count=total_chapters,
             )
+
+    def _handle_worker_startup_failure(
+        self,
+        startup_exc: WorkerStartupError,
+        chapters: list,
+        output_dir: Path,
+        *,
+        total_chapters: int,
+    ) -> list[ChapterResult]:
+        statuses = list(startup_exc.statuses or [])
+        primary = statuses[0] if statuses else None
+        action = resolve_startup_failure_action(
+            primary,
+            memory_degrade_allowed=self._memory_policy_allows_startup_degrade(),
+        )
+
+        if action == StartupFailureAction.FALLBACK_MEMORY:
+            self._degrade_to_sequential_memory_mode()
+            return self._parallel_fallback(
+                chapters,
+                output_dir,
+                total_chapters=total_chapters,
+                reason="memory_pressure",
+                message=primary.format_failure_detail(
+                    "Parallel fallback: worker startup memory pressure detected"
+                ),
+                log_message=(
+                    "[PARALLEL] Worker startup memory pressure detected; "
+                    "retrying sequential mode"
+                ),
+                failed_count=total_chapters,
+                safe_mode_reason=self._memory_policy_reason()
+                or "memory pressure error",
+            )
+
+        if action == StartupFailureAction.FAIL_FAST_MEMORY:
+            self._notify_worker_startup_failure(
+                total_chapters=total_chapters,
+                message=primary.format_failure_detail("Worker startup failed"),
+                status=primary,
+                reason="worker_startup_memory_error",
+            )
+            raise WorkerRuntimeMemoryError(
+                primary.format_failure(
+                    fallback_message=str(startup_exc),
+                    include_meta=False,
+                ),
+                status=primary,
+            ) from startup_exc
+
+        if action == StartupFailureAction.FAIL_FAST_UNAVAILABLE:
+            self._notify_worker_startup_failure(
+                total_chapters=total_chapters,
+                message=primary.format_failure_detail("Worker startup failed"),
+                status=primary,
+                reason="worker_startup_unavailable",
+            )
+            raise WorkerRuntimeUnavailableError(
+                primary.format_failure(
+                    fallback_message=str(startup_exc),
+                    include_meta=False,
+                ),
+                status=primary,
+            ) from startup_exc
+
+        if action == StartupFailureAction.FALLBACK_INFRASTRUCTURE:
+            return self._parallel_fallback(
+                chapters,
+                output_dir,
+                total_chapters=total_chapters,
+                reason="worker_infrastructure_error",
+                message=primary.format_failure_detail(
+                    "Parallel fallback: worker infrastructure startup errors detected"
+                ),
+                log_message=(
+                    "[PARALLEL] Worker infrastructure startup errors detected; "
+                    "retrying sequential mode"
+                ),
+                failed_count=total_chapters,
+                wrap_reason="worker infrastructure startup errors",
+            )
+
+        if action == StartupFailureAction.FAIL_FAST_LOAD:
+            self._notify_worker_startup_failure(
+                total_chapters=total_chapters,
+                message=primary.format_failure_detail("Worker startup failed"),
+                status=primary,
+                reason="worker_startup_load_error",
+            )
+            raise WorkerRuntimeLoadError(
+                primary.format_failure(
+                    fallback_message=str(startup_exc),
+                    include_meta=False,
+                ),
+                status=primary,
+            ) from startup_exc
+
+        self._notify_worker_startup_failure(
+            total_chapters=total_chapters,
+            message=(
+                primary.format_failure_detail("Worker startup failed")
+                if primary is not None
+                else "Worker startup failed"
+            ),
+            status=primary,
+        )
+        raise startup_exc
+
+    def _memory_policy_allows_startup_degrade(self) -> bool:
+        memory_policy = self.runtime.config.memory_policy
+        if memory_policy is None:
+            return False
+        manual_worker_mode = self.runtime.config.worker_plan.worker_mode == "manual"
+        if manual_worker_mode:
+            return False
+        return True
 
     def _memory_policy_reason(self) -> Optional[str]:
         memory_policy = self.runtime.config.memory_policy
@@ -486,10 +645,3 @@ class ParallelChapterRunner:
         from .retry import should_retry_sequential_from_parallel_errors
 
         return should_retry_sequential_from_parallel_errors(results)
-
-    @staticmethod
-    def _is_infrastructure_runtime_error(error: str) -> bool:
-        """Return True when an error indicates process/thread runtime infrastructure issues."""
-        from .retry import is_infrastructure_runtime_error
-
-        return is_infrastructure_runtime_error(error)
