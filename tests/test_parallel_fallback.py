@@ -15,7 +15,9 @@ import numpy as np
 import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
+TESTS_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(TESTS_DIR))
 
 from modules.pipeline.orchestrator import (
     ChapterResult,
@@ -29,7 +31,7 @@ from modules.pipeline.worker_errors import (
     WorkerRuntimeMemoryError,
     WorkerRuntimeUnavailableError,
 )
-from tests.worker_pool_test_helpers import (
+from worker_pool_test_helpers import (
     NeverCompletingChapterExecutor,
     ProgressCapture,
     RecordMemoryPolicy,

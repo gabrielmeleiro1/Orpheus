@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+import sys
 from unittest.mock import patch
 
 import pytest
+
+TESTS_DIR = Path(__file__).parent
+sys.path.insert(0, str(TESTS_DIR))
 
 from modules.pipeline import worker_runtime
 from modules.pipeline.pool_manager import (
@@ -12,7 +17,7 @@ from modules.pipeline.pool_manager import (
     _worker_startup_probe,
 )
 from modules.pipeline.worker_errors import WorkerStartupError, WorkerStartupStatus
-from tests.worker_pool_test_helpers import (
+from worker_pool_test_helpers import (
     ProbeTrackingExecutor,
     make_failing_probe_executor,
     make_startup_status,

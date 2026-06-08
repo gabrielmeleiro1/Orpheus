@@ -5,11 +5,16 @@ from __future__ import annotations
 from concurrent.futures import Future
 from dataclasses import dataclass
 import os
+from pathlib import Path
+import sys
 import threading
 import time
 from unittest.mock import patch
 
 import pytest
+
+TESTS_DIR = Path(__file__).parent
+sys.path.insert(0, str(TESTS_DIR))
 
 from modules.pipeline.models import ChapterResult
 from modules.pipeline.pool_manager import (
@@ -18,7 +23,7 @@ from modules.pipeline.pool_manager import (
     _worker_startup_probe,
 )
 from modules.pipeline.worker_errors import WorkerStartupError
-from tests.worker_pool_test_helpers import (
+from worker_pool_test_helpers import (
     FakeExecutor as _FakeExecutor,
     NeverCompletingChapterExecutor,
     assert_pending_futures_cancelled,
