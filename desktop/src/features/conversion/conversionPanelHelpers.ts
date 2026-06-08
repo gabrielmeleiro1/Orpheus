@@ -29,17 +29,19 @@ export function compactSample(text: string, maxChars = 260): string {
   return `${normalized.slice(0, maxChars - 3)}...`;
 }
 
+// Alias map must stay in sync with modules/tts/quantization.py (QUANTIZATION_ALIASES).
+const QUANTIZATION_ALIASES: Record<string, string> = {
+  q8: "8bit",
+  q4: "4bit",
+  full: "bf16",
+};
+
 export function normalizeQuantizationValue(value: string): string | null {
   if (!value) {
     return null;
   }
-  if (value === "q8") {
-    return "8bit";
-  }
-  if (value === "q4") {
-    return "4bit";
-  }
-  return value;
+  const normalized = value.trim().toLowerCase();
+  return QUANTIZATION_ALIASES[normalized] ?? normalized;
 }
 
 export function extractDroppedPaths(payload: unknown): string[] {

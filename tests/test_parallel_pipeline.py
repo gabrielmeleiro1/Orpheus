@@ -693,7 +693,7 @@ class TestPipelineIntegration:
         pipeline = ConversionPipeline(config)
         config.parallel_worker_mode = "auto"
 
-        snapshot = pipeline._performance_snapshot()  # noqa: SLF001
+        snapshot = pipeline._runtime.performance_snapshot()  # noqa: SLF001
 
         assert snapshot["parallel_worker_mode"] == "manual"
         assert snapshot["memory_safe_mode"] is False
@@ -716,7 +716,7 @@ class TestPipelineIntegration:
         )
 
         pipeline = ConversionPipeline(config)
-        snapshot = pipeline._performance_snapshot()  # noqa: SLF001
+        snapshot = pipeline._runtime.performance_snapshot()  # noqa: SLF001
 
         assert snapshot["safe_mode_reason"] == "memory headroom unknown"
         assert snapshot["memory_safe_mode"] is True
@@ -1298,7 +1298,7 @@ class TestPipelineAdaptiveWorkers:
         )
         pipeline = ConversionPipeline(cfg)
 
-        snapshot = pipeline._performance_snapshot()  # noqa: SLF001
+        snapshot = pipeline._runtime.performance_snapshot()  # noqa: SLF001
 
         assert snapshot["parallel_worker_mode"] == "manual"
         assert snapshot["requested_parallel_chapters"] == 3
@@ -1514,7 +1514,7 @@ class TestPipelineAdaptiveWorkers:
         pipeline._performance_encode_chapters = 3  # noqa: SLF001
         pipeline._performance_encode_seconds = 6.0  # noqa: SLF001
 
-        snapshot = pipeline._performance_snapshot()  # noqa: SLF001
+        snapshot = pipeline._runtime.performance_snapshot()  # noqa: SLF001
 
         assert snapshot["tts_chars_per_second"] == 500.0
         assert snapshot["encoder_chapters_per_second"] == 0.5

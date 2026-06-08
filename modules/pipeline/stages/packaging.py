@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from modules.pipeline.result_validation import (
+    format_failure_notes,
     select_packaging_audio_input,
     summarize_packaging_input_failures,
 )
@@ -15,9 +16,7 @@ def _raise_if_packaging_inputs_invalid(chapter_results: list[Any]) -> None:
     failure_notes = summarize_packaging_input_failures(chapter_results)
     if not failure_notes:
         return
-    summary = "; ".join(failure_notes[:3])
-    if len(failure_notes) > 3:
-        summary += f"; ... (+{len(failure_notes) - 3} more)"
+    summary = format_failure_notes(failure_notes)
     raise RuntimeError(f"Refusing to package incomplete chapter set. {summary}")
 
 
