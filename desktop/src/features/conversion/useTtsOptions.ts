@@ -1,0 +1,275 @@
+import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
+
+import type { ApiClient } from "../../api/client";
+import type { ModelOptionsResponse, SystemCapabilitiesResponse, TermSelectOption } from "../../types/api";
+
+import {
+  buildQuantizationOptions,
+  findEngine,
+  mapEngineOption,
+  mapVoiceOption,
+  parseSpeed,
+  type PersistedSettings,
+} from "./conversionOptionsShared";
+
+const VOICE_FILTER_DEBOUNCE_MS = 180;
+
+export interface UseTtsOptionsArgs {
+  apiClient: ApiClient | null;
+  persistedSettingsRef: MutableRefObject<PersistedSettings>;
+  settingsHydratedRef: MutableRefObject<boolean>;
+}
+
+export interface UseTtsOptionsResult {
+  loading: boolean;
+  error: string;
+  modelOptions: ModelOptionsResponse | null;
+  systemCapabilities: SystemCapabilitiesResponse | null;
+  selectedEngine: string;
+  setSelectedEngine: (value: string) => void;
+  selectedVoice: string;
+  setSelectedVoice: (value: string) => void;
+  engineOptions: TermSelectOption[];
+  filteredVoiceOptions: TermSelectOption[];
+  voiceFilter: string;
+  setVoiceFilter: (value: string) => void;
+  speedInput: string;
+  speed: number;
+  setSpeed: (value: string) => void;
+  selectedQuantization: string;
+  setSelectedQuantization: (value: string) => void;
+  quantizationOptions: TermSelectOption[];
+}
+
+export function useTtsOptions({
+  apiClient,
+  persistedSettingsRef,
+  settingsHydratedRef,
+}: UseTtsOptionsArgs): UseTtsOptionsResult {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
+  const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
+  const [allVoiceOptions, setAllVoiceOptions] = useState<TermSelectOption[]>([]);
+
+  const [selectedEngine, setSelectedEngineState] = useState("");
+  const [selectedVoice, setSelectedVoiceState] = useState("");
+  const [voiceFilter, setVoiceFilter] = useState("");
+  const [debouncedVoiceFilter, setDebouncedVoiceFilter] = useState("");
+
+  const [speedInput, setSpeedInput] = useState("1.0");
+  const [selectedQuantization, setSelectedQuantizationState] = useState("");
+
+  const engineOptions = useMemo(
+    () => (modelOptions?.tts_engines ?? []).map((engine) => mapEngineOption(engine)).filter((option) => option.value),
+    [modelOptions],
+  );
+
+  const quantizationOptions = useMemo(
+    () => buildQuantizationOptions(findEngine(modelOptions, selectedEngine), systemCapabilities),
+    [modelOptions, selectedEngine, systemCapabilities],
+  );
+
+  const filteredVoiceOptions = useMemo(() => {
+    const query = debouncedVoiceFilter.trim().toLowerCase();
+    if (!query) {
+      return allVoiceOptions;
+    }
+    return allVoiceOptions.filter((option) => (option.search ?? option.label.toLowerCase()).includes(query));
+  }, [allVoiceOptions, debouncedVoiceFilter]);
+
+  const speed = useMemo(() => parseSpeed(speedInput), [speedInput]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedVoiceFilter(voiceFilter);
+    }, VOICE_FILTER_DEBOUNCE_MS);
+
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [voiceFilter]);
+
+  useEffect(() => {
+    if (!apiClient) {
+      settingsHydratedRef.current = false;
+      setLoading(false);
+      setError("");
+      setModelOptions(null);
+      setSystemCapabilities(null);
+      setAllVoiceOptions([]);
+      return;
+    }
+
+    let cancelled = false;
+
+    settingsHydratedRef.current = false;
+    setLoading(true);
+    setError("");
+
+    const load = async () => {
+      try {
+        const [models, capabilities] = await Promise.all([
+          apiClient.getModelOptions(),
+          apiClient.getSystemCapabilities(),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setModelOptions(models);
+        setSystemCapabilities(capabilities);
+
+        const persisted = persistedSettingsRef.current;
+
+        const nextEngine =
+          [persisted.tts_engine, String(capabilities.default_tts_engine ?? "")]
+            .map((value) => String(value ?? "").trim())
+            .find((candidate) => candidate && models.tts_engines.some((engine) => engine.id === candidate)) ??
+          models.tts_engines[0]?.id ??
+          "";
+
+        setSelectedEngineState(nextEngine);
+
+        const savedSpeed = Number.isFinite(persisted.speed) && (persisted.speed ?? 0) > 0 ? String(persisted.speed) : "1.0";
+        setSpeedInput(savedSpeed);
+        settingsHydratedRef.current = true;
+      } catch (loadError: unknown) {
+        if (cancelled) {
+          return;
+        }
+
+        setModelOptions(null);
+        setSystemCapabilities(null);
+        setAllVoiceOptions([]);
+        setError(loadError instanceof Error ? loadError.message : "failed to load conversion options");
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void load();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiClient, persistedSettingsRef, settingsHydratedRef]);
+
+  useEffect(() => {
+    if (!apiClient || !selectedEngine.trim()) {
+      setAllVoiceOptions([]);
+      setSelectedVoiceState("");
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadVoices = async () => {
+      try {
+        const response = await apiClient.getVoiceOptions(selectedEngine);
+        if (cancelled) {
+          return;
+        }
+
+        const mapped = response.voices.map((voice) => mapVoiceOption(voice));
+        setAllVoiceOptions(mapped);
+
+        const preferred = persistedSettingsRef.current.voice;
+        const nextVoice =
+          [selectedVoice, preferred]
+            .map((value) => String(value ?? "").trim())
+            .find((candidate) => candidate && mapped.some((voice) => voice.value === candidate)) ??
+          mapped[0]?.value ??
+          "";
+
+        setSelectedVoiceState(nextVoice);
+      } catch {
+        if (cancelled) {
+          return;
+        }
+
+        const fallbackVoices = findEngine(modelOptions, selectedEngine)?.voices ?? [];
+        const mapped = fallbackVoices.map((voice) => mapVoiceOption(voice));
+        setAllVoiceOptions(mapped);
+
+        const preferred = persistedSettingsRef.current.voice;
+        const nextVoice =
+          [selectedVoice, preferred]
+            .map((value) => String(value ?? "").trim())
+            .find((candidate) => candidate && mapped.some((voice) => voice.value === candidate)) ??
+          mapped[0]?.value ??
+          "";
+        setSelectedVoiceState(nextVoice);
+      }
+    };
+
+    void loadVoices();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [apiClient, modelOptions, persistedSettingsRef, selectedEngine, selectedVoice]);
+
+  useEffect(() => {
+    setSelectedQuantizationState((previous) => {
+      if (quantizationOptions.some((option) => option.value === previous)) {
+        return previous;
+      }
+
+      const persisted = String(persistedSettingsRef.current.tts_quantization ?? "").trim();
+      if (persisted && quantizationOptions.some((option) => option.value === persisted)) {
+        return persisted;
+      }
+
+      const capabilityDefault = String(systemCapabilities?.default_tts_quantization ?? "").trim();
+      if (capabilityDefault && quantizationOptions.some((option) => option.value === capabilityDefault)) {
+        return capabilityDefault;
+      }
+
+      return quantizationOptions[0]?.value ?? "";
+    });
+  }, [persistedSettingsRef, quantizationOptions, systemCapabilities]);
+
+  const setSelectedEngine = useCallback((value: string) => {
+    setSelectedEngineState(value);
+    setVoiceFilter("");
+    setDebouncedVoiceFilter("");
+  }, []);
+
+  const setSelectedVoice = useCallback((value: string) => {
+    setSelectedVoiceState(value);
+  }, []);
+
+  const setSpeed = useCallback((value: string) => {
+    setSpeedInput(value);
+  }, []);
+
+  const setSelectedQuantization = useCallback((value: string) => {
+    setSelectedQuantizationState(value);
+  }, []);
+
+  return {
+    loading,
+    error,
+    modelOptions,
+    systemCapabilities,
+    selectedEngine,
+    setSelectedEngine,
+    selectedVoice,
+    setSelectedVoice,
+    engineOptions,
+    filteredVoiceOptions,
+    voiceFilter,
+    setVoiceFilter,
+    speedInput,
+    speed,
+    setSpeed,
+    selectedQuantization,
+    setSelectedQuantization,
+    quantizationOptions,
+  };
+}

@@ -39,6 +39,7 @@ from .models import (
 from .progress import PipelineProgressTracker
 from .pipeline_stages import PipelineStages
 from .result_validation import (
+    format_failure_notes,
     summarize_incomplete_chapters,
     validate_conversion_success_artifacts,
     validate_chapter_result_structure,
@@ -311,13 +312,6 @@ class ConversionPipeline:
             performance=performance,
         )
 
-    def _performance_snapshot(
-        self,
-        performance: Optional[dict[str, Any]] = None,
-    ) -> dict[str, Any]:
-        """Build a lightweight runtime snapshot for progress events."""
-        return self._runtime.performance_snapshot(performance)
-
     def estimate_eta(self) -> Optional[float]:
         """
         Estimate remaining time in seconds.
@@ -411,11 +405,7 @@ class ConversionPipeline:
                 )
             )
             if structural_mismatch_notes:
-                failure_summary = "; ".join(structural_mismatch_notes[:3])
-                if len(structural_mismatch_notes) > 3:
-                    failure_summary += (
-                        f"; ... (+{len(structural_mismatch_notes) - 3} more)"
-                    )
+                failure_summary = format_failure_notes(structural_mismatch_notes)
                 self._log_verbose(
                     "[STATUS] Chapter result structural mismatch before packaging: "
                     f"{failure_summary}",
@@ -435,11 +425,7 @@ class ConversionPipeline:
 
             incomplete_chapter_notes = summarize_incomplete_chapters(chapter_results)
             if incomplete_chapter_notes:
-                failure_summary = "; ".join(incomplete_chapter_notes[:3])
-                if len(incomplete_chapter_notes) > 3:
-                    failure_summary += (
-                        f"; ... (+{len(incomplete_chapter_notes) - 3} more)"
-                    )
+                failure_summary = format_failure_notes(incomplete_chapter_notes)
                 self._log_verbose(
                     f"[STATUS] {len(incomplete_chapter_notes)}/{len(chapter_results)} chapters incomplete before packaging: "
                     f"{failure_summary}",
@@ -495,9 +481,7 @@ class ConversionPipeline:
                 failure_notes = list(artifact_validation.chapter_notes)
                 if artifact_validation.packaged_output_note is not None:
                     failure_notes.insert(0, artifact_validation.packaged_output_note)
-                failure_summary = "; ".join(failure_notes[:3])
-                if len(failure_notes) > 3:
-                    failure_summary += f"; ... (+{len(failure_notes) - 3} more)"
+                failure_summary = format_failure_notes(failure_notes)
                 self._runtime.set_stage(PipelineStage.ERROR)
                 processing_time = time.time() - pipeline_start
                 return ConversionResult(

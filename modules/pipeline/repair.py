@@ -16,7 +16,9 @@ from .models import (
     RepairResult,
 )
 from .result_validation import (
+    format_failure_notes,
     summarize_repair_input_failures,
+    validate_chapter_sets,
     validate_conversion_success_artifacts,
 )
 from .stages.ingestion import ingest_source
@@ -38,66 +40,8 @@ class RepairRuntime:
     cancel: Callable[[], None]
 
 
-def _normalize_repair_chapter_title(title: Any) -> str:
-    return " ".join(str(title or "").split()).casefold()
-
-
 def _chapter_number(chapter: Any, fallback: int) -> int:
     return int(getattr(chapter, "chapter_number", getattr(chapter, "number", fallback)))
-
-
-def _validate_repair_structure(document_chapters: list[Any], stored_chapters: list[Any]) -> list[str]:
-    source_by_number: dict[int, Any] = {}
-    duplicate_source_numbers: list[int] = []
-    for index, chapter in enumerate(document_chapters):
-        chapter_number = int(getattr(chapter, "number", index + 1))
-        if chapter_number in source_by_number:
-            duplicate_source_numbers.append(chapter_number)
-        source_by_number[chapter_number] = chapter
-
-    stored_numbers: set[int] = set()
-    duplicate_stored_numbers: list[int] = []
-    for chapter in stored_chapters:
-        chapter_number = _chapter_number(chapter, 0)
-        if chapter_number in stored_numbers:
-            duplicate_stored_numbers.append(chapter_number)
-        stored_numbers.add(chapter_number)
-
-    source_numbers = set(source_by_number)
-    errors: list[str] = []
-    if duplicate_source_numbers:
-        duplicate_numbers = ", ".join(str(number) for number in sorted(set(duplicate_source_numbers)))
-        errors.append(f"duplicate source chapter rows: {duplicate_numbers}")
-    if duplicate_stored_numbers:
-        duplicate_numbers = ", ".join(str(number) for number in sorted(set(duplicate_stored_numbers)))
-        errors.append(f"duplicate stored chapter rows: {duplicate_numbers}")
-
-    missing_stored_numbers = sorted(source_numbers - stored_numbers)
-    if missing_stored_numbers:
-        missing_numbers = ", ".join(str(number) for number in missing_stored_numbers)
-        errors.append(f"missing stored chapter rows for source chapters: {missing_numbers}")
-
-    missing_source_numbers = sorted(stored_numbers - source_numbers)
-    if missing_source_numbers:
-        missing_numbers = ", ".join(str(number) for number in missing_source_numbers)
-        errors.append(f"missing source chapter rows for stored chapters: {missing_numbers}")
-
-    for chapter in stored_chapters:
-        chapter_number = _chapter_number(chapter, 0)
-        source_chapter = source_by_number.get(chapter_number)
-        if source_chapter is None:
-            continue
-        stored_title = _normalize_repair_chapter_title(getattr(chapter, "title", ""))
-        source_title = _normalize_repair_chapter_title(getattr(source_chapter, "title", ""))
-        if not stored_title or not source_title or stored_title == source_title:
-            continue
-        errors.append(
-            "title mismatch for chapter "
-            f"{chapter_number}: expected {getattr(chapter, 'title', '')!r}, "
-            f"got {getattr(source_chapter, 'title', '')!r}"
-        )
-
-    return errors
 
 
 def _existing_repair_result(
@@ -303,7 +247,11 @@ def execute_repair_plan(
         document = runtime.ingest_source(plan.source_path)
         document_chapters = list(getattr(document, "chapters", []))
         stored_chapters = sorted(plan.stored_chapters, key=lambda item: _chapter_number(item, 0))
-        structure_errors = _validate_repair_structure(document_chapters, stored_chapters)
+        structure_errors = validate_chapter_sets(
+            document_chapters,
+            stored_chapters,
+            context="repair",
+        )
         if structure_errors:
             runtime.set_stage(PipelineStage.ERROR)
             return _failure_result(
@@ -392,7 +340,7 @@ def execute_repair_plan(
             return _failure_result(
                 plan=plan,
                 chapters=results,
-                error="Repair incomplete. " + "; ".join(incomplete_notes[:3]),
+                error="Repair incomplete. " + format_failure_notes(incomplete_notes),
                 processing_started_at=pipeline_start,
             )
 
@@ -425,7 +373,7 @@ def execute_repair_plan(
             return _failure_result(
                 plan=plan,
                 chapters=results,
-                error="Repair reported invalid artifacts. " + "; ".join(notes[:3]),
+                error="Repair reported invalid artifacts. " + format_failure_notes(notes),
                 processing_started_at=pipeline_start,
             )
         runtime.set_stage(PipelineStage.COMPLETE)

@@ -7,6 +7,7 @@ from typing import Optional
 from modules.pipeline.models import ConversionResult as PipelineConversionResult
 from modules.pipeline.result_validation import (
     ConversionArtifactValidation,
+    format_failure_notes,
     validate_conversion_success_artifacts,
 )
 from modules.storage.models import ConversionResult as ControllerConversionResult
@@ -23,9 +24,7 @@ def success_artifact_error(
             f"{validation.packaged_output_note}"
         )
     if notes:
-        summary = "; ".join(notes[:3])
-        if len(notes) > 3:
-            summary += f"; ... (+{len(notes) - 3} more)"
+        summary = format_failure_notes(notes)
         return f"Conversion reported success with invalid artifacts. {summary}"
     return None
 
