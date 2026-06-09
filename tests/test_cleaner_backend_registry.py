@@ -1,0 +1,74 @@
+"""Tests for the cleaner backend registry."""
+
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner_api import CleanerAPIStrategy
+from modules.tts.cleaner_backends import (
+    available_cleaner_backends,
+    get_cleaner_backend,
+    list_cleaner_backend_models,
+    register_cleaner_backend,
+    validate_cleaner_backend,
+)
+from modules.tts.cleaner_mlx import CleanerMLXStrategy
+from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend
+
+
+def test_available_cleaner_backends_returns_sorted_api_and_mlx():
+    assert available_cleaner_backends() == ("api", "mlx")
+
+
+def test_get_cleaner_backend_api_returns_api_strategy():
+    backend = get_cleaner_backend("api")
+
+    assert isinstance(backend, CleanerAPIStrategy)
+    assert backend.name == "api"
+    assert backend.is_local is False
+    assert backend.requires_model is False
+    assert backend.requires_api_key is True
+
+
+def test_get_cleaner_backend_mlx_returns_mlx_strategy():
+    backend = get_cleaner_backend("mlx")
+
+    assert isinstance(backend, CleanerMLXStrategy)
+    assert backend.name == "mlx"
+    assert backend.is_local is True
+    assert backend.requires_model is True
+    assert backend.requires_api_key is False
+
+
+def test_unknown_backend_raises_value_error_with_clear_message():
+    with pytest.raises(ValueError, match=(
+        r"Text cleaner backend 'unknown' is not supported\. "
+        r"Available backends: api, mlx\."
+    )):
+        validate_cleaner_backend("unknown")
+
+
+def test_list_cleaner_backend_models_uses_backend_list_models():
+    mlx_models = list_cleaner_backend_models("mlx")
+    api_models = list_cleaner_backend_models("api")
+
+    assert mlx_models
+    assert api_models
+    assert mlx_models != api_models
+
+
+def test_registering_fake_backend_lets_text_cleaner_use_it(registry_snapshot):
+    register_cleaner_backend("fake", FakeCleanerBackend)
+
+    cleaner = TextCleaner(CleanerConfig(backend="fake"))
+    backend = cleaner._backend_strategy
+
+    backend.load(cleaner)
+    assert cleaner.is_loaded is True
+    assert backend.generate_llm_response(cleaner, "prompt") == "fake-response:prompt"
+
+    traces = asyncio.run(backend.clean_batch_with_trace_async(cleaner, ["one", "two"]))
+    assert [trace.cleaned_text for trace in traces] == ["fake:one", "fake:two"]

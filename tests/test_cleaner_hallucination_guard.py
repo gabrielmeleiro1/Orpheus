@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner import CleanerConfig, TextCleaner
+from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
 def _make_cleaner(backend: str = "mlx") -> TextCleaner:
@@ -34,7 +35,7 @@ def _make_cleaner(backend: str = "mlx") -> TextCleaner:
     cleaner._llm_fallback_count = 0
     cleaner._rule_only_count = 0
     cleaner._needs_llm_cleaning = lambda _text: True
-    return cleaner
+    return attach_cleaner_backend_strategy(cleaner)
 
 
 def test_output_within_bounds_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:

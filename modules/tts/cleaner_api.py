@@ -420,7 +420,18 @@ def resolve_api_runtime(config: Any) -> tuple[str, str, str]:
 class CleanerAPIStrategy:
     """API cleaner backend strategy for TextCleaner facade."""
 
+    name = "api"
+    is_local = False
+    requires_model = False
+    requires_api_key = True
+    display_name = "Cloud API"
     backend = "api"
+
+    @classmethod
+    def list_models(cls) -> list[str]:
+        from modules.tts.cleaner_config import list_api_cleaner_models
+
+        return list_api_cleaner_models()
 
     async def _clean_batch_bounded(
         self,

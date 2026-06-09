@@ -18,6 +18,7 @@ from modules.audio.packager import M4BPackager
 from modules.pipeline.orchestrator import ChapterResult, ConversionPipeline, PipelineConfig
 from modules.tts import cleaner as cleaner_module
 from modules.tts.cleaner import CleanerConfig, TextCleaner
+from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
 @pytest.mark.benchmark
@@ -143,6 +144,8 @@ def test_cleaner_api_batch_trace_throughput_with_bounded_concurrency() -> None:
         return ""
 
     cleaner._generate_api_response_async = _fake_generate_api_response_async
+
+    attach_cleaner_backend_strategy(cleaner)
 
     texts = [f"sample chunk {i}" for i in range(48)]
     start = time.perf_counter()
@@ -299,6 +302,8 @@ def test_cleaner_api_batch_reuses_single_client_session() -> None:
     cleaner._needs_llm_cleaning = lambda _text: True
     cleaner._rule_based_clean = lambda text: text
     cleaner._extract_result = lambda _response: ""
+
+    attach_cleaner_backend_strategy(cleaner)
 
     session_creations = 0
     requests = 0
