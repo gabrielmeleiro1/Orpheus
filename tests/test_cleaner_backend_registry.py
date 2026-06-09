@@ -16,7 +16,7 @@ from modules.tts.cleaner_backends import (
     validate_cleaner_backend,
 )
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
-from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend, registry_snapshot
+from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend
 
 
 def test_available_cleaner_backends_returns_sorted_api_and_mlx():
