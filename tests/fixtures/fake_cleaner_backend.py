@@ -5,9 +5,7 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING
 
-import pytest
-
-from modules.tts.cleaner_backends.registry import _REGISTRY, get_cleaner_backend
+from modules.tts.cleaner_backends.registry import get_cleaner_backend, validate_cleaner_backend
 from modules.tts.cleaner_config import CleanTrace
 
 if TYPE_CHECKING:
@@ -51,15 +49,6 @@ class FakeCleanerBackend:
         return ["fake-model"]
 
 
-@pytest.fixture
-def registry_snapshot():
-    """Preserve registry contents across tests that register custom backends."""
-    original = dict(_REGISTRY)
-    yield
-    _REGISTRY.clear()
-    _REGISTRY.update(original)
-
-
 def make_partial_text_cleaner(
     config: CleanerConfig | None = None,
     *,
@@ -82,4 +71,12 @@ def make_partial_text_cleaner(
     cleaner._llm_success_count = 0
     cleaner._llm_fallback_count = 0
     cleaner._rule_only_count = 0
+    return cleaner
+
+
+def attach_cleaner_backend_strategy(cleaner: TextCleaner) -> TextCleaner:
+    """Ensure a partially constructed TextCleaner has a registry-backed strategy."""
+    cleaner._backend_strategy = get_cleaner_backend(
+        validate_cleaner_backend(cleaner.config.backend)
+    )
     return cleaner
