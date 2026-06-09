@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner import CleanerConfig, TextCleaner
+from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
 BASELINE_PATH = Path(__file__).parent / ".cleaner_latency_baseline.json"
@@ -69,7 +70,7 @@ def _make_cleaner(backend: str = "mlx") -> TextCleaner:
     cleaner._llm_success_count = 0
     cleaner._llm_fallback_count = 0
     cleaner._rule_only_count = 0
-    return cleaner
+    return attach_cleaner_backend_strategy(cleaner)
 
 
 def _measure_ms(fn, iterations: int = 20) -> float:
