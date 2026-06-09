@@ -5,26 +5,14 @@ from __future__ import annotations
 import types
 from unittest.mock import patch
 
-import pytest
-
 from modules.pipeline.models import PipelineConfig, build_worker_plan
 from modules.pipeline.stages.cleaning import clean_chunks_with_trace
 from modules.tts.cleaner_backends.registry import (
-    _REGISTRY,
     is_local_cleaner_backend,
     register_cleaner_backend,
     requires_api_key_cleaner_backend,
 )
 from modules.tts.cleaner_config import CleanTrace
-
-
-@pytest.fixture
-def registry_snapshot():
-    """Preserve registry contents across tests that register custom backends."""
-    original = dict(_REGISTRY)
-    yield
-    _REGISTRY.clear()
-    _REGISTRY.update(original)
 
 
 def test_is_local_cleaner_backend_mlx_and_api():

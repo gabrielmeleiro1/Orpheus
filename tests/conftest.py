@@ -8,7 +8,7 @@ if PROJECT_ROOT in sys.path:
     sys.path.remove(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
 
-from tests.fixtures.fake_cleaner_backend import registry_snapshot  # noqa: F401
+pytest_plugins = ["tests.fixtures.fake_cleaner_backend"]
 
 @pytest.fixture
 def test_data_dir():
