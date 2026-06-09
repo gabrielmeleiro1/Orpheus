@@ -1253,7 +1253,7 @@ class TestPipelineAdaptiveWorkers:
                     worker_mode="auto",
                     worker_auto_mode="memory_safe",
                     process_safe=False,
-                    initial_reason="local MLX model contention guard",
+                    initial_reason="local GPU model contention guard",
                 ),
                 max_parallel_chapters=3,
                 parallel_worker_mode="auto",
@@ -1273,7 +1273,7 @@ class TestPipelineAdaptiveWorkers:
         assert pipeline._selected_parallel_chapters == 1
         assert (
             pipeline._selected_parallel_worker_count_reason
-            == "local MLX model contention guard"
+            == "local GPU model contention guard"
         )
         assert ("warmup", "info") in calls
 

@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
+from modules.tts.cleaner_backends.registry import is_local_cleaner_backend
+
 
 @dataclass(frozen=True)
 class CleanedChunkResult:
@@ -472,7 +474,7 @@ def clean_chunks_with_trace(
     """
     cleaner_backend = str(getattr(getattr(cleaner, "config", None), "backend", "")).lower() or "unknown"
 
-    if cleaner_backend == "mlx":
+    if is_local_cleaner_backend(cleaner_backend):
         batch_result = _run_sync_trace_batch_cleaning(
             runtime,
             cleaner=cleaner,
