@@ -2173,6 +2173,98 @@ def test_conversion_service_pipeline_config_defaults_cleaning_artifacts_on(tmp_p
     assert pipeline_config.save_cleaning_debug is True
 
 
+def test_conversion_service_pipeline_config_rejects_invalid_cleaner_backend(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    with pytest.raises(ValueError, match="not supported"):
+        service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+            runtime_options=ConversionRuntimeOptions(
+                voice="af_bella",
+                speed=1.0,
+                tts_engine="kokoro",
+                tts_quantization=None,
+                cleaner_model=None,
+                cleaner_backend="bogus",
+                cleaner_api_model=None,
+                tts_options=None,
+            ),
+            conversion_mode="audiobook",
+        )
+
+
+def test_conversion_service_pipeline_config_defaults_cleaner_backend_to_mlx(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model=None,
+            cleaner_backend=None,
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
+
+    assert pipeline_config.cleaner_backend == "mlx"
+
+
+def test_conversion_service_pipeline_config_accepts_registered_cleaner_backend(tmp_path):
+    from modules.tts.cleaner_backends.registry import _REGISTRY, register_cleaner_backend
+
+    class FakeCleanerBackend:
+        name = "fake"
+        is_local = True
+        requires_model = False
+        display_name = "Fake Backend"
+        requires_api_key = False
+
+        def load(self, cleaner) -> None:
+            return None
+
+        async def clean_batch_with_trace_async(self, cleaner, texts):
+            return []
+
+        def generate_llm_response(self, cleaner, prompt: str) -> str:
+            return prompt
+
+        def unload(self, cleaner, *, keep_in_cache: bool = True) -> None:
+            return None
+
+        def clear_cache(self, cleaner) -> None:
+            return None
+
+        def list_models(self) -> list[str]:
+            return ["fake-model"]
+
+    original = dict(_REGISTRY)
+    try:
+        register_cleaner_backend("fake", FakeCleanerBackend)
+        service = _make_service(tmp_path, _PipelineStub)
+
+        pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+            runtime_options=ConversionRuntimeOptions(
+                voice="af_bella",
+                speed=1.0,
+                tts_engine="kokoro",
+                tts_quantization=None,
+                cleaner_model=None,
+                cleaner_backend="fake",
+                cleaner_api_model=None,
+                tts_options=None,
+            ),
+            conversion_mode="audiobook",
+        )
+
+        assert pipeline_config.cleaner_backend == "fake"
+    finally:
+        _REGISTRY.clear()
+        _REGISTRY.update(original)
+
+
 def test_conversion_service_pipeline_config_accepts_direct_cleaner_api_key(tmp_path):
     service = _make_service(tmp_path, _PipelineStub)
 

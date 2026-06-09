@@ -9,6 +9,16 @@ if PROJECT_ROOT in sys.path:
 sys.path.insert(0, PROJECT_ROOT)
 
 @pytest.fixture
+def registry_snapshot():
+    """Preserve registry contents across tests that register custom backends."""
+    from modules.tts.cleaner_backends.registry import _REGISTRY
+
+    original = dict(_REGISTRY)
+    yield
+    _REGISTRY.clear()
+    _REGISTRY.update(original)
+
+@pytest.fixture
 def test_data_dir():
     """Return path to test fixtures directory."""
     return Path(__file__).parent / "fixtures"

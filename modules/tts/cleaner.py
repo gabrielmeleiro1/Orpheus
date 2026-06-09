@@ -36,6 +36,7 @@ from .cleaner_config import (
     list_api_cleaner_models as list_api_cleaner_models,
     list_cleaner_models as list_cleaner_models,
 )
+from .cleaner_backends.registry import get_cleaner_backend, validate_cleaner_backend
 from modules.async_bridge import run_coroutine_sync
 
 # MLX-LM runtime compatibility globals retained for direct monkeypatch tests.
@@ -105,13 +106,8 @@ class TextCleaner:
             config: Cleaner configuration (uses defaults if None)
         """
         self.config = config or CleanerConfig()
-        if self.config.backend == "mlx":
-            _ensure_mlx_lm_runtime()
-        self._backend_strategy = (
-            cleaner_api_backend.CleanerAPIStrategy()
-            if self.config.backend == "api"
-            else cleaner_mlx_backend.CleanerMLXStrategy()
-        )
+        self.config.backend = validate_cleaner_backend(self.config.backend)
+        self._backend_strategy = get_cleaner_backend(self.config.backend)
         
         self._model = None
         self._tokenizer = None
@@ -127,18 +123,6 @@ class TextCleaner:
         self._llm_fallback_count = 0
         self._rule_only_count = 0
 
-    def _get_backend_strategy(self):
-        strategy = getattr(self, "_backend_strategy", None)
-        if strategy is not None:
-            return strategy
-        strategy = (
-            cleaner_api_backend.CleanerAPIStrategy()
-            if self.config.backend == "api"
-            else cleaner_mlx_backend.CleanerMLXStrategy()
-        )
-        self._backend_strategy = strategy
-        return strategy
-    
     @property
     def is_loaded(self) -> bool:
         """Check if model is currently loaded."""
@@ -162,7 +146,7 @@ class TextCleaner:
     
     def load(self) -> None:
         """Load the LLM model into memory."""
-        self._get_backend_strategy().load(self)
+        self._backend_strategy.load(self)
     
     def clean(self, text: str) -> str:
         """Compatibility wrapper that returns only cleaned text."""
@@ -188,7 +172,7 @@ class TextCleaner:
 
         For API backend this avoids sync/async bridge overhead by executing fully async.
         """
-        return await self._get_backend_strategy().clean_batch_with_trace_async(self, texts)
+        return await self._backend_strategy.clean_batch_with_trace_async(self, texts)
 
     def clean_chunks(self, texts: list[str]) -> list[str]:
         """Clean multiple chunks with local gating while preserving input order."""
@@ -279,7 +263,7 @@ class TextCleaner:
 
         Supports both legacy mlx-lm (`temp`) and newer (`temperature`) APIs.
         """
-        return self._get_backend_strategy().generate_llm_response(self, prompt)
+        return self._backend_strategy.generate_llm_response(self, prompt)
 
     def _generate_mlx_response(self, prompt: str) -> str:
         """Generate cleaned text via local mlx-lm runtime."""
@@ -418,11 +402,11 @@ class TextCleaner:
         Args:
             keep_in_cache: If True, model stays in global cache for reuse
         """
-        self._get_backend_strategy().unload(self, keep_in_cache=keep_in_cache)
+        self._backend_strategy.unload(self, keep_in_cache=keep_in_cache)
     
     def clear_cache(self) -> None:
         """Clear the global cleaner model cache."""
-        self._get_backend_strategy().clear_cache(self)
+        self._backend_strategy.clear_cache(self)
     
     def __enter__(self):
         """Context manager entry."""

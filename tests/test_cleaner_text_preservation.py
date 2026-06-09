@@ -18,6 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner import TextCleaner, CleanerConfig
+from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +39,7 @@ def _make_rule_only_cleaner() -> TextCleaner:
     cleaner._llm_success_count = 0
     cleaner._llm_fallback_count = 0
     cleaner._rule_only_count = 0
-    return cleaner
+    return attach_cleaner_backend_strategy(cleaner)
 
 
 def _make_mlx_cleaner_with_fake_llm(fake_response: str) -> TextCleaner:
@@ -505,6 +506,7 @@ class TestAPIBackendFallback:
             api_model="gpt-4o-mini",
         )
         cleaner._loaded = True
+        attach_cleaner_backend_strategy(cleaner)
 
         original_urlopen = cleaner_module.urlrequest.urlopen
         original_key = os.environ.get("OPENAI_API_KEY")

@@ -7,6 +7,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from modules.tts.cleaner_backends.registry import is_local_cleaner_backend
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtime_options import TTSRuntimeOptions, resolve_tts_runtime
 from modules.tts.device_memory import (
@@ -72,10 +73,10 @@ def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
 
     max_workers = requested_workers if parallel_requested else 1
     initial_reason: Optional[str] = None
-    local_mlx_model_path = (
+    local_gpu_model_contention = (
         worker_mode == "auto"
         and str(config.tts_engine or "").strip().lower() == "kokoro"
-        and str(config.cleaner_backend or "").strip().lower() == "mlx"
+        and is_local_cleaner_backend(config.cleaner_backend)
         and not (worker_auto_mode == "cpu_cores" and process_safe)
     )
 
@@ -88,9 +89,9 @@ def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
     elif worker_auto_mode == "sequential":
         max_workers = 1
         initial_reason = "backend sequential auto worker policy"
-    elif local_mlx_model_path:
+    elif local_gpu_model_contention:
         max_workers = 1
-        initial_reason = "local MLX model contention guard"
+        initial_reason = "local GPU model contention guard"
     elif config.memory_policy is not None:
         allowed_workers = getattr(config.memory_policy, "allowed_workers", None)
         if callable(allowed_workers):

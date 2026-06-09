@@ -15,6 +15,8 @@ import urllib.error as urlerror
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -22,9 +24,28 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner_transport import generate_api_response_async
 from modules.tts.cleaner import TextCleaner, CleanerConfig
+from modules.tts.cleaner_api import CleanerAPIStrategy
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
 from modules.tts.cleaner_rules import extract_result
 from modules.tts import cleaner_rules as cleaner_rules_backend
+from tests.fixtures.fake_cleaner_backend import make_partial_text_cleaner
+
+
+def test_text_cleaner_init_selects_backend_from_registry(monkeypatch):
+    api_cleaner = TextCleaner(CleanerConfig(backend="api"))
+    api_strategy = api_cleaner._backend_strategy
+    assert isinstance(api_strategy, CleanerAPIStrategy)
+
+    monkeypatch.setattr(
+        "modules.tts.cleaner_mlx.ensure_mlx_lm_runtime",
+        lambda: None,
+    )
+    mlx_cleaner = TextCleaner(CleanerConfig(backend="mlx"))
+    mlx_strategy = mlx_cleaner._backend_strategy
+    assert isinstance(mlx_strategy, CleanerMLXStrategy)
+
+    with pytest.raises(ValueError, match="not supported"):
+        TextCleaner(CleanerConfig(backend="bogus"))
 
 
 def test_extract_result_strips_prompt_delimiter_echoes():
@@ -96,19 +117,7 @@ def test_cleaner_prompt_scopes_literary_preservation():
 
 
 def _make_loaded_mlx_cleaner(config: CleanerConfig | None = None) -> TextCleaner:
-    cleaner = TextCleaner.__new__(TextCleaner)
-    cleaner.config = config or CleanerConfig()
-    cleaner._loaded = True
-    cleaner._model = object()
-    cleaner._tokenizer = object()
-    cleaner._manager = None
-    cleaner._model_lock = threading.RLock()
-    cleaner._total_chunks_cleaned = 0
-    cleaner._total_time_ms = 0
-    cleaner._llm_success_count = 0
-    cleaner._llm_fallback_count = 0
-    cleaner._rule_only_count = 0
-    return cleaner
+    return make_partial_text_cleaner(config or CleanerConfig(), loaded=True)
 
 
 def test_cleaner_skip_llm_option_uses_rule_only_for_long_clean_text(monkeypatch):
@@ -191,9 +200,7 @@ def test_rule_based_cleaning():
     print("[1] Testing rule-based text cleaning...")
     
     # Create cleaner without loading LLM
-    cleaner = TextCleaner.__new__(TextCleaner)
-    cleaner.config = CleanerConfig()
-    cleaner._loaded = False
+    cleaner = make_partial_text_cleaner(CleanerConfig(), loaded=False)
     
     test_cases = [
         ("Dr. Smith went to St. Louis.", "Dr. Smith went to St. Louis."),
@@ -272,18 +279,7 @@ def test_rule_based_cleaning():
 
     # Test 4: mlx-lm sampler compatibility
     print("\n[4] Testing mlx-lm sampler compatibility...")
-    compat_cleaner = TextCleaner.__new__(TextCleaner)
-    compat_cleaner.config = CleanerConfig()
-    compat_cleaner._loaded = True
-    compat_cleaner._model = object()
-    compat_cleaner._tokenizer = object()
-    compat_cleaner._manager = None
-    compat_cleaner._model_lock = threading.RLock()
-    compat_cleaner._total_chunks_cleaned = 0
-    compat_cleaner._total_time_ms = 0
-    compat_cleaner._llm_success_count = 0
-    compat_cleaner._llm_fallback_count = 0
-    compat_cleaner._rule_only_count = 0
+    compat_cleaner = make_partial_text_cleaner(CleanerConfig(), loaded=True)
 
     calls = []
 
@@ -327,24 +323,16 @@ def test_rule_based_cleaning():
 
     # Test 6: API backend path (OpenAI-compatible / Kimi)
     print("\n[6] Testing API cleaner backend request flow...")
-    api_cleaner = TextCleaner.__new__(TextCleaner)
-    api_cleaner.config = CleanerConfig(
-        model_name="moonshot-v1-8k",
-        backend="api",
-        api_base_url="https://api.moonshot.cn/v1",
-        api_key_env="KIMI_API_KEY",
-        api_model=None,
+    api_cleaner = make_partial_text_cleaner(
+        CleanerConfig(
+            model_name="moonshot-v1-8k",
+            backend="api",
+            api_base_url="https://api.moonshot.cn/v1",
+            api_key_env="KIMI_API_KEY",
+            api_model=None,
+        ),
+        loaded=True,
     )
-    api_cleaner._loaded = True
-    api_cleaner._model = None
-    api_cleaner._tokenizer = None
-    api_cleaner._manager = None
-    api_cleaner._model_lock = threading.RLock()
-    api_cleaner._total_chunks_cleaned = 0
-    api_cleaner._total_time_ms = 0
-    api_cleaner._llm_success_count = 0
-    api_cleaner._llm_fallback_count = 0
-    api_cleaner._rule_only_count = 0
 
     captured_request = {"url": None, "model": None, "context": None}
 
@@ -402,24 +390,16 @@ def test_rule_based_cleaning():
 
     # Test 7: API backend TLS context with custom CA bundle
     print("\n[7] Testing API cleaner backend TLS custom CA bundle...")
-    api_ca_cleaner = TextCleaner.__new__(TextCleaner)
-    api_ca_cleaner.config = CleanerConfig(
-        model_name="moonshot-v1-8k",
-        backend="api",
-        api_base_url="https://api.moonshot.cn/v1",
-        api_key_env="KIMI_API_KEY",
-        api_model=None,
+    api_ca_cleaner = make_partial_text_cleaner(
+        CleanerConfig(
+            model_name="moonshot-v1-8k",
+            backend="api",
+            api_base_url="https://api.moonshot.cn/v1",
+            api_key_env="KIMI_API_KEY",
+            api_model=None,
+        ),
+        loaded=True,
     )
-    api_ca_cleaner._loaded = True
-    api_ca_cleaner._model = None
-    api_ca_cleaner._tokenizer = None
-    api_ca_cleaner._manager = None
-    api_ca_cleaner._model_lock = threading.RLock()
-    api_ca_cleaner._total_chunks_cleaned = 0
-    api_ca_cleaner._total_time_ms = 0
-    api_ca_cleaner._llm_success_count = 0
-    api_ca_cleaner._llm_fallback_count = 0
-    api_ca_cleaner._rule_only_count = 0
     class _FakeSSLContext:
         def __init__(self):
             self.loaded_cafile = None
@@ -486,24 +466,16 @@ def test_rule_based_cleaning():
 
     # Test 8: API backend parser fallback for choices[].text payloads
     print("\n[8] Testing API cleaner backend parser fallback...")
-    api_text_cleaner = TextCleaner.__new__(TextCleaner)
-    api_text_cleaner.config = CleanerConfig(
-        model_name="gpt-5-nano",
-        backend="api",
-        api_base_url="https://api.openai.com/v1",
-        api_key_env="OPENAI_API_KEY",
-        api_model="gpt-5-nano",
+    api_text_cleaner = make_partial_text_cleaner(
+        CleanerConfig(
+            model_name="gpt-5-nano",
+            backend="api",
+            api_base_url="https://api.openai.com/v1",
+            api_key_env="OPENAI_API_KEY",
+            api_model="gpt-5-nano",
+        ),
+        loaded=True,
     )
-    api_text_cleaner._loaded = True
-    api_text_cleaner._model = None
-    api_text_cleaner._tokenizer = None
-    api_text_cleaner._manager = None
-    api_text_cleaner._model_lock = threading.RLock()
-    api_text_cleaner._total_chunks_cleaned = 0
-    api_text_cleaner._total_time_ms = 0
-    api_text_cleaner._llm_success_count = 0
-    api_text_cleaner._llm_fallback_count = 0
-    api_text_cleaner._rule_only_count = 0
 
     parser_capture = {"url": None, "model": None}
 
@@ -535,24 +507,16 @@ def test_rule_based_cleaning():
 
     # Test 9: API backend retries token field when provider rejects max_tokens
     print("\n[9] Testing API token parameter fallback (max_tokens -> max_completion_tokens)...")
-    api_token_cleaner = TextCleaner.__new__(TextCleaner)
-    api_token_cleaner.config = CleanerConfig(
-        model_name="gpt-4o-mini",
-        backend="api",
-        api_base_url="https://api.openai.com/v1",
-        api_key_env="OPENAI_API_KEY",
-        api_model="gpt-4o-mini",
+    api_token_cleaner = make_partial_text_cleaner(
+        CleanerConfig(
+            model_name="gpt-4o-mini",
+            backend="api",
+            api_base_url="https://api.openai.com/v1",
+            api_key_env="OPENAI_API_KEY",
+            api_model="gpt-4o-mini",
+        ),
+        loaded=True,
     )
-    api_token_cleaner._loaded = True
-    api_token_cleaner._model = None
-    api_token_cleaner._tokenizer = None
-    api_token_cleaner._manager = None
-    api_token_cleaner._model_lock = threading.RLock()
-    api_token_cleaner._total_chunks_cleaned = 0
-    api_token_cleaner._total_time_ms = 0
-    api_token_cleaner._llm_success_count = 0
-    api_token_cleaner._llm_fallback_count = 0
-    api_token_cleaner._rule_only_count = 0
 
     token_payloads = []
 
@@ -619,24 +583,16 @@ def test_rule_based_cleaning():
 
     # Test 10: GPT-5 models use max_completion_tokens without retry
     print("\n[10] Testing GPT-5 token parameter selection...")
-    api_gpt5_cleaner = TextCleaner.__new__(TextCleaner)
-    api_gpt5_cleaner.config = CleanerConfig(
-        model_name="gpt-5-nano",
-        backend="api",
-        api_base_url="https://api.openai.com/v1",
-        api_key_env="OPENAI_API_KEY",
-        api_model="gpt-5-nano",
+    api_gpt5_cleaner = make_partial_text_cleaner(
+        CleanerConfig(
+            model_name="gpt-5-nano",
+            backend="api",
+            api_base_url="https://api.openai.com/v1",
+            api_key_env="OPENAI_API_KEY",
+            api_model="gpt-5-nano",
+        ),
+        loaded=True,
     )
-    api_gpt5_cleaner._loaded = True
-    api_gpt5_cleaner._model = None
-    api_gpt5_cleaner._tokenizer = None
-    api_gpt5_cleaner._manager = None
-    api_gpt5_cleaner._model_lock = threading.RLock()
-    api_gpt5_cleaner._total_chunks_cleaned = 0
-    api_gpt5_cleaner._total_time_ms = 0
-    api_gpt5_cleaner._llm_success_count = 0
-    api_gpt5_cleaner._llm_fallback_count = 0
-    api_gpt5_cleaner._rule_only_count = 0
 
     gpt5_payloads = []
 
@@ -679,24 +635,16 @@ def test_rule_based_cleaning():
 
     # Test 11: o-family models should omit temperature override
     print("\n[11] Testing o-family temperature compatibility...")
-    api_o3_cleaner = TextCleaner.__new__(TextCleaner)
-    api_o3_cleaner.config = CleanerConfig(
-        model_name="o3-mini",
-        backend="api",
-        api_base_url="https://api.openai.com/v1",
-        api_key_env="OPENAI_API_KEY",
-        api_model="o3-mini",
+    api_o3_cleaner = make_partial_text_cleaner(
+        CleanerConfig(
+            model_name="o3-mini",
+            backend="api",
+            api_base_url="https://api.openai.com/v1",
+            api_key_env="OPENAI_API_KEY",
+            api_model="o3-mini",
+        ),
+        loaded=True,
     )
-    api_o3_cleaner._loaded = True
-    api_o3_cleaner._model = None
-    api_o3_cleaner._tokenizer = None
-    api_o3_cleaner._manager = None
-    api_o3_cleaner._model_lock = threading.RLock()
-    api_o3_cleaner._total_chunks_cleaned = 0
-    api_o3_cleaner._total_time_ms = 0
-    api_o3_cleaner._llm_success_count = 0
-    api_o3_cleaner._llm_fallback_count = 0
-    api_o3_cleaner._rule_only_count = 0
 
     o3_payloads = []
 

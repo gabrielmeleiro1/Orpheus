@@ -20,9 +20,6 @@ API_MODEL_CHOICES = [
     "gpt-4o",
     "moonshot-v1-8k",
 ]
-CLEANER_BACKENDS: tuple[str, ...] = ("mlx", "api")
-
-
 @dataclass
 class CleanerConfig:
     """Configuration for text cleaner."""
@@ -33,7 +30,7 @@ class CleanerConfig:
     batch_size: int = 1
     cache_model: bool = True
     skip_llm_when_not_needed: bool = False
-    backend: Literal["mlx", "api"] = "mlx"
+    backend: str = "mlx"
     api_base_url: str = DEFAULT_API_BASE_URL
     api_key_env: str = "OPENAI_API_KEY"
     api_key: Optional[str] = None
@@ -72,18 +69,16 @@ def list_api_cleaner_models() -> list[str]:
 
 def list_cleaner_backends() -> list[str]:
     """Return supported text cleaner backend identifiers."""
-    return list(CLEANER_BACKENDS)
+    from modules.tts.cleaner_backends.registry import available_cleaner_backends
+
+    return list(available_cleaner_backends())
 
 
 def normalize_cleaner_backend(value: str) -> str:
     """Normalize and validate a text cleaner backend identifier."""
-    backend = str(value or "").strip().lower()
-    if backend in CLEANER_BACKENDS:
-        return backend
-    available = ", ".join(CLEANER_BACKENDS)
-    raise ValueError(
-        f"Text cleaner backend '{backend}' is not supported. Use one of: {available}."
-    )
+    from modules.tts.cleaner_backends.registry import validate_cleaner_backend
+
+    return validate_cleaner_backend(value)
 
 
 CLEANER_PROMPT_TEMPLATE = """You are a minimal text-correction assistant for a text-to-speech system.

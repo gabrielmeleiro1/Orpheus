@@ -1,3 +1,5 @@
+import pytest
+
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
@@ -30,3 +32,8 @@ def test_local_cleaner_batch_scores_all_chunks_and_preserves_order(monkeypatch):
     assert len(calls) == 1
     assert traces[0].artifact_score is not None
     assert traces[1].artifact_score is not None
+
+
+def test_text_cleaner_rejects_unknown_backend_at_init():
+    with pytest.raises(ValueError, match="not supported"):
+        TextCleaner(CleanerConfig(backend="bogus"))
