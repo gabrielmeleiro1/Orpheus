@@ -94,9 +94,21 @@ def clear_cleaner_cache() -> None:
 class CleanerMLXStrategy:
     """MLX cleaner backend strategy for TextCleaner facade."""
 
+    name = "mlx"
+    is_local = True
+    requires_model = True
+    requires_api_key = False
+    display_name = "Local MLX"
     backend = "mlx"
 
+    @classmethod
+    def list_models(cls) -> list[str]:
+        from modules.tts.cleaner_config import list_cleaner_models
+
+        return list_cleaner_models()
+
     def load(self, cleaner: Any) -> None:
+        ensure_mlx_lm_runtime()
         if cleaner._loaded:
             return
 
