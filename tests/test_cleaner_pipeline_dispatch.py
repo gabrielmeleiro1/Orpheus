@@ -25,6 +25,12 @@ def test_is_local_cleaner_backend_mlx_and_api():
     assert requires_api_key_cleaner_backend("unknown") is False
 
 
+def test_is_local_cleaner_backend_cuda():
+    assert is_local_cleaner_backend("cuda") is True
+    assert is_local_cleaner_backend("CUDA") is True
+    assert requires_api_key_cleaner_backend("cuda") is False
+
+
 def test_build_worker_plan_uses_registry_for_local_gpu_contention_guard():
     config = PipelineConfig(
         enable_parallel=True,
@@ -32,6 +38,25 @@ def test_build_worker_plan_uses_registry_for_local_gpu_contention_guard():
         parallel_worker_mode="auto",
         tts_engine="kokoro",
         cleaner_backend="mlx",
+        tts_worker_auto_mode="memory_safe",
+        tts_process_safe=False,
+    )
+
+    plan = build_worker_plan(config)
+
+    assert plan.max_workers == 1
+    assert plan.initial_reason == "local GPU model contention guard"
+
+
+def test_build_worker_plan_cuda_local_gpu_contention():
+    config = PipelineConfig(
+        enable_parallel=True,
+        requested_parallel_chapters=3,
+        parallel_worker_mode="auto",
+        tts_engine="kokoro",
+        cleaner_backend="cuda",
+        cleaner_cuda_device="cuda:0",
+        cleaner_cuda_quantization="4bit",
         tts_worker_auto_mode="memory_safe",
         tts_process_safe=False,
     )
@@ -139,6 +164,43 @@ def test_cleaning_stage_uses_local_dispatch_for_mlx():
         )
 
     local_dispatch.assert_called_once()
+    assert cleaned == []
+    assert llm_inputs == []
+    assert trace_rows == []
+    assert cancelled is False
+
+
+def test_cleaning_stage_uses_local_dispatch_for_cuda():
+    runtime = types.SimpleNamespace(
+        check_cancelled=lambda: False,
+        log_verbose=lambda *_args, **_kwargs: None,
+        config=types.SimpleNamespace(save_cleaning_debug=False),
+    )
+    cleaner = types.SimpleNamespace(
+        config=types.SimpleNamespace(backend="cuda"),
+    )
+    hooks = types.SimpleNamespace()
+
+    with (
+        patch(
+            "modules.pipeline.stages.cleaning._run_sync_trace_batch_cleaning",
+            return_value=([], False),
+        ) as local_dispatch,
+        patch(
+            "modules.pipeline.stages.cleaning._run_batch_trace_cleaning",
+        ) as api_batch,
+    ):
+        cleaned, llm_inputs, trace_rows, cancelled = clean_chunks_with_trace(
+            runtime,
+            hooks,
+            chapter_idx=0,
+            total_chapters=1,
+            chunks=["one", "two"],
+            cleaner=cleaner,
+        )
+
+    local_dispatch.assert_called_once()
+    api_batch.assert_not_called()
     assert cleaned == []
     assert llm_inputs == []
     assert trace_rows == []
