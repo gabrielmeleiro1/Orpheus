@@ -13,7 +13,9 @@ brew install python@3.12 node rust ffmpeg
 ```
 
 - macOS on Apple Silicon is the primary supported runtime. The local MLX stack
-  is Apple Silicon oriented.
+  is Apple Silicon oriented. Headless NVIDIA GPU text cleaning uses the
+  ``cuda`` cleaner backend (PyTorch + transformers; optional bitsandbytes for
+  4/8-bit loading) and does not require Apple Silicon.
 - Python 3.12 is recommended for the desktop sidecar build and is the version
   used by the packaged runtime dependencies.
 - Node.js is used by the React/Vite/Tauri frontend.
