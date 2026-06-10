@@ -1,4 +1,4 @@
-"""Registry for text cleaner backends."""
+"""Registry for text cleaner backends (mlx, cuda, api)."""
 
 from __future__ import annotations
 
@@ -58,9 +58,11 @@ def _register_builtin_backends() -> None:
         return
 
     from modules.tts.cleaner_api import CleanerAPIStrategy
+    from modules.tts.cleaner_cuda import CleanerCUDAStrategy
     from modules.tts.cleaner_mlx import CleanerMLXStrategy
 
     register_cleaner_backend("mlx", CleanerMLXStrategy)
+    register_cleaner_backend("cuda", CleanerCUDAStrategy)
     register_cleaner_backend("api", CleanerAPIStrategy)
     _BUILTIN_BACKENDS_REGISTERED = True
 
