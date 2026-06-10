@@ -5,12 +5,21 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
-# Curated model options for text cleaning in the UI.
+# Curated MLX model options for text cleaning (backend="mlx").
 # The default remains first.
 CLEANER_MODEL_CHOICES = [
     "mlx-community/Llama-3.2-3B-Instruct-4bit",
     "mlx-community/Llama-3.2-1B-Instruct-4bit",
 ]
+# Curated Hugging Face model options for CUDA text cleaning (backend="cuda").
+CUDA_CLEANER_MODEL_CHOICES = [
+    "meta-llama/Llama-3.2-3B-Instruct",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "Qwen/Qwen2.5-1.5B-Instruct",
+]
+DEFAULT_CUDA_MODEL = CUDA_CLEANER_MODEL_CHOICES[0]
+CUDA_CLEANER_QUANTIZATIONS = ("4bit", "8bit", "fp16")
+
 DEFAULT_API_MODEL = "gpt-5-nano"
 DEFAULT_API_BASE_URL = "https://api.openai.com/v1"
 API_MODEL_CHOICES = [
@@ -22,7 +31,13 @@ API_MODEL_CHOICES = [
 ]
 @dataclass
 class CleanerConfig:
-    """Configuration for text cleaner."""
+    """Configuration for text cleaner.
+
+    ``backend`` selects the registered strategy: ``mlx`` (Apple Silicon),
+    ``cuda`` (NVIDIA GPU), or ``api`` (remote). Local backends use
+    ``model_name`` with their respective catalogs; CUDA also uses
+    ``cuda_device`` and ``cuda_quantization``.
+    """
 
     model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
     max_tokens: int = 2048
@@ -31,6 +46,8 @@ class CleanerConfig:
     cache_model: bool = True
     skip_llm_when_not_needed: bool = False
     backend: str = "mlx"
+    cuda_device: str = "cuda"
+    cuda_quantization: str = "4bit"
     api_base_url: str = DEFAULT_API_BASE_URL
     api_key_env: str = "OPENAI_API_KEY"
     api_key: Optional[str] = None
@@ -58,8 +75,34 @@ class CleanTrace:
 
 
 def list_cleaner_models() -> list[str]:
-    """Return cleaner model identifiers offered to users."""
+    """Return MLX cleaner model identifiers (backend=\"mlx\")."""
     return CLEANER_MODEL_CHOICES.copy()
+
+
+def list_cuda_cleaner_models() -> list[str]:
+    """Return CUDA cleaner model identifiers (backend=\"cuda\")."""
+    return CUDA_CLEANER_MODEL_CHOICES.copy()
+
+
+def normalize_cuda_device(value: str) -> str:
+    """Normalize and validate a CUDA device identifier."""
+    from modules.tts.runtime_options import validate_device
+
+    normalized = str(value or "").strip()
+    validate_device("cuda", normalized)
+    return normalized
+
+
+def normalize_cuda_quantization(value: str) -> str:
+    """Normalize and validate a CUDA cleaner quantization mode."""
+    normalized = str(value or "").strip().lower()
+    if normalized not in CUDA_CLEANER_QUANTIZATIONS:
+        available = ", ".join(CUDA_CLEANER_QUANTIZATIONS)
+        raise ValueError(
+            f"Unsupported CUDA cleaner quantization '{value}'. "
+            f"Supported values: {available}."
+        )
+    return normalized
 
 
 def list_api_cleaner_models() -> list[str]:
@@ -68,7 +111,7 @@ def list_api_cleaner_models() -> list[str]:
 
 
 def list_cleaner_backends() -> list[str]:
-    """Return supported text cleaner backend identifiers."""
+    """Return registered cleaner backend identifiers (mlx, cuda, api)."""
     from modules.tts.cleaner_backends.registry import available_cleaner_backends
 
     return list(available_cleaner_backends())

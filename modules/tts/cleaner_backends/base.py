@@ -1,4 +1,4 @@
-"""Cleaner backend protocol for TextCleaner."""
+"""Cleaner backend protocol for TextCleaner (MLX, CUDA, API implementations)."""
 
 from __future__ import annotations
 
