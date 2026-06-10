@@ -90,6 +90,9 @@ class AppConfig:
         default_voice: Default voice ID
         default_speed: Default speech speed
         cleaner_model_name: Default text-cleaner model ID
+        cleaner_backend: Text cleaner backend (mlx, cuda, or api)
+        cleaner_cuda_device: CUDA device for cleaner when backend is cuda
+        cleaner_cuda_quantization: CUDA quant mode (4bit, 8bit, fp16) for cuda backend
         max_parallel_chapters: Max chapters to process in parallel
         enable_parallel: Enable parallel processing
         db_path: Path to SQLite database
@@ -107,6 +110,8 @@ class AppConfig:
     tts_quantization: str = "bf16"
     cleaner_model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
     cleaner_backend: str = "mlx"
+    cleaner_cuda_device: str = "cuda"
+    cleaner_cuda_quantization: str = "4bit"
     cleaner_api_base_url: str = "https://api.openai.com/v1"
     cleaner_api_key_env: str = "OPENAI_API_KEY"
     cleaner_api_model: Optional[str] = "gpt-5-nano"
@@ -154,6 +159,14 @@ class AppConfig:
 
         # Optional env overrides for runtime backend selection.
         self.cleaner_backend = os.getenv("CLEANER_BACKEND", self.cleaner_backend).strip() or self.cleaner_backend
+        self.cleaner_cuda_device = (
+            os.getenv("CLEANER_CUDA_DEVICE", self.cleaner_cuda_device).strip()
+            or self.cleaner_cuda_device
+        )
+        self.cleaner_cuda_quantization = (
+            os.getenv("CLEANER_CUDA_QUANTIZATION", self.cleaner_cuda_quantization).strip()
+            or self.cleaner_cuda_quantization
+        )
         self.cleaner_api_base_url = os.getenv("CLEANER_API_BASE_URL", self.cleaner_api_base_url).strip() or self.cleaner_api_base_url
         self.cleaner_api_key_env = os.getenv("CLEANER_API_KEY_ENV", self.cleaner_api_key_env).strip() or self.cleaner_api_key_env
         env_api_model = os.getenv("CLEANER_API_MODEL")
@@ -243,6 +256,8 @@ class AppConfig:
             "tts_quantization": self.tts_quantization,
             "cleaner_model_name": self.cleaner_model_name,
             "cleaner_backend": self.cleaner_backend,
+            "cleaner_cuda_device": self.cleaner_cuda_device,
+            "cleaner_cuda_quantization": self.cleaner_cuda_quantization,
             "cleaner_api_base_url": self.cleaner_api_base_url,
             "cleaner_api_key_env": self.cleaner_api_key_env,
             "cleaner_api_model": self.cleaner_api_model,

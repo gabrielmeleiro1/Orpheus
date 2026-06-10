@@ -278,6 +278,8 @@ class RuntimeOptionsResolver:
             tts_runtime_options=normalized_options.tts_runtime_options,
             cleaner_model_name=normalized_options.cleaner_model or self._config.cleaner_model_name,
             cleaner_backend=normalized_options.cleaner_backend,
+            cleaner_cuda_device=self._config.cleaner_cuda_device,
+            cleaner_cuda_quantization=self._config.cleaner_cuda_quantization,
             cleaner_api_base_url=self._config.cleaner_api_base_url,
             cleaner_api_key_env=self._config.cleaner_api_key_env,
             cleaner_api_key=normalized_options.cleaner_api_key,
