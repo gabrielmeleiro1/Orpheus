@@ -2212,6 +2212,54 @@ def test_conversion_service_pipeline_config_defaults_cleaner_backend_to_mlx(tmp_
     assert pipeline_config.cleaner_backend == "mlx"
 
 
+def test_conversion_service_pipeline_config_reads_cuda_backend_from_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLEANER_BACKEND", "cuda")
+    monkeypatch.setenv("CLEANER_CUDA_DEVICE", "cuda:0")
+    monkeypatch.setenv("CLEANER_CUDA_QUANTIZATION", "8bit")
+
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    service = ConversionService(
+        config=config,
+        repository=_RepositoryStub(),
+        job_cls=SimpleNamespace,
+        status_enum=_JobStatus,
+        cleaner_api_limiter=_LimiterStub(),
+        runtime_validator=lambda *args, **kwargs: None,
+        shared_worker_pool_manager=None,
+        pipeline_cls=_PipelineStub,
+    )
+
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model=None,
+            cleaner_backend=None,
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
+
+    assert pipeline_config.cleaner_backend == "cuda"
+    assert pipeline_config.cleaner_cuda_device == "cuda:0"
+    assert pipeline_config.cleaner_cuda_quantization == "8bit"
+
+
+def test_normalize_cuda_device_rejects_invalid_device_string():
+    from modules.tts.cleaner_config import normalize_cuda_device
+
+    with pytest.raises(ValueError, match="CUDA device must be"):
+        normalize_cuda_device("gpu:0")
+
+
 def test_conversion_service_pipeline_config_accepts_registered_cleaner_backend(tmp_path):
     from modules.tts.cleaner_backends.registry import _REGISTRY, register_cleaner_backend
 
