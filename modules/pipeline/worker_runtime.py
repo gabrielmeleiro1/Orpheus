@@ -169,6 +169,14 @@ def _init_worker(
                             config=CleanerConfig(
                                 model_name=worker_init_config["cleaner_model_name"],
                                 backend=worker_init_config["cleaner_backend"],
+                                cuda_device=worker_init_config.get(
+                                    "cleaner_cuda_device",
+                                    "cuda",
+                                ),
+                                cuda_quantization=worker_init_config.get(
+                                    "cleaner_cuda_quantization",
+                                    "4bit",
+                                ),
                                 api_base_url=worker_init_config["cleaner_api_base_url"],
                                 api_key_env=worker_init_config["cleaner_api_key_env"],
                                 api_key=worker_init_config.get("cleaner_api_key"),

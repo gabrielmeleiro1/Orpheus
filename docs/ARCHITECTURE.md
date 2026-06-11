@@ -173,6 +173,9 @@ while preserving event-specific fields (`event_type`, `state`, `progress`, etc.)
 - Runtime preflight validation is cached per `TTSRuntimeSpec.cache_key()`.
 - Preview engine is reused across requests for matching runtime keys.
 - TTS batch synthesis reuses executor pools and uses VRAM-pressure adaptive pauses.
+- Local cleaner backends (`mlx` on Apple Silicon, `cuda` on NVIDIA GPUs) use a
+  sync per-chunk batch path via `is_local_cleaner_backend()` dispatch; both share
+  the same worker GPU-contention guard when Kokoro TTS is also local.
 - API cleaner batch path is native async with bounded concurrency (`api_batch_concurrency`)
   and trace return support.
 - Final M4A/M4B outputs encode once from PCM/WAV chapter masters when those masters
