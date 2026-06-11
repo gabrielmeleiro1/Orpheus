@@ -1,4 +1,4 @@
-"""Bounded runtime capability probes for optional MLX dependencies."""
+"""Bounded runtime capability probes for optional MLX and CUDA dependencies."""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 import threading
 import time
 from typing import Any
+
+from modules.tts.cleaner_backends.registry import (
+    available_cleaner_backends,
+    get_cleaner_backend,
+    is_local_cleaner_backend,
+    validate_cleaner_backend,
+)
 
 
 ProbeResult = dict[str, Any]
@@ -33,7 +40,7 @@ except Exception as exc:
     print(json.dumps({"available": False, "error": str(exc)}))
 """
 
-    _CLEANER_PROBE = """
+    _CLEANER_MLX_PROBE = """
 import json
 try:
     import mlx.core  # noqa: F401
@@ -42,6 +49,31 @@ try:
 except Exception as exc:
     print(json.dumps({"available": False, "error": str(exc)}))
 """
+
+    _CLEANER_CUDA_PROBE = """
+import json
+import os
+try:
+    import torch
+    if not torch.cuda.is_available():
+        print(json.dumps({
+            "available": False,
+            "error": "CUDA is not available on this system.",
+        }))
+    else:
+        import transformers  # noqa: F401
+        quant = os.getenv("CLEANER_CUDA_QUANTIZATION", "4bit").strip().lower() or "4bit"
+        if quant in {"4bit", "8bit"}:
+            import bitsandbytes  # noqa: F401
+        print(json.dumps({"available": True}))
+except Exception as exc:
+    print(json.dumps({"available": False, "error": str(exc)}))
+"""
+
+    _CLEANER_PROBE_SCRIPTS: dict[str, str] = {
+        "mlx": _CLEANER_MLX_PROBE,
+        "cuda": _CLEANER_CUDA_PROBE,
+    }
 
     def __init__(
         self,
@@ -54,6 +86,9 @@ except Exception as exc:
         self._cache: dict[str, tuple[float, ProbeResult]] = {}
         self._lock = threading.Lock()
         self._refresh_in_progress = False
+
+    def _cleaner_cache_key(self, backend: str) -> str:
+        return f"cleaner:{validate_cleaner_backend(backend)}"
 
     def _cached_result(self, probe_kind: str) -> ProbeResult | None:
         with self._lock:
@@ -79,20 +114,27 @@ except Exception as exc:
             )
         return dict(stored)
 
-    def _store_snapshot_results(
+    def _snapshot_probe_kinds(self) -> tuple[str, ...]:
+        kinds = ["tts", "cleaner"]
+        for backend_name in available_cleaner_backends():
+            if is_local_cleaner_backend(backend_name):
+                kinds.append(self._cleaner_cache_key(backend_name))
+        return tuple(kinds)
+
+    def _store_cleaner_backend_result(
         self,
-        *,
-        tts: ProbeResult,
-        cleaner: ProbeResult,
-    ) -> None:
-        expires_at = time.monotonic() + self._cache_ttl_seconds
-        stored_tts = dict(tts)
-        stored_tts["cache_hit"] = False
-        stored_cleaner = dict(cleaner)
-        stored_cleaner["cache_hit"] = False
-        with self._lock:
-            self._cache["tts"] = (expires_at, stored_tts)
-            self._cache["cleaner"] = (expires_at, stored_cleaner)
+        backend: str,
+        result: ProbeResult,
+    ) -> ProbeResult:
+        normalized = validate_cleaner_backend(backend)
+        cache_key = self._cleaner_cache_key(normalized)
+        stored = self._store_result(cache_key, result)
+        if normalized == "mlx":
+            expires_at = time.monotonic() + self._cache_ttl_seconds
+            legacy = dict(stored)
+            with self._lock:
+                self._cache["cleaner"] = (expires_at, legacy)
+        return stored
 
     def _get_snapshot_cache_state(self) -> tuple[dict[str, ProbeResult | None], str, bool]:
         now = time.monotonic()
@@ -100,7 +142,7 @@ except Exception as exc:
             refresh_in_progress = self._refresh_in_progress
             results: dict[str, ProbeResult | None] = {}
             states: list[str] = []
-            for probe_kind in ("tts", "cleaner"):
+            for probe_kind in self._snapshot_probe_kinds():
                 cached = self._cache.get(probe_kind)
                 if cached is None:
                     results[probe_kind] = None
@@ -122,6 +164,37 @@ except Exception as exc:
             overall_state = "pending"
         return results, overall_state, refresh_in_progress
 
+    def _read_cached_cleaner_backend_result(self, backend: str) -> ProbeResult | None:
+        cache_key = self._cleaner_cache_key(validate_cleaner_backend(backend))
+        with self._lock:
+            cached = self._cache.get(cache_key)
+            if cached is None:
+                return None
+            return dict(cached[1])
+
+    def get_cached_cleaner_backend_availability(self) -> dict[str, bool]:
+        """Return cached local cleaner availability without running probes."""
+        availability: dict[str, bool] = {}
+        for backend_name in available_cleaner_backends():
+            if not is_local_cleaner_backend(backend_name):
+                continue
+            cached = self._read_cached_cleaner_backend_result(backend_name)
+            availability[backend_name] = (
+                bool(cached.get("available", False)) if cached is not None else False
+            )
+        return availability
+
+    def get_cached_cleaner_backend_results(self) -> dict[str, ProbeResult]:
+        """Return cached local cleaner probe payloads without running probes."""
+        results: dict[str, ProbeResult] = {}
+        for backend_name in available_cleaner_backends():
+            if not is_local_cleaner_backend(backend_name):
+                continue
+            cached = self._read_cached_cleaner_backend_result(backend_name)
+            if cached is not None:
+                results[backend_name] = cached
+        return results
+
     def _probe_payload(self, result: ProbeResult | None) -> dict[str, Any]:
         if result is None:
             return {
@@ -138,8 +211,15 @@ except Exception as exc:
     def _refresh_runtime_snapshot(self) -> None:
         try:
             tts = self._run_probe(self._TTS_PROBE, self._timeout_seconds)
-            cleaner = self._run_probe(self._CLEANER_PROBE, self._timeout_seconds)
-            self._store_snapshot_results(tts=tts, cleaner=cleaner)
+            self._store_result("tts", tts)
+            for backend_name in available_cleaner_backends():
+                if not is_local_cleaner_backend(backend_name):
+                    continue
+                script = self._CLEANER_PROBE_SCRIPTS.get(backend_name)
+                if script is None:
+                    continue
+                result = self._run_probe(script, self._timeout_seconds)
+                self._store_cleaner_backend_result(backend_name, result)
         finally:
             with self._lock:
                 self._refresh_in_progress = False
@@ -264,14 +344,53 @@ except Exception as exc:
             self._run_probe(self._TTS_PROBE, self._timeout_seconds),
         )
 
-    def probe_mlx_cleaner_runtime(self) -> ProbeResult:
-        cached = self._cached_result("cleaner")
+    def probe_cleaner_backend(self, backend: str) -> ProbeResult:
+        """Probe one registered cleaner backend's local runtime availability."""
+        normalized = validate_cleaner_backend(backend)
+        cache_key = self._cleaner_cache_key(normalized)
+        cached = self._cached_result(cache_key)
         if cached is not None:
             return cached
-        return self._store_result(
-            "cleaner",
-            self._run_probe(self._CLEANER_PROBE, self._timeout_seconds),
+
+        strategy = get_cleaner_backend(normalized)
+        if strategy.requires_api_key:
+            return self._store_result(
+                cache_key,
+                {
+                    "available": True,
+                    "latency_ms": 0.0,
+                    "error": None,
+                    "cache_hit": False,
+                },
+            )
+
+        script = self._CLEANER_PROBE_SCRIPTS.get(normalized)
+        if script is None:
+            return self._store_result(
+                cache_key,
+                {
+                    "available": False,
+                    "latency_ms": 0.0,
+                    "error": f"No runtime probe configured for cleaner backend '{normalized}'.",
+                    "cache_hit": False,
+                },
+            )
+
+        return self._store_cleaner_backend_result(
+            normalized,
+            self._run_probe(script, self._timeout_seconds),
         )
+
+    def probe_local_cleaner_backends(self) -> dict[str, ProbeResult]:
+        """Probe every registered local cleaner backend."""
+        results: dict[str, ProbeResult] = {}
+        for backend_name in available_cleaner_backends():
+            if is_local_cleaner_backend(backend_name):
+                results[backend_name] = self.probe_cleaner_backend(backend_name)
+        return results
+
+    def probe_mlx_cleaner_runtime(self) -> ProbeResult:
+        return self.probe_cleaner_backend("mlx")
 
     def get_system_runtime_snapshot(self) -> dict[str, Any]:
         results, state, refresh_in_progress = self._get_snapshot_cache_state()

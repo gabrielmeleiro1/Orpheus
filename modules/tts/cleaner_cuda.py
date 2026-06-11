@@ -9,6 +9,7 @@ import threading
 from typing import Any, Optional
 
 from modules.tts.cleaner_config import (
+    CUDA_CLEANER_QUANTIZATIONS,
     list_cuda_cleaner_models,
     normalize_cuda_device,
     normalize_cuda_quantization,
@@ -214,6 +215,8 @@ class CleanerCUDAStrategy:
     requires_api_key = False
     display_name = "Local CUDA"
     backend = "cuda"
+    supported_quantizations = CUDA_CLEANER_QUANTIZATIONS
+    default_device = "cuda"
 
     @classmethod
     def list_models(cls) -> list[str]:

@@ -110,7 +110,8 @@ def _init_worker(
         _WORKER_PROVIDER = runtime_spec.provider
         _WORKER_DEVICE = runtime_spec.device
         try:
-            from modules.tts.cleaner import CleanerConfig, TextCleaner
+            from modules.tts.cleaner import TextCleaner
+            from modules.tts.cleaner_config import build_cleaner_config_from_worker_init
             from modules.tts.factory import TTSEngineFactory
 
             tts_warmup_failed = False
@@ -166,32 +167,9 @@ def _init_worker(
                 if _WORKER_INIT_STATUS is None:
                     try:
                         _WORKER_TEXT_CLEANER = TextCleaner(
-                            config=CleanerConfig(
-                                model_name=worker_init_config["cleaner_model_name"],
-                                backend=worker_init_config["cleaner_backend"],
-                                cuda_device=worker_init_config.get(
-                                    "cleaner_cuda_device",
-                                    "cuda",
-                                ),
-                                cuda_quantization=worker_init_config.get(
-                                    "cleaner_cuda_quantization",
-                                    "4bit",
-                                ),
-                                api_base_url=worker_init_config["cleaner_api_base_url"],
-                                api_key_env=worker_init_config["cleaner_api_key_env"],
-                                api_key=worker_init_config.get("cleaner_api_key"),
-                                api_model=worker_init_config["cleaner_api_model"],
-                                api_batch_concurrency=worker_init_config.get(
-                                    "cleaner_api_global_concurrency", 4
-                                ),
-                                api_global_limiter=worker_init_config.get(
-                                    "cleaner_api_global_limiter"
-                                ),
-                                skip_llm_when_not_needed=worker_init_config.get(
-                                    "cleaner_skip_llm_when_not_needed", True
-                                ),
-                                cache_model=True,
-                            )
+                            config=build_cleaner_config_from_worker_init(
+                                worker_init_config,
+                            ),
                         )
                         _WORKER_TEXT_CLEANER.load()
                     except Exception as exc:

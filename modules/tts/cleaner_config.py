@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
+from modules.tts.runtime_options import validate_device
+
 # Curated MLX model options for text cleaning (backend="mlx").
 # The default remains first.
 CLEANER_MODEL_CHOICES = [
@@ -86,8 +88,6 @@ def list_cuda_cleaner_models() -> list[str]:
 
 def normalize_cuda_device(value: str) -> str:
     """Normalize and validate a CUDA device identifier."""
-    from modules.tts.runtime_options import validate_device
-
     normalized = str(value or "").strip()
     validate_device("cuda", normalized)
     return normalized
@@ -108,6 +108,70 @@ def normalize_cuda_quantization(value: str) -> str:
 def list_api_cleaner_models() -> list[str]:
     """Return API model identifiers offered to users."""
     return API_MODEL_CHOICES.copy()
+
+
+def resolve_cleaner_model_name(
+    *,
+    backend: str,
+    requested_model: Optional[str] = None,
+    configured_model: Optional[str] = None,
+    explicit_model: bool = False,
+) -> str:
+    """Resolve the effective cleaner model for a backend and request context."""
+    normalized_backend = str(backend or "mlx").strip().lower()
+    if requested_model:
+        return requested_model
+
+    config_model = configured_model or CLEANER_MODEL_CHOICES[0]
+    if normalized_backend == "cuda" and not explicit_model:
+        if config_model in CLEANER_MODEL_CHOICES:
+            return DEFAULT_CUDA_MODEL
+        return config_model
+    if normalized_backend != "cuda" and config_model in CUDA_CLEANER_MODEL_CHOICES:
+        return CLEANER_MODEL_CHOICES[0]
+    return config_model
+
+
+def build_cleaner_config_from_pipeline(config: Any) -> CleanerConfig:
+    """Build CleanerConfig from a PipelineConfig-like object."""
+    return CleanerConfig(
+        model_name=config.cleaner_model_name,
+        backend=config.cleaner_backend,
+        cuda_device=config.cleaner_cuda_device,
+        cuda_quantization=config.cleaner_cuda_quantization,
+        api_base_url=config.cleaner_api_base_url,
+        api_key_env=config.cleaner_api_key_env,
+        api_key=config.cleaner_api_key,
+        api_model=config.cleaner_api_model,
+        api_batch_concurrency=config.cleaner_api_global_concurrency,
+        api_global_limiter=config.cleaner_api_global_limiter,
+        skip_llm_when_not_needed=config.cleaner_skip_llm_when_not_needed,
+        cache_model=True,
+    )
+
+
+def build_cleaner_config_from_worker_init(worker_init_config: dict[str, Any]) -> CleanerConfig:
+    """Build CleanerConfig from serialized worker initialization settings."""
+    return CleanerConfig(
+        model_name=worker_init_config["cleaner_model_name"],
+        backend=worker_init_config["cleaner_backend"],
+        cuda_device=worker_init_config.get("cleaner_cuda_device", "cuda"),
+        cuda_quantization=worker_init_config.get("cleaner_cuda_quantization", "4bit"),
+        api_base_url=worker_init_config["cleaner_api_base_url"],
+        api_key_env=worker_init_config["cleaner_api_key_env"],
+        api_key=worker_init_config.get("cleaner_api_key"),
+        api_model=worker_init_config["cleaner_api_model"],
+        api_batch_concurrency=worker_init_config.get(
+            "cleaner_api_global_concurrency",
+            4,
+        ),
+        api_global_limiter=worker_init_config.get("cleaner_api_global_limiter"),
+        skip_llm_when_not_needed=worker_init_config.get(
+            "cleaner_skip_llm_when_not_needed",
+            True,
+        ),
+        cache_model=True,
+    )
 
 
 def list_cleaner_backends() -> list[str]:

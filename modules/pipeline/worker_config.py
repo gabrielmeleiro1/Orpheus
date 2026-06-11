@@ -191,21 +191,31 @@ def build_shared_pool_fingerprint(
             model=config.tts_model_name,
         ).cache_key()
     )
-    return (
+    fingerprint: list[Any] = [
         tts_runtime_key,
         config.voice,
         config.cleaner_model_name,
         config.cleaner_backend,
-        getattr(config, "cleaner_cuda_device", "cuda"),
-        getattr(config, "cleaner_cuda_quantization", "4bit"),
-        config.cleaner_api_base_url,
-        config.cleaner_api_key_env,
-        config.cleaner_api_key,
-        config.cleaner_api_model,
-        config.cleaner_skip_llm_when_not_needed,
-        config.cleaner_api_global_concurrency,
-        max_workers,
+    ]
+    if config.cleaner_backend == "cuda":
+        fingerprint.extend(
+            [
+                getattr(config, "cleaner_cuda_device", "cuda"),
+                getattr(config, "cleaner_cuda_quantization", "4bit"),
+            ]
+        )
+    fingerprint.extend(
+        [
+            config.cleaner_api_base_url,
+            config.cleaner_api_key_env,
+            config.cleaner_api_key,
+            config.cleaner_api_model,
+            config.cleaner_skip_llm_when_not_needed,
+            config.cleaner_api_global_concurrency,
+            max_workers,
+        ]
     )
+    return tuple(fingerprint)
 
 
 __all__ = [

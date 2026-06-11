@@ -100,6 +100,8 @@ class CleanerMLXStrategy:
     requires_api_key = False
     display_name = "Local MLX"
     backend = "mlx"
+    supported_quantizations = None
+    default_device = None
 
     @classmethod
     def list_models(cls) -> list[str]:
