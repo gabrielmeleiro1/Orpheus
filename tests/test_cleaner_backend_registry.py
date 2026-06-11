@@ -15,12 +15,14 @@ from modules.tts.cleaner_backends import (
     register_cleaner_backend,
     validate_cleaner_backend,
 )
+from modules.tts.cleaner_cuda import CleanerCUDAStrategy
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
+from modules.tts.cleaner_config import CUDA_CLEANER_MODEL_CHOICES, list_cleaner_models
 from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend
 
 
-def test_available_cleaner_backends_returns_sorted_api_and_mlx():
-    assert available_cleaner_backends() == ("api", "mlx")
+def test_available_cleaner_backends_returns_sorted_api_cuda_and_mlx():
+    assert available_cleaner_backends() == ("api", "cuda", "mlx")
 
 
 def test_get_cleaner_backend_api_returns_api_strategy():
@@ -43,10 +45,21 @@ def test_get_cleaner_backend_mlx_returns_mlx_strategy():
     assert backend.requires_api_key is False
 
 
+def test_get_cleaner_backend_cuda_returns_cuda_strategy():
+    backend = get_cleaner_backend("cuda")
+
+    assert isinstance(backend, CleanerCUDAStrategy)
+    assert backend.name == "cuda"
+    assert backend.is_local is True
+    assert backend.requires_model is True
+    assert backend.requires_api_key is False
+    assert backend.display_name == "Local CUDA"
+
+
 def test_unknown_backend_raises_value_error_with_clear_message():
     with pytest.raises(ValueError, match=(
         r"Text cleaner backend 'unknown' is not supported\. "
-        r"Available backends: api, mlx\."
+        r"Available backends: api, cuda, mlx\."
     )):
         validate_cleaner_backend("unknown")
 
@@ -54,10 +67,14 @@ def test_unknown_backend_raises_value_error_with_clear_message():
 def test_list_cleaner_backend_models_uses_backend_list_models():
     mlx_models = list_cleaner_backend_models("mlx")
     api_models = list_cleaner_backend_models("api")
+    cuda_models = list_cleaner_backend_models("cuda")
 
     assert mlx_models
     assert api_models
+    assert cuda_models
     assert mlx_models != api_models
+    assert cuda_models == CUDA_CLEANER_MODEL_CHOICES
+    assert cuda_models != list_cleaner_models()
 
 
 def test_registering_fake_backend_lets_text_cleaner_use_it(registry_snapshot):

@@ -426,6 +426,8 @@ class CleanerAPIStrategy:
     requires_api_key = True
     display_name = "Cloud API"
     backend = "api"
+    supported_quantizations = None
+    default_device = None
 
     @classmethod
     def list_models(cls) -> list[str]:

@@ -11,7 +11,13 @@ from modules.pipeline.models import PipelineConfig
 from modules.pipeline.worker_recommendation import detect_cpu_core_workers
 from modules.storage.models import ConversionMode
 from modules.tts.api_rate_limit import GlobalAPILimiter
-from modules.tts.cleaner_config import normalize_cleaner_backend
+from modules.tts.cleaner_backends.registry import get_cleaner_backend
+from modules.tts.cleaner_config import (
+    normalize_cleaner_backend,
+    normalize_cuda_device,
+    normalize_cuda_quantization,
+    resolve_cleaner_model_name,
+)
 from modules.tts.runtime_options import TTSRuntimeOptions, resolve_tts_runtime
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.device_memory import DeviceMemoryPolicy, get_device_memory_policy
@@ -45,6 +51,8 @@ class ConversionRuntimeOptions:
     tts_device: Optional[str] = None
     cleaner_model: Optional[str] = None
     cleaner_backend: Optional[str] = None
+    cleaner_cuda_device: Optional[str] = None
+    cleaner_cuda_quantization: Optional[str] = None
     cleaner_api_model: Optional[str] = None
     cleaner_api_key: Optional[str] = None
     tts_options: Optional[dict[str, Any]] = None
@@ -64,6 +72,8 @@ class NormalizedConversionRuntimeOptions:
     tts_runtime_options: TTSRuntimeOptions
     cleaner_model: Optional[str]
     cleaner_backend: str
+    cleaner_cuda_device: str
+    cleaner_cuda_quantization: str
     cleaner_api_model: Optional[str]
     cleaner_api_key: Optional[str]
     enable_parallel: bool
@@ -188,6 +198,24 @@ class RuntimeOptionsResolver:
             else self._config.cleaner_api_model
         )
 
+        # CUDA-only request fields are normalized only for the cuda backend.
+        if effective_cleaner_backend == "cuda":
+            cuda_device_source = (
+                runtime_options.cleaner_cuda_device
+                if runtime_options.cleaner_cuda_device is not None
+                else self._config.cleaner_cuda_device
+            )
+            cuda_quant_source = (
+                runtime_options.cleaner_cuda_quantization
+                if runtime_options.cleaner_cuda_quantization is not None
+                else self._config.cleaner_cuda_quantization
+            )
+            effective_cuda_device = normalize_cuda_device(cuda_device_source)
+            effective_cuda_quantization = normalize_cuda_quantization(cuda_quant_source)
+        else:
+            effective_cuda_device = self._config.cleaner_cuda_device
+            effective_cuda_quantization = self._config.cleaner_cuda_quantization
+
         from modules.tts.factory import TTSEngineFactory
 
         tts_capabilities = TTSEngineFactory.get_engine_capabilities(effective_tts_engine)
@@ -242,6 +270,8 @@ class RuntimeOptionsResolver:
             tts_runtime_options=tts_runtime_options,
             cleaner_model=runtime_options.cleaner_model,
             cleaner_backend=effective_cleaner_backend,
+            cleaner_cuda_device=effective_cuda_device,
+            cleaner_cuda_quantization=effective_cuda_quantization,
             cleaner_api_model=effective_cleaner_api_model,
             cleaner_api_key=(
                 runtime_options.cleaner_api_key.strip()
@@ -276,8 +306,14 @@ class RuntimeOptionsResolver:
             tts_quantization=normalized_options.tts_quantization,
             tts_runtime=normalized_options.tts_runtime,
             tts_runtime_options=normalized_options.tts_runtime_options,
-            cleaner_model_name=normalized_options.cleaner_model or self._config.cleaner_model_name,
+            cleaner_model_name=resolve_cleaner_model_name(
+                backend=normalized_options.cleaner_backend,
+                requested_model=normalized_options.cleaner_model,
+                configured_model=self._config.cleaner_model_name,
+            ),
             cleaner_backend=normalized_options.cleaner_backend,
+            cleaner_cuda_device=normalized_options.cleaner_cuda_device,
+            cleaner_cuda_quantization=normalized_options.cleaner_cuda_quantization,
             cleaner_api_base_url=self._config.cleaner_api_base_url,
             cleaner_api_key_env=self._config.cleaner_api_key_env,
             cleaner_api_key=normalized_options.cleaner_api_key,
@@ -285,7 +321,7 @@ class RuntimeOptionsResolver:
             cleaner_api_global_concurrency=self._config.cleaner_api_global_concurrency,
             cleaner_api_global_limiter=(
                 self._cleaner_api_limiter.semaphore
-                if normalized_options.cleaner_backend == "api"
+                if get_cleaner_backend(normalized_options.cleaner_backend).requires_api_key
                 else None
             ),
             shared_worker_pool_manager=self._shared_worker_pool_manager,

@@ -8,8 +8,9 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
 from modules.web.deps import ControllerDep
-from modules.tts.cleaner_config import DEFAULT_API_BASE_URL
 from modules.tts.cleaner_api import fetch_openai_model_ids
+from modules.tts.cleaner_backends.metadata import list_cleaner_backend_options
+from modules.tts.cleaner_config import DEFAULT_API_BASE_URL, list_cuda_cleaner_models
 
 router = APIRouter()
 
@@ -25,6 +26,8 @@ class ParallelWarmupRequest(BaseModel):
     tts_quantization: Optional[str] = None
     cleaner_model: Optional[str] = None
     cleaner_backend: Optional[str] = None
+    cleaner_cuda_device: Optional[str] = None
+    cleaner_cuda_quantization: Optional[str] = None
     cleaner_api_model: Optional[str] = None
     cleaner_api_key: Optional[str] = None
     max_parallel_chapters: int = Field(default=4, ge=1)
@@ -36,6 +39,8 @@ def get_model_options(controller: ControllerDep) -> dict:
         "tts_engines": controller.get_available_tts_engines(),
         "cleaner_models": controller.get_available_cleaner_models(),
         "api_cleaner_models": controller.get_available_api_cleaner_models(),
+        "cuda_cleaner_models": list_cuda_cleaner_models(),
+        "cleaner_backend_options": list_cleaner_backend_options(),
     }
 
 
@@ -72,6 +77,8 @@ def warmup_parallel_workers(
         tts_quantization=payload.tts_quantization,
         cleaner_model=payload.cleaner_model,
         cleaner_backend=payload.cleaner_backend,
+        cleaner_cuda_device=payload.cleaner_cuda_device,
+        cleaner_cuda_quantization=payload.cleaner_cuda_quantization,
         cleaner_api_model=payload.cleaner_api_model,
         cleaner_api_key=payload.cleaner_api_key,
         max_parallel_chapters=payload.max_parallel_chapters,
