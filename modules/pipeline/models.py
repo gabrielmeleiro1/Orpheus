@@ -121,7 +121,11 @@ def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
 
 @dataclass
 class PipelineConfig:
-    """Configuration for conversion pipeline."""
+    """Configuration for conversion pipeline.
+
+    Cleaner settings support local MLX (Apple Silicon), local CUDA (NVIDIA GPU),
+    and remote API backends via ``cleaner_backend``.
+    """
 
     conversion_mode: str = "audiobook"
     tts_engine: str = "kokoro"
@@ -131,6 +135,8 @@ class PipelineConfig:
     tts_runtime_options: Optional[TTSRuntimeOptions] = None
     cleaner_model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
     cleaner_backend: str = "mlx"
+    cleaner_cuda_device: str = "cuda"
+    cleaner_cuda_quantization: str = "4bit"
     cleaner_api_base_url: str = "https://api.openai.com/v1"
     cleaner_api_key_env: str = "OPENAI_API_KEY"
     cleaner_api_key: Optional[str] = None

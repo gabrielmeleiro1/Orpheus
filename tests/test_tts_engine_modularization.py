@@ -285,13 +285,17 @@ def test_runtime_capability_snapshot_returns_pending_then_refreshes_in_backgroun
     first_probe_started = threading.Event()
     probe_calls = {"count": 0}
 
-    def fake_run_probe(_script: str, _timeout_seconds: float) -> dict[str, object]:
+    def fake_run_probe(script: str, _timeout_seconds: float) -> dict[str, object]:
         probe_calls["count"] += 1
         if probe_calls["count"] == 1:
             first_probe_started.set()
             assert release_probe.wait(timeout=2.0)
             return {"available": True, "latency_ms": 12.5, "error": None, "cache_hit": False}
-        return {"available": False, "latency_ms": 18.0, "error": "missing", "cache_hit": False}
+        if "mlx_lm" in script:
+            return {"available": True, "latency_ms": 5.0, "error": None, "cache_hit": False}
+        if "torch" in script:
+            return {"available": False, "latency_ms": 18.0, "error": "missing", "cache_hit": False}
+        raise AssertionError(f"unexpected probe script: {script!r}")
 
     with patch.object(service, "_run_probe", side_effect=fake_run_probe) as mock_run_probe:
         started_at = time.perf_counter()
@@ -323,8 +327,19 @@ def test_runtime_capability_snapshot_returns_pending_then_refreshes_in_backgroun
 
     assert refreshed["cache_hit"] is True
     assert refreshed["tts"] == {"available": True, "latency_ms": 12.5, "error": None}
-    assert refreshed["cleaner"] == {"available": False, "latency_ms": 18.0, "error": "missing"}
-    assert mock_run_probe.call_count == 2
+    mlx_cached = service._read_cached_cleaner_backend_result("mlx")
+    cuda_cached = service._read_cached_cleaner_backend_result("cuda")
+    assert mlx_cached is not None and mlx_cached["available"] is True
+    assert mlx_cached["latency_ms"] == 5.0
+    assert cuda_cached is not None and cuda_cached["available"] is False
+    assert cuda_cached["error"] == "missing"
+    assert refreshed["cleaner"] == {
+        "available": mlx_cached["available"],
+        "latency_ms": mlx_cached["latency_ms"],
+        "error": mlx_cached["error"],
+    }
+    assert service.get_cached_cleaner_backend_availability() == {"mlx": True, "cuda": False}
+    assert mock_run_probe.call_count == 3
 
 
 def test_runtime_capability_snapshot_returns_stale_and_deduplicates_refreshes() -> None:
@@ -347,14 +362,17 @@ def test_runtime_capability_snapshot_returns_stale_and_deduplicates_refreshes() 
             {"available": True, "latency_ms": 202.0, "error": None, "cache_hit": False},
         )
 
-    def fake_run_probe(_script: str, _timeout_seconds: float) -> dict[str, object]:
+    def fake_run_probe(script: str, _timeout_seconds: float) -> dict[str, object]:
         probe_calls["count"] += 1
         if probe_calls["count"] == 1:
             first_probe_started.set()
             assert release_probe.wait(timeout=2.0)
-        if probe_calls["count"] == 1:
             return {"available": True, "latency_ms": 8.0, "error": None, "cache_hit": False}
-        return {"available": True, "latency_ms": 9.0, "error": None, "cache_hit": False}
+        if "mlx_lm" in script:
+            return {"available": True, "latency_ms": 9.0, "error": None, "cache_hit": False}
+        if "torch" in script:
+            return {"available": False, "latency_ms": 11.0, "error": "no gpu", "cache_hit": False}
+        raise AssertionError(f"unexpected probe script: {script!r}")
 
     with patch.object(service, "_run_probe", side_effect=fake_run_probe) as mock_run_probe:
         started_at = time.perf_counter()
@@ -395,8 +413,19 @@ def test_runtime_capability_snapshot_returns_stale_and_deduplicates_refreshes() 
             raise AssertionError("stale runtime snapshot never refreshed")
 
     assert refreshed["tts"] == {"available": True, "latency_ms": 8.0, "error": None}
-    assert refreshed["cleaner"] == {"available": True, "latency_ms": 9.0, "error": None}
-    assert mock_run_probe.call_count == 2
+    mlx_cached = service._read_cached_cleaner_backend_result("mlx")
+    cuda_cached = service._read_cached_cleaner_backend_result("cuda")
+    assert mlx_cached is not None and mlx_cached["available"] is True
+    assert mlx_cached["latency_ms"] == 9.0
+    assert cuda_cached is not None and cuda_cached["available"] is False
+    assert cuda_cached["error"] == "no gpu"
+    assert refreshed["cleaner"] == {
+        "available": mlx_cached["available"],
+        "latency_ms": mlx_cached["latency_ms"],
+        "error": mlx_cached["error"],
+    }
+    assert service.get_cached_cleaner_backend_availability() == {"mlx": True, "cuda": False}
+    assert mock_run_probe.call_count == 3
 
 
 def test_runtime_capability_service_reports_subprocess_timeout() -> None:
@@ -653,6 +682,10 @@ def test_app_controller_capabilities_use_runtime_probe_service() -> None:
         "cache_hit": False,
         "tts": {"available": False, "latency_ms": 10.0, "error": "missing"},
         "cleaner": {"available": True, "latency_ms": 12.0, "error": None},
+    }
+    controller._runtime_capability_service.get_cached_cleaner_backend_availability.return_value = {
+        "mlx": True,
+        "cuda": False,
     }
     controller._cleaner_api_limiter = MagicMock()
     controller._cleaner_api_limiter.snapshot.return_value = {"wait_count": 0, "wait_ms_total": 0.0}

@@ -2,8 +2,15 @@
 Text Cleaner Module
 ===================
 LLM-based text normalization for improved TTS output.
-Uses MLX-LM for efficient local inference on Apple Silicon.
-Supports model caching between chunks for improved performance.
+
+Registered backends (see ``cleaner_backends.registry``):
+- ``mlx`` — local MLX-LM inference on Apple Silicon
+- ``cuda`` — local Hugging Face / PyTorch inference on NVIDIA GPUs
+- ``api`` — OpenAI-compatible remote API
+
+Local MLX and CUDA backends support model caching between chunks for improved
+performance. Backend selection is controlled via ``CleanerConfig.backend`` or
+``CLEANER_BACKEND``.
 """
 
 import asyncio
@@ -89,13 +96,15 @@ def _clear_cleaner_cache():
 class TextCleaner:
     """
     LLM-based text cleaner for TTS preprocessing.
-    
-    Uses a small language model to normalize text before TTS:
+
+    Dispatches to a registered backend strategy (``mlx``, ``cuda``, or ``api``).
+    Local backends (MLX on Apple Silicon, CUDA on NVIDIA GPUs) load a small
+    language model to normalize text before TTS:
     - Preserves source wording
     - Fixes extraction artifacts
     - Fixes formatting issues
-    
-    Supports model caching between chunks for improved performance.
+
+    Local backends support per-backend model caching between chunks.
     """
     
     def __init__(self, config: Optional[CleanerConfig] = None):
@@ -145,7 +154,7 @@ class TextCleaner:
         }
     
     def load(self) -> None:
-        """Load the LLM model into memory."""
+        """Load backend resources (local MLX/CUDA model or API client)."""
         self._backend_strategy.load(self)
     
     def clean(self, text: str) -> str:
@@ -170,7 +179,8 @@ class TextCleaner:
         """
         Clean multiple chunks concurrently while preserving per-chunk trace data.
 
-        For API backend this avoids sync/async bridge overhead by executing fully async.
+        API backend runs fully async. Local MLX and CUDA backends use a sync
+        per-chunk path via ``asyncio.to_thread`` to avoid blocking the event loop.
         """
         return await self._backend_strategy.clean_batch_with_trace_async(self, texts)
 
@@ -259,9 +269,9 @@ class TextCleaner:
 
     def _generate_llm_response(self, prompt: str) -> str:
         """
-        Generate cleaned text from the LLM.
+        Generate cleaned text via the active backend strategy.
 
-        Supports both legacy mlx-lm (`temp`) and newer (`temperature`) APIs.
+        MLX uses mlx-lm; CUDA uses transformers; API uses chat completions.
         """
         return self._backend_strategy.generate_llm_response(self, prompt)
 
@@ -405,7 +415,7 @@ class TextCleaner:
         self._backend_strategy.unload(self, keep_in_cache=keep_in_cache)
     
     def clear_cache(self) -> None:
-        """Clear the global cleaner model cache."""
+        """Clear the active backend's model cache (MLX or CUDA when local)."""
         self._backend_strategy.clear_cache(self)
     
     def __enter__(self):

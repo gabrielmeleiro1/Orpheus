@@ -37,6 +37,10 @@ from modules.storage.models import BookSummary, ConversionResult
 from modules.storage.repository import IBookRepository
 from modules.storage.sqlite_repo import SQLiteRepository
 from modules.tts.api_rate_limit import GlobalAPILimiter
+from modules.tts.cleaner_backends.registry import (
+    available_cleaner_backends,
+    requires_api_key_cleaner_backend,
+)
 from modules.tts.cleaner_config import list_cleaner_backends
 from modules.tts.device_memory import get_device_memory_policy
 from modules.tts.factory import TTSEngineFactory
@@ -430,7 +434,16 @@ class AppController:
     def get_system_capabilities(self) -> dict[str, Any]:
         runtime_probe = self._runtime_capability_service.get_system_runtime_snapshot()
         mlx_runtime_available = bool(runtime_probe["tts"]["available"])
-        mlx_cleaner_runtime_available = bool(runtime_probe["cleaner"]["available"])
+        cleaner_runtime_availability = (
+            self._runtime_capability_service.get_cached_cleaner_backend_availability()
+        )
+        for backend_name in available_cleaner_backends():
+            if requires_api_key_cleaner_backend(backend_name):
+                cleaner_runtime_availability[backend_name] = True
+        mlx_cleaner_runtime_available = cleaner_runtime_availability.get(
+            "mlx",
+            bool(runtime_probe["cleaner"]["available"]),
+        )
 
         limiter_snapshot = self._cleaner_api_limiter.snapshot()
         pool_snapshot: dict[str, Any] = {}
@@ -455,6 +468,7 @@ class AppController:
         return {
             "primary_runtime": "mlx",
             "mlx_runtime_available": mlx_runtime_available,
+            "cleaner_runtime_availability": cleaner_runtime_availability,
             "mlx_cleaner_runtime_available": mlx_cleaner_runtime_available,
             "default_tts_engine": self.config.tts_engine,
             "default_tts_quantization": self.config.tts_quantization,
@@ -484,6 +498,8 @@ class AppController:
         tts_quantization: Optional[str] = None,
         cleaner_model: Optional[str] = None,
         cleaner_backend: Optional[str] = None,
+        cleaner_cuda_device: Optional[str] = None,
+        cleaner_cuda_quantization: Optional[str] = None,
         cleaner_api_model: Optional[str] = None,
         cleaner_api_key: Optional[str] = None,
         max_parallel_chapters: int = 4,
@@ -496,6 +512,8 @@ class AppController:
                 tts_quantization=tts_quantization,
                 cleaner_model=cleaner_model,
                 cleaner_backend=cleaner_backend,
+                cleaner_cuda_device=cleaner_cuda_device,
+                cleaner_cuda_quantization=cleaner_cuda_quantization,
                 cleaner_api_model=cleaner_api_model,
                 cleaner_api_key=cleaner_api_key,
                 parallel_worker_mode="auto",

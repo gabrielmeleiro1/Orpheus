@@ -1,4 +1,4 @@
-"""Registry-backed cleaner backend implementations."""
+"""Registry-backed cleaner backend implementations (MLX, CUDA, API)."""
 
 from modules.tts.cleaner_backends.base import CleanerBackend
 from modules.tts.cleaner_backends.registry import (

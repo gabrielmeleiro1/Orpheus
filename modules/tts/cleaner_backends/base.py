@@ -1,8 +1,8 @@
-"""Cleaner backend protocol for TextCleaner."""
+"""Cleaner backend protocol for TextCleaner (MLX, CUDA, API implementations)."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 from modules.tts.cleaner_config import CleanTrace
 
@@ -16,6 +16,8 @@ class CleanerBackend(Protocol):
     requires_model: bool
     display_name: str
     requires_api_key: bool
+    supported_quantizations: ClassVar[tuple[str, ...] | None]
+    default_device: ClassVar[str | None]
 
     def load(self, cleaner: Any) -> None:
         """Load backend resources required for cleaning."""

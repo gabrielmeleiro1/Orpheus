@@ -58,24 +58,18 @@ def ensure_chapter_tts_engine(runtime: Any):
     return tts_engine
 
 
+def _cleaner_config_from_runtime(runtime: Any):
+    """Build CleanerConfig from pipeline runtime settings."""
+    from modules.tts.cleaner_config import build_cleaner_config_from_pipeline
+
+    return build_cleaner_config_from_pipeline(runtime.config)
+
+
 def create_text_cleaner_instance(runtime: Any):
     """Create and load a text cleaner instance for current pipeline config."""
-    from modules.tts.cleaner import TextCleaner, CleanerConfig
+    from modules.tts.cleaner import TextCleaner
 
-    cleaner = TextCleaner(
-        config=CleanerConfig(
-            model_name=runtime.config.cleaner_model_name,
-            backend=runtime.config.cleaner_backend,
-            api_base_url=runtime.config.cleaner_api_base_url,
-            api_key_env=runtime.config.cleaner_api_key_env,
-            api_key=runtime.config.cleaner_api_key,
-            api_model=runtime.config.cleaner_api_model,
-            api_batch_concurrency=runtime.config.cleaner_api_global_concurrency,
-            api_global_limiter=runtime.config.cleaner_api_global_limiter,
-            skip_llm_when_not_needed=runtime.config.cleaner_skip_llm_when_not_needed,
-            cache_model=True,
-        )
-    )
+    cleaner = TextCleaner(config=_cleaner_config_from_runtime(runtime))
     cleaner.load()
     runtime.log_verbose("[CLEANER] Model loaded - Cleaning text chunks...", "success")
     return cleaner
@@ -135,25 +129,14 @@ def warmup_models(runtime: Any) -> None:
         runtime.log_verbose("[WARMUP] TTS runtime loaded and warmed", "success")
 
     if runtime.state.text_cleaner is None:
-        from modules.tts.cleaner import TextCleaner, CleanerConfig
+        from modules.tts.cleaner import TextCleaner
 
         runtime.log_verbose(
             f"[WARMUP] Loading Text Cleaner model: {runtime.config.cleaner_model_name}",
             "process",
         )
         runtime.state.text_cleaner = TextCleaner(
-            config=CleanerConfig(
-                model_name=runtime.config.cleaner_model_name,
-                backend=runtime.config.cleaner_backend,
-                api_base_url=runtime.config.cleaner_api_base_url,
-                api_key_env=runtime.config.cleaner_api_key_env,
-                api_key=runtime.config.cleaner_api_key,
-                api_model=runtime.config.cleaner_api_model,
-                api_batch_concurrency=runtime.config.cleaner_api_global_concurrency,
-                api_global_limiter=runtime.config.cleaner_api_global_limiter,
-                skip_llm_when_not_needed=runtime.config.cleaner_skip_llm_when_not_needed,
-                cache_model=True,
-            )
+            config=_cleaner_config_from_runtime(runtime),
         )
         runtime.state.text_cleaner.load()
         runtime.log_verbose("[WARMUP] Text Cleaner model loaded and cached", "success")
