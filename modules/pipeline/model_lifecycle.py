@@ -60,23 +60,9 @@ def ensure_chapter_tts_engine(runtime: Any):
 
 def _cleaner_config_from_runtime(runtime: Any):
     """Build CleanerConfig from pipeline runtime settings."""
-    from modules.tts.cleaner import CleanerConfig
+    from modules.tts.cleaner_config import build_cleaner_config_from_pipeline
 
-    config = runtime.config
-    return CleanerConfig(
-        model_name=config.cleaner_model_name,
-        backend=config.cleaner_backend,
-        cuda_device=config.cleaner_cuda_device,
-        cuda_quantization=config.cleaner_cuda_quantization,
-        api_base_url=config.cleaner_api_base_url,
-        api_key_env=config.cleaner_api_key_env,
-        api_key=config.cleaner_api_key,
-        api_model=config.cleaner_api_model,
-        api_batch_concurrency=config.cleaner_api_global_concurrency,
-        api_global_limiter=config.cleaner_api_global_limiter,
-        skip_llm_when_not_needed=config.cleaner_skip_llm_when_not_needed,
-        cache_model=True,
-    )
+    return build_cleaner_config_from_pipeline(runtime.config)
 
 
 def create_text_cleaner_instance(runtime: Any):

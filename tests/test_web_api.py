@@ -600,6 +600,8 @@ def test_parallel_warmup_route_forwards_worker_recommendation_payload():
         "tts_quantization": "bf16",
         "cleaner_model": None,
         "cleaner_backend": "api",
+        "cleaner_cuda_device": None,
+        "cleaner_cuda_quantization": None,
         "cleaner_api_model": "gpt-5-nano",
         "cleaner_api_key": "sk-test",
         "max_parallel_chapters": 4,
@@ -644,6 +646,83 @@ def test_model_options_expose_kokoro_conversion_capabilities():
     assert engines["kokoro"]["available_for_conversion"] is True
     assert engines["kokoro"]["capabilities"]["worker_auto_mode"] == "sequential"
     assert engines["kokoro"]["capabilities"]["process_safe"] is False
+    payload = response.json()
+    assert isinstance(payload.get("cuda_cleaner_models"), list)
+    assert payload["cuda_cleaner_models"]
+    backend_options = payload.get("cleaner_backend_options")
+    assert isinstance(backend_options, list)
+    option_names = [option["name"] for option in backend_options]
+    assert option_names == ["api", "cuda", "mlx"]
+    cuda_option = next(option for option in backend_options if option["name"] == "cuda")
+    assert cuda_option["supported_quantizations"] == ["4bit", "8bit", "fp16"]
+    assert cuda_option["default_device"] == "cuda"
+
+
+def test_parallel_warmup_accepts_cuda_cleaner_backend(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+
+        def warmup_parallel_worker_recommendation(self, **kwargs):
+            captured.update(kwargs)
+            return {"recommended_parallel_chapters": 1}
+
+    client = _make_client_with_controller(_Controller())
+    response = client.post(
+        "/api/options/parallel/warmup",
+        json={
+            "voice": "am_adam",
+            "speed": 1.0,
+            "cleaner_backend": "cuda",
+            "cleaner_model": "meta-llama/Llama-3.2-3B-Instruct",
+            "cleaner_cuda_device": "cuda:0",
+            "cleaner_cuda_quantization": "8bit",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["cleaner_backend"] == "cuda"
+    assert captured["cleaner_model"] == "meta-llama/Llama-3.2-3B-Instruct"
+    assert captured["cleaner_cuda_device"] == "cuda:0"
+    assert captured["cleaner_cuda_quantization"] == "8bit"
+
+
+def test_start_conversion_nested_runtime_options_forwards_cuda_fields():
+    captured: dict[str, object] = {}
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+
+        def start_conversion(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                id="job-1",
+                status="queued",
+                book_id=None,
+                error=None,
+            )
+
+    client = _make_client_with_controller(_Controller())
+    response = client.post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/sample.md",
+            "runtime_options": {
+                "cleaner_backend": "cuda",
+                "cleaner_cuda_device": "cuda:1",
+                "cleaner_cuda_quantization": "fp16",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    runtime_options = captured["runtime_options"]
+    assert runtime_options.cleaner_backend == "cuda"
+    assert runtime_options.cleaner_cuda_device == "cuda:1"
+    assert runtime_options.cleaner_cuda_quantization == "fp16"
 
 
 def test_web_api() -> bool:
@@ -742,6 +821,8 @@ def test_web_api() -> bool:
         assert "supported_quantizations" in first_engine
     assert isinstance(data.get("cleaner_models"), list)
     assert isinstance(data.get("api_cleaner_models"), list)
+    assert isinstance(data.get("cuda_cleaner_models"), list)
+    assert isinstance(data.get("cleaner_backend_options"), list)
     print("✓ /api/options/models")
 
     class _Status:

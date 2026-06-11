@@ -32,6 +32,8 @@ class ConversionRuntimeOptionsRequest(BaseModel):
     tts_device: Optional[str] = None
     cleaner_model: Optional[str] = None
     cleaner_backend: Optional[str] = None
+    cleaner_cuda_device: Optional[str] = None
+    cleaner_cuda_quantization: Optional[str] = None
     cleaner_api_model: Optional[str] = None
     cleaner_api_key: Optional[str] = None
     tts_options: Optional[dict[str, object]] = None
@@ -49,6 +51,8 @@ class ConversionRuntimeOptionsRequest(BaseModel):
             tts_device=self.tts_device,
             cleaner_model=self.cleaner_model,
             cleaner_backend=self.cleaner_backend,
+            cleaner_cuda_device=self.cleaner_cuda_device,
+            cleaner_cuda_quantization=self.cleaner_cuda_quantization,
             cleaner_api_model=self.cleaner_api_model,
             cleaner_api_key=self.cleaner_api_key,
             tts_options=self.tts_options,

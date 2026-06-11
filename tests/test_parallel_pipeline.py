@@ -1855,6 +1855,45 @@ class TestWorkerProgressTotals:
             expected_spec.cache_key()
         )
 
+    def test_shared_pool_fingerprint_ignores_cuda_fields_for_non_cuda_backend(self, tmp_path):
+        mlx_base = PipelineConfig(
+            output_dir=tmp_path / "mlx-base",
+            temp_dir=tmp_path / "temp-mlx-base",
+            cleaner_backend="mlx",
+            cleaner_cuda_device="cuda:0",
+            cleaner_cuda_quantization="8bit",
+        )
+        mlx_variant = PipelineConfig(
+            output_dir=tmp_path / "mlx-variant",
+            temp_dir=tmp_path / "temp-mlx-variant",
+            cleaner_backend="mlx",
+            cleaner_cuda_device="cuda:1",
+            cleaner_cuda_quantization="fp16",
+        )
+
+        assert build_shared_pool_fingerprint(mlx_base, max_workers=2) == (
+            build_shared_pool_fingerprint(mlx_variant, max_workers=2)
+        )
+
+        cuda_config = PipelineConfig(
+            output_dir=tmp_path / "cuda",
+            temp_dir=tmp_path / "temp-cuda",
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:0",
+            cleaner_cuda_quantization="8bit",
+        )
+        cuda_variant = PipelineConfig(
+            output_dir=tmp_path / "cuda-variant",
+            temp_dir=tmp_path / "temp-cuda-variant",
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:1",
+            cleaner_cuda_quantization="8bit",
+        )
+
+        assert build_shared_pool_fingerprint(cuda_config, max_workers=2) != (
+            build_shared_pool_fingerprint(cuda_variant, max_workers=2)
+        )
+
     def test_worker_entry_forwards_total_chapters(self, tmp_path):
         chapter = MockChapter(2, "Two", "body")
 

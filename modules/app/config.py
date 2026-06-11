@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from modules.tts.cleaner_config import resolve_cleaner_model_name
+
 _DEFAULT_DATA_DIR = Path("data")
 _DEFAULT_OUTPUT_DIR = Path("output")
 _DEFAULT_TEMP_DIR = Path("temp")
@@ -159,6 +161,18 @@ class AppConfig:
 
         # Optional env overrides for runtime backend selection.
         self.cleaner_backend = os.getenv("CLEANER_BACKEND", self.cleaner_backend).strip() or self.cleaner_backend
+        env_cleaner_model = os.getenv("CLEANER_MODEL_NAME")
+        cleaner_model_explicitly_set = False
+        if env_cleaner_model is not None:
+            normalized_cleaner_model = env_cleaner_model.strip()
+            if normalized_cleaner_model:
+                self.cleaner_model_name = normalized_cleaner_model
+                cleaner_model_explicitly_set = True
+        self.cleaner_model_name = resolve_cleaner_model_name(
+            backend=self.cleaner_backend,
+            configured_model=self.cleaner_model_name,
+            explicit_model=cleaner_model_explicitly_set,
+        )
         self.cleaner_cuda_device = (
             os.getenv("CLEANER_CUDA_DEVICE", self.cleaner_cuda_device).strip()
             or self.cleaner_cuda_device

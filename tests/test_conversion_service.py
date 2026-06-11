@@ -2251,6 +2251,126 @@ def test_conversion_service_pipeline_config_reads_cuda_backend_from_env(tmp_path
     assert pipeline_config.cleaner_backend == "cuda"
     assert pipeline_config.cleaner_cuda_device == "cuda:0"
     assert pipeline_config.cleaner_cuda_quantization == "8bit"
+    assert pipeline_config.cleaner_model_name == "meta-llama/Llama-3.2-3B-Instruct"
+
+
+def test_app_config_cuda_backend_without_model_env_defaults_to_cuda_catalog(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLEANER_BACKEND", "cuda")
+    monkeypatch.delenv("CLEANER_MODEL_NAME", raising=False)
+
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+
+    assert config.cleaner_backend == "cuda"
+    assert config.cleaner_model_name == "meta-llama/Llama-3.2-3B-Instruct"
+
+
+def test_app_config_cuda_backend_respects_explicit_cleaner_model_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLEANER_BACKEND", "cuda")
+    monkeypatch.setenv("CLEANER_MODEL_NAME", "Qwen/Qwen2.5-1.5B-Instruct")
+
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+
+    assert config.cleaner_model_name == "Qwen/Qwen2.5-1.5B-Instruct"
+
+
+def test_conversion_service_cuda_request_without_model_uses_cuda_catalog_default(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model=None,
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:0",
+            cleaner_cuda_quantization="8bit",
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
+
+    assert pipeline_config.cleaner_model_name == "meta-llama/Llama-3.2-3B-Instruct"
+
+
+def test_conversion_service_mlx_request_does_not_inherit_cuda_catalog_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLEANER_BACKEND", "cuda")
+    service = _make_service(tmp_path, _PipelineStub)
+
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model=None,
+            cleaner_backend="mlx",
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
+
+    assert pipeline_config.cleaner_backend == "mlx"
+    assert pipeline_config.cleaner_model_name == "mlx-community/Llama-3.2-3B-Instruct-4bit"
+
+
+def test_resolve_cleaner_model_name_preserves_explicit_cuda_catalog_choice() -> None:
+    from modules.tts.cleaner_config import resolve_cleaner_model_name
+
+    resolved = resolve_cleaner_model_name(
+        backend="cuda",
+        configured_model="Qwen/Qwen2.5-1.5B-Instruct",
+        explicit_model=True,
+    )
+    assert resolved == "Qwen/Qwen2.5-1.5B-Instruct"
+
+
+@pytest.mark.parametrize(
+    ("cleaner_backend", "expects_limiter"),
+    [
+        ("api", True),
+        ("mlx", False),
+        ("cuda", False),
+    ],
+)
+def test_conversion_service_pipeline_config_api_limiter_follows_backend_contract(
+    tmp_path,
+    cleaner_backend,
+    expects_limiter,
+):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model=None,
+            cleaner_backend=cleaner_backend,
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
+
+    if expects_limiter:
+        assert pipeline_config.cleaner_api_global_limiter is _LimiterStub.semaphore
+    else:
+        assert pipeline_config.cleaner_api_global_limiter is None
 
 
 def test_normalize_cuda_device_rejects_invalid_device_string():
@@ -2258,6 +2378,75 @@ def test_normalize_cuda_device_rejects_invalid_device_string():
 
     with pytest.raises(ValueError, match="CUDA device must be"):
         normalize_cuda_device("gpu:0")
+
+
+def test_conversion_service_normalizes_cuda_fields_when_backend_is_cuda(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model="meta-llama/Llama-3.2-3B-Instruct",
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:1",
+            cleaner_cuda_quantization="fp16",
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
+
+    assert pipeline_config.cleaner_backend == "cuda"
+    assert pipeline_config.cleaner_cuda_device == "cuda:1"
+    assert pipeline_config.cleaner_cuda_quantization == "fp16"
+
+
+def test_conversion_service_ignores_cuda_request_fields_when_backend_is_not_cuda(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model=None,
+            cleaner_backend="mlx",
+            cleaner_cuda_device="gpu:0",
+            cleaner_cuda_quantization="bogus",
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
+
+    assert pipeline_config.cleaner_backend == "mlx"
+    assert pipeline_config.cleaner_cuda_device == "cuda"
+    assert pipeline_config.cleaner_cuda_quantization == "4bit"
+
+
+def test_conversion_service_rejects_invalid_cuda_device_at_normalize_time(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    with pytest.raises(ValueError, match="CUDA device must be"):
+        service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+            runtime_options=ConversionRuntimeOptions(
+                voice="af_bella",
+                speed=1.0,
+                tts_engine="kokoro",
+                tts_quantization=None,
+                cleaner_model=None,
+                cleaner_backend="cuda",
+                cleaner_cuda_device="gpu:0",
+                cleaner_cuda_quantization="4bit",
+                cleaner_api_model=None,
+                tts_options=None,
+            ),
+            conversion_mode="audiobook",
+        )
 
 
 def test_conversion_service_pipeline_config_accepts_registered_cleaner_backend(tmp_path):
