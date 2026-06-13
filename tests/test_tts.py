@@ -18,7 +18,7 @@ from modules.tts.engine_config import TTSConfig
 
 @pytest.fixture(autouse=True)
 def _stub_lazy_mlx_runtime(monkeypatch):
-    monkeypatch.setattr(cleaner_module, "_ensure_mlx_lm_runtime", lambda: None)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "ensure_mlx_lm_runtime", lambda: None)
     monkeypatch.setattr(tts_engine_module, "_ensure_mlx_runtime", lambda: None)
     monkeypatch.setattr(tts_engine_module, "_ensure_tqdm_thread_lock", lambda: None)
 

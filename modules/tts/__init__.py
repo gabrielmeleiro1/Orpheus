@@ -25,7 +25,7 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "clear_vram": ("modules.tts.memory", "clear_vram"),
     "get_memory_stats": ("modules.tts.memory", "get_memory_stats"),
     "TextCleaner": ("modules.tts.cleaner", "TextCleaner"),
-    "CleanerConfig": ("modules.tts.cleaner", "CleanerConfig"),
+    "CleanerConfig": ("modules.tts.cleaner_config", "CleanerConfig"),
     # Strategy Pattern
     "TTSStrategy": ("modules.tts.strategies", "TTSStrategy"),
     "TTSVoice": ("modules.tts.strategies", "TTSVoice"),

@@ -23,7 +23,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner_transport import generate_api_response_async
-from modules.tts.cleaner import TextCleaner, CleanerConfig
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from modules.tts.cleaner_api import CleanerAPIStrategy
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
 from modules.tts.cleaner_rules import extract_result
@@ -92,8 +93,8 @@ def test_cleaner_skip_llm_routes_joined_first_person_words_to_llm(monkeypatch):
         calls.append(kwargs)
         return "I am tired. I would rest."
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", fake_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", fake_generate)
 
     trace = cleaner.clean_with_trace("Iam tired. Iwould rest.")
 
@@ -132,7 +133,7 @@ def test_cleaner_skip_llm_option_uses_rule_only_for_long_clean_text(monkeypatch)
     def fail_generate(*_args, **_kwargs):
         raise AssertionError("LLM generation should not be called")
 
-    monkeypatch.setattr(cleaner_module, "generate", fail_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", fail_generate)
 
     trace = cleaner.clean_with_trace(text)
 
@@ -164,8 +165,8 @@ def test_cleaner_skip_llm_option_still_uses_llm_when_heuristic_triggers(monkeypa
         calls.append(kwargs)
         return "NASA launched today."
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", fake_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", fake_generate)
 
     trace = cleaner.clean_with_trace("NASA launched today.")
 
@@ -288,15 +289,15 @@ def test_rule_based_cleaning():
         assert "sampler" in kwargs
         return "NASA launched today."
 
-    original_generate = cleaner_module.generate
-    original_make_sampler = cleaner_module.make_sampler
-    cleaner_module.make_sampler = lambda temp=0.0: ("sampler", temp)
-    cleaner_module.generate = fake_generate
+    original_generate = cleaner_module.cleaner_mlx_backend.generate
+    original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
+    cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
+    cleaner_module.cleaner_mlx_backend.generate = fake_generate
     try:
         cleaned = compat_cleaner.clean("NASA launched today.")
     finally:
-        cleaner_module.generate = original_generate
-        cleaner_module.make_sampler = original_make_sampler
+        cleaner_module.cleaner_mlx_backend.generate = original_generate
+        cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
     assert cleaned == "NASA launched today."
     assert len(calls) == 1
@@ -308,13 +309,13 @@ def test_rule_based_cleaning():
 
     # Test 5: before/after cleaner trace
     print("\n[5] Testing cleaner before/after trace...")
-    cleaner_module.make_sampler = lambda temp=0.0: ("sampler", temp)
-    cleaner_module.generate = fake_generate
+    cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
+    cleaner_module.cleaner_mlx_backend.generate = fake_generate
     try:
         trace = compat_cleaner.clean_with_trace("NASA launched today.")
     finally:
-        cleaner_module.generate = original_generate
-        cleaner_module.make_sampler = original_make_sampler
+        cleaner_module.cleaner_mlx_backend.generate = original_generate
+        cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
     assert trace.original_text == "NASA launched today."
     assert "NASA" in trace.rule_based_text
     assert trace.cleaned_text == "NASA launched today."
@@ -368,14 +369,14 @@ def test_rule_based_cleaning():
             }
         )
 
-    original_urlopen = cleaner_module.urlrequest.urlopen
+    original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
     original_key = os.environ.get("KIMI_API_KEY")
     os.environ["KIMI_API_KEY"] = "test-key"
-    cleaner_module.urlrequest.urlopen = fake_urlopen
+    cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen
     try:
             cleaned_api = api_cleaner.clean("NASA launched today.")
     finally:
-        cleaner_module.urlrequest.urlopen = original_urlopen
+        cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
             os.environ.pop("KIMI_API_KEY", None)
         else:
@@ -436,18 +437,18 @@ def test_rule_based_cleaning():
         )
 
     original_create_default_context = ssl.create_default_context
-    original_urlopen = cleaner_module.urlrequest.urlopen
+    original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
     original_key = os.environ.get("KIMI_API_KEY")
     original_ca_bundle = os.environ.get("CLEANER_API_CA_BUNDLE")
     os.environ["KIMI_API_KEY"] = "test-key"
     os.environ["CLEANER_API_CA_BUNDLE"] = "/tmp/custom-ca.pem"
     ssl.create_default_context = fake_create_default_context
-    cleaner_module.urlrequest.urlopen = fake_urlopen_with_context
+    cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_with_context
     try:
         cleaned_api_ca = api_ca_cleaner.clean("NASA launched today.")
     finally:
         ssl.create_default_context = original_create_default_context
-        cleaner_module.urlrequest.urlopen = original_urlopen
+        cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
             os.environ.pop("KIMI_API_KEY", None)
         else:
@@ -487,14 +488,14 @@ def test_rule_based_cleaning():
         parser_capture["model"] = body["model"]
         return _FakeResponse({"choices": [{"text": "NASA launched today."}]})
 
-    original_urlopen = cleaner_module.urlrequest.urlopen
+    original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
     original_key = os.environ.get("OPENAI_API_KEY")
     os.environ["OPENAI_API_KEY"] = "test-key"
-    cleaner_module.urlrequest.urlopen = fake_urlopen_text_choice
+    cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_text_choice
     try:
         cleaned_api_text = api_text_cleaner.clean("NASA launched today.")
     finally:
-        cleaner_module.urlrequest.urlopen = original_urlopen
+        cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
             os.environ.pop("OPENAI_API_KEY", None)
         else:
@@ -564,14 +565,14 @@ def test_rule_based_cleaning():
             }
         )
 
-    original_urlopen = cleaner_module.urlrequest.urlopen
+    original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
     original_key = os.environ.get("OPENAI_API_KEY")
     os.environ["OPENAI_API_KEY"] = "test-key"
-    cleaner_module.urlrequest.urlopen = fake_urlopen_token_retry
+    cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_token_retry
     try:
         cleaned_api_token = api_token_cleaner.clean("NASA launched today.")
     finally:
-        cleaner_module.urlrequest.urlopen = original_urlopen
+        cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
             os.environ.pop("OPENAI_API_KEY", None)
         else:
@@ -613,14 +614,14 @@ def test_rule_based_cleaning():
             }
         )
 
-    original_urlopen = cleaner_module.urlrequest.urlopen
+    original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
     original_key = os.environ.get("OPENAI_API_KEY")
     os.environ["OPENAI_API_KEY"] = "test-key"
-    cleaner_module.urlrequest.urlopen = fake_urlopen_gpt5
+    cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_gpt5
     try:
         cleaned_api_gpt5 = api_gpt5_cleaner.clean("NASA launched today.")
     finally:
-        cleaner_module.urlrequest.urlopen = original_urlopen
+        cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
             os.environ.pop("OPENAI_API_KEY", None)
         else:
@@ -665,14 +666,14 @@ def test_rule_based_cleaning():
             }
         )
 
-    original_urlopen = cleaner_module.urlrequest.urlopen
+    original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
     original_key = os.environ.get("OPENAI_API_KEY")
     os.environ["OPENAI_API_KEY"] = "test-key"
-    cleaner_module.urlrequest.urlopen = fake_urlopen_o3
+    cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_o3
     try:
         cleaned_api_o3 = api_o3_cleaner.clean("NASA launched today.")
     finally:
-        cleaner_module.urlrequest.urlopen = original_urlopen
+        cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
             os.environ.pop("OPENAI_API_KEY", None)
         else:

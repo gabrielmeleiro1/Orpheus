@@ -12,7 +12,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
@@ -42,8 +43,8 @@ def test_output_within_bounds_is_accepted(monkeypatch: pytest.MonkeyPatch) -> No
     cleaner = _make_cleaner("mlx")
     input_text = "The crash of 1987 forced 42 traders to react quickly in London."
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", lambda _m, _t, **_k: input_text)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: input_text)
 
     trace = cleaner.clean_with_trace(input_text)
     assert trace.mode == "llm_success"
@@ -56,8 +57,8 @@ def test_output_1_3x_longer_triggers_fallback(monkeypatch: pytest.MonkeyPatch) -
     rule_based = cleaner._rule_based_clean(input_text)
     hallucinated = "x" * (int(len(rule_based) * 2.0))
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", lambda _m, _t, **_k: hallucinated)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: hallucinated)
 
     trace = cleaner.clean_with_trace(input_text)
     assert trace.mode == "hallucination_fallback"
@@ -70,8 +71,8 @@ def test_hallucination_fallback_stat_incremented(monkeypatch: pytest.MonkeyPatch
     rule_based = cleaner._rule_based_clean(input_text)
     hallucinated = "y" * (int(len(rule_based) * 2.0))
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", lambda _m, _t, **_k: hallucinated)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: hallucinated)
 
     before = cleaner.stats_snapshot()["llm_fallback"]
     _ = cleaner.clean(input_text)
@@ -88,8 +89,8 @@ def test_abbreviation_expansion_triggers_preservation_fallback(
     rule_based = cleaner._rule_based_clean(input_text)
     expanded = "Doctor Smith met Mister Jones in 1987."
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", lambda _m, _t, **_k: expanded)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: expanded)
 
     trace = cleaner.clean_with_trace(input_text)
     assert trace.mode == "hallucination_fallback"
@@ -116,7 +117,7 @@ def test_api_backend_hallucination_also_guarded(monkeypatch: pytest.MonkeyPatch)
             return json.dumps(payload).encode("utf-8")
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", lambda *_a, **_k: _FakeResponse())
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", lambda *_a, **_k: _FakeResponse())
 
     trace = cleaner.clean_with_trace(input_text)
     assert trace.mode == "hallucination_fallback"
@@ -129,8 +130,8 @@ def test_trace_records_hallucination_mode(monkeypatch: pytest.MonkeyPatch) -> No
     rule_based = cleaner._rule_based_clean(input_text)
     hallucinated = "q" * (int(len(rule_based) * 2.0))
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", lambda _m, _t, **_k: hallucinated)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: hallucinated)
 
     trace = cleaner.clean_with_trace(input_text)
     assert trace.mode == "hallucination_fallback"
