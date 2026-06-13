@@ -101,10 +101,36 @@ export interface TtsEngineOption {
   options_schema?: Record<string, unknown>;
 }
 
+/** Raw cleaner backend option shape from `/api/options/models`. */
+export interface CleanerBackendOptionApi {
+  name: string;
+  display_name: string;
+  is_local: boolean;
+  requires_model?: boolean;
+  requires_api_key: boolean;
+  models: string[];
+  supported_quantizations?: string[];
+  default_device?: string;
+}
+
+/** Normalized cleaner backend option for desktop UI and runtime decisions. */
+export interface CleanerBackendOption {
+  id: string;
+  display_name: string;
+  is_local: boolean;
+  requires_model: boolean;
+  requires_api_key: boolean;
+  models: string[];
+  supported_quantizations?: string[];
+  default_device?: string;
+}
+
 export interface ModelOptionsResponse {
   tts_engines: TtsEngineOption[];
   cleaner_models: string[];
   api_cleaner_models: string[];
+  cuda_cleaner_models?: string[];
+  cleaner_backend_options: CleanerBackendOptionApi[];
 }
 
 export interface VoiceOptionsResponse {
@@ -133,7 +159,7 @@ interface RuntimeProbe {
 export interface SystemCapabilitiesResponse {
   default_tts_engine: string;
   default_tts_quantization: string;
-  mlx_cleaner_runtime_available: boolean;
+  cleaner_runtime_availability: Record<string, boolean>;
   runtime_probe: RuntimeProbe;
   primary_runtime?: string;
   mlx_runtime_available?: boolean;
@@ -171,6 +197,8 @@ export interface ParallelWarmupRequest {
   tts_quantization?: string | null;
   cleaner_model?: string | null;
   cleaner_backend?: string | null;
+  cleaner_cuda_device?: string | null;
+  cleaner_cuda_quantization?: string | null;
   cleaner_api_model?: string | null;
   cleaner_api_key?: string | null;
   max_parallel_chapters: number;
@@ -196,6 +224,8 @@ export interface ConversionRuntimeOptions {
   tts_quantization?: string | null;
   cleaner_model?: string | null;
   cleaner_backend?: string | null;
+  cleaner_cuda_device?: string | null;
+  cleaner_cuda_quantization?: string | null;
   cleaner_api_model?: string | null;
   cleaner_api_key?: string | null;
   tts_options?: TtsRuntimeOptions | null;

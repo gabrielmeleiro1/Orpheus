@@ -16,6 +16,8 @@ export interface PersistedSettings {
   cleaner_backend?: string;
   cleaner_model?: string;
   cleaner_backend_configured?: boolean;
+  cleaner_cuda_device?: string;
+  cleaner_cuda_quantization?: string;
   parallel_worker_mode?: "auto" | "manual";
   parallel_manual_max?: number;
 }

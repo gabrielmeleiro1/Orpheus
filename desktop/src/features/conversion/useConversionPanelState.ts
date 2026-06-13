@@ -118,6 +118,8 @@ export function useConversionPanelState({
     setQueueStatus: sourceQueue.setQueueStatus,
   });
 
+  const requiresCleanerApiKey = optionState.selectedCleanerBackend?.requires_api_key ?? false;
+
   const startDisabled =
     !apiClient ||
     queueRunner.queueRunning ||
@@ -125,7 +127,8 @@ export function useConversionPanelState({
     !sourceQueue.sourcePath.trim() ||
     !optionState.selectedEngine ||
     !optionState.selectedVoice ||
-    (optionState.cleanerBackend === "api" && !optionState.cleanerApiKey.trim()) ||
+    optionState.cleanerRuntimeError ||
+    (requiresCleanerApiKey && !optionState.cleanerApiKey.trim()) ||
     (optionState.cleanerModelOptions.length > 0 && !optionState.cleanerModel);
 
   const cancelDisabled = !conversionJob.activeJobId || conversionJob.isCancelling;
