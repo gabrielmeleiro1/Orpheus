@@ -2449,34 +2449,31 @@ def test_conversion_service_rejects_invalid_cuda_device_at_normalize_time(tmp_pa
         )
 
 
-def test_conversion_service_pipeline_config_accepts_registered_cleaner_backend(tmp_path):
-    from modules.tts.cleaner_backends.registry import _REGISTRY, register_cleaner_backend
-
+def test_conversion_service_pipeline_config_accepts_registered_cleaner_backend(
+    tmp_path,
+    registry_snapshot,
+):
+    from modules.tts.cleaner_backends.registry import register_cleaner_backend
     from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend
 
-    original = dict(_REGISTRY)
-    try:
-        register_cleaner_backend("fake", FakeCleanerBackend)
-        service = _make_service(tmp_path, _PipelineStub)
+    register_cleaner_backend("fake", FakeCleanerBackend)
+    service = _make_service(tmp_path, _PipelineStub)
 
-        pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
-            runtime_options=ConversionRuntimeOptions(
-                voice="af_bella",
-                speed=1.0,
-                tts_engine="kokoro",
-                tts_quantization=None,
-                cleaner_model=None,
-                cleaner_backend="fake",
-                cleaner_api_model=None,
-                tts_options=None,
-            ),
-            conversion_mode="audiobook",
-        )
+    pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
+        runtime_options=ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.0,
+            tts_engine="kokoro",
+            tts_quantization=None,
+            cleaner_model=None,
+            cleaner_backend="fake",
+            cleaner_api_model=None,
+            tts_options=None,
+        ),
+        conversion_mode="audiobook",
+    )
 
-        assert pipeline_config.cleaner_backend == "fake"
-    finally:
-        _REGISTRY.clear()
-        _REGISTRY.update(original)
+    assert pipeline_config.cleaner_backend == "fake"
 
 
 def test_conversion_service_pipeline_config_accepts_direct_cleaner_api_key(tmp_path):
