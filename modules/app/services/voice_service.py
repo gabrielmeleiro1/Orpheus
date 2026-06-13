@@ -298,7 +298,7 @@ class VoiceService:
         return engines
 
     def get_available_cleaner_models(self) -> list[str]:
-        from modules.tts.cleaner import list_cleaner_models
+        from modules.tts.cleaner_config import list_cleaner_models
 
         models = list_cleaner_models()
         if self._config.cleaner_model_name not in models:
@@ -306,7 +306,7 @@ class VoiceService:
         return models
 
     def get_available_api_cleaner_models(self) -> list[str]:
-        from modules.tts.cleaner import list_api_cleaner_models
+        from modules.tts.cleaner_config import list_api_cleaner_models
 
         models = list_api_cleaner_models()
         if self._config.cleaner_api_model and self._config.cleaner_api_model not in models:

@@ -10,7 +10,8 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 

@@ -14,7 +14,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
@@ -88,7 +89,7 @@ def test_api_trace_before_after_for_malformed_chapter_snippet(
         return _FakeResponse(str(sample["expected_clean"]))
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", fake_urlopen)
 
     trace = cleaner.clean_with_trace(str(sample["dirty"]))
 
@@ -119,7 +120,7 @@ def test_api_trace_multichapter_batch_updates_stats(monkeypatch: pytest.MonkeyPa
         return _FakeResponse(str(sample["expected_clean"]))
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", fake_urlopen)
 
     traces = [cleaner.clean_with_trace(str(sample["dirty"])) for sample in SAMPLES]
 
@@ -150,7 +151,7 @@ def test_api_trace_repairs_he_time_fragment_after_llm(monkeypatch: pytest.Monkey
         return _FakeResponse(llm_output)
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", fake_urlopen)
 
     trace = cleaner.clean_with_trace(dirty)
     assert trace.mode == "llm_success"
@@ -174,7 +175,7 @@ def test_api_trace_repairs_spaced_caps_signature_after_llm(
         return _FakeResponse(dirty)
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", fake_urlopen)
 
     trace = cleaner.clean_with_trace(dirty)
     assert trace.mode == "llm_success"
@@ -291,7 +292,7 @@ def test_api_trace_strips_numeric_reference_markers_even_when_llm_echoes_input(
         return _FakeResponse(dirty)
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", fake_urlopen)
 
     trace = cleaner.clean_with_trace(dirty)
     assert trace.mode == "llm_success"
@@ -317,7 +318,7 @@ def test_api_trace_repairs_split_uppercase_word_for_tts_natural_reading(
         return _FakeResponse(dirty)
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", fake_urlopen)
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", fake_urlopen)
 
     trace = cleaner.clean_with_trace(dirty)
     assert trace.mode == "llm_success"

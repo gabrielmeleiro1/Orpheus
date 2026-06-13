@@ -17,7 +17,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
-from modules.tts.cleaner import TextCleaner, CleanerConfig
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
@@ -52,18 +53,18 @@ def _make_mlx_cleaner_with_fake_llm(fake_response: str) -> TextCleaner:
 
 def _patch_generate(fake_response: str):
     """Context-free monkey-patch helpers for mlx generate + make_sampler."""
-    original_generate = cleaner_module.generate
-    original_make_sampler = cleaner_module.make_sampler
+    original_generate = cleaner_module.cleaner_mlx_backend.generate
+    original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
 
     def _fake_generate(_model, _tokenizer, **kwargs):
         return fake_response
 
-    cleaner_module.generate = _fake_generate
-    cleaner_module.make_sampler = lambda temp=0.0: ("sampler", temp)
+    cleaner_module.cleaner_mlx_backend.generate = _fake_generate
+    cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
 
     def _restore():
-        cleaner_module.generate = original_generate
-        cleaner_module.make_sampler = original_make_sampler
+        cleaner_module.cleaner_mlx_backend.generate = original_generate
+        cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
     return _restore
 
@@ -351,17 +352,17 @@ class TestFallbackBehavior:
         def _exploding_generate(*args, **kwargs):
             raise RuntimeError("API is down")
 
-        original_generate = cleaner_module.generate
-        original_make_sampler = cleaner_module.make_sampler
-        cleaner_module.generate = _exploding_generate
-        cleaner_module.make_sampler = lambda temp=0.0: ("sampler", temp)
+        original_generate = cleaner_module.cleaner_mlx_backend.generate
+        original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
+        cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
+        cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
         try:
             trace = cleaner.clean_with_trace("NASA launched today.")
             assert trace.mode == "llm_fallback"
             assert trace.cleaned_text == "NASA launched today."
         finally:
-            cleaner_module.generate = original_generate
-            cleaner_module.make_sampler = original_make_sampler
+            cleaner_module.cleaner_mlx_backend.generate = original_generate
+            cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
     def test_fallback_stats_incremented(self):
         cleaner = _make_rule_only_cleaner()
@@ -371,18 +372,18 @@ class TestFallbackBehavior:
         def _exploding_generate(*args, **kwargs):
             raise RuntimeError("boom")
 
-        original_generate = cleaner_module.generate
-        original_make_sampler = cleaner_module.make_sampler
-        cleaner_module.generate = _exploding_generate
-        cleaner_module.make_sampler = lambda temp=0.0: ("sampler", temp)
+        original_generate = cleaner_module.cleaner_mlx_backend.generate
+        original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
+        cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
+        cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
         try:
             cleaner.clean("NASA launched today.")
             stats = cleaner.stats_snapshot()
             assert stats["llm_fallback"] == 1
             assert stats["llm_success"] == 0
         finally:
-            cleaner_module.generate = original_generate
-            cleaner_module.make_sampler = original_make_sampler
+            cleaner_module.cleaner_mlx_backend.generate = original_generate
+            cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
 
 # ---------------------------------------------------------------------------
@@ -401,10 +402,10 @@ class TestTraceCapturesError:
         def _exploding_generate(*args, **kwargs):
             raise RuntimeError("Cleaner API HTTP 401: Invalid Authentication")
 
-        original_generate = cleaner_module.generate
-        original_make_sampler = cleaner_module.make_sampler
-        cleaner_module.generate = _exploding_generate
-        cleaner_module.make_sampler = lambda temp=0.0: ("sampler", temp)
+        original_generate = cleaner_module.cleaner_mlx_backend.generate
+        original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
+        cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
+        cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
         try:
             # Use text long enough (>50 chars) with numbers to trigger LLM path
             text = "The investor bought 42 shares of stock in 2024 and sold them later for a significant profit."
@@ -413,8 +414,8 @@ class TestTraceCapturesError:
             assert "401" in trace.llm_error
             assert "Invalid Authentication" in trace.llm_error
         finally:
-            cleaner_module.generate = original_generate
-            cleaner_module.make_sampler = original_make_sampler
+            cleaner_module.cleaner_mlx_backend.generate = original_generate
+            cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
 
 # ---------------------------------------------------------------------------
@@ -508,7 +509,7 @@ class TestAPIBackendFallback:
         cleaner._loaded = True
         attach_cleaner_backend_strategy(cleaner)
 
-        original_urlopen = cleaner_module.urlrequest.urlopen
+        original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
         original_key = os.environ.get("OPENAI_API_KEY")
         os.environ["OPENAI_API_KEY"] = "sk-invalid-key"
 
@@ -531,14 +532,14 @@ class TestAPIBackendFallback:
             exc.fp = _Fake401Response()
             raise exc
 
-        cleaner_module.urlrequest.urlopen = fake_urlopen
+        cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen
         try:
             trace = cleaner.clean_with_trace("NASA launched today.")
             assert trace.mode == "llm_fallback"
             assert "401" in trace.llm_error
             assert trace.cleaned_text == "NASA launched today."
         finally:
-            cleaner_module.urlrequest.urlopen = original_urlopen
+            cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
             if original_key is None:
                 os.environ.pop("OPENAI_API_KEY", None)
             else:

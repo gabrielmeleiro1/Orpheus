@@ -9,7 +9,8 @@ from modules.tts.cleaner_backends.registry import get_cleaner_backend, validate_
 from modules.tts.cleaner_config import CleanTrace
 
 if TYPE_CHECKING:
-    from modules.tts.cleaner import CleanerConfig, TextCleaner
+    from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 
 
 class FakeCleanerBackend:
@@ -49,13 +50,20 @@ class FakeCleanerBackend:
         return ["fake-model"]
 
 
+class FakeLocalCleanerBackend(FakeCleanerBackend):
+    """Named local backend for tests that need a distinct registry id."""
+
+    name = "fake-local"
+    display_name = "Fake Local"
+
+
 def make_partial_text_cleaner(
     config: CleanerConfig | None = None,
     *,
     loaded: bool = False,
 ) -> TextCleaner:
     """Build a TextCleaner without running full __init__, with backend strategy set."""
-    from modules.tts.cleaner import CleanerConfig, TextCleaner
+    from modules.tts.cleaner import TextCleaner
 
     cleaner = TextCleaner.__new__(TextCleaner)
     cleaner.config = config or CleanerConfig()

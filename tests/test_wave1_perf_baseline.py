@@ -17,7 +17,8 @@ import pytest
 from modules.audio.packager import M4BPackager
 from modules.pipeline.orchestrator import ChapterResult, ConversionPipeline, PipelineConfig
 from modules.tts import cleaner as cleaner_module
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
