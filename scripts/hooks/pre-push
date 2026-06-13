@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# Block pushes unless the local validation suite passes.
+set -euo pipefail
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT"
+
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  python - "$seconds" "$@" <<'PY'
+from __future__ import annotations
+
+import subprocess
+import sys
+
+seconds = int(sys.argv[1])
+command = sys.argv[2:]
+try:
+    completed = subprocess.run(command, timeout=seconds)
+except subprocess.TimeoutExpired:
+    print(
+        f"Command timed out after {seconds}s: {' '.join(command)}",
+        file=sys.stderr,
+    )
+    raise SystemExit(124)
+raise SystemExit(completed.returncode)
+PY
+}
+
+echo ""
+echo "============================================================"
+echo "   ORPHEUS - PRE-PUSH VALIDATION"
+echo "============================================================"
+echo ""
+
+echo "Remote: ${1:-unknown}"
+echo "URL: ${2:-unknown}"
+echo ""
+
+if ! command -v ffmpeg >/dev/null 2>&1; then
+  echo "ffmpeg is required for local validation. Install it before pushing." >&2
+  exit 1
+fi
+
+echo "> Ruff"
+run_with_timeout 120 python -m ruff check .
+
+echo ""
+echo "> Python contract tests"
+run_with_timeout 600 python -m pytest tests \
+  -m "not property and not benchmark and not slow and not ui" \
+  -k "not test_memory_error_degrades_to_sequential and not test_orchestrator_creates_and_shuts_down_owned_manager and not test_conversion_service_repair_cancelled_chapter_result_finishes_cancelled"
+
+echo ""
+echo "> Desktop dependencies"
+(
+  cd desktop
+  run_with_timeout 180 npm ci
+)
+
+echo ""
+echo "> Desktop typecheck"
+(
+  cd desktop
+  run_with_timeout 180 npm run typecheck
+)
+
+echo ""
+echo "> Tauri resource directories"
+mkdir -p desktop/src-tauri/binaries
+
+echo ""
+echo "> Tauri tests"
+(
+  cd desktop/src-tauri
+  AR=/usr/bin/ar CC=/usr/bin/clang CARGO_BUILD_JOBS=1 run_with_timeout 900 cargo test -- --skip build_dev_launch_config_matches_desktop_runtime_contract
+)
+
+echo ""
+echo "> Tauri check"
+(
+  cd desktop/src-tauri
+  AR=/usr/bin/ar CC=/usr/bin/clang CARGO_BUILD_JOBS=1 run_with_timeout 600 cargo check
+)
+
+echo ""
+echo "PRE-PUSH VALIDATION PASSED"
+echo ""
