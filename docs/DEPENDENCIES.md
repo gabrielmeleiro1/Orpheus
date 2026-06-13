@@ -14,8 +14,7 @@ brew install python@3.12 node rust ffmpeg
 
 - macOS on Apple Silicon is the primary supported runtime. The local MLX stack
   is Apple Silicon oriented. Headless NVIDIA GPU text cleaning uses the
-  ``cuda`` cleaner backend (PyTorch + transformers; optional bitsandbytes for
-  4/8-bit loading) and does not require Apple Silicon.
+  ``cuda`` cleaner backend and does not require Apple Silicon.
 - Python 3.12 is recommended for the desktop sidecar build and is the version
   used by the packaged runtime dependencies.
 - Node.js is used by the React/Vite/Tauri frontend.
@@ -52,6 +51,19 @@ python -m pip install -r requirements-dev.txt
 
 `requirements-dev.txt` includes `requirements.txt`, so do not install both
 separately.
+
+### CUDA cleaner backend
+
+The ``cuda`` cleaner backend shares the committed PyTorch stack in
+``requirements.txt``:
+
+- ``torch`` — CUDA runtime and model execution
+- ``transformers`` — Hugging Face model loading and generation
+- ``bitsandbytes`` — optional 4-bit / 8-bit quantization (``CleanerConfig.cuda_quantization``)
+
+These packages are installed with the normal development workflow above. A CUDA-capable
+NVIDIA driver and GPU are required at runtime; the desktop sidecar build on macOS
+does not bundle CUDA wheels.
 
 ## Desktop Frontend
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -25,6 +26,19 @@ from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # 
 
 
 SUPPORTED_SOURCE_SUFFIXES = {".pdf", ".epub"}
+CLEANER_BACKEND_CHOICES = ("mlx", "api", "cuda")
+CUDA_CLEANER_QUANTIZATION_CHOICES = ("4bit", "8bit", "fp16")
+
+
+def _apply_cleaner_env(
+    *,
+    cleaner_backend: str,
+    cleaner_cuda_device: str,
+    cleaner_cuda_quantization: str,
+) -> None:
+    os.environ["CLEANER_BACKEND"] = cleaner_backend
+    os.environ["CLEANER_CUDA_DEVICE"] = cleaner_cuda_device
+    os.environ["CLEANER_CUDA_QUANTIZATION"] = cleaner_cuda_quantization
 
 
 @dataclass
@@ -133,12 +147,20 @@ def run_feedback_loop(args: argparse.Namespace) -> int:
     source_file = resolve_source(Path(args.source).expanduser().resolve(), args.contains)
     print(f"[runner] source: {source_file}")
 
+    _apply_cleaner_env(
+        cleaner_backend=args.cleaner_backend,
+        cleaner_cuda_device=args.cleaner_cuda_device,
+        cleaner_cuda_quantization=args.cleaner_cuda_quantization,
+    )
+
     config = PipelineConfig(
         tts_engine="kokoro",
         tts_model_name="mlx-community/Kokoro-82M",
         tts_quantization=args.tts_quantization,
         cleaner_model_name=args.cleaner_model,
         cleaner_backend=args.cleaner_backend,
+        cleaner_cuda_device=args.cleaner_cuda_device,
+        cleaner_cuda_quantization=args.cleaner_cuda_quantization,
         cleaner_api_base_url=args.cleaner_api_base_url,
         cleaner_api_key_env=args.cleaner_api_key_env,
         cleaner_api_model=args.cleaner_api_model,
@@ -277,8 +299,22 @@ def run_feedback_loop(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    defaults = PipelineConfig()
     parser = argparse.ArgumentParser(
-        description="Run iterative chapter-by-chapter conversion with quality gates."
+        description="Run iterative chapter-by-chapter conversion with quality gates.",
+        epilog=(
+            "Examples:\n"
+            "  MLX cleaner (default):\n"
+            "    python tools/feedback_loop_runner.py --source book.epub\n\n"
+            "  CUDA cleaner on a specific GPU:\n"
+            "    python tools/feedback_loop_runner.py --source book.epub \\\n"
+            "      --cleaner-backend cuda --cleaner-cuda-device cuda:0 \\\n"
+            "      --cleaner-cuda-quantization 8bit\n\n"
+            "  Remote API cleaner:\n"
+            "    python tools/feedback_loop_runner.py --source book.epub \\\n"
+            "      --cleaner-backend api --cleaner-model gpt-4o-mini"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--source",
@@ -327,8 +363,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cleaner-backend",
         default="mlx",
-        choices=["mlx", "api"],
-        help="Cleaner backend: local MLX model or remote OpenAI-compatible API",
+        choices=CLEANER_BACKEND_CHOICES,
+        help="Cleaner backend: mlx (local MLX), cuda (local NVIDIA GPU), or api (remote)",
+    )
+    parser.add_argument(
+        "--cleaner-cuda-device",
+        default=defaults.cleaner_cuda_device,
+        help="CUDA device for cleaner when --cleaner-backend=cuda (also CLEANER_CUDA_DEVICE)",
+    )
+    parser.add_argument(
+        "--cleaner-cuda-quantization",
+        default=defaults.cleaner_cuda_quantization,
+        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
     )
     parser.add_argument(
         "--cleaner-api-base-url",

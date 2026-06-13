@@ -230,15 +230,124 @@ class MLXDeviceMemoryPolicy(HostMemoryPolicy):
         return None
 
 
+def _cuda_memory_stat(stats: Mapping[str, object], *keys: str) -> int:
+    for key in keys:
+        try:
+            value = stats.get(key)
+            if value is not None:
+                return max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _cuda_device_index(device: str | None) -> int | None:
+    if device is None or device == "cuda":
+        return 0
+    if device.startswith("cuda:"):
+        try:
+            return int(device.split(":", 1)[1])
+        except ValueError:
+            return None
+    return None
+
+
+def _same_cuda_device_index(left: str | None, right: str | None) -> bool:
+    left_index = _cuda_device_index(left)
+    right_index = _cuda_device_index(right)
+    if left_index is None or right_index is None:
+        return False
+    return left_index == right_index
+
+
 class CUDADeviceMemoryPolicy:
     provider = "cuda"
-    sampling_unavailable_reason = "cuda device memory sampling unavailable"
 
-    def __init__(self, *, device: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        device: str | None = None,
+        torch_module: Any = None,
+    ) -> None:
         self.device = device
+        self._torch_module = torch_module
+
+    def _resolve_torch(self) -> Any:
+        if self._torch_module is not None:
+            return self._torch_module
+        try:
+            import torch
+
+            return torch
+        except Exception:
+            return None
+
+    @property
+    def sampling_unavailable_reason(self) -> str | None:
+        torch_module = self._resolve_torch()
+        if torch_module is None:
+            return "cuda device memory sampling unavailable"
+        cuda = getattr(torch_module, "cuda", None)
+        if cuda is None or not callable(getattr(cuda, "mem_get_info", None)):
+            return "cuda device memory sampling unavailable"
+        return None
 
     def sample(self) -> DeviceMemorySnapshot | None:
-        return None
+        torch_module = self._resolve_torch()
+        if torch_module is None:
+            return None
+        cuda = getattr(torch_module, "cuda", None)
+        if cuda is None:
+            return None
+        mem_get_info = getattr(cuda, "mem_get_info", None)
+        if not callable(mem_get_info):
+            return None
+
+        device_index = _cuda_device_index(self.device)
+        if device_index is None:
+            return None
+
+        try:
+            device_count = getattr(cuda, "device_count", None)
+            if callable(device_count):
+                if device_index < 0 or device_index >= int(device_count()):
+                    return None
+
+            free_bytes, total_bytes = mem_get_info(device_index)
+
+            active_bytes = 0
+            cache_bytes = 0
+            peak_bytes = 0
+            memory_stats = getattr(cuda, "memory_stats", None)
+            if callable(memory_stats):
+                try:
+                    stats = memory_stats(device_index)
+                    active_bytes = _cuda_memory_stat(
+                        stats,
+                        "active_bytes.all.current",
+                    )
+                    peak_bytes = _cuda_memory_stat(
+                        stats,
+                        "active_bytes.all.peak",
+                    )
+                    cache_bytes = _cuda_memory_stat(
+                        stats,
+                        "reserved_bytes.all.current",
+                    )
+                except Exception:
+                    pass
+
+            return DeviceMemorySnapshot(
+                provider=self.provider,
+                device=self.device,
+                total_bytes=max(0, int(total_bytes)),
+                available_bytes=max(0, int(free_bytes)),
+                active_bytes=active_bytes,
+                cache_bytes=cache_bytes,
+                peak_bytes=peak_bytes,
+            )
+        except Exception:
+            return None
 
     def configure_worker_environment(
         self,
@@ -246,15 +355,141 @@ class CUDADeviceMemoryPolicy:
         available_bytes: int,
         active_workers: int,
     ) -> dict[str, str]:
+        """Return CUDA worker env vars when needed.
+
+        PyTorch manages CUDA memory per process, so no per-worker env vars
+        are required today. Worker sizing uses sampled VRAM instead.
+        """
         _ = available_bytes, active_workers
         return {}
 
     def clear_cache(self) -> None:
-        return
+        torch_module = self._resolve_torch()
+        if torch_module is None:
+            return
+        cuda = getattr(torch_module, "cuda", None)
+        if cuda is None:
+            return
+        empty_cache = getattr(cuda, "empty_cache", None)
+        if not callable(empty_cache):
+            return
+        device_index = _cuda_device_index(self.device)
+        if device_index is None:
+            return
+        try:
+            device_ctx = getattr(cuda, "device", None)
+            if callable(device_ctx):
+                with device_ctx(device_index):
+                    empty_cache()
+            else:
+                empty_cache()
+        except Exception:
+            return
 
     def estimated_worker_bytes(self, runtime_spec: TTSRuntimeSpec) -> int | None:
-        _ = runtime_spec
+        if runtime_spec.engine == "kokoro":
+            return 4 * 1024**3
         return None
+
+    def to_dict(self) -> dict[str, str | None]:
+        return {"provider": self.provider, "device": self.device}
+
+
+class CombinedDeviceMemoryPolicy:
+    provider = "combined"
+
+    def __init__(
+        self,
+        *,
+        tts_runtime_spec: TTSRuntimeSpec,
+        cleaner_config: Any,
+        torch_module: Any = None,
+    ) -> None:
+        from modules.tts.cleaner_config import CleanerConfig
+
+        if not isinstance(cleaner_config, CleanerConfig):
+            raise TypeError("cleaner_config must be a CleanerConfig instance")
+
+        self.tts_runtime_spec = tts_runtime_spec
+        self.cleaner_config = cleaner_config
+        self.device = tts_runtime_spec.device
+        self._torch_module = torch_module
+        self._tts_policy = CUDADeviceMemoryPolicy(
+            device=tts_runtime_spec.device,
+            torch_module=torch_module,
+        )
+        self._cleaner_policy = CUDADeviceMemoryPolicy(
+            device=cleaner_config.cuda_device,
+            torch_module=torch_module,
+        )
+
+    @property
+    def sampling_unavailable_reason(self) -> str | None:
+        for policy in (self._tts_policy, self._cleaner_policy):
+            reason = policy.sampling_unavailable_reason
+            if reason is not None:
+                return reason
+        return None
+
+    def sample(self) -> DeviceMemorySnapshot | None:
+        snapshots = [
+            self._tts_policy.sample(),
+            self._cleaner_policy.sample(),
+        ]
+        valid_snapshots = [snapshot for snapshot in snapshots if snapshot is not None]
+        if not valid_snapshots:
+            return None
+
+        limiting_snapshot = min(
+            valid_snapshots,
+            key=lambda snapshot: snapshot.available_bytes,
+        )
+        return DeviceMemorySnapshot(
+            provider=self.provider,
+            device=self.device,
+            total_bytes=max(snapshot.total_bytes for snapshot in valid_snapshots),
+            available_bytes=min(snapshot.available_bytes for snapshot in valid_snapshots),
+            process_rss_bytes=max(
+                snapshot.process_rss_bytes for snapshot in valid_snapshots
+            ),
+            active_bytes=limiting_snapshot.active_bytes,
+            cache_bytes=limiting_snapshot.cache_bytes,
+            peak_bytes=limiting_snapshot.peak_bytes,
+        )
+
+    def configure_worker_environment(
+        self,
+        *,
+        available_bytes: int,
+        active_workers: int,
+    ) -> dict[str, str]:
+        merged: dict[str, str] = {}
+        for policy in (self._tts_policy, self._cleaner_policy):
+            merged.update(
+                policy.configure_worker_environment(
+                    available_bytes=available_bytes,
+                    active_workers=active_workers,
+                )
+            )
+        return merged
+
+    def clear_cache(self) -> None:
+        self._tts_policy.clear_cache()
+        self._cleaner_policy.clear_cache()
+
+    def estimated_worker_bytes(self, runtime_spec: TTSRuntimeSpec) -> int | None:
+        from modules.pipeline.cleaner_memory import estimate_cleaner_cuda_bytes
+
+        total_estimate = 0
+        tts_estimate = self._tts_policy.estimated_worker_bytes(runtime_spec)
+        if tts_estimate is not None:
+            total_estimate += tts_estimate
+        if self.cleaner_config.backend.strip().lower() == "cuda":
+            total_estimate += estimate_cleaner_cuda_bytes(
+                self.cleaner_config.model_name,
+                self.cleaner_config.cuda_quantization,
+            )
+        return total_estimate if total_estimate > 0 else None
 
     def to_dict(self) -> dict[str, str | None]:
         return {"provider": self.provider, "device": self.device}
@@ -267,6 +502,30 @@ def get_device_memory_policy(runtime_spec: TTSRuntimeSpec) -> DeviceMemoryPolicy
     if provider == "cuda":
         return CUDADeviceMemoryPolicy(device=runtime_spec.device)
     return HostMemoryPolicy(device=runtime_spec.device)
+
+
+def get_combined_device_memory_policy(
+    tts_spec: TTSRuntimeSpec,
+    cleaner_config: Any,
+) -> DeviceMemoryPolicy:
+    """Return a combined CUDA policy when TTS and cleaner share a device."""
+    from modules.tts.cleaner_config import CleanerConfig
+
+    if not isinstance(cleaner_config, CleanerConfig):
+        raise TypeError("cleaner_config must be a CleanerConfig instance")
+
+    tts_provider = tts_spec.provider.strip().lower()
+    cleaner_backend = cleaner_config.backend.strip().lower()
+    if (
+        tts_provider == "cuda"
+        and cleaner_backend == "cuda"
+        and _same_cuda_device_index(tts_spec.device, cleaner_config.cuda_device)
+    ):
+        return CombinedDeviceMemoryPolicy(
+            tts_runtime_spec=tts_spec,
+            cleaner_config=cleaner_config,
+        )
+    return get_device_memory_policy(tts_spec)
 
 
 def device_memory_policy_from_serialized(
@@ -287,4 +546,6 @@ def device_memory_policy_from_serialized(
         return CUDADeviceMemoryPolicy(device=device)
     if provider == "host":
         return HostMemoryPolicy(device=device)
+    if provider == "combined":
+        return None
     raise ValueError(f"Unsupported device memory policy provider '{provider}'.")

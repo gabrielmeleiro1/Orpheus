@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""Run a single-book Kokoro elapsed-time benchmark matrix."""
+"""Run a single-book Kokoro elapsed-time benchmark matrix.
+
+Examples:
+  Default MLX cleaner:
+    python benchmarks/kokoro_single_book/run_kokoro_single_book.py book.epub
+
+  CUDA cleaner on a specific GPU:
+    python benchmarks/kokoro_single_book/run_kokoro_single_book.py book.epub \\
+      --cleaner-backend cuda --cleaner-cuda-device cuda:0 --cleaner-cuda-quantization 8bit
+"""
 
 from __future__ import annotations
 
@@ -16,7 +25,12 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from modules.pipeline.orchestrator import PipelineConfig  # noqa: E402
-from scripts.benchmark_nagel_pipeline import run_benchmark  # noqa: E402
+from scripts.benchmark_nagel_pipeline import (  # noqa: E402
+    CLEANER_BACKEND_CHOICES,
+    CUDA_CLEANER_QUANTIZATION_CHOICES,
+    _apply_cleaner_env,
+    run_benchmark,
+)
 
 
 def _slug(value: str) -> str:
@@ -181,7 +195,10 @@ def _aggregate_cases(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     defaults = PipelineConfig()
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("source", type=Path, help="PDF, EPUB, TXT, or Markdown source")
     parser.add_argument("--output-root", type=Path, default=Path("output/kokoro_single_book"))
     parser.add_argument("--temp-root", type=Path, default=Path("temp/kokoro_single_book"))
@@ -191,7 +208,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--include-overlap", action="store_true")
     parser.add_argument("--chapter-limit", type=int, default=None)
     parser.add_argument("--voice", default=defaults.voice)
-    parser.add_argument("--cleaner-backend", default=defaults.cleaner_backend)
+    parser.add_argument(
+        "--cleaner-backend",
+        default=defaults.cleaner_backend,
+        choices=CLEANER_BACKEND_CHOICES,
+        help="Cleaner backend: mlx (Apple Silicon), cuda (NVIDIA GPU), or api (remote)",
+    )
+    parser.add_argument(
+        "--cleaner-cuda-device",
+        default=defaults.cleaner_cuda_device,
+        help="CUDA device for cleaner when --cleaner-backend=cuda (also CLEANER_CUDA_DEVICE)",
+    )
+    parser.add_argument(
+        "--cleaner-cuda-quantization",
+        default=defaults.cleaner_cuda_quantization,
+        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
+    )
     parser.add_argument("--cleaner-model", default=None)
     parser.add_argument("--pdf-backend", default=defaults.pdf_extraction_backend)
     parser.add_argument("--min-extracted-chars", type=int, default=1)
@@ -200,6 +233,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    _apply_cleaner_env(
+        cleaner_backend=args.cleaner_backend,
+        cleaner_cuda_device=args.cleaner_cuda_device,
+        cleaner_cuda_quantization=args.cleaner_cuda_quantization,
+    )
     source_path = args.source.expanduser().resolve()
     output_root = args.output_root
     temp_root = args.temp_root
@@ -227,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
                 tts_engine="kokoro",
                 tts_quantization="bf16",
                 cleaner_backend=args.cleaner_backend,
+                cleaner_cuda_device=args.cleaner_cuda_device,
+                cleaner_cuda_quantization=args.cleaner_cuda_quantization,
                 cleaner_model_name=args.cleaner_model,
                 pdf_extraction_backend=args.pdf_backend,
                 voice=args.voice,

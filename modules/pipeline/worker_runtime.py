@@ -56,6 +56,16 @@ def _worker_environment_from_config(
     return worker_environment
 
 
+def _cleaner_startup_identity(
+    worker_init_config: dict[str, Any],
+) -> tuple[str, Optional[str]]:
+    backend = str(worker_init_config.get("cleaner_backend") or "unknown").strip().lower()
+    device: Optional[str] = None
+    if backend == "cuda":
+        device = worker_init_config.get("cleaner_cuda_device")
+    return backend, device
+
+
 def _record_worker_init_failure(
     exc: BaseException,
     *,
@@ -165,6 +175,9 @@ def _init_worker(
                         logger.warning("Worker TTS warm-up failed fatally: %s", exc)
 
                 if _WORKER_INIT_STATUS is None:
+                    cleaner_provider, cleaner_device = _cleaner_startup_identity(
+                        worker_init_config,
+                    )
                     try:
                         _WORKER_TEXT_CLEANER = TextCleaner(
                             config=build_cleaner_config_from_worker_init(
@@ -175,8 +188,8 @@ def _init_worker(
                     except Exception as exc:
                         _record_worker_init_failure(
                             exc,
-                            provider=runtime_spec.provider,
-                            device=runtime_spec.device,
+                            provider=cleaner_provider,
+                            device=cleaner_device,
                             phase="cleaner_load",
                         )
                         logger.warning("Worker cleaner model load failed: %s", exc)

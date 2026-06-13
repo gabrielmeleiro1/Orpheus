@@ -2452,30 +2452,7 @@ def test_conversion_service_rejects_invalid_cuda_device_at_normalize_time(tmp_pa
 def test_conversion_service_pipeline_config_accepts_registered_cleaner_backend(tmp_path):
     from modules.tts.cleaner_backends.registry import _REGISTRY, register_cleaner_backend
 
-    class FakeCleanerBackend:
-        name = "fake"
-        is_local = True
-        requires_model = False
-        display_name = "Fake Backend"
-        requires_api_key = False
-
-        def load(self, cleaner) -> None:
-            return None
-
-        async def clean_batch_with_trace_async(self, cleaner, texts):
-            return []
-
-        def generate_llm_response(self, cleaner, prompt: str) -> str:
-            return prompt
-
-        def unload(self, cleaner, *, keep_in_cache: bool = True) -> None:
-            return None
-
-        def clear_cache(self, cleaner) -> None:
-            return None
-
-        def list_models(self) -> list[str]:
-            return ["fake-model"]
+    from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend
 
     original = dict(_REGISTRY)
     try:

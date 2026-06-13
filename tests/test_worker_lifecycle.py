@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -16,13 +17,36 @@ from modules.pipeline.pool_manager import (
     SharedWorkerPoolManager,
     _worker_startup_probe,
 )
-from modules.pipeline.worker_errors import WorkerStartupError, WorkerStartupStatus
+from modules.pipeline.worker_errors import (
+    WorkerStartupError,
+    WorkerStartupStatus,
+    classify_worker_startup_error,
+)
+from modules.tts.cleaner_errors import CleanerRuntimeMemoryError, CleanerRuntimeUnavailable
+from modules.tts.runtime_spec import TTSRuntimeSpec
 from worker_pool_test_helpers import (
     ProbeTrackingExecutor,
     make_failing_probe_executor,
     make_startup_status,
     reset_executor_class_state,
 )
+
+
+@pytest.fixture(autouse=True)
+def restore_worker_runtime_state():
+    original_state = {
+        "_WORKER_TTS_ENGINE": worker_runtime._WORKER_TTS_ENGINE,
+        "_WORKER_TEXT_CLEANER": worker_runtime._WORKER_TEXT_CLEANER,
+        "_WORKER_PIPELINE_CONFIG": worker_runtime._WORKER_PIPELINE_CONFIG,
+        "_WORKER_INIT_STATUS": worker_runtime._WORKER_INIT_STATUS,
+        "_WORKER_PROVIDER": worker_runtime._WORKER_PROVIDER,
+        "_WORKER_DEVICE": worker_runtime._WORKER_DEVICE,
+    }
+    try:
+        yield
+    finally:
+        for name, value in original_state.items():
+            setattr(worker_runtime, name, value)
 
 
 def _fake_worker_initializer_with_error(
@@ -167,3 +191,103 @@ def test_pool_reuse_uses_health_ping_not_startup_probes() -> None:
 
     assert reuse_submissions[0] is _health_ping
     assert manager.snapshot()["reuse_hits"] >= 1
+
+
+def _cuda_worker_init_config() -> dict:
+    return {
+        "tts_runtime": TTSRuntimeSpec.from_legacy(
+            "kokoro",
+            "bf16",
+            model="mlx-community/Kokoro-82M",
+        ).to_dict(),
+        "tts_engine": "kokoro",
+        "tts_model_name": "mlx-community/Kokoro-82M",
+        "tts_quantization": "bf16",
+        "voice": "af_bella",
+        "cleaner_model_name": "meta-llama/Llama-3.2-3B-Instruct",
+        "cleaner_backend": "cuda",
+        "cleaner_cuda_device": "cuda:0",
+        "cleaner_cuda_quantization": "4bit",
+        "cleaner_api_base_url": "https://api.openai.com/v1",
+        "cleaner_api_key_env": "OPENAI_API_KEY",
+        "cleaner_api_model": "gpt-5-nano",
+        "cleaner_api_global_concurrency": 6,
+        "cleaner_api_global_limiter": None,
+    }
+
+
+def test_classify_cleaner_runtime_errors_into_worker_taxonomy() -> None:
+    memory_status = classify_worker_startup_error(
+        CleanerRuntimeMemoryError("CUDA out of memory"),
+        provider="cuda",
+        device="cuda:0",
+        phase="cleaner_load",
+    )
+    assert memory_status.error_type == "WorkerRuntimeMemoryError"
+
+    unavailable_status = classify_worker_startup_error(
+        CleanerRuntimeUnavailable("CUDA cleaner runtime unavailable"),
+        provider="cuda",
+        device="cuda:0",
+        phase="cleaner_load",
+    )
+    assert unavailable_status.error_type == "WorkerRuntimeUnavailableError"
+
+
+def test_worker_init_cuda_cleaner_unavailable_is_fatal_during_warmup() -> None:
+    worker_runtime_module = importlib.import_module("modules.pipeline.worker_runtime")
+    fake_engine = MagicMock()
+    fake_cleaner = MagicMock()
+    fake_cleaner.load.side_effect = CleanerRuntimeUnavailable(
+        "CUDA cleaner runtime unavailable"
+    )
+
+    with patch(
+        "modules.tts.factory.TTSEngineFactory.create",
+        return_value=fake_engine,
+    ), patch(
+        "modules.tts.cleaner.TextCleaner",
+        return_value=fake_cleaner,
+    ):
+        worker_runtime_module._init_worker(
+            available_vram_gb=8.0,
+            active_workers=1,
+            worker_init_config=_cuda_worker_init_config(),
+        )
+
+    status = worker_runtime_module.get_worker_startup_status()
+    assert status.success is False
+    assert status.error_type == "WorkerRuntimeUnavailableError"
+    assert status.phase == "cleaner_load"
+    assert status.provider == "cuda"
+    assert status.device == "cuda:0"
+    assert "CUDA cleaner runtime unavailable" in (status.message or "")
+    assert worker_runtime_module.get_worker_init_error() == status.message
+
+
+def test_worker_init_cuda_cleaner_memory_error_includes_backend_and_device() -> None:
+    worker_runtime_module = importlib.import_module("modules.pipeline.worker_runtime")
+    fake_engine = MagicMock()
+    fake_cleaner = MagicMock()
+    fake_cleaner.load.side_effect = CleanerRuntimeMemoryError("CUDA out of memory")
+
+    with patch(
+        "modules.tts.factory.TTSEngineFactory.create",
+        return_value=fake_engine,
+    ), patch(
+        "modules.tts.cleaner.TextCleaner",
+        return_value=fake_cleaner,
+    ):
+        worker_runtime_module._init_worker(
+            available_vram_gb=8.0,
+            active_workers=1,
+            worker_init_config=_cuda_worker_init_config(),
+        )
+
+    status = worker_runtime_module.get_worker_startup_status()
+    assert status.success is False
+    assert status.error_type == "WorkerRuntimeMemoryError"
+    assert status.provider == "cuda"
+    assert status.device == "cuda:0"
+    assert "cuda/cuda:0" in status.format_failure()
+    assert "CUDA out of memory" in (status.message or "")

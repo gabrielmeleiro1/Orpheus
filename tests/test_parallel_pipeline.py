@@ -24,7 +24,7 @@ from modules.pipeline.chapter_dispatch import (
     dispatch_chapters,
     effective_workers,
 )
-from modules.pipeline.models import WorkerPlan
+from modules.pipeline.models import WorkerPlan, build_worker_plan
 from modules.pipeline.pool_manager import SharedWorkerPoolManager
 
 # Import parallel components
@@ -669,6 +669,158 @@ class TestPipelineIntegration:
         assert pipeline.config.worker_plan.requested_workers == 4
         assert pipeline.config.worker_plan.max_workers == 1
         assert pipeline.is_parallel is True
+
+    def test_build_worker_plan_cuda_same_device_contention_guard(self):
+        runtime_spec = TTSRuntimeSpec(
+            provider="cuda",
+            engine="kokoro",
+            model="Kokoro-82M",
+            quantization="bf16",
+            device="cuda:0",
+        )
+        config = PipelineConfig(
+            enable_parallel=True,
+            requested_parallel_chapters=3,
+            parallel_worker_mode="auto",
+            tts_runtime=runtime_spec,
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda",
+            cleaner_cuda_quantization="4bit",
+            tts_worker_auto_mode="memory_safe",
+            tts_process_safe=False,
+        )
+
+        plan = build_worker_plan(config)
+
+        assert plan.max_workers == 1
+        assert (
+            plan.initial_reason
+            == "CUDA TTS + CUDA cleaner same-device contention guard"
+        )
+
+    def test_build_worker_plan_cuda_different_devices_skips_same_device_guard(self):
+        runtime_spec = TTSRuntimeSpec(
+            provider="cuda",
+            engine="kokoro",
+            model="Kokoro-82M",
+            quantization="bf16",
+            device="cuda:0",
+        )
+        config = PipelineConfig(
+            enable_parallel=True,
+            requested_parallel_chapters=3,
+            parallel_worker_mode="auto",
+            tts_runtime=runtime_spec,
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:1",
+            cleaner_cuda_quantization="4bit",
+            tts_worker_auto_mode="memory_safe",
+            tts_process_safe=False,
+        )
+
+        plan = build_worker_plan(config)
+
+        assert plan.max_workers == 3
+        assert plan.initial_reason is None
+
+    def test_pipeline_config_uses_combined_device_memory_policy_for_cuda_same_device(
+        self, tmp_path
+    ):
+        from modules.tts.device_memory import CombinedDeviceMemoryPolicy
+
+        runtime_spec = TTSRuntimeSpec(
+            provider="cuda",
+            engine="kokoro",
+            model="Kokoro-82M",
+            quantization="bf16",
+            device="cuda:0",
+        )
+        config = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            tts_runtime=runtime_spec,
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:0",
+            cleaner_cuda_quantization="4bit",
+        )
+
+        assert isinstance(config.device_memory_policy, CombinedDeviceMemoryPolicy)
+        assert config.device_memory_policy.provider == "combined"
+
+    def test_worker_config_rebuilds_combined_device_memory_policy(self, tmp_path):
+        from modules.tts.device_memory import CombinedDeviceMemoryPolicy
+
+        runtime_spec = TTSRuntimeSpec(
+            provider="cuda",
+            engine="kokoro",
+            model="Kokoro-82M",
+            quantization="bf16",
+            device="cuda:0",
+        )
+        config = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            tts_runtime=runtime_spec,
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:0",
+            cleaner_cuda_quantization="4bit",
+        )
+
+        pipeline = ConversionPipeline(config)
+        worker_init_config = pipeline._build_worker_init_config()  # noqa: SLF001
+        worker_config = build_worker_pipeline_config(
+            worker_init_config["pipeline_config"]
+        )
+
+        assert worker_init_config["pipeline_config"]["device_memory_policy"] == {
+            "provider": "combined",
+            "device": "cuda:0",
+        }
+        assert isinstance(worker_config.device_memory_policy, CombinedDeviceMemoryPolicy)
+        assert worker_config.device_memory_policy.provider == "combined"
+
+    def test_runtime_options_resolver_uses_combined_memory_policy(self, tmp_path):
+        from unittest.mock import MagicMock
+
+        from modules.app.config import AppConfig
+        from modules.app.services.conversion_runtime import (
+            ConversionRuntimeOptions,
+            RuntimeOptionsResolver,
+        )
+        from modules.tts.device_memory import CombinedDeviceMemoryPolicy
+
+        config = AppConfig(
+            data_dir=tmp_path / "data",
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            db_path=tmp_path / "data" / "app.db",
+            enable_parallel=True,
+            max_parallel_chapters=3,
+            cleaner_backend="cuda",
+            cleaner_cuda_device="cuda:0",
+            cleaner_cuda_quantization="4bit",
+        )
+        resolver = RuntimeOptionsResolver(
+            config=config,
+            cleaner_api_limiter=MagicMock(),
+            runtime_validator=lambda *args, **kwargs: None,
+        )
+
+        normalized = resolver.normalize(
+            ConversionRuntimeOptions(
+                tts_provider="cuda",
+                tts_device="cuda:0",
+                tts_quantization="bf16",
+                cleaner_backend="cuda",
+                cleaner_cuda_device="cuda:0",
+                enable_parallel=True,
+                max_parallel_chapters=3,
+            )
+        )
+
+        assert isinstance(normalized.device_memory_policy, CombinedDeviceMemoryPolicy)
+        assert normalized.memory_policy is not None
+        assert normalized.memory_policy.estimated_per_worker_memory_bytes is not None
 
     def test_performance_snapshot_reports_worker_plan_after_raw_mode_mutation(
         self, tmp_path
