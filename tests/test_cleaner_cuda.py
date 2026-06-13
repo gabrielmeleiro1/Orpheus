@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
@@ -96,6 +97,65 @@ def test_cleaner_cuda_strategy_load_uses_configured_device(monkeypatch):
     assert cleaner._loaded is True
     assert observed["cuda_device"] == "cuda:1"
     assert observed["cuda_quantization"] == "8bit"
+
+
+def test_load_cuda_model_maps_explicit_cuda_device_for_transformers(monkeypatch):
+    import sys
+    import types
+
+    import modules.tts.cleaner_cuda as cleaner_cuda_module
+
+    fake_torch = make_fake_torch_module(cuda_available=True)
+    observed: dict[str, object] = {}
+
+    class _FakeTokenizer:
+        pad_token = None
+        eos_token = "<eos>"
+
+        @classmethod
+        def from_pretrained(cls, model_name):
+            observed["tokenizer_model_name"] = model_name
+            return cls()
+
+    class _FakeModel:
+        @classmethod
+        def from_pretrained(cls, model_name, **kwargs):
+            observed["model_name"] = model_name
+            observed.update(kwargs)
+            return cls()
+
+    class _FakeBitsAndBytesConfig:
+        def __init__(self, **kwargs):
+            observed["quantization_config"] = kwargs
+
+    fake_transformers = types.SimpleNamespace(
+        AutoModelForCausalLM=_FakeModel,
+        AutoTokenizer=_FakeTokenizer,
+        BitsAndBytesConfig=_FakeBitsAndBytesConfig,
+    )
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    cleaner = make_partial_cuda_cleaner(
+        CleanerConfig(
+            backend="cuda",
+            model_name="meta-llama/Llama-3.2-3B-Instruct",
+            cuda_device="cuda:1",
+            cuda_quantization="4bit",
+            cache_model=False,
+        ),
+    )
+
+    cleaner_cuda_module._load_cuda_model(cleaner, fake_torch)
+
+    assert observed["device_map"] == {"": "cuda:1"}
+
+
+def test_default_cuda_quantization_dependency_is_declared():
+    requirements = (Path(__file__).parent.parent / "requirements.txt").read_text(
+        encoding="utf-8",
+    )
+
+    assert "bitsandbytes" in requirements
 
 
 def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch):
