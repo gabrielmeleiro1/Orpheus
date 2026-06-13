@@ -128,8 +128,8 @@ def clear_cleaner_cache() -> None:
         gc.collect()
 
 
-def _resolve_device_map(device: str) -> str:
-    return "auto" if device == "cuda" else device
+def _resolve_device_map(device: str) -> str | dict[str, str]:
+    return "auto" if device == "cuda" else {"": device}
 
 
 def _load_cuda_model(cleaner: Any, torch_module: Any) -> tuple[Any, Any]:
