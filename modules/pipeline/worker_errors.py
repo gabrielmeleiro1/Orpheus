@@ -124,6 +124,10 @@ def classify_worker_startup_error(
     phase: str,
 ) -> WorkerStartupStatus:
     """Classify a worker initialization failure into a serializable startup status."""
+    from modules.tts.cleaner_errors import (
+        CleanerRuntimeMemoryError,
+        CleanerRuntimeUnavailable,
+    )
     from modules.tts.runtimes.errors import (
         TTSRuntimeMemoryError,
         TTSRuntimeUnavailable,
@@ -139,6 +143,7 @@ def classify_worker_startup_error(
         (
             WorkerRuntimeMemoryError,
             TTSRuntimeMemoryError,
+            CleanerRuntimeMemoryError,
         ),
     ):
         error_type = StartupErrorKind.RUNTIME_MEMORY
@@ -147,6 +152,7 @@ def classify_worker_startup_error(
         (
             WorkerRuntimeUnavailableError,
             TTSRuntimeUnavailable,
+            CleanerRuntimeUnavailable,
         ),
     ):
         error_type = StartupErrorKind.RUNTIME_UNAVAILABLE

@@ -10,7 +10,11 @@ Registered backends (see ``cleaner_backends.registry``):
 
 Local MLX and CUDA backends support model caching between chunks for improved
 performance. Backend selection is controlled via ``CleanerConfig.backend`` or
-``CLEANER_BACKEND``.
+``CLEANER_BACKEND``. CUDA options include ``cuda_device`` and ``cuda_quantization``.
+
+When Kokoro TTS and the CUDA cleaner share the same GPU, worker planning uses
+``CombinedDeviceMemoryPolicy`` for merged VRAM sampling and applies the same-device
+contention guard (single worker).
 """
 
 import asyncio
@@ -35,11 +39,9 @@ from . import cleaner_transport as cleaner_transport_backend
 from .cleaner_config import (
     API_MODEL_CHOICES as API_MODEL_CHOICES,
     CLEANER_MODEL_CHOICES as CLEANER_MODEL_CHOICES,
-    CLEANER_PROMPT_TEMPLATE,  # noqa: F401 - compatibility re-export
     DEFAULT_API_MODEL as DEFAULT_API_MODEL,
     CleanerConfig,
     CleanTrace,
-    build_cleaner_prompt,  # noqa: F401 - compatibility re-export
     list_api_cleaner_models as list_api_cleaner_models,
     list_cleaner_models as list_cleaner_models,
 )

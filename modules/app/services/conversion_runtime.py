@@ -13,6 +13,7 @@ from modules.storage.models import ConversionMode
 from modules.tts.api_rate_limit import GlobalAPILimiter
 from modules.tts.cleaner_backends.registry import get_cleaner_backend
 from modules.tts.cleaner_config import (
+    CleanerConfig,
     normalize_cleaner_backend,
     normalize_cuda_device,
     normalize_cuda_quantization,
@@ -20,7 +21,7 @@ from modules.tts.cleaner_config import (
 )
 from modules.tts.runtime_options import TTSRuntimeOptions, resolve_tts_runtime
 from modules.tts.runtime_spec import TTSRuntimeSpec
-from modules.tts.device_memory import DeviceMemoryPolicy, get_device_memory_policy
+from modules.tts.device_memory import DeviceMemoryPolicy, get_combined_device_memory_policy
 
 
 def _memory_snapshot_from_device_policy(
@@ -243,7 +244,21 @@ class RuntimeOptionsResolver:
             requested_enable_parallel = False
 
         memory_policy = None
-        device_memory_policy = get_device_memory_policy(tts_runtime)
+        resolved_cleaner_model = resolve_cleaner_model_name(
+            backend=effective_cleaner_backend,
+            requested_model=runtime_options.cleaner_model,
+            configured_model=self._config.cleaner_model_name,
+        )
+        cleaner_config = CleanerConfig(
+            model_name=resolved_cleaner_model,
+            backend=effective_cleaner_backend,
+            cuda_device=effective_cuda_device,
+            cuda_quantization=effective_cuda_quantization,
+        )
+        device_memory_policy = get_combined_device_memory_policy(
+            tts_runtime,
+            cleaner_config,
+        )
         if requested_enable_parallel and worker_auto_mode != "cpu_cores":
             estimated_worker_bytes = device_memory_policy.estimated_worker_bytes(
                 tts_runtime,

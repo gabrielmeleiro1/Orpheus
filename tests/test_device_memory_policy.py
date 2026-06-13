@@ -86,8 +86,10 @@ def test_host_memory_policy_has_no_provider_specific_worker_environment():
     ) == {}
 
 
-def test_cuda_device_memory_policy_is_unavailable_until_cuda_sampling_exists():
-    from modules.tts.device_memory import get_device_memory_policy
+def test_cuda_device_memory_policy_unavailable_without_torch(monkeypatch):
+    from modules.tts.device_memory import CUDADeviceMemoryPolicy, get_device_memory_policy
+
+    monkeypatch.setitem(sys.modules, "torch", None)
 
     policy = get_device_memory_policy(
         TTSRuntimeSpec(provider="cuda", engine="kokoro", model=None, quantization="bf16")
@@ -100,6 +102,117 @@ def test_cuda_device_memory_policy_is_unavailable_until_cuda_sampling_exists():
         available_bytes=12 * GIB,
         active_workers=3,
     ) == {}
+
+    injected = CUDADeviceMemoryPolicy(device="cuda:0", torch_module=None)
+    assert injected.sampling_unavailable_reason == "cuda device memory sampling unavailable"
+
+
+def test_cuda_device_memory_policy_sample_maps_cuda_fields():
+    from modules.tts.device_memory import CUDADeviceMemoryPolicy
+
+    fake_cuda = types.SimpleNamespace(
+        device_count=lambda: 1,
+        mem_get_info=lambda device: (20 * GIB, 24 * GIB),
+        memory_stats=lambda device: {
+            "active_bytes.all.current": 3 * GIB,
+            "active_bytes.all.peak": 5 * GIB,
+            "reserved_bytes.all.current": 2 * GIB,
+        },
+        device=lambda index: types.SimpleNamespace(
+            __enter__=lambda self: self,
+            __exit__=lambda self, *_args: False,
+        ),
+        empty_cache=lambda: None,
+    )
+    fake_torch = types.SimpleNamespace(cuda=fake_cuda)
+
+    snapshot = CUDADeviceMemoryPolicy(
+        device="cuda:0",
+        torch_module=fake_torch,
+    ).sample()
+
+    assert snapshot is not None
+    assert snapshot.provider == "cuda"
+    assert snapshot.device == "cuda:0"
+    assert snapshot.total_bytes == 24 * GIB
+    assert snapshot.available_bytes == 20 * GIB
+    assert snapshot.active_bytes == 3 * GIB
+    assert snapshot.cache_bytes == 2 * GIB
+    assert snapshot.peak_bytes == 5 * GIB
+    assert snapshot.process_rss_bytes == 0
+
+
+def test_cuda_device_memory_policy_invalid_device_index_returns_none():
+    from modules.tts.device_memory import CUDADeviceMemoryPolicy
+
+    fake_cuda = types.SimpleNamespace(
+        device_count=lambda: 1,
+        mem_get_info=lambda device: (20 * GIB, 24 * GIB),
+        memory_stats=lambda device: {},
+        device=lambda index: types.SimpleNamespace(
+            __enter__=lambda self: self,
+            __exit__=lambda self, *_args: False,
+        ),
+    )
+    fake_torch = types.SimpleNamespace(cuda=fake_cuda)
+    policy = CUDADeviceMemoryPolicy(device="cuda:9", torch_module=fake_torch)
+
+    assert policy.sample() is None
+
+
+def test_cuda_device_memory_policy_clear_cache_uses_configured_device():
+    from modules.tts.device_memory import CUDADeviceMemoryPolicy
+
+    cleared_devices: list[int] = []
+
+    class _DeviceContext:
+        def __init__(self, index: int) -> None:
+            self.index = index
+
+        def __enter__(self) -> _DeviceContext:
+            cleared_devices.append(self.index)
+            return self
+
+        def __exit__(self, *_args: object) -> bool:
+            return False
+
+    fake_cuda = types.SimpleNamespace(
+        device=lambda index: _DeviceContext(index),
+        empty_cache=lambda: cleared_devices.append(-1),
+    )
+    fake_torch = types.SimpleNamespace(cuda=fake_cuda)
+
+    CUDADeviceMemoryPolicy(device="cuda:1", torch_module=fake_torch).clear_cache()
+
+    assert cleared_devices == [1, -1]
+
+
+def test_cuda_device_memory_policy_sampling_available_with_mocked_torch():
+    from modules.tts.device_memory import CUDADeviceMemoryPolicy
+
+    fake_cuda = types.SimpleNamespace(
+        device_count=lambda: 1,
+        mem_get_info=lambda device: (8 * GIB, 16 * GIB),
+        memory_stats=lambda device: {},
+        device=lambda index: types.SimpleNamespace(
+            __enter__=lambda self: self,
+            __exit__=lambda self, *_args: False,
+        ),
+    )
+    policy = CUDADeviceMemoryPolicy(device="cuda", torch_module=types.SimpleNamespace(cuda=fake_cuda))
+
+    assert policy.sampling_unavailable_reason is None
+    assert policy.sample() is not None
+
+
+def test_cuda_device_memory_policy_estimated_worker_bytes_for_kokoro():
+    from modules.tts.device_memory import CUDADeviceMemoryPolicy
+
+    runtime = TTSRuntimeSpec(provider="cuda", engine="kokoro", model=None, quantization="bf16")
+    assert CUDADeviceMemoryPolicy().estimated_worker_bytes(runtime) == 4 * GIB
+    assert CUDADeviceMemoryPolicy().estimated_worker_bytes(
+        TTSRuntimeSpec(provider="cuda", engine="api", model=None, quantization="full")
+    ) is None
 
 
 def test_device_memory_policy_factory_and_estimate_follow_runtime_provider():

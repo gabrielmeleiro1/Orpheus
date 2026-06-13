@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
+from modules.pipeline.cleaner_memory import (
+    CLEANER_CUDA_LOAD_HEADROOM_BYTES,
+    estimate_cleaner_cuda_bytes,
+)
+from modules.tts.device_memory import CUDADeviceMemoryPolicy
 from modules.tts.factory import TTSEngineFactory
 
 
@@ -65,11 +70,40 @@ def _cleaner_config_from_runtime(runtime: Any):
     return build_cleaner_config_from_pipeline(runtime.config)
 
 
+def _maybe_warn_cleaner_cuda_memory_low(runtime: Any, cleaner_config: Any) -> None:
+    """Log when live CUDA free memory may be insufficient for cleaner load."""
+    if str(getattr(cleaner_config, "backend", "") or "").strip().lower() != "cuda":
+        return
+
+    estimated_bytes = estimate_cleaner_cuda_bytes(
+        getattr(cleaner_config, "model_name", ""),
+        getattr(cleaner_config, "cuda_quantization", "4bit"),
+    )
+    required_bytes = estimated_bytes + CLEANER_CUDA_LOAD_HEADROOM_BYTES
+    snapshot = CUDADeviceMemoryPolicy(
+        device=getattr(cleaner_config, "cuda_device", None),
+    ).sample()
+    if snapshot is None:
+        return
+
+    if snapshot.available_bytes < required_bytes:
+        gib = 1024**3
+        runtime.log_verbose(
+            "[WARMUP] CUDA memory may be insufficient for cleaner load "
+            f"(available={snapshot.available_bytes / gib:.1f} GiB, "
+            f"estimate={estimated_bytes / gib:.1f} GiB + "
+            f"headroom={CLEANER_CUDA_LOAD_HEADROOM_BYTES / gib:.1f} GiB)",
+            "warning",
+        )
+
+
 def create_text_cleaner_instance(runtime: Any):
     """Create and load a text cleaner instance for current pipeline config."""
     from modules.tts.cleaner import TextCleaner
 
-    cleaner = TextCleaner(config=_cleaner_config_from_runtime(runtime))
+    cleaner_config = _cleaner_config_from_runtime(runtime)
+    _maybe_warn_cleaner_cuda_memory_low(runtime, cleaner_config)
+    cleaner = TextCleaner(config=cleaner_config)
     cleaner.load()
     runtime.log_verbose("[CLEANER] Model loaded - Cleaning text chunks...", "success")
     return cleaner
@@ -135,9 +169,9 @@ def warmup_models(runtime: Any) -> None:
             f"[WARMUP] Loading Text Cleaner model: {runtime.config.cleaner_model_name}",
             "process",
         )
-        runtime.state.text_cleaner = TextCleaner(
-            config=_cleaner_config_from_runtime(runtime),
-        )
+        cleaner_config = _cleaner_config_from_runtime(runtime)
+        _maybe_warn_cleaner_cuda_memory_low(runtime, cleaner_config)
+        runtime.state.text_cleaner = TextCleaner(config=cleaner_config)
         runtime.state.text_cleaner.load()
         runtime.log_verbose("[WARMUP] Text Cleaner model loaded and cached", "success")
 

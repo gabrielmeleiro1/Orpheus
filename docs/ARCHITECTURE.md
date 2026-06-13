@@ -151,6 +151,29 @@ while preserving event-specific fields (`event_type`, `state`, `progress`, etc.)
 - Current default engine: `kokoro`
 - Kokoro is the only supported app TTS engine.
 
+## Text Cleaner
+
+- Facade: `modules/tts/cleaner.py` (`TextCleaner`)
+- Backend protocol: `modules/tts/cleaner_backends/base.py` (`CleanerBackend`)
+- Registry: `modules/tts/cleaner_backends/registry.py`
+  - `register_cleaner_backend`, `get_cleaner_backend`, `validate_cleaner_backend`
+  - `is_local_cleaner_backend`, `requires_api_key_cleaner_backend`
+- Registered backends:
+  - `mlx` — local MLX-LM inference on Apple Silicon (`modules/tts/cleaner_mlx.py`)
+  - `cuda` — local Hugging Face / PyTorch inference on NVIDIA GPUs (`modules/tts/cleaner_cuda.py`)
+  - `api` — OpenAI-compatible remote API (`modules/tts/cleaner_api.py`)
+- Backend selection: `CleanerConfig.backend` or `CLEANER_BACKEND`.
+- Local backends (`mlx`, `cuda`) use a sync per-chunk batch path via
+  `is_local_cleaner_backend()` dispatch and support model caching between chunks.
+- API backend uses native async batching with bounded concurrency
+  (`api_batch_concurrency`) and trace return support.
+- When Kokoro TTS and the cleaner both run locally on GPU, worker planning applies
+  a local GPU model contention guard (forces single worker).
+- When both TTS and cleaner use CUDA on the same device index,
+  `CombinedDeviceMemoryPolicy` (`modules/tts/device_memory.py`) merges VRAM sampling
+  and worker estimates for TTS + cleaner, and the worker plan applies the
+  **CUDA TTS + CUDA cleaner same-device contention guard** (forces single worker).
+
 ## Internal Additive Contracts
 
 - `modules.audio.packager.M4BPackager.create_m4b(...)` accepts optional
@@ -173,11 +196,8 @@ while preserving event-specific fields (`event_type`, `state`, `progress`, etc.)
 - Runtime preflight validation is cached per `TTSRuntimeSpec.cache_key()`.
 - Preview engine is reused across requests for matching runtime keys.
 - TTS batch synthesis reuses executor pools and uses VRAM-pressure adaptive pauses.
-- Local cleaner backends (`mlx` on Apple Silicon, `cuda` on NVIDIA GPUs) use a
-  sync per-chunk batch path via `is_local_cleaner_backend()` dispatch; both share
-  the same worker GPU-contention guard when Kokoro TTS is also local.
-- API cleaner batch path is native async with bounded concurrency (`api_batch_concurrency`)
-  and trace return support.
+- Text cleaner dispatch, backends, and same-device CUDA contention guards are
+  documented in **Text Cleaner** above.
 - Final M4A/M4B outputs encode once from PCM/WAV chapter masters when those masters
   are present, avoiding MP3-to-AAC transcoding in normal conversions.
 - Packaging can reuse known chapter durations from pipeline results to avoid redundant probe I/O.

@@ -2,6 +2,14 @@
 
 This runner exists because multiprocessing spawn cannot use a ``python -``
 stdin entrypoint. It is intentionally small and delegates to the real pipeline.
+
+Examples:
+  MLX cleaner baseline:
+    python tools/benchmark_parallel_workers.py book.epub --workers 1 2 3
+
+  CUDA cleaner on a specific GPU:
+    python tools/benchmark_parallel_workers.py book.epub --workers 1 2 3 \\
+      --cleaner-backend cuda --cleaner-cuda-device cuda:0 --cleaner-cuda-quantization 8bit
 """
 
 from __future__ import annotations
@@ -19,7 +27,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from modules.pipeline.models import PipelineConfig  # noqa: E402
 from modules.pipeline.orchestrator import ConversionPipeline  # noqa: E402
-from scripts.benchmark_nagel_pipeline import _BenchmarkForcedMemoryPolicy  # noqa: E402
+from scripts.benchmark_nagel_pipeline import (  # noqa: E402
+    CLEANER_BACKEND_CHOICES,
+    CUDA_CLEANER_QUANTIZATION_CHOICES,
+    _BenchmarkForcedMemoryPolicy,
+    _apply_cleaner_env,
+)
 
 
 def _run_case(
@@ -32,6 +45,8 @@ def _run_case(
     tts_engine: str,
     voice: str,
     cleaner_backend: str,
+    cleaner_cuda_device: str,
+    cleaner_cuda_quantization: str,
     chapter_limit: int | None,
 ) -> dict[str, Any]:
     config = PipelineConfig(
@@ -40,6 +55,8 @@ def _run_case(
         tts_engine=tts_engine,
         voice=voice,
         cleaner_backend=cleaner_backend,
+        cleaner_cuda_device=cleaner_cuda_device,
+        cleaner_cuda_quantization=cleaner_cuda_quantization,
         cleaner_api_key="benchmark-dummy-key",
         cleaner_skip_llm_when_not_needed=True,
         chapter_limit=chapter_limit,
@@ -74,16 +91,42 @@ def _run_case(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    defaults = PipelineConfig()
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("source", type=Path)
     parser.add_argument("--output-root", type=Path, default=Path("temp/worker_bench"))
     parser.add_argument("--temp-root", type=Path, default=Path("temp/worker_bench_tmp"))
     parser.add_argument("--tts-engine", default="kokoro")
     parser.add_argument("--voice", default="am_adam")
-    parser.add_argument("--cleaner-backend", default="mlx")
+    parser.add_argument(
+        "--cleaner-backend",
+        default="mlx",
+        choices=CLEANER_BACKEND_CHOICES,
+        help="Cleaner backend: mlx (Apple Silicon), cuda (NVIDIA GPU), or api (remote)",
+    )
+    parser.add_argument(
+        "--cleaner-cuda-device",
+        default=defaults.cleaner_cuda_device,
+        help="CUDA device for cleaner when --cleaner-backend=cuda (also CLEANER_CUDA_DEVICE)",
+    )
+    parser.add_argument(
+        "--cleaner-cuda-quantization",
+        default=defaults.cleaner_cuda_quantization,
+        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
+    )
     parser.add_argument("--chapter-limit", type=int, default=None)
     parser.add_argument("--workers", type=int, nargs="+", default=[1, 2, 3])
     args = parser.parse_args()
+
+    _apply_cleaner_env(
+        cleaner_backend=args.cleaner_backend,
+        cleaner_cuda_device=args.cleaner_cuda_device,
+        cleaner_cuda_quantization=args.cleaner_cuda_quantization,
+    )
 
     source = args.source.expanduser().resolve()
     output_root = args.output_root
@@ -104,6 +147,8 @@ def main() -> int:
             tts_engine=args.tts_engine,
             voice=args.voice,
             cleaner_backend=args.cleaner_backend,
+            cleaner_cuda_device=args.cleaner_cuda_device,
+            cleaner_cuda_quantization=args.cleaner_cuda_quantization,
             chapter_limit=args.chapter_limit,
         )
         if baseline_wall is None:

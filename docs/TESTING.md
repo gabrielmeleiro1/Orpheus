@@ -159,3 +159,24 @@ pytest -m ui
 Examples:
 - `tests/test_cleaner_api_trace_multichapter_real.py` requires real API credentials/network.
 - `tests/test_perf_smoke.py` and `tests/test_performance_benchmark.py` are performance-only checks.
+
+## GPU Test Markers and Skip Policy
+
+`pytest.ini` defines `@pytest.mark.gpu` for tests that require real GPU hardware
+(NVIDIA CUDA and/or Apple Neural Engine, depending on the test).
+
+Policy:
+- CUDA cleaner unit and lifecycle tests (for example `tests/test_cleaner_cuda.py`,
+  `tests/test_cleaner_cuda_lifecycle.py`) use mocked PyTorch and run in the default
+  contract without hardware.
+- Tests that load models on real CUDA hardware should carry `@pytest.mark.gpu` and
+  skip when the required device is unavailable (for example
+  `@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU required")`).
+- Run GPU-only suites explicitly when hardware is present:
+
+```bash
+pytest -m gpu
+```
+
+The default contract does not exclude `gpu` today; keep real-hardware tests behind
+explicit skip guards until they are moved behind the marker in a follow-up change.

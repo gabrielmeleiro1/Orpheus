@@ -4,6 +4,21 @@
 The script name is kept for compatibility with the earlier Nagel-only
 benchmark, but the harness now supports all parser types exposed by the current
 pipeline implementation.
+
+Examples:
+  Parse/chunk only (default):
+    python scripts/benchmark_nagel_pipeline.py book.epub
+
+  Full conversion with MLX cleaner:
+    python scripts/benchmark_nagel_pipeline.py book.epub --full
+
+  Full conversion with CUDA cleaner:
+    python scripts/benchmark_nagel_pipeline.py book.epub --full \\
+      --cleaner-backend cuda --cleaner-cuda-device cuda:0 --cleaner-cuda-quantization 8bit
+
+  Remote API cleaner:
+    python scripts/benchmark_nagel_pipeline.py book.epub --full \\
+      --cleaner-backend api --cleaner-model gpt-4o-mini
 """
 
 from __future__ import annotations
@@ -11,6 +26,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 import time
@@ -36,6 +52,9 @@ from modules.tts import cleaner_rules as cleaner_rules_backend  # noqa: E402
 from modules.tts.chunker import ChunkConfig, TextChunker  # noqa: E402
 from modules.tts.factory import TTSEngineFactory  # noqa: E402
 
+
+CLEANER_BACKEND_CHOICES = ("mlx", "api", "cuda")
+CUDA_CLEANER_QUANTIZATION_CHOICES = ("4bit", "8bit", "fp16")
 
 BENCHMARK_SCHEMA_VERSION = 3
 BENCHMARK_SCHEMA_KEYS = (
@@ -380,6 +399,17 @@ def _round_seconds(value: float) -> float:
     return round(max(0.0, value), 4)
 
 
+def _apply_cleaner_env(
+    *,
+    cleaner_backend: str,
+    cleaner_cuda_device: str,
+    cleaner_cuda_quantization: str,
+) -> None:
+    os.environ["CLEANER_BACKEND"] = cleaner_backend
+    os.environ["CLEANER_CUDA_DEVICE"] = cleaner_cuda_device
+    os.environ["CLEANER_CUDA_QUANTIZATION"] = cleaner_cuda_quantization
+
+
 def _default_pipeline_config(
     *,
     output_dir: Path,
@@ -405,6 +435,8 @@ def _build_config(
     tts_quantization: str | None = None,
     cleaner_backend: str | None = None,
     cleaner_model_name: str | None = None,
+    cleaner_cuda_device: str | None = None,
+    cleaner_cuda_quantization: str | None = None,
     cleaner_skip_llm_when_not_needed: bool = True,
     pdf_extraction_backend: str = "fitz",
     voice: str | None = None,
@@ -432,6 +464,10 @@ def _build_config(
         config.cleaner_backend = cleaner_backend
     if cleaner_model_name is not None:
         config.cleaner_model_name = cleaner_model_name
+    if cleaner_cuda_device is not None:
+        config.cleaner_cuda_device = cleaner_cuda_device
+    if cleaner_cuda_quantization is not None:
+        config.cleaner_cuda_quantization = cleaner_cuda_quantization
     config.cleaner_skip_llm_when_not_needed = cleaner_skip_llm_when_not_needed
     if voice is not None:
         config.voice = voice
@@ -1116,6 +1152,8 @@ def run_benchmark(
     tts_quantization: str | None = None,
     cleaner_backend: str | None = None,
     cleaner_model_name: str | None = None,
+    cleaner_cuda_device: str | None = None,
+    cleaner_cuda_quantization: str | None = None,
     cleaner_skip_llm_when_not_needed: bool = True,
     cleaner_gate: bool = False,
     pdf_extraction_backend: str = "fitz",
@@ -1149,6 +1187,8 @@ def run_benchmark(
         tts_quantization=tts_quantization,
         cleaner_backend=cleaner_backend,
         cleaner_model_name=cleaner_model_name,
+        cleaner_cuda_device=cleaner_cuda_device,
+        cleaner_cuda_quantization=cleaner_cuda_quantization,
         cleaner_skip_llm_when_not_needed=cleaner_skip_llm_when_not_needed,
         pdf_extraction_backend=pdf_extraction_backend,
         voice=voice,
@@ -1333,7 +1373,10 @@ def run_worker_selection_comparison(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     defaults = PipelineConfig()
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("source", help="PDF, EPUB, Markdown, or text source to benchmark")
     parser.add_argument("--output-dir", type=Path, default=Path("output/nagel_benchmark"))
     parser.add_argument("--temp-dir", type=Path, default=Path("temp/nagel_benchmark"))
@@ -1344,8 +1387,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--tts-engine", default=defaults.tts_engine)
     parser.add_argument("--tts-model", default=None)
     parser.add_argument("--tts-quantization", default=defaults.tts_quantization)
-    parser.add_argument("--cleaner-backend", default=defaults.cleaner_backend)
+    parser.add_argument(
+        "--cleaner-backend",
+        default=defaults.cleaner_backend,
+        choices=CLEANER_BACKEND_CHOICES,
+        help="Cleaner backend: mlx (Apple Silicon), cuda (NVIDIA GPU), or api (remote)",
+    )
     parser.add_argument("--cleaner-model", default=None)
+    parser.add_argument(
+        "--cleaner-cuda-device",
+        default=defaults.cleaner_cuda_device,
+        help="CUDA device for cleaner when --cleaner-backend=cuda (also CLEANER_CUDA_DEVICE)",
+    )
+    parser.add_argument(
+        "--cleaner-cuda-quantization",
+        default=defaults.cleaner_cuda_quantization,
+        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
+    )
     parser.add_argument(
         "--cleaner-skip-llm-when-not-needed",
         action=argparse.BooleanOptionalAction,
@@ -1390,6 +1449,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    _apply_cleaner_env(
+        cleaner_backend=args.cleaner_backend,
+        cleaner_cuda_device=args.cleaner_cuda_device,
+        cleaner_cuda_quantization=args.cleaner_cuda_quantization,
+    )
     parse_only = args.cleaner_gate or not args.full or args.parse_only
     if args.compare_worker_selection:
         summary = run_worker_selection_comparison(
@@ -1401,6 +1465,8 @@ def main(argv: list[str] | None = None) -> int:
             tts_quantization=args.tts_quantization,
             cleaner_backend=args.cleaner_backend,
             cleaner_model_name=args.cleaner_model,
+            cleaner_cuda_device=args.cleaner_cuda_device,
+            cleaner_cuda_quantization=args.cleaner_cuda_quantization,
             cleaner_skip_llm_when_not_needed=args.cleaner_skip_llm_when_not_needed,
             pdf_extraction_backend=args.pdf_backend,
             voice=args.voice,
@@ -1428,6 +1494,8 @@ def main(argv: list[str] | None = None) -> int:
         tts_quantization=args.tts_quantization,
         cleaner_backend=args.cleaner_backend,
         cleaner_model_name=args.cleaner_model,
+        cleaner_cuda_device=args.cleaner_cuda_device,
+        cleaner_cuda_quantization=args.cleaner_cuda_quantization,
         cleaner_skip_llm_when_not_needed=args.cleaner_skip_llm_when_not_needed,
         cleaner_gate=args.cleaner_gate,
         pdf_extraction_backend=args.pdf_backend,

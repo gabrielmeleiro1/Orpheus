@@ -8,12 +8,14 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from modules.tts.cleaner_backends.registry import is_local_cleaner_backend
+from modules.tts.cleaner_config import CleanerConfig
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtime_options import TTSRuntimeOptions, resolve_tts_runtime
 from modules.tts.device_memory import (
     DeviceMemoryPolicy,
+    _same_cuda_device_index,
     device_memory_policy_from_serialized,
-    get_device_memory_policy,
+    get_combined_device_memory_policy,
 )
 
 
@@ -55,6 +57,37 @@ class WorkerPlan:
     initial_reason: Optional[str] = None
 
 
+def _cuda_tts_cleaner_same_device_contention(config: "PipelineConfig") -> bool:
+    tts_runtime = config.tts_runtime
+    if tts_runtime is None:
+        return False
+    if tts_runtime.provider.strip().lower() != "cuda":
+        return False
+    if str(config.cleaner_backend or "").strip().lower() != "cuda":
+        return False
+    return _same_cuda_device_index(tts_runtime.device, config.cleaner_cuda_device)
+
+
+def _local_gpu_model_contention(config: "PipelineConfig") -> bool:
+    worker_mode = str(config.parallel_worker_mode or "auto").strip().lower()
+    worker_auto_mode = str(config.tts_worker_auto_mode or "memory_safe").strip().lower()
+    process_safe = bool(config.tts_process_safe)
+    tts_runtime = config.tts_runtime
+    cleaner_backend = str(config.cleaner_backend or "").strip().lower()
+    if (
+        tts_runtime is not None
+        and tts_runtime.provider.strip().lower() == "cuda"
+        and cleaner_backend == "cuda"
+    ):
+        return False
+    return (
+        worker_mode == "auto"
+        and str(config.tts_engine or "").strip().lower() == "kokoro"
+        and is_local_cleaner_backend(config.cleaner_backend)
+        and not (worker_auto_mode == "cpu_cores" and process_safe)
+    )
+
+
 def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
     """Build the immutable worker policy for a pipeline config."""
     requested_workers = max(
@@ -73,12 +106,12 @@ def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
 
     max_workers = requested_workers if parallel_requested else 1
     initial_reason: Optional[str] = None
-    local_gpu_model_contention = (
+    cuda_same_device_contention = (
         worker_mode == "auto"
-        and str(config.tts_engine or "").strip().lower() == "kokoro"
-        and is_local_cleaner_backend(config.cleaner_backend)
         and not (worker_auto_mode == "cpu_cores" and process_safe)
+        and _cuda_tts_cleaner_same_device_contention(config)
     )
+    local_gpu_model_contention = _local_gpu_model_contention(config)
 
     if not parallel_requested:
         initial_reason = "parallel disabled"
@@ -89,6 +122,9 @@ def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
     elif worker_auto_mode == "sequential":
         max_workers = 1
         initial_reason = "backend sequential auto worker policy"
+    elif cuda_same_device_contention:
+        max_workers = 1
+        initial_reason = "CUDA TTS + CUDA cleaner same-device contention guard"
     elif local_gpu_model_contention:
         max_workers = 1
         initial_reason = "local GPU model contention guard"
@@ -194,8 +230,19 @@ class PipelineConfig:
             self.device_memory_policy
         )
         runtime_provider = self.tts_runtime.provider.strip().lower()
-        if device_memory_policy is None or device_memory_policy.provider != runtime_provider:
-            device_memory_policy = get_device_memory_policy(self.tts_runtime)
+        resolved_cleaner_config = CleanerConfig(
+            model_name=self.cleaner_model_name,
+            backend=self.cleaner_backend,
+            cuda_device=self.cleaner_cuda_device,
+            cuda_quantization=self.cleaner_cuda_quantization,
+        )
+        if device_memory_policy is None or (
+            device_memory_policy.provider not in {runtime_provider, "combined"}
+        ):
+            device_memory_policy = get_combined_device_memory_policy(
+                self.tts_runtime,
+                resolved_cleaner_config,
+            )
         self.device_memory_policy = device_memory_policy
         self.max_parallel_chapters = max(1, int(self.max_parallel_chapters or 1))
         if self.requested_parallel_chapters is None:

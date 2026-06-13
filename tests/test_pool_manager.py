@@ -22,6 +22,9 @@ from modules.pipeline.pool_manager import (
     _health_ping,
     _worker_startup_probe,
 )
+from modules.pipeline.orchestrator import ConversionPipeline
+from modules.pipeline.models import PipelineConfig
+from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.pipeline.worker_errors import WorkerStartupError
 from worker_pool_test_helpers import (
     FakeExecutor as _FakeExecutor,
@@ -721,3 +724,33 @@ def test_shared_pool_snapshot_records_cancellation() -> None:
     assert snapshot["cancelled_jobs"] == 1
     assert snapshot["startup_failures"] == 0
     assert_pending_futures_cancelled(executor)
+
+
+def test_cuda_same_device_worker_plan_caps_shared_pool_workers(tmp_path: Path) -> None:
+    runtime_spec = TTSRuntimeSpec(
+        provider="cuda",
+        engine="kokoro",
+        model="Kokoro-82M",
+        quantization="bf16",
+        device="cuda:0",
+    )
+    config = PipelineConfig(
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        tts_runtime=runtime_spec,
+        cleaner_backend="cuda",
+        cleaner_cuda_device="cuda:0",
+        cleaner_cuda_quantization="4bit",
+        enable_parallel=True,
+        max_parallel_chapters=3,
+        requested_parallel_chapters=3,
+    )
+    pipeline = ConversionPipeline(config)
+
+    assert config.worker_plan.max_workers == 1
+    assert (
+        config.worker_plan.initial_reason
+        == "CUDA TTS + CUDA cleaner same-device contention guard"
+    )
+    assert pipeline._parallel_config is not None
+    assert pipeline._parallel_config.max_workers == 1
