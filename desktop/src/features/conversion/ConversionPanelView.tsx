@@ -1,4 +1,5 @@
 import type { SourcePreflight } from "../../types/api";
+import { cleanerBackendUsesCudaFields } from "./cleanerBackendHelpers";
 import { TermSelect } from "./TermSelect";
 import { compactSample, nowStatus, splitPath } from "./conversionPanelHelpers";
 import type {
@@ -90,6 +91,14 @@ export function ConversionPanelView({
     syncSelectedQueueEdits,
   } = actions;
   if (activeTab === "config") {
+    const selectedCleanerBackend = optionState.selectedCleanerBackend;
+    const showCleanerCudaControls = cleanerBackendUsesCudaFields(selectedCleanerBackend);
+    const cleanerCudaQuantizationOptions =
+      selectedCleanerBackend?.supported_quantizations?.map((quantization) => ({
+        value: quantization,
+        label: quantization,
+      })) ?? [];
+
     return (
       <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" hidden={hidden}>
         <div className="panel-header">
@@ -109,7 +118,7 @@ export function ConversionPanelView({
                   label="cleaner backend"
                   value={optionState.cleanerBackend}
                   options={optionState.cleanerBackendOptions}
-                  placeholder="local (mlx)"
+                  placeholder="select backend"
                   onChange={optionState.setCleanerBackend}
                 />
               </div>
@@ -138,46 +147,84 @@ export function ConversionPanelView({
                 />
               </div>
             </div>
+
+            {showCleanerCudaControls ? (
+              <>
+                <div className="form-row">
+                  <span className="form-row-label">device</span>
+                  <div className="form-row-field">
+                    <input
+                      id="cleaner-cuda-device-input"
+                      className="field-input"
+                      type="text"
+                      aria-label="cleaner CUDA device"
+                      placeholder={selectedCleanerBackend?.default_device || "cuda:0"}
+                      value={optionState.cleanerCudaDevice}
+                      onChange={(event) => optionState.setCleanerCudaDevice(event.target.value)}
+                    />
+                  </div>
+                </div>
+
+                {cleanerCudaQuantizationOptions.length > 0 ? (
+                  <div className="form-row">
+                    <span className="form-row-label">quantization</span>
+                    <div className="form-row-field">
+                      <TermSelect
+                        id="cleaner-cuda-quantization-select"
+                        label="cleaner cuda quantization"
+                        value={optionState.cleanerCudaQuantization}
+                        options={cleanerCudaQuantizationOptions}
+                        placeholder="default"
+                        onChange={optionState.setCleanerCudaQuantization}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            ) : null}
           </div>
 
-          <div className="panel-section config-panel-section">
-            <div className="section-title">
-              <span>openai api cleaner</span>
-            </div>
-            <div className="form-row">
-              <span className="form-row-label">api key</span>
-              <div className="form-row-field">
-                <input
-                  id="cleaner-api-key-input"
-                  className="field-input"
-                  type="password"
-                  autoComplete="off"
-                  placeholder="sk-..."
-                  value={optionState.cleanerApiKey}
-                  onChange={(event) => optionState.setCleanerApiKey(event.target.value)}
-                />
+          {selectedCleanerBackend?.requires_api_key ? (
+            <div className="panel-section config-panel-section">
+              <div className="section-title">
+                <span>{selectedCleanerBackend.display_name} cleaner</span>
               </div>
-            </div>
+              <div className="form-row">
+                <span className="form-row-label">api key</span>
+                <div className="form-row-field">
+                  <input
+                    id="cleaner-api-key-input"
+                    className="field-input"
+                    type="password"
+                    aria-label={`${selectedCleanerBackend.display_name} API key`}
+                    autoComplete="off"
+                    placeholder="sk-..."
+                    value={optionState.cleanerApiKey}
+                    onChange={(event) => optionState.setCleanerApiKey(event.target.value)}
+                  />
+                </div>
+              </div>
 
-            <div className="action-row">
-              <button
-                id="fetch-openai-models-btn"
-                className="btn btn-compact"
-                type="button"
-                disabled={!apiClient || optionState.openAiModelFetchLoading || !optionState.cleanerApiKey.trim()}
-                onClick={() => void optionState.fetchOpenAiModelIds()}
+              <div className="action-row">
+                <button
+                  id="fetch-cleaner-models-btn"
+                  className="btn btn-compact"
+                  type="button"
+                  disabled={!apiClient || optionState.openAiModelFetchLoading || !optionState.cleanerApiKey.trim()}
+                  onClick={() => void optionState.fetchOpenAiModelIds()}
+                >
+                  {optionState.openAiModelFetchLoading ? "fetching..." : "fetch models"}
+                </button>
+              </div>
+
+              <span
+                id="cleaner-model-fetch-status"
+                className={`field-hint${optionState.openAiModelFetchError ? " is-error" : ""}`}
               >
-                {optionState.openAiModelFetchLoading ? "fetching..." : "fetch OpenAI models"}
-              </button>
+                {optionState.openAiModelFetchStatus}
+              </span>
             </div>
-
-            <span
-              id="openai-model-fetch-status"
-              className={`field-hint${optionState.openAiModelFetchError ? " is-error" : ""}`}
-            >
-              {optionState.openAiModelFetchStatus}
-            </span>
-          </div>
+          ) : null}
         </div>
       </section>
     );

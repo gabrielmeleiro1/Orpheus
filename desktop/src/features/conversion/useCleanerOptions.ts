@@ -1,14 +1,19 @@
-import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import type { ApiClient } from "../../api/client";
-import type { ModelOptionsResponse, SystemCapabilitiesResponse, TermSelectOption } from "../../types/api";
+import type { CleanerBackendOption, ModelOptionsResponse, SystemCapabilitiesResponse, TermSelectOption } from "../../types/api";
 
+import {
+  cleanerBackendRequiresApiKey,
+  defaultCleanerCudaDevice,
+  defaultCleanerCudaQuantization,
+  deriveCleanerRuntimeStatus,
+  filterAvailableCleanerBackendOptions,
+  mapCleanerBackendOptionToTermSelect,
+  resolveCleanerBackendOptions,
+  selectedCleanerBackendOption,
+} from "./cleanerBackendHelpers";
 import type { PersistedSettings } from "./conversionOptionsShared";
-
-const CLEANER_BACKEND_OPTIONS: TermSelectOption[] = [
-  { value: "mlx", label: "local (mlx)" },
-  { value: "api", label: "api" },
-];
 
 export interface UseCleanerOptionsArgs {
   apiClient: ApiClient | null;
@@ -22,9 +27,14 @@ export interface UseCleanerOptionsResult {
   setCleanerBackend: (value: string) => void;
   cleanerBackendOptions: TermSelectOption[];
   cleanerBackendConfigured: boolean;
+  selectedCleanerBackend: CleanerBackendOption | null;
   cleanerModel: string;
   setCleanerModel: (value: string) => void;
   cleanerModelOptions: TermSelectOption[];
+  cleanerCudaDevice: string;
+  setCleanerCudaDevice: (value: string) => void;
+  cleanerCudaQuantization: string;
+  setCleanerCudaQuantization: (value: string) => void;
   cleanerApiKey: string;
   setCleanerApiKey: (value: string) => void;
   fetchOpenAiModelIds: () => Promise<void>;
@@ -35,32 +45,53 @@ export interface UseCleanerOptionsResult {
   cleanerRuntimeError: boolean;
 }
 
-function deriveCleanerRuntimeStatus(capabilities: SystemCapabilitiesResponse | null): {
-  message: string;
-  isError: boolean;
-} {
-  if (!capabilities) {
-    return { message: "Runtime capability probe unavailable.", isError: true };
+interface InitialBackendSelection {
+  backendId: string;
+  restoredPersistedBackend: boolean;
+}
+
+function resolveInitialBackendSelection(
+  modelOptions: ModelOptionsResponse | null,
+  systemCapabilities: SystemCapabilitiesResponse | null,
+  persisted: PersistedSettings,
+): InitialBackendSelection {
+  const availableOptions = filterAvailableCleanerBackendOptions(
+    resolveCleanerBackendOptions(modelOptions),
+    systemCapabilities,
+  );
+  const fallbackBackend = availableOptions[0]?.id ?? "";
+
+  const hasConfiguredCleanerBackend = Boolean(persisted.cleaner_backend_configured);
+  const persistedBackend = hasConfiguredCleanerBackend ? String(persisted.cleaner_backend ?? "").trim() : "";
+
+  if (persistedBackend && availableOptions.some((option) => option.id === persistedBackend)) {
+    return { backendId: persistedBackend, restoredPersistedBackend: true };
   }
 
-  const runtimeProbe = capabilities.runtime_probe;
-  const state = String(runtimeProbe?.state ?? "").toLowerCase();
-  const refreshInProgress = Boolean(runtimeProbe?.refresh_in_progress);
+  return { backendId: fallbackBackend, restoredPersistedBackend: false };
+}
 
-  if (!runtimeProbe || state !== "fresh" || refreshInProgress) {
-    return { message: "Checking local MLX cleaner runtime...", isError: false };
+function resolveInitialCudaDevice(
+  backendOption: CleanerBackendOption | null,
+  persisted: PersistedSettings,
+): string {
+  const persistedDevice = String(persisted.cleaner_cuda_device ?? "").trim();
+  if (persistedDevice) {
+    return persistedDevice;
   }
+  return defaultCleanerCudaDevice(backendOption);
+}
 
-  if (capabilities.mlx_cleaner_runtime_available) {
-    return { message: "Local MLX cleaner ready.", isError: false };
+function resolveInitialCudaQuantization(
+  backendOption: CleanerBackendOption | null,
+  persisted: PersistedSettings,
+): string {
+  const persistedQuantization = String(persisted.cleaner_cuda_quantization ?? "").trim();
+  const supportedQuantizations = backendOption?.supported_quantizations ?? [];
+  if (persistedQuantization && supportedQuantizations.includes(persistedQuantization)) {
+    return persistedQuantization;
   }
-
-  const cleanerError = runtimeProbe?.cleaner?.error;
-  const detail = typeof cleanerError === "string" && cleanerError.trim() ? ` (${cleanerError.trim()})` : "";
-  return {
-    message: `Local MLX cleaner unavailable${detail}. Choose API in config if needed.`,
-    isError: true,
-  };
+  return defaultCleanerCudaQuantization(backendOption);
 }
 
 export function useCleanerOptions({
@@ -69,56 +100,120 @@ export function useCleanerOptions({
   systemCapabilities,
   persistedSettingsRef,
 }: UseCleanerOptionsArgs): UseCleanerOptionsResult {
-  const [cleanerBackend, setCleanerBackendState] = useState("mlx");
+  const cleanerOptionsHydratedRef = useRef(false);
+  const [cleanerBackend, setCleanerBackendState] = useState("");
   const [cleanerBackendConfigured, setCleanerBackendConfigured] = useState(false);
   const [cleanerModel, setCleanerModelState] = useState("");
+  const [cleanerCudaDevice, setCleanerCudaDeviceState] = useState("");
+  const [cleanerCudaQuantization, setCleanerCudaQuantizationState] = useState("");
   const [cleanerApiKey, setCleanerApiKeyState] = useState("");
   const [fetchedOpenAiModelOptions, setFetchedOpenAiModelOptions] = useState<TermSelectOption[]>([]);
-  const [openAiModelFetchStatus, setOpenAiModelFetchStatus] = useState("Paste an OpenAI API key to fetch available models.");
+  const [openAiModelFetchStatus, setOpenAiModelFetchStatus] = useState("Paste an API key to fetch available models.");
   const [openAiModelFetchLoading, setOpenAiModelFetchLoading] = useState(false);
   const [openAiModelFetchError, setOpenAiModelFetchError] = useState(false);
 
-  const [cleanerRuntimeStatus, setCleanerRuntimeStatus] = useState("Checking local MLX cleaner runtime...");
+  const [cleanerRuntimeStatus, setCleanerRuntimeStatus] = useState("Checking cleaner runtime...");
   const [cleanerRuntimeError, setCleanerRuntimeError] = useState(false);
 
+  const availableCleanerBackendOptions = useMemo(
+    () => filterAvailableCleanerBackendOptions(resolveCleanerBackendOptions(modelOptions), systemCapabilities),
+    [modelOptions, systemCapabilities],
+  );
+
+  const cleanerBackendOptions = useMemo(
+    () => availableCleanerBackendOptions.map(mapCleanerBackendOptionToTermSelect),
+    [availableCleanerBackendOptions],
+  );
+
+  const selectedCleanerBackend = useMemo(
+    () => selectedCleanerBackendOption(modelOptions, cleanerBackend),
+    [cleanerBackend, modelOptions],
+  );
+
   const cleanerModelOptions = useMemo(() => {
-    if (cleanerBackend === "api" && fetchedOpenAiModelOptions.length > 0) {
+    if (cleanerBackendRequiresApiKey(modelOptions, cleanerBackend) && fetchedOpenAiModelOptions.length > 0) {
       return fetchedOpenAiModelOptions;
     }
-    const models = cleanerBackend === "api" ? modelOptions?.api_cleaner_models : modelOptions?.cleaner_models;
-    return (models ?? []).map((model) => ({ value: model, label: model }));
-  }, [cleanerBackend, fetchedOpenAiModelOptions, modelOptions]);
+
+    const models = selectedCleanerBackend?.models ?? [];
+    return models.map((model) => ({ value: model, label: model }));
+  }, [cleanerBackend, fetchedOpenAiModelOptions, modelOptions, selectedCleanerBackend]);
+
+  const selectCleanerBackend = useCallback(
+    (
+      value: string,
+      cudaDefaults?: {
+        device?: string;
+        quantization?: string;
+      },
+    ) => {
+      const backendOption = selectedCleanerBackendOption(modelOptions, value);
+
+      setCleanerBackendState(value);
+      setCleanerCudaDeviceState(cudaDefaults?.device ?? defaultCleanerCudaDevice(backendOption));
+      setCleanerCudaQuantizationState(cudaDefaults?.quantization ?? defaultCleanerCudaQuantization(backendOption));
+    },
+    [modelOptions],
+  );
 
   useEffect(() => {
     if (!apiClient) {
-      setCleanerBackendState("mlx");
+      cleanerOptionsHydratedRef.current = false;
+      setCleanerBackendState("");
       setCleanerBackendConfigured(false);
       setCleanerModelState("");
+      setCleanerCudaDeviceState("");
+      setCleanerCudaQuantizationState("");
       setCleanerApiKeyState("");
       setFetchedOpenAiModelOptions([]);
-      setOpenAiModelFetchStatus("Paste an OpenAI API key to fetch available models.");
+      setOpenAiModelFetchStatus("Paste an API key to fetch available models.");
       setOpenAiModelFetchLoading(false);
       setOpenAiModelFetchError(false);
-      setCleanerRuntimeStatus("Checking local MLX cleaner runtime...");
+      setCleanerRuntimeStatus("Checking cleaner runtime...");
       setCleanerRuntimeError(false);
       return;
     }
 
-    if (!modelOptions) {
+    if (!modelOptions || cleanerOptionsHydratedRef.current) {
+      return;
+    }
+
+    const backendOptions = resolveCleanerBackendOptions(modelOptions);
+    if (backendOptions.length === 0) {
       return;
     }
 
     const persisted = persistedSettingsRef.current;
     const hasConfiguredCleanerBackend = Boolean(persisted.cleaner_backend_configured);
     setCleanerBackendConfigured(hasConfiguredCleanerBackend);
-    const fallbackBackend = "mlx";
-    const nextBackend =
-      [hasConfiguredCleanerBackend ? persisted.cleaner_backend : "", fallbackBackend]
-        .map((value) => String(value ?? "").trim())
-        .find((candidate) => CLEANER_BACKEND_OPTIONS.some((option) => option.value === candidate)) ?? "mlx";
 
-    setCleanerBackendState(nextBackend);
-  }, [apiClient, modelOptions, persistedSettingsRef]);
+    const initialSelection = resolveInitialBackendSelection(modelOptions, systemCapabilities, persisted);
+    const backendOption = selectedCleanerBackendOption(modelOptions, initialSelection.backendId);
+    const persistedCudaDefaults = initialSelection.restoredPersistedBackend
+      ? {
+          device: resolveInitialCudaDevice(backendOption, persisted),
+          quantization: resolveInitialCudaQuantization(backendOption, persisted),
+        }
+      : undefined;
+    selectCleanerBackend(initialSelection.backendId, persistedCudaDefaults);
+    cleanerOptionsHydratedRef.current = true;
+  }, [apiClient, modelOptions, persistedSettingsRef, selectCleanerBackend, systemCapabilities]);
+
+  useEffect(() => {
+    if (!apiClient || !modelOptions || !cleanerBackend) {
+      return;
+    }
+
+    const isAvailable = availableCleanerBackendOptions.some((option) => option.id === cleanerBackend);
+    if (isAvailable) {
+      return;
+    }
+
+    const nextBackend = availableCleanerBackendOptions[0]?.id ?? "";
+    if (nextBackend !== cleanerBackend) {
+      selectCleanerBackend(nextBackend);
+    }
+  }, [apiClient, availableCleanerBackendOptions, cleanerBackend, modelOptions, selectCleanerBackend]);
 
   useEffect(() => {
     setCleanerModelState((previous) => {
@@ -136,35 +231,45 @@ export function useCleanerOptions({
   }, [cleanerModelOptions, persistedSettingsRef]);
 
   useEffect(() => {
-    if (!systemCapabilities) {
-      if (!apiClient) {
-        return;
-      }
-      setCleanerRuntimeStatus("Runtime capability probe unavailable.");
+    if (!selectedCleanerBackend) {
+      setCleanerRuntimeStatus("No cleaner backend options available.");
       setCleanerRuntimeError(true);
       return;
     }
 
-    const runtimeStatus = deriveCleanerRuntimeStatus(systemCapabilities);
+    const runtimeStatus = deriveCleanerRuntimeStatus(systemCapabilities, selectedCleanerBackend);
     setCleanerRuntimeStatus(runtimeStatus.message);
     setCleanerRuntimeError(runtimeStatus.isError);
-  }, [apiClient, systemCapabilities]);
+  }, [selectedCleanerBackend, systemCapabilities]);
 
-  const setCleanerBackend = useCallback((value: string) => {
-    setCleanerBackendConfigured(true);
-    setCleanerBackendState(value);
-  }, []);
+  const setCleanerBackend = useCallback(
+    (value: string) => {
+      setCleanerBackendConfigured(true);
+      selectCleanerBackend(value);
+    },
+    [selectCleanerBackend],
+  );
 
   const setCleanerModel = useCallback((value: string) => {
     setCleanerBackendConfigured(true);
     setCleanerModelState(value);
   }, []);
 
+  const setCleanerCudaDevice = useCallback((value: string) => {
+    setCleanerBackendConfigured(true);
+    setCleanerCudaDeviceState(value);
+  }, []);
+
+  const setCleanerCudaQuantization = useCallback((value: string) => {
+    setCleanerBackendConfigured(true);
+    setCleanerCudaQuantizationState(value);
+  }, []);
+
   const setCleanerApiKey = useCallback((value: string) => {
     setCleanerApiKeyState(value);
     setOpenAiModelFetchError(false);
     if (!value.trim()) {
-      setOpenAiModelFetchStatus("Paste an OpenAI API key to fetch available models.");
+      setOpenAiModelFetchStatus("Paste an API key to fetch available models.");
     }
   }, []);
 
@@ -175,43 +280,55 @@ export function useCleanerOptions({
       return;
     }
 
+    if (!selectedCleanerBackend?.requires_api_key) {
+      setOpenAiModelFetchError(true);
+      setOpenAiModelFetchStatus("Select a cleaner backend that uses an API key before fetching models.");
+      return;
+    }
+
     const normalizedKey = cleanerApiKey.trim();
     if (!normalizedKey) {
       setOpenAiModelFetchError(true);
-      setOpenAiModelFetchStatus("Paste an OpenAI API key before fetching models.");
+      setOpenAiModelFetchStatus("Paste an API key before fetching models.");
       return;
     }
 
     setCleanerBackendConfigured(true);
     setOpenAiModelFetchLoading(true);
     setOpenAiModelFetchError(false);
-    setOpenAiModelFetchStatus("Fetching OpenAI models...");
+    setOpenAiModelFetchStatus(`Fetching ${selectedCleanerBackend.display_name} models...`);
 
     try {
       const modelIds = await apiClient.fetchOpenAiModelIds(normalizedKey);
       const options = modelIds.map((model) => ({ value: model, label: model }));
       setFetchedOpenAiModelOptions(options);
-      setCleanerBackendState("api");
       setOpenAiModelFetchStatus(
-        options.length > 0 ? `Loaded ${options.length} OpenAI models.` : "No OpenAI models returned for this key.",
+        options.length > 0
+          ? `Loaded ${options.length} ${selectedCleanerBackend.display_name} models.`
+          : `No ${selectedCleanerBackend.display_name} models returned for this key.`,
       );
       setOpenAiModelFetchError(options.length === 0);
     } catch (fetchError: unknown) {
       setOpenAiModelFetchError(true);
-      setOpenAiModelFetchStatus(fetchError instanceof Error ? fetchError.message : "OpenAI model fetch failed.");
+      setOpenAiModelFetchStatus(fetchError instanceof Error ? fetchError.message : "Cleaner model fetch failed.");
     } finally {
       setOpenAiModelFetchLoading(false);
     }
-  }, [apiClient, cleanerApiKey]);
+  }, [apiClient, cleanerApiKey, selectedCleanerBackend]);
 
   return {
     cleanerBackend,
     setCleanerBackend,
-    cleanerBackendOptions: CLEANER_BACKEND_OPTIONS,
+    cleanerBackendOptions,
     cleanerBackendConfigured,
+    selectedCleanerBackend,
     cleanerModel,
     setCleanerModel,
     cleanerModelOptions,
+    cleanerCudaDevice,
+    setCleanerCudaDevice,
+    cleanerCudaQuantization,
+    setCleanerCudaQuantization,
     cleanerApiKey,
     setCleanerApiKey,
     fetchOpenAiModelIds,

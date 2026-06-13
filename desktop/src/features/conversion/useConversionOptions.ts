@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
-import type { ParallelWorkerRecommendation, TermSelectOption } from "../../types/api";
+import type { CleanerBackendOption, ParallelWorkerRecommendation, TermSelectOption } from "../../types/api";
 
 import { readPersistedSettings, savePersistedSettings } from "./conversionOptionsShared";
 import { useCleanerOptions } from "./useCleanerOptions";
@@ -34,9 +34,14 @@ export interface UseConversionOptionsResult {
   setCleanerBackend: (value: string) => void;
   cleanerBackendOptions: TermSelectOption[];
   cleanerBackendConfigured: boolean;
+  selectedCleanerBackend: CleanerBackendOption | null;
   cleanerModel: string;
   setCleanerModel: (value: string) => void;
   cleanerModelOptions: TermSelectOption[];
+  cleanerCudaDevice: string;
+  setCleanerCudaDevice: (value: string) => void;
+  cleanerCudaQuantization: string;
+  setCleanerCudaQuantization: (value: string) => void;
   cleanerApiKey: string;
   setCleanerApiKey: (value: string) => void;
   fetchOpenAiModelIds: () => Promise<void>;
@@ -82,8 +87,11 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
       selectedEngine: ttsOptions.selectedEngine,
       selectedQuantization: ttsOptions.selectedQuantization,
       cleanerBackend: cleanerOptions.cleanerBackend,
+      selectedCleanerBackend: cleanerOptions.selectedCleanerBackend,
       cleanerModel: cleanerOptions.cleanerModel,
       cleanerApiKey: cleanerOptions.cleanerApiKey,
+      cleanerCudaDevice: cleanerOptions.cleanerCudaDevice,
+      cleanerCudaQuantization: cleanerOptions.cleanerCudaQuantization,
     },
   });
 
@@ -100,6 +108,8 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
       cleaner_backend: cleanerOptions.cleanerBackend || undefined,
       cleaner_model: cleanerOptions.cleanerModel || undefined,
       cleaner_backend_configured: cleanerOptions.cleanerBackendConfigured,
+      cleaner_cuda_device: cleanerOptions.cleanerCudaDevice || undefined,
+      cleaner_cuda_quantization: cleanerOptions.cleanerCudaQuantization || undefined,
       parallel_worker_mode: parallelWorkers.parallelWorkerMode,
       parallel_manual_max: parallelWorkers.selectedParallelWorkerLimit,
     };
@@ -109,6 +119,8 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
   }, [
     cleanerOptions.cleanerBackend,
     cleanerOptions.cleanerBackendConfigured,
+    cleanerOptions.cleanerCudaDevice,
+    cleanerOptions.cleanerCudaQuantization,
     cleanerOptions.cleanerModel,
     parallelWorkers.parallelWorkerMode,
     parallelWorkers.selectedParallelWorkerLimit,
@@ -149,9 +161,14 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
     setCleanerBackend: cleanerOptions.setCleanerBackend,
     cleanerBackendOptions: cleanerOptions.cleanerBackendOptions,
     cleanerBackendConfigured: cleanerOptions.cleanerBackendConfigured,
+    selectedCleanerBackend: cleanerOptions.selectedCleanerBackend,
     cleanerModel: cleanerOptions.cleanerModel,
     setCleanerModel: cleanerOptions.setCleanerModel,
     cleanerModelOptions: cleanerOptions.cleanerModelOptions,
+    cleanerCudaDevice: cleanerOptions.cleanerCudaDevice,
+    setCleanerCudaDevice: cleanerOptions.setCleanerCudaDevice,
+    cleanerCudaQuantization: cleanerOptions.cleanerCudaQuantization,
+    setCleanerCudaQuantization: cleanerOptions.setCleanerCudaQuantization,
     cleanerApiKey: cleanerOptions.cleanerApiKey,
     setCleanerApiKey: cleanerOptions.setCleanerApiKey,
     fetchOpenAiModelIds: cleanerOptions.fetchOpenAiModelIds,

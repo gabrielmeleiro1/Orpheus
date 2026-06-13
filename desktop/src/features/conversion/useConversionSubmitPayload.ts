@@ -5,6 +5,7 @@ import type {
   ConversionRuntimeOptions,
   StartConversionRequest,
 } from "../../types/api";
+import { buildCleanerRuntimePayloadFields } from "./cleanerBackendHelpers";
 import { normalizeQuantizationValue } from "./conversionPanelHelpers";
 import type { ConversionQueueItem } from "./conversionPanelModel";
 import type { useConversionOptions } from "./useConversionOptions";
@@ -15,20 +16,21 @@ export function buildRuntimeOptions(
   optionState: ConversionOptionState,
 ): ConversionRuntimeOptions {
   const quantization = normalizeQuantizationValue(optionState.selectedQuantization);
+  const cleanerFields = buildCleanerRuntimePayloadFields({
+    selectedBackend: optionState.selectedCleanerBackend,
+    cleanerBackend: optionState.cleanerBackend,
+    cleanerModel: optionState.cleanerModel,
+    cleanerApiKey: optionState.cleanerApiKey,
+    cleanerCudaDevice: optionState.cleanerCudaDevice,
+    cleanerCudaQuantization: optionState.cleanerCudaQuantization,
+  });
+
   return {
     voice: optionState.selectedVoice,
     speed: optionState.speed,
     tts_engine: optionState.selectedEngine || null,
     tts_quantization: quantization,
-    cleaner_backend: optionState.cleanerBackend,
-    cleaner_model:
-      optionState.cleanerBackend === "mlx" ? optionState.cleanerModel || null : null,
-    cleaner_api_model:
-      optionState.cleanerBackend === "api" ? optionState.cleanerModel || null : null,
-    cleaner_api_key:
-      optionState.cleanerBackend === "api"
-        ? optionState.cleanerApiKey.trim() || null
-        : null,
+    ...cleanerFields,
     tts_options: { quantization },
     parallel_worker_mode: optionState.parallelWorkerMode,
     max_parallel_chapters: optionState.selectedParallelWorkerLimit,

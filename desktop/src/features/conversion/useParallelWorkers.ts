@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
 
 import type { ApiClient } from "../../api/client";
-import type { ParallelWorkerRecommendation, SystemCapabilitiesResponse } from "../../types/api";
+import type {
+  CleanerBackendOption,
+  ParallelWorkerRecommendation,
+  SystemCapabilitiesResponse,
+} from "../../types/api";
 
+import { buildCleanerRuntimePayloadFields } from "./cleanerBackendHelpers";
+import { normalizeQuantizationValue } from "./conversionPanelHelpers";
 import type { PersistedSettings } from "./conversionOptionsShared";
 
 const DEFAULT_PARALLEL_WORKER_MODE = "manual";
@@ -14,8 +20,11 @@ export interface ParallelWarmupContext {
   selectedEngine: string;
   selectedQuantization: string;
   cleanerBackend: string;
+  selectedCleanerBackend: CleanerBackendOption | null;
   cleanerModel: string;
   cleanerApiKey: string;
+  cleanerCudaDevice: string;
+  cleanerCudaQuantization: string;
 }
 
 export interface UseParallelWorkersArgs {
@@ -149,30 +158,38 @@ export function useParallelWorkers({
       selectedEngine,
       selectedQuantization,
       cleanerBackend,
+      selectedCleanerBackend,
       cleanerModel,
       cleanerApiKey,
+      cleanerCudaDevice,
+      cleanerCudaQuantization,
     } = warmupContext;
 
     setParallelWarmupLoading(true);
     setParallelWorkerError(false);
     setParallelWorkerStatus("Running model warm-up memory calibration...");
     try {
-      const quantization = selectedQuantization.trim() || null;
+      const quantization = normalizeQuantizationValue(selectedQuantization);
       const requestedWarmupMax =
         parallelWorkerMode === "manual"
           ? selectedParallelWorkerLimit
           : parallelRecommendation?.requested_parallel_chapters ??
             parallelRecommendation?.max_safe_parallel_chapters ??
             Math.max(DEFAULT_PARALLEL_WORKER_LIMIT, Number.parseInt(parallelManualMax, 10) || 1);
+      const cleanerFields = buildCleanerRuntimePayloadFields({
+        selectedBackend: selectedCleanerBackend,
+        cleanerBackend,
+        cleanerModel,
+        cleanerApiKey,
+        cleanerCudaDevice,
+        cleanerCudaQuantization,
+      });
       const recommendation = await apiClient.warmupParallelWorkers({
         voice: selectedVoice || "am_adam",
         speed,
         tts_engine: selectedEngine || null,
         tts_quantization: quantization,
-        cleaner_backend: cleanerBackend,
-        cleaner_model: cleanerBackend === "mlx" ? cleanerModel || null : null,
-        cleaner_api_model: cleanerBackend === "api" ? cleanerModel || null : null,
-        cleaner_api_key: cleanerBackend === "api" ? cleanerApiKey.trim() || null : null,
+        ...cleanerFields,
         max_parallel_chapters: requestedWarmupMax,
       });
       setParallelRecommendation(recommendation);
