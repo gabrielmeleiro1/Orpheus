@@ -13,6 +13,7 @@ from modules.tts.cleaner_backends.registry import (
     requires_api_key_cleaner_backend,
 )
 from modules.tts.cleaner_config import CleanTrace
+from tests.fixtures.fake_cleaner_backend import FakeLocalCleanerBackend
 
 
 def test_is_local_cleaner_backend_mlx_and_api():
@@ -87,31 +88,6 @@ def test_build_worker_plan_skips_local_gpu_guard_for_api_backend():
 def test_build_worker_plan_local_gpu_guard_follows_registered_local_backend(
     registry_snapshot,
 ):
-    class FakeLocalCleanerBackend:
-        name = "fake-local"
-        is_local = True
-        requires_model = False
-        display_name = "Fake Local"
-        requires_api_key = False
-
-        def load(self, cleaner) -> None:
-            return None
-
-        async def clean_batch_with_trace_async(self, cleaner, texts):
-            return []
-
-        def generate_llm_response(self, cleaner, prompt: str) -> str:
-            return prompt
-
-        def unload(self, cleaner, *, keep_in_cache: bool = True) -> None:
-            return None
-
-        def clear_cache(self, cleaner) -> None:
-            return None
-
-        def list_models(self) -> list[str]:
-            return ["fake-model"]
-
     register_cleaner_backend("fake-local", FakeLocalCleanerBackend)
 
     config = PipelineConfig(

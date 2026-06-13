@@ -16,11 +16,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from modules.tts.cleaner import (
-    CleanerConfig,
-    TextCleaner, 
-    _get_cached_cleaner,
-    _set_cached_cleaner,
-    _clear_cleaner_cache
+    TextCleaner,
+)
+from modules.tts.cleaner_config import CleanerConfig
+from modules.tts.cleaner_mlx import (
+    clear_cleaner_cache as _clear_cleaner_cache,
+    get_cached_cleaner as _get_cached_cleaner,
+    set_cached_cleaner as _set_cached_cleaner,
 )
 
 pytestmark = pytest.mark.property
@@ -203,7 +205,7 @@ class TestTextCleanerLLMSemantics:
 
     @staticmethod
     def _mocked_mlx_cleaner() -> TextCleaner:
-        with patch("modules.tts.cleaner._ensure_mlx_lm_runtime"):
+        with patch("modules.tts.cleaner_mlx.ensure_mlx_lm_runtime"):
             return TextCleaner()
     
     @pytest.mark.property
@@ -223,7 +225,7 @@ class TestTextCleanerLLMSemantics:
             cleaner._tokenizer = MagicMock()
             
             # Mock the generate function
-            with patch('modules.tts.cleaner.generate', return_value=mock_response):
+            with patch('modules.tts.cleaner_mlx.generate', return_value=mock_response):
                 result = cleaner.clean(text)
                 
                 # Result should be the extracted text
@@ -253,7 +255,7 @@ class TestTextCleanerErrorHandling:
 
     @staticmethod
     def _mocked_mlx_cleaner() -> TextCleaner:
-        with patch("modules.tts.cleaner._ensure_mlx_lm_runtime"):
+        with patch("modules.tts.cleaner_mlx.ensure_mlx_lm_runtime"):
             return TextCleaner()
     
     @pytest.mark.property
@@ -270,7 +272,7 @@ class TestTextCleanerErrorHandling:
             cleaner._tokenizer = MagicMock()
             
             # Mock generate to raise exception
-            with patch('modules.tts.cleaner.generate', side_effect=Exception("LLM Error")):
+            with patch('modules.tts.cleaner_mlx.generate', side_effect=Exception("LLM Error")):
                 cleaner._rule_based_clean(text)
                 
                 # Clean should fallback to rule-based

@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_api import CleanerAPIStrategy
 from modules.tts.cleaner_backends import (
     available_cleaner_backends,
@@ -17,7 +17,11 @@ from modules.tts.cleaner_backends import (
 )
 from modules.tts.cleaner_cuda import CleanerCUDAStrategy
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
-from modules.tts.cleaner_config import CUDA_CLEANER_MODEL_CHOICES, list_cleaner_models
+from modules.tts.cleaner_config import (
+    CUDA_CLEANER_MODEL_CHOICES,
+    CleanerConfig,
+    list_cleaner_models,
+)
 from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend
 
 
@@ -89,3 +93,12 @@ def test_registering_fake_backend_lets_text_cleaner_use_it(registry_snapshot):
 
     traces = asyncio.run(backend.clean_batch_with_trace_async(cleaner, ["one", "two"]))
     assert [trace.cleaned_text for trace in traces] == ["fake:one", "fake:two"]
+
+
+def test_cleaner_facade_does_not_reexport_config_helpers():
+    import modules.tts.cleaner as cleaner_module
+
+    assert not hasattr(cleaner_module, "CleanerConfig")
+    assert not hasattr(cleaner_module, "CleanTrace")
+    assert not hasattr(cleaner_module, "CLEANER_MODEL_CHOICES")
+    assert not hasattr(cleaner_module, "API_MODEL_CHOICES")
