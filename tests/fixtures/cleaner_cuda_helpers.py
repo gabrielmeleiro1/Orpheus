@@ -7,7 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from modules.tts.cleaner_backends.registry import get_cleaner_backend, validate_cleaner_backend
 from modules.tts.cleaner_config import CleanTrace
 

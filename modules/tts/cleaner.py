@@ -36,63 +36,21 @@ from . import cleaner_mlx as cleaner_mlx_backend
 from . import cleaner_rules as cleaner_rules_backend
 from . import cleaner_trace as cleaner_trace_backend
 from . import cleaner_transport as cleaner_transport_backend
-from .cleaner_config import (
-    API_MODEL_CHOICES as API_MODEL_CHOICES,
-    CLEANER_MODEL_CHOICES as CLEANER_MODEL_CHOICES,
-    DEFAULT_API_MODEL as DEFAULT_API_MODEL,
-    CleanerConfig,
-    CleanTrace,
-    list_api_cleaner_models as list_api_cleaner_models,
-    list_cleaner_models as list_cleaner_models,
-)
+from .cleaner_config import CleanerConfig as _CleanerConfig
+from .cleaner_config import CleanTrace as _CleanTrace
 from .cleaner_backends.registry import get_cleaner_backend, validate_cleaner_backend
 from modules.async_bridge import run_coroutine_sync
 
-# MLX-LM runtime compatibility globals retained for direct monkeypatch tests.
-MLX_LM_AVAILABLE = cleaner_mlx_backend.MLX_LM_AVAILABLE
-MLX_LM_IMPORT_ERROR: Optional[Exception] = cleaner_mlx_backend.MLX_LM_IMPORT_ERROR
-_MLX_LM_RUNTIME_CHECKED = cleaner_mlx_backend._MLX_LM_RUNTIME_CHECKED
-mx = cleaner_mlx_backend.mx
-load = cleaner_mlx_backend.load
-generate = cleaner_mlx_backend.generate
-make_sampler = cleaner_mlx_backend.make_sampler
 logger = logging.getLogger(__name__)
 
-# Preserve the urllib module seam used by tests that monkeypatch transport.
-urlrequest = cleaner_api_backend.urlrequest
 
-
-def _ensure_mlx_lm_runtime() -> None:
-    """Import MLX-LM on demand."""
-    global MLX_LM_AVAILABLE, MLX_LM_IMPORT_ERROR, _MLX_LM_RUNTIME_CHECKED, mx, load, generate, make_sampler
-    mx, load, generate, make_sampler = cleaner_mlx_backend.ensure_mlx_lm_runtime()
-    MLX_LM_AVAILABLE = cleaner_mlx_backend.MLX_LM_AVAILABLE
-    MLX_LM_IMPORT_ERROR = cleaner_mlx_backend.MLX_LM_IMPORT_ERROR
-    _MLX_LM_RUNTIME_CHECKED = cleaner_mlx_backend._MLX_LM_RUNTIME_CHECKED
-
-
-class _CleanerAPIHTTPError(RuntimeError):
+class CleanerAPIHTTPError(RuntimeError):
     """Internal transport error for HTTP responses with non-2xx status."""
 
     def __init__(self, status_code: int, detail: str):
         super().__init__(f"Cleaner API HTTP {status_code}: {detail}")
         self.status_code = status_code
         self.detail = detail
-
-
-def _get_cached_cleaner(model_name: str) -> Optional[tuple[Any, Any]]:
-    """Get cleaner model from cache if available."""
-    return cleaner_mlx_backend.get_cached_cleaner(model_name)
-
-
-def _set_cached_cleaner(model_name: str, model: Any, tokenizer: Any):
-    """Cache cleaner model."""
-    cleaner_mlx_backend.set_cached_cleaner(model_name, model, tokenizer)
-
-
-def _clear_cleaner_cache():
-    """Clear the cleaner model cache."""
-    cleaner_mlx_backend.clear_cleaner_cache()
 
 
 class TextCleaner:
@@ -109,14 +67,14 @@ class TextCleaner:
     Local backends support per-backend model caching between chunks.
     """
     
-    def __init__(self, config: Optional[CleanerConfig] = None):
+    def __init__(self, config: Optional[_CleanerConfig] = None):
         """
         Initialize the text cleaner.
         
         Args:
             config: Cleaner configuration (uses defaults if None)
         """
-        self.config = config or CleanerConfig()
+        self.config = config or _CleanerConfig()
         self.config.backend = validate_cleaner_backend(self.config.backend)
         self._backend_strategy = get_cleaner_backend(self.config.backend)
         
@@ -177,7 +135,7 @@ class TextCleaner:
         configured = int(getattr(self.config, "api_batch_concurrency", 4) or 1)
         return max(1, configured)
 
-    async def clean_batch_with_trace_async(self, texts: list[str]) -> list[CleanTrace]:
+    async def clean_batch_with_trace_async(self, texts: list[str]) -> list[_CleanTrace]:
         """
         Clean multiple chunks concurrently while preserving per-chunk trace data.
 
@@ -190,11 +148,11 @@ class TextCleaner:
         """Clean multiple chunks with local gating while preserving input order."""
         return [trace.cleaned_text for trace in self.clean_chunks_with_trace(texts)]
 
-    def clean_chunks_with_trace(self, texts: list[str]) -> list[CleanTrace]:
+    def clean_chunks_with_trace(self, texts: list[str]) -> list[_CleanTrace]:
         """Synchronous batch-clean interface for local and fallback paths."""
         indexed = list(enumerate(texts))
         indexed.sort(key=lambda item: len(item[1]))
-        traces_by_index: dict[int, CleanTrace] = {}
+        traces_by_index: dict[int, _CleanTrace] = {}
         for index, text in indexed:
             traces_by_index[index] = self.clean_with_trace(text)
         return [traces_by_index[index] for index in range(len(texts))]
@@ -227,7 +185,7 @@ class TextCleaner:
         semaphore: asyncio.Semaphore,
         *,
         api_session: Any = None,
-    ) -> CleanTrace:
+    ) -> _CleanTrace:
         """Async API backend variant of clean_with_trace for batch execution."""
         async def generate_response(prompt: str) -> str:
             async with semaphore:
@@ -240,13 +198,13 @@ class TextCleaner:
 
         return await cleaner_trace_backend.run_trace_decision_flow_async(
             self,
-            CleanTrace,
+            _CleanTrace,
             text,
             generate_response,
             warning_logger=logger,
         )
 
-    def clean_with_trace(self, text: str) -> CleanTrace:
+    def clean_with_trace(self, text: str) -> _CleanTrace:
         """
         Clean and normalize text for TTS.
         
@@ -258,7 +216,7 @@ class TextCleaner:
         """
         return cleaner_trace_backend.run_trace_decision_flow(
             self,
-            CleanTrace,
+            _CleanTrace,
             text,
             self._generate_llm_response,
             warning_logger=logger,
@@ -280,18 +238,20 @@ class TextCleaner:
     def _generate_mlx_response(self, prompt: str) -> str:
         """Generate cleaned text via local mlx-lm runtime."""
         with self._model_lock:
-            if make_sampler is not None:
-                return generate(
+            if cleaner_mlx_backend.make_sampler is not None:
+                return cleaner_mlx_backend.generate(
                     self._model,
                     self._tokenizer,
                     prompt=prompt,
                     max_tokens=self.config.max_tokens,
-                    sampler=make_sampler(temp=self.config.temperature),
+                    sampler=cleaner_mlx_backend.make_sampler(
+                        temp=self.config.temperature
+                    ),
                     verbose=False
                 )
 
             try:
-                return generate(
+                return cleaner_mlx_backend.generate(
                     self._model,
                     self._tokenizer,
                     prompt=prompt,
@@ -302,7 +262,7 @@ class TextCleaner:
             except TypeError as exc:
                 if "unexpected keyword argument 'temp'" not in str(exc):
                     raise
-                return generate(
+                return cleaner_mlx_backend.generate(
                     self._model,
                     self._tokenizer,
                     prompt=prompt,
@@ -322,7 +282,7 @@ class TextCleaner:
         return cleaner_transport_backend.generate_api_response(
             self,
             prompt,
-            http_error_cls=_CleanerAPIHTTPError,
+            http_error_cls=CleanerAPIHTTPError,
             aiohttp_module=aiohttp,
         )
 
@@ -336,7 +296,7 @@ class TextCleaner:
         return await cleaner_transport_backend.generate_api_response_async(
             self,
             prompt,
-            http_error_cls=_CleanerAPIHTTPError,
+            http_error_cls=CleanerAPIHTTPError,
             aiohttp_module=aiohttp,
             api_session=api_session,
         )
@@ -359,7 +319,7 @@ class TextCleaner:
             api_key=api_key,
             payload=payload,
             ssl_context=ssl_context,
-            http_error_cls=_CleanerAPIHTTPError,
+            http_error_cls=CleanerAPIHTTPError,
             max_tokens=self.config.max_tokens,
             aiohttp_module=aiohttp_runtime,
             api_session=api_session,
@@ -436,7 +396,7 @@ def test_rule_based_cleaning() -> bool:
     print("\nTesting rule-based text cleaning...")
     
     cleaner = TextCleaner.__new__(TextCleaner)
-    cleaner.config = CleanerConfig()
+    cleaner.config = _CleanerConfig()
     cleaner._loaded = False
     
     test_cases = [

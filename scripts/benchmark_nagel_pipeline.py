@@ -1380,7 +1380,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("source", help="PDF, EPUB, Markdown, or text source to benchmark")
     parser.add_argument("--output-dir", type=Path, default=Path("output/nagel_benchmark"))
     parser.add_argument("--temp-dir", type=Path, default=Path("temp/nagel_benchmark"))
-    parser.add_argument("--full", action="store_true", help="Run full MLX conversion")
+    parser.add_argument("--full", action="store_true", help="Run full conversion")
     parser.add_argument("--parse-only", action="store_true", help="Run parse/chunk benchmark only")
     parser.add_argument("--cleaner-gate", action="store_true", help="Run parse/chunk plus rule-based cleaner gate only")
     parser.add_argument("--pdf-backend", default=defaults.pdf_extraction_backend, choices=["fitz", "pymupdf4llm", "auto"])

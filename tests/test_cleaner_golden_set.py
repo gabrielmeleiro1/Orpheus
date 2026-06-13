@@ -12,7 +12,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
@@ -66,8 +67,8 @@ def test_llm_fixes_trace_artifacts(sample: dict[str, object], monkeypatch: pytes
     def _fake_generate(_model, _tokenizer, **_kwargs):
         return str(sample["expected_clean"])
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", _fake_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", _fake_generate)
 
     cleaned = cleaner.clean(str(sample["dirty"]))
     assert cleaned == sample["expected_clean"]
@@ -80,8 +81,8 @@ def test_all_golden_samples_no_crash(sample: dict[str, object], monkeypatch: pyt
     def _fake_generate(_model, _tokenizer, **_kwargs):
         return str(sample["expected_clean"])
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", _fake_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", _fake_generate)
 
     trace = cleaner.clean_with_trace(str(sample["dirty"]))
     assert trace.cleaned_text
@@ -94,8 +95,8 @@ def test_golden_samples_content_preserved(sample: dict[str, object], monkeypatch
     def _fake_generate(_model, _tokenizer, **_kwargs):
         return str(sample["expected_clean"])
 
-    monkeypatch.setattr(cleaner_module, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module, "generate", _fake_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", _fake_generate)
 
     cleaned = cleaner.clean(str(sample["dirty"]))
     cleaned_lower = cleaned.lower()

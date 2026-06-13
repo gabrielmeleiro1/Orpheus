@@ -6,7 +6,7 @@ from modules.tts.cleaner_config import CleanerConfig
 
 
 def test_local_cleaner_batch_scores_all_chunks_and_preserves_order(monkeypatch):
-    monkeypatch.setattr(cleaner_module, "_ensure_mlx_lm_runtime", lambda: None)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "ensure_mlx_lm_runtime", lambda: None)
     cleaner = TextCleaner(CleanerConfig(backend="mlx", skip_llm_when_not_needed=True))
     calls: list[str] = []
 

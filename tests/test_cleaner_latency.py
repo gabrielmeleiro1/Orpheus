@@ -17,7 +17,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
-from modules.tts.cleaner import CleanerConfig, TextCleaner
+from modules.tts.cleaner import TextCleaner
+from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
@@ -116,7 +117,7 @@ def test_api_clean_overhead_under_200ms(monkeypatch: pytest.MonkeyPatch) -> None
             return json.dumps(payload).encode("utf-8")
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", lambda *_a, **_k: _FakeResponse())
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", lambda *_a, **_k: _FakeResponse())
 
     elapsed_ms = _measure_ms(lambda: cleaner.clean(input_text), iterations=10)
     assert elapsed_ms < 200.0
@@ -144,7 +145,7 @@ def test_latency_vs_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
             return json.dumps(payload).encode("utf-8")
 
     monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(cleaner_module.urlrequest, "urlopen", lambda *_a, **_k: _FakeResponse())
+    monkeypatch.setattr(cleaner_module.cleaner_api_backend.urlrequest, "urlopen", lambda *_a, **_k: _FakeResponse())
 
     current_metrics = {
         "cleaner_rule_based_ms": _measure_ms(lambda: mlx_cleaner._rule_based_clean(long_rule_text), iterations=30),
