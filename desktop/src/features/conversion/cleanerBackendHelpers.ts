@@ -152,10 +152,6 @@ export function cleanerBackendUsesCudaFields(option: CleanerBackendOption | null
     return false;
   }
 
-  if (option.id === "cuda") {
-    return true;
-  }
-
   return Boolean(option.default_device || (option.supported_quantizations?.length ?? 0) > 0);
 }
 
