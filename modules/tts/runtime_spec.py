@@ -25,7 +25,9 @@ def canonical_provider(provider: str | None) -> str | None:
     return lowered
 
 
-KOKORO_DEFAULT_MODEL = "mlx-community/Kokoro-82M"
+KOKORO_MLX_DEFAULT_MODEL = "mlx-community/Kokoro-82M"
+KOKORO_PACKAGE_DEFAULT_MODEL = "hexgrad/Kokoro-82M"
+KOKORO_DEFAULT_MODEL = KOKORO_MLX_DEFAULT_MODEL
 
 # CUDA provider option names and coercion keys (single source of truth).
 CUDA_RUNTIME_OPTION_BOOL_KEYS = frozenset(
@@ -220,7 +222,9 @@ class TTSRuntimeSpec:
         if self.model is not None:
             return self.model
         if self.engine == "kokoro":
-            return KOKORO_DEFAULT_MODEL
+            if self.provider in {"cuda", "cpu"}:
+                return KOKORO_PACKAGE_DEFAULT_MODEL
+            return KOKORO_MLX_DEFAULT_MODEL
         return None
 
     def cache_key(self) -> tuple[str, str, str | None, str, str | None, tuple[tuple[str, str], ...]]:
