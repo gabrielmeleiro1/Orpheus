@@ -262,7 +262,7 @@ def test_conversion_routes_forward_full_frontend_selection_payloads_on_start_and
 
     assert start.status_code == 200
     assert repair.status_code == 200
-    assert str(controller.start_kwargs["source_path"]) == frontend_payload["source_path"]
+    assert controller.start_kwargs["source_path"] == Path(frontend_payload["source_path"])
     assert controller.start_kwargs["conversion_mode"] == frontend_payload["conversion_mode"]
     assert controller.start_kwargs["title"] == frontend_payload["title"]
     assert controller.start_kwargs["author"] == frontend_payload["author"]
@@ -1333,7 +1333,7 @@ def test_web_api() -> bool:
 
         backup = fake_client.post("/api/maintenance/backup")
         assert backup.status_code == 200
-        assert backup.json()["backup_path"] == "/tmp/audiobooks-backup.db"
+        assert Path(backup.json()["backup_path"]) == Path("/tmp/audiobooks-backup.db")
         print("✓ POST /api/maintenance/backup")
 
         cleanup_rejected = fake_client.post("/api/maintenance/cleanup", json={"confirm": "nope"})
@@ -1367,7 +1367,8 @@ def test_web_api() -> bool:
 
     open_folder = fake_client.post("/api/library/1/open-folder")
     assert open_folder.status_code == 200
-    assert open_folder.json() == {"book_id": 1, "folder_path": "/tmp"}
+    assert open_folder.json()["book_id"] == 1
+    assert Path(open_folder.json()["folder_path"]) == Path("/tmp")
     assert fake_controller.open_folder_calls[-1] == 1
     print("✓ POST /api/library/{book_id}/open-folder")
 

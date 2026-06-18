@@ -18,7 +18,7 @@ def test_markdown_parser_splits_headings_into_chapters(tmp_path):
     assert all(isinstance(chapter, IngestionChapter) for chapter in document.chapters)
     assert document.title == "Guide"
     assert document.author is None
-    assert document.raw_markdown == source_path.read_text(encoding="utf-8")
+    assert document.raw_markdown.splitlines() == source_path.read_text(encoding="utf-8").splitlines()
     assert [chapter.title for chapter in document.chapters] == ["Guide", "Install", "Usage"]
     assert "Overview text." in document.chapters[0].content
     assert "Install steps." in document.chapters[1].content

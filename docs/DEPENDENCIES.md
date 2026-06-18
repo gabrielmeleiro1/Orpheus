@@ -65,6 +65,40 @@ These packages are installed with the normal development workflow above. A CUDA-
 NVIDIA driver and GPU are required at runtime; the desktop sidecar build on macOS
 does not bundle CUDA wheels.
 
+### Local model assets
+
+Python requirements install the libraries needed to run local models, but model
+weights are downloaded separately. The package-backed Kokoro runtime uses the
+Hugging Face model declared in `modules.tts.runtime_spec.KOKORO_PACKAGE_DEFAULT_MODEL`.
+
+Download the required local model snapshots after installing Python packages:
+
+```bash
+python scripts/download_models.py
+```
+
+By default this downloads `hexgrad/Kokoro-82M` into the normal Hugging Face
+cache with Hugging Face cache symlinks disabled, which avoids the common
+Windows non-admin symlink failure. To keep a copied model directory inside the
+workspace, use:
+
+```bash
+python scripts/download_models.py --local-dir .artifacts/models/kokoro
+```
+
+Then point local runs at that model directory in `.env.local`:
+
+```bash
+TTS_PROVIDER=cpu
+TTS_MODEL_NAME=.artifacts/models/kokoro
+```
+
+Release packaging can place the same snapshot into a bundle directory:
+
+```bash
+python scripts/download_models.py --local-dir desktop/src-tauri/binaries/models/kokoro
+```
+
 ## Desktop Frontend
 
 JavaScript packages are declared in `desktop/package.json` and locked in

@@ -41,6 +41,7 @@ hiddenimports = [
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
 ]
+hiddenimports += _collect_submodules("modules")
 hiddenimports += _collect_submodules("kokoro")
 
 if platform.system() == "Darwin":

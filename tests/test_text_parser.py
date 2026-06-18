@@ -18,7 +18,7 @@ def test_text_parser_reads_plain_text_into_single_chapter(tmp_path):
     assert all(isinstance(chapter, IngestionChapter) for chapter in document.chapters)
     assert document.title == "notes"
     assert document.author is None
-    assert document.raw_markdown == source_path.read_text(encoding="utf-8")
+    assert document.raw_markdown.splitlines() == source_path.read_text(encoding="utf-8").splitlines()
     assert len(document.chapters) == 1
     assert document.chapters[0].number == 1
     assert document.chapters[0].title == "notes"

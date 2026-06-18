@@ -47,7 +47,7 @@ class PackageKokoroRuntime:
             return
 
         try:
-            from kokoro import KPipeline
+            from kokoro import KModel, KPipeline
         except ImportError as exc:
             raise TTSRuntimeUnavailable(
                 "Package Kokoro runtime is unavailable. Install kokoro>=0.9.4."
@@ -55,6 +55,16 @@ class PackageKokoroRuntime:
 
         kwargs = self._pipeline_kwargs()
         try:
+            local_model_dir = self._local_model_dir()
+            if local_model_dir is not None:
+                model_path = local_model_dir / "kokoro-v1_0.pth"
+                config_path = local_model_dir / "config.json"
+                kwargs["model"] = KModel(
+                    repo_id="hexgrad/Kokoro-82M",
+                    config=str(config_path),
+                    model=str(model_path),
+                )
+                kwargs.pop("repo_id", None)
             self._pipeline = KPipeline(**kwargs)
         except TypeError:
             kwargs.pop("repo_id", None)
@@ -62,6 +72,15 @@ class PackageKokoroRuntime:
             self._pipeline = KPipeline(**kwargs)
         except Exception as exc:
             raise TTSRuntimeUnavailable(f"Package Kokoro runtime failed to load: {exc}") from exc
+
+    def _local_model_dir(self) -> Path | None:
+        model_name = self._config.runtime_spec.resolved_model()
+        if model_name is None:
+            return None
+        candidate = Path(model_name)
+        if candidate.is_dir():
+            return candidate
+        return None
 
     def _pipeline_kwargs(self) -> dict[str, object]:
         language_code = "a"
@@ -74,6 +93,15 @@ class PackageKokoroRuntime:
         if self._config.runtime_spec.device:
             kwargs["device"] = self._config.runtime_spec.device
         return kwargs
+
+    def _voice_arg(self, voice: str) -> str:
+        local_model_dir = self._local_model_dir()
+        if local_model_dir is None or voice.endswith(".pt"):
+            return voice
+        voice_path = local_model_dir / "voices" / f"{voice}.pt"
+        if voice_path.is_file():
+            return str(voice_path)
+        return voice
 
     def unload(self, *, keep_in_cache: bool = True) -> None:
         _ = keep_in_cache
@@ -103,7 +131,7 @@ class PackageKokoroRuntime:
             np.asarray(audio, dtype=np.float32)
             for _graphemes, _phonemes, audio in self._pipeline(
                 text,
-                voice=voice,
+                voice=self._voice_arg(voice),
                 speed=speed,
             )
         ]
