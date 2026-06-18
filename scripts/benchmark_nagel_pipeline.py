@@ -49,12 +49,14 @@ from modules.errors import OCRRequiredPDFError  # noqa: E402
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
 from modules.pipeline.memory_policy import SafeMemoryPolicy, sample_memory_snapshot  # noqa: E402
 from modules.tts import cleaner_rules as cleaner_rules_backend  # noqa: E402
+from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
 from modules.tts.chunker import ChunkConfig, TextChunker  # noqa: E402
+from modules.tts.cleaner_config import CUDA_CLEANER_QUANTIZATIONS  # noqa: E402
 from modules.tts.factory import TTSEngineFactory  # noqa: E402
 
 
-CLEANER_BACKEND_CHOICES = ("mlx", "api", "cuda")
-CUDA_CLEANER_QUANTIZATION_CHOICES = ("4bit", "8bit", "fp16")
+CLEANER_BACKEND_CHOICES = available_cleaner_backends()
+CUDA_CLEANER_QUANTIZATION_CHOICES = CUDA_CLEANER_QUANTIZATIONS
 
 BENCHMARK_SCHEMA_VERSION = 3
 BENCHMARK_SCHEMA_KEYS = (

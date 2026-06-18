@@ -19,6 +19,7 @@ from modules.tts.cleaner_cuda import CleanerCUDAStrategy
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
 from modules.tts.cleaner_config import (
     CUDA_CLEANER_MODEL_CHOICES,
+    CUDA_CLEANER_QUANTIZATIONS,
     CleanerConfig,
     list_cleaner_models,
 )
@@ -98,7 +99,51 @@ def test_registering_fake_backend_lets_text_cleaner_use_it(registry_snapshot):
 def test_cleaner_facade_does_not_reexport_config_helpers():
     import modules.tts.cleaner as cleaner_module
 
-    assert not hasattr(cleaner_module, "CleanerConfig")
-    assert not hasattr(cleaner_module, "CleanTrace")
-    assert not hasattr(cleaner_module, "CLEANER_MODEL_CHOICES")
-    assert not hasattr(cleaner_module, "API_MODEL_CHOICES")
+    assert hasattr(cleaner_module, "CleanerAPIHTTPError")
+
+    removed_exports = (
+        "CleanerConfig",
+        "CleanTrace",
+        "CLEANER_MODEL_CHOICES",
+        "API_MODEL_CHOICES",
+        "mx",
+        "load",
+        "generate",
+        "make_sampler",
+        "MLX_LM_AVAILABLE",
+        "urlrequest",
+        "_ensure_mlx_lm_runtime",
+        "_get_cached_cleaner",
+        "_set_cached_cleaner",
+        "_clear_cleaner_cache",
+        "_CleanerAPIHTTPError",
+    )
+
+    for export_name in removed_exports:
+        assert not hasattr(cleaner_module, export_name)
+
+
+def test_benchmark_cleaner_backend_choices_match_registry():
+    from scripts.benchmark_nagel_pipeline import CLEANER_BACKEND_CHOICES
+
+    assert CLEANER_BACKEND_CHOICES == available_cleaner_backends()
+
+
+def test_benchmark_cuda_quantization_choices_match_config():
+    from scripts.benchmark_nagel_pipeline import CUDA_CLEANER_QUANTIZATION_CHOICES
+
+    assert CUDA_CLEANER_QUANTIZATION_CHOICES == CUDA_CLEANER_QUANTIZATIONS
+
+
+def test_parallel_worker_benchmark_reuses_benchmark_choices():
+    from scripts import benchmark_nagel_pipeline
+    from tools import benchmark_parallel_workers
+
+    assert (
+        benchmark_parallel_workers.CLEANER_BACKEND_CHOICES
+        is benchmark_nagel_pipeline.CLEANER_BACKEND_CHOICES
+    )
+    assert (
+        benchmark_parallel_workers.CUDA_CLEANER_QUANTIZATION_CHOICES
+        is benchmark_nagel_pipeline.CUDA_CLEANER_QUANTIZATION_CHOICES
+    )
