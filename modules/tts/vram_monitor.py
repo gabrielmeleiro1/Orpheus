@@ -27,6 +27,7 @@ try:
     import mlx.core as mx
     MLX_AVAILABLE = True
 except ImportError:
+    mx = None
     MLX_AVAILABLE = False
 
 if TYPE_CHECKING:

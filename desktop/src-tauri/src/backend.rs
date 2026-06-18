@@ -361,11 +361,14 @@ pub fn resolve_sidecar_path(
     current_binary_path: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let filename = sidecar_runtime_filename();
+    let sidecar_dir_name = BACKEND_SIDECAR_NAME;
     let mut candidates: Vec<PathBuf> = Vec::new();
 
     if let Some(dir) = resource_dir {
         candidates.push(dir.join(&filename));
         candidates.push(dir.join("binaries").join(&filename));
+        candidates.push(dir.join(sidecar_dir_name).join(&filename));
+        candidates.push(dir.join("binaries").join(sidecar_dir_name).join(&filename));
         candidates.push(dir.join(&filename).join(&filename));
         candidates.push(dir.join("binaries").join(&filename).join(&filename));
     }
@@ -374,6 +377,8 @@ pub fn resolve_sidecar_path(
         if let Some(exe_dir) = current_binary.parent() {
             candidates.push(exe_dir.join(&filename));
             candidates.push(exe_dir.join("binaries").join(&filename));
+            candidates.push(exe_dir.join(sidecar_dir_name).join(&filename));
+            candidates.push(exe_dir.join("binaries").join(sidecar_dir_name).join(&filename));
             candidates.push(exe_dir.join(&filename).join(&filename));
             candidates.push(exe_dir.join("binaries").join(&filename).join(&filename));
             #[cfg(target_os = "macos")]

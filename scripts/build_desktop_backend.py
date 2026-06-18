@@ -363,7 +363,10 @@ def _expose_espeak_data_at_sidecar_root(sidecar_dir: Path) -> None:
         if data_item.is_dir():
             shutil.copytree(data_item, target, symlinks=True)
         else:
-            target.symlink_to(ESPEAK_DATA_DIR / data_item.name)
+            try:
+                target.symlink_to(ESPEAK_DATA_DIR / data_item.name)
+            except OSError:
+                shutil.copy2(data_item, target)
 
 
 def _copy_sidecar_for_tauri(

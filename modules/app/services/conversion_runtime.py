@@ -138,7 +138,7 @@ class RuntimeOptionsResolver:
         engine = runtime_options.tts_engine or self._config.tts_engine
         return resolve_tts_runtime(
             tts_engine=engine,
-            tts_model_name=None,
+            tts_model_name=self._config.tts_model_name,
             tts_quantization=(
                 runtime_options.tts_quantization or self._config.tts_quantization
             ),
