@@ -309,7 +309,7 @@ class TTSRuntimeOptions:
             or _text(getattr(config, "tts_quantization", None))
         )
         resolved = cls(
-            model_name=parsed.model_name,
+            model_name=parsed.model_name or _text(getattr(config, "tts_model_name", None)),
             quantization=quantization,
             provider=provider,
             device=device,

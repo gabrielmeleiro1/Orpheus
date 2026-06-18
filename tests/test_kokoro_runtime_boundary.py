@@ -18,6 +18,7 @@ from modules.pipeline.model_lifecycle import _create_tts_strategy, _tts_strategy
 from modules.pipeline.models import PipelineConfig
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtimes import KokoroRuntimeConfig, KokoroRuntimeFactory
+from modules.tts.runtimes.kokoro_package import PackageKokoroRuntime
 from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.strategies.kokoro import KokoroConfig, KokoroTTSStrategy
@@ -74,6 +75,61 @@ def test_runtime_boundary_registry_registers_mlx_kokoro() -> None:
 def test_runtime_boundary_registry_registers_package_kokoro_providers() -> None:
     assert ("cpu", "kokoro") in KokoroRuntimeFactory.registered_keys()
     assert ("cuda", "kokoro") in KokoroRuntimeFactory.registered_keys()
+
+
+def test_package_kokoro_runtime_loads_local_model_dir_without_repo_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "kokoro"
+    voices_dir = model_dir / "voices"
+    voices_dir.mkdir(parents=True)
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "kokoro-v1_0.pth").write_bytes(b"model")
+    (voices_dir / "am_adam.pt").write_bytes(b"voice")
+
+    calls: dict[str, Any] = {}
+
+    class FakeKModel:
+        def __init__(self, **kwargs: object) -> None:
+            calls["model"] = kwargs
+
+    class FakeKPipeline:
+        def __init__(self, **kwargs: object) -> None:
+            calls["pipeline"] = kwargs
+
+        def __call__(self, text: str, *, voice: str, speed: float):
+            calls["synthesis"] = {"text": text, "voice": voice, "speed": speed}
+            yield text, "phonemes", np.ones(2, dtype=np.float32)
+
+    fake_kokoro = SimpleNamespace(KModel=FakeKModel, KPipeline=FakeKPipeline)
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+
+    runtime = PackageKokoroRuntime(
+        KokoroRuntimeConfig(
+            runtime_spec=TTSRuntimeSpec(
+                provider="cpu",
+                engine="kokoro",
+                model=str(model_dir),
+                quantization="bf16",
+            ),
+            model_name=str(model_dir),
+            quantization="bf16",
+            sample_rate=24000,
+        )
+    )
+
+    runtime.load()
+    audio = runtime.synthesize("hello", "am_adam")
+
+    assert audio.shape == (2,)
+    assert calls["model"] == {
+        "repo_id": "hexgrad/Kokoro-82M",
+        "config": str(model_dir / "config.json"),
+        "model": str(model_dir / "kokoro-v1_0.pth"),
+    }
+    assert "repo_id" not in calls["pipeline"]
+    assert calls["synthesis"]["voice"] == str(voices_dir / "am_adam.pt")
 
 
 def test_kokoro_strategy_does_not_import_legacy_runtime_provider() -> None:

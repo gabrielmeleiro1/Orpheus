@@ -53,6 +53,12 @@ def _read_path_env(env_key: str) -> Optional[Path]:
     if not normalized:
         return None
 
+    if normalized == "~" or normalized.startswith("~/") or normalized.startswith("~\\"):
+        home = os.getenv("HOME")
+        if home:
+            suffix = normalized[2:] if len(normalized) > 1 else ""
+            return Path(home, suffix)
+
     return Path(normalized).expanduser()
 
 
@@ -109,6 +115,9 @@ class AppConfig:
     default_voice: str = "am_adam"
     default_speed: float = 1.0
     tts_engine: str = "kokoro"
+    tts_provider: Optional[str] = None
+    tts_device: Optional[str] = None
+    tts_model_name: Optional[str] = None
     tts_quantization: str = "bf16"
     cleaner_model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
     cleaner_backend: str = "mlx"
@@ -160,6 +169,11 @@ class AppConfig:
         )
 
         # Optional env overrides for runtime backend selection.
+        self.tts_provider = os.getenv("TTS_PROVIDER", self.tts_provider or "").strip() or None
+        self.tts_device = os.getenv("TTS_DEVICE", self.tts_device or "").strip() or None
+        env_tts_model = os.getenv("TTS_MODEL_NAME")
+        if env_tts_model is not None:
+            self.tts_model_name = env_tts_model.strip() or None
         self.cleaner_backend = os.getenv("CLEANER_BACKEND", self.cleaner_backend).strip() or self.cleaner_backend
         env_cleaner_model = os.getenv("CLEANER_MODEL_NAME")
         cleaner_model_explicitly_set = False
@@ -267,6 +281,9 @@ class AppConfig:
             "default_voice": self.default_voice,
             "default_speed": self.default_speed,
             "tts_engine": self.tts_engine,
+            "tts_provider": self.tts_provider,
+            "tts_device": self.tts_device,
+            "tts_model_name": self.tts_model_name,
             "tts_quantization": self.tts_quantization,
             "cleaner_model_name": self.cleaner_model_name,
             "cleaner_backend": self.cleaner_backend,

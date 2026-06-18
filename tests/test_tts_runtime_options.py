@@ -123,6 +123,26 @@ def test_runtime_options_precedence_prefers_explicit_quantization_over_payload(
     assert spec.provider == "mlx"
 
 
+def test_runtime_options_use_configured_tts_provider_and_model(tmp_path) -> None:
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+        tts_provider="cpu",
+        tts_model_name=".artifacts/models/kokoro",
+        tts_quantization="bf16",
+    )
+
+    spec = TTSRuntimeOptions.from_runtime_options(
+        ConversionRuntimeOptions(),
+        config,
+    ).to_runtime_spec("kokoro", config)
+
+    assert spec.provider == "cpu"
+    assert spec.model == ".artifacts/models/kokoro"
+
+
 def test_validation_helpers_reject_invalid_cuda_device_and_provider_options() -> None:
     validate_quantization("cuda", "fp16")
     validate_device("cuda", "cuda:0")
