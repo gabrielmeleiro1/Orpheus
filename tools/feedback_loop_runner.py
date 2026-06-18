@@ -23,11 +23,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
+from modules.tts import cleaner_config  # noqa: E402
+from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
 
 
 SUPPORTED_SOURCE_SUFFIXES = {".pdf", ".epub"}
-CLEANER_BACKEND_CHOICES = ("mlx", "api", "cuda")
-CUDA_CLEANER_QUANTIZATION_CHOICES = ("4bit", "8bit", "fp16")
 
 
 def _apply_cleaner_env(
@@ -363,7 +363,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cleaner-backend",
         default="mlx",
-        choices=CLEANER_BACKEND_CHOICES,
+        choices=available_cleaner_backends(),
         help="Cleaner backend: mlx (local MLX), cuda (local NVIDIA GPU), or api (remote)",
     )
     parser.add_argument(
@@ -374,7 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cleaner-cuda-quantization",
         default=defaults.cleaner_cuda_quantization,
-        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        choices=cleaner_config.CUDA_CLEANER_QUANTIZATIONS,
         help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
     )
     parser.add_argument(

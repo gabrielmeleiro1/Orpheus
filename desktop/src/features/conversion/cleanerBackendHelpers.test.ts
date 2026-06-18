@@ -203,15 +203,32 @@ describe("cleaner runtime status", () => {
     const option = cleanerBackendOption({ id: "cuda", display_name: "Local CUDA" });
 
     expect(deriveCleanerRuntimeStatus(capabilities({ cuda: true }), option)).toEqual({
-      message: "Local Local CUDA cleaner ready.",
+      message: "Local CUDA cleaner ready.",
       isError: false,
     });
     expect(deriveCleanerRuntimeStatus(capabilities({ cuda: false }, "missing torch"), option)).toEqual({
-      message: "Local Local CUDA cleaner unavailable (missing torch). Choose another backend if needed.",
+      message: "Local CUDA cleaner unavailable (missing torch). Choose another backend if needed.",
       isError: true,
     });
     expect(deriveCleanerRuntimeStatus(capabilities({}), option)).toEqual({
-      message: "Checking local Local CUDA cleaner runtime...",
+      message: "Checking Local CUDA cleaner runtime...",
+      isError: false,
+    });
+  });
+
+  it("keeps the local runtime status prefix for backend labels without it", () => {
+    const option = cleanerBackendOption({ id: "cuda", display_name: "CUDA" });
+
+    expect(deriveCleanerRuntimeStatus(capabilities({ cuda: true }), option)).toEqual({
+      message: "Local CUDA cleaner ready.",
+      isError: false,
+    });
+    expect(deriveCleanerRuntimeStatus(capabilities({ cuda: false }), option)).toEqual({
+      message: "Local CUDA cleaner unavailable. Choose another backend if needed.",
+      isError: true,
+    });
+    expect(deriveCleanerRuntimeStatus(capabilities({}), option)).toEqual({
+      message: "Checking local CUDA cleaner runtime...",
       isError: false,
     });
   });

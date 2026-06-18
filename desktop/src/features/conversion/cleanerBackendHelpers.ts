@@ -187,6 +187,15 @@ export function buildCleanerRuntimePayloadFields(
   return fields;
 }
 
+function localCleanerRuntimeDisplayName(displayName: string, localPrefix: "Local" | "local"): string {
+  const normalizedDisplayName = displayName.trim();
+  if (/^local\b/i.test(normalizedDisplayName)) {
+    return normalizedDisplayName;
+  }
+
+  return `${localPrefix} ${normalizedDisplayName}`;
+}
+
 export function deriveCleanerRuntimeStatus(
   capabilities: SystemCapabilitiesResponse | null,
   selectedBackend: CleanerBackendOption | null,
@@ -210,7 +219,10 @@ export function deriveCleanerRuntimeStatus(
 
   const availability = capabilities.cleaner_runtime_availability[selectedBackend.id];
   if (availability === true) {
-    return { message: `Local ${displayName} cleaner ready.`, isError: false };
+    return {
+      message: `${localCleanerRuntimeDisplayName(displayName, "Local")} cleaner ready.`,
+      isError: false,
+    };
   }
 
   if (availability === false) {
@@ -218,10 +230,16 @@ export function deriveCleanerRuntimeStatus(
     const detail =
       typeof cleanerError === "string" && cleanerError.trim() ? ` (${cleanerError.trim()})` : "";
     return {
-      message: `Local ${displayName} cleaner unavailable${detail}. Choose another backend if needed.`,
+      message: `${localCleanerRuntimeDisplayName(
+        displayName,
+        "Local",
+      )} cleaner unavailable${detail}. Choose another backend if needed.`,
       isError: true,
     };
   }
 
-  return { message: `Checking local ${displayName} cleaner runtime...`, isError: false };
+  return {
+    message: `Checking ${localCleanerRuntimeDisplayName(displayName, "local")} cleaner runtime...`,
+    isError: false,
+  };
 }

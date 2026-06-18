@@ -26,9 +26,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from modules.pipeline.orchestrator import PipelineConfig  # noqa: E402
 from scripts.benchmark_nagel_pipeline import (  # noqa: E402
-    CLEANER_BACKEND_CHOICES,
-    CUDA_CLEANER_QUANTIZATION_CHOICES,
     _apply_cleaner_env,
+    cleaner_backend_choices,
+    cleaner_cuda_quantization_choices,
     run_benchmark,
 )
 
@@ -211,7 +211,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cleaner-backend",
         default=defaults.cleaner_backend,
-        choices=CLEANER_BACKEND_CHOICES,
+        choices=cleaner_backend_choices(),
         help="Cleaner backend: mlx (Apple Silicon), cuda (NVIDIA GPU), or api (remote)",
     )
     parser.add_argument(
@@ -222,7 +222,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cleaner-cuda-quantization",
         default=defaults.cleaner_cuda_quantization,
-        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        choices=cleaner_cuda_quantization_choices(),
         help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
     )
     parser.add_argument("--cleaner-model", default=None)

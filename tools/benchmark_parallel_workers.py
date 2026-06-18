@@ -28,10 +28,10 @@ if str(REPO_ROOT) not in sys.path:
 from modules.pipeline.models import PipelineConfig  # noqa: E402
 from modules.pipeline.orchestrator import ConversionPipeline  # noqa: E402
 from scripts.benchmark_nagel_pipeline import (  # noqa: E402
-    CLEANER_BACKEND_CHOICES,
-    CUDA_CLEANER_QUANTIZATION_CHOICES,
     _BenchmarkForcedMemoryPolicy,
     _apply_cleaner_env,
+    cleaner_backend_choices,
+    cleaner_cuda_quantization_choices,
 )
 
 
@@ -90,7 +90,7 @@ def _run_case(
     }
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     defaults = PipelineConfig()
     parser = argparse.ArgumentParser(
         description=__doc__,
@@ -104,7 +104,7 @@ def main() -> int:
     parser.add_argument(
         "--cleaner-backend",
         default="mlx",
-        choices=CLEANER_BACKEND_CHOICES,
+        choices=cleaner_backend_choices(),
         help="Cleaner backend: mlx (Apple Silicon), cuda (NVIDIA GPU), or api (remote)",
     )
     parser.add_argument(
@@ -115,12 +115,20 @@ def main() -> int:
     parser.add_argument(
         "--cleaner-cuda-quantization",
         default=defaults.cleaner_cuda_quantization,
-        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        choices=cleaner_cuda_quantization_choices(),
         help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
     )
     parser.add_argument("--chapter-limit", type=int, default=None)
     parser.add_argument("--workers", type=int, nargs="+", default=[1, 2, 3])
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    return build_parser().parse_args(argv)
+
+
+def main() -> int:
+    args = parse_args()
 
     _apply_cleaner_env(
         cleaner_backend=args.cleaner_backend,
