@@ -86,9 +86,13 @@ python -m pytest --no-cov tests/test_run_tests.py
 The desktop UI is verified through the contained Tauri path, not a separate
 preview harness:
 
+Desktop Node commands require Node 20 or newer. The repository root
+`.node-version` and `desktop/package.json` both declare this floor.
+
 ```bash
 cd desktop
 npm run typecheck
+npm test -- --run
 npm run build
 cd src-tauri
 cargo test
@@ -97,6 +101,7 @@ cargo check
 
 What this exercises:
 - TypeScript contracts and React production build
+- Vitest desktop unit coverage
 - Tauri/Rust shell lifecycle and path handling tests
 - frontend assets as bundled for the desktop app
 
@@ -110,6 +115,7 @@ python run_tests.py --contract
 python -m pytest tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py -q -o addopts=
 cd desktop
 npm run typecheck
+npm test -- --run
 npm run build
 cd src-tauri
 cargo test
@@ -124,7 +130,7 @@ npm run desktop:install
 Release-candidate evidence should include:
 - `python run_tests.py --contract`
 - focused backend/web command above
-- `cd desktop && npm run typecheck && npm run build`
+- `cd desktop && npm run typecheck && npm test -- --run && npm run build`
 - `cd desktop/src-tauri && cargo test && cargo check`
 - `python scripts/build_desktop_backend.py && cd desktop && npm run desktop:build`
 - installed-app launch/quit smoke, plus one real short conversion/playback before
@@ -132,9 +138,11 @@ Release-candidate evidence should include:
 
 Coverage note:
 - The Python/core contract does not exercise the desktop TypeScript build,
-  Tauri/Rust shell, packaged sidecar, release installer, or installed app.
-- The additional commands above cover frontend build/type contracts, Rust shell
-  behavior, backend launcher/runtime checks, sidecar packaging, and app install.
+  Vitest unit coverage, Tauri/Rust shell, packaged sidecar, release installer,
+  or installed app.
+- The additional commands above cover frontend build/type/test contracts, Rust
+  shell behavior, backend launcher/runtime checks, sidecar packaging, and app
+  install.
 - Packaged-user-flow checks (file picker through completed conversion/playback)
   still require installed-app smoke validation.
 

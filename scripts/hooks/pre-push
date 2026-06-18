@@ -67,6 +67,13 @@ echo "> Desktop typecheck"
 )
 
 echo ""
+echo "> Desktop Vitest"
+(
+  cd desktop
+  run_with_timeout 180 npm test -- --run
+)
+
+echo ""
 echo "> Tauri resource directories"
 mkdir -p desktop/src-tauri/binaries
 
