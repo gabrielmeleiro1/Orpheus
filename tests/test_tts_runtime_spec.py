@@ -224,6 +224,18 @@ def test_resolved_model_and_cache_key_use_kokoro_default_when_model_absent() -> 
     }
 
 
+def test_cuda_kokoro_default_model_uses_upstream_huggingface_id() -> None:
+    spec = TTSRuntimeSpec.from_legacy(
+        "kokoro",
+        "bf16",
+        provider="cuda",
+        device="cuda:0",
+    )
+
+    assert spec.model is None
+    assert spec.resolved_model() == "hexgrad/Kokoro-82M"
+
+
 def test_from_dict_coerces_legacy_cuda_string_options_for_runtime_options() -> None:
     payload = {
         "provider": "mlx",

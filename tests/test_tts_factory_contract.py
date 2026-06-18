@@ -99,6 +99,11 @@ def test_conversion_engine_provider_filter_accepts_mlx_audio_alias() -> None:
     assert TTSEngineFactory.available_conversion_engines(provider="mlx_audio") == ["kokoro"]
 
 
+def test_conversion_engine_provider_filter_accepts_package_kokoro_providers() -> None:
+    assert TTSEngineFactory.available_conversion_engines(provider="cuda") == ["kokoro"]
+    assert TTSEngineFactory.available_conversion_engines(provider="cpu") == ["kokoro"]
+
+
 def test_kokoro_strategy_exposes_full_known_voice_catalog() -> None:
     strategy = TTSEngineFactory.create("kokoro")
     voice_ids = {voice.id for voice in strategy.supported_voices}

@@ -8,6 +8,7 @@ import importlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 import numpy as np
@@ -17,7 +18,6 @@ from modules.pipeline.model_lifecycle import _create_tts_strategy, _tts_strategy
 from modules.pipeline.models import PipelineConfig
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtimes import KokoroRuntimeConfig, KokoroRuntimeFactory
-from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.strategies.kokoro import KokoroConfig, KokoroTTSStrategy
@@ -69,6 +69,11 @@ def test_runtime_boundary_registry_registers_mlx_kokoro() -> None:
 
     assert runtime is sentinel
     assert calls == [config]
+
+
+def test_runtime_boundary_registry_registers_package_kokoro_providers() -> None:
+    assert ("cpu", "kokoro") in KokoroRuntimeFactory.registered_keys()
+    assert ("cuda", "kokoro") in KokoroRuntimeFactory.registered_keys()
 
 
 def test_kokoro_strategy_does_not_import_legacy_runtime_provider() -> None:
@@ -239,21 +244,52 @@ def test_unsupported_cuda_runtime_provider_builds_spec_until_runtime_load() -> N
     assert spec.device == "cuda:0"
 
 
-def test_unsupported_cuda_runtime_provider_fails_with_runtime_unavailable() -> None:
+def test_package_kokoro_runtime_delegates_to_kpipeline(monkeypatch, tmp_path: Path) -> None:
+    from modules.tts.runtimes.kokoro_package import PackageKokoroRuntime
+
+    class _FakePipeline:
+        instances: list["_FakePipeline"] = []
+
+        def __init__(self, **kwargs: Any) -> None:
+            self.kwargs = kwargs
+            self.calls: list[dict[str, Any]] = []
+            _FakePipeline.instances.append(self)
+
+        def __call__(self, text: str, **kwargs: Any):  # noqa: ANN202
+            self.calls.append({"text": text, **kwargs})
+            yield "gs", "ps", np.array([0.25, -0.25], dtype=np.float32)
+
+    fake_kokoro = SimpleNamespace(KPipeline=_FakePipeline)
+    fake_soundfile = SimpleNamespace(write=lambda path, audio, rate: Path(path).write_text(f"{rate}:{audio.tolist()}", encoding="utf-8"))
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+    monkeypatch.setitem(sys.modules, "soundfile", fake_soundfile)
+
     strategy = KokoroTTSStrategy(
         KokoroConfig(
             runtime_spec=TTSRuntimeSpec(
                 provider="cuda",
                 engine="kokoro",
-                model=None,
+                model="hexgrad/Kokoro-82M",
                 quantization="bf16",
                 device="cuda:0",
             )
         )
     )
 
-    with pytest.raises(TTSRuntimeUnavailable, match="cuda"):
-        strategy.load()
+    output_path = tmp_path / "audio.wav"
+    runtime = PackageKokoroRuntime(
+        KokoroRuntimeConfig.from_strategy_config(strategy.config)
+    )
+    runtime.load()
+    audio = runtime.synthesize("Hello", voice="am_adam", speed=1.25, output_path=output_path)
+
+    assert audio.tolist() == [0.25, -0.25]
+    assert output_path.read_text(encoding="utf-8") == "24000:[0.25, -0.25]"
+    assert _FakePipeline.instances[0].kwargs["repo_id"] == "hexgrad/Kokoro-82M"
+    assert _FakePipeline.instances[0].kwargs["device"] == "cuda:0"
+    assert _FakePipeline.instances[0].calls == [
+        {"text": "Hello", "voice": "am_adam", "speed": 1.25}
+    ]
 
 
 @pytest.mark.parametrize("strategy_runtime_options", [None, {}])

@@ -1,7 +1,7 @@
 """
 TTS Module
 ==========
-Text-to-Speech engine using Kokoro-82M via MLX.
+Text-to-Speech engine using Kokoro-82M provider runtimes.
 
 Package exports are loaded lazily so lightweight modules such as
 ``modules.tts.runtime_spec`` do not import ML/NumPy dependencies.

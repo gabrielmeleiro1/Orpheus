@@ -7,11 +7,12 @@ ebooklib==0.18
 beautifulsoup4==4.12.0
 lxml==5.0.0
 
-# Machine Learning (MLX - Apple Silicon)
-mlx==0.30.6
-mlx-lm==0.24.1
-mlx-vlm==0.3.0
-mlx-audio==0.1.0
+# Machine Learning
+mlx==0.30.6; platform_system == "Darwin" and platform_machine == "arm64"
+mlx-lm==0.24.1; platform_system == "Darwin" and platform_machine == "arm64"
+mlx-vlm==0.3.0; platform_system == "Darwin" and platform_machine == "arm64"
+mlx-audio==0.1.0; platform_system == "Darwin" and platform_machine == "arm64"
+kokoro==0.9.4
 numpy==2.2.6
 scipy==1.17.1
 spacy==3.8.11

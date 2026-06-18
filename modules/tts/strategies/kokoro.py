@@ -1,7 +1,7 @@
 """
 Kokoro TTS Strategy
 ===================
-TTSStrategy implementation for Kokoro-82M via mlx-audio.
+TTSStrategy implementation for Kokoro-82M runtimes.
 """
 
 from __future__ import annotations
@@ -38,11 +38,10 @@ class KokoroConfig(TTSConfig):
 
 class KokoroTTSStrategy(TTSStrategy):
     """
-    Kokoro-82M TTS strategy using mlx-audio framework.
-    Optimized for Apple Silicon with quantization support.
+    Kokoro-82M TTS strategy using provider-specific runtime adapters.
 
     The current grouped multi-item path uses scheduler-driven chunk submission
-    around per-item synthesis, not native MLX batch inference.
+    around per-item synthesis, not native runtime batch inference.
     """
 
     supports_incremental_batch_results = True

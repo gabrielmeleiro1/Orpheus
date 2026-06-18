@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from modules.tts.quantization import CANONICAL_QUANTIZATIONS, QUANTIZATION_ALIASES
 from modules.tts.runtime_spec import (
     CUDA_PROVIDER_OPTION_KEYS,
+    KOKORO_PACKAGE_DEFAULT_MODEL,
     TTSRuntimeSpec,
     canonical_provider,
 )
@@ -419,8 +420,12 @@ class TTSRuntimeOptions:
     def to_runtime_spec(self, engine: str, config: Any) -> TTSRuntimeSpec:
         resolved = self.with_resolved_provider()
         model_name = resolved.model_name
-        if model_name is None and str(engine or "").strip().lower() == "kokoro":
-            model_name = "mlx-community/Kokoro-82M"
+        if (
+            model_name is None
+            and str(engine or "").strip().lower() == "kokoro"
+            and resolved.provider in {"cuda", "cpu"}
+        ):
+            model_name = KOKORO_PACKAGE_DEFAULT_MODEL
         return TTSRuntimeSpec.from_legacy(
             engine,
             resolved.quantization or getattr(config, "tts_quantization", "bf16"),

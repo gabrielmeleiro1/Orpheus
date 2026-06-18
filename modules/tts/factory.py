@@ -54,6 +54,7 @@ class TTSEngineFactory:
             "version": "1.0.0",
             "sample_rate": 24000,
             "capabilities": capabilities,
+            "supported_providers": ["mlx", "cuda", "cpu"],
             "supported_quantizations": ["bf16"],
             "options_schema": {
                 "quantization": {
@@ -249,13 +250,24 @@ class TTSEngineFactory:
                 continue
             if not capabilities.get("supports_conversion", True):
                 continue
+            supported_providers = info.get("supported_providers", ())
+            if not isinstance(supported_providers, (list, tuple, set, frozenset)):
+                supported_providers = ()
+            normalized_supported_providers = {
+                str(item).strip().lower()
+                for item in supported_providers
+                if str(item).strip()
+            }
             engine_provider = capabilities.get("provider")
             if isinstance(engine_provider, str):
                 engine_provider = engine_provider.strip().lower()
-            if normalized_provider is not None and engine_provider != normalized_provider:
+            if (
+                normalized_provider is not None
+                and engine_provider != normalized_provider
+                and normalized_provider not in normalized_supported_providers
+            ):
                 continue
-            if normalized_provider is None or engine_provider == normalized_provider:
-                engine_names.append(engine_type)
+            engine_names.append(engine_type)
         return sorted(engine_names)
 
     @classmethod
@@ -293,6 +305,8 @@ class TTSEngineFactory:
         temp_instance = strategy_class()
         info = temp_instance.to_engine_info()
         info["id"] = engine_type
+        if engine_type == "kokoro":
+            info["supported_providers"] = ["mlx", "cuda", "cpu"]
         return info
 
     @classmethod

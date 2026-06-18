@@ -96,7 +96,7 @@ class TTSStrategy(ABC):
     Abstract base class for TTS engine strategies.
 
     Implementations:
-        - KokoroTTSStrategy: Kokoro-82M via mlx-audio
+        - KokoroTTSStrategy: Kokoro-82M via provider-specific runtime adapters
         - OpenAITTSStrategy: OpenAI TTS API (future)
     """
 
