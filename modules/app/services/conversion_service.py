@@ -6,6 +6,7 @@ import logging
 import shutil
 import threading
 import time
+from itertools import count
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -83,6 +84,7 @@ class ConversionService:
         )
         self._active_job = None
         self._job_lock = threading.Lock()
+        self._job_sequence = count()
         self._tts_session = TtsEngineSession()
 
     def _job_is_active_or_pending(self, job: Any) -> bool:
@@ -139,7 +141,7 @@ class ConversionService:
             if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
                 raise RuntimeError("A conversion is already in progress")
             source_path = self._durable_source_path_for_conversion(source_path)
-            job_id = f"conv_{time.time_ns()}"
+            job_id = f"conv_{time.time_ns()}_{next(self._job_sequence)}"
             job = self._job_cls(id=job_id, book_id=None, status=self._status.IDLE)
             self._active_job = job
 
@@ -208,7 +210,7 @@ class ConversionService:
         with self._job_lock:
             if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
                 raise RuntimeError("A conversion is already in progress")
-            job_id = f"repair_{book_id}_{time.time_ns()}"
+            job_id = f"repair_{book_id}_{time.time_ns()}_{next(self._job_sequence)}"
             job = self._job_cls(id=job_id, book_id=book_id, status=self._status.IDLE)
             self._active_job = job
 

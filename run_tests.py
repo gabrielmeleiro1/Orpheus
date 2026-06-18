@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import time
@@ -20,7 +21,7 @@ SMOKE_TEST_MODULES: list[tuple[str, str]] = [
     ("tests/test_epub_parser.py", SCRIPT),
     ("tests/test_storage_migrations.py", SCRIPT),
     ("tests/test_storage_repository.py", SCRIPT),
-    ("tests/test_storage_maintenance.py", SCRIPT),
+    ("tests/test_storage_maintenance.py", PYTEST),
     ("tests/test_cleaner.py", SCRIPT),
     ("tests/test_cleaner_golden_set.py", SCRIPT),
     ("tests/test_cleaner_hallucination_guard.py", SCRIPT),
@@ -38,7 +39,7 @@ SMOKE_TEST_MODULES: list[tuple[str, str]] = [
     ("tests/test_markdown_parser.py", PYTEST),
     ("tests/test_text_parser.py", PYTEST),
     ("tests/test_voice_service_thread_safety.py", PYTEST),
-    ("tests/test_tts_resilience.py", SCRIPT),
+    ("tests/test_tts_resilience.py", PYTEST),
     ("tests/test_events.py", SCRIPT),
     ("tests/test_conversion_service.py", PYTEST),
     ("tests/test_run_tests.py", PYTEST),
@@ -95,9 +96,12 @@ def run_test(test_path: str, mode: str) -> tuple[bool, float]:
         Tuple of (passed, duration_seconds)
     """
     start = time.time()
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     result = subprocess.run(
         build_smoke_command(test_path, mode),
         capture_output=True,
+        env=env,
         text=True,
         cwd=REPO_ROOT,
     )
@@ -126,13 +130,13 @@ def run_smoke_suite() -> int:
 
     for test_path, mode in SMOKE_TEST_MODULES:
         if not (REPO_ROOT / test_path).exists():
-            print(f"⚠ SKIP: {test_path} (not found)")
+            print(f"WARN SKIP: {test_path} (not found)")
             continue
 
-        print(f"▸ Running {test_path} [{mode}]...", end=" ", flush=True)
+        print(f"> Running {test_path} [{mode}]...", end=" ", flush=True)
         passed, duration = run_test(test_path, mode)
 
-        status = "✓ PASS" if passed else "✗ FAIL"
+        status = "PASS" if passed else "FAIL"
         print(f"{status} ({duration:.1f}s)")
 
         results.append((test_path, mode, passed, duration))
@@ -148,7 +152,7 @@ def run_smoke_suite() -> int:
     failed_count = len(results) - passed_count
 
     for test_path, mode, passed, duration in results:
-        status = "✓" if passed else "✗"
+        status = "PASS" if passed else "FAIL"
         name = Path(test_path).stem
         print(f"  {status} {name} [{mode}]: {duration:.1f}s")
 
@@ -173,7 +177,7 @@ def run_contract_suite() -> int:
     print("\n" + "=" * 60)
     print("   ORPHEUS - PYTEST CONTRACT")
     print("=" * 60 + "\n")
-    print(f"▸ Running {' '.join(build_contract_command())}\n")
+    print(f"> Running {' '.join(build_contract_command())}\n")
 
     result = subprocess.run(build_contract_command(), cwd=REPO_ROOT)
     return result.returncode

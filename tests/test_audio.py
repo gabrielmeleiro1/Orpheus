@@ -1,4 +1,5 @@
 
+import os
 import pytest
 import numpy as np
 import subprocess
@@ -195,6 +196,7 @@ class TestAudioEncoder:
 
     @patch("subprocess.Popen")
     @patch("shutil.which")
+    @pytest.mark.skipif(sys.platform != "darwin", reason="Homebrew fallback is macOS-specific")
     def test_array_to_mp3_uses_homebrew_ffmpeg_when_path_lookup_misses_it(
         self,
         mock_which,
@@ -595,6 +597,7 @@ class TestM4BPackager:
 
     @patch("subprocess.run")
     @patch("shutil.which")
+    @pytest.mark.skipif(os.name == "nt", reason="backslash is a path separator on Windows")
     def test_create_m4b_escapes_concat_paths_for_ffmpeg(self, mock_which, mock_run, tmp_path):
         mock_which.return_value = "/usr/bin/ffmpeg"
 

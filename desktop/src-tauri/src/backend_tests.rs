@@ -142,7 +142,7 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
     );
     let cwd = config.cwd.expect("dev launcher should have repository cwd");
     assert!(
-        cwd.ends_with("Audiobook Tauri"),
+        cwd.ends_with("Orpheus"),
         "expected cwd to point at repository root, got {}",
         cwd.display()
     );
@@ -152,24 +152,24 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
         .into_iter()
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(
-        env.get("AUDIOBOOK_DATA_DIR"),
-        Some(&"/tmp/audiobook-app/data".to_string())
+        env.get("AUDIOBOOK_DATA_DIR").map(PathBuf::from),
+        Some(PathBuf::from("/tmp/audiobook-app").join("data"))
     );
     assert_eq!(
-        env.get("AUDIOBOOK_OUTPUT_DIR"),
-        Some(&"/tmp/audiobook-app/output".to_string())
+        env.get("AUDIOBOOK_OUTPUT_DIR").map(PathBuf::from),
+        Some(PathBuf::from("/tmp/audiobook-app").join("output"))
     );
     assert_eq!(
-        env.get("AUDIOBOOK_TEMP_DIR"),
-        Some(&"/tmp/audiobook-app/temp".to_string())
+        env.get("AUDIOBOOK_TEMP_DIR").map(PathBuf::from),
+        Some(PathBuf::from("/tmp/audiobook-app").join("temp"))
     );
     assert_eq!(
-        env.get("AUDIOBOOK_DB_PATH"),
-        Some(&"/tmp/audiobook-app/data/audiobooks.db".to_string())
+        env.get("AUDIOBOOK_DB_PATH").map(PathBuf::from),
+        Some(PathBuf::from("/tmp/audiobook-app").join("data").join("audiobooks.db"))
     );
     assert_eq!(
-        env.get("AUDIOBOOK_DESKTOP_READY_FILE"),
-        Some(&"/tmp/audiobook-app/backend-ready.json".to_string())
+        env.get("AUDIOBOOK_DESKTOP_READY_FILE").map(PathBuf::from),
+        Some(PathBuf::from("/tmp/audiobook-app").join("backend-ready.json"))
     );
 }
 

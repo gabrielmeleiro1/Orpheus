@@ -82,11 +82,13 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
     assert (copied_executable.parent / "_internal" / "dependency.txt").read_text(
         encoding="utf-8"
     ) == "dependency"
-    assert copied_executable.stat().st_mode & stat.S_IXUSR
+    if os.name != "nt":
+        assert copied_executable.stat().st_mode & stat.S_IXUSR
     assert (copied_executable.parent / "bin" / "ffmpeg").read_text(encoding="utf-8") == "ffmpeg source"
     assert (copied_executable.parent / "bin" / "ffprobe").read_text(encoding="utf-8") == "ffprobe source"
-    assert (copied_executable.parent / "bin" / "ffmpeg").stat().st_mode & stat.S_IXUSR
-    assert (copied_executable.parent / "bin" / "ffprobe").stat().st_mode & stat.S_IXUSR
+    if os.name != "nt":
+        assert (copied_executable.parent / "bin" / "ffmpeg").stat().st_mode & stat.S_IXUSR
+        assert (copied_executable.parent / "bin" / "ffprobe").stat().st_mode & stat.S_IXUSR
     assert not legacy_external_bin.exists()
     assert not other_legacy_external_bin.exists()
 
@@ -186,8 +188,9 @@ def test_copy_sidecar_for_tauri_copies_resolved_ffmpeg_binaries_under_bin(
     copied_bin = copied_executable.parent / "bin"
     assert (copied_bin / "ffmpeg").read_text(encoding="utf-8") == "ffmpeg binary"
     assert (copied_bin / "ffprobe").read_text(encoding="utf-8") == "ffprobe binary"
-    assert (copied_bin / "ffmpeg").stat().st_mode & stat.S_IXUSR
-    assert (copied_bin / "ffprobe").stat().st_mode & stat.S_IXUSR
+    if os.name != "nt":
+        assert (copied_bin / "ffmpeg").stat().st_mode & stat.S_IXUSR
+        assert (copied_bin / "ffprobe").stat().st_mode & stat.S_IXUSR
 
 
 def test_validate_sidecar_resources_requires_packaged_ffmpeg_and_ffprobe(tmp_path: Path) -> None:
@@ -284,12 +287,15 @@ def test_expose_espeak_data_at_sidecar_root_links_files_and_copies_dirs(tmp_path
 
     phontab_link = sidecar_dir / "phontab"
     voices_dir = sidecar_dir / "voices"
-    assert phontab_link.is_symlink()
+    if os.name == "nt":
+        assert phontab_link.is_file()
+    else:
+        assert phontab_link.is_symlink()
+        assert phontab_link.readlink() == Path("_internal") / "espeakng_loader" / "espeak-ng-data" / "phontab"
     assert voices_dir.is_dir()
     assert not voices_dir.is_symlink()
     assert phontab_link.read_text(encoding="utf-8") == "phoneme table"
     assert (voices_dir / "en").read_text(encoding="utf-8") == "english voices"
-    assert phontab_link.readlink() == Path("_internal") / "espeakng_loader" / "espeak-ng-data" / "phontab"
 
 
 def test_backend_build_prerequisites_include_mlx_runtime_imports() -> None:
