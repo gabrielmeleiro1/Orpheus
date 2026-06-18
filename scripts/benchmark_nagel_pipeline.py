@@ -49,14 +49,19 @@ from modules.errors import OCRRequiredPDFError  # noqa: E402
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
 from modules.pipeline.memory_policy import SafeMemoryPolicy, sample_memory_snapshot  # noqa: E402
 from modules.tts import cleaner_rules as cleaner_rules_backend  # noqa: E402
+from modules.tts import cleaner_config  # noqa: E402
 from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
 from modules.tts.chunker import ChunkConfig, TextChunker  # noqa: E402
-from modules.tts.cleaner_config import CUDA_CLEANER_QUANTIZATIONS  # noqa: E402
 from modules.tts.factory import TTSEngineFactory  # noqa: E402
 
 
-CLEANER_BACKEND_CHOICES = available_cleaner_backends()
-CUDA_CLEANER_QUANTIZATION_CHOICES = CUDA_CLEANER_QUANTIZATIONS
+def cleaner_backend_choices() -> tuple[str, ...]:
+    return available_cleaner_backends()
+
+
+def cleaner_cuda_quantization_choices() -> tuple[str, ...]:
+    return cleaner_config.CUDA_CLEANER_QUANTIZATIONS
+
 
 BENCHMARK_SCHEMA_VERSION = 3
 BENCHMARK_SCHEMA_KEYS = (
@@ -1392,7 +1397,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cleaner-backend",
         default=defaults.cleaner_backend,
-        choices=CLEANER_BACKEND_CHOICES,
+        choices=cleaner_backend_choices(),
         help="Cleaner backend: mlx (Apple Silicon), cuda (NVIDIA GPU), or api (remote)",
     )
     parser.add_argument("--cleaner-model", default=None)
@@ -1404,7 +1409,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cleaner-cuda-quantization",
         default=defaults.cleaner_cuda_quantization,
-        choices=CUDA_CLEANER_QUANTIZATION_CHOICES,
+        choices=cleaner_cuda_quantization_choices(),
         help="CUDA quant mode when --cleaner-backend=cuda (also CLEANER_CUDA_QUANTIZATION)",
     )
     parser.add_argument(

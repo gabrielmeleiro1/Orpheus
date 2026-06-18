@@ -124,26 +124,23 @@ def test_cleaner_facade_does_not_reexport_config_helpers():
 
 
 def test_benchmark_cleaner_backend_choices_match_registry():
-    from scripts.benchmark_nagel_pipeline import CLEANER_BACKEND_CHOICES
+    from scripts.benchmark_nagel_pipeline import cleaner_backend_choices
 
-    assert CLEANER_BACKEND_CHOICES == available_cleaner_backends()
+    assert cleaner_backend_choices() == available_cleaner_backends()
 
 
 def test_benchmark_cuda_quantization_choices_match_config():
-    from scripts.benchmark_nagel_pipeline import CUDA_CLEANER_QUANTIZATION_CHOICES
+    from scripts.benchmark_nagel_pipeline import cleaner_cuda_quantization_choices
 
-    assert CUDA_CLEANER_QUANTIZATION_CHOICES == CUDA_CLEANER_QUANTIZATIONS
+    assert cleaner_cuda_quantization_choices() == CUDA_CLEANER_QUANTIZATIONS
 
 
 def test_parallel_worker_benchmark_reuses_benchmark_choices():
     from scripts import benchmark_nagel_pipeline
     from tools import benchmark_parallel_workers
 
+    assert benchmark_parallel_workers.cleaner_backend_choices is benchmark_nagel_pipeline.cleaner_backend_choices
     assert (
-        benchmark_parallel_workers.CLEANER_BACKEND_CHOICES
-        is benchmark_nagel_pipeline.CLEANER_BACKEND_CHOICES
-    )
-    assert (
-        benchmark_parallel_workers.CUDA_CLEANER_QUANTIZATION_CHOICES
-        is benchmark_nagel_pipeline.CUDA_CLEANER_QUANTIZATION_CHOICES
+        benchmark_parallel_workers.cleaner_cuda_quantization_choices
+        is benchmark_nagel_pipeline.cleaner_cuda_quantization_choices
     )
