@@ -1190,6 +1190,7 @@ class TestPipelineConfigOptions:
             patch(
                 "modules.pipeline.parallel.os.sysconf",
                 side_effect=AttributeError("missing"),
+                create=True,
             ),
             patch("builtins.__import__", side_effect=_fake_import),
         ):

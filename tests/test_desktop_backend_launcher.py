@@ -13,6 +13,8 @@ import urllib.request
 from pathlib import Path
 from typing import TextIO
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -135,6 +137,8 @@ def test_desktop_backend_launcher_writes_ready_file_for_packaged_handoff(tmp_pat
 
 
 def test_desktop_backend_launcher_exits_cleanly_on_sigterm(tmp_path: Path) -> None:
+    if os.name == "nt":
+        pytest.skip("POSIX SIGTERM exit-code contract is not available on Windows")
     process = _launch_desktop_backend("--host", "127.0.0.1", "--port", "0", cwd=tmp_path)
     try:
         _read_ready_payload(process)

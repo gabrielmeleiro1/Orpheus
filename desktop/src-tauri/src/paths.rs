@@ -85,24 +85,24 @@ mod tests {
         let env = runtime_paths.as_env();
 
         assert_eq!(
-            env.get("AUDIOBOOK_DATA_DIR"),
-            Some(&"/tmp/audiobook-app/data".to_string())
+            env.get("AUDIOBOOK_DATA_DIR").map(PathBuf::from),
+            Some(PathBuf::from("/tmp/audiobook-app").join("data"))
         );
         assert_eq!(
-            env.get("AUDIOBOOK_OUTPUT_DIR"),
-            Some(&"/tmp/audiobook-app/output".to_string())
+            env.get("AUDIOBOOK_OUTPUT_DIR").map(PathBuf::from),
+            Some(PathBuf::from("/tmp/audiobook-app").join("output"))
         );
         assert_eq!(
-            env.get("AUDIOBOOK_TEMP_DIR"),
-            Some(&"/tmp/audiobook-app/temp".to_string())
+            env.get("AUDIOBOOK_TEMP_DIR").map(PathBuf::from),
+            Some(PathBuf::from("/tmp/audiobook-app").join("temp"))
         );
         assert_eq!(
-            env.get("AUDIOBOOK_DB_PATH"),
-            Some(&"/tmp/audiobook-app/data/audiobooks.db".to_string())
+            env.get("AUDIOBOOK_DB_PATH").map(PathBuf::from),
+            Some(PathBuf::from("/tmp/audiobook-app").join("data").join("audiobooks.db"))
         );
         assert_eq!(
-            env.get("AUDIOBOOK_DESKTOP_READY_FILE"),
-            Some(&"/tmp/audiobook-app/backend-ready.json".to_string())
+            env.get("AUDIOBOOK_DESKTOP_READY_FILE").map(PathBuf::from),
+            Some(PathBuf::from("/tmp/audiobook-app").join("backend-ready.json"))
         );
     }
 }
