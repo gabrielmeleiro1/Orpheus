@@ -122,6 +122,41 @@ def test_copy_sidecar_for_tauri_requires_mlx_metal_library(
         )
 
 
+def test_copy_sidecar_for_tauri_windows_does_not_require_mlx_resources(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    binaries_dir = tmp_path / "binaries"
+    onedir = dist_dir / "orpheus-desktop-backend"
+    executable = _write_executable(onedir / "orpheus-desktop-backend.exe", "backend exe")
+    ffmpeg_source = _write_executable(tmp_path / "tools" / "ffmpeg.exe", "ffmpeg exe")
+    ffprobe_source = _write_executable(tmp_path / "tools" / "ffprobe.exe", "ffprobe exe")
+    _ = executable
+    (onedir / "_internal" / "espeakng_loader" / "espeak-ng-data").mkdir(parents=True)
+    (onedir / "_internal" / "espeakng_loader" / "espeak-ng-data" / "phontab").write_text(
+        "phoneme table",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(build_desktop_backend, "DIST_DIR", dist_dir)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_BINARIES_DIR", binaries_dir)
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "TAURI_SIDECAR_RESOURCE_DIR",
+        binaries_dir / "orpheus-desktop-backend",
+    )
+
+    copied_executable = build_desktop_backend._copy_sidecar_for_tauri(  # noqa: SLF001
+        "x86_64-pc-windows-msvc",
+        ffmpeg_binaries={"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
+    )
+
+    assert copied_executable == binaries_dir / "orpheus-desktop-backend" / "orpheus-desktop-backend.exe"
+    assert (copied_executable.parent / "bin" / "ffmpeg.exe").read_text(encoding="utf-8") == "ffmpeg exe"
+    assert (copied_executable.parent / "bin" / "ffprobe.exe").read_text(encoding="utf-8") == "ffprobe exe"
+
+
 def test_copy_sidecar_for_tauri_copies_resolved_ffmpeg_binaries_under_bin(
     tmp_path: Path,
     monkeypatch,
@@ -260,8 +295,17 @@ def test_expose_espeak_data_at_sidecar_root_links_files_and_copies_dirs(tmp_path
 def test_backend_build_prerequisites_include_mlx_runtime_imports() -> None:
     assert "jinja2" not in build_desktop_backend.REQUIRED_MODULES
     assert {"en_core_web_sm", "scipy", "spacy", "thinc", "torch", "transformers"}.issubset(
-        set(build_desktop_backend.REQUIRED_MODULES),
+        set(build_desktop_backend.required_modules("aarch64-apple-darwin")),
     )
+
+
+def test_windows_backend_build_prerequisites_use_kokoro_package_not_mlx() -> None:
+    modules = set(build_desktop_backend.required_modules("x86_64-pc-windows-msvc"))
+
+    assert {"kokoro", "torch", "soundfile", "espeakng_loader"}.issubset(modules)
+    assert "mlx" not in modules
+    assert "mlx_lm" not in modules
+    assert "mlx_audio" not in modules
 
 
 def test_build_script_help_runs_from_desktop_working_directory_without_pythonpath() -> None:

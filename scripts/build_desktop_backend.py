@@ -29,30 +29,38 @@ BUILD_ROOT = TAURI_DIR / "target" / "pyinstaller-sidecar"
 WORK_DIR = BUILD_ROOT / "work"
 DIST_DIR = BUILD_ROOT / "dist"
 
-REQUIRED_MODULES = (
+COMMON_REQUIRED_MODULES = (
     "fastapi",
     "uvicorn",
     "numpy",
     "soundfile",
     "pydub",
-    "mlx",
-    "mlx_lm",
-    "mlx_audio",
     "en_core_web_sm",
     "scipy",
     "spacy",
     "thinc",
     "torch",
     "transformers",
+    "kokoro",
+    "espeakng_loader",
 )
+DARWIN_REQUIRED_MODULES = (
+    "mlx",
+    "mlx_lm",
+    "mlx_audio",
+)
+REQUIRED_MODULES = (*COMMON_REQUIRED_MODULES, *DARWIN_REQUIRED_MODULES)
 
 REQUIRED_BINARIES = ("ffmpeg", "ffprobe")
-REQUIRED_PYINSTALLER_RESOURCES = (
-    Path("_internal") / "mlx" / "lib" / "mlx.metallib",
+COMMON_REQUIRED_PYINSTALLER_RESOURCES = (
     Path("_internal") / "espeakng_loader" / "espeak-ng-data" / "phontab",
 )
+DARWIN_REQUIRED_PYINSTALLER_RESOURCES = (
+    Path("_internal") / "mlx" / "lib" / "mlx.metallib",
+)
 REQUIRED_SIDECAR_RESOURCES = (
-    *REQUIRED_PYINSTALLER_RESOURCES,
+    *COMMON_REQUIRED_PYINSTALLER_RESOURCES,
+    *DARWIN_REQUIRED_PYINSTALLER_RESOURCES,
     Path("bin") / "ffmpeg",
     Path("bin") / "ffprobe",
 )
@@ -133,6 +141,30 @@ def _resolve_target_triple(explicit_target: str) -> str:
     )
 
 
+def _is_windows_target(target_triple: str) -> bool:
+    return "windows" in target_triple.lower()
+
+
+def _is_darwin_target(target_triple: str) -> bool:
+    return "apple-darwin" in target_triple.lower()
+
+
+def required_modules(target_triple: str) -> tuple[str, ...]:
+    modules = list(COMMON_REQUIRED_MODULES)
+    if _is_darwin_target(target_triple):
+        modules.extend(DARWIN_REQUIRED_MODULES)
+    return tuple(dict.fromkeys(modules))
+
+
+def required_sidecar_resources(target_triple: str) -> tuple[Path, ...]:
+    resources = list(COMMON_REQUIRED_PYINSTALLER_RESOURCES)
+    if _is_darwin_target(target_triple):
+        resources.extend(DARWIN_REQUIRED_PYINSTALLER_RESOURCES)
+    suffix = ".exe" if _is_windows_target(target_triple) else ""
+    resources.extend(Path("bin") / f"{binary}{suffix}" for binary in REQUIRED_BINARIES)
+    return tuple(resources)
+
+
 def _resolve_required_binary_paths() -> tuple[dict[str, Path], list[str]]:
     resolved_bins: dict[str, Path] = {}
     missing_bins: list[str] = []
@@ -145,7 +177,12 @@ def _resolve_required_binary_paths() -> tuple[dict[str, Path], list[str]]:
     return resolved_bins, missing_bins
 
 
-def _validate_runtime_dependencies(python_executable: str) -> dict[str, Path]:
+def _validate_runtime_dependencies(
+    python_executable: str,
+    *,
+    target_triple: str | None = None,
+) -> dict[str, Path]:
+    resolved_target = target_triple or _resolve_target_triple("")
     pyinstaller_check = subprocess.run(
         [python_executable, "-m", "PyInstaller", "--version"],
         capture_output=True,
@@ -163,7 +200,7 @@ def _validate_runtime_dependencies(python_executable: str) -> dict[str, Path]:
         )
 
     missing_modules: list[str] = []
-    for module in REQUIRED_MODULES:
+    for module in required_modules(resolved_target):
         module_check = subprocess.run(
             [
                 python_executable,
@@ -225,10 +262,15 @@ def _run_pyinstaller(python_executable: str, *, clean: bool) -> None:
     subprocess.run(command, cwd=PROJECT_ROOT, check=True)
 
 
-def _validate_sidecar_resources(sidecar_dir: Path) -> None:
+def _validate_sidecar_resources(
+    sidecar_dir: Path,
+    *,
+    target_triple: str | None = None,
+) -> None:
+    resolved_target = target_triple or _resolve_target_triple("")
     missing = [
         resource
-        for resource in REQUIRED_SIDECAR_RESOURCES
+        for resource in required_sidecar_resources(resolved_target)
         if not (sidecar_dir / resource).is_file()
     ]
     if missing:
@@ -236,13 +278,15 @@ def _validate_sidecar_resources(sidecar_dir: Path) -> None:
         raise RuntimeError(
             "PyInstaller sidecar is missing required runtime resources:\n"
             f"{formatted}\n"
-            "Rebuild with a spec that collects MLX package data."
+            "Rebuild with a spec that collects platform runtime package data."
         )
 
 
 def _copy_ffmpeg_binaries(
     sidecar_dir: Path,
     ffmpeg_binaries: Mapping[str, Path],
+    *,
+    target_triple: str,
 ) -> None:
     bin_dir = sidecar_dir / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
@@ -251,7 +295,8 @@ def _copy_ffmpeg_binaries(
         source = Path(ffmpeg_binaries[binary_name])
         if not source.is_file() or not os.access(source, os.X_OK):
             raise RuntimeError(f"Required runtime binary is not executable: {source}")
-        destination = bin_dir / binary_name
+        destination_name = f"{binary_name}.exe" if _is_windows_target(target_triple) else binary_name
+        destination = bin_dir / destination_name
         shutil.copy2(source, destination)
 
 
@@ -326,7 +371,7 @@ def _copy_sidecar_for_tauri(
     *,
     ffmpeg_binaries: Mapping[str, Path] | None = None,
 ) -> Path:
-    pyinstaller_binary_name = f"{SIDE_CAR_STEM}.exe" if "windows" in target_triple else SIDE_CAR_STEM
+    pyinstaller_binary_name = f"{SIDE_CAR_STEM}.exe" if _is_windows_target(target_triple) else SIDE_CAR_STEM
     built_sidecar_dir = DIST_DIR / SIDE_CAR_STEM
     built_binary = built_sidecar_dir / pyinstaller_binary_name
     if not built_binary.is_file():
@@ -346,7 +391,7 @@ def _copy_sidecar_for_tauri(
 
     legacy_tauri_name = (
         f"{SIDE_CAR_STEM}-{target_triple}.exe"
-        if "windows" in target_triple
+        if _is_windows_target(target_triple)
         else f"{SIDE_CAR_STEM}-{target_triple}"
     )
     legacy_output_binary = TAURI_BINARIES_DIR / legacy_tauri_name
@@ -354,17 +399,21 @@ def _copy_sidecar_for_tauri(
     if TAURI_SIDECAR_RESOURCE_DIR.exists():
         shutil.rmtree(TAURI_SIDECAR_RESOURCE_DIR)
     shutil.copytree(built_sidecar_dir, TAURI_SIDECAR_RESOURCE_DIR, symlinks=True)
-    _copy_ffmpeg_binaries(TAURI_SIDECAR_RESOURCE_DIR, resolved_ffmpeg_binaries)
+    _copy_ffmpeg_binaries(
+        TAURI_SIDECAR_RESOURCE_DIR,
+        resolved_ffmpeg_binaries,
+        target_triple=target_triple,
+    )
     _normalize_mlx_dylib_layout(TAURI_SIDECAR_RESOURCE_DIR)
     _expose_espeak_data_at_sidecar_root(TAURI_SIDECAR_RESOURCE_DIR)
-    _validate_sidecar_resources(TAURI_SIDECAR_RESOURCE_DIR)
+    _validate_sidecar_resources(TAURI_SIDECAR_RESOURCE_DIR, target_triple=target_triple)
     legacy_output_binary.unlink(missing_ok=True)
     for stale_binary in TAURI_BINARIES_DIR.glob(f"{SIDE_CAR_STEM}-*"):
         if stale_binary.is_file():
             stale_binary.unlink()
 
     output_binary = TAURI_SIDECAR_RESOURCE_DIR / pyinstaller_binary_name
-    if "windows" not in target_triple:
+    if not _is_windows_target(target_triple):
         output_binary.chmod(output_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     return output_binary
@@ -372,9 +421,8 @@ def _copy_sidecar_for_tauri(
 
 def main() -> int:
     args = _parse_args()
-    ffmpeg_binaries = _validate_runtime_dependencies(args.python)
-
     target_triple = _resolve_target_triple(args.target_triple)
+    ffmpeg_binaries = _validate_runtime_dependencies(args.python, target_triple=target_triple)
     _run_pyinstaller(args.python, clean=not args.no_clean)
     output_binary = _copy_sidecar_for_tauri(
         target_triple,
