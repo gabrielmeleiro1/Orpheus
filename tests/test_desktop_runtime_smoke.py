@@ -297,6 +297,19 @@ def test_ffmpeg_runtime_check_uses_sidecar_bin_and_reduced_path(
     assert "-show_entries" in commands[1][0]
 
 
+def test_sidecar_ffmpeg_runtime_binaries_accept_windows_exe_names(tmp_path: Path) -> None:
+    sidecar = _write_executable(tmp_path / "sidecar" / "orpheus-desktop-backend.exe")
+    ffmpeg = _write_executable(sidecar.parent / "bin" / "ffmpeg.exe")
+    ffprobe = _write_executable(sidecar.parent / "bin" / "ffprobe.exe")
+
+    resolved = desktop_runtime_smoke.resolve_ffmpeg_runtime_binaries(
+        backend="sidecar",
+        sidecar_path=sidecar,
+    )
+
+    assert resolved == {"ffmpeg": ffmpeg, "ffprobe": ffprobe}
+
+
 def test_sse_ping_uses_scoped_events_query_token(monkeypatch) -> None:
     ready = desktop_runtime_smoke.ReadyPayload(
         host="127.0.0.1",

@@ -305,6 +305,15 @@ def _validate_runtime_binary(path: Path, label: str) -> Path:
     return path
 
 
+def _resolve_sidecar_runtime_binary(bin_dir: Path, binary: str) -> Path:
+    candidates = (bin_dir / binary, bin_dir / f"{binary}.exe")
+    for candidate in candidates:
+        if candidate.is_file():
+            return _validate_runtime_binary(candidate, binary)
+    formatted = ", ".join(str(candidate) for candidate in candidates)
+    raise SmokeFailure(f"{binary} runtime binary is not executable: {formatted}")
+
+
 def resolve_ffmpeg_runtime_binaries(
     *,
     backend: str,
@@ -316,8 +325,8 @@ def resolve_ffmpeg_runtime_binaries(
             raise FileNotFoundError(f"sidecar executable not found: {resolved_sidecar}")
         bin_dir = resolved_sidecar.parent / "bin"
         return {
-            "ffmpeg": _validate_runtime_binary(bin_dir / "ffmpeg", "ffmpeg"),
-            "ffprobe": _validate_runtime_binary(bin_dir / "ffprobe", "ffprobe"),
+            "ffmpeg": _resolve_sidecar_runtime_binary(bin_dir, "ffmpeg"),
+            "ffprobe": _resolve_sidecar_runtime_binary(bin_dir, "ffprobe"),
         }
 
     from modules.audio.ffmpeg import resolve_ffmpeg_binary
