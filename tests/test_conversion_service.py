@@ -2251,7 +2251,7 @@ def test_conversion_service_pipeline_config_reads_cuda_backend_from_env(tmp_path
     assert pipeline_config.cleaner_backend == "cuda"
     assert pipeline_config.cleaner_cuda_device == "cuda:0"
     assert pipeline_config.cleaner_cuda_quantization == "8bit"
-    assert pipeline_config.cleaner_model_name == "meta-llama/Llama-3.2-3B-Instruct"
+    assert pipeline_config.cleaner_model_name == "Qwen/Qwen2.5-1.5B-Instruct"
 
 
 def test_app_config_cuda_backend_without_model_env_defaults_to_cuda_catalog(tmp_path, monkeypatch):
@@ -2266,7 +2266,7 @@ def test_app_config_cuda_backend_without_model_env_defaults_to_cuda_catalog(tmp_
     )
 
     assert config.cleaner_backend == "cuda"
-    assert config.cleaner_model_name == "meta-llama/Llama-3.2-3B-Instruct"
+    assert config.cleaner_model_name == "Qwen/Qwen2.5-1.5B-Instruct"
 
 
 def test_app_config_cuda_backend_respects_explicit_cleaner_model_env(tmp_path, monkeypatch):
@@ -2302,7 +2302,7 @@ def test_conversion_service_cuda_request_without_model_uses_cuda_catalog_default
         conversion_mode="audiobook",
     )
 
-    assert pipeline_config.cleaner_model_name == "meta-llama/Llama-3.2-3B-Instruct"
+    assert pipeline_config.cleaner_model_name == "Qwen/Qwen2.5-1.5B-Instruct"
 
 
 def test_conversion_service_mlx_request_does_not_inherit_cuda_catalog_default(tmp_path, monkeypatch):

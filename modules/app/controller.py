@@ -464,9 +464,10 @@ class AppController:
             self.config.tts_engine,
             self.config.tts_quantization,
         )
+        primary_runtime = default_tts_runtime.provider
 
         return {
-            "primary_runtime": "mlx",
+            "primary_runtime": primary_runtime,
             "mlx_runtime_available": mlx_runtime_available,
             "cleaner_runtime_availability": cleaner_runtime_availability,
             "mlx_cleaner_runtime_available": mlx_cleaner_runtime_available,

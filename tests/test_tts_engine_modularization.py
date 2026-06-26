@@ -668,7 +668,9 @@ def test_engine_runtime_helpers_cover_warmup_and_metrics_contract() -> None:
     assert engine_runtime.get_metrics(tts)["warmup_complete"] is True
 
 
-def test_app_controller_capabilities_use_runtime_probe_service() -> None:
+def test_app_controller_capabilities_use_runtime_probe_service(monkeypatch) -> None:
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.system", lambda: "Linux")
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.machine", lambda: "x86_64")
     controller = AppController.__new__(AppController)
     controller.config = SimpleNamespace(
         tts_engine="kokoro",
@@ -698,6 +700,7 @@ def test_app_controller_capabilities_use_runtime_probe_service() -> None:
         payload = controller.get_system_capabilities()
 
     assert payload["mlx_runtime_available"] is False
+    assert payload["primary_runtime"] == "cpu"
     assert payload["mlx_cleaner_runtime_available"] is True
     assert payload["runtime_probe"]["mode"] == "import"
 
