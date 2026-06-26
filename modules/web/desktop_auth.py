@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse, Response
 _AUDIO_PLAYBACK_PATH_RE = re.compile(r"^/api/library/(?P<book_id>[^/]+)/audio/?$")
 _QUERY_TOKEN_VERSION = "v1"
 _QUERY_TOKEN_TTL_SECONDS = 60
+_AUDIO_QUERY_TOKEN_TTL_SECONDS = 6 * 60 * 60
 
 desktop_query_token_router = APIRouter(prefix="/api/desktop", tags=["desktop"])
 
@@ -146,6 +147,12 @@ def _request_scope(payload: DesktopQueryTokenRequest) -> str:
     raise HTTPException(status_code=422, detail="Unsupported query token scope")
 
 
+def _query_token_ttl_for_scope(scope: str) -> int:
+    if scope.startswith("audio:"):
+        return _AUDIO_QUERY_TOKEN_TTL_SECONDS
+    return _QUERY_TOKEN_TTL_SECONDS
+
+
 @desktop_query_token_router.post("/query-token", response_model=DesktopQueryTokenResponse)
 async def create_desktop_query_token(
     payload: DesktopQueryTokenRequest,
@@ -159,7 +166,11 @@ async def create_desktop_query_token(
         raise HTTPException(status_code=500, detail="Desktop API token is not configured")
 
     scope = _request_scope(payload)
-    token, expires_at = mint_desktop_query_token(expected_token, scope)
+    token, expires_at = mint_desktop_query_token(
+        expected_token,
+        scope,
+        ttl_seconds=_query_token_ttl_for_scope(scope),
+    )
     return DesktopQueryTokenResponse(token=token, expires_at=expires_at)
 
 

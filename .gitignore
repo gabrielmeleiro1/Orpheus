@@ -27,7 +27,8 @@ coverage.xml
 htmlcov/
 desktop/dist/
 desktop/node_modules/
-desktop/src-tauri/binaries/
+desktop/src-tauri/binaries/*
+!desktop/src-tauri/binaries/.gitkeep
 desktop/src-tauri/target/
 *.tsbuildinfo
 *-crop-check.png

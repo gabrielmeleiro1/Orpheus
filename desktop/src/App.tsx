@@ -44,6 +44,34 @@ function messageFromUnknown(error: unknown, fallback: string): string {
   return fallback;
 }
 
+export interface BackendMonitorFailureResolution {
+  clearClient: boolean;
+  connectionState: BackendConnectionState;
+  health: HealthResponse | null;
+  statusMessage: string;
+}
+
+export function resolveBackendMonitorFailure(
+  status: Awaited<ReturnType<typeof readDesktopBackendStatus>> | null,
+  error: unknown,
+): BackendMonitorFailureResolution {
+  if (status?.lifecycle === "failed" || status?.lifecycle === "stopped") {
+    return {
+      clearClient: true,
+      connectionState: "error",
+      health: null,
+      statusMessage: describeDesktopBackendStatus(status),
+    };
+  }
+
+  return {
+    clearClient: false,
+    connectionState: "checking",
+    health: null,
+    statusMessage: messageFromUnknown(error, "backend health check failed"),
+  };
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
@@ -138,8 +166,10 @@ function App() {
     };
 
     const checkBackend = async () => {
+      let status: Awaited<ReturnType<typeof readDesktopBackendStatus>> | null = null;
+
       try {
-        const status = await readDesktopBackendStatus();
+        status = await readDesktopBackendStatus();
         if (cancelled) {
           return;
         }
@@ -162,7 +192,17 @@ function App() {
         setConnectionState("connected");
         setStatusMessage("backend connected");
       } catch (error: unknown) {
-        markBackendUnavailable(messageFromUnknown(error, "backend monitor failed"));
+        if (cancelled) {
+          return;
+        }
+        const resolution = resolveBackendMonitorFailure(status, error);
+        setHealth(resolution.health);
+        setConnectionState(resolution.connectionState);
+        setStatusMessage(resolution.statusMessage);
+        if (resolution.clearClient) {
+          setApiClient(null);
+          setBackendBaseUrl("");
+        }
       }
     };
 

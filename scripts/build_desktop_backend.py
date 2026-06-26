@@ -49,7 +49,8 @@ DARWIN_REQUIRED_MODULES = (
     "mlx_lm",
     "mlx_audio",
 )
-REQUIRED_MODULES = (*COMMON_REQUIRED_MODULES, *DARWIN_REQUIRED_MODULES)
+CUDA_REQUIRED_MODULES = ("bitsandbytes",)
+REQUIRED_MODULES = (*COMMON_REQUIRED_MODULES, *DARWIN_REQUIRED_MODULES, *CUDA_REQUIRED_MODULES)
 
 REQUIRED_BINARIES = ("ffmpeg", "ffprobe")
 COMMON_REQUIRED_PYINSTALLER_RESOURCES = (
@@ -149,10 +150,43 @@ def _is_darwin_target(target_triple: str) -> bool:
     return "apple-darwin" in target_triple.lower()
 
 
+def _target_os(target_triple: str) -> str:
+    normalized = target_triple.lower()
+    if "apple-darwin" in normalized:
+        return "darwin"
+    if "windows" in normalized:
+        return "windows"
+    if "linux" in normalized:
+        return "linux"
+    return "unknown"
+
+
+def _host_os() -> str:
+    system = platform.system().lower()
+    if system in {"darwin", "windows", "linux"}:
+        return system
+    return "unknown"
+
+
+def _validate_pyinstaller_target_matches_host(target_triple: str) -> None:
+    target_os = _target_os(target_triple)
+    host_os = _host_os()
+    if target_os == "unknown" or host_os == "unknown" or target_os == host_os:
+        return
+    raise RuntimeError(
+        "Cross-OS PyInstaller builds are not supported.\n"
+        f"Host OS: {host_os}\n"
+        f"Target triple: {target_triple}\n"
+        "Run this script on the target operating system or pass a same-OS target triple."
+    )
+
+
 def required_modules(target_triple: str) -> tuple[str, ...]:
     modules = list(COMMON_REQUIRED_MODULES)
     if _is_darwin_target(target_triple):
         modules.extend(DARWIN_REQUIRED_MODULES)
+    else:
+        modules.extend(CUDA_REQUIRED_MODULES)
     return tuple(dict.fromkeys(modules))
 
 
@@ -183,6 +217,7 @@ def _validate_runtime_dependencies(
     target_triple: str | None = None,
 ) -> dict[str, Path]:
     resolved_target = target_triple or _resolve_target_triple("")
+    _validate_pyinstaller_target_matches_host(resolved_target)
     pyinstaller_check = subprocess.run(
         [python_executable, "-m", "PyInstaller", "--version"],
         capture_output=True,

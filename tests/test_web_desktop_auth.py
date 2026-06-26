@@ -108,6 +108,19 @@ def _mint_query_token(client: TestClient, scope: str, *, book_id: int | None = N
     return token
 
 
+def _create_query_token(client: TestClient, scope: str, *, book_id: int | None = None) -> dict[str, object]:
+    payload: dict[str, object] = {"scope": scope}
+    if book_id is not None:
+        payload["book_id"] = book_id
+    response = client.post(
+        "/api/desktop/query-token",
+        json=payload,
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    assert response.status_code == 200
+    return response.json()
+
+
 def test_desktop_mode_health_remains_open(tmp_path: Path) -> None:
     audio_path = tmp_path / "sample.m4b"
     audio_path.write_bytes(b"ID3desktop-audio")
@@ -222,6 +235,21 @@ def test_desktop_mode_requires_scoped_sse_query_token(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: ping" in response.text
+
+
+def test_desktop_query_tokens_keep_event_ttl_short_and_audio_ttl_longer(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.m4b"
+    audio_path.write_bytes(b"ID3desktop-audio")
+    controller = _FakeController(audio_path)
+
+    with _make_desktop_client(controller) as client:
+        with patch("modules.web.desktop_auth.time.time", return_value=1_700_000_000):
+            events = _create_query_token(client, "events")
+            audio = _create_query_token(client, "audio", book_id=1)
+
+    assert events["expires_at"] == 1_700_000_060
+    assert isinstance(audio["expires_at"], int)
+    assert audio["expires_at"] > 1_700_000_060
 
 
 def test_desktop_mode_requires_scoped_audio_query_token(tmp_path: Path) -> None:

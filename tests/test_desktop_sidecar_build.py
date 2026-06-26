@@ -229,6 +229,29 @@ def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
     assert resolved == {"ffmpeg": ffmpeg, "ffprobe": ffprobe}
 
 
+def test_validate_runtime_dependencies_rejects_cross_os_target(monkeypatch) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+
+    with pytest.raises(RuntimeError, match="Cross-OS PyInstaller builds are not supported"):
+        build_desktop_backend._validate_runtime_dependencies(  # noqa: SLF001
+            "python",
+            target_triple="aarch64-apple-darwin",
+        )
+
+
+def test_cuda_backend_build_prerequisites_include_bitsandbytes() -> None:
+    modules = set(build_desktop_backend.required_modules("x86_64-unknown-linux-gnu"))
+
+    assert "bitsandbytes" in modules
+
+
+def test_backend_sidecar_spec_collects_bitsandbytes_for_cuda_packaging() -> None:
+    spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
+
+    assert '_collect_submodules("bitsandbytes")' in spec_text
+    assert '_collect_dynamic_libs("bitsandbytes")' in spec_text
+
+
 def test_normalize_mlx_dylib_layout_removes_root_duplicate_and_retargets_core(
     tmp_path: Path,
     monkeypatch,

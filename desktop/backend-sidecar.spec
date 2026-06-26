@@ -43,6 +43,7 @@ hiddenimports = [
 ]
 hiddenimports += _collect_submodules("modules")
 hiddenimports += _collect_submodules("kokoro")
+hiddenimports += _collect_submodules("bitsandbytes")
 
 if platform.system() == "Darwin":
     hiddenimports += ["mlx._reprlib_fix"]
@@ -63,6 +64,7 @@ if platform.system() == "Darwin":
     datas += _collect_data_files("mlx", includes=["lib/*.metallib"])
 
 binaries = _collect_dynamic_libs("espeakng_loader")
+binaries += _collect_dynamic_libs("bitsandbytes")
 
 a = Analysis(
     [str(entry_script)],
