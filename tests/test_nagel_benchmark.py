@@ -140,6 +140,59 @@ def test_parse_only_benchmark_can_limit_real_book_chapters(tmp_path: Path) -> No
     )
 
 
+def test_parse_document_honors_non_prose_skip_opt_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from modules.ingestion.models import Chapter, Document
+    from modules.pipeline.models import PipelineConfig
+    from scripts import benchmark_nagel_pipeline
+
+    class FakeMarkdownParser:
+        def __init__(self, _source_path: Path) -> None:
+            pass
+
+        def parse(self) -> Document:
+            return Document(
+                title="Benchmark Source",
+                chapters=[
+                    Chapter(
+                        number=1,
+                        title="Chapter 1",
+                        content="This narrated paragraph belongs in the benchmark. " * 8,
+                    ),
+                    Chapter(
+                        number=2,
+                        title="Index",
+                        content="\n".join(
+                            [
+                                "Anderson, Mary 12, 44, 109",
+                                "Barnes, Thomas 15, 61",
+                                "Carter, Evelyn 18, 72, 119",
+                                "Dawson, River 31, 88",
+                            ]
+                        ),
+                    ),
+                ],
+            )
+
+    source = tmp_path / "fixture.md"
+    source.write_text("# fixture", encoding="utf-8")
+    monkeypatch.setattr(benchmark_nagel_pipeline, "MarkdownParser", FakeMarkdownParser)
+
+    skip_config = PipelineConfig(skip_non_prose_sections=True)
+    keep_config = PipelineConfig(skip_non_prose_sections=False)
+
+    skipped_document = benchmark_nagel_pipeline._parse_document(source, skip_config)
+    kept_document = benchmark_nagel_pipeline._parse_document(source, keep_config)
+
+    assert [chapter.title for chapter in skipped_document.chapters] == ["Chapter 1"]
+    assert [chapter.title for chapter in kept_document.chapters] == [
+        "Chapter 1",
+        "Index",
+    ]
+
+
 def test_parse_only_benchmark_marks_empty_extraction_invalid(
     tmp_path: Path,
     monkeypatch,

@@ -70,6 +70,7 @@ def _serialize_pipeline_config_dict(config: PipelineConfig) -> dict[str, Any]:
         "tts_idle_timeout_seconds": config.tts_idle_timeout_seconds,
         "chapter_limit": config.chapter_limit,
         "pre_chunk_document_cleanup": config.pre_chunk_document_cleanup,
+        "skip_non_prose_sections": config.skip_non_prose_sections,
         "artifact_gated_cleaning": config.artifact_gated_cleaning,
         "speech_normalization": config.speech_normalization,
     }
@@ -166,6 +167,10 @@ def build_worker_pipeline_config(
         shared_worker_pool_manager=None,
         pre_chunk_document_cleanup=serialized_config.get(
             "pre_chunk_document_cleanup",
+            True,
+        ),
+        skip_non_prose_sections=serialized_config.get(
+            "skip_non_prose_sections",
             True,
         ),
         artifact_gated_cleaning=serialized_config.get(

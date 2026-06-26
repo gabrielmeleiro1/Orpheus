@@ -1773,6 +1773,20 @@ class TestWorkerProgressTotals:
             is True
         )
 
+    def test_worker_init_config_serializes_non_prose_skip_policy(self, tmp_path):
+        config = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            skip_non_prose_sections=False,
+        )
+        pipeline = ConversionPipeline(config)
+
+        worker_init_config = pipeline._build_worker_init_config()  # noqa: SLF001
+        worker_config = build_worker_pipeline_config(worker_init_config["pipeline_config"])
+
+        assert worker_init_config["pipeline_config"]["skip_non_prose_sections"] is False
+        assert worker_config.skip_non_prose_sections is False
+
     def test_worker_init_config_serializes_tts_runtime_spec(self, tmp_path):
         runtime_spec = TTSRuntimeSpec(
             provider="cuda",

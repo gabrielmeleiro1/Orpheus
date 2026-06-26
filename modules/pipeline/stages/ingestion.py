@@ -46,10 +46,19 @@ def ingest_source(runtime: Any, source_path: Path):
         from modules.text.document_normalizer import normalize_extracted_document
 
         raw_chars = sum(len(chapter.content) for chapter in document.chapters)
-        document = normalize_extracted_document(document, source_type=suffix)
+        raw_chapters = len(document.chapters)
+        document = normalize_extracted_document(
+            document,
+            source_type=suffix,
+            skip_non_prose_sections=bool(
+                getattr(runtime.config, "skip_non_prose_sections", True)
+            ),
+        )
         normalized_chars = sum(len(chapter.content) for chapter in document.chapters)
+        normalized_chapters = len(document.chapters)
         runtime.log_verbose(
             "[PARSER] Pre-chunk cleanup complete: "
+            f"{raw_chapters} -> {normalized_chapters} chapters, "
             f"{raw_chars} -> {normalized_chars} chars",
             "info",
         )
