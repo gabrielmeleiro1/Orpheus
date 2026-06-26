@@ -220,7 +220,7 @@ class ParallelChapterRunner:
         results: list[ChapterResult],
         chapters: list[Any],
     ) -> None:
-        self._processor._record_parallel_stage_throughput(results, chapters)
+        self._processor.record_parallel_stage_throughput(results, chapters)
 
     def _notify_worker_startup_failure(
         self,

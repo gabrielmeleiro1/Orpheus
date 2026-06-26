@@ -712,6 +712,14 @@ class ChapterProcessor:
             if encode_seconds > 0:
                 self._record_encode_throughput(encode_seconds)
 
+    def record_parallel_stage_throughput(
+        self,
+        results: list[ChapterResult],
+        chapters: list[Any],
+    ) -> None:
+        """Record throughput from completed parallel chapter results."""
+        self._record_parallel_stage_throughput(results, chapters)
+
     @timed_stage("encode")
     def _encode_chapter_audio(
         self,
