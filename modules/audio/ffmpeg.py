@@ -143,6 +143,8 @@ def run_ffmpeg_command(
         result = subprocess.run(
             list(cmd),
             capture_output=True,
+            encoding="utf-8",
+            errors="replace",
             text=True,
             timeout=timeout,
         )
