@@ -5,10 +5,31 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
+python_supports_validation() {
+  "$1" - <<'PY'
+from __future__ import annotations
+
+import sys
+
+raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)
+PY
+}
+
+if [[ -x "$ROOT/venv/bin/python" ]]; then
+  PYTHON="$ROOT/venv/bin/python"
+elif command -v python >/dev/null 2>&1 && python_supports_validation "$(command -v python)"; then
+  PYTHON="$(command -v python)"
+elif command -v python3.12 >/dev/null 2>&1; then
+  PYTHON="$(command -v python3.12)"
+else
+  echo "Python 3.12 is required for local validation. Create venv/bin/python or install python3.12." >&2
+  exit 1
+fi
+
 run_with_timeout() {
   local seconds="$1"
   shift
-  python - "$seconds" "$@" <<'PY'
+  "$PYTHON" - "$seconds" "$@" <<'PY'
 from __future__ import annotations
 
 import subprocess
@@ -44,11 +65,11 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 
 echo "> Ruff"
-run_with_timeout 120 python -m ruff check .
+run_with_timeout 120 "$PYTHON" -m ruff check .
 
 echo ""
 echo "> Python contract tests"
-run_with_timeout 600 python -m pytest tests \
+run_with_timeout 600 "$PYTHON" -m pytest tests \
   -m "not property and not benchmark and not slow and not ui" \
   -k "not test_memory_error_degrades_to_sequential and not test_orchestrator_creates_and_shuts_down_owned_manager and not test_conversion_service_repair_cancelled_chapter_result_finishes_cancelled"
 
