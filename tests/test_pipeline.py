@@ -891,6 +891,57 @@ class TestConversionPipeline:
             assert wav_file.getnframes() == 12
             assert wav_file.getframerate() == 24000
 
+    def test_synthesize_chapter_chunks_orders_incremental_audio_by_chunk_index(
+        self,
+        mock_components,
+        tmp_path,
+    ):
+        """Incremental TTS results may arrive out of order; final audio follows source chunks."""
+        from modules.tts.engine import BatchResult
+
+        class OutOfOrderIncrementalTTSEngine:
+            supports_incremental_batch_results = True
+            is_loaded = True
+            sample_rate = 24000
+
+            def synthesize_batch(self, items, progress_callback=None):  # noqa: ANN001
+                _ = items, progress_callback
+                raise AssertionError("synthesize_batch should not be used when an iterator exists")
+
+            def iter_synthesize_batch(self, items, progress_callback=None):  # noqa: ANN001
+                _ = progress_callback
+                assert [item.index for item in items] == [0, 1]
+                yield BatchResult(
+                    audio=np.array([2.0, 2.0], dtype=np.float32),
+                    index=1,
+                    error=None,
+                    duration_ms=100,
+                )
+                yield BatchResult(
+                    audio=np.array([1.0, 1.0], dtype=np.float32),
+                    index=0,
+                    error=None,
+                    duration_ms=100,
+                )
+
+        config = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+        )
+        pipeline = ConversionPipeline(config)
+        pipeline._tts_engine = OutOfOrderIncrementalTTSEngine()
+        chapter = MagicMock(number=1, title="Chapter 1")
+
+        chapter_audio = pipeline.stages.chapter_processor.synthesize_chapter_chunks(  # noqa: SLF001
+            chapter=chapter,
+            chapter_idx=0,
+            total_chapters=1,
+            chunks=["chunk one", "chunk two"],
+        )
+
+        assert isinstance(chapter_audio, np.ndarray)
+        assert chapter_audio.tolist() == [1.0, 1.0, 2.0, 2.0]
+
     def test_synthesize_chapter_chunks_requires_incremental_opt_in(
         self,
         mock_components,

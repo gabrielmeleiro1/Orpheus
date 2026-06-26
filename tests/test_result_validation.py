@@ -84,7 +84,7 @@ def test_validate_chapter_sets_repair_reports_title_mismatch() -> None:
 
     errors = validate_chapter_sets(source, stored, context="repair")
 
-    assert errors == ["title mismatch for chapter 1: expected 'Different', got 'One'"]
+    assert errors == ["title mismatch for chapter 1: expected 'One', got 'Different'"]
 
 
 def test_validate_chapter_sets_repair_ignores_blank_or_matching_titles() -> None:

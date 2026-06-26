@@ -315,8 +315,8 @@ def validate_chapter_sets(
             continue
         errors.append(
             "title mismatch for chapter "
-            f"{chapter_number}: expected {getattr(chapter, 'title', '')!r}, "
-            f"got {getattr(expected_chapter, 'title', '')!r}"
+            f"{chapter_number}: expected {getattr(expected_chapter, 'title', '')!r}, "
+            f"got {getattr(chapter, 'title', '')!r}"
         )
 
     return errors

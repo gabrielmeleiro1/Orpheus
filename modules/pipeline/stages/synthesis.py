@@ -338,13 +338,6 @@ def _validate_incremental_batch_result(
     else:
         seen_indexes.add(result_index)
 
-    if result_index != position:
-        runtime.log_verbose(
-            f"[TTS] Incremental batch result {position + 1} arrived out of order",
-            "error",
-        )
-        valid = False
-
     if batch_result.error:
         runtime.log_verbose(
             f"[TTS] Error on chunk {result_index + 1}: {batch_result.error}",
@@ -410,6 +403,22 @@ def _consume_batch_result_audio(accumulator: ChapterAudioAccumulator, batch_resu
     if batch_result.audio is not None:
         accumulator.add_segment(batch_result.audio)
         batch_result.audio = None
+
+
+def _flush_ordered_incremental_results(
+    accumulator: ChapterAudioAccumulator,
+    pending_results: dict[int, Any],
+    *,
+    next_index: int,
+) -> tuple[int, int]:
+    """Consume buffered incremental results in chunk order when contiguous."""
+    consumed_count = 0
+    while next_index in pending_results:
+        batch_result = pending_results.pop(next_index)
+        _consume_batch_result_audio(accumulator, batch_result)
+        next_index += 1
+        consumed_count += 1
+    return next_index, consumed_count
 
 
 def _should_use_file_batch_results(
@@ -656,6 +665,8 @@ def _synthesize_chapter_chunks_incrementally(
     result_count = 0
     valid_count = 0
     streamed_results: list[Any] = []
+    pending_results: dict[int, Any] = {}
+    next_index_to_consume = 0
 
     try:
         for position, batch_result in enumerate(
@@ -674,8 +685,13 @@ def _synthesize_chapter_chunks_incrementally(
                 seen_indexes=seen_indexes,
             )
             if result_valid:
-                _consume_batch_result_audio(accumulator, batch_result)
-                valid_count += 1
+                pending_results[batch_result.index] = batch_result
+                next_index_to_consume, consumed_count = _flush_ordered_incremental_results(
+                    accumulator,
+                    pending_results,
+                    next_index=next_index_to_consume,
+                )
+                valid_count += consumed_count
             else:
                 batch_result.audio = None
                 valid = False
