@@ -15,7 +15,12 @@ import modules.audio as audio_module
 
 from modules.audio.processor import AudioProcessor
 from modules.audio.encoder import AudioEncoder
-from modules.audio.ffmpeg import atomic_output_path, resolve_ffmpeg_binary, wait_for_ffmpeg_process
+from modules.audio.ffmpeg import (
+    atomic_output_path,
+    resolve_ffmpeg_binary,
+    run_ffmpeg_command,
+    wait_for_ffmpeg_process,
+)
 from modules.audio.packager import M4BPackager, AudiobookMetadata, ChapterMarker
 
 
@@ -97,6 +102,25 @@ class TestFFmpegBinaryDiscovery:
         monkeypatch.setattr("modules.audio.ffmpeg.shutil.which", lambda _name: None)
 
         assert resolve_ffmpeg_binary("ffmpeg") == str(configured_ffmpeg)
+
+    def test_run_ffmpeg_command_replaces_undecodable_subprocess_output(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured_kwargs = {}
+
+        def fake_run(cmd, **kwargs):  # noqa: ANN001
+            captured_kwargs.update(kwargs)
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", fake_run)
+
+        result = run_ffmpeg_command(["ffmpeg", "-version"], failure_message="probe failed")
+
+        assert result.returncode == 0
+        assert captured_kwargs["encoding"] == "utf-8"
+        assert captured_kwargs["errors"] == "replace"
+        assert captured_kwargs["text"] is True
 
 
 class TestAudioProcessor:
