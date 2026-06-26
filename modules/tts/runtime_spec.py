@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import platform
 from dataclasses import dataclass
 from typing import Any, Mapping
 
@@ -115,8 +116,30 @@ class TTSRuntimeSpec:
         return typed_options.to_runtime_spec(str(engine), config)
 
     @staticmethod
-    def default_provider(engine: str) -> str:
-        return "mlx" if str(engine).strip().lower() == "kokoro" else "local"
+    def mlx_supported_on_current_platform() -> bool:
+        return (
+            platform.system() == "Darwin"
+            and platform.machine().lower() in {"arm64", "aarch64"}
+        )
+
+    @staticmethod
+    def cuda_available_on_current_platform() -> bool:
+        try:
+            import torch
+        except Exception:
+            return False
+        try:
+            return bool(torch.cuda.is_available())
+        except Exception:
+            return False
+
+    @classmethod
+    def default_provider(cls, engine: str) -> str:
+        if str(engine).strip().lower() == "kokoro":
+            if cls.mlx_supported_on_current_platform():
+                return "mlx"
+            return "cuda" if cls.cuda_available_on_current_platform() else "cpu"
+        return "local"
 
     @staticmethod
     def _coerce_bool_value(value: object) -> bool:

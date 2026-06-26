@@ -7,17 +7,42 @@ import pytest
 from modules.tts.runtime_spec import TTSRuntimeSpec
 
 
-def test_kokoro_legacy_runtime_defaults_to_mlx_provider() -> None:
+def test_kokoro_legacy_runtime_defaults_to_cpu_when_mlx_and_cuda_unsupported(monkeypatch) -> None:
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.system", lambda: "Linux")
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.machine", lambda: "x86_64")
+    monkeypatch.setattr("modules.tts.runtime_spec.TTSRuntimeSpec.cuda_available_on_current_platform", lambda: False)
+
     spec = TTSRuntimeSpec.from_legacy(
         "kokoro",
         "bf16",
-        model="mlx-community/Kokoro-82M",
     )
 
-    assert spec.provider == "mlx"
+    assert spec.provider == "cpu"
     assert spec.engine == "kokoro"
-    assert spec.model == "mlx-community/Kokoro-82M"
+    assert spec.resolved_model() == "hexgrad/Kokoro-82M"
     assert spec.quantization == "bf16"
+
+
+def test_kokoro_legacy_runtime_defaults_to_cuda_when_cuda_available(monkeypatch) -> None:
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.system", lambda: "Windows")
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.machine", lambda: "AMD64")
+    monkeypatch.setattr("modules.tts.runtime_spec.TTSRuntimeSpec.cuda_available_on_current_platform", lambda: True)
+
+    spec = TTSRuntimeSpec.from_legacy("kokoro", "bf16")
+
+    assert spec.provider == "cuda"
+    assert spec.resolved_model() == "hexgrad/Kokoro-82M"
+
+
+def test_kokoro_legacy_runtime_defaults_to_mlx_on_apple_silicon(monkeypatch) -> None:
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("modules.tts.runtime_spec.platform.machine", lambda: "arm64")
+    monkeypatch.setattr("modules.tts.runtime_spec.TTSRuntimeSpec.cuda_available_on_current_platform", lambda: True)
+
+    spec = TTSRuntimeSpec.from_legacy("kokoro", "bf16")
+
+    assert spec.provider == "mlx"
+    assert spec.resolved_model() == "mlx-community/Kokoro-82M"
 
 
 def test_kokoro_runtime_canonicalizes_mlx_audio_provider_alias() -> None:
@@ -25,6 +50,7 @@ def test_kokoro_runtime_canonicalizes_mlx_audio_provider_alias() -> None:
         "kokoro",
         "bf16",
         model="mlx-community/Kokoro-82M",
+        provider="mlx",
     )
     explicit_alias_spec = TTSRuntimeSpec.from_legacy(
         "kokoro",

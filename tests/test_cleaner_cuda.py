@@ -156,6 +156,7 @@ def test_default_cuda_quantization_dependency_is_declared():
     )
 
     assert "bitsandbytes" in requirements
+    assert "accelerate" in requirements
 
 
 def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch):

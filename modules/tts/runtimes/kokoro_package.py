@@ -47,7 +47,7 @@ class PackageKokoroRuntime:
             return
 
         try:
-            from kokoro import KModel, KPipeline
+            from kokoro import KPipeline
         except ImportError as exc:
             raise TTSRuntimeUnavailable(
                 "Package Kokoro runtime is unavailable. Install kokoro>=0.9.4."
@@ -57,6 +57,8 @@ class PackageKokoroRuntime:
         try:
             local_model_dir = self._local_model_dir()
             if local_model_dir is not None:
+                from kokoro import KModel
+
                 model_path = local_model_dir / "kokoro-v1_0.pth"
                 config_path = local_model_dir / "config.json"
                 kwargs["model"] = KModel(
