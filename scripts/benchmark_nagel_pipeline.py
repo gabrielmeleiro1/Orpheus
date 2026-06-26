@@ -508,7 +508,13 @@ def _parse_document(source_path: Path, config: PipelineConfig) -> Any:
     else:
         raise ValueError(f"Unsupported benchmark source type: {suffix}")
     if bool(getattr(config, "pre_chunk_document_cleanup", True)):
-        document = normalize_extracted_document(document, source_type=suffix)
+        document = normalize_extracted_document(
+            document,
+            source_type=suffix,
+            skip_non_prose_sections=bool(
+                getattr(config, "skip_non_prose_sections", True)
+            ),
+        )
     return document
 
 

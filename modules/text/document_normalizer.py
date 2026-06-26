@@ -9,6 +9,10 @@ import string
 from typing import Iterable
 
 from modules.ingestion.models import Chapter, Document
+from modules.ingestion.content_filter import (
+    classify_chapter_content,
+    filter_audiobook_chapters,
+)
 
 _PAGE_NUMBER_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdmIVXLCDM]{1,12})\s*$")
 _LOWERCASE_HYPHEN_BREAK_RE = re.compile(r"([a-z])-\s*\n\s*([a-z])")
@@ -149,7 +153,12 @@ def _renumber(chapters: list[Chapter]) -> list[Chapter]:
     return renumbered
 
 
-def normalize_extracted_document(document: Document, *, source_type: str) -> Document:
+def normalize_extracted_document(
+    document: Document,
+    *,
+    source_type: str,
+    skip_non_prose_sections: bool = True,
+) -> Document:
     """Return a copy of ``document`` after parser-specific deterministic cleanup."""
     if not is_dataclass(document):
         return document
@@ -164,6 +173,11 @@ def normalize_extracted_document(document: Document, *, source_type: str) -> Doc
             return document
         title = str(chapter.title).strip()
         content = str(chapter.content)
+        if (
+            skip_non_prose_sections
+            and classify_chapter_content(title, content).should_skip
+        ):
+            continue
         if source_type == "epub" and _is_epub_non_narrative_chapter(title, content):
             continue
         if source_type == "pdf":
@@ -177,4 +191,11 @@ def normalize_extracted_document(document: Document, *, source_type: str) -> Doc
         if content.strip():
             normalized_chapters.append(replace(chapter, content=content))
 
-    return replace(document, chapters=_renumber(normalized_chapters))
+    renumbered_chapters = _renumber(normalized_chapters)
+    if skip_non_prose_sections:
+        retained_chapters, _skipped_sections = filter_audiobook_chapters(
+            renumbered_chapters
+        )
+        renumbered_chapters = retained_chapters
+
+    return replace(document, chapters=renumbered_chapters)

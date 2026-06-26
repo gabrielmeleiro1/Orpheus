@@ -211,6 +211,7 @@ class PipelineConfig:
     device_memory_policy: Optional[DeviceMemoryPolicy] = None
     chapter_limit: Optional[int] = None
     pre_chunk_document_cleanup: bool = True
+    skip_non_prose_sections: bool = True
     artifact_gated_cleaning: bool = True
     speech_normalization: bool = False
     worker_plan: WorkerPlan = field(init=False)

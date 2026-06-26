@@ -225,6 +225,7 @@ class TestConversionPipeline:
                 "concat": mock_concat,
                 "processor": mock_proc,
                 "encoder": mock_enc,
+                "packager": mock_packager,
             }
 
     def test_pipeline_execution_success(self, mock_components, tmp_path):
@@ -246,6 +247,90 @@ class TestConversionPipeline:
         assert result.success
         assert result.title == "Test Book"
         assert len(result.chapters) == 1
+
+    def test_convert_filters_non_prose_sections_before_cleaning_tts_and_output(
+        self, mock_components, tmp_path
+    ):
+        config = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            enable_parallel=False,
+        )
+        pipeline = ConversionPipeline(config)
+        test_file = tmp_path / "test.pdf"
+        test_file.write_text("dummy pdf content")
+        mock_components["pdf"].return_value.parse.return_value = Document(
+            title="Mixed Book",
+            author="Test Author",
+            chapters=[
+                Chapter(
+                    number=1,
+                    title="Contents",
+                    content="\n".join(
+                        [
+                            "Foreword ................................ ix",
+                            "Chapter 1 The Signal .................... 1",
+                            "Chapter 2 The Reply ..................... 23",
+                            "Epilogue ................................ 97",
+                        ]
+                    ),
+                ),
+                Chapter(
+                    number=2,
+                    title="Chapter 1",
+                    content="The first narrated paragraph was calm and clear. " * 10,
+                ),
+                Chapter(
+                    number=3,
+                    title="Bibliography",
+                    content="\n".join(
+                        [
+                            "Adams, J. (2018). The long memory of cities. Oxford University Press.",
+                            "Baker, L. (2020). Archive fever revisited. Journal of History, 14(2), 33-49.",
+                            "Davis, P. (2016). Reading by lantern light. North River Press.",
+                            "Evans, R. (2021). Listening rooms and public speech. https://example.org/listening",
+                        ]
+                    ),
+                ),
+                Chapter(
+                    number=4,
+                    title="Chapter 2",
+                    content="The second narrated paragraph belonged in the audiobook. " * 10,
+                ),
+                Chapter(
+                    number=5,
+                    title="Index",
+                    content="\n".join(
+                        [
+                            "Anderson, Mary 12, 44, 109",
+                            "Barnes, Thomas 15, 61",
+                            "Carter, Evelyn 18, 72, 119",
+                            "Dawson, River 31, 88",
+                            "Ellis Island 41, 42",
+                            "Franklin, Anna 53, 100",
+                        ]
+                    ),
+                ),
+            ],
+        )
+
+        result = pipeline.convert(test_file)
+
+        assert result.success
+        assert [chapter.chapter_title for chapter in result.chapters] == [
+            "Chapter 1",
+            "Chapter 2",
+        ]
+        assert [chapter.chapter_number for chapter in result.chapters] == [1, 2]
+        chunk_inputs = [
+            call.args[0] for call in mock_components["chunker"].return_value.chunk.call_args_list
+        ]
+        assert [text.strip() for text in chunk_inputs] == [
+            ("The first narrated paragraph was calm and clear. " * 10).strip(),
+            ("The second narrated paragraph belonged in the audiobook. " * 10).strip(),
+        ]
+        _, create_m4b_kwargs = mock_components["packager"].return_value.create_m4b.call_args
+        assert create_m4b_kwargs["chapter_names"] == ["Chapter 1", "Chapter 2"]
 
     def test_pipeline_reports_ocr_required_pdf_before_cleaning(self, mock_components, tmp_path):
         config = PipelineConfig(output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
