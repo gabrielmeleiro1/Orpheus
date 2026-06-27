@@ -5,6 +5,7 @@ Unit tests for the PDF parser using a generated sample PDF.
 """
 
 import sys
+import tempfile
 from pathlib import Path
 
 # Add project root to path
@@ -162,18 +163,20 @@ def test_pdf_parser_does_not_split_no_toc_body_lines_that_start_with_lowercase_f
 def test_pdf_parser():
     """Run all PDF parser tests."""
     
-    # Setup - create sample PDF
-    test_dir = PROJECT_ROOT / "tests" / "samples"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    sample_pdf = test_dir / "sample.pdf"
-    
     print("\n" + "="*50)
     print("PDF PARSER TEST SUITE")
     print("="*50 + "\n")
-    
-    # Create sample PDF
-    print("[1] Creating sample PDF...")
-    create_sample_pdf(sample_pdf)
+
+    with tempfile.TemporaryDirectory(prefix="orpheus-pdf-parser-") as temp_dir:
+        sample_pdf = Path(temp_dir) / "sample.pdf"
+
+        # Create sample PDF in isolated temp output (never tracked fixtures).
+        print("[1] Creating sample PDF...")
+        create_sample_pdf(sample_pdf)
+        return _run_pdf_parser_checks(sample_pdf)
+
+
+def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
     
     # Test 1: File validation
     print("\n[2] Testing file validation...")
