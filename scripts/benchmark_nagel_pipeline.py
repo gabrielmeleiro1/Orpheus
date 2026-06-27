@@ -48,6 +48,7 @@ from modules.errors import OCRRequiredPDFError  # noqa: E402
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
 from modules.pipeline.memory_policy import SafeMemoryPolicy, sample_memory_snapshot  # noqa: E402
 from modules.pipeline.stage_metrics import StageTimings, time_instance_method  # noqa: E402
+from modules.ingestion.extraction_artifact_signals import scan_cleaner_handoff_artifacts  # noqa: E402
 from modules.tts import cleaner_rules as cleaner_rules_backend  # noqa: E402
 from modules.tts import cleaner_config  # noqa: E402
 from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
@@ -136,8 +137,6 @@ BENCHMARK_SCHEMA_KEYS = (
     "error",
     "errors",
 )
-
-from modules.ingestion.extraction_artifact_signals import scan_cleaner_handoff_artifacts
 
 _HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s+.*$")
 
