@@ -2,6 +2,26 @@
 
 Architecture reference: `docs/ARCHITECTURE.md`
 
+## Test Tiers
+
+Orpheus uses layered validation so fast checks stay fast and slow or
+environment-dependent work stays opt-in.
+
+| Tier | Command | What it proves | What it does not prove |
+| --- | --- | --- | --- |
+| Contract | `python run_tests.py --contract` | Python/core pytest gate with coverage floor (`--cov-fail-under=69`), strict markers, and the default marker filter (`not property`, `not benchmark`, `not slow`, `not ui`) | Desktop build, Tauri/Rust shell, packaged sidecar, release installer, real GPU hardware, property fuzzing, long benchmarks |
+| Smoke | `python run_tests.py` | Curated script/pytest modules in `SMOKE_TEST_MODULES` for quick local iteration | Full contract coverage, desktop release matrix, optional suites |
+| Focused pytest | `python -m pytest --no-cov <paths>` | Targeted regression for one subsystem without global coverage enforcement | Cross-surface release readiness |
+| Property | `pytest -m property` | Invariant/fuzz coverage for parsers and cleaners | Runtime performance or UI behavior |
+| Benchmark | `pytest -m benchmark` or `python -m orpheus bench ...` | Performance regressions and pipeline timing evidence | Functional correctness by itself |
+| Slow | `pytest -m slow` | Long-running integration paths that are too heavy for contract | Fast pre-commit feedback |
+| UI | `pytest -m ui` | UI-adjacent Python checks when present | Desktop Vitest/Tauri UI |
+| GPU | `pytest -m gpu` | Real CUDA/ANE hardware paths when explicitly run | Default laptop/CI environments without hardware |
+
+Tracked parser fixtures live under `tests/fixtures/` and `tests/samples/`.
+Tests must not rewrite those paths; generated samples belong in temp dirs or
+`.artifacts/`.
+
 ## Python/Core Regression Gate
 
 Install development dependencies before running the test and static-analysis
@@ -53,6 +73,43 @@ A green smoke run is useful for iteration, but it does **not** prove that the
 Python/core pytest contract is green.
 
 ## Focused Checks
+
+Use these when you change one subsystem and want signal without the full
+contract or desktop release matrix.
+
+Parser or cleaner changes:
+
+```bash
+python -m pytest --no-cov tests/test_pdf_parser.py tests/test_epub_parser.py tests/test_markdown_parser.py tests/test_text_parser.py tests/test_ingestion.py
+python -m pytest --no-cov tests/test_cleaner.py tests/test_cleaner_golden_set.py tests/test_cleaner_heuristic.py tests/test_cleaner_text_preservation.py
+```
+
+TTS or runtime changes:
+
+```bash
+python -m pytest --no-cov tests/test_tts.py tests/test_tts_engine_modularization.py tests/test_tts_factory_contract.py tests/test_tts_resilience.py tests/test_tts_runtime_lock.py tests/test_runtime_recovery.py tests/test_parallel_fallback.py
+```
+
+API or frontend payload changes:
+
+```bash
+python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_conversion_service.py
+cd desktop && npm run typecheck && npm test -- --run
+```
+
+Storage or path changes:
+
+```bash
+python -m pytest --no-cov tests/test_storage_migrations.py tests/test_storage_repository.py tests/test_storage_maintenance.py tests/test_library_service.py
+```
+
+Desktop sidecar changes:
+
+```bash
+python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py
+python scripts/build_desktop_backend.py
+cd desktop/src-tauri && cargo test && cargo check
+```
 
 Static cleanup checks:
 
