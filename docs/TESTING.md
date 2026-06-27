@@ -168,6 +168,32 @@ Examples:
 - `tests/test_cleaner_api_trace_multichapter_real.py` requires real API credentials/network.
 - `tests/test_perf_smoke.py` and `tests/test_performance_benchmark.py` are performance-only checks.
 
+## Empirical Benchmark Suite
+
+Use the unified benchmark CLI when you need comparable local evidence for
+parsing, cleaning, TTS, or full-pipeline changes:
+
+```bash
+python -m orpheus bench parse path/to/book.pdf
+python -m orpheus bench clean path/to/book.pdf
+python -m orpheus bench full path/to/book.pdf --chapter-limit 1 --profile-tts-chunks
+python -m orpheus bench suite path/to/small.md path/to/medium.pdf --modes parse,clean
+```
+
+By default the suite writes summaries and temp files under
+`.artifacts/benchmarks/`, which is ignored local artifact state. Each command
+writes a top-level `bench_summary.json` plus the existing per-run
+`benchmark_summary.json` files from `scripts/benchmark_nagel_pipeline.py`.
+
+Recommended workflow:
+- Use small or medium project-authored fixtures for quick regression checks.
+- Use local real books only for local baseline evidence; do not commit them.
+- Run `parse,clean` first for fast signal, then run `full` only on bounded
+  chapter limits unless you intentionally want a long TTS benchmark.
+- Compare `wall_time_seconds`, `parse_seconds`, cleaner gate counts,
+  `tts_seconds_total`, `artifact_quality`, chapter counts, chunk counts, and
+  output validity across branches.
+
 ## GPU Test Markers and Skip Policy
 
 `pytest.ini` defines `@pytest.mark.gpu` for tests that require real GPU hardware
