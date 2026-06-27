@@ -41,7 +41,6 @@ class KokoroRuntimeConfig:
             "kokoro",
             config.quantization,
             model=config.model_name,
-            provider="mlx",
             options=(
                 config.runtime_options
                 if isinstance(config.runtime_options, dict)

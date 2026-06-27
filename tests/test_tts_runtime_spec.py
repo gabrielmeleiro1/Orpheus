@@ -2,9 +2,52 @@
 
 from __future__ import annotations
 
+import builtins
+import sys
+
 import pytest
 
 from modules.tts.runtime_spec import TTSRuntimeSpec
+
+
+def test_cuda_available_on_current_platform_contract_with_mocked_torch(
+    monkeypatch,
+) -> None:
+    """CUDA runtime probing must follow torch.cuda.is_available() when torch imports."""
+    from types import SimpleNamespace
+
+    fake_torch = SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: True),
+    )
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    assert TTSRuntimeSpec.cuda_available_on_current_platform() is True
+
+    fake_torch.cuda.is_available = lambda: False
+    assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
+
+    def _raise_cuda_probe_error() -> bool:
+        raise RuntimeError("cuda driver unavailable")
+
+    fake_torch.cuda.is_available = _raise_cuda_probe_error
+    assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
+
+
+def test_cuda_available_on_current_platform_contract_when_torch_missing(
+    monkeypatch,
+) -> None:
+    """CUDA runtime probing must return False when torch cannot be imported."""
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+    original_import = builtins.__import__
+
+    def import_without_torch(name: str, /, *args, **kwargs):
+        if name == "torch":
+            raise ImportError("torch not installed")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_torch)
+
+    assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
 
 
 def test_kokoro_legacy_runtime_defaults_to_cpu_when_mlx_and_cuda_unsupported(monkeypatch) -> None:

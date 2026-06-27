@@ -117,6 +117,8 @@ def _summary_run(
         "wall_time_seconds": metrics.get("wall_time_seconds"),
         "parse_seconds": metrics.get("parse_seconds"),
         "clean_seconds_total": metrics.get("clean_seconds_total"),
+        "tts_provider": metrics.get("tts_provider"),
+        "tts_device": metrics.get("tts_device"),
         "tts_seconds_total": metrics.get("tts_seconds_total"),
         "audio_duration_seconds": _audio_duration_seconds(metrics),
         "audio_realtime_factor": _audio_realtime_factor(metrics),
