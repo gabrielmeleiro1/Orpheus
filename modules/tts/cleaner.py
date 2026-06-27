@@ -22,6 +22,7 @@ import logging
 import os
 import ssl
 import threading
+import time
 from typing import Any, Optional
 
 try:
@@ -153,8 +154,25 @@ class TextCleaner:
         indexed = list(enumerate(texts))
         indexed.sort(key=lambda item: len(item[1]))
         traces_by_index: dict[int, _CleanTrace] = {}
+        llm_cleaning_enabled = True
         for index, text in indexed:
-            traces_by_index[index] = self.clean_with_trace(text)
+            if not llm_cleaning_enabled:
+                start_time = time.time()
+                rule_based_text = self._rule_based_clean(text)
+                traces_by_index[index] = cleaner_trace_backend.make_rule_only_trace(
+                    self,
+                    _CleanTrace,
+                    original_text=text,
+                    rule_based_text=rule_based_text,
+                    start_time=start_time,
+                    artifact_score=self._artifact_score_for(rule_based_text),
+                )
+                continue
+
+            trace = self.clean_with_trace(text)
+            traces_by_index[index] = trace
+            if trace.mode == "hallucination_fallback":
+                llm_cleaning_enabled = False
         return [traces_by_index[index] for index in range(len(texts))]
 
     def _artifact_score_for(self, text: str) -> dict[str, object]:

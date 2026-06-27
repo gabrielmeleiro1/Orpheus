@@ -43,6 +43,27 @@ class _OtherErrorCleaner:
         raise ValueError("model parse failed")
 
 
+class _HallucinationFallbackCleaner:
+    def __init__(self) -> None:
+        self.clean_calls = 0
+
+    def clean_with_trace(self, text: str):
+        from types import SimpleNamespace
+
+        self.clean_calls += 1
+        return SimpleNamespace(
+            original_text=text,
+            rule_based_text=text,
+            cleaned_text=text,
+            mode="hallucination_fallback",
+            llm_output="changed text",
+            llm_error="LLM preservation guard rejected token replace",
+        )
+
+    def _rule_based_clean(self, text: str) -> str:
+        return text
+
+
 class _SerialRecoveryEngine:
     sample_rate = 24000
 
@@ -140,6 +161,33 @@ def _test_clean_chunk_falls_back_to_rule_based_mode() -> None:
     print("✓ cleaner fallback to rule-based mode")
 
 
+def _test_clean_chunk_disables_llm_after_hallucination_fallback() -> None:
+    pipeline = _make_pipeline()
+    cleaner = _HallucinationFallbackCleaner()
+
+    cleaned, llm_enabled, trace1 = pipeline.stages._chapter_processor.clean_chunk_safely(
+        cleaner=cleaner,
+        chunk="before",
+        llm_cleaning_enabled=True,
+    )
+    assert cleaned == "before"
+    assert llm_enabled is False
+    assert trace1 is not None
+    assert trace1["mode"] == "hallucination_fallback"
+
+    cleaned2, llm_enabled2, trace2 = pipeline.stages._chapter_processor.clean_chunk_safely(
+        cleaner=cleaner,
+        chunk="again",
+        llm_cleaning_enabled=llm_enabled,
+    )
+    assert cleaned2 == "again"
+    assert llm_enabled2 is False
+    assert trace2 is not None
+    assert trace2["mode"] == "rule_only"
+    assert cleaner.clean_calls == 1, "LLM cleaner should not be called again after hallucination fallback"
+    print("✓ cleaner hallucination fallback disables remaining LLM attempts")
+
+
 def _test_clean_chunk_reraises_non_infrastructure_errors() -> None:
     pipeline = _make_pipeline()
     cleaner = _OtherErrorCleaner()
@@ -193,6 +241,7 @@ def test_runtime_recovery() -> bool:
 
     _test_infrastructure_marker_detection()
     _test_clean_chunk_falls_back_to_rule_based_mode()
+    _test_clean_chunk_disables_llm_after_hallucination_fallback()
     _test_clean_chunk_reraises_non_infrastructure_errors()
     _test_batch_failure_retries_serial_synthesis()
 

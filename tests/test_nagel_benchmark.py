@@ -1352,3 +1352,69 @@ def test_build_config_cuda_backend_resolves_models(
     assert config.tts_model_name == "hexgrad/Kokoro-82M"
     assert config.tts_runtime is not None
     assert config.tts_runtime.provider == "cuda"
+
+
+def test_build_config_cuda_backend_keeps_chunk_overlap_off_by_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import benchmark_nagel_pipeline
+    from modules.tts.runtime_spec import TTSRuntimeSpec
+
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "mlx_supported_on_current_platform",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "cuda_available_on_current_platform",
+        staticmethod(lambda: True),
+    )
+
+    auto_config = benchmark_nagel_pipeline._build_config(
+        output_dir=tmp_path / "auto-output",
+        temp_dir=tmp_path / "auto-temp",
+        cleaner_backend="cuda",
+        cleaner_cuda_device="cuda:0",
+        enable_chunk_overlap=None,
+    )
+    explicit_off_config = benchmark_nagel_pipeline._build_config(
+        output_dir=tmp_path / "off-output",
+        temp_dir=tmp_path / "off-temp",
+        cleaner_backend="cuda",
+        cleaner_cuda_device="cuda:0",
+        enable_chunk_overlap=False,
+    )
+
+    assert auto_config.enable_chunk_overlap is False
+    assert explicit_off_config.enable_chunk_overlap is False
+
+
+def test_build_config_cuda_backend_allows_explicit_chunk_overlap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import benchmark_nagel_pipeline
+    from modules.tts.runtime_spec import TTSRuntimeSpec
+
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "mlx_supported_on_current_platform",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "cuda_available_on_current_platform",
+        staticmethod(lambda: True),
+    )
+
+    config = benchmark_nagel_pipeline._build_config(
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        cleaner_backend="cuda",
+        cleaner_cuda_device="cuda:0",
+        enable_chunk_overlap=True,
+    )
+
+    assert config.enable_chunk_overlap is True

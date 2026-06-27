@@ -97,13 +97,25 @@ def _maybe_warn_cleaner_cuda_memory_low(runtime: Any, cleaner_config: Any) -> No
         )
 
 
+def _should_defer_cleaner_load(runtime: Any) -> bool:
+    """Return True when rule-only gating can avoid cleaner model load entirely."""
+    return bool(getattr(runtime.config, "cleaner_skip_llm_when_not_needed", False))
+
+
 def create_text_cleaner_instance(runtime: Any):
     """Create and load a text cleaner instance for current pipeline config."""
     from modules.tts.cleaner import TextCleaner
 
     cleaner_config = _cleaner_config_from_runtime(runtime)
-    _maybe_warn_cleaner_cuda_memory_low(runtime, cleaner_config)
     cleaner = TextCleaner(config=cleaner_config)
+    if _should_defer_cleaner_load(runtime):
+        runtime.log_verbose(
+            "[CLEANER] Deferring model load until a chunk requires LLM cleanup",
+            "info",
+        )
+        return cleaner
+
+    _maybe_warn_cleaner_cuda_memory_low(runtime, cleaner_config)
     cleaner.load()
     runtime.log_verbose("[CLEANER] Model loaded - Cleaning text chunks...", "success")
     return cleaner
@@ -165,15 +177,21 @@ def warmup_models(runtime: Any) -> None:
     if runtime.state.text_cleaner is None:
         from modules.tts.cleaner import TextCleaner
 
-        runtime.log_verbose(
-            f"[WARMUP] Loading Text Cleaner model: {runtime.config.cleaner_model_name}",
-            "process",
-        )
         cleaner_config = _cleaner_config_from_runtime(runtime)
-        _maybe_warn_cleaner_cuda_memory_low(runtime, cleaner_config)
         runtime.state.text_cleaner = TextCleaner(config=cleaner_config)
-        runtime.state.text_cleaner.load()
-        runtime.log_verbose("[WARMUP] Text Cleaner model loaded and cached", "success")
+        if _should_defer_cleaner_load(runtime):
+            runtime.log_verbose(
+                "[WARMUP] Text Cleaner model load deferred until LLM cleanup is needed",
+                "info",
+            )
+        else:
+            runtime.log_verbose(
+                f"[WARMUP] Loading Text Cleaner model: {runtime.config.cleaner_model_name}",
+                "process",
+            )
+            _maybe_warn_cleaner_cuda_memory_low(runtime, cleaner_config)
+            runtime.state.text_cleaner.load()
+            runtime.log_verbose("[WARMUP] Text Cleaner model loaded and cached", "success")
 
     if callable(record_warmup):
         record_warmup()

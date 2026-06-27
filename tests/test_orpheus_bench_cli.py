@@ -147,6 +147,42 @@ def test_full_command_runs_full_pipeline_with_tts_profile(
     assert summary["runs"][0]["audio_realtime_factor"] == 2.0
 
 
+def test_full_command_passes_chunk_overlap_choice(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from orpheus import bench
+
+    source = tmp_path / "book.md"
+    source.write_text("# One\n\nA short benchmark chapter.", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_run_benchmark(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "mode": "full",
+            "source_path": str(Path(kwargs["source_path"]).resolve()),
+            "wall_time_seconds": 5.0,
+            "metrics_path": str(Path(kwargs["output_dir"]) / "benchmark_summary.json"),
+        }
+
+    monkeypatch.setattr(bench, "run_benchmark", fake_run_benchmark)
+
+    exit_code = bench.main(
+        [
+            "full",
+            str(source),
+            "--output-root",
+            str(tmp_path / "out"),
+            "--enable-chunk-overlap",
+        ]
+    )
+
+    assert exit_code == 0
+    assert calls[0]["enable_chunk_overlap"] is True
+
+
 def test_suite_command_runs_requested_modes_for_multiple_sources(
     tmp_path: Path,
     monkeypatch,
@@ -477,4 +513,3 @@ def test_report_command_writes_outputs_without_baseline(tmp_path: Path) -> None:
         for case in report["cases"]
         for metric in case["metrics"].values()
     )
-

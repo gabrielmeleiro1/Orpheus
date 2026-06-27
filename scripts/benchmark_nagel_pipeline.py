@@ -381,7 +381,7 @@ def _build_config(
     chunk_size: int | None = None,
     chapter_limit: int | None = None,
     emit_chapter_mp3_artifacts: bool = False,
-    enable_chunk_overlap: bool = False,
+    enable_chunk_overlap: bool | None = False,
     enable_tts_file_batch_results: bool = True,
     enable_parallel: bool = True,
     max_parallel_chapters: int = 2,
@@ -414,16 +414,20 @@ def _build_config(
     if chapter_limit is not None:
         config.chapter_limit = max(1, int(chapter_limit))
     config.emit_chapter_mp3_artifacts = bool(emit_chapter_mp3_artifacts)
+    requested_enable_chunk_overlap = enable_chunk_overlap
     config.enable_chunk_overlap = bool(enable_chunk_overlap)
     config.enable_tts_file_batch_results = bool(enable_tts_file_batch_results)
     config.enable_parallel = enable_parallel
     config.max_parallel_chapters = int(max_parallel_chapters)
     config.requested_parallel_chapters = int(max_parallel_chapters)
     config.parallel_worker_mode = str(parallel_worker_mode or "auto")
-    return _finalize_benchmark_config(
+    config = _finalize_benchmark_config(
         config,
         explicit_cleaner_model=cleaner_model_name is not None,
     )
+    if requested_enable_chunk_overlap is None:
+        config.enable_chunk_overlap = False
+    return config
 
 
 def _finalize_benchmark_config(
@@ -1105,7 +1109,7 @@ def run_benchmark(
     chunk_size: int | None = None,
     chapter_limit: int | None = None,
     emit_chapter_mp3_artifacts: bool = False,
-    enable_chunk_overlap: bool = False,
+    enable_chunk_overlap: bool | None = False,
     enable_tts_file_batch_results: bool = True,
     min_extracted_chars: int = 1,
     enable_parallel: bool = True,
@@ -1361,7 +1365,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--enable-chunk-overlap",
         action=argparse.BooleanOptionalAction,
-        default=defaults.enable_chunk_overlap,
+        default=None,
     )
     parser.add_argument(
         "--enable-tts-file-batch-results",

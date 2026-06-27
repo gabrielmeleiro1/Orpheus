@@ -489,11 +489,11 @@ class TestM4BPackager:
              
              packager.create_m4b(["ch1.mp3"], ["Chapter 1"], metadata, "out.m4b")
              
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 1
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_create_m4b_without_cover_uses_existing_two_pass_remux_path(self, mock_which, mock_run, tmp_path):
+    def test_create_m4b_without_cover_uses_single_pass_metadata_mux(self, mock_which, mock_run, tmp_path):
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.side_effect = _successful_ffmpeg_run
 
@@ -514,24 +514,23 @@ class TestM4BPackager:
             chapter_durations_ms=[1000, 1500],
         )
 
-        assert mock_run.call_count == 2
-        concat_args = mock_run.call_args_list[0].args[0]
-        final_args = mock_run.call_args_list[1].args[0]
-
-        assert concat_args[0] == "/usr/bin/ffmpeg"
-        assert concat_args[concat_args.index("-f") + 1] == "concat"
-        assert concat_args[concat_args.index("-c:a") + 1] == "aac"
-        assert concat_args[concat_args.index("-b:a") + 1] == "128k"
-        assert concat_args[concat_args.index("-movflags") + 1] == "+faststart"
-        assert str(concat_args[-1]).endswith("concat.m4a")
+        assert mock_run.call_count == 1
+        final_args = mock_run.call_args_list[0].args[0]
 
         assert final_args[0] == "/usr/bin/ffmpeg"
-        assert str(final_args[final_args.index("-i") + 1]).endswith("concat.m4a")
+        concat_f_index = final_args.index("-f")
+        assert final_args[concat_f_index + 1] == "concat"
+        assert final_args[concat_f_index + 2] == "-safe"
+        assert final_args[concat_f_index + 4] == "-i"
+        assert final_args[final_args.index("-c:a") + 1] == "aac"
+        assert final_args[final_args.index("-b:a") + 1] == "128k"
+        assert final_args[final_args.index("-movflags") + 1] == "+faststart"
         ffmetadata_f_index = final_args.index("-f")
+        ffmetadata_f_index = final_args.index("-f", ffmetadata_f_index + 1)
         assert final_args[ffmetadata_f_index + 1] == "ffmetadata"
         assert final_args[ffmetadata_f_index + 2] == "-i"
         assert final_args[final_args.index("-map_metadata") + 1] == "1"
-        assert final_args[final_args.index("-c:a") + 1] == "copy"
+        assert final_args[final_args.index("-map_chapters") + 1] == "1"
         temp_output = Path(final_args[-1])
         assert temp_output.parent == output.parent
         assert temp_output.name.startswith(f".{output.name}.")
@@ -549,9 +548,6 @@ class TestM4BPackager:
         def fake_run(cmd, **kwargs):  # noqa: ANN001, ANN202
             assert kwargs["timeout"] > 0
             output_arg = Path(cmd[-1])
-            if output_arg.name == "concat.m4a":
-                output_arg.write_bytes(b"concat")
-                return MagicMock(returncode=0, stderr="")
             temp_outputs.append(output_arg)
             output_arg.write_bytes(b"partial")
             return MagicMock(returncode=1, stderr="boom")
@@ -575,7 +571,7 @@ class TestM4BPackager:
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_create_m4b_with_cover_keeps_attached_pic_two_pass_path(self, mock_which, mock_run, tmp_path):
+    def test_create_m4b_with_cover_keeps_attached_pic_mapping(self, mock_which, mock_run, tmp_path):
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.side_effect = _successful_ffmpeg_run
 
@@ -591,7 +587,7 @@ class TestM4BPackager:
              patch.object(packager, "_write_ffmetadata"):
             packager.create_m4b([audio_file], ["One"], metadata, tmp_path / "book.m4b")
 
-        assert mock_run.call_count == 2
+        assert mock_run.call_count == 1
         final_args = mock_run.call_args_list[-1].args[0]
         assert "-disposition:v" in final_args
         assert final_args[final_args.index("-disposition:v") + 1] == "attached_pic"

@@ -142,6 +142,14 @@ class TestRemovesOCRArtifacts:
             "The self-governed recipient-cum witness made a promise-making and promise-keeping ritual."
         )
 
+    def test_repairs_known_closed_compound_hyphenation(self):
+        cleaner = _make_rule_only_cleaner()
+        result = cleaner._rule_based_clean(
+            "A country- woman spoke to the Country- men near the road."
+        )
+
+        assert result == "A countrywoman spoke to the Countrymen near the road."
+
     def test_removes_link_formatting(self):
         cleaner = _make_rule_only_cleaner()
         result = cleaner._rule_based_clean("[click here](https://example.com)")
