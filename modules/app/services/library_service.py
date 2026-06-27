@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
 from modules.errors import sanitize_filename
 from modules.ingestion.preflight import preflight_source as inspect_source
 from modules.pipeline.book_workspace import sanitize_book_title
@@ -22,7 +23,7 @@ from modules.storage.repository import IBookRepository
 
 MANAGED_UPLOAD_ROOT_NAME = "web_uploads"
 UPLOAD_HANDLE_PREFIX = "upload:"
-SUPPORTED_UPLOAD_SUFFIXES = {".pdf", ".epub", ".txt", ".md"}
+SUPPORTED_UPLOAD_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 DEFAULT_PASTE_TITLE = "Pasted Document"
