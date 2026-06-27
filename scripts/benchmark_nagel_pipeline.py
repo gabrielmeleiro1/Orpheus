@@ -52,6 +52,10 @@ from modules.ingestion.extraction_artifact_signals import scan_cleaner_handoff_a
 from modules.tts import cleaner_rules as cleaner_rules_backend  # noqa: E402
 from modules.tts import cleaner_config  # noqa: E402
 from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
+from modules.tts.cleaner_config import CleanerConfig, resolve_cleaner_model_name  # noqa: E402
+from modules.tts.device_memory import get_combined_device_memory_policy  # noqa: E402
+from modules.tts.runtime_options import resolve_tts_runtime  # noqa: E402
+from modules.pipeline.models import build_worker_plan  # noqa: E402
 from modules.tts.chunker import ChunkConfig, TextChunker  # noqa: E402
 from modules.tts.factory import TTSEngineFactory  # noqa: E402
 
@@ -416,6 +420,52 @@ def _build_config(
     config.max_parallel_chapters = int(max_parallel_chapters)
     config.requested_parallel_chapters = int(max_parallel_chapters)
     config.parallel_worker_mode = str(parallel_worker_mode or "auto")
+    return _finalize_benchmark_config(
+        config,
+        explicit_cleaner_model=cleaner_model_name is not None,
+    )
+
+
+def _finalize_benchmark_config(
+    config: PipelineConfig,
+    *,
+    explicit_cleaner_model: bool,
+) -> PipelineConfig:
+    """Re-resolve runtime fields after post-init mutations in the benchmark harness."""
+    config.cleaner_model_name = resolve_cleaner_model_name(
+        backend=config.cleaner_backend,
+        requested_model=None,
+        configured_model=config.cleaner_model_name,
+        explicit_model=explicit_cleaner_model,
+    )
+    if (
+        str(config.cleaner_backend).strip().lower() == "cuda"
+        and str(config.tts_model_name or "").startswith("mlx-community/")
+    ):
+        config.tts_model_name = None
+    config.tts_runtime = None
+    config.tts_runtime_options = None
+    config.tts_runtime, config.tts_runtime_options = resolve_tts_runtime(
+        tts_engine=config.tts_engine,
+        tts_model_name=config.tts_model_name,
+        tts_quantization=config.tts_quantization,
+        tts_runtime=config.tts_runtime,
+        tts_runtime_options=config.tts_runtime_options,
+    )
+    config.tts_engine = config.tts_runtime.engine
+    config.tts_model_name = config.tts_runtime.resolved_model()
+    config.tts_quantization = config.tts_runtime.quantization
+    resolved_cleaner_config = CleanerConfig(
+        model_name=config.cleaner_model_name,
+        backend=config.cleaner_backend,
+        cuda_device=config.cleaner_cuda_device,
+        cuda_quantization=config.cleaner_cuda_quantization,
+    )
+    config.device_memory_policy = get_combined_device_memory_policy(
+        config.tts_runtime,
+        resolved_cleaner_config,
+    )
+    config.worker_plan = build_worker_plan(config)
     return config
 
 

@@ -1320,3 +1320,35 @@ def test_cleaner_gate_benchmark_reuses_parse_metrics_document(
 
     assert metrics["success"] is True
     assert parse_calls == 1
+
+
+def test_build_config_cuda_backend_resolves_models(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts import benchmark_nagel_pipeline
+    from modules.tts.runtime_spec import TTSRuntimeSpec
+
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "mlx_supported_on_current_platform",
+        staticmethod(lambda: False),
+    )
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "cuda_available_on_current_platform",
+        staticmethod(lambda: True),
+    )
+
+    config = benchmark_nagel_pipeline._build_config(
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        cleaner_backend="cuda",
+        cleaner_cuda_device="cuda:0",
+        cleaner_cuda_quantization="4bit",
+    )
+
+    assert config.cleaner_model_name == "Qwen/Qwen2.5-1.5B-Instruct"
+    assert config.tts_model_name == "hexgrad/Kokoro-82M"
+    assert config.tts_runtime is not None
+    assert config.tts_runtime.provider == "cuda"
