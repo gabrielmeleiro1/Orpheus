@@ -347,11 +347,16 @@ class LibraryService:
             ):
                 output_files.add(artifact_dir / f"{prefix}_{suffix}")
 
-        safe_title = sanitize_book_title(getattr(book, "title", ""))
-        if safe_title:
-            fallback_dir = self._output_dir / safe_title
-            if self._is_within_output_root(fallback_dir) and not self._is_output_root(fallback_dir):
-                output_dirs.add(fallback_dir)
+        # Only guess a title-derived directory when no real output directory
+        # could be resolved from stored paths. Otherwise a book whose actual
+        # directory was de-duplicated (e.g. "Title (2)") would also delete a
+        # different book that owns the plain "Title" directory.
+        if not output_dirs:
+            safe_title = sanitize_book_title(getattr(book, "title", ""))
+            if safe_title:
+                fallback_dir = self._output_dir / safe_title
+                if self._is_within_output_root(fallback_dir) and not self._is_output_root(fallback_dir):
+                    output_dirs.add(fallback_dir)
 
         return output_dirs, output_files
 

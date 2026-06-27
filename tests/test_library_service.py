@@ -502,6 +502,167 @@ def test_library_service_delete_book_preserves_external_source_inside_output_roo
     assert not book_dir.exists()
 
 
+def test_library_service_delete_book_with_duplicate_title_preserves_sibling_output(tmp_path):
+    output_root = tmp_path / "output"
+
+    sibling_dir = output_root / "Shared Title"
+    sibling_chapters = sibling_dir / "chapters"
+    sibling_chapters.mkdir(parents=True, exist_ok=True)
+    (sibling_dir / "Shared Title.m4b").write_text("sibling audio", encoding="utf-8")
+    (sibling_chapters / "01.mp3").write_text("sibling chapter", encoding="utf-8")
+
+    deleted_dir = output_root / "Shared Title (2)"
+    deleted_chapters = deleted_dir / "chapters"
+    deleted_chapters.mkdir(parents=True, exist_ok=True)
+    (deleted_dir / "Shared Title.m4b").write_text("deleted audio", encoding="utf-8")
+    (deleted_chapters / "01.mp3").write_text("deleted chapter", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=42,
+                title="Shared Title",
+                author="Tester",
+                source_path=str(tmp_path / "imports" / "shared.epub"),
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path="output/Shared Title (2)/Shared Title.m4b",
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=42,
+                    book_id=42,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path="output/Shared Title (2)/chapters/01.mp3",
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root)
+
+    deleted = service.delete_book(42)
+
+    assert deleted is True
+    assert not deleted_dir.exists()
+    assert sibling_dir.exists()
+    assert (sibling_dir / "Shared Title.m4b").exists()
+    assert (sibling_chapters / "01.mp3").exists()
+
+
+def test_library_service_delete_book_refuses_path_traversal_in_stored_paths(tmp_path):
+    output_root = tmp_path / "output"
+    temp_root = tmp_path / "temp"
+    output_root.mkdir(parents=True, exist_ok=True)
+    (temp_root / "web_uploads").mkdir(parents=True, exist_ok=True)
+
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir(parents=True, exist_ok=True)
+    protected_audio = outside_dir / "private.m4b"
+    protected_chapter = outside_dir / "private.mp3"
+    protected_source = outside_dir / "private_source.epub"
+    for artifact in (protected_audio, protected_chapter, protected_source):
+        artifact.write_text("user data", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=77,
+                title="Traversal Book",
+                author="Tester",
+                source_path="temp/web_uploads/../../outside/private_source.epub",
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path="output/../outside/private.m4b",
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=77,
+                    book_id=77,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path="output/../outside/private.mp3",
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root, temp_dir=temp_root)
+
+    deleted = service.delete_book(77)
+
+    assert deleted is True
+    assert protected_audio.exists()
+    assert protected_chapter.exists()
+    assert protected_source.exists()
+    assert outside_dir.exists()
+
+
+def test_library_service_delete_book_with_already_deleted_source_removes_output(tmp_path):
+    output_root = tmp_path / "output"
+    temp_root = tmp_path / "temp"
+    (temp_root / "web_uploads").mkdir(parents=True, exist_ok=True)
+
+    book_dir = output_root / "Gone Source"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True, exist_ok=True)
+    (book_dir / "Gone Source.m4b").write_text("audio", encoding="utf-8")
+    (chapters_dir / "01.mp3").write_text("chapter", encoding="utf-8")
+
+    # Source was a managed upload that the user already deleted from disk.
+    missing_source = "temp/web_uploads/already_gone.epub"
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=55,
+                title="Gone Source",
+                author="Tester",
+                source_path=missing_source,
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path="output/Gone Source/Gone Source.m4b",
+                playback_status=PlaybackStatus.PACKAGED,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=55,
+                    book_id=55,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path="output/Gone Source/chapters/01.mp3",
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root, temp_dir=temp_root)
+
+    deleted = service.delete_book(55)
+
+    assert deleted is True
+    assert repository.deleted_ids == [55]
+    assert not book_dir.exists()
+
+
 def test_library_service_open_book_folder_prefers_output_folder(tmp_path):
     source_path = tmp_path / "imports" / "folder-book.pdf"
     source_path.parent.mkdir(parents=True, exist_ok=True)
