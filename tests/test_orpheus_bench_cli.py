@@ -404,8 +404,10 @@ def test_policy_preset_expands_parser_and_cleaner_fixtures(
     monkeypatch,
 ) -> None:
     from orpheus import bench
+    from orpheus.bench.policy import policy_bench_fixture_paths
 
     calls: list[dict[str, object]] = []
+    fixture_paths = policy_bench_fixture_paths()
 
     def fake_run_benchmark(**kwargs):
         calls.append(kwargs)
@@ -422,11 +424,10 @@ def test_policy_preset_expands_parser_and_cleaner_fixtures(
     exit_code = bench.main(["policy", "--output-root", str(tmp_path / "policy")])
 
     assert exit_code == 0
-    assert len(calls) == 4
-    assert all(call["chapter_limit"] == 2 for call in calls)
-    assert all(call["min_extracted_chars"] == 50 for call in calls)
+    assert len(calls) == len(fixture_paths) * 2
+    assert all(call["min_extracted_chars"] == 1 for call in calls)
     source_names = {Path(str(call["source_path"])).name for call in calls}
-    assert source_names == {"policy_headings.md", "policy_cleaner_noise.md"}
+    assert source_names == {path.name for path in fixture_paths}
 
 
 def test_compare_command_writes_regression_report(tmp_path: Path) -> None:

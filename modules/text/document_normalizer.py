@@ -11,6 +11,7 @@ from typing import Iterable
 from modules.ingestion.models import Chapter, Document
 from modules.ingestion.content_filter import (
     SkippedSection,
+    classify_chapter_content,
     filter_audiobook_chapters,
     serialize_skipped_section,
 )
@@ -175,6 +176,19 @@ def normalize_extracted_document(
             return document
         title = str(chapter.title).strip()
         content = str(chapter.content)
+        if skip_non_prose_sections:
+            classification = classify_chapter_content(title, content)
+            if classification.should_skip:
+                skipped_sections.append(
+                    SkippedSection(
+                        original_number=chapter.number,
+                        title=title,
+                        reason=classification.reason or "non_prose",
+                        confidence=classification.confidence,
+                        chars=len(content),
+                    )
+                )
+                continue
         if source_type == "epub" and _is_epub_non_narrative_chapter(title, content):
             skipped_sections.append(
                 SkippedSection(

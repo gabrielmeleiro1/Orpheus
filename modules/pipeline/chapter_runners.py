@@ -14,6 +14,7 @@ from .chapter_processor import ChapterProcessor
 from .models import ChapterResult
 from .result_validation import format_failure_notes
 from .runtime import PipelineRuntimeProtocol
+from .worker_config import build_worker_pipeline_config
 from .worker_errors import (
     WorkerRuntimeLoadError,
     WorkerRuntimeMemoryError,
@@ -29,6 +30,75 @@ PARALLEL_AVAILABLE = importlib.util.find_spec(f"{__package__}.parallel") is not 
 logger = logging.getLogger(__name__)
 
 
+def process_chapter_worker(
+    chapter: Any,
+    chapter_idx: int,
+    output_dir: Path,
+    total_chapters: Optional[int] = None,
+    tts_engine: Any = None,
+    text_cleaner: Any = None,
+) -> ChapterResult:
+    """
+    Worker function for processing a single chapter in a separate process.
+
+    This runs in isolation in a ProcessPoolExecutor worker.
+    PipelineConfig is read from the process-global worker cache
+    (set once by _init_worker) to avoid per-chapter pickle overhead.
+    """
+    from . import orchestrator as orchestrator_module
+
+    if tts_engine is None or text_cleaner is None:
+        cached_tts, cached_cleaner = orchestrator_module.get_worker_cached_models()
+        tts_engine = tts_engine or cached_tts
+        text_cleaner = text_cleaner or cached_cleaner
+
+    config = orchestrator_module.get_worker_cached_config()
+    if config is None:
+        raise RuntimeError(
+            "Worker pipeline config not initialized. "
+            "Ensure _init_worker was called with worker_init_config."
+        )
+
+    worker_config = build_worker_pipeline_config(config)
+
+    from .orchestrator import ConversionPipeline
+
+    pipeline = ConversionPipeline(worker_config)
+    runtime = pipeline.stages.runtime
+    if tts_engine is not None:
+        runtime.set_tts_engine(tts_engine)
+    if text_cleaner is not None:
+        runtime.set_text_cleaner(text_cleaner)
+    stage_timings: dict[str, float] = {}
+    stages = pipeline.stages
+    previous_stage_timings = stages.begin_stage_timing_capture(stage_timings)
+
+    try:
+        resolved_total_chapters = (
+            int(total_chapters)
+            if total_chapters is not None and int(total_chapters) > 0
+            else chapter_idx + 1
+        )
+        result = stages.process_chapter(
+            chapter=chapter,
+            chapter_idx=chapter_idx,
+            total_chapters=resolved_total_chapters,
+            output_dir=output_dir,
+        )
+        result.stage_timings = stage_timings
+        return result
+    except Exception as exc:
+        logger.error("Worker failed for chapter %s: %s", chapter_idx, exc)
+        return ChapterResult(
+            chapter_number=chapter.number,
+            chapter_title=chapter.title,
+            error=str(exc),
+            stage_timings=stage_timings,
+        )
+    finally:
+        stages.restore_stage_timing_capture(previous_stage_timings)
+
+
 def _process_chapter_worker_entry(
     chapter: Any,
     chapter_idx: int,
@@ -37,7 +107,7 @@ def _process_chapter_worker_entry(
     total_chapters: Optional[int] = None,
 ) -> ChapterResult:
     _ = _file_manager
-    return ChapterProcessor.process_chapter_worker(
+    return process_chapter_worker(
         chapter=chapter,
         chapter_idx=chapter_idx,
         output_dir=output_dir,
