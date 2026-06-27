@@ -24,6 +24,16 @@ class SkippedSection:
     chars: int
 
 
+def serialize_skipped_section(section: SkippedSection) -> dict[str, object]:
+    return {
+        "original_number": section.original_number,
+        "title": section.title,
+        "reason": section.reason,
+        "confidence": section.confidence,
+        "chars": section.chars,
+    }
+
+
 _INDEX_TITLE_RE = re.compile(r"\b(?:index|name index|subject index)\b", re.IGNORECASE)
 _REFERENCES_TITLE_RE = re.compile(r"\b(?:bibliography|references|works cited)\b", re.IGNORECASE)
 _TOC_TITLE_RE = re.compile(r"\b(?:contents|table of contents)\b", re.IGNORECASE)

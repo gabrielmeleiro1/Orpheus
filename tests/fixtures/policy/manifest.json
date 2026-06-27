@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {"id": "index-alphabetical", "category": "index", "source": "index-alphabetical.md", "expected_skip": true, "expected_reason": "index", "expected_chapters": 0},
+    {"id": "bibliography-citations", "category": "bibliography", "source": "bibliography-citations.md", "expected_skip": true, "expected_reason": "references", "expected_chapters": 0},
+    {"id": "table-of-contents", "category": "table_of_contents", "source": "table-of-contents.md", "expected_skip": true, "expected_reason": "table_of_contents", "expected_chapters": 0},
+    {"id": "copyright-page", "category": "copyright", "source": "copyright-page.md", "expected_skip": true, "expected_reason": "copyright", "expected_chapters": 0},
+    {"id": "prose-plain", "category": "prose", "source": "prose-plain.md", "must_not_skip": true, "expected_chapters": 1},
+    {"id": "prose-with-citations", "category": "false_positive_prose", "source": "prose-with-citations.md", "must_not_skip": true, "expected_chapters": 1},
+    {"id": "prose-chapter-title-with-colon", "category": "false_positive_prose", "source": "prose-chapter-title-with-colon.md", "must_not_skip": true, "expected_chapters": 1},
+    {"id": "footnotes-inline", "category": "footnotes", "source": "footnotes-inline.md", "must_not_skip": true, "expected_chapters": 1},
+    {"id": "ocr-residue", "category": "ocr_residue", "source": "ocr-residue.md", "must_not_skip": true, "expected_chapters": 1},
+    {"id": "social-boilerplate", "category": "social_boilerplate", "source": "social-boilerplate.md", "must_not_skip": true, "expected_chapters": 1},
+    {"id": "mixed-prose-and-back-matter", "category": "mixed", "source": "mixed-prose-and-back-matter.md", "expected_chapters": 1, "expected_skip_reasons": ["table_of_contents", "index"]}
+  ]
+}
