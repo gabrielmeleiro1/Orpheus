@@ -11,6 +11,11 @@ import json
 import sqlite3
 from typing import Any, Optional
 
+# Output sub-directories owned by the maintenance tooling itself (e.g. prune
+# report JSON). These must never be treated as orphan/stale artifacts, otherwise
+# a later prune run would delete the prior run's own audit history.
+RESERVED_OUTPUT_DIR_NAMES = frozenset({"reports"})
+
 
 def workspace_root_for_db(db_path: Path) -> Path:
     if db_path.parent.name in {"data", "state"}:
@@ -211,7 +216,11 @@ def audit_storage_state(
                 temp_upload_refs.add(source_path.resolve())
 
         actual_output_dirs = (
-            {str(p.resolve()) for p in output_root.iterdir() if p.is_dir()}
+            {
+                str(p.resolve())
+                for p in output_root.iterdir()
+                if p.is_dir() and p.name not in RESERVED_OUTPUT_DIR_NAMES
+            }
             if output_root.exists()
             else set()
         )
