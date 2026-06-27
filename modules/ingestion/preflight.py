@@ -10,7 +10,9 @@ from typing import Any, Optional
 from .text_encoding import read_source_text
 from .pdf_preflight import analyze_pdf_text_layer
 
-SUPPORTED_PREFLIGHT_SUFFIXES = {".pdf", ".epub", ".txt", ".md"}
+from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
+
+SUPPORTED_PREFLIGHT_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
 DEFAULT_SAMPLE_CHARS = 900
 TINY_SOURCE_BYTES = 64
 

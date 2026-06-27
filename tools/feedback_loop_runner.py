@@ -22,12 +22,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from modules.contracts.source_extensions import FEEDBACK_LOOP_SOURCE_SUFFIXES
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
 from modules.tts import cleaner_config  # noqa: E402
 from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
 
 
-SUPPORTED_SOURCE_SUFFIXES = {".pdf", ".epub"}
+SUPPORTED_SOURCE_SUFFIXES = FEEDBACK_LOOP_SOURCE_SUFFIXES
 
 
 def _apply_cleaner_env(
