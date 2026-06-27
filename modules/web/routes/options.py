@@ -5,8 +5,12 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
+from modules.contracts.conversion_runtime_options import (
+    build_runtime_option_pydantic_fields,
+    parallel_warmup_runtime_option_specs,
+)
 from modules.web.deps import ControllerDep
 from modules.tts.cleaner_api import fetch_openai_model_ids
 from modules.tts.cleaner_backends.metadata import list_cleaner_backend_options
@@ -19,18 +23,11 @@ class OpenAIModelListRequest(BaseModel):
     api_key: str = Field(..., min_length=1)
 
 
-class ParallelWarmupRequest(BaseModel):
-    voice: str = "am_adam"
-    speed: float = 1.0
-    tts_engine: Optional[str] = None
-    tts_quantization: Optional[str] = None
-    cleaner_model: Optional[str] = None
-    cleaner_backend: Optional[str] = None
-    cleaner_cuda_device: Optional[str] = None
-    cleaner_cuda_quantization: Optional[str] = None
-    cleaner_api_model: Optional[str] = None
-    cleaner_api_key: Optional[str] = None
-    max_parallel_chapters: int = Field(default=4, ge=1)
+ParallelWarmupRequest = create_model(
+    "ParallelWarmupRequest",
+    __base__=BaseModel,
+    **build_runtime_option_pydantic_fields(parallel_warmup_runtime_option_specs()),
+)
 
 
 @router.get("/api/options/models")
