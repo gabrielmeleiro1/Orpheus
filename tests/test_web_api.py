@@ -7,6 +7,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -444,6 +446,183 @@ def test_conversion_routes_merge_partial_grouped_runtime_options_with_flat_legac
     assert runtime_options.tts_engine == "kokoro"
     assert runtime_options.parallel_worker_mode == "manual"
     assert runtime_options.max_parallel_chapters == 3
+
+
+_FRONTEND_CANONICAL_RUNTIME_OPTIONS = {
+    "voice": "af_bella",
+    "speed": 1.35,
+    "tts_engine": "kokoro",
+    "tts_quantization": "bf16",
+    "cleaner_backend": "api",
+    "cleaner_model": None,
+    "cleaner_api_model": "gpt-5-nano",
+    "cleaner_api_key": "sk-contract",
+    "tts_options": {"quantization": "bf16"},
+    "parallel_worker_mode": "manual",
+    "enable_parallel": True,
+    "max_parallel_chapters": 3,
+}
+
+
+def _capture_conversion_controller():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.start_kwargs = None
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.start_kwargs = kwargs
+            return _Job()
+
+    return _Controller()
+
+
+def _pipeline_config_for_payload(tmp_path: Path, api_payload: dict):
+    from modules.app.config import AppConfig
+    from modules.app.services.conversion_runtime import RuntimeOptionsResolver
+    from modules.contracts.conversion_runtime import from_api_payload
+
+    runtime_options = from_api_payload(api_payload)
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    resolver = RuntimeOptionsResolver(
+        config=config,
+        cleaner_api_limiter=SimpleNamespace(semaphore=None),
+        runtime_validator=lambda *args, **kwargs: None,
+    )
+    pipeline_config = resolver.create_pipeline_config(
+        conversion_mode=api_payload.get("conversion_mode", "audiobook"),
+        runtime_options=runtime_options,
+    )
+    return runtime_options, pipeline_config
+
+
+@pytest.mark.parametrize(
+    ("api_payload", "expected_runtime", "expected_pipeline"),
+    [
+        pytest.param(
+            {
+                "source_path": "/tmp/frontend-contract.epub",
+                "conversion_mode": "document_audio",
+                "title": "Frontend Contract Book",
+                "author": "Contract Author",
+                "runtime_options": _FRONTEND_CANONICAL_RUNTIME_OPTIONS,
+            },
+            _FRONTEND_CANONICAL_RUNTIME_OPTIONS,
+            {
+                "conversion_mode": "document_audio",
+                "voice": "af_bella",
+                "speed": 1.35,
+                "tts_engine": "kokoro",
+                "tts_quantization": "bf16",
+                "cleaner_backend": "api",
+                "cleaner_api_model": "gpt-5-nano",
+                "enable_parallel": True,
+                "max_parallel_chapters": 3,
+                "parallel_worker_mode": "manual",
+            },
+            id="frontend-canonical-nested",
+        ),
+        pytest.param(
+            {
+                "source_path": "/tmp/frontend-contract.epub",
+                "conversion_mode": "document_audio",
+                "title": "Frontend Contract Book",
+                "author": "Contract Author",
+                **_FRONTEND_CANONICAL_RUNTIME_OPTIONS,
+            },
+            _FRONTEND_CANONICAL_RUNTIME_OPTIONS,
+            {
+                "conversion_mode": "document_audio",
+                "voice": "af_bella",
+                "speed": 1.35,
+                "tts_engine": "kokoro",
+                "tts_quantization": "bf16",
+                "cleaner_backend": "api",
+                "cleaner_api_model": "gpt-5-nano",
+                "enable_parallel": True,
+                "max_parallel_chapters": 3,
+                "parallel_worker_mode": "manual",
+            },
+            id="flat-legacy",
+        ),
+        pytest.param(
+            {
+                "source_path": "/tmp/book.pdf",
+                "voice": "af_bella",
+                "speed": 1.35,
+                "parallel_worker_mode": "manual",
+                "max_parallel_chapters": 3,
+                "runtime_options": {
+                    "tts_engine": "kokoro",
+                    "tts_quantization": "bf16",
+                    "cleaner_backend": "api",
+                    "cleaner_api_model": "gpt-5-nano",
+                    "enable_parallel": True,
+                },
+            },
+            {
+                "voice": "af_bella",
+                "speed": 1.35,
+                "tts_engine": "kokoro",
+                "tts_quantization": "bf16",
+                "cleaner_backend": "api",
+                "cleaner_api_model": "gpt-5-nano",
+                "parallel_worker_mode": "manual",
+                "enable_parallel": True,
+                "max_parallel_chapters": 3,
+            },
+            {
+                "voice": "af_bella",
+                "speed": 1.35,
+                "tts_engine": "kokoro",
+                "tts_quantization": "bf16",
+                "cleaner_backend": "api",
+                "cleaner_api_model": "gpt-5-nano",
+                "enable_parallel": True,
+                "max_parallel_chapters": 3,
+                "parallel_worker_mode": "manual",
+            },
+            id="partial-flat-and-nested-merge",
+        ),
+    ],
+)
+def test_conversion_api_payload_contract_maps_to_controller_and_pipeline_config(
+    tmp_path,
+    api_payload,
+    expected_runtime,
+    expected_pipeline,
+):
+    from modules.contracts.conversion_runtime import from_api_payload
+
+    controller = _capture_conversion_controller()
+    client = _make_client_with_controller(controller)
+    response = client.post("/api/conversions", json=api_payload)
+
+    assert response.status_code == 200
+    controller_runtime = controller.start_kwargs["runtime_options"]
+    contract_runtime = from_api_payload(api_payload)
+
+    for field, expected_value in expected_runtime.items():
+        assert getattr(controller_runtime, field) == expected_value
+        assert getattr(contract_runtime, field) == expected_value
+
+    _, pipeline_config = _pipeline_config_for_payload(tmp_path, api_payload)
+    for field, expected_value in expected_pipeline.items():
+        assert getattr(pipeline_config, field) == expected_value
 
 
 def test_start_conversion_rejects_invalid_conversion_mode():

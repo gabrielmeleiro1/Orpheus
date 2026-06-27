@@ -5,9 +5,15 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, create_model
 
 from modules.app import ConversionCallbacks, ConversionRuntimeOptions
+from modules.contracts.conversion_runtime_options import (
+    CONVERSION_RUNTIME_OPTION_SPECS,
+    build_runtime_option_pydantic_fields,
+    conversion_runtime_option_field_names,
+)
+from modules.contracts.conversion_runtime import merge_runtime_options
 from modules.pipeline.book_workspace import MAX_BOOK_TITLE_LENGTH
 from modules.web.deps import ControllerDep, EventBrokerDep, TempDirDep, call_with_http_errors
 from modules.web.serializers import job_payload, job_status_value
@@ -23,43 +29,21 @@ def _model_fields_set(model: BaseModel) -> set[str]:
     return set(fields_set)
 
 
-class ConversionRuntimeOptionsRequest(BaseModel):
-    voice: str = "am_adam"
-    speed: float = 1.0
-    tts_engine: Optional[str] = None
-    tts_quantization: Optional[str] = None
-    tts_provider: Optional[str] = None
-    tts_device: Optional[str] = None
-    cleaner_model: Optional[str] = None
-    cleaner_backend: Optional[str] = None
-    cleaner_cuda_device: Optional[str] = None
-    cleaner_cuda_quantization: Optional[str] = None
-    cleaner_api_model: Optional[str] = None
-    cleaner_api_key: Optional[str] = None
-    tts_options: Optional[dict[str, object]] = None
-    parallel_worker_mode: Optional[str] = None
-    enable_parallel: Optional[bool] = None
-    max_parallel_chapters: Optional[int] = Field(default=None, ge=1)
-
+class _ConversionRuntimeOptionsRequestMixin:
     def to_app_options(self) -> ConversionRuntimeOptions:
         return ConversionRuntimeOptions(
-            voice=self.voice,
-            speed=self.speed,
-            tts_engine=self.tts_engine,
-            tts_quantization=self.tts_quantization,
-            tts_provider=self.tts_provider,
-            tts_device=self.tts_device,
-            cleaner_model=self.cleaner_model,
-            cleaner_backend=self.cleaner_backend,
-            cleaner_cuda_device=self.cleaner_cuda_device,
-            cleaner_cuda_quantization=self.cleaner_cuda_quantization,
-            cleaner_api_model=self.cleaner_api_model,
-            cleaner_api_key=self.cleaner_api_key,
-            tts_options=self.tts_options,
-            parallel_worker_mode=self.parallel_worker_mode,
-            enable_parallel=self.enable_parallel,
-            max_parallel_chapters=self.max_parallel_chapters,
+            **{
+                name: getattr(self, name)
+                for name in conversion_runtime_option_field_names()
+            }
         )
+
+
+ConversionRuntimeOptionsRequest = create_model(
+    "ConversionRuntimeOptionsRequest",
+    __base__=(BaseModel, _ConversionRuntimeOptionsRequestMixin),
+    **build_runtime_option_pydantic_fields(CONVERSION_RUNTIME_OPTION_SPECS),
+)
 
 
 class _RuntimeOptionsRequest(ConversionRuntimeOptionsRequest):
@@ -69,18 +53,11 @@ class _RuntimeOptionsRequest(ConversionRuntimeOptionsRequest):
         if self.runtime_options is None:
             return self.to_app_options()
 
-        flat_options = self.to_app_options()
-        nested_options = self.runtime_options.to_app_options()
-        nested_fields = _model_fields_set(self.runtime_options)
-        option_values = {
-            field: (
-                getattr(nested_options, field)
-                if field in nested_fields
-                else getattr(flat_options, field)
-            )
-            for field in ConversionRuntimeOptions.__dataclass_fields__
-        }
-        return ConversionRuntimeOptions(**option_values)
+        return merge_runtime_options(
+            self.to_app_options(),
+            self.runtime_options.to_app_options(),
+            nested_fields_set=_model_fields_set(self.runtime_options),
+        )
 
 
 class StartConversionRequest(_RuntimeOptionsRequest):

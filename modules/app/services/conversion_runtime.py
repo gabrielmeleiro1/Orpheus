@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from modules.app.config import AppConfig
+from modules.contracts.conversion_runtime_options import ConversionRuntimeOptions
 from modules.pipeline.memory_policy import MemorySnapshot, SafeMemoryPolicy
 from modules.pipeline.models import PipelineConfig
 from modules.pipeline.worker_recommendation import detect_cpu_core_workers
@@ -38,28 +39,6 @@ def _memory_snapshot_from_device_policy(
         mlx_cache_bytes=snapshot.cache_bytes,
         mlx_peak_bytes=snapshot.peak_bytes,
     )
-
-
-@dataclass(frozen=True)
-class ConversionRuntimeOptions:
-    """Runtime selections shared by start and repair conversions."""
-
-    voice: str = "am_adam"
-    speed: float = 1.0
-    tts_engine: Optional[str] = None
-    tts_quantization: Optional[str] = None
-    tts_provider: Optional[str] = None
-    tts_device: Optional[str] = None
-    cleaner_model: Optional[str] = None
-    cleaner_backend: Optional[str] = None
-    cleaner_cuda_device: Optional[str] = None
-    cleaner_cuda_quantization: Optional[str] = None
-    cleaner_api_model: Optional[str] = None
-    cleaner_api_key: Optional[str] = None
-    tts_options: Optional[dict[str, Any]] = None
-    parallel_worker_mode: Optional[str] = None
-    enable_parallel: Optional[bool] = None
-    max_parallel_chapters: Optional[int] = None
 
 
 @dataclass(frozen=True)
