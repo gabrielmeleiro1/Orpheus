@@ -253,6 +253,39 @@ Recommended workflow:
   `tts_seconds_total`, `artifact_quality`, chapter counts, chunk counts, and
   output validity across branches.
 
+### Presets and regression reports
+
+Deterministic suite presets live under `tests/fixtures/benchmark_suite/`:
+
+```bash
+python -m orpheus bench quick
+python -m orpheus bench policy
+python -m orpheus bench compare BASELINE/current/repeated_benchmark_summary.json CURRENT/repeated_benchmark_summary.json --output-dir .artifacts/benchmarks/report
+python -m orpheus bench report path/to/repeated_benchmark_summary.json --output-dir .artifacts/benchmarks/report
+```
+
+`quick` runs parse and clean against short synthetic markdown fixtures with
+`chapter_limit=1`. `policy` runs parse and clean against heading-structure and
+cleaner-noise fixtures with bounded chapter limits.
+
+Repeated-run summaries from `scripts/benchmark_nagel_repeated.py` can be compared
+branch-to-branch with `bench compare` or inspected alone with `bench report`.
+Both commands write `report.json` and `report.md` using the shared validity
+thresholds in `orpheus/bench/validity.py`.
+
+### Evidence command matrix
+
+| Change area | Fast evidence | Deeper evidence (opt-in) |
+| --- | --- | --- |
+| Parser / ingestion | `python -m pytest --no-cov tests/test_*parser*.py tests/test_ingestion.py` | `python -m orpheus bench policy` |
+| Cleaner / normalization | `python -m pytest --no-cov tests/test_cleaner*.py` | `python -m orpheus bench clean tests/fixtures/benchmark_suite/policy_cleaner_noise.md` |
+| TTS / runtime | `python -m pytest --no-cov tests/test_tts*.py tests/test_runtime_recovery.py` | `python -m orpheus bench full path/to/book.md --chapter-limit 1 --profile-tts-chunks` |
+| API / web payloads | `python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_conversion_service.py` | `cd desktop && npm run typecheck && npm test -- --run` |
+| Storage / library paths | `python -m pytest --no-cov tests/test_storage_*.py tests/test_library_service.py tests/test_book_workspace.py` | — |
+| Desktop sidecar / packaging | `python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py` | `python scripts/build_desktop_backend.py && cd desktop/src-tauri && cargo test` |
+| Benchmark / perf regressions | `python -m orpheus bench quick` | `scripts/benchmark_nagel_repeated.py …` then `python -m orpheus bench compare BASELINE CURRENT` |
+| Full release candidate | `python run_tests.py --contract` | Desktop release matrix in [Desktop Release Readiness Verification](#desktop-release-readiness-verification) |
+
 ## GPU Test Markers and Skip Policy
 
 `pytest.ini` defines `@pytest.mark.gpu` for tests that require real GPU hardware

@@ -17,6 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from orpheus.bench.validity import (  # noqa: E402
+    MAX_SPREAD_PCT_OF_MEDIAN,
+    MIN_REPETITIONS_FOR_VALIDITY,
+)
 from scripts.benchmark_nagel_pipeline import run_benchmark  # noqa: E402
 
 
@@ -33,8 +37,6 @@ METRIC_KEYS = (
     "encode_seconds_total",
     "package_seconds_total",
 )
-MIN_REPETITIONS_FOR_VALIDITY = 3
-MAX_SPREAD_PCT_OF_MEDIAN = 10.0
 
 
 def _round(value: float | None) -> float | None:

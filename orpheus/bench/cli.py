@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from orpheus.bench.metrics import skipped_sections_from_metrics
+from orpheus.bench.presets import SUPPORTED_PRESETS, get_preset
+from orpheus.bench.report import ReportError, write_report_outputs
+
 DEFAULT_OUTPUT_ROOT = Path(".artifacts/benchmarks")
 DEFAULT_TEMP_ROOT = DEFAULT_OUTPUT_ROOT / "temp"
 SUMMARY_FILENAME = "bench_summary.json"
@@ -28,6 +32,12 @@ def _load_benchmark_runner() -> Any:
 
 def run_benchmark(**kwargs: Any) -> dict[str, Any]:
     return _load_benchmark_runner().run_benchmark(**kwargs)
+
+
+def _invoke_run_benchmark(**kwargs: Any) -> dict[str, Any]:
+    from orpheus import bench
+
+    return bench.run_benchmark(**kwargs)
 
 
 def cleaner_backend_choices() -> tuple[str, ...]:
@@ -127,6 +137,7 @@ def _summary_run(
         "chunks": metrics.get("chunks"),
         "cleaner_gate_rule_only_chunks": metrics.get("cleaner_gate_rule_only_chunks"),
         "cleaner_gate_llm_needed_chunks": metrics.get("cleaner_gate_llm_needed_chunks"),
+        "skipped_non_prose_sections": skipped_sections_from_metrics(metrics),
         "artifact_quality": metrics.get("artifact_quality"),
         "error": metrics.get("error"),
     }
@@ -157,6 +168,12 @@ def _write_summary(
     return summary
 
 
+def _apply_preset_defaults(args: argparse.Namespace, defaults: dict[str, Any]) -> None:
+    for key, value in defaults.items():
+        attr = key.replace("-", "_")
+        setattr(args, attr, value)
+
+
 def _execute_specs(
     *,
     command: str,
@@ -170,14 +187,15 @@ def _execute_specs(
     temp_root.mkdir(parents=True, exist_ok=True)
 
     runs: list[dict[str, Any]] = []
+    suite_like = command in {"suite", *SUPPORTED_PRESETS}
     for index, spec in enumerate(specs, start=1):
-        output_dir = _run_output_dir(output_root, spec, index, suite=command == "suite")
+        output_dir = _run_output_dir(output_root, spec, index, suite=suite_like)
         temp_dir = temp_root / output_dir.relative_to(output_root)
         _reset_run_dir(output_dir)
         _reset_run_dir(temp_dir)
         flags = _mode_flags(spec.command)
         with contextlib.redirect_stdout(sys.stderr):
-            metrics = run_benchmark(
+            metrics = _invoke_run_benchmark(
                 source_path=spec.source_path,
                 output_dir=output_dir,
                 temp_dir=temp_dir,
@@ -276,6 +294,30 @@ def build_parser() -> argparse.ArgumentParser:
     suite_parser.add_argument("--modes", type=_parse_modes, default=("parse", "clean"))
     _add_common_options(suite_parser)
 
+    for preset_name in SUPPORTED_PRESETS:
+        preset_parser = subparsers.add_parser(preset_name)
+        _add_common_options(preset_parser)
+
+    compare_parser = subparsers.add_parser(
+        "compare",
+        help="Compare repeated benchmark summaries and write a regression report.",
+    )
+    compare_parser.add_argument("baseline", type=Path)
+    compare_parser.add_argument("current", type=Path)
+    compare_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Directory for report.json and report.md (default: <current>/report).",
+    )
+
+    report_parser = subparsers.add_parser(
+        "report",
+        help="Build a performance regression report from a repeated benchmark summary.",
+    )
+    report_parser.add_argument("summary_path", type=Path)
+    report_parser.add_argument("--baseline", type=Path)
+    report_parser.add_argument("--output-dir", type=Path, required=True)
+
     return parser
 
 
@@ -286,13 +328,54 @@ def _specs_from_args(args: argparse.Namespace) -> list[RunSpec]:
             for source in args.sources
             for mode in args.modes
         ]
+    if args.command in SUPPORTED_PRESETS:
+        preset = get_preset(args.command)
+        _apply_preset_defaults(args, preset.defaults)
+        return [
+            RunSpec(command=mode, source_path=source, label=_source_label(source))
+            for source in preset.sources
+            for mode in preset.modes
+        ]
     source = Path(args.source)
     return [RunSpec(command=args.command, source_path=source, label=_source_label(source))]
+
+
+def _run_compare(args: argparse.Namespace) -> int:
+    output_dir = args.output_dir or (args.current.parent / "report")
+    try:
+        report = write_report_outputs(
+            summary_path=args.current,
+            output_dir=output_dir,
+            baseline_path=args.baseline,
+        )
+    except (OSError, json.JSONDecodeError, ReportError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 1 if report["status"] == "fail" else 0
+
+
+def _run_report(args: argparse.Namespace) -> int:
+    try:
+        report = write_report_outputs(
+            summary_path=args.summary_path,
+            output_dir=args.output_dir,
+            baseline_path=args.baseline,
+        )
+    except (OSError, json.JSONDecodeError, ReportError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 1 if report["status"] == "fail" else 0
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "compare":
+        return _run_compare(args)
+    if args.command == "report":
+        return _run_report(args)
     specs = _specs_from_args(args)
     summary = _execute_specs(command=args.command, specs=specs, args=args)
     print(json.dumps(summary, indent=2, sort_keys=True))
