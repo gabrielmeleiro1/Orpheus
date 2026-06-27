@@ -5,6 +5,7 @@ Unit tests for the EPUB parser using a generated sample EPUB.
 """
 
 import sys
+import tempfile
 import warnings
 from pathlib import Path
 from bs4 import XMLParsedAsHTMLWarning
@@ -616,18 +617,20 @@ def test_epub_parser_recovers_chapters_when_toc_targets_empty_split_markers(tmp_
 def test_epub_parser():
     """Run all EPUB parser tests."""
     
-    # Setup - create sample EPUB
-    test_dir = PROJECT_ROOT / "tests" / "samples"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    sample_epub = test_dir / "sample.epub"
-    
     print("\n" + "="*50)
     print("EPUB PARSER TEST SUITE")
     print("="*50 + "\n")
-    
-    # Create sample EPUB
-    print("[1] Creating sample EPUB...")
-    create_sample_epub(sample_epub)
+
+    with tempfile.TemporaryDirectory(prefix="orpheus-epub-parser-") as temp_dir:
+        sample_epub = Path(temp_dir) / "sample.epub"
+
+        # Create sample EPUB in isolated temp output (never tracked fixtures).
+        print("[1] Creating sample EPUB...")
+        create_sample_epub(sample_epub)
+        return _run_epub_parser_checks(sample_epub)
+
+
+def _run_epub_parser_checks(sample_epub: Path) -> bool:
     
     # Test 1: File validation
     print("\n[2] Testing file validation...")
