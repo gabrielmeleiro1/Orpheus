@@ -365,3 +365,115 @@ def test_module_entrypoint_dispatches_to_bench_subcommand(monkeypatch) -> None:
 
     assert entrypoint.main(["bench", "parse", "book.md"]) == 0
     assert calls == [["parse", "book.md"]]
+
+
+def test_quick_preset_expands_fixture_sources_and_applies_defaults(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from orpheus import bench
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_benchmark(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "mode": "parse_only" if kwargs["parse_only"] else "cleaner_gate",
+            "source_path": str(Path(kwargs["source_path"]).resolve()),
+            "wall_time_seconds": 1.0,
+            "metrics_path": str(Path(kwargs["output_dir"]) / "benchmark_summary.json"),
+        }
+
+    monkeypatch.setattr(bench, "run_benchmark", fake_run_benchmark)
+
+    exit_code = bench.main(["quick", "--output-root", str(tmp_path / "quick")])
+
+    assert exit_code == 0
+    assert len(calls) == 4
+    assert all(call["chapter_limit"] == 1 for call in calls)
+    source_names = {Path(str(call["source_path"])).name for call in calls}
+    assert source_names == {"short_chapter.md", "footnotes_stub.md"}
+    summary = json.loads((tmp_path / "quick" / "bench_summary.json").read_text())
+    assert summary["command"] == "quick"
+    assert summary["status"] == "pass"
+
+
+def test_policy_preset_expands_parser_and_cleaner_fixtures(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from orpheus import bench
+
+    calls: list[dict[str, object]] = []
+
+    def fake_run_benchmark(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success": True,
+            "mode": "parse_only" if kwargs["parse_only"] else "cleaner_gate",
+            "source_path": str(Path(kwargs["source_path"]).resolve()),
+            "wall_time_seconds": 1.0,
+            "metrics_path": str(Path(kwargs["output_dir"]) / "benchmark_summary.json"),
+        }
+
+    monkeypatch.setattr(bench, "run_benchmark", fake_run_benchmark)
+
+    exit_code = bench.main(["policy", "--output-root", str(tmp_path / "policy")])
+
+    assert exit_code == 0
+    assert len(calls) == 4
+    assert all(call["chapter_limit"] == 2 for call in calls)
+    assert all(call["min_extracted_chars"] == 50 for call in calls)
+    source_names = {Path(str(call["source_path"])).name for call in calls}
+    assert source_names == {"policy_headings.md", "policy_cleaner_noise.md"}
+
+
+def test_compare_command_writes_regression_report(tmp_path: Path) -> None:
+    from orpheus import bench
+
+    fixture_dir = Path("tests/fixtures/performance_regression_dashboard")
+    output_dir = tmp_path / "compare-report"
+
+    exit_code = bench.main(
+        [
+            "compare",
+            str(fixture_dir / "baseline_repeated_summary.json"),
+            str(fixture_dir / "current_repeated_summary.json"),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 1
+    report = json.loads((output_dir / "report.json").read_text())
+    assert report["status"] == "fail"
+    assert (output_dir / "report.md").exists()
+    default_case = next(case for case in report["cases"] if case["name"] == "default")
+    assert default_case["metrics"]["wall_time_seconds"]["delta_status"] == "regression"
+
+
+def test_report_command_writes_outputs_without_baseline(tmp_path: Path) -> None:
+    from orpheus import bench
+
+    fixture_dir = Path("tests/fixtures/performance_regression_dashboard")
+    output_dir = tmp_path / "report"
+
+    exit_code = bench.main(
+        [
+            "report",
+            str(fixture_dir / "current_repeated_summary.json"),
+            "--output-dir",
+            str(output_dir),
+        ]
+    )
+
+    assert exit_code == 1
+    report = json.loads((output_dir / "report.json").read_text())
+    assert report["status"] == "fail"
+    assert all(
+        metric["delta_status"] == "not_available"
+        for case in report["cases"]
+        for metric in case["metrics"].values()
+    )
+
