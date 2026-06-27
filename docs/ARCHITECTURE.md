@@ -2,6 +2,35 @@
 
 This document describes the current runtime architecture, backend surface, and local verification expectations for Orpheus.
 
+## Architecture Inventory
+
+Deeper package and boundary maps from the codebase cleanup inventory live under
+`docs/architecture/`:
+
+- [python-boundaries.md](architecture/python-boundaries.md) — Python layer map (`web` → `app` → `pipeline` → `ingestion`/`tts`/`audio`, `storage`), public entry points, import rules, and decomposition targets.
+- [desktop-boundaries.md](architecture/desktop-boundaries.md) — Tauri vs React vs API split, conversion form ownership, and frontend/backend drift risks.
+- [tooling-boundaries.md](architecture/tooling-boundaries.md) — `scripts/`, `tools/`, `orpheus bench`, sidecar build, pre-push hook, and benchmark artifact conventions.
+
+## Where to Change X
+
+Use this table before editing. When a change crosses layers, update the matching
+types and tests listed in [TESTING.md](TESTING.md#focused-checks).
+
+| Change | Primary locations | Related contracts |
+| --- | --- | --- |
+| Parser behavior (PDF, EPUB, Markdown, text) | `modules/ingestion/pdf_parser.py`, `epub_parser.py`, `markdown_parser.py`, `text_parser.py`; `modules/ingestion/preflight.py` | `modules/pipeline/stages/ingestion.py`, `modules/text/document_normalizer.py`; tests under `tests/test_*_parser.py` |
+| Cleaner policy and backends | `modules/tts/cleaner.py`, `cleaner_config.py`, `cleaner_backends/` (`mlx`, `cuda`, `api`) | `modules/pipeline/stages/cleaning.py`; env `CLEANER_BACKEND`; tests `tests/test_cleaner*.py` |
+| TTS runtime options | `modules/tts/runtime_spec.py`, `runtime_options.py`, `factory.py`, `strategies/`, `runtimes/` | `modules/pipeline/models.py` (`PipelineConfig`); `modules/app/services/runtime_capability_service.py`; tests `tests/test_tts*.py` |
+| Frontend conversion form | `desktop/src/features/conversion/` (`ConversionPanel*.tsx`, `useConversionSubmitPayload.ts`, `useTtsOptions.ts`, `useCleanerOptions.ts`) | `desktop/src/types/api.ts`; capabilities from `GET /api/system/capabilities` |
+| API request/response payloads | `modules/web/routes/conversions.py`, `options.py`, `uploads.py`, `library.py`; `modules/web/serializers.py` | `modules/app/services/conversion_runtime.py` (`ConversionRuntimeOptions`); `desktop/src/types/api.ts` and `api/client.ts` |
+| Storage schema and library paths | `modules/storage/migrations.py`, `models.py`, `sqlite_repo.py`, `maintenance.py` | `modules/app/services/library_service.py`, `conversion_paths.py`; tests `tests/test_storage_*.py`, `tests/test_library_service.py` |
+
+Known cross-layer drift risks (keep these aligned when editing the rows above):
+
+- Source suffix lists: Tauri file picker, `library_service.SUPPORTED_UPLOAD_SUFFIXES`, `ingestion/preflight.py`, and conversion UI copy.
+- Conversion runtime options: `types/api.ts` ↔ FastAPI Pydantic models ↔ `ConversionRuntimeOptions` ↔ `PipelineConfig`.
+- Progress stage names: `modules/app/events.py` / pipeline progress ↔ `ProgressStageName` in `types/api.ts`.
+
 ## Repository Shape
 
 - Launchers: `apps/launchers/desktop_backend.py`
