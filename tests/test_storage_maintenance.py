@@ -292,6 +292,160 @@ def test_prune_preserves_packaged_only_books_and_output_dirs(tmp_path):
     assert book.id not in report["actions"]["deleted_book_rows"]
 
 
+def test_prune_preserves_external_user_source_files(tmp_path):
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # User source kept in a personal library folder, not a managed upload.
+    external_source = root / "my-library" / "novel.epub"
+    external_source.parent.mkdir(parents=True, exist_ok=True)
+    external_source.write_bytes(b"%EPUB user owned")
+
+    packaged = output_dir / "Owned Book" / "Owned Book.m4b"
+    packaged.parent.mkdir(parents=True, exist_ok=True)
+    packaged.write_bytes(b"m4b")
+
+    repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        repo.create_book_with_chapters(
+            BookCreate(
+                title="Owned Book",
+                author="Author",
+                source_path=str(external_source),
+                source_type=SourceType.EPUB,
+                total_chapters=1,
+                playback_path=str(packaged),
+                playback_status=PlaybackStatus.PACKAGED,
+            ),
+            [ChapterCreate(book_id=0, chapter_number=1, title="One")],
+        )
+    finally:
+        repo.close()
+
+    report = prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+    )
+
+    assert external_source.exists()
+    assert external_source.read_bytes() == b"%EPUB user owned"
+    assert report["actions"]["moved_sources"] == []
+    assert not (db_path.parent / "sources").exists() or not list(
+        (db_path.parent / "sources").glob("novel*.epub")
+    )
+
+
+def test_prune_is_safe_against_path_traversal_in_stored_paths(tmp_path):
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    outside = root / "outside"
+    outside.mkdir(parents=True, exist_ok=True)
+    protected_source = outside / "secret_source.epub"
+    protected_artifact = outside / "secret.m4b"
+    protected_source.write_bytes(b"user secret")
+    protected_artifact.write_bytes(b"user audio")
+
+    repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        repo.create_book_with_chapters(
+            BookCreate(
+                title="Traversal Book",
+                author="Author",
+                source_path="temp/web_uploads/../../outside/secret_source.epub",
+                source_type=SourceType.EPUB,
+                total_chapters=1,
+                playback_path="output/../outside/secret.m4b",
+                playback_status=PlaybackStatus.PACKAGED,
+            ),
+            [
+                ChapterCreate(
+                    book_id=0,
+                    chapter_number=1,
+                    title="One",
+                    mp3_path="output/../outside/secret.m4b",
+                )
+            ],
+        )
+    finally:
+        repo.close()
+
+    prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+    )
+
+    assert protected_source.exists()
+    assert protected_source.read_bytes() == b"user secret"
+    assert protected_artifact.exists()
+    assert outside.exists()
+
+
+def test_prune_is_idempotent_and_preserves_live_artifacts_on_repeated_runs(tmp_path):
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    source = root / "library" / "source.pdf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"%PDF source")
+    packaged = output_dir / "Live Book" / "Live Book.m4b"
+    packaged.parent.mkdir(parents=True, exist_ok=True)
+    packaged.write_bytes(b"m4b")
+
+    repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        book, _chapters = repo.create_book_with_chapters(
+            BookCreate(
+                title="Live Book",
+                author="Author",
+                source_path=str(source),
+                source_type=SourceType.PDF,
+                total_chapters=1,
+                playback_path=str(packaged),
+                playback_status=PlaybackStatus.PACKAGED,
+            ),
+            [ChapterCreate(book_id=0, chapter_number=1, title="One")],
+        )
+    finally:
+        repo.close()
+
+    first = prune_stale_records_and_files(
+        db_path, output_dir=output_dir, temp_dir=temp_dir, aggressive=True
+    )
+    second = prune_stale_records_and_files(
+        db_path, output_dir=output_dir, temp_dir=temp_dir, aggressive=True
+    )
+
+    assert book.id not in first["actions"]["deleted_book_rows"]
+    assert second["actions"]["deleted_book_rows"] == []
+    assert second["actions"]["deleted_output_dirs"] == []
+    assert packaged.exists()
+    assert source.exists()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        remaining = conn.execute(
+            "SELECT title FROM books WHERE id = ?", (book.id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert remaining is not None
+
+
 def test_prune_does_not_move_upload_sources_until_db_prune_commits(tmp_path, monkeypatch):
     root = tmp_path
     db_path = root / "data" / "audiobooks.db"
