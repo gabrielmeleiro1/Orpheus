@@ -2065,7 +2065,7 @@ class TestWorkerProgressTotals:
         chapter = MockChapter(2, "Two", "body")
 
         with patch(
-            "modules.pipeline.chapter_runners.ChapterProcessor.process_chapter_worker",
+            "modules.pipeline.chapter_runners.process_chapter_worker",
             return_value=ChapterResult(chapter_number=2, chapter_title="Two"),
         ) as mock_worker:
             _process_chapter_worker_entry(
