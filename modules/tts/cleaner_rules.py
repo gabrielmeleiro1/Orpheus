@@ -5,27 +5,13 @@ from __future__ import annotations
 from difflib import SequenceMatcher
 import re
 
-_PDF_HYPHENATION_LEAK_RE = re.compile(
-    r"\b[A-Za-z]{2,}-\s+(?!(?:a|an|and|nor|or|the|to)\b)[a-z]{2,}\b"
+from modules.ingestion.extraction_artifact_signals import (
+    has_joined_first_person_leakage,
+    has_pdf_hyphenation_leakage,
+    has_pdf_joined_dash_leakage,
+    has_pdf_page_footnote_leakage,
 )
-_PDF_PAGE_FOOTNOTE_LEAK_RE = re.compile(
-    r"(?i)\b(?:"
-    r"\d{1,4}[il]\s+[a-z]{3,}|"
-    r"[a-z]{2,}\s+I\s+The problem\b|"
-    r"This content downloaded from\b|"
-    r"All use subject to\b|"
-    r"Stable URL:|"
-    r"JSTOR is a not-for-profit"
-    r")"
-)
-_PDF_JOINED_DASH_LEAK_RE = re.compile(r"(?i)\bthemselvestoward\b")
-_JOINED_FIRST_PERSON_LEAK_RE = re.compile(
-    r"\bI(?:"
-    r"am|always|began|begin|believe|can|could|feel|felt|found|had|have|"
-    r"hear|heard|know|lay|looked|may|might|must|said|saw|see|shall|should|"
-    r"suppose|think|want|wanted|was|went|were|will|wish|would"
-    r")\b"
-)
+
 _WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9À-ÖØ-öø-ÿ]+")
 _DROP_CAP_BREAK = r"(?:\s*(?:<br\s*/?>|\n)\s*)"
 _REVIEW_HASH_DROP_CAP_RE = re.compile(
@@ -133,11 +119,6 @@ def repair_separated_drop_cap_fragments(text: str) -> str:
 
     repaired = _REVIEW_HASH_DROP_CAP_RE.sub(_join, text)
     return _REVIEW_DROP_CAP_RE.sub(_join, repaired)
-
-
-def has_joined_first_person_leakage(text: str) -> bool:
-    """Return true when first-person words look joined by extraction cleanup."""
-    return _JOINED_FIRST_PERSON_LEAK_RE.search(text) is not None
 
 
 def repair_known_leading_letter_fragments(text: str) -> str:
@@ -277,13 +258,13 @@ def needs_llm_cleaning(text: str) -> bool:
     if re.search(r"\b(?!I\b|A\b)[B-HJ-Z]\b", normalized):
         return True
 
-    if _PDF_HYPHENATION_LEAK_RE.search(normalized):
+    if has_pdf_hyphenation_leakage(normalized):
         return True
 
-    if _PDF_PAGE_FOOTNOTE_LEAK_RE.search(normalized):
+    if has_pdf_page_footnote_leakage(normalized):
         return True
 
-    if _PDF_JOINED_DASH_LEAK_RE.search(normalized):
+    if has_pdf_joined_dash_leakage(normalized):
         return True
 
     if has_joined_first_person_leakage(normalized):
@@ -311,13 +292,13 @@ def describe_llm_cleaning_reason(text: str) -> str:
     if re.search(r"\b(?!I\b|A\b)[B-HJ-Z]\b", normalized):
         return "orphaned single-letter OCR fragment"
 
-    if _PDF_HYPHENATION_LEAK_RE.search(normalized):
+    if has_pdf_hyphenation_leakage(normalized):
         return "possible PDF line-break hyphenation"
 
-    if _PDF_PAGE_FOOTNOTE_LEAK_RE.search(normalized):
+    if has_pdf_page_footnote_leakage(normalized):
         return "possible PDF page or footnote residue"
 
-    if _PDF_JOINED_DASH_LEAK_RE.search(normalized):
+    if has_pdf_joined_dash_leakage(normalized):
         return "possible joined PDF dash line-break artifact"
 
     if has_joined_first_person_leakage(normalized):

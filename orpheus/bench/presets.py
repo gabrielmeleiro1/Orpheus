@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from orpheus.bench.policy import policy_bench_fixture_paths
+
 FIXTURE_ROOT = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "benchmark_suite"
 SUPPORTED_PRESETS = ("quick", "policy")
 
@@ -30,8 +32,8 @@ PRESETS: dict[str, PresetSpec] = {
     "policy": PresetSpec(
         name="policy",
         modes=("parse", "clean"),
-        sources=_fixture_sources("policy_headings.md", "policy_cleaner_noise.md"),
-        defaults={"chapter_limit": 2, "min_extracted_chars": 50},
+        sources=tuple(policy_bench_fixture_paths()),
+        defaults={"min_extracted_chars": 1},
     ),
 }
 

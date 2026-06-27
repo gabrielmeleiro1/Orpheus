@@ -242,3 +242,45 @@ def test_filter_falls_back_to_shallow_copy_for_non_dataclass_chapter_like_object
     assert first.number == 10
     assert skipped[0].original_number == 11
     assert skipped[0].reason == "copyright"
+
+
+def test_keeps_narrative_prose_with_parenthetical_citation_year():
+    content = (
+        "The historian argued that memory is selective (Miller, 2019), especially "
+        "when witnesses recall events from decades earlier. She repeated the point "
+        "in the next paragraph to keep the chapter readable."
+    )
+    classification = classify_chapter_content("Chapter 7", content)
+    assert classification.should_skip is False
+    assert classification.reason is None
+
+
+def test_keeps_narrative_prose_with_doi_and_isbn_mentions_in_body():
+    content = (
+        "The archivist noted that the DOI https://example.org/paper/9 was printed on "
+        "a handbill, not in the novel itself. ISBN numbers belong on copyright pages, "
+        "she said, and this chapter is ordinary narrative prose about the discovery."
+    )
+    classification = classify_chapter_content("Discovery", content)
+    assert classification.should_skip is False
+
+
+def test_keeps_chapter_title_with_colon_and_substantive_body():
+    content = (
+        "The committee convened before dawn. Their debate about self-governing towns "
+        "lasted through breakfast and into the promise-making season without ever "
+        "resembling a bibliography or table of contents."
+    )
+    classification = classify_chapter_content("Chapter 3: The Argument", content)
+    assert classification.should_skip is False
+    assert classification.reason is None
+
+
+def test_keeps_intentional_hyphenated_compounds_in_prose():
+    content = (
+        "The twenty-first-century harbor still used old stone quays. Mara described "
+        "a well-known self-governing village where promise-making rituals continued "
+        "each spring without interruption."
+    )
+    classification = classify_chapter_content("Chapter 8", content)
+    assert classification.should_skip is False

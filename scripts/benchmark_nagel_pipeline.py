@@ -31,7 +31,6 @@ import re
 import sys
 import time
 import wave
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +47,7 @@ from modules.ingestion.text_parser import TextParser  # noqa: E402
 from modules.errors import OCRRequiredPDFError  # noqa: E402
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
 from modules.pipeline.memory_policy import SafeMemoryPolicy, sample_memory_snapshot  # noqa: E402
+from modules.pipeline.stage_metrics import StageTimings, time_instance_method  # noqa: E402
 from modules.tts import cleaner_rules as cleaner_rules_backend  # noqa: E402
 from modules.tts import cleaner_config  # noqa: E402
 from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
@@ -136,88 +136,13 @@ BENCHMARK_SCHEMA_KEYS = (
     "errors",
 )
 
-_PROMPT_DELIMITER_RE = re.compile(
-    r"(?im)(?:^\s*-{3,}\s*$|\.---|prompt delimiter|<\|/?(?:system|user|assistant)\|>)"
-)
-_MODEL_COMMENTARY_RE = re.compile(
-    r"(?i)\b("
-    r"as an ai|"
-    r"cleaned text:|"
-    r"here is the cleaned|"
-    r"i (?:have )?corrected\s+(?:the\s+)?(?:text|formatting|artifacts?|markdown|line breaks?)|"
-    r"i removed\s+(?:the\s+)?(?:text|formatting|artifacts?|markdown|headers?|footers?|citations?|references?|line breaks?)|"
-    r"note:|"
-    r"the text has been"
-    r")\b"
-)
-_PDF_HYPHENATION_LEAK_RE = re.compile(
-    r"\b[A-Za-z]{2,}-\s+(?!(?:a|an|and|nor|or|the|to)\b)[a-z]{2,}\b"
-)
-_PDF_PAGE_FOOTNOTE_LEAK_RE = re.compile(
-    r"(?i)\b(?:"
-    r"\d{1,4}[il]\s+[a-z]{3,}|"
-    r"[a-z]{2,}\s+I\s+The problem\b|"
-    r"This content downloaded from\b|"
-    r"All use subject to\b|"
-    r"Stable URL:|"
-    r"JSTOR is a not-for-profit"
-    r")"
-)
-_PDF_JOINED_DASH_LEAK_RE = re.compile(r"(?i)\bthemselvestoward\b")
-_EPUB_SOCIAL_BOILERPLATE_RE = re.compile(
-    r"(?i)\b(?:"
-    r"follow\s+(?:the\s+)?penguin|"
-    r"penguin(?:books|classics)|"
-    r"youtube\.com/penguin|"
-    r"facebook\.com/penguin|"
-    r"soundcloud\.com/penguin|"
-    r"@penguin(?:uk)?books"
-    r")\b"
-)
-_JOINED_WORD_LEAK_RE = re.compile(
-    r"\bI(?:"
-    r"am|always|began|begin|believe|can|could|feel|felt|found|had|have|"
-    r"hear|heard|know|lay|looked|may|might|must|said|saw|see|shall|should|"
-    r"suppose|think|want|wanted|was|went|were|will|wish|would"
-    r")\b"
-)
-_GARBLED_REPEATED_TOKEN_RE = re.compile(
-    r"(?i)\b(?:"
-    r"Firstop{3,}mry|"
-    r"lltllll|"
-    r"iVttLiiii|"
-    r"Peeeeeeee|"
-    r"bhedmeeeeta|"
-    r"evidelllly|"
-    r"i{10}"
-    r")\b"
-)
+from modules.ingestion.extraction_artifact_signals import scan_cleaner_handoff_artifacts
+
 _HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s+.*$")
 
 
 class BenchmarkValidationError(RuntimeError):
     """Raised when a benchmark artifact is not valid for comparison."""
-
-
-@dataclass
-class StageTimings:
-    """Accumulate coarse pipeline stage timings for one benchmark run."""
-
-    totals: dict[str, float] = field(default_factory=dict)
-
-    def add(self, key: str, elapsed_seconds: float) -> None:
-        self.totals[key] = self.totals.get(key, 0.0) + max(0.0, elapsed_seconds)
-
-    def get(self, key: str) -> float:
-        return self.totals.get(key, 0.0)
-
-    def rounded(self, key: str) -> float:
-        return round(self.get(key), 4)
-
-    def per_chunk(self, total_seconds: float, chunks: int) -> float | None:
-        if chunks <= 0 or total_seconds <= 0:
-            return None
-        return round(total_seconds / chunks, 4)
 
 
 def _tts_chunk_profile_summary(
@@ -561,6 +486,9 @@ def _source_metrics_from_document(
         "chapters": len(chapters),
         "extracted_chars": extracted_chars,
         "chunks": chunks,
+        "skipped_non_prose_sections": list(
+            getattr(document, "skipped_non_prose_sections", []) or []
+        ),
         "parse_seconds": _round_seconds(parse_seconds),
         "chunk_seconds": _round_seconds(chunk_seconds),
         "parse_chars_per_second": round(extracted_chars / max(parse_seconds, 1e-9), 2),
@@ -622,87 +550,30 @@ def _issue(
     return payload
 
 
+_ARTIFACT_ISSUE_DETAILS = {
+    "prompt_delimiter_leakage": "cleaned/TTS handoff text contains prompt delimiter-like content",
+    "model_commentary_leakage": "cleaned/TTS handoff text contains model commentary-like content",
+    "pdf_hyphenation_leakage": "cleaned/TTS handoff text still contains PDF line-break hyphenation",
+    "pdf_page_footnote_leakage": "cleaned/TTS handoff text still contains PDF page/header/footnote residue",
+    "pdf_joined_dash_leakage": "cleaned/TTS handoff text contains a joined PDF dash line-break artifact",
+    "epub_social_boilerplate": "cleaned/TTS handoff text contains EPUB publisher/social boilerplate",
+    "joined_word_leakage": "cleaned/TTS handoff text contains joined word extraction residue",
+    "garbled_repeated_token_leakage": "cleaned/TTS handoff text contains a garbled repeated-character token",
+}
+
+
 def _scan_text_for_leakage(path: Path, text: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    delimiter_match = _PROMPT_DELIMITER_RE.search(text)
-    if delimiter_match:
+    for artifact in scan_cleaner_handoff_artifacts(text):
         issues.append(
             _issue(
-                "prompt_delimiter_leakage",
+                artifact.issue_type,
                 path,
-                "cleaned/TTS handoff text contains prompt delimiter-like content",
-                excerpt=delimiter_match.group(0),
-            )
-        )
-
-    commentary_match = _MODEL_COMMENTARY_RE.search(text)
-    if commentary_match:
-        issues.append(
-            _issue(
-                "model_commentary_leakage",
-                path,
-                "cleaned/TTS handoff text contains model commentary-like content",
-                excerpt=commentary_match.group(0),
-            )
-        )
-    hyphenation_match = _PDF_HYPHENATION_LEAK_RE.search(text)
-    if hyphenation_match:
-        issues.append(
-            _issue(
-                "pdf_hyphenation_leakage",
-                path,
-                "cleaned/TTS handoff text still contains PDF line-break hyphenation",
-                excerpt=hyphenation_match.group(0),
-            )
-        )
-    page_footnote_match = _PDF_PAGE_FOOTNOTE_LEAK_RE.search(text)
-    if page_footnote_match:
-        issues.append(
-            _issue(
-                "pdf_page_footnote_leakage",
-                path,
-                "cleaned/TTS handoff text still contains PDF page/header/footnote residue",
-                excerpt=page_footnote_match.group(0),
-            )
-        )
-    joined_dash_match = _PDF_JOINED_DASH_LEAK_RE.search(text)
-    if joined_dash_match:
-        issues.append(
-            _issue(
-                "pdf_joined_dash_leakage",
-                path,
-                "cleaned/TTS handoff text contains a joined PDF dash line-break artifact",
-                excerpt=joined_dash_match.group(0),
-            )
-        )
-    epub_boilerplate_match = _EPUB_SOCIAL_BOILERPLATE_RE.search(text)
-    if epub_boilerplate_match:
-        issues.append(
-            _issue(
-                "epub_social_boilerplate",
-                path,
-                "cleaned/TTS handoff text contains EPUB publisher/social boilerplate",
-                excerpt=epub_boilerplate_match.group(0),
-            )
-        )
-    joined_word_match = _JOINED_WORD_LEAK_RE.search(text)
-    if joined_word_match:
-        issues.append(
-            _issue(
-                "joined_word_leakage",
-                path,
-                "cleaned/TTS handoff text contains joined word extraction residue",
-                excerpt=joined_word_match.group(0),
-            )
-        )
-    garbled_token_match = _GARBLED_REPEATED_TOKEN_RE.search(text)
-    if garbled_token_match:
-        issues.append(
-            _issue(
-                "garbled_repeated_token_leakage",
-                path,
-                "cleaned/TTS handoff text contains a garbled repeated-character token",
-                excerpt=garbled_token_match.group(0),
+                _ARTIFACT_ISSUE_DETAILS.get(
+                    artifact.issue_type,
+                    "cleaned/TTS handoff text contains extraction artifact residue",
+                ),
+                excerpt=artifact.excerpt,
             )
         )
     return issues
@@ -865,28 +736,11 @@ def scan_artifact_quality(
     }
 
 
-def _time_instance_method(
-    instance: Any,
-    method_name: str,
-    timing_key: str,
-    timings: StageTimings,
-) -> None:
-    original = getattr(instance, method_name, None)
-    if not callable(original):
-        return
-
-    def timed(*args: Any, **kwargs: Any) -> Any:
-        started_at = time.perf_counter()
-        try:
-            return original(*args, **kwargs)
-        finally:
-            timings.add(timing_key, time.perf_counter() - started_at)
-
-    setattr(instance, method_name, timed)
-
-
 def _install_tts_chunk_profiler(pipeline: Any, profiler: TTSChunkProfiler) -> None:
-    original_ensure = getattr(pipeline, "_ensure_chapter_tts_engine", None)
+    stages = getattr(pipeline, "stages", None)
+    processor = getattr(stages, "chapter_processor", None) if stages is not None else None
+    target = processor if processor is not None else pipeline
+    original_ensure = getattr(target, "_ensure_chapter_tts_engine", None)
 
     if callable(original_ensure):
 
@@ -895,7 +749,7 @@ def _install_tts_chunk_profiler(pipeline: Any, profiler: TTSChunkProfiler) -> No
             profiler.wrap_engine(getattr(pipeline, "_tts_engine", None))
             return result
 
-        setattr(pipeline, "_ensure_chapter_tts_engine", profiled_ensure)
+        setattr(target, "_ensure_chapter_tts_engine", profiled_ensure)
 
     profiler.wrap_engine(getattr(pipeline, "_tts_engine", None))
 
@@ -905,13 +759,35 @@ def _create_timed_pipeline(
     timings: StageTimings,
 ) -> Any:
     pipeline = ConversionPipeline(config)
-    _time_instance_method(pipeline, "_ingest", "parse", timings)
-    _time_instance_method(pipeline, "_clean_chapter_content", "clean", timings)
-    _time_instance_method(pipeline, "_synthesize_chapter_chunks", "tts", timings)
-    _time_instance_method(pipeline, "_clean_and_synthesize_with_overlap", "clean_tts_overlap", timings)
-    _time_instance_method(pipeline, "_encode_chapter_audio", "encode", timings)
-    _time_instance_method(pipeline, "_package", "package", timings)
-    _time_instance_method(pipeline, "_ensure_chapter_tts_engine", "tts_model_load", timings)
+    stages = getattr(pipeline, "stages", None)
+    if stages is not None:
+        processor = stages.chapter_processor
+        time_instance_method(stages, "ingest", "parse", timings)
+        time_instance_method(stages, "package", "package", timings)
+        time_instance_method(processor, "_clean_chapter_content", "clean", timings)
+        time_instance_method(processor, "_synthesize_chapter_chunks", "tts", timings)
+        time_instance_method(
+            processor,
+            "_clean_and_synthesize_with_overlap",
+            "clean_tts_overlap",
+            timings,
+        )
+        time_instance_method(processor, "_encode_chapter_audio", "encode", timings)
+        time_instance_method(processor, "_ensure_chapter_tts_engine", "tts_model_load", timings)
+        return pipeline
+
+    time_instance_method(pipeline, "_ingest", "parse", timings)
+    time_instance_method(pipeline, "_clean_chapter_content", "clean", timings)
+    time_instance_method(pipeline, "_synthesize_chapter_chunks", "tts", timings)
+    time_instance_method(
+        pipeline,
+        "_clean_and_synthesize_with_overlap",
+        "clean_tts_overlap",
+        timings,
+    )
+    time_instance_method(pipeline, "_encode_chapter_audio", "encode", timings)
+    time_instance_method(pipeline, "_package", "package", timings)
+    time_instance_method(pipeline, "_ensure_chapter_tts_engine", "tts_model_load", timings)
     return pipeline
 
 

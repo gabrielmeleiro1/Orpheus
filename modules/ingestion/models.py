@@ -23,3 +23,4 @@ class Document:
     author: Optional[str] = None
     chapters: list[Chapter] = field(default_factory=list)
     raw_markdown: str = ""
+    skipped_non_prose_sections: list[dict[str, object]] = field(default_factory=list)

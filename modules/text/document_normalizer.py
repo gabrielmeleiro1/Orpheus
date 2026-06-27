@@ -10,8 +10,9 @@ from typing import Iterable
 
 from modules.ingestion.models import Chapter, Document
 from modules.ingestion.content_filter import (
-    classify_chapter_content,
+    SkippedSection,
     filter_audiobook_chapters,
+    serialize_skipped_section,
 )
 
 _PAGE_NUMBER_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdmIVXLCDM]{1,12})\s*$")
@@ -166,6 +167,7 @@ def normalize_extracted_document(
     source_type = source_type.lower().lstrip(".")
     chapters = list(document.chapters)
     repeated_headers = _detect_repeated_headers(chapters) if source_type == "pdf" else set()
+    skipped_sections: list[SkippedSection] = []
 
     normalized_chapters: list[Chapter] = []
     for chapter in chapters:
@@ -173,12 +175,16 @@ def normalize_extracted_document(
             return document
         title = str(chapter.title).strip()
         content = str(chapter.content)
-        if (
-            skip_non_prose_sections
-            and classify_chapter_content(title, content).should_skip
-        ):
-            continue
         if source_type == "epub" and _is_epub_non_narrative_chapter(title, content):
+            skipped_sections.append(
+                SkippedSection(
+                    original_number=chapter.number,
+                    title=title,
+                    reason="epub_non_narrative",
+                    confidence=0.95,
+                    chars=len(content),
+                )
+            )
             continue
         if source_type == "pdf":
             content = _normalize_pdf_chapter(content, repeated_headers)
@@ -193,9 +199,14 @@ def normalize_extracted_document(
 
     renumbered_chapters = _renumber(normalized_chapters)
     if skip_non_prose_sections:
-        retained_chapters, _skipped_sections = filter_audiobook_chapters(
-            renumbered_chapters
-        )
+        retained_chapters, filtered_skipped = filter_audiobook_chapters(renumbered_chapters)
+        skipped_sections.extend(filtered_skipped)
         renumbered_chapters = retained_chapters
 
-    return replace(document, chapters=renumbered_chapters)
+    return replace(
+        document,
+        chapters=renumbered_chapters,
+        skipped_non_prose_sections=[
+            serialize_skipped_section(section) for section in skipped_sections
+        ],
+    )
