@@ -26,6 +26,10 @@ _CLEAR_SPACED_HYPHEN_COMPOUND_RE = re.compile(
     r"\b(?P<left>self|promise|recipient)-\s+(?P<right>governed|making|keeping|cum)\b",
     re.IGNORECASE,
 )
+_KNOWN_CLOSED_COMPOUND_HYPHEN_RE = re.compile(
+    r"\b(?P<left>country)-\s+(?P<right>woman|women|man|men)\b",
+    re.IGNORECASE,
+)
 
 
 def strip_inline_numeric_references(text: str) -> str:
@@ -142,6 +146,19 @@ def repair_clear_spaced_hyphenated_compounds(text: str) -> str:
     return _CLEAR_SPACED_HYPHEN_COMPOUND_RE.sub(_join, text)
 
 
+def repair_known_closed_compound_hyphenation(text: str) -> str:
+    """Repair reviewed PDF line-break artifacts in closed compound words."""
+
+    def _join(match: re.Match[str]) -> str:
+        left = match.group("left")
+        repaired = f"{left}{match.group('right')}"
+        if left[:1].isupper():
+            return repaired[:1].upper() + repaired[1:]
+        return repaired
+
+    return _KNOWN_CLOSED_COMPOUND_HYPHEN_RE.sub(_join, text)
+
+
 def is_markdown_table_line(line: str) -> bool:
     stripped = line.strip()
     return stripped.startswith("|") and stripped.count("|") >= 2
@@ -240,6 +257,7 @@ def rule_based_clean(text: str) -> str:
     text = repair_split_uppercase_word_fragments(text)
     text = repair_spaced_caps_em_dash_attributions(text)
     text = repair_clear_spaced_hyphenated_compounds(text)
+    text = repair_known_closed_compound_hyphenation(text)
     return text.strip()
 
 

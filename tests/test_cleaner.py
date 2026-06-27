@@ -144,6 +144,36 @@ def test_cleaner_skip_llm_option_uses_rule_only_for_long_clean_text(monkeypatch)
     assert stats["llm_success"] == 0
 
 
+def test_cleaner_batch_uses_rule_only_after_hallucination_fallback(monkeypatch):
+    cleaner = _make_loaded_mlx_cleaner(
+        CleanerConfig(skip_llm_when_not_needed=True)
+    )
+    calls = []
+    original_clean_with_trace = cleaner.clean_with_trace
+
+    def fake_clean_with_trace(text: str):
+        calls.append(text)
+        if len(calls) == 1:
+            return cleaner_module._CleanTrace(
+                original_text=text,
+                rule_based_text=text,
+                cleaned_text=text,
+                llm_output="changed text",
+                llm_error="LLM preservation guard rejected token replace",
+                mode="hallucination_fallback",
+            )
+        return original_clean_with_trace(text)
+
+    monkeypatch.setattr(cleaner, "clean_with_trace", fake_clean_with_trace)
+
+    traces = cleaner.clean_chunks_with_trace(["chunk one", "chunk two", "chunk tre"])
+
+    assert traces[0].mode == "hallucination_fallback"
+    assert traces[1].mode == "rule_only"
+    assert traces[2].mode == "rule_only"
+    assert len(calls) == 1
+
+
 def test_cleaner_blank_text_counts_as_rule_only_chunk():
     cleaner = _make_loaded_mlx_cleaner()
 

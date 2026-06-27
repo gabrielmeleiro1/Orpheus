@@ -123,8 +123,6 @@ class M4BPackager:
             temp_path = Path(temp_dir)
 
             concat_file = temp_path / "concat.txt"
-            concat_m4a = temp_path / "concat.m4a"
-
             write_ffmpeg_concat_file(concat_file, audio_files)
 
             # Generate chapter markers
@@ -138,26 +136,18 @@ class M4BPackager:
 
             has_cover = bool(metadata.cover_path and Path(metadata.cover_path).exists())
 
-            concat_cmd = [
+            final_cmd = [
                 self.ffmpeg_path, "-y",
                 "-f", "concat",
                 "-safe", "0",
                 "-i", str(concat_file),
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
-                str(concat_m4a)
-            ]
-
-            self._run_concat_command(concat_file, concat_cmd)
-
-            final_cmd = [
-                self.ffmpeg_path, "-y",
-                "-i", str(concat_m4a),
                 "-f", "ffmetadata",
                 "-i", str(chapter_file),
                 "-map_metadata", "1",
-                "-c:a", "copy",
+                "-map_chapters", "1",
+                "-c:a", "aac",
+                "-b:a", "128k",
+                "-movflags", "+faststart",
             ]
 
             if has_cover:

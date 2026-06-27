@@ -71,6 +71,57 @@ def test_warmup_loads_tts_before_cleaner_without_error() -> None:
     fake_cleaner.load.assert_called_once_with()
 
 
+def test_warmup_defers_cleaner_load_when_skip_llm_gate_enabled() -> None:
+    model_lifecycle = importlib.import_module("modules.pipeline.model_lifecycle")
+    pipeline = _cuda_warmup_pipeline()
+    pipeline.config.cleaner_skip_llm_when_not_needed = True
+    call_order: list[str] = []
+
+    fake_engine = MagicMock()
+    fake_engine.is_loaded = False
+    fake_engine.load.side_effect = lambda: call_order.append("tts_load")
+    fake_engine.warmup.side_effect = lambda **_: call_order.append("tts_warmup")
+
+    fake_cleaner = MagicMock()
+    fake_cleaner.load.side_effect = lambda: call_order.append("cleaner_load")
+
+    with patch(
+        "modules.tts.factory.TTSEngineFactory.create",
+        return_value=fake_engine,
+    ), patch(
+        "modules.tts.cleaner.TextCleaner",
+        return_value=fake_cleaner,
+    ), patch.object(
+        model_lifecycle,
+        "_maybe_warn_cleaner_cuda_memory_low",
+    ):
+        model_lifecycle.warmup_models(pipeline)
+
+    assert call_order == ["tts_load", "tts_warmup"]
+    assert pipeline.state.text_cleaner is fake_cleaner
+    fake_cleaner.load.assert_not_called()
+
+
+def test_get_text_cleaner_for_chapter_defers_load_when_skip_llm_gate_enabled() -> None:
+    model_lifecycle = importlib.import_module("modules.pipeline.model_lifecycle")
+    pipeline = _cuda_warmup_pipeline()
+    pipeline.config.cleaner_skip_llm_when_not_needed = True
+    pipeline.state.parallel_execution_active = False
+    fake_cleaner = MagicMock()
+
+    with patch(
+        "modules.tts.cleaner.TextCleaner",
+        return_value=fake_cleaner,
+    ), patch.object(
+        model_lifecycle,
+        "_maybe_warn_cleaner_cuda_memory_low",
+    ):
+        cleaner = model_lifecycle.get_text_cleaner_for_chapter(pipeline)
+
+    assert cleaner is fake_cleaner
+    fake_cleaner.load.assert_not_called()
+
+
 def test_warmup_warns_when_cuda_memory_below_estimate_plus_headroom() -> None:
     model_lifecycle = importlib.import_module("modules.pipeline.model_lifecycle")
     pipeline = _cuda_warmup_pipeline()

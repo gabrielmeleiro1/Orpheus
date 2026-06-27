@@ -98,15 +98,23 @@ def clean_chunk_safely(
         clean_with_trace = getattr(cleaner, "clean_with_trace", None)
         if callable(clean_with_trace):
             trace = clean_with_trace(chunk)
+            trace_mode = getattr(trace, "mode", "llm_success")
             trace_payload = {
                 "original_text": getattr(trace, "original_text", chunk),
                 "rule_based_text": getattr(trace, "rule_based_text", chunk),
                 "cleaned_text": getattr(trace, "cleaned_text", chunk),
-                "mode": getattr(trace, "mode", "llm_success"),
+                "mode": trace_mode,
                 "llm_output": getattr(trace, "llm_output", None),
                 "llm_error": getattr(trace, "llm_error", None),
             }
-            return trace_payload["cleaned_text"], True, trace_payload
+            continue_llm = trace_mode != "hallucination_fallback"
+            if not continue_llm:
+                runtime.log_verbose(
+                    "[CLEANER] LLM preservation guard rejected cleanup; "
+                    "using rule-based cleaning for remaining chunks",
+                    "warning",
+                )
+            return trace_payload["cleaned_text"], continue_llm, trace_payload
 
         cleaned = cleaner.clean(chunk)
         return cleaned, True, None

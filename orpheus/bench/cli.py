@@ -210,6 +210,7 @@ def _execute_specs(
                 voice=args.voice,
                 chunk_size=args.chunk_size,
                 chapter_limit=args.chapter_limit,
+                enable_chunk_overlap=args.enable_chunk_overlap,
                 min_extracted_chars=args.min_extracted_chars,
                 enable_parallel=not args.no_parallel,
                 max_parallel_chapters=args.max_parallel_chapters,
@@ -267,6 +268,11 @@ def _add_common_options(parser: argparse.ArgumentParser) -> None:
         choices=cleaner_cuda_quantization_choices(),
     )
     parser.add_argument("--cleaner-always-llm", action="store_true")
+    parser.add_argument(
+        "--enable-chunk-overlap",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--no-parallel", action="store_true")
     parser.add_argument("--max-parallel-chapters", type=int, default=2)
     parser.add_argument(
