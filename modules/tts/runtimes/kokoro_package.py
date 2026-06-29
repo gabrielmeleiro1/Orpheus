@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import wave
 from pathlib import Path
 from typing import Iterator
 
@@ -105,6 +106,22 @@ class PackageKokoroRuntime:
             return str(voice_path)
         return voice
 
+    def _write_output_audio(self, output_path: Path, audio: np.ndarray) -> None:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            import soundfile as sf
+        except ModuleNotFoundError:
+            pcm = np.clip(np.asarray(audio, dtype=np.float32).reshape(-1), -1.0, 1.0)
+            pcm16 = (pcm * 32767.0).astype(np.int16, copy=False)
+            with wave.open(str(output_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(self.sample_rate)
+                wav_file.writeframes(pcm16.tobytes())
+            return
+
+        sf.write(str(output_path), audio, self.sample_rate)
+
     def unload(self, *, keep_in_cache: bool = True) -> None:
         _ = keep_in_cache
         self._pipeline = None
@@ -143,10 +160,7 @@ class PackageKokoroRuntime:
             audio = np.array([], dtype=np.float32)
 
         if output_path is not None:
-            import soundfile as sf
-
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            sf.write(str(output_path), audio, self.sample_rate)
+            self._write_output_audio(output_path, audio)
 
         self._chunks_processed += 1
         self._total_chunk_time_ms += (time.perf_counter() - started_at) * 1000
