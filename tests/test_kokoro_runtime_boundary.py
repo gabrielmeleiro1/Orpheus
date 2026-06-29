@@ -348,6 +348,61 @@ def test_package_kokoro_runtime_delegates_to_kpipeline(monkeypatch, tmp_path: Pa
     ]
 
 
+def test_package_kokoro_runtime_writes_output_without_soundfile(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    import builtins
+    import wave
+
+    from modules.tts.runtimes.kokoro_package import PackageKokoroRuntime
+
+    class _FakePipeline:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def __call__(self, _text: str, **_kwargs: Any):  # noqa: ANN202
+            yield "gs", "ps", np.array([0.25, -0.25], dtype=np.float32)
+
+    fake_kokoro = SimpleNamespace(KPipeline=_FakePipeline)
+    monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+    monkeypatch.delitem(sys.modules, "soundfile", raising=False)
+    original_import = builtins.__import__
+
+    def fake_import(name: str, *args: Any, **kwargs: Any):  # noqa: ANN401
+        if name == "soundfile":
+            raise ModuleNotFoundError("No module named 'soundfile'")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    strategy = KokoroTTSStrategy(
+        KokoroConfig(
+            runtime_spec=TTSRuntimeSpec(
+                provider="cuda",
+                engine="kokoro",
+                model="hexgrad/Kokoro-82M",
+                quantization="bf16",
+                device="cuda:0",
+            )
+        )
+    )
+
+    output_path = tmp_path / "audio.wav"
+    runtime = PackageKokoroRuntime(
+        KokoroRuntimeConfig.from_strategy_config(strategy.config)
+    )
+    runtime.load()
+    audio = runtime.synthesize("Hello", voice="am_adam", speed=1.0, output_path=output_path)
+
+    assert audio.tolist() == [0.25, -0.25]
+    with wave.open(str(output_path), "rb") as wav_file:
+        assert wav_file.getnchannels() == 1
+        assert wav_file.getsampwidth() == 2
+        assert wav_file.getframerate() == 24000
+        assert wav_file.getnframes() == 2
+
+
 @pytest.mark.parametrize("strategy_runtime_options", [None, {}])
 def test_runtime_config_inherits_options_from_runtime_spec_when_strategy_options_absent(
     strategy_runtime_options,
