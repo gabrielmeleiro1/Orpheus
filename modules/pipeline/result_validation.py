@@ -70,13 +70,36 @@ def _path_missing_if_checkable(path: Any) -> bool:
 
 def select_packaging_audio_input(result: Any) -> Optional[Path]:
     """Return the preferred existing chapter audio path for packaging."""
+    aac_path = getattr(result, "aac_path", None)
     wav_path = getattr(result, "wav_path", None)
     mp3_path = getattr(result, "mp3_path", None)
+    if _path_exists(aac_path):
+        return aac_path
     if _path_exists(wav_path):
         return wav_path
     if _path_exists(mp3_path):
         return mp3_path
     return None
+
+
+def select_packaging_audio_inputs(chapter_results: list[Any]) -> list[Path]:
+    """Return homogeneous preferred chapter audio inputs for packaging."""
+    if chapter_results and all(
+        _path_exists(getattr(result, "aac_path", None)) for result in chapter_results
+    ):
+        return [getattr(result, "aac_path") for result in chapter_results]
+
+    if chapter_results and all(
+        _path_exists(getattr(result, "wav_path", None)) for result in chapter_results
+    ):
+        return [getattr(result, "wav_path") for result in chapter_results]
+
+    if chapter_results and all(
+        _path_exists(getattr(result, "mp3_path", None)) for result in chapter_results
+    ):
+        return [getattr(result, "mp3_path") for result in chapter_results]
+
+    return []
 
 
 def _chapter_note(result: Any, reason: str) -> str:

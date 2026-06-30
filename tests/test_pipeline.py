@@ -1,6 +1,7 @@
 
 import pytest
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from pathlib import Path
 import numpy as np
@@ -27,6 +28,7 @@ def test_benchmark_backed_kokoro_defaults():
 
     assert pipeline_config.chunk_size == 700
     assert pipeline_config.enable_tts_file_batch_results is False
+    assert pipeline_config.enable_chapter_aac_packaging is False
     assert pipeline_config.tts_file_batch_results_auto_threshold_chunks == 64
     assert pipeline_config.keep_tts_engine_warm is True
     assert pipeline_config.tts_idle_timeout_seconds == 300.0
@@ -82,6 +84,30 @@ def test_zero_idle_timeout_unloads_retained_kokoro_immediately(tmp_path):
 
     tts_engine.unload.assert_called_once_with(keep_in_cache=False)
     assert pipeline._tts_engine is None  # noqa: SLF001
+
+
+def test_finish_conversion_run_shuts_down_chapter_aac_executor_on_cleanup_error():
+    from modules.pipeline.conversion_lifecycle import finish_conversion_run
+
+    executor = MagicMock()
+    runtime = SimpleNamespace(
+        state=SimpleNamespace(chapter_aac_executor=executor, cancelled=True),
+        set_parallel_execution_active=MagicMock(),
+    )
+
+    def cleanup_temp():
+        raise RuntimeError("cleanup failed")
+
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        finish_conversion_run(
+            runtime,
+            cleanup_models=MagicMock(),
+            cleanup_temp=cleanup_temp,
+        )
+
+    executor.shutdown.assert_called_once_with(wait=True)
+    assert runtime.state.chapter_aac_executor is None
+    assert runtime.state.cancelled is False
 
 
 def test_warmup_reuses_retained_loaded_kokoro_without_probe(tmp_path):
@@ -975,6 +1001,43 @@ class TestConversionPipeline:
         with wave.open(str(chapter_wav), "rb") as wav_file:
             assert wav_file.getnframes() == 12
             assert wav_file.getframerate() == 24000
+
+    def test_consume_batch_result_audio_clears_file_backed_audio_payload(
+        self,
+        tmp_path,
+    ):
+        import wave
+
+        from modules.pipeline.stages.synthesis import (
+            ChapterAudioAccumulator,
+            _consume_batch_result_audio,
+        )
+        from modules.tts.engine import BatchResult
+
+        chunk_path = tmp_path / "chunk.wav"
+        with wave.open(str(chunk_path), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(24000)
+            writer.writeframes(b"\0\0" * 4)
+
+        accumulator = ChapterAudioAccumulator(
+            output_path=tmp_path / "chapter.wav",
+            sample_rate=24000,
+            max_in_memory_samples=1,
+        )
+        result = BatchResult(
+            audio=np.array([0.1, 0.2], dtype=np.float32),
+            audio_path=chunk_path,
+            index=0,
+        )
+
+        _consume_batch_result_audio(accumulator, result)
+        accumulator.close()
+
+        assert result.audio_path is None
+        assert result.audio is None
+        assert not chunk_path.exists()
 
     def test_synthesize_chapter_chunks_orders_incremental_audio_by_chunk_index(
         self,

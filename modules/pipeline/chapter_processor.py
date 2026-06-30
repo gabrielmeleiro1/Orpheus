@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import time
 import traceback
@@ -542,6 +543,7 @@ class ChapterProcessor:
         chapter_idx: int,
         total_chapters: int,
         chunks: list[str],
+        chapter_result: ChapterResult | None = None,
     ) -> Optional[Path | np.ndarray]:
         from .stages.synthesis import synthesize_chapter_chunks
 
@@ -552,6 +554,7 @@ class ChapterProcessor:
             chapter_idx=chapter_idx,
             total_chapters=total_chapters,
             chunks=chunks,
+            chapter_result=chapter_result,
         )
 
     def synthesize_chapter_chunks(
@@ -561,6 +564,7 @@ class ChapterProcessor:
         chapter_idx: int,
         total_chapters: int,
         chunks: list[str],
+        chapter_result: ChapterResult | None = None,
     ) -> Optional[Path | np.ndarray]:
         """Run TTS stage for chapter chunks and return chapter audio payload."""
         return self._synthesize_chapter_chunks(
@@ -568,6 +572,7 @@ class ChapterProcessor:
             chapter_idx=chapter_idx,
             total_chapters=total_chapters,
             chunks=chunks,
+            chapter_result=chapter_result,
         )
 
     @timed_stage("clean_tts_overlap")
@@ -682,6 +687,47 @@ class ChapterProcessor:
             chapter_wav=chapter_wav,
         )
 
+    def _ensure_chapter_aac(
+        self,
+        *,
+        result: ChapterResult,
+        chapter: Any,
+        encoding_source: Path | np.ndarray,
+    ) -> None:
+        if not getattr(self.runtime.config, "enable_chapter_aac_packaging", False):
+            return
+        if result.aac_path is not None and result.aac_path.exists():
+            return
+
+        from .stages.encoding import EncodingStageContext, encode_chapter_aac
+
+        def encode() -> Path:
+            sample_rate = self.runtime.tts_sample_rate()
+            context = EncodingStageContext(
+                config=self.runtime.config,
+                sample_rate=sample_rate,
+                encoding_stage=PipelineStage.ENCODING,
+                set_stage=self.runtime.set_stage,
+                notify_progress=self.runtime.notify_progress,
+                log_verbose=self.runtime.log_verbose,
+            )
+            return encode_chapter_aac(
+                context=context,
+                chapter=chapter,
+                chapter_wav=encoding_source,
+            )
+
+        if bool(getattr(self.runtime.config, "enable_background_chapter_aac_encoding", True)):
+            executor = self.runtime.state.chapter_aac_executor
+            if executor is None:
+                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chapter-aac")
+                self.runtime.state.chapter_aac_executor = executor
+            result.aac_future = executor.submit(encode)
+            return
+
+        result.aac_path = encode()
+        self.runtime.track_temp_cleanup_path(result.aac_path)
+
     def encode_chapter_audio(
         self,
         *,
@@ -778,6 +824,7 @@ class ChapterProcessor:
                 chapter_idx=chapter_idx,
                 total_chapters=total_chapters,
                 chunks=chunks,
+                chapter_result=result,
             )
             tts_seconds = time.perf_counter() - tts_started
             if chapter_wav is None:
@@ -852,6 +899,11 @@ class ChapterProcessor:
                 encoding_source,
                 sample_rate=sample_rate,
             )
+            self._ensure_chapter_aac(
+                result=result,
+                chapter=chapter,
+                encoding_source=encoding_source,
+            )
             self._record_encode_throughput(time.perf_counter() - encode_started)
             self.runtime.log_verbose(
                 f"[ENCODER] Skipped chapter MP3 artifact ({result.duration_ms / 1000:.1f}s)",
@@ -877,6 +929,11 @@ class ChapterProcessor:
         self._record_encode_throughput(time.perf_counter() - encode_started)
         result.mp3_path = chapter_mp3
         result.duration_ms = duration_ms
+        self._ensure_chapter_aac(
+            result=result,
+            chapter=chapter,
+            encoding_source=encoding_source,
+        )
 
         self.runtime.log_verbose(
             f"[ENCODER] Complete: {chapter_mp3.name} ({result.duration_ms / 1000:.1f}s)",

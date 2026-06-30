@@ -90,8 +90,11 @@ BENCHMARK_SCHEMA_KEYS = (
     "tts_quantization",
     "voice",
     "chunk_size",
+    "chapter_start",
     "chapter_limit",
     "emit_chapter_mp3_artifacts",
+    "enable_chapter_aac_packaging",
+    "enable_background_chapter_aac_encoding",
     "enable_chunk_overlap",
     "enable_tts_file_batch_results",
     "parallel_requested",
@@ -111,6 +114,7 @@ BENCHMARK_SCHEMA_KEYS = (
     "extracted_chars",
     "pages",
     "chapters",
+    "chapter_titles",
     "chunks",
     "skipped_non_prose_sections",
     "clean_seconds_total",
@@ -222,10 +226,10 @@ class TTSChunkProfiler:
     def wrap_engine(self, engine: Any) -> None:
         if engine is None:
             return
-        inner_engine = getattr(engine, "_engine", None)
-        if inner_engine is not None and inner_engine is not engine:
-            self.wrap_engine(inner_engine)
-            return
+        for inner_name in ("_engine", "_runtime"):
+            inner_engine = getattr(engine, inner_name, None)
+            if inner_engine is not None and inner_engine is not engine:
+                self.wrap_engine(inner_engine)
 
         engine_id = id(engine)
         if engine_id in self._wrapped_engine_ids:
@@ -379,8 +383,11 @@ def _build_config(
     pdf_extraction_backend: str = "fitz",
     voice: str | None = None,
     chunk_size: int | None = None,
+    chapter_start: int | None = None,
     chapter_limit: int | None = None,
     emit_chapter_mp3_artifacts: bool = False,
+    enable_chapter_aac_packaging: bool = False,
+    enable_background_chapter_aac_encoding: bool = True,
     enable_chunk_overlap: bool | None = False,
     enable_tts_file_batch_results: bool = True,
     enable_parallel: bool = True,
@@ -411,9 +418,13 @@ def _build_config(
         config.voice = voice
     if chunk_size is not None:
         config.chunk_size = int(chunk_size)
+    if chapter_start is not None:
+        config.chapter_start = max(1, int(chapter_start))
     if chapter_limit is not None:
         config.chapter_limit = max(1, int(chapter_limit))
     config.emit_chapter_mp3_artifacts = bool(emit_chapter_mp3_artifacts)
+    config.enable_chapter_aac_packaging = bool(enable_chapter_aac_packaging)
+    config.enable_background_chapter_aac_encoding = bool(enable_background_chapter_aac_encoding)
     requested_enable_chunk_overlap = enable_chunk_overlap
     config.enable_chunk_overlap = bool(enable_chunk_overlap)
     config.enable_tts_file_batch_results = bool(enable_tts_file_batch_results)
@@ -488,6 +499,11 @@ def _parse_document(source_path: Path, config: PipelineConfig) -> Any:
         document = MarkdownParser(source_path).parse()
     else:
         raise ValueError(f"Unsupported benchmark source type: {suffix}")
+    _limit_document_chapters(
+        document,
+        config.chapter_limit,
+        chapter_start=getattr(config, "chapter_start", 1),
+    )
     if bool(getattr(config, "pre_chunk_document_cleanup", True)):
         document = normalize_extracted_document(
             document,
@@ -514,11 +530,20 @@ def _chunk_document(document: Any, config: PipelineConfig) -> tuple[int, float]:
     return len(chunks), time.perf_counter() - started_at
 
 
-def _limit_document_chapters(document: Any, chapter_limit: int | None) -> Any:
-    if chapter_limit is None:
+def _limit_document_chapters(
+    document: Any,
+    chapter_limit: int | None,
+    *,
+    chapter_start: int = 1,
+) -> Any:
+    start_index = max(0, int(chapter_start or 1) - 1)
+    if chapter_limit is None and start_index == 0:
         return document
     chapters = list(getattr(document, "chapters", []))
-    document.chapters = chapters[: max(1, int(chapter_limit))]
+    if chapter_limit is None:
+        document.chapters = chapters[start_index:]
+    else:
+        document.chapters = chapters[start_index : start_index + max(1, int(chapter_limit))]
     return document
 
 
@@ -538,6 +563,7 @@ def _source_metrics_from_document(
         "author": getattr(document, "author", None),
         "pages": getattr(document, "total_pages", None),
         "chapters": len(chapters),
+        "chapter_titles": [str(getattr(chapter, "title", "")) for chapter in chapters],
         "extracted_chars": extracted_chars,
         "chunks": chunks,
         "skipped_non_prose_sections": list(
@@ -552,7 +578,6 @@ def _source_metrics_from_document(
 def _parse_source_for_metrics(source_path: Path, config: PipelineConfig) -> tuple[dict[str, Any], Any]:
     started_at = time.perf_counter()
     document = _parse_document(source_path, config)
-    _limit_document_chapters(document, config.chapter_limit)
     parse_seconds = time.perf_counter() - started_at
     return (
         _source_metrics_from_document(
@@ -642,10 +667,8 @@ def _run_cleaner_gate(
     """Score chunks after rule-based cleanup without loading cleaner or TTS models."""
     if document is None:
         document = _parse_document(source_path, config)
-        _limit_document_chapters(document, config.chapter_limit)
     chunks = _document_chunks(document, config)
     detected_issues: list[dict[str, Any]] = []
-    unsafe_rule_only_issues: list[dict[str, Any]] = []
     rule_only_chunks = 0
     llm_needed_chunks = 0
     cleaned_chars = 0
@@ -672,8 +695,8 @@ def _run_cleaner_gate(
         "cleaner_gate_artifact_issue_types": issue_types,
         "cleaner_gate_artifact_issues": detected_issues,
         "artifact_quality": {
-            "success": not unsafe_rule_only_issues,
-            "issues": unsafe_rule_only_issues,
+            "success": not detected_issues,
+            "issues": detected_issues,
             "checked_files": [f"cleaner_gate#chunk:{index}" for index in range(1, len(chunks) + 1)],
             "cleaned_chars": cleaned_chars,
             "before_cleaning_chars": sum(len(chunk) for chunk in chunks),
@@ -886,8 +909,11 @@ def _base_metrics(
         "tts_quantization": config.tts_quantization,
         "voice": config.voice,
         "chunk_size": config.chunk_size,
+        "chapter_start": getattr(config, "chapter_start", 1),
         "chapter_limit": config.chapter_limit,
         "emit_chapter_mp3_artifacts": config.emit_chapter_mp3_artifacts,
+        "enable_chapter_aac_packaging": config.enable_chapter_aac_packaging,
+        "enable_background_chapter_aac_encoding": config.enable_background_chapter_aac_encoding,
         "enable_chunk_overlap": config.enable_chunk_overlap,
         "enable_tts_file_batch_results": config.enable_tts_file_batch_results,
         "parallel_requested": bool(config.enable_parallel),
@@ -911,6 +937,7 @@ def _base_metrics(
         "extracted_chars": 0,
         "pages": None,
         "chapters": 0,
+        "chapter_titles": [],
         "chunks": 0,
         "skipped_non_prose_sections": [],
         "clean_seconds_total": 0.0,
@@ -1108,7 +1135,10 @@ def run_benchmark(
     voice: str | None = None,
     chunk_size: int | None = None,
     chapter_limit: int | None = None,
+    chapter_start: int | None = None,
     emit_chapter_mp3_artifacts: bool = False,
+    enable_chapter_aac_packaging: bool = False,
+    enable_background_chapter_aac_encoding: bool = True,
     enable_chunk_overlap: bool | None = False,
     enable_tts_file_batch_results: bool = True,
     min_extracted_chars: int = 1,
@@ -1141,8 +1171,11 @@ def run_benchmark(
         pdf_extraction_backend=pdf_extraction_backend,
         voice=voice,
         chunk_size=chunk_size,
+        chapter_start=chapter_start,
         chapter_limit=chapter_limit,
         emit_chapter_mp3_artifacts=emit_chapter_mp3_artifacts,
+        enable_chapter_aac_packaging=enable_chapter_aac_packaging,
+        enable_background_chapter_aac_encoding=enable_background_chapter_aac_encoding,
         enable_chunk_overlap=enable_chunk_overlap,
         enable_tts_file_batch_results=enable_tts_file_batch_results,
         enable_parallel=enable_parallel,
@@ -1243,6 +1276,7 @@ def run_worker_selection_comparison(
     temp_dir: Path,
     max_parallel_chapters: int = 2,
     chapter_limit: int | None = None,
+    chapter_start: int | None = None,
     **benchmark_kwargs: Any,
 ) -> dict[str, Any]:
     """Run bounded full benchmarks for sequential, static, and warmup selection."""
@@ -1279,6 +1313,7 @@ def run_worker_selection_comparison(
             temp_dir=case_temp_dir,
             parse_only=False,
             chapter_limit=chapter_limit,
+            chapter_start=chapter_start,
             enable_parallel=bool(case["enable_parallel"]),
             max_parallel_chapters=int(case["max_parallel_chapters"]),
             worker_selection_mode=str(case["worker_selection_mode"]),
@@ -1308,6 +1343,7 @@ def run_worker_selection_comparison(
     summary = {
         "source_path": str(Path(source_path).expanduser().resolve()),
         "chapter_limit": chapter_limit,
+        "chapter_start": chapter_start or 1,
         "requested_parallel_chapters": max_parallel_chapters,
         "cases": results,
     }
@@ -1360,8 +1396,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--voice", default=defaults.voice)
     parser.add_argument("--chunk-size", type=int, default=defaults.chunk_size)
+    parser.add_argument("--chapter-start", type=int, default=1)
     parser.add_argument("--chapter-limit", type=int, default=None)
     parser.add_argument("--emit-chapter-mp3-artifacts", action="store_true")
+    parser.add_argument("--enable-chapter-aac-packaging", action="store_true")
+    parser.add_argument(
+        "--enable-background-chapter-aac-encoding",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     parser.add_argument(
         "--enable-chunk-overlap",
         action=argparse.BooleanOptionalAction,
@@ -1419,8 +1462,11 @@ def main(argv: list[str] | None = None) -> int:
             pdf_extraction_backend=args.pdf_backend,
             voice=args.voice,
             chunk_size=args.chunk_size,
+            chapter_start=args.chapter_start,
             chapter_limit=args.chapter_limit,
             emit_chapter_mp3_artifacts=args.emit_chapter_mp3_artifacts,
+            enable_chapter_aac_packaging=args.enable_chapter_aac_packaging,
+            enable_background_chapter_aac_encoding=args.enable_background_chapter_aac_encoding,
             enable_chunk_overlap=args.enable_chunk_overlap,
             enable_tts_file_batch_results=args.enable_tts_file_batch_results,
             min_extracted_chars=args.min_extracted_chars,
@@ -1449,8 +1495,11 @@ def main(argv: list[str] | None = None) -> int:
         pdf_extraction_backend=args.pdf_backend,
         voice=args.voice,
         chunk_size=args.chunk_size,
+        chapter_start=args.chapter_start,
         chapter_limit=args.chapter_limit,
         emit_chapter_mp3_artifacts=args.emit_chapter_mp3_artifacts,
+        enable_chapter_aac_packaging=args.enable_chapter_aac_packaging,
+        enable_background_chapter_aac_encoding=args.enable_background_chapter_aac_encoding,
         enable_chunk_overlap=args.enable_chunk_overlap,
         enable_tts_file_batch_results=args.enable_tts_file_batch_results,
         min_extracted_chars=args.min_extracted_chars,

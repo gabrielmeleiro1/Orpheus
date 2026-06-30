@@ -8,6 +8,16 @@ import re
 PDF_HYPHENATION_LEAK_RE = re.compile(
     r"\b[A-Za-z]{2,}-\s+(?!(?:a|an|and|nor|or|the|to)\b)[a-z]{2,}\b"
 )
+PDF_INTERNAL_HYPHEN_FRAGMENT_RE = re.compile(
+    r"(?i)\b(?:becom-ing|(?!(?:"
+    r"anti|auto|card|co|cross|de|half|high|inter|low|micro|mid|multi|non|"
+    r"over|post|pre|proto|quasi|re|self|semi|short|under|well"
+    r")-)"
+    r"[a-z]{2,6}-(?:"
+    r"[a-z]{2,}(?:ence|ences|ance|ances|ment|ments|tion|tions|sion|sions)|"
+    r"ence|nment|rience|sation|rounding|pendence"
+    r"))\b"
+)
 PDF_PAGE_FOOTNOTE_LEAK_RE = re.compile(
     r"(?i)\b(?:"
     r"\d{1,4}[il]\s+[a-z]{3,}|"
@@ -70,7 +80,10 @@ class ExtractionArtifactIssue:
 
 
 def has_pdf_hyphenation_leakage(text: str) -> bool:
-    return PDF_HYPHENATION_LEAK_RE.search(text) is not None
+    return (
+        PDF_HYPHENATION_LEAK_RE.search(text) is not None
+        or PDF_INTERNAL_HYPHEN_FRAGMENT_RE.search(text) is not None
+    )
 
 
 def has_pdf_page_footnote_leakage(text: str) -> bool:
@@ -92,6 +105,7 @@ def scan_cleaner_handoff_artifacts(text: str) -> list[ExtractionArtifactIssue]:
         ("prompt_delimiter_leakage", PROMPT_DELIMITER_RE),
         ("model_commentary_leakage", MODEL_COMMENTARY_RE),
         ("pdf_hyphenation_leakage", PDF_HYPHENATION_LEAK_RE),
+        ("pdf_internal_hyphen_fragment", PDF_INTERNAL_HYPHEN_FRAGMENT_RE),
         ("pdf_page_footnote_leakage", PDF_PAGE_FOOTNOTE_LEAK_RE),
         ("pdf_joined_dash_leakage", PDF_JOINED_DASH_LEAK_RE),
         ("epub_social_boilerplate", EPUB_SOCIAL_BOILERPLATE_RE),

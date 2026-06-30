@@ -26,9 +26,15 @@ def begin_conversion_run(runtime) -> None:
 def finish_conversion_run(runtime, *, cleanup_models, cleanup_temp) -> None:
     """Release per-run resources after a conversion exits."""
     runtime.set_parallel_execution_active(False)
-    cleanup_models()
-    cleanup_temp()
-    runtime.state.cancelled = False
+    executor = getattr(runtime.state, "chapter_aac_executor", None)
+    if executor is not None:
+        executor.shutdown(wait=True)
+        runtime.state.chapter_aac_executor = None
+    try:
+        cleanup_models()
+        cleanup_temp()
+    finally:
+        runtime.state.cancelled = False
 
 
 def cancelled_result(title: str = "", author: str | None = None) -> ConversionResult:

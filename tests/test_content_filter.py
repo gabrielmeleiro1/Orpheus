@@ -132,6 +132,33 @@ def test_classifies_table_of_contents_with_title_page_lines_as_skip():
     assert classification.confidence >= 0.9
 
 
+def test_classifies_list_of_maps_as_skip():
+    content = "\n".join(
+        [
+            "Europe in 1740",
+            "The Silesian Campaign",
+            "The Seven Years War",
+            "Prussia after 1763",
+        ]
+    )
+
+    classification = classify_chapter_content("List of Maps", content)
+
+    assert classification.should_skip is True
+    assert classification.reason == "list_of_maps"
+    assert classification.confidence >= 0.9
+
+
+def test_does_not_classify_map_or_figure_prose_titles_as_map_lists():
+    for title in ("Map of the Heart", "Figure of Speech"):
+        classification = classify_chapter_content(
+            title,
+            "This short chapter title is figurative\nand continues as prose without punctuation",
+        )
+
+        assert classification.should_skip is False
+
+
 def test_classifies_copyright_and_legal_page_as_skip():
     content = (
         "Copyright (c) 2024 Example Press. All rights reserved.\n"

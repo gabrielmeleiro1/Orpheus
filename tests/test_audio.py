@@ -536,6 +536,43 @@ class TestM4BPackager:
         assert temp_output.name.startswith(f".{output.name}.")
         assert temp_output.name.endswith(f".tmp{output.suffix}")
 
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_create_m4b_uses_stream_copy_for_m4a_inputs(self, mock_which, mock_run, tmp_path):
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.side_effect = _successful_ffmpeg_run
+
+        first = tmp_path / "one.m4a"
+        second = tmp_path / "two.m4a"
+        first.write_bytes(b"one")
+        second.write_bytes(b"two")
+        output = tmp_path / "book.m4b"
+
+        packager = M4BPackager()
+        metadata = AudiobookMetadata(title="Book", author="Author")
+
+        packager.create_m4b(
+            [first, second],
+            ["One", "Two"],
+            metadata,
+            output,
+            chapter_durations_ms=[1000, 1500],
+        )
+
+        final_args = mock_run.call_args_list[0].args[0]
+        assert final_args[final_args.index("-c:a") + 1] == "copy"
+        assert "-b:a" not in final_args
+        ffmetadata_f_index = final_args.index("-f")
+        ffmetadata_f_index = final_args.index("-f", ffmetadata_f_index + 1)
+        assert final_args[ffmetadata_f_index + 1] == "ffmetadata"
+        assert final_args[ffmetadata_f_index + 2] == "-i"
+        assert final_args[final_args.index("-map_metadata") + 1] == "1"
+        assert final_args[final_args.index("-map_chapters") + 1] == "1"
+        temp_output = Path(final_args[-1])
+        assert temp_output.parent == output.parent
+        assert temp_output.name.startswith(f".{output.name}.")
+        assert temp_output.name.endswith(f".tmp{output.suffix}")
+
     @patch("shutil.which")
     def test_create_m4b_failure_preserves_existing_output_and_cleans_temp(self, mock_which, tmp_path):
         mock_which.return_value = "/usr/bin/ffmpeg"
