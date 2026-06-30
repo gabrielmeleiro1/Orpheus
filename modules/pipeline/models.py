@@ -186,9 +186,12 @@ class PipelineConfig:
     temp_dir: Path = field(default_factory=lambda: Path("temp"))
     mp3_bitrate: str = "128k"
     emit_chapter_mp3_artifacts: bool = False
+    enable_chapter_aac_packaging: bool = False
+    enable_background_chapter_aac_encoding: bool = True
     normalize_volume: bool = True
     target_dbfs: float = -16.0
     chunk_size: int = 700
+    chapter_start: int = 1
 
     # Parallel processing settings
     enable_parallel: bool = True
@@ -267,6 +270,8 @@ class ChapterResult:
     chapter_title: str
     wav_path: Optional[Path] = None
     mp3_path: Optional[Path] = None
+    aac_path: Optional[Path] = None
+    aac_future: Optional[Any] = None
     duration_ms: int = 0
     error: Optional[str] = None
     stage_timings: dict[str, float] = field(default_factory=dict)

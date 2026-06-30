@@ -38,6 +38,10 @@ _INDEX_TITLE_RE = re.compile(r"\b(?:index|name index|subject index)\b", re.IGNOR
 _REFERENCES_TITLE_RE = re.compile(r"\b(?:bibliography|references|works cited)\b", re.IGNORECASE)
 _TOC_TITLE_RE = re.compile(r"\b(?:contents|table of contents)\b", re.IGNORECASE)
 _COPYRIGHT_TITLE_RE = re.compile(r"\b(?:copyright|legal|imprint)\b", re.IGNORECASE)
+_MAP_LIST_TITLE_RE = re.compile(
+    r"^\s*(?:list\s+of\s+)?(?:maps|figures|illustrations)\s*$",
+    re.IGNORECASE,
+)
 
 _INDEX_LINE_RE = re.compile(
     r"^[A-Z][A-Za-z' -]{2,}(?:,\s+[A-Z][A-Za-z' -]+)?\s+"
@@ -87,6 +91,8 @@ def classify_chapter_content(title: str, content: str) -> ContentClassification:
         return ContentClassification(True, "copyright", 0.95)
     if _is_table_of_contents(title_text, lines):
         return ContentClassification(True, "table_of_contents", 0.95)
+    if _is_map_list(title_text, lines):
+        return ContentClassification(True, "list_of_maps", 0.93)
     if _is_index(title_text, lines):
         return ContentClassification(True, "index", 0.95)
     if _is_references(title_text, lines):
@@ -171,6 +177,15 @@ def _is_table_of_contents(title: str, lines: list[str]) -> bool:
         return False
     matching = sum(1 for line in lines if _TOC_LINE_RE.match(line) or _BARE_TOC_LINE_RE.match(line))
     return matching / len(lines) >= 0.6
+
+
+def _is_map_list(title: str, lines: list[str]) -> bool:
+    if not _MAP_LIST_TITLE_RE.search(title):
+        return False
+    if len(lines) <= 12:
+        sentence_like = sum(1 for line in lines if re.search(r"[.!?]$", line))
+        return sentence_like == 0
+    return _is_low_prose_density(lines)
 
 
 def _is_copyright(title: str, content: str) -> bool:

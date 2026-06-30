@@ -19,7 +19,7 @@ class TraceDecisionRequest:
     original_text: str
     rule_based_text: str
     start_time: float
-    artifact_score: dict[str, object]
+    artifact_score: dict[str, object] | None
     prompt: str
 
 
@@ -109,6 +109,15 @@ def _warn(
         warning_logger.warning(message, *args)
 
 
+def _resolve_trace_artifact_score(
+    cleaner: Any,
+    request: TraceDecisionRequest,
+) -> dict[str, object]:
+    if isinstance(request.artifact_score, dict):
+        return request.artifact_score
+    return cleaner._artifact_score_for(request.rule_based_text)  # noqa: SLF001
+
+
 def _start_trace_decision_flow(
     cleaner: Any,
     trace_cls,
@@ -127,16 +136,19 @@ def _start_trace_decision_flow(
         )
 
     rule_based_text = cleaner._rule_based_clean(text)  # noqa: SLF001
-    artifact_score = cleaner._artifact_score_for(original_text)  # noqa: SLF001
-    if cleaner._should_use_rule_only_cleaning(rule_based_text, artifact_score):  # noqa: SLF001
-        return make_rule_only_trace(
-            cleaner,
-            trace_cls,
-            original_text=original_text,
-            rule_based_text=rule_based_text,
-            start_time=start_time,
-            artifact_score=artifact_score,
-        )
+    if cleaner._needs_llm_cleaning(rule_based_text):  # noqa: SLF001
+        artifact_score = None
+    else:
+        artifact_score = cleaner._artifact_score_for(rule_based_text)  # noqa: SLF001
+        if cleaner._should_use_rule_only_cleaning(rule_based_text, artifact_score):  # noqa: SLF001
+            return make_rule_only_trace(
+                cleaner,
+                trace_cls,
+                original_text=original_text,
+                rule_based_text=rule_based_text,
+                start_time=start_time,
+                artifact_score=artifact_score,
+            )
 
     if not cleaner._loaded:  # noqa: SLF001
         cleaner.load()
@@ -162,6 +174,7 @@ def _complete_trace_decision_flow(
     *,
     warning_logger: logging.Logger | None = None,
 ) -> Any:
+    artifact_score = _resolve_trace_artifact_score(cleaner, request)
     cleaned = cleaner._extract_result(response)  # noqa: SLF001
     final_text = cleaned if cleaned else request.rule_based_text
     final_text = cleaner._repair_known_leading_letter_fragments(final_text)  # noqa: SLF001
@@ -186,7 +199,7 @@ def _complete_trace_decision_flow(
             llm_output=cleaned,
             llm_error=guard_message,
             hallucination=True,
-            artifact_score=request.artifact_score,
+            artifact_score=artifact_score,
         )
 
     if cleaned:
@@ -205,7 +218,7 @@ def _complete_trace_decision_flow(
                 llm_output=cleaned,
                 llm_error=preservation_error,
                 hallucination=True,
-                artifact_score=request.artifact_score,
+                artifact_score=artifact_score,
             )
 
     return make_success_trace(
@@ -216,7 +229,7 @@ def _complete_trace_decision_flow(
         cleaned_text=final_text,
         llm_output=cleaned,
         start_time=request.start_time,
-        artifact_score=request.artifact_score,
+        artifact_score=artifact_score,
     )
 
 
@@ -236,7 +249,7 @@ def _exception_fallback_trace(
         rule_based_text=request.rule_based_text,
         start_time=request.start_time,
         llm_error=str(exc),
-        artifact_score=request.artifact_score,
+        artifact_score=_resolve_trace_artifact_score(cleaner, request),
     )
 
 

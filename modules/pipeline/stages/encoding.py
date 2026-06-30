@@ -269,3 +269,53 @@ def encode_chapter_audio(
             audio_filter=audio_filter,
         )
     return chapter_mp3, source_duration_ms
+
+
+def encode_chapter_aac(
+    context: EncodingStageContext | Any,
+    chapter: Any,
+    chapter_wav: Path | np.ndarray,
+) -> Path:
+    """Encode chapter WAV/audio payload to AAC/M4A for stream-copy packaging."""
+    from modules.audio.encoder import AudioEncoder
+
+    context = _coerce_encoding_context(context)
+    sample_rate = int(context.sample_rate or 24000)
+
+    audio_array: np.ndarray | None = None
+    audio_filter: str | None = None
+    if isinstance(chapter_wav, np.ndarray):
+        audio_array = np.asarray(chapter_wav, dtype=np.float32).reshape(-1)
+    elif context.config.normalize_volume:
+        audio_filter = _normalization_filter_for_wav(
+            chapter_wav,
+            target_dBFS=context.config.target_dbfs,
+        )
+
+    if context.config.normalize_volume and audio_array is not None:
+        audio_array = _normalize_audio_array(
+            audio_array,
+            target_dBFS=context.config.target_dbfs,
+        )
+
+    chapter_aac = context.config.temp_dir / f"chapter_{chapter.number:02d}.m4a"
+    encoder = AudioEncoder(
+        bitrate=context.config.mp3_bitrate,
+        sample_rate=sample_rate,
+    )
+    array_to_aac = getattr(encoder, "array_to_aac", None)
+    if audio_array is not None and callable(array_to_aac):
+        array_to_aac(
+            audio_array,
+            chapter_aac,
+            sample_rate=sample_rate,
+            bitrate=context.config.mp3_bitrate,
+        )
+    else:
+        encoder.wav_to_aac(
+            chapter_wav,
+            chapter_aac,
+            bitrate=context.config.mp3_bitrate,
+            audio_filter=audio_filter,
+        )
+    return chapter_aac

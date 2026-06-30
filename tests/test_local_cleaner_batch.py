@@ -14,19 +14,19 @@ def test_local_cleaner_batch_scores_all_chunks_and_preserves_order(monkeypatch):
     monkeypatch.setattr(
         cleaner,
         "_generate_llm_response",
-        lambda prompt: calls.append(prompt) or "conversation fixed.",
+        lambda prompt: calls.append(prompt) or "I think this should be fixed.",
     )
 
     traces = cleaner.clean_chunks_with_trace(
         [
             "Clean prose that should stay on the deterministic path.",
-            "conver-\nsation fixed.",
+            "Ithink this should be fixed.",
         ]
     )
 
     assert [trace.cleaned_text for trace in traces] == [
         "Clean prose that should stay on the deterministic path.",
-        "conversation fixed.",
+        "I think this should be fixed.",
     ]
     assert [trace.mode for trace in traces] == ["rule_only", "llm_success"]
     assert len(calls) == 1

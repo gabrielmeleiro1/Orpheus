@@ -7,7 +7,7 @@ from typing import Any, Optional
 
 from modules.pipeline.result_validation import (
     format_failure_notes,
-    select_packaging_audio_input,
+    select_packaging_audio_inputs,
     summarize_packaging_input_failures,
 )
 
@@ -20,30 +20,45 @@ def _raise_if_packaging_inputs_invalid(chapter_results: list[Any]) -> None:
     raise RuntimeError(f"Refusing to package incomplete chapter set. {summary}")
 
 
+def resolve_background_audio_futures(chapter_results: list[Any], runtime: Any | None = None) -> None:
+    """Wait for background chapter audio encodes and attach their output paths."""
+    for result in chapter_results:
+        future = getattr(result, "aac_future", None)
+        if future is None:
+            continue
+        aac_path = future.result()
+        result.aac_future = None
+        result.aac_path = Path(aac_path)
+        if runtime is not None:
+            track_temp_cleanup_path = getattr(runtime, "track_temp_cleanup_path", None)
+            if callable(track_temp_cleanup_path):
+                track_temp_cleanup_path(result.aac_path)
+
+
 def _collect_packaging_inputs(
     chapter_results: list[Any],
+    runtime: Any | None = None,
 ) -> tuple[list[Path], list[str], Optional[list[int]]]:
     """Collect validated packaging inputs from chapter results."""
     audio_files: list[Path] = []
     chapter_names: list[str] = []
     chapter_durations_ms: list[int] = []
     has_complete_durations = True
+    resolve_background_audio_futures(chapter_results, runtime=runtime)
     _raise_if_packaging_inputs_invalid(chapter_results)
 
+    audio_files = select_packaging_audio_inputs(chapter_results)
     for result in chapter_results:
-        selected_audio_path = select_packaging_audio_input(result)
-
-        if selected_audio_path is not None:
-            audio_files.append(selected_audio_path)
-            chapter_names.append(result.chapter_title)
-            if result.duration_ms > 0:
-                chapter_durations_ms.append(int(result.duration_ms))
-            else:
-                has_complete_durations = False
+        chapter_names.append(result.chapter_title)
+        if result.duration_ms > 0:
+            chapter_durations_ms.append(int(result.duration_ms))
+        else:
+            has_complete_durations = False
 
     if not audio_files:
         raise RuntimeError(
-            "No valid chapter audio to package. Chapter results did not produce audio paths."
+            "No homogeneous chapter audio to package. Chapters must all provide AAC, "
+            "all provide WAV, or all provide MP3 inputs."
         )
 
     return (
@@ -67,7 +82,8 @@ def package_chapters(
         Path to M4B file
     """
     audio_files, chapter_names, chapter_durations_ms = _collect_packaging_inputs(
-        chapter_results
+        chapter_results,
+        runtime=runtime,
     )
 
     from modules.audio.packager import M4BPackager, AudiobookMetadata
@@ -96,13 +112,19 @@ def package_chapters(
         return m4a_path
 
     m4b_path = output_dir / f"{safe_title}.m4b"
-    packager = M4BPackager()
-    packager.create_m4b(
-        mp3_files=audio_files,
-        chapter_names=chapter_names,
-        metadata=metadata,
-        output_path=m4b_path,
-        chapter_durations_ms=chapter_durations_ms,
-    )
+    try:
+        packager = M4BPackager()
+        packager.create_m4b(
+            mp3_files=audio_files,
+            chapter_names=chapter_names,
+            metadata=metadata,
+            output_path=m4b_path,
+            chapter_durations_ms=chapter_durations_ms,
+        )
+    finally:
+        executor = getattr(getattr(runtime, "state", None), "chapter_aac_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=True)
+            runtime.state.chapter_aac_executor = None
 
     return m4b_path

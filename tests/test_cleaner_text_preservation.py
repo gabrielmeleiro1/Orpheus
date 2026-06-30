@@ -365,9 +365,9 @@ class TestFallbackBehavior:
         cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
         cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
         try:
-            trace = cleaner.clean_with_trace("NASA launched today.")
+            trace = cleaner.clean_with_trace("Iam tired today.")
             assert trace.mode == "llm_fallback"
-            assert trace.cleaned_text == "NASA launched today."
+            assert trace.cleaned_text == "Iam tired today."
         finally:
             cleaner_module.cleaner_mlx_backend.generate = original_generate
             cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
@@ -385,7 +385,7 @@ class TestFallbackBehavior:
         cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
         cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
         try:
-            cleaner.clean("NASA launched today.")
+            cleaner.clean("Iam tired today.")
             stats = cleaner.stats_snapshot()
             assert stats["llm_fallback"] == 1
             assert stats["llm_success"] == 0
@@ -542,10 +542,10 @@ class TestAPIBackendFallback:
 
         cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen
         try:
-            trace = cleaner.clean_with_trace("NASA launched today.")
+            trace = cleaner.clean_with_trace("Iam tired today.")
             assert trace.mode == "llm_fallback"
             assert "401" in trace.llm_error
-            assert trace.cleaned_text == "NASA launched today."
+            assert trace.cleaned_text == "Iam tired today."
         finally:
             cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
             if original_key is None:

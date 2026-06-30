@@ -30,6 +30,13 @@ def write_ffmpeg_concat_file(concat_file: Path, audio_files: list[Path]) -> None
             handle.write(f"file {quote_ffmpeg_concat_path(audio_file)}\n")
 
 
+def audio_files_support_stream_copy(audio_files: list[Path]) -> bool:
+    """Return True when chapter inputs can be concatenated with AAC stream copy."""
+    if not audio_files:
+        return False
+    return all(path.suffix.lower() == ".m4a" for path in audio_files)
+
+
 def _escape_ffmetadata_value(value: str) -> str:
     """Escape FFmetadata scalar values so titles cannot break key/value lines."""
     return (
@@ -135,6 +142,7 @@ class M4BPackager:
             self._write_ffmetadata(chapter_file, chapters, metadata)
 
             has_cover = bool(metadata.cover_path and Path(metadata.cover_path).exists())
+            use_stream_copy = audio_files_support_stream_copy(audio_files)
 
             final_cmd = [
                 self.ffmpeg_path, "-y",
@@ -145,10 +153,12 @@ class M4BPackager:
                 "-i", str(chapter_file),
                 "-map_metadata", "1",
                 "-map_chapters", "1",
-                "-c:a", "aac",
-                "-b:a", "128k",
-                "-movflags", "+faststart",
             ]
+            if use_stream_copy:
+                final_cmd.extend(["-c:a", "copy"])
+            else:
+                final_cmd.extend(["-c:a", "aac", "-b:a", "128k"])
+            final_cmd.extend(["-movflags", "+faststart"])
 
             if has_cover:
                 final_cmd.extend([

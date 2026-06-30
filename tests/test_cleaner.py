@@ -76,6 +76,73 @@ def test_rule_based_clean_preserves_em_dash_pronoun_spacing():
     )
 
 
+def test_rule_based_clean_repairs_reviewed_spaced_hyphen_compounds():
+    from modules.ingestion.extraction_artifact_signals import (
+        scan_cleaner_handoff_artifacts,
+    )
+
+    cleaned = cleaner_rules_backend.rule_based_clean(
+        "He was a notorious card- sharper who fleeced them."
+    )
+    assert "card-sharper" in cleaned
+    assert "card- sharper" not in cleaned
+    assert not any(
+        issue.issue_type == "pdf_hyphenation_leakage"
+        for issue in scan_cleaner_handoff_artifacts(cleaned)
+    )
+
+    # A second reviewed compound proves this is not tied to one benchmark phrase.
+    assert (
+        "well-being"
+        in cleaner_rules_backend.rule_based_clean("Their well- being mattered most.")
+    )
+
+
+def test_rule_based_clean_preserves_unknown_spaced_hyphen_text_for_gate():
+    cleaned = cleaner_rules_backend.rule_based_clean(
+        "The passage left experi- ence and gover- nment artifacts."
+    )
+
+    assert "experi- ence" in cleaned
+    assert "gover- nment" in cleaned
+    assert cleaner_rules_backend.needs_llm_cleaning(cleaned) is True
+
+
+def test_rule_based_clean_preserves_valid_prose_against_hyphen_repair():
+    # Hanging/suspended hyphens (followed by a conjunction/article) are valid and
+    # must be left untouched.
+    for valid in (
+        "pre- and post-war economics shifted.",
+        "two- or three-year contracts were common.",
+        "neither in- nor outside the room.",
+    ):
+        assert cleaner_rules_backend.rule_based_clean(valid) == valid
+
+    # Already-correct hyphenated compounds and em dashes stay intact.
+    assert (
+        cleaner_rules_backend.rule_based_clean("a self-reliant, well-known idea")
+        == "a self-reliant, well-known idea"
+    )
+    assert (
+        cleaner_rules_backend.rule_based_clean("He paused — perhaps too long.")
+        == "He paused — perhaps too long."
+    )
+    assert cleaner_rules_backend.rule_based_clean("No- wait, he said.") == (
+        "No- wait, he said."
+    )
+    assert cleaner_rules_backend.rule_based_clean("Yes- perhaps we should.") == (
+        "Yes- perhaps we should."
+    )
+    assert cleaner_rules_backend.rule_based_clean("Well- maybe tomorrow.") == (
+        "Well- maybe tomorrow."
+    )
+    # A hyphen flanked by spaces (punctuation dash) is not a line-break artifact.
+    assert (
+        cleaner_rules_backend.rule_based_clean("the plan - which failed - was bold")
+        == "the plan - which failed - was bold"
+    )
+
+
 def test_rule_based_clean_still_repairs_spaced_caps_em_dash_attributions():
     assert (
         cleaner_rules_backend.rule_based_clean("An attribution follows—C ORMAC M C C ARTHY")
@@ -193,15 +260,15 @@ def test_cleaner_skip_llm_option_still_uses_llm_when_heuristic_triggers(monkeypa
 
     def fake_generate(_model, _tokenizer, **kwargs):
         calls.append(kwargs)
-        return "NASA launched today."
+        return "I am tired today."
 
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", fake_generate)
 
-    trace = cleaner.clean_with_trace("NASA launched today.")
+    trace = cleaner.clean_with_trace("Iam tired today.")
 
     assert trace.mode == "llm_success"
-    assert trace.cleaned_text == "NASA launched today."
+    assert trace.cleaned_text == "I am tired today."
     assert len(calls) == 1
 
 
@@ -285,8 +352,9 @@ def test_rule_based_cleaning():
     
     need_tests = [
         ("Hello world", False),
-            ("There are 42 apples", False),
-        ("NASA launched today", True),
+        ("There are 42 apples", False),
+        ("NASA launched today", False),
+        ("Iam tired today", True),
         ("Simple text here", False),
     ]
     
@@ -317,19 +385,19 @@ def test_rule_based_cleaning():
     def fake_generate(_model, _tokenizer, **kwargs):
         calls.append(kwargs)
         assert "sampler" in kwargs
-        return "NASA launched today."
+        return "I am tired today."
 
     original_generate = cleaner_module.cleaner_mlx_backend.generate
     original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
     cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
     cleaner_module.cleaner_mlx_backend.generate = fake_generate
     try:
-        cleaned = compat_cleaner.clean("NASA launched today.")
+        cleaned = compat_cleaner.clean("Iam tired today.")
     finally:
         cleaner_module.cleaner_mlx_backend.generate = original_generate
         cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
-    assert cleaned == "NASA launched today."
+    assert cleaned == "I am tired today."
     assert len(calls) == 1
     assert calls[0]["sampler"] == ("sampler", compat_cleaner.config.temperature)
     stats = compat_cleaner.stats_snapshot()
@@ -342,13 +410,13 @@ def test_rule_based_cleaning():
     cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
     cleaner_module.cleaner_mlx_backend.generate = fake_generate
     try:
-        trace = compat_cleaner.clean_with_trace("NASA launched today.")
+        trace = compat_cleaner.clean_with_trace("Iam tired today.")
     finally:
         cleaner_module.cleaner_mlx_backend.generate = original_generate
         cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
-    assert trace.original_text == "NASA launched today."
-    assert "NASA" in trace.rule_based_text
-    assert trace.cleaned_text == "NASA launched today."
+    assert trace.original_text == "Iam tired today."
+    assert "Iam" in trace.rule_based_text
+    assert trace.cleaned_text == "I am tired today."
     assert trace.mode == "llm_success"
     print("  ✓ cleaner trace captures original, rule-based, and cleaned text")
 
@@ -392,7 +460,7 @@ def test_rule_based_cleaning():
                 "choices": [
                     {
                         "message": {
-                            "content": "NASA launched today."
+                            "content": "I am tired today."
                         }
                     }
                 ]
@@ -404,7 +472,7 @@ def test_rule_based_cleaning():
     os.environ["KIMI_API_KEY"] = "test-key"
     cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen
     try:
-            cleaned_api = api_cleaner.clean("NASA launched today.")
+        cleaned_api = api_cleaner.clean("Iam tired today.")
     finally:
         cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
@@ -412,7 +480,7 @@ def test_rule_based_cleaning():
         else:
             os.environ["KIMI_API_KEY"] = original_key
 
-    assert cleaned_api == "NASA launched today."
+    assert cleaned_api == "I am tired today."
     assert captured_request["url"] == "https://api.moonshot.cn/v1/chat/completions"
     assert captured_request["model"] == "moonshot-v1-8k"
     assert captured_request["context"] is not None
@@ -459,7 +527,7 @@ def test_rule_based_cleaning():
                 "choices": [
                     {
                         "message": {
-                            "content": "NASA launched today."
+                            "content": "I am tired today."
                         }
                     }
                 ]
@@ -475,7 +543,7 @@ def test_rule_based_cleaning():
     ssl.create_default_context = fake_create_default_context
     cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_with_context
     try:
-        cleaned_api_ca = api_ca_cleaner.clean("NASA launched today.")
+        cleaned_api_ca = api_ca_cleaner.clean("Iam tired today.")
     finally:
         ssl.create_default_context = original_create_default_context
         cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
@@ -488,7 +556,7 @@ def test_rule_based_cleaning():
         else:
             os.environ["CLEANER_API_CA_BUNDLE"] = original_ca_bundle
 
-    assert cleaned_api_ca == "NASA launched today."
+    assert cleaned_api_ca == "I am tired today."
     assert ssl_capture["created"] == 1
     assert ssl_capture["context"] is not None
     assert ssl_capture["context"].loaded_cafile == "/tmp/custom-ca.pem"
@@ -516,14 +584,14 @@ def test_rule_based_cleaning():
         parser_capture["url"] = request_obj.full_url
         body = json.loads(request_obj.data.decode("utf-8"))
         parser_capture["model"] = body["model"]
-        return _FakeResponse({"choices": [{"text": "NASA launched today."}]})
+        return _FakeResponse({"choices": [{"text": "I am tired today."}]})
 
     original_urlopen = cleaner_module.cleaner_api_backend.urlrequest.urlopen
     original_key = os.environ.get("OPENAI_API_KEY")
     os.environ["OPENAI_API_KEY"] = "test-key"
     cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_text_choice
     try:
-        cleaned_api_text = api_text_cleaner.clean("NASA launched today.")
+        cleaned_api_text = api_text_cleaner.clean("Iam tired today.")
     finally:
         cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
@@ -531,7 +599,7 @@ def test_rule_based_cleaning():
         else:
             os.environ["OPENAI_API_KEY"] = original_key
 
-    assert cleaned_api_text == "NASA launched today."
+    assert cleaned_api_text == "I am tired today."
     assert parser_capture["url"] == "https://api.openai.com/v1/chat/completions"
     assert parser_capture["model"] == "gpt-5-nano"
     print("  ✓ API backend parser handles choices[].text fallback")
@@ -588,7 +656,7 @@ def test_rule_based_cleaning():
                 "choices": [
                     {
                         "message": {
-                            "content": "NASA launched today."
+                            "content": "I am tired today."
                         }
                     }
                 ]
@@ -600,7 +668,7 @@ def test_rule_based_cleaning():
     os.environ["OPENAI_API_KEY"] = "test-key"
     cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_token_retry
     try:
-        cleaned_api_token = api_token_cleaner.clean("NASA launched today.")
+        cleaned_api_token = api_token_cleaner.clean("Iam tired today.")
     finally:
         cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
@@ -608,7 +676,7 @@ def test_rule_based_cleaning():
         else:
             os.environ["OPENAI_API_KEY"] = original_key
 
-    assert cleaned_api_token == "NASA launched today."
+    assert cleaned_api_token == "I am tired today."
     assert len(token_payloads) == 2
     print("  ✓ API backend retries with max_completion_tokens when max_tokens is rejected")
 
@@ -637,7 +705,7 @@ def test_rule_based_cleaning():
                 "choices": [
                     {
                         "message": {
-                            "content": "NASA launched today."
+                            "content": "I am tired today."
                         }
                     }
                 ]
@@ -649,7 +717,7 @@ def test_rule_based_cleaning():
     os.environ["OPENAI_API_KEY"] = "test-key"
     cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_gpt5
     try:
-        cleaned_api_gpt5 = api_gpt5_cleaner.clean("NASA launched today.")
+        cleaned_api_gpt5 = api_gpt5_cleaner.clean("Iam tired today.")
     finally:
         cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
@@ -657,7 +725,7 @@ def test_rule_based_cleaning():
         else:
             os.environ["OPENAI_API_KEY"] = original_key
 
-    assert cleaned_api_gpt5 == "NASA launched today."
+    assert cleaned_api_gpt5 == "I am tired today."
     assert len(gpt5_payloads) == 1
     assert "max_completion_tokens" in gpt5_payloads[0]
     assert "max_tokens" not in gpt5_payloads[0]
@@ -689,7 +757,7 @@ def test_rule_based_cleaning():
                 "choices": [
                     {
                         "message": {
-                            "content": "NASA launched today."
+                            "content": "I am tired today."
                         }
                     }
                 ]
@@ -701,7 +769,7 @@ def test_rule_based_cleaning():
     os.environ["OPENAI_API_KEY"] = "test-key"
     cleaner_module.cleaner_api_backend.urlrequest.urlopen = fake_urlopen_o3
     try:
-        cleaned_api_o3 = api_o3_cleaner.clean("NASA launched today.")
+        cleaned_api_o3 = api_o3_cleaner.clean("Iam tired today.")
     finally:
         cleaner_module.cleaner_api_backend.urlrequest.urlopen = original_urlopen
         if original_key is None:
@@ -709,7 +777,7 @@ def test_rule_based_cleaning():
         else:
             os.environ["OPENAI_API_KEY"] = original_key
 
-    assert cleaned_api_o3 == "NASA launched today."
+    assert cleaned_api_o3 == "I am tired today."
     assert len(o3_payloads) == 1
     assert "max_completion_tokens" in o3_payloads[0]
     assert "temperature" not in o3_payloads[0]
@@ -808,6 +876,52 @@ def test_mlx_clean_batch_with_trace_async_serializes_local_model_calls():
 
     assert [trace.cleaned_text for trace in traces] == [f"cleaned {text}" for text in texts]
     assert cleaner.peak_active_calls == 1
+
+
+def test_trace_decision_scores_before_rule_only_gate_when_llm_not_required():
+    from modules.tts.cleaner_trace import _start_trace_decision_flow
+    from modules.tts.cleaner import _CleanTrace
+
+    score_calls: list[str] = []
+    cleaner = SimpleNamespace(
+        _rule_based_clean=lambda text: f"{text} cleaned",
+        _needs_llm_cleaning=lambda text: False,
+        _artifact_score_for=lambda text: (
+            score_calls.append(text) or {"total": 0.0, "cleaning_path": "rules_only"}
+        ),
+        _should_use_rule_only_cleaning=lambda rule_based_text, artifact_score: True,
+        _loaded=True,
+        _rule_only_count=0,
+        _total_chunks_cleaned=0,
+        _total_time_ms=0.0,
+    )
+
+    result = _start_trace_decision_flow(cleaner, _CleanTrace, "clean prose")
+
+    assert score_calls == ["clean prose cleaned"]
+    assert result.mode == "rule_only"
+
+
+def test_trace_decision_defers_artifact_scoring_when_llm_heuristics_trigger():
+    from modules.tts.cleaner_trace import TraceDecisionRequest, _start_trace_decision_flow
+
+    score_calls: list[str] = []
+    cleaner = SimpleNamespace(
+        _rule_based_clean=lambda text: text,
+        _needs_llm_cleaning=lambda text: True,
+        _artifact_score_for=lambda text: (
+            score_calls.append(text) or {"total": 0.5, "cleaning_path": "light_llm"}
+        ),
+        _should_use_rule_only_cleaning=lambda rule_based_text, artifact_score: False,
+        _loaded=True,
+        load=lambda: None,
+    )
+
+    result = _start_trace_decision_flow(cleaner, TraceDecisionRequest, "bad- hy phen")
+
+    assert score_calls == []
+    assert isinstance(result, TraceDecisionRequest)
+    assert result.artifact_score is None
 
 
 if __name__ == "__main__":

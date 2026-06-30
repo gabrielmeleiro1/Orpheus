@@ -140,6 +140,106 @@ def test_parse_only_benchmark_can_limit_real_book_chapters(tmp_path: Path) -> No
     )
 
 
+def test_parse_only_benchmark_can_select_unseen_chapter_range(tmp_path: Path) -> None:
+    from scripts import benchmark_nagel_pipeline
+
+    source = tmp_path / "fixture.md"
+    source.write_text(
+        "\n\n".join(
+            f"# Chapter {index}\n\nUnique chapter {index} body. " * 40
+            for index in range(1, 7)
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = benchmark_nagel_pipeline.run_benchmark(
+        source_path=source,
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        parse_only=True,
+        min_extracted_chars=100,
+        chapter_start=3,
+        chapter_limit=4,
+    )
+
+    assert metrics["success"] is True
+    assert metrics["chapter_start"] == 3
+    assert metrics["chapter_limit"] == 4
+    assert metrics["chapters"] == 4
+    assert metrics["chapter_titles"] == [
+        "Chapter 3",
+        "Chapter 4",
+        "Chapter 5",
+        "Chapter 6",
+    ]
+
+
+def test_chapter_range_applies_before_non_prose_filtering(tmp_path: Path) -> None:
+    from scripts import benchmark_nagel_pipeline
+
+    source = tmp_path / "fixture.md"
+    source.write_text(
+        "\n\n".join(
+            [
+                "# Chapter 1\n\nFirst body. " * 40,
+                "# Chapter 2\n\nSecond body. " * 40,
+                "# List of Maps\n\nEurope in 1740\nThe Silesian Campaign",
+                "# Chapter 4\n\nFourth body. " * 40,
+                "# Chapter 5\n\nFifth body. " * 40,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = benchmark_nagel_pipeline.run_benchmark(
+        source_path=source,
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        parse_only=True,
+        min_extracted_chars=100,
+        chapter_start=3,
+        chapter_limit=2,
+    )
+
+    assert metrics["success"] is True
+    assert metrics["chapter_titles"] == ["Chapter 4"]
+
+
+def test_cleaner_gate_reuses_already_limited_document_without_reslicing(
+    tmp_path: Path,
+) -> None:
+    from scripts import benchmark_nagel_pipeline
+
+    source = tmp_path / "fixture.md"
+    source.write_text(
+        "\n\n".join(
+            [
+                "# Chapter 1\n\nSafe opening prose. " * 20,
+                "# Chapter 2\n\nSafe second prose. " * 20,
+                "# Chapter 3\n\nThis held-out chapter has experi- ence leakage. " * 20,
+                "# Chapter 4\n\nSafe fourth prose. " * 20,
+                "# Chapter 5\n\nSafe fifth prose. " * 20,
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    metrics = benchmark_nagel_pipeline.run_benchmark(
+        source_path=source,
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        cleaner_gate=True,
+        min_extracted_chars=100,
+        chapter_start=3,
+        chapter_limit=2,
+    )
+
+    assert metrics["chapter_titles"] == ["Chapter 3", "Chapter 4"]
+    assert metrics["success"] is False
+    assert metrics["cleaner_gate_artifact_issue_count"] >= 1
+    assert "pdf_hyphenation_leakage" in metrics["cleaner_gate_artifact_issue_types"]
+
+
 def test_parse_document_honors_non_prose_skip_opt_out(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -408,6 +508,7 @@ def test_full_benchmark_reports_stage_timings_without_hardcoded_model(
     assert metrics["total_duration_ms"] == 1234
     assert metrics["output_path"] == str(tmp_path / "book.m4b")
     assert metrics["artifact_quality"]["success"] is True
+    assert metrics["artifact_quality"]["issues"] == []
     assert metrics["artifact_quality"]["checked_files"]
     assert metrics["tts_chunk_profile"] == {
         "enabled": False,
@@ -603,6 +704,134 @@ def test_tts_chunk_profile_wraps_loaded_strategy_engine(
 
         def iter_synthesize_batch(self, items, progress_callback=None):
             yield from self._engine.iter_synthesize_batch(items, progress_callback)
+
+    class _FakePipeline:
+        def __init__(self, config) -> None:
+            self.config = config
+            self._tts_engine = None
+
+        def _ingest(self, _source_path):
+            return SimpleNamespace(
+                title="Fake",
+                author="Tester",
+                chapters=[
+                    SimpleNamespace(
+                        number=1,
+                        title="Chapter 1",
+                        content="Benchmark full mode body text. " * 40,
+                    )
+                ],
+            )
+
+        def _ensure_chapter_tts_engine(self):
+            if self._tts_engine is None:
+                self._tts_engine = _Strategy()
+
+        def convert(self, _source_path):
+            document = self._ingest(_source_path)
+            chapters_dir = self.config.output_dir / "Fake" / "chapters"
+            chapters_dir.mkdir(parents=True)
+            (chapters_dir / "chapter_01_before_cleaning.md").write_text(
+                "# Chapter 1\n\n" + document.chapters[0].content,
+                encoding="utf-8",
+            )
+            (chapters_dir / "chapter_01_cleaned.md").write_text(
+                "# Chapter 1\n\n" + document.chapters[0].content,
+                encoding="utf-8",
+            )
+            self._ensure_chapter_tts_engine()
+            list(
+                self._tts_engine.iter_synthesize_batch(
+                    [
+                        SynthesisItem(text="first chunk", voice="af_bella", speed=1.0, index=0),
+                        SynthesisItem(text="second chunk", voice="af_bella", speed=1.0, index=1),
+                    ]
+                )
+            )
+            output_path = tmp_path / "book.m4b"
+            output_path.write_bytes(b"m4b")
+            return ConversionResult(
+                success=True,
+                title="Fake",
+                author="Tester",
+                output_path=output_path,
+                chapters=[
+                    ChapterResult(
+                        chapter_number=1,
+                        chapter_title="Chapter 1",
+                        duration_ms=100,
+                        stage_timings={"tts": 0.1},
+                    )
+                ],
+                total_duration_ms=100,
+                processing_time_seconds=0.2,
+            )
+
+    monkeypatch.setattr(benchmark_nagel_pipeline, "ConversionPipeline", _FakePipeline)
+
+    metrics = benchmark_nagel_pipeline.run_benchmark(
+        source_path=source,
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        parse_only=False,
+        min_extracted_chars=100,
+        profile_tts_chunks=True,
+    )
+
+    profile_path = Path(metrics["tts_chunk_profile"]["path"])
+    rows = [
+        json.loads(line)
+        for line in profile_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert metrics["tts_chunk_profile"]["rows"] == 2
+    assert [row["text_chars"] for row in rows] == [
+        len("first chunk"),
+        len("second chunk"),
+    ]
+
+
+def test_tts_chunk_profile_wraps_loaded_strategy_runtime(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import numpy as np
+
+    from modules.pipeline.models import ChapterResult, ConversionResult
+    from modules.tts.strategies.base import SynthesisItem, SynthesisResult
+    from scripts import benchmark_nagel_pipeline
+
+    source = tmp_path / "fixture.txt"
+    source.write_text("Benchmark full mode body text. " * 40, encoding="utf-8")
+
+    class _Runtime:
+        sample_rate = 24000
+
+        def synthesize(self, text: str, voice: str, speed: float):
+            return np.ones(1200, dtype=np.float32)
+
+        def iter_synthesize_batch(self, items, progress_callback=None):
+            total = len(items)
+            for completed, item in enumerate(items, start=1):
+                audio = self.synthesize(item.text, item.voice, item.speed)
+                if progress_callback is not None:
+                    progress_callback(completed, total)
+                yield SynthesisResult(
+                    audio=audio,
+                    index=item.index,
+                    error=None,
+                    duration_ms=50,
+                )
+
+    class _Strategy:
+        sample_rate = 24000
+
+        def __init__(self) -> None:
+            self._runtime = _Runtime()
+
+        def iter_synthesize_batch(self, items, progress_callback=None):
+            yield from self._runtime.iter_synthesize_batch(items, progress_callback)
 
     class _FakePipeline:
         def __init__(self, config) -> None:
@@ -902,10 +1131,193 @@ def test_full_benchmark_marks_interrupted_runs_unsuccessful(
             min_extracted_chars=100,
         )
 
-    metrics = json.loads((tmp_path / "output" / "benchmark_summary.json").read_text())
-    assert metrics["success"] is False
-    assert metrics["error"] == "interrupted"
-    assert metrics["errors"] == ["interrupted"]
+
+def test_optimization_corpus_forwards_chunk_size(monkeypatch, tmp_path: Path) -> None:
+    from scripts import run_optimization_corpus
+
+    source = tmp_path / "book.txt"
+    source.write_text("text", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        run_optimization_corpus,
+        "CORPUS_CASES",
+        (
+            {
+                "book_key": "book",
+                "source_env": "ORPHEUS_TEST_BOOK",
+                "default_source": str(source),
+            },
+        ),
+    )
+
+    def fake_run_benchmark(**kwargs):
+        calls.append(kwargs)
+        return {
+            "artifact_quality": {"success": True, "issues": []},
+            "success": True,
+            "wall_time_seconds": 1.0,
+            "source_hash": "hash",
+            "source_path": str(source),
+            "metrics_path": "metrics.json",
+        }
+
+    monkeypatch.setattr(run_optimization_corpus, "run_benchmark", fake_run_benchmark)
+
+    summary = run_optimization_corpus.run_corpus(
+        run_name="chunk-test",
+        artifacts_root=tmp_path / "artifacts",
+        chunk_size=1200,
+    )
+
+    assert calls[0]["chunk_size"] == 1200
+    assert summary["chunk_size"] == 1200
+
+
+def test_optimization_corpus_repeat_summarizes_total_wall_time(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from scripts import run_optimization_corpus
+
+    source = tmp_path / "book.txt"
+    source.write_text("text", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        run_optimization_corpus,
+        "CORPUS_CASES",
+        (
+            {
+                "book_key": "book",
+                "source_env": "ORPHEUS_TEST_BOOK",
+                "default_source": str(source),
+            },
+        ),
+    )
+
+    def fake_run_benchmark(**kwargs):
+        calls.append(kwargs)
+        wall_time = float(len(calls))
+        return {
+            "artifact_quality": {"success": True, "issues": []},
+            "success": True,
+            "wall_time_seconds": wall_time,
+            "source_hash": "hash",
+            "source_path": str(source),
+            "metrics_path": f"metrics-{len(calls)}.json",
+        }
+
+    monkeypatch.setattr(run_optimization_corpus, "run_benchmark", fake_run_benchmark)
+
+    summary = run_optimization_corpus.run_repeated_corpus(
+        repeat=3,
+        run_name="repeat-test",
+        artifacts_root=tmp_path / "artifacts",
+        chapter_limit=1,
+    )
+
+    assert [run["run_name"] for run in summary["runs"]] == [
+        "repeat-test-r01",
+        "repeat-test-r02",
+        "repeat-test-r03",
+    ]
+    assert summary["aggregate"]["repeat_count"] == 3
+    assert summary["aggregate"]["success_count"] == 3
+    assert summary["aggregate"]["quality_pass_count"] == 3
+    assert summary["aggregate"]["artifact_issue_count"] == 0
+    assert summary["aggregate"]["total_wall_time_seconds"] == {
+        "best": 1.0,
+        "mean": 2.0,
+        "median": 2.0,
+        "worst": 3.0,
+    }
+    assert (tmp_path / "artifacts" / "repeat-test" / "summary.json").exists()
+
+
+def test_optimization_corpus_clears_case_dirs_and_counts_quality_only_for_success(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from scripts import run_optimization_corpus
+
+    source = tmp_path / "book.txt"
+    source.write_text("text", encoding="utf-8")
+
+    monkeypatch.setattr(
+        run_optimization_corpus,
+        "CORPUS_CASES",
+        (
+            {
+                "book_key": "book",
+                "source_env": "ORPHEUS_TEST_BOOK",
+                "default_source": str(source),
+            },
+        ),
+    )
+
+    stale_output = tmp_path / "artifacts" / "stale-test" / "output" / "book" / "stale.txt"
+    stale_temp = tmp_path / "artifacts" / "stale-test" / "temp" / "book" / "stale.tmp"
+    stale_output.parent.mkdir(parents=True)
+    stale_temp.parent.mkdir(parents=True)
+    stale_output.write_text("stale", encoding="utf-8")
+    stale_temp.write_text("stale", encoding="utf-8")
+
+    def fake_run_benchmark(**kwargs):
+        assert not stale_output.exists()
+        assert not stale_temp.exists()
+        return {
+            "artifact_quality": {"success": True, "issues": []},
+            "success": False,
+            "error": "no extractable text or chunks in parsed source",
+            "wall_time_seconds": 1.0,
+            "source_hash": "hash",
+            "source_path": str(source),
+            "metrics_path": "metrics.json",
+        }
+
+    monkeypatch.setattr(run_optimization_corpus, "run_benchmark", fake_run_benchmark)
+
+    summary = run_optimization_corpus.run_corpus(
+        run_name="stale-test",
+        artifacts_root=tmp_path / "artifacts",
+    )
+
+    assert summary["aggregate"]["success_count"] == 0
+    assert summary["aggregate"]["quality_pass_count"] == 0
+
+
+def test_optimization_corpus_requires_complete_expected_hash_manifest(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from scripts import run_optimization_corpus
+
+    source = tmp_path / "book.txt"
+    source.write_text("text", encoding="utf-8")
+    monkeypatch.setattr(
+        run_optimization_corpus,
+        "CORPUS_CASES",
+        (
+            {
+                "book_key": "book",
+                "source_env": "ORPHEUS_TEST_BOOK",
+                "default_source": str(source),
+            },
+            {
+                "book_key": "other",
+                "source_env": "ORPHEUS_TEST_OTHER",
+                "default_source": str(source),
+            },
+        ),
+    )
+
+    with pytest.raises(ValueError, match="missing keys: other"):
+        run_optimization_corpus.run_corpus(
+            run_name="hash-test",
+            artifacts_root=tmp_path / "artifacts",
+            expected_source_hashes={"book": "abc"},
+        )
 
 
 def test_worker_selection_comparison_runs_sequential_static_and_warmup_modes(
@@ -1055,6 +1467,58 @@ def test_artifact_quality_scan_allows_suspended_hyphenation(
     assert not any(
         issue["type"] == "pdf_hyphenation_leakage"
         for issue in quality["issues"]
+    )
+
+
+def test_artifact_quality_scan_flags_internal_hyphen_fragments(
+    tmp_path: Path,
+) -> None:
+    from scripts.benchmark_nagel_pipeline import scan_artifact_quality
+
+    chapters_dir = tmp_path / "Book" / "chapters"
+    chapters_dir.mkdir(parents=True)
+    (chapters_dir / "chapter_01_cleaned.md").write_text(
+        "# Chapter 1\n\nThe argument about inde-pendence still reads broken.",
+        encoding="utf-8",
+    )
+
+    quality = scan_artifact_quality(tmp_path)
+
+    assert quality["success"] is False
+    assert any(
+        issue["type"] == "pdf_internal_hyphen_fragment"
+        for issue in quality["issues"]
+    )
+
+
+def test_cleaner_gate_quality_fails_on_rule_only_artifact_leakage(
+    tmp_path: Path,
+) -> None:
+    from scripts.benchmark_nagel_pipeline import _run_cleaner_gate
+    from modules.ingestion.models import Chapter, Document
+    from modules.pipeline.models import PipelineConfig
+
+    document = Document(
+        title="Gate Test",
+        chapters=[
+            Chapter(
+                number=1,
+                title="One",
+                content="The paragraph still contains experi- ence after extraction.",
+            )
+        ],
+    )
+
+    result = _run_cleaner_gate(
+        source_path=tmp_path / "book.pdf",
+        config=PipelineConfig(),
+        document=document,
+    )
+
+    assert result["artifact_quality"]["success"] is False
+    assert any(
+        issue["type"] == "pdf_hyphenation_leakage"
+        for issue in result["artifact_quality"]["issues"]
     )
 
 
@@ -1274,7 +1738,11 @@ def test_cleaner_gate_benchmark_reports_rule_only_and_llm_needed_chunks(
         issue["type"] == "pdf_page_footnote_leakage"
         for issue in metrics["cleaner_gate_artifact_issues"]
     )
-    assert metrics["artifact_quality"]["success"] is True
+    assert metrics["artifact_quality"]["success"] is False
+    assert any(
+        issue["type"] == "pdf_page_footnote_leakage"
+        for issue in metrics["artifact_quality"]["issues"]
+    )
 
 
 def test_cleaner_gate_benchmark_reuses_parse_metrics_document(
@@ -1318,7 +1786,8 @@ def test_cleaner_gate_benchmark_reuses_parse_metrics_document(
         min_extracted_chars=1,
     )
 
-    assert metrics["success"] is True
+    assert metrics["success"] is False
+    assert metrics["artifact_quality"]["success"] is False
     assert parse_calls == 1
 
 

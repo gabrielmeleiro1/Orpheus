@@ -368,10 +368,6 @@ class ConversionPipeline:
             self._notify_progress(message=f"Parsing {source_path.name}...")
 
             document = self.stages.ingest(source_path)
-            if self.config.chapter_limit is not None:
-                document.chapters = document.chapters[
-                    : max(1, int(self.config.chapter_limit))
-                ]
             if self._check_cancelled():
                 return self._cancelled_result()
 

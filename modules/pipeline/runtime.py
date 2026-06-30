@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
@@ -111,8 +112,12 @@ class PipelineRunState:
     performance_encode_chapters: int = 0
     performance_encode_seconds: float = 0.0
     temp_cleanup_paths: set[Path] = field(default_factory=set)
+    chapter_aac_executor: ThreadPoolExecutor | None = None
 
     def reset_for_conversion(self, *, selected_parallel_chapters: int) -> None:
+        if self.chapter_aac_executor is not None:
+            self.chapter_aac_executor.shutdown(wait=True)
+            self.chapter_aac_executor = None
         self.start_time = time.time()
         self.chars_processed = 0
         self.total_chars = 0

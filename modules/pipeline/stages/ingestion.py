@@ -8,6 +8,21 @@ from typing import Any
 from modules.ingestion.models import Document
 
 
+def _select_configured_chapter_range(document: Any, config: Any) -> Any:
+    chapter_start = max(1, int(getattr(config, "chapter_start", 1) or 1))
+    chapter_limit = getattr(config, "chapter_limit", None)
+    start_index = chapter_start - 1
+    if chapter_limit is None and start_index == 0:
+        return document
+
+    chapters = list(getattr(document, "chapters", []))
+    if chapter_limit is None:
+        document.chapters = chapters[start_index:]
+    else:
+        document.chapters = chapters[start_index : start_index + max(1, int(chapter_limit))]
+    return document
+
+
 def ingest_source(runtime: Any, source_path: Path):
     """Parse source file and extract document structure."""
     suffix = source_path.suffix.lower()
@@ -42,6 +57,7 @@ def ingest_source(runtime: Any, source_path: Path):
 
     runtime.log_verbose("[PARSER] Parsing content...", "process")
     document = parser.parse()
+    document = _select_configured_chapter_range(document, runtime.config)
     if bool(getattr(runtime.config, "pre_chunk_document_cleanup", True)):
         from modules.text.document_normalizer import normalize_extracted_document
 

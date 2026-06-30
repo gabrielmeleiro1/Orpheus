@@ -32,11 +32,7 @@ def _make_rule_only_cleaner() -> TextCleaner:
 
 
 TRUE_CASES = [
-    "NASA launched a rocket.",
-    "The PDF format was used by the API client.",
     "This took place on the # W trading floor.",
-    "A long paragraph with NASA acronyms should trigger additional cleaning.",
-    "The W symbol was left in the sentence after markdown cleanup.",
     "The bat has expe- rience and a sur- rounding world.",
     "The page residue left 44I comprehension in the prose.",
     "The text was interrupted from I The problem I am going to raise.",
@@ -54,6 +50,11 @@ FALSE_CASES = [
     "Already expanded abbreviations with no artifacts.",
     "This street contained two- and three-story wooden dwellings.",
     "The final sentence ends here.",
+    "NASA launched a rocket.",
+    "The PDF format was used by the API client.",
+    "A long paragraph with NASA acronyms should not trigger additional cleaning.",
+    "The W symbol was used as a variable in the sentence.",
+    "FREDERICK THE SECOND Wonder of the world: 1194-1250",
 ]
 
 EDGE_CASES = [

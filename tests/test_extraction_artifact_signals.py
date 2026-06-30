@@ -19,6 +19,28 @@ def test_has_pdf_hyphenation_leakage_ignores_suspended_compounds():
     assert has_pdf_hyphenation_leakage("The conver- sation continued") is True
 
 
+def test_scan_cleaner_handoff_artifacts_flags_internal_hyphen_fragments():
+    issues = scan_cleaner_handoff_artifacts(
+        "The text still says inde-pendence, expe-rience, experi-ence, and gover-nment."
+    )
+
+    assert any(issue.issue_type == "pdf_internal_hyphen_fragment" for issue in issues)
+
+
+def test_internal_hyphen_fragment_detector_allows_common_compounds():
+    text = (
+        "The self-reliant card-sharper discussed well-being, "
+        "post-war order, proto-imperial symbols, co-operation, "
+        "co-dependence, de-industrialization, anti-discrimination, "
+        "micro-organisms, inter-action, and mind-bending work."
+    )
+
+    assert not any(
+        issue.issue_type == "pdf_internal_hyphen_fragment"
+        for issue in scan_cleaner_handoff_artifacts(text)
+    )
+
+
 def test_has_joined_first_person_leakage_detects_joined_words():
     assert has_joined_first_person_leakage("Iwanted to leave early.") is True
     assert has_joined_first_person_leakage("I wanted to leave early.") is False

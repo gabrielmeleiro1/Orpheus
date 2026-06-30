@@ -23,15 +23,14 @@ _REVIEW_DROP_CAP_RE = re.compile(
     rf"(?P<rest>he(?:re(?:['’]s)?)?|hen|hat)\b"
 )
 _CLEAR_SPACED_HYPHEN_COMPOUND_RE = re.compile(
-    r"\b(?P<left>self|promise|recipient)-\s+(?P<right>governed|making|keeping|cum)\b",
+    r"\b(?P<left>card|self|promise|recipient|well)-\s+"
+    r"(?P<right>being|governed|making|keeping|cum|sharper)\b",
     re.IGNORECASE,
 )
 _KNOWN_CLOSED_COMPOUND_HYPHEN_RE = re.compile(
     r"\b(?P<left>country)-\s+(?P<right>woman|women|man|men)\b",
     re.IGNORECASE,
 )
-
-
 def strip_inline_numeric_references(text: str) -> str:
     """Remove bracketed numeric citation markers like [3], [10], [245]."""
     return re.sub(r"\s*\[\d{1,4}\]\s*", " ", text)
@@ -273,9 +272,6 @@ def needs_llm_cleaning(text: str) -> bool:
     if re.search(r"(?<!^)\s#\s*[A-Za-z]\b", normalized):
         return True
 
-    if re.search(r"\b(?!I\b|A\b)[B-HJ-Z]\b", normalized):
-        return True
-
     if has_pdf_hyphenation_leakage(normalized):
         return True
 
@@ -286,13 +282,6 @@ def needs_llm_cleaning(text: str) -> bool:
         return True
 
     if has_joined_first_person_leakage(normalized):
-        return True
-
-    if (
-        len(normalized) >= 12
-        and re.search(r"[a-z]", normalized)
-        and re.search(r"\b[A-Z]{3,}\b", normalized)
-    ):
         return True
 
     return False
@@ -307,9 +296,6 @@ def describe_llm_cleaning_reason(text: str) -> str:
     if re.search(r"(?<!^)\s#\s*[A-Za-z]\b", normalized):
         return "mid-sentence markdown heading marker"
 
-    if re.search(r"\b(?!I\b|A\b)[B-HJ-Z]\b", normalized):
-        return "orphaned single-letter OCR fragment"
-
     if has_pdf_hyphenation_leakage(normalized):
         return "possible PDF line-break hyphenation"
 
@@ -321,13 +307,6 @@ def describe_llm_cleaning_reason(text: str) -> str:
 
     if has_joined_first_person_leakage(normalized):
         return "possible joined first-person word extraction artifact"
-
-    if (
-        len(normalized) >= 12
-        and re.search(r"[a-z]", normalized)
-        and re.search(r"\b[A-Z]{3,}\b", normalized)
-    ):
-        return "uppercase token that may be OCR/casing artifact"
 
     return "default conservative cleanup pass"
 

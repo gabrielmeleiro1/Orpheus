@@ -399,6 +399,7 @@ def _consume_batch_result_audio(accumulator: ChapterAudioAccumulator, batch_resu
         except Exception:
             pass
         batch_result.audio_path = None
+        batch_result.audio = None
         return
     if batch_result.audio is not None:
         accumulator.add_segment(batch_result.audio)
@@ -611,6 +612,7 @@ def _synthesize_batch_results_to_chapter_audio(
     chapter: Any,
     batch_results: list[Any],
     total_chunks: int,
+    chapter_result: Any | None = None,
 ) -> Optional[Path | np.ndarray]:
     """Validate list-returned batch results and assemble chapter audio."""
     if not _validate_complete_batch_results(
@@ -631,16 +633,23 @@ def _synthesize_batch_results_to_chapter_audio(
     )
 
     chapter_wav = runtime.config.temp_dir / f"chapter_{chapter.number:02d}.wav"
-    accumulator = _create_batch_audio_accumulator(
-        runtime,
-        chapter_wav=chapter_wav,
-        sample_rate=_pipeline_sample_rate(runtime),
-        total_samples=valid_batch.total_samples,
-    )
-    for batch_result in valid_batch.results:
-        _consume_batch_result_audio(accumulator, batch_result)
+    sample_rate = _pipeline_sample_rate(runtime)
+    accumulator: ChapterAudioAccumulator | None = None
+    try:
+        accumulator = _create_batch_audio_accumulator(
+            runtime,
+            chapter_wav=chapter_wav,
+            sample_rate=sample_rate,
+            total_samples=valid_batch.total_samples,
+        )
+        for batch_result in valid_batch.results:
+            _consume_batch_result_audio(accumulator, batch_result)
 
-    return _finalize_chapter_audio(runtime, accumulator)
+        return _finalize_chapter_audio(runtime, accumulator)
+    except Exception:
+        if accumulator is not None:
+            accumulator.close()
+        raise
 
 
 def _synthesize_chapter_chunks_incrementally(
@@ -652,23 +661,26 @@ def _synthesize_chapter_chunks_incrementally(
     on_batch_progress: Any,
     total_chunks: int,
     iter_synthesize_batch: Any,
+    chapter_result: Any | None = None,
 ) -> Optional[Path | np.ndarray]:
     """Consume iterator-returned TTS results without retaining the full result list."""
     chapter_wav = runtime.config.temp_dir / f"chapter_{chapter.number:02d}.wav"
-    accumulator = ChapterAudioAccumulator(
-        output_path=chapter_wav,
-        sample_rate=_pipeline_sample_rate(runtime),
-        max_in_memory_samples=_max_in_memory_chapter_samples(runtime),
-    )
-    seen_indexes: set[int] = set()
-    valid = True
-    result_count = 0
-    valid_count = 0
-    streamed_results: list[Any] = []
-    pending_results: dict[int, Any] = {}
-    next_index_to_consume = 0
-
+    sample_rate = _pipeline_sample_rate(runtime)
+    accumulator: ChapterAudioAccumulator | None = None
     try:
+        accumulator = ChapterAudioAccumulator(
+            output_path=chapter_wav,
+            sample_rate=sample_rate,
+            max_in_memory_samples=_max_in_memory_chapter_samples(runtime),
+        )
+        seen_indexes: set[int] = set()
+        valid = True
+        result_count = 0
+        valid_count = 0
+        streamed_results: list[Any] = []
+        pending_results: dict[int, Any] = {}
+        next_index_to_consume = 0
+
         for position, batch_result in enumerate(
             iter_synthesize_batch(
                 items=batch_items,
@@ -713,6 +725,7 @@ def _synthesize_chapter_chunks_incrementally(
                 chapter=chapter,
                 batch_results=retry_results,
                 total_chunks=total_chunks,
+                chapter_result=chapter_result,
             )
 
         valid = _finalize_incremental_batch_validation(
@@ -732,7 +745,8 @@ def _synthesize_chapter_chunks_incrementally(
         )
         return _finalize_chapter_audio(runtime, accumulator)
     except Exception:
-        accumulator.close()
+        if accumulator is not None:
+            accumulator.close()
         raise
 
 
@@ -743,6 +757,7 @@ def synthesize_chapter_chunks(
     chapter_idx: int,
     total_chapters: int,
     chunks: list[str],
+    chapter_result: Any | None = None,
 ) -> Optional[Path | np.ndarray]:
     """Run TTS stage for chapter chunks and return chapter audio payload."""
     _start_tts_stage(runtime, hooks)
@@ -771,6 +786,7 @@ def synthesize_chapter_chunks(
             on_batch_progress=on_batch_progress,
             total_chunks=total_chunks,
             iter_synthesize_batch=iter_synthesize_batch,
+            chapter_result=chapter_result,
         )
 
     batch_results = runtime.synthesize_batch(
@@ -789,6 +805,7 @@ def synthesize_chapter_chunks(
         chapter=chapter,
         batch_results=batch_results,
         total_chunks=total_chunks,
+        chapter_result=chapter_result,
     )
 
 
