@@ -8,7 +8,9 @@ import {
   defaultCleanerCudaQuantization,
   deriveCleanerRuntimeStatus,
   isCleanerBackendRuntimeAvailable,
+  preferredCleanerBackendId,
   resolveCleanerBackendOptions,
+  resolveInitialCleanerBackendId,
 } from "./cleanerBackendHelpers";
 
 function cleanerBackendOption(
@@ -230,6 +232,50 @@ describe("cleaner runtime status", () => {
     expect(deriveCleanerRuntimeStatus(capabilities({}), option)).toEqual({
       message: "Checking local CUDA cleaner runtime...",
       isError: false,
+    });
+  });
+});
+
+describe("initial cleaner backend selection policy", () => {
+  const apiOption = cleanerBackendOption({
+    id: "api",
+    display_name: "Cloud API",
+    is_local: false,
+    requires_api_key: true,
+    models: [],
+  });
+  const cudaOption = cleanerBackendOption({ id: "cuda", display_name: "Local CUDA" });
+  const mlxOption = cleanerBackendOption({ id: "mlx", display_name: "Local MLX" });
+
+  it("prefers an available local backend over the api backend in server order", () => {
+    // Server declares api first, but a local backend must win when available.
+    expect(preferredCleanerBackendId([apiOption, cudaOption, mlxOption])).toBe("cuda");
+    expect(resolveInitialCleanerBackendId([apiOption, cudaOption, mlxOption], "")).toEqual({
+      backendId: "cuda",
+      restoredPersistedBackend: false,
+    });
+  });
+
+  it("falls back to the api backend only when no local backend is available", () => {
+    expect(preferredCleanerBackendId([apiOption])).toBe("api");
+    expect(resolveInitialCleanerBackendId([apiOption], "")).toEqual({
+      backendId: "api",
+      restoredPersistedBackend: false,
+    });
+    expect(preferredCleanerBackendId([])).toBe("");
+  });
+
+  it("honors a persisted, still-available backend choice over the default", () => {
+    expect(resolveInitialCleanerBackendId([apiOption, cudaOption, mlxOption], "api")).toEqual({
+      backendId: "api",
+      restoredPersistedBackend: true,
+    });
+  });
+
+  it("ignores a persisted backend that is no longer available", () => {
+    expect(resolveInitialCleanerBackendId([apiOption, mlxOption], "cuda")).toEqual({
+      backendId: "mlx",
+      restoredPersistedBackend: false,
     });
   });
 });

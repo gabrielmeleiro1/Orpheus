@@ -10,7 +10,9 @@ import {
   deriveCleanerRuntimeStatus,
   filterAvailableCleanerBackendOptions,
   mapCleanerBackendOptionToTermSelect,
+  preferredCleanerBackendId,
   resolveCleanerBackendOptions,
+  resolveInitialCleanerBackendId,
   selectedCleanerBackendOption,
 } from "./cleanerBackendHelpers";
 import type { PersistedSettings } from "./conversionOptionsShared";
@@ -46,30 +48,20 @@ export interface UseCleanerOptionsResult {
   cleanerRuntimeError: boolean;
 }
 
-interface InitialBackendSelection {
-  backendId: string;
-  restoredPersistedBackend: boolean;
-}
-
 function resolveInitialBackendSelection(
   modelOptions: ModelOptionsResponse | null,
   systemCapabilities: SystemCapabilitiesResponse | null,
   persisted: PersistedSettings,
-): InitialBackendSelection {
+) {
   const availableOptions = filterAvailableCleanerBackendOptions(
     resolveCleanerBackendOptions(modelOptions),
     systemCapabilities,
   );
-  const fallbackBackend = availableOptions[0]?.id ?? "";
 
   const hasConfiguredCleanerBackend = Boolean(persisted.cleaner_backend_configured);
   const persistedBackend = hasConfiguredCleanerBackend ? String(persisted.cleaner_backend ?? "").trim() : "";
 
-  if (persistedBackend && availableOptions.some((option) => option.id === persistedBackend)) {
-    return { backendId: persistedBackend, restoredPersistedBackend: true };
-  }
-
-  return { backendId: fallbackBackend, restoredPersistedBackend: false };
+  return resolveInitialCleanerBackendId(availableOptions, persistedBackend);
 }
 
 function resolveInitialCudaDevice(
@@ -207,15 +199,28 @@ export function useCleanerOptions({
     }
 
     const isAvailable = availableCleanerBackendOptions.some((option) => option.id === cleanerBackend);
-    if (isAvailable) {
+    // When the user has explicitly configured a backend we only intervene if it
+    // drops out of availability. When the selection is still an auto-default we
+    // keep tracking the preferred (local-first) option as the runtime probe
+    // finishes and local backends flip from unavailable to available.
+    if (isAvailable && cleanerBackendConfigured) {
       return;
     }
 
-    const nextBackend = availableCleanerBackendOptions[0]?.id ?? "";
+    const nextBackend = cleanerBackendConfigured
+      ? availableCleanerBackendOptions[0]?.id ?? ""
+      : preferredCleanerBackendId(availableCleanerBackendOptions);
     if (nextBackend !== cleanerBackend) {
       selectCleanerBackend(nextBackend);
     }
-  }, [apiClient, availableCleanerBackendOptions, cleanerBackend, modelOptions, selectCleanerBackend]);
+  }, [
+    apiClient,
+    availableCleanerBackendOptions,
+    cleanerBackend,
+    cleanerBackendConfigured,
+    modelOptions,
+    selectCleanerBackend,
+  ]);
 
   useEffect(() => {
     setCleanerModelState((previous) => {
