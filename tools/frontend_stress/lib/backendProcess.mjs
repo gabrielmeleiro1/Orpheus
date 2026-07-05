@@ -3,6 +3,8 @@ import { createInterface } from "node:readline";
 import fs from "node:fs";
 import path from "node:path";
 
+import { registerCleanup } from "./cleanupRegistry.mjs";
+
 /**
  * Spawns the Orpheus desktop backend (FastAPI/uvicorn) with isolated state
  * directories and parses its single-line JSON "ready" event from stdout.
@@ -31,6 +33,29 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
     { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] },
   );
 
+  // Defined before the readiness wait (and registered immediately) so the
+  // process is guaranteed to get torn down even if it never becomes ready —
+  // whether via the timeout/error paths below, an interrupt, or a later
+  // stage of the harness failing first.
+  let stopped = false;
+  const stop = async () => {
+    if (stopped || proc.exitCode !== null || proc.killed) {
+      stopped = true;
+      return;
+    }
+    stopped = true;
+    await new Promise((resolve) => {
+      proc.once("exit", () => resolve());
+      proc.kill("SIGTERM");
+      setTimeout(() => {
+        if (proc.exitCode === null) {
+          proc.kill("SIGKILL");
+        }
+      }, 5_000);
+    });
+  };
+  registerCleanup(stop);
+
   const stderrChunks = [];
   proc.stderr.on("data", (chunk) => {
     stderrChunks.push(chunk.toString());
@@ -44,6 +69,7 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
       if (settled) return;
       settled = true;
       rl.close();
+      stop().catch(() => {});
       reject(
         new Error(
           `backend did not emit ready event within ${readyTimeoutMs}ms. stderr:\n${stderrChunks.join("")}`,
@@ -84,30 +110,13 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      stop().catch(() => {});
       reject(err);
     });
   });
 
   const baseUrl = `http://${ready.host}:${ready.port}`;
   log(`backend ready at ${baseUrl}`);
-
-  let stopped = false;
-  const stop = async () => {
-    if (stopped || proc.exitCode !== null || proc.killed) {
-      stopped = true;
-      return;
-    }
-    stopped = true;
-    await new Promise((resolve) => {
-      proc.once("exit", () => resolve());
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        if (proc.exitCode === null) {
-          proc.kill("SIGKILL");
-        }
-      }, 5_000);
-    });
-  };
 
   return {
     proc,

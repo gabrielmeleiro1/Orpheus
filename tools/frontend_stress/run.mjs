@@ -7,6 +7,7 @@ import { chromium } from "playwright";
 
 import { startBackend } from "./lib/backendProcess.mjs";
 import { resolveFallbackChromiumExecutable } from "./lib/chromiumResolver.mjs";
+import { cleanupAll, registerCleanup } from "./lib/cleanupRegistry.mjs";
 import { startFrontend } from "./lib/frontendProcess.mjs";
 import { formatDuration, nowIso } from "./lib/util.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
@@ -109,7 +110,24 @@ function log(scope, message) {
   console.log(`[${ts}] [${scope}] ${message}`);
 }
 
+// Ctrl-C (or a kill) during a long scenario wait would otherwise skip
+// straight past main()'s try/finally, leaking the backend/vite/chromium
+// children it started. Route both signals through the same cleanup
+// registry the normal exit path uses, then exit non-zero.
+function installSignalHandlers() {
+  for (const signal of ["SIGINT", "SIGTERM"]) {
+    process.on(signal, () => {
+      log("harness", `received ${signal}; cleaning up spawned processes...`);
+      cleanupAll()
+        .catch((err) => console.error("cleanup failed:", err))
+        .finally(() => process.exit(1));
+    });
+  }
+}
+
 async function main() {
+  installSignalHandlers();
+
   const args = parseArgs(process.argv.slice(2));
   fs.mkdirSync(artifactsDir, { recursive: true });
 
@@ -124,29 +142,32 @@ async function main() {
     ? path.resolve(args.stateDir)
     : path.join(__dirname, ".state", new Date().toISOString().replace(/[:.]/g, "-"));
 
-  if (reuseMode) {
-    log("harness", `reuse mode: backend=${args.backendUrl} frontend=${args.frontendUrl}`);
-    backendBaseUrl = args.backendUrl;
-    token = args.token;
-    frontendUrl = args.frontendUrl;
-  } else {
-    log("harness", `self-start mode: state dir = ${stateDir}`);
-    fs.mkdirSync(stateDir, { recursive: true });
-    backend = await startBackend({ repoRoot, stateDir, log: (msg) => log("backend", msg) });
-    backendBaseUrl = backend.baseUrl;
-    token = backend.token;
-
-    frontend = await startFrontend({ desktopDir, port: args.frontendPort, log: (msg) => log("frontend", msg) });
-    frontendUrl = frontend.baseUrl;
-  }
-
+  // Everything from here on (spawning the backend/frontend through running
+  // the scenarios) is covered by the finally below, so a failure partway
+  // through startup — e.g. the frontend's readiness timeout while the
+  // backend is already running — still tears down whatever already started.
   try {
+    if (reuseMode) {
+      log("harness", `reuse mode: backend=${args.backendUrl} frontend=${args.frontendUrl}`);
+      backendBaseUrl = args.backendUrl;
+      token = args.token;
+      frontendUrl = args.frontendUrl;
+    } else {
+      log("harness", `self-start mode: state dir = ${stateDir}`);
+      fs.mkdirSync(stateDir, { recursive: true });
+      backend = await startBackend({ repoRoot, stateDir, log: (msg) => log("backend", msg) });
+      backendBaseUrl = backend.baseUrl;
+      token = backend.token;
+
+      frontend = await startFrontend({ desktopDir, port: args.frontendPort, log: (msg) => log("frontend", msg) });
+      frontendUrl = frontend.baseUrl;
+    }
+
     const hadFailure = await runWithBrowser({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend });
     process.exitCode = hadFailure ? 1 : 0;
   } finally {
     if (!args.keepOpen) {
-      if (frontend) await frontend.stop().catch(() => {});
-      if (backend) await backend.stop().catch(() => {});
+      await cleanupAll();
     } else {
       log("harness", "--keep-open set: leaving spawned processes running");
     }
@@ -155,13 +176,8 @@ async function main() {
 
 async function runWithBrowser({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend }) {
   const browser = await launchChromium({ headless: !args.headed });
-  try {
-    return await runScenarios({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend, browser });
-  } finally {
-    if (!args.keepOpen) {
-      await browser.close().catch(() => {});
-    }
-  }
+  registerCleanup(() => browser.close());
+  return runScenarios({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend, browser });
 }
 
 async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend, browser }) {

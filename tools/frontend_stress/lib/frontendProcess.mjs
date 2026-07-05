@@ -3,6 +3,8 @@ import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { registerCleanup } from "./cleanupRegistry.mjs";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VITE_SERVER_CHILD = path.join(__dirname, "viteServerChild.mjs");
 
@@ -26,6 +28,13 @@ export async function startFrontend({ desktopDir, port, log, readyTimeoutMs = 30
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  // Defined and registered immediately (before the readiness poll below) so
+  // this process is guaranteed to get torn down even if it never becomes
+  // ready — whether via the timeout path below, an interrupt, or a later
+  // stage of the harness failing first.
+  const stop = makeStopFn(proc);
+  registerCleanup(stop);
+
   const outputChunks = [];
   proc.stdout.on("data", (chunk) => outputChunks.push(chunk.toString()));
   proc.stderr.on("data", (chunk) => outputChunks.push(chunk.toString()));
@@ -45,7 +54,7 @@ export async function startFrontend({ desktopDir, port, log, readyTimeoutMs = 30
       const response = await fetch(baseUrl, { method: "GET" });
       if (response.ok || response.status === 304) {
         log(`frontend ready at ${baseUrl}`);
-        return { proc, baseUrl, stop: makeStopFn(proc), getOutput: () => outputChunks.join("") };
+        return { proc, baseUrl, stop, getOutput: () => outputChunks.join("") };
       }
     } catch (err) {
       lastError = err;
@@ -53,6 +62,7 @@ export async function startFrontend({ desktopDir, port, log, readyTimeoutMs = 30
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
+  await stop().catch(() => {});
   throw new Error(
     `frontend did not become ready within ${readyTimeoutMs}ms (last error: ${lastError}). output:\n${outputChunks.join("")}`,
   );
