@@ -235,25 +235,27 @@ registry metadata.
 
 | Field | Backend source | Frontend consumer |
 |-------|----------------|-------------------|
-| `default_tts_engine` | `RuntimeCapabilityService` | `useTtsOptions`, `conversionOptionsShared` |
-| `default_tts_quantization` | same | `buildQuantizationOptions` adds `bf16` fallback if empty |
-| `cleaner_runtime_availability` | same | `deriveCleanerRuntimeStatus` |
-| `parallel_worker_recommendation` | same | `useParallelWorkers` |
+| `default_tts_engine` | `AppController.get_system_capabilities()` reads `self.config.tts_engine` directly | `useTtsOptions`, `conversionOptionsShared` |
+| `default_tts_quantization` | `AppController.get_system_capabilities()` reads `self.config.tts_quantization` directly | `buildQuantizationOptions` adds `bf16` fallback if empty |
+| `cleaner_runtime_availability` | Runtime capability checks assembled by controller | `deriveCleanerRuntimeStatus` |
+| `parallel_worker_recommendation` | Controller capability response | `useParallelWorkers` |
 
 Frontend adds **`bf16` quantization fallback** when API returns no values —
 backend may disagree with this default.
 
 ### Progress stage names
 
-`types/api.ts` defines `ProgressStageName`: `ingestion | chunking | cleaning |
-synthesis | encoding | packaging`. These must match SSE payloads from
-`modules/app/events.py` / pipeline progress (verify in Workstream 6).
+Backend progress emits `PipelineStage` values from `modules/pipeline/models.py`
+(`ingesting`, `synthesizing`, etc.). Frontend `ProgressStageName` remains
+`ingestion | chunking | cleaning | synthesis | encoding | packaging`; the explicit
+mapping lives in `desktop/src/features/events/progressStageModel.ts`.
 
 ### OpenAI models URL
 
-`api/client.ts` hardcodes `OPENAI_MODELS_URL = "https://api.openai.com/v1/models"`
-in `fetchOpenAiModelIds` POST body; backend `cleaner_config.DEFAULT_API_BASE_URL`
-may differ for proxy setups.
+`api/client.ts` no longer sends a models URL. It posts only the pasted API key to
+`/api/options/openai/models`; the backend route always calls
+`fetch_openai_model_ids(..., base_url=DEFAULT_API_BASE_URL)` from
+`modules/tts/cleaner_config.py`.
 
 ---
 

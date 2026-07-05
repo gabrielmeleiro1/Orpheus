@@ -118,10 +118,13 @@ request/response serializers. No conversion business logic beyond delegation to
 
 - Pydantic request models in `routes/conversions.py` and `routes/options.py`
   mirror `ConversionRuntimeOptions` field-for-field — centralize (Workstream 2).
-- `routes/options.py` imports `modules.tts` directly for cleaner metadata;
-  could go through `RuntimeCapabilityService` to keep web thinner.
-- `MAX_BOOK_TITLE_LENGTH` imported from `pipeline.book_workspace` in
-  conversions route — title policy belongs in a shared contract module.
+- Known web-layer violations:
+  - `routes/conversions.py` imports `MAX_BOOK_TITLE_LENGTH` from
+    `modules.pipeline.book_workspace`; move title policy to `modules/contracts`.
+  - `routes/options.py` imports `fetch_openai_model_ids`,
+    `list_cleaner_backend_options`, `DEFAULT_API_BASE_URL`, and
+    `list_cuda_cleaner_models` from `modules.tts`; expose this through app
+    services or shared contracts so `modules.web` stays a thin interface layer.
 
 ---
 
@@ -293,8 +296,9 @@ interface. No business rules about conversion options.
 ## Recommended Import Rules (for later enforcement)
 
 1. `ingestion`, `audio`, `storage` must not import `app`, `web`, or `pipeline`.
-2. `web` must not import `pipeline` except shared constants (today: `book_workspace`;
-   move to contract module).
+2. `web` must not import `pipeline` or `tts`; current exceptions in
+   `routes/conversions.py` and `routes/options.py` are known violations to move
+   behind `modules/contracts` or app services.
 3. `tts` must not import `pipeline` (resolve `device_memory` / `cleaner_memory` split).
 4. `pipeline` may import `ingestion`, `tts`, `audio`, `text`; not `web` or `app`.
 5. Benchmarks and scripts should prefer package `__init__` exports or documented

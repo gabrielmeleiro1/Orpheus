@@ -21,7 +21,7 @@ types and tests listed in [TESTING.md](TESTING.md#focused-checks).
 | Parser behavior (PDF, EPUB, Markdown, text) | `modules/ingestion/pdf_parser.py`, `epub_parser.py`, `markdown_parser.py`, `text_parser.py`; `modules/ingestion/preflight.py` | `modules/pipeline/stages/ingestion.py`, `modules/text/document_normalizer.py`; tests under `tests/test_*_parser.py` |
 | Cleaner policy and backends | `modules/tts/cleaner.py`, `cleaner_config.py`, `cleaner_backends/` (`mlx`, `cuda`, `api`) | `modules/pipeline/stages/cleaning.py`; env `CLEANER_BACKEND`; tests `tests/test_cleaner*.py` |
 | TTS runtime options | `modules/tts/runtime_spec.py`, `runtime_options.py`, `factory.py`, `strategies/`, `runtimes/` | `modules/pipeline/models.py` (`PipelineConfig`); `modules/app/services/runtime_capability_service.py`; tests `tests/test_tts*.py` |
-| Frontend conversion form | `desktop/src/features/conversion/` (`ConversionPanel*.tsx`, `useConversionSubmitPayload.ts`, `useTtsOptions.ts`, `useCleanerOptions.ts`) | `desktop/src/types/api.ts`; capabilities from `GET /api/system/capabilities` |
+| Frontend conversion form | `desktop/src/features/conversion/` (`ConversionPanel.tsx`, `ConversionPanelView.tsx`, `conversionPanelModel.ts`, `conversionPanelStateTypes.ts`, `useConversionOptions.ts`, `useConversionSubmitPayload.ts`, `useTtsOptions.ts`, `useCleanerOptions.ts`, `useParallelWorkers.ts`) | Types are split under `desktop/src/types/` and re-exported by `desktop/src/types/api.ts`; capabilities from `GET /api/system/capabilities` |
 | API request/response payloads | `modules/web/routes/conversions.py`, `options.py`, `uploads.py`, `library.py`; `modules/web/serializers.py` | `modules/contracts/conversion_runtime_options.py` (`ConversionRuntimeOptions`); `desktop/src/types/api.ts` and `api/client.ts` |
 | Storage schema and library paths | `modules/storage/migrations.py`, `models.py`, `sqlite_repo.py`, `maintenance.py` | `modules/app/services/library_service.py`, `conversion_paths.py`; tests `tests/test_storage_*.py`, `tests/test_library_service.py` |
 
@@ -29,7 +29,7 @@ Known cross-layer drift risks (keep these aligned when editing the rows above):
 
 - Source suffix lists: derived from `modules/contracts/source_extensions.py`; the Tauri file picker and conversion UI copy must match it.
 - Conversion runtime options: `types/api.ts` ↔ FastAPI Pydantic models ↔ `ConversionRuntimeOptions` (`modules/contracts/conversion_runtime_options.py`) ↔ `PipelineConfig`.
-- Progress stage names: `modules/app/events.py` / pipeline progress ↔ `ProgressStageName` in `types/api.ts`.
+- Progress stage names: backend pipeline events emit `PipelineStage` values from `modules/pipeline/models.py` (`ingesting`, `synthesizing`, etc.); `desktop/src/features/events/progressStageModel.ts` maps them to frontend `ProgressStageName` values (`ingestion`, `synthesis`, etc.) from the `desktop/src/types/api.ts` barrel.
 
 ## Repository Shape
 
@@ -97,9 +97,10 @@ Desktop auth and API boundary:
   origin `http://localhost:5173`.
 
 Desktop process lifecycle contract:
-- Normal app quit should stop bundled backend sidecar.
-- Forced process kill of the app binary can leave an orphan backend process.
-- Current mitigation is explicit manual cleanup during diagnostics.
+- Normal app quit terminates the bundled backend sidecar process group from
+  `desktop/src-tauri/src/backend.rs`.
+- Forced process kill of the app binary can still leave an orphan backend process;
+  diagnostics cleanup is only for that abnormal case.
 
 ## Layered Design
 
