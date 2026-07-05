@@ -41,6 +41,26 @@ def test_internal_hyphen_fragment_detector_allows_common_compounds():
     )
 
 
+def test_internal_hyphen_fragment_detector_allows_capitalized_compounds():
+    text = (
+        "There is no difference between Time and any of the three "
+        "dimensions of Space except that the Time-Dimension moves, "
+        "as the Space-Dimension does not; the Four-Dimension geometry "
+        "held the Time-Traveller's attention despite his ill-treatment "
+        "and long-expected far-sighted full-preparation."
+    )
+
+    assert not any(
+        issue.issue_type == "pdf_internal_hyphen_fragment"
+        for issue in scan_cleaner_handoff_artifacts(text)
+    )
+    # Sentence-start hyphenation artifacts are still caught.
+    assert any(
+        issue.issue_type == "pdf_internal_hyphen_fragment"
+        for issue in scan_cleaner_handoff_artifacts("Gover-nment matters here.")
+    )
+
+
 def test_has_joined_first_person_leakage_detects_joined_words():
     assert has_joined_first_person_leakage("Iwanted to leave early.") is True
     assert has_joined_first_person_leakage("I wanted to leave early.") is False
