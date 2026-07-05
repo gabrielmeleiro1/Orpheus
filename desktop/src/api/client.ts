@@ -137,10 +137,9 @@ export interface ApiClient {
   cleanupStorage(options?: ApiRequestOptions): Promise<MaintenanceCleanupResponse>;
 }
 
-const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
-
 export interface LibraryQueryOptions {
   conversionMode?: ConversionMode | "";
+  favorite?: boolean;
 }
 
 function resolveUrl(baseUrl: string, path: string): string {
@@ -393,7 +392,6 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
       method: "POST",
       body: JSON.stringify({
         api_key: normalizedKey,
-        models_url: OPENAI_MODELS_URL,
       }),
       ...options,
     });
@@ -527,6 +525,10 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
 
     if (filters.conversionMode) {
       params.set("conversion_mode", filters.conversionMode);
+    }
+
+    if (filters.favorite !== undefined) {
+      params.set("favorite", String(filters.favorite));
     }
 
     const query = params.toString();

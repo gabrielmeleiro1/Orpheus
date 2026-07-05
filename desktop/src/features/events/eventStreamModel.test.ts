@@ -76,12 +76,15 @@ describe("event stream payload normalization", () => {
 
 describe("event stream reducer progress stages", () => {
   it.each([
+    ["idle", "ingestion"],
     ["ingesting", "ingestion"],
     ["chunking", "chunking"],
     ["cleaning", "cleaning"],
     ["synthesizing", "synthesis"],
     ["encoding", "encoding"],
     ["packaging", "packaging"],
+    ["error", "ingestion"],
+    ["cancelled", "ingestion"],
   ] satisfies Array<[string, ProgressStageName]>)(
     "maps backend PipelineStage %s to frontend stage %s",
     (backendStage, frontendStage) => {
