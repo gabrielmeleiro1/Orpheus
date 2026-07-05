@@ -37,13 +37,48 @@ interface ApiClientOptions {
   token?: string;
 }
 
+export type ApiErrorCode = "http" | "network" | "timeout" | "aborted" | "invalid-json";
+
+export class ApiError extends Error {
+  status: number | null;
+  code: ApiErrorCode;
+  detail: string;
+  retriable: boolean;
+
+  constructor({
+    message,
+    status,
+    code,
+    detail,
+    retriable,
+  }: {
+    message: string;
+    status: number | null;
+    code: ApiErrorCode;
+    detail: string;
+    retriable: boolean;
+  }) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+    this.detail = detail;
+    this.retriable = retriable;
+  }
+}
+
 export interface DesktopBackendStatus {
   lifecycle: "stopped" | "starting" | "ready" | "failed";
   endpoint: DesktopBackendStatusEndpoint | null;
   error: string | null;
 }
 
-interface JsonRequestOptions extends Omit<RequestInit, "headers"> {
+export interface ApiRequestOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+interface JsonRequestOptions extends Omit<RequestInit, "headers" | "signal">, ApiRequestOptions {
   headers?: HeadersInit;
 }
 
@@ -51,31 +86,55 @@ export interface ApiClient {
   usesDesktopAuth: boolean;
   requestJson<T>(path: string, init?: JsonRequestOptions): Promise<T>;
   requestBlob(path: string, init?: JsonRequestOptions): Promise<Blob>;
-  getHealth(): Promise<HealthResponse>;
-  getModelOptions(): Promise<ModelOptionsResponse>;
-  fetchOpenAiModelIds(apiKey: string): Promise<string[]>;
-  getVoiceOptions(engine: string): Promise<VoiceOptionsResponse>;
-  getSystemCapabilities(): Promise<SystemCapabilitiesResponse>;
-  warmupParallelWorkers(payload: ParallelWarmupRequest): Promise<ParallelWorkerRecommendation>;
-  preflightSource(sourcePath: string): Promise<SourcePreflight>;
-  uploadSourceText(payload: SourceTextUploadRequest): Promise<SourceUploadResponse>;
-  suggestVoice(sourcePath: string, engine?: string | null): Promise<VoiceSuggestionResponse>;
-  startConversion(payload: StartConversionRequest): Promise<StartConversionResponse>;
-  repairConversion(bookId: number, payload: RepairConversionRequest): Promise<StartConversionResponse>;
-  getActiveConversion(): Promise<ActiveConversionResponse>;
-  cancelConversion(jobId: string): Promise<CancelConversionResponse>;
-  getLibrary(search?: string, limit?: number, filters?: LibraryQueryOptions): Promise<LibraryListResponse>;
-  getLibraryBook(bookId: number): Promise<LibraryBookDetail>;
-  getLibraryAudioUrl(bookId: number): Promise<string>;
-  createDesktopQueryToken(payload: DesktopQueryTokenRequest): Promise<DesktopQueryTokenResponse>;
-  updateLibraryBook(bookId: number, payload: LibraryBookUpdateRequest): Promise<LibraryBookDetail>;
-  getCleaningPreview(bookId: number, chapterNumber: number): Promise<CleaningPreviewResponse>;
-  updateBookPlaybackPosition(bookId: number, positionSec: number): Promise<PlaybackPositionUpdateResponse>;
-  openBookFolder(bookId: number): Promise<OpenBookFolderResponse>;
-  deleteBook(bookId: number): Promise<DeleteBookResponse>;
-  getMaintenanceDiagnostics(): Promise<MaintenanceDiagnosticsResponse>;
-  backupDatabase(): Promise<MaintenanceBackupResponse>;
-  cleanupStorage(): Promise<MaintenanceCleanupResponse>;
+  getHealth(options?: ApiRequestOptions): Promise<HealthResponse>;
+  getModelOptions(options?: ApiRequestOptions): Promise<ModelOptionsResponse>;
+  fetchOpenAiModelIds(apiKey: string, options?: ApiRequestOptions): Promise<string[]>;
+  getVoiceOptions(engine: string, options?: ApiRequestOptions): Promise<VoiceOptionsResponse>;
+  getSystemCapabilities(options?: ApiRequestOptions): Promise<SystemCapabilitiesResponse>;
+  warmupParallelWorkers(payload: ParallelWarmupRequest, options?: ApiRequestOptions): Promise<ParallelWorkerRecommendation>;
+  preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight>;
+  uploadSourceText(payload: SourceTextUploadRequest, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
+  suggestVoice(sourcePath: string, engine?: string | null, options?: ApiRequestOptions): Promise<VoiceSuggestionResponse>;
+  startConversion(payload: StartConversionRequest, options?: ApiRequestOptions): Promise<StartConversionResponse>;
+  repairConversion(
+    bookId: number,
+    payload: RepairConversionRequest,
+    options?: ApiRequestOptions,
+  ): Promise<StartConversionResponse>;
+  getActiveConversion(options?: ApiRequestOptions): Promise<ActiveConversionResponse>;
+  cancelConversion(jobId: string, options?: ApiRequestOptions): Promise<CancelConversionResponse>;
+  getLibrary(
+    search?: string,
+    limit?: number,
+    filters?: LibraryQueryOptions,
+    options?: ApiRequestOptions,
+  ): Promise<LibraryListResponse>;
+  getLibraryBook(bookId: number, options?: ApiRequestOptions): Promise<LibraryBookDetail>;
+  getLibraryAudioUrl(bookId: number, options?: ApiRequestOptions): Promise<string>;
+  createDesktopQueryToken(
+    payload: DesktopQueryTokenRequest,
+    options?: ApiRequestOptions,
+  ): Promise<DesktopQueryTokenResponse>;
+  updateLibraryBook(
+    bookId: number,
+    payload: LibraryBookUpdateRequest,
+    options?: ApiRequestOptions,
+  ): Promise<LibraryBookDetail>;
+  getCleaningPreview(
+    bookId: number,
+    chapterNumber: number,
+    options?: ApiRequestOptions,
+  ): Promise<CleaningPreviewResponse>;
+  updateBookPlaybackPosition(
+    bookId: number,
+    positionSec: number,
+    options?: ApiRequestOptions,
+  ): Promise<PlaybackPositionUpdateResponse>;
+  openBookFolder(bookId: number, options?: ApiRequestOptions): Promise<OpenBookFolderResponse>;
+  deleteBook(bookId: number, options?: ApiRequestOptions): Promise<DeleteBookResponse>;
+  getMaintenanceDiagnostics(options?: ApiRequestOptions): Promise<MaintenanceDiagnosticsResponse>;
+  backupDatabase(options?: ApiRequestOptions): Promise<MaintenanceBackupResponse>;
+  cleanupStorage(options?: ApiRequestOptions): Promise<MaintenanceCleanupResponse>;
 }
 
 const OPENAI_MODELS_URL = "https://api.openai.com/v1/models";
@@ -119,6 +178,39 @@ function createHeaders(
   return headers;
 }
 
+function summarizeValidationLocation(loc: unknown): string {
+  if (!Array.isArray(loc)) {
+    return "";
+  }
+
+  const parts = loc
+    .map((item) => String(item).trim())
+    .filter((item) => item.length > 0 && item !== "body");
+  return parts.join(".");
+}
+
+function summarizeValidationDetails(detail: unknown): string {
+  if (!Array.isArray(detail)) {
+    return "";
+  }
+
+  return detail
+    .map((item) => {
+      if (!item || typeof item !== "object") {
+        return "";
+      }
+      const source = item as Record<string, unknown>;
+      const message = typeof source.msg === "string" ? source.msg.trim() : "";
+      if (!message) {
+        return "";
+      }
+      const location = summarizeValidationLocation(source.loc);
+      return location ? `${location}: ${message}` : message;
+    })
+    .filter((item) => item.length > 0)
+    .join("; ");
+}
+
 function normalizeErrorText(bodyText: string): string {
   const trimmed = bodyText.trim();
   if (!trimmed) {
@@ -130,6 +222,10 @@ function normalizeErrorText(bodyText: string): string {
     if (typeof parsed.detail === "string" && parsed.detail.trim()) {
       return parsed.detail.trim();
     }
+    const detailSummary = summarizeValidationDetails(parsed.detail);
+    if (detailSummary) {
+      return detailSummary;
+    }
     if (typeof parsed.message === "string" && parsed.message.trim()) {
       return parsed.message.trim();
     }
@@ -138,6 +234,96 @@ function normalizeErrorText(bodyText: string): string {
   }
 
   return trimmed;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function createHttpError(status: number, detail: string): ApiError {
+  return new ApiError({
+    message: `API request failed (${status})${detail ? `: ${detail}` : ""}`,
+    status,
+    code: "http",
+    detail,
+    retriable: status === 408 || status === 429 || status >= 500,
+  });
+}
+
+function createRequestFailure(error: unknown, timedOut: boolean): ApiError {
+  if (timedOut) {
+    return new ApiError({
+      message: "request timed out",
+      status: null,
+      code: "timeout",
+      detail: "request timed out",
+      retriable: true,
+    });
+  }
+
+  if (isAbortError(error)) {
+    return new ApiError({
+      message: "request aborted",
+      status: null,
+      code: "aborted",
+      detail: "request aborted",
+      retriable: false,
+    });
+  }
+
+  const detail = error instanceof Error ? error.message : String(error || "network request failed");
+  return new ApiError({
+    message: detail,
+    status: null,
+    code: "network",
+    detail,
+    retriable: true,
+  });
+}
+
+async function fetchWithRequestOptions(
+  input: RequestInfo | URL,
+  init: JsonRequestOptions,
+  headers: Headers,
+): Promise<Response> {
+  const { timeoutMs, signal, ...fetchInit } = init;
+  const timeout = Number(timeoutMs);
+
+  const controller = new AbortController();
+  let timedOut = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const abortFromCaller = () => controller.abort();
+  const shouldUseComposedSignal = Boolean(signal) || (Number.isFinite(timeout) && timeout > 0);
+
+  if (shouldUseComposedSignal) {
+    if (signal?.aborted) {
+      controller.abort();
+    } else {
+      signal?.addEventListener("abort", abortFromCaller, { once: true });
+    }
+
+    if (Number.isFinite(timeout) && timeout > 0) {
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeout);
+    }
+  }
+
+  try {
+    return await fetch(input, {
+      ...fetchInit,
+      headers,
+      ...(shouldUseComposedSignal ? { signal: controller.signal } : {}),
+    });
+  } catch (error: unknown) {
+    throw createRequestFailure(error, timedOut);
+  } finally {
+    if (timeoutId !== undefined) {
+      clearTimeout(timeoutId);
+    }
+    signal?.removeEventListener("abort", abortFromCaller);
+  }
 }
 
 export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient {
@@ -155,46 +341,50 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
   async function requestJson<T>(path: string, init: JsonRequestOptions = {}): Promise<T> {
     const headers = createHeaders(init, bearerToken, "application/json");
 
-    const response = await fetch(resolveUrl(resolvedBaseUrl, path), {
-      ...init,
-      headers,
-    });
+    const response = await fetchWithRequestOptions(resolveUrl(resolvedBaseUrl, path), init, headers);
 
     if (!response.ok) {
       const bodyText = await response.text();
       const bodyHint = normalizeErrorText(bodyText);
-      throw new Error(`API request failed (${response.status})${bodyHint ? `: ${bodyHint}` : ""}`);
+      throw createHttpError(response.status, bodyHint);
     }
 
-    return (await response.json()) as T;
+    try {
+      return (await response.json()) as T;
+    } catch {
+      throw new ApiError({
+        message: "invalid JSON response",
+        status: null,
+        code: "invalid-json",
+        detail: "invalid JSON response",
+        retriable: false,
+      });
+    }
   }
 
   async function requestBlob(path: string, init: JsonRequestOptions = {}): Promise<Blob> {
     const headers = createHeaders(init, bearerToken, null);
 
-    const response = await fetch(resolveUrl(resolvedBaseUrl, path), {
-      ...init,
-      headers,
-    });
+    const response = await fetchWithRequestOptions(resolveUrl(resolvedBaseUrl, path), init, headers);
 
     if (!response.ok) {
       const bodyText = await response.text();
       const bodyHint = normalizeErrorText(bodyText);
-      throw new Error(`API request failed (${response.status})${bodyHint ? `: ${bodyHint}` : ""}`);
+      throw createHttpError(response.status, bodyHint);
     }
 
     return response.blob();
   }
 
-  async function getHealth(): Promise<HealthResponse> {
-    return requestJson<HealthResponse>("/health");
+  async function getHealth(options?: ApiRequestOptions): Promise<HealthResponse> {
+    return requestJson<HealthResponse>("/health", options);
   }
 
-  async function getModelOptions(): Promise<ModelOptionsResponse> {
-    return requestJson<ModelOptionsResponse>("/api/options/models");
+  async function getModelOptions(options?: ApiRequestOptions): Promise<ModelOptionsResponse> {
+    return requestJson<ModelOptionsResponse>("/api/options/models", options);
   }
 
-  async function fetchOpenAiModelIds(apiKey: string): Promise<string[]> {
+  async function fetchOpenAiModelIds(apiKey: string, options?: ApiRequestOptions): Promise<string[]> {
     const normalizedKey = apiKey.trim();
     if (!normalizedKey) {
       throw new Error("OpenAI API key is required");
@@ -205,51 +395,62 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
         api_key: normalizedKey,
         models_url: OPENAI_MODELS_URL,
       }),
+      ...options,
     });
     return Array.isArray(response.models) ? response.models : [];
   }
 
-  async function getVoiceOptions(engine: string): Promise<VoiceOptionsResponse> {
+  async function getVoiceOptions(engine: string, options?: ApiRequestOptions): Promise<VoiceOptionsResponse> {
     const params = new URLSearchParams();
     if (engine.trim()) {
       params.set("engine", engine.trim());
     }
     const query = params.toString();
     const path = query ? `/api/options/voices?${query}` : "/api/options/voices";
-    return requestJson<VoiceOptionsResponse>(path);
+    return requestJson<VoiceOptionsResponse>(path, options);
   }
 
-  async function getSystemCapabilities(): Promise<SystemCapabilitiesResponse> {
-    return requestJson<SystemCapabilitiesResponse>("/api/system/capabilities");
+  async function getSystemCapabilities(options?: ApiRequestOptions): Promise<SystemCapabilitiesResponse> {
+    return requestJson<SystemCapabilitiesResponse>("/api/system/capabilities", options);
   }
 
-  async function warmupParallelWorkers(payload: ParallelWarmupRequest): Promise<ParallelWorkerRecommendation> {
+  async function warmupParallelWorkers(
+    payload: ParallelWarmupRequest,
+    options?: ApiRequestOptions,
+  ): Promise<ParallelWorkerRecommendation> {
     return requestJson<ParallelWorkerRecommendation>("/api/options/parallel/warmup", {
       method: "POST",
       body: JSON.stringify(payload),
+      ...options,
     });
   }
 
-  async function preflightSource(sourcePath: string): Promise<SourcePreflight> {
+  async function preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight> {
     return requestJson<SourcePreflight>("/api/sources/preflight", {
       method: "POST",
       body: JSON.stringify({ source_path: sourcePath }),
+      ...options,
     });
   }
 
-  async function uploadSourceText(payload: SourceTextUploadRequest): Promise<SourceUploadResponse> {
+  async function uploadSourceText(
+    payload: SourceTextUploadRequest,
+    options?: ApiRequestOptions,
+  ): Promise<SourceUploadResponse> {
     return requestJson<SourceUploadResponse>("/api/uploads/text", {
       method: "POST",
       body: JSON.stringify({
         text: payload.text,
         title: payload.title?.trim() || null,
       }),
+      ...options,
     });
   }
 
   async function suggestVoice(
     sourcePath: string,
     engine?: string | null,
+    options?: ApiRequestOptions,
   ): Promise<VoiceSuggestionResponse> {
     return requestJson<VoiceSuggestionResponse>("/api/voices/suggest", {
       method: "POST",
@@ -257,32 +458,42 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
         source_path: sourcePath,
         tts_engine: engine || null,
       }),
+      ...options,
     });
   }
 
-  async function startConversion(payload: StartConversionRequest): Promise<StartConversionResponse> {
+  async function startConversion(
+    payload: StartConversionRequest,
+    options?: ApiRequestOptions,
+  ): Promise<StartConversionResponse> {
     return requestJson<StartConversionResponse>("/api/conversions", {
       method: "POST",
       body: JSON.stringify(payload),
+      ...options,
     });
   }
 
   async function repairConversion(
     bookId: number,
     payload: RepairConversionRequest,
+    options?: ApiRequestOptions,
   ): Promise<StartConversionResponse> {
     const normalizedBookId = normalizeBookId(bookId);
     return requestJson<StartConversionResponse>(`/api/conversions/repair/${normalizedBookId}`, {
       method: "POST",
       body: JSON.stringify(payload),
+      ...options,
     });
   }
 
-  async function getActiveConversion(): Promise<ActiveConversionResponse> {
-    return requestJson<ActiveConversionResponse>("/api/conversions/active");
+  async function getActiveConversion(options?: ApiRequestOptions): Promise<ActiveConversionResponse> {
+    return requestJson<ActiveConversionResponse>("/api/conversions/active", options);
   }
 
-  async function cancelConversion(jobId: string): Promise<CancelConversionResponse> {
+  async function cancelConversion(
+    jobId: string,
+    options?: ApiRequestOptions,
+  ): Promise<CancelConversionResponse> {
     const normalizedJobId = jobId.trim();
     if (!normalizedJobId) {
       throw new Error("jobId is required");
@@ -292,6 +503,7 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
       `/api/conversions/${encodeURIComponent(normalizedJobId)}/cancel`,
       {
         method: "POST",
+        ...options,
       },
     );
   }
@@ -300,6 +512,7 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     search?: string,
     limit?: number,
     filters: LibraryQueryOptions = {},
+    options?: ApiRequestOptions,
   ): Promise<LibraryListResponse> {
     const params = new URLSearchParams();
 
@@ -318,16 +531,20 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
 
     const query = params.toString();
     const path = query ? `/api/library?${query}` : "/api/library";
-    return requestJson<LibraryListResponse>(path);
+    return requestJson<LibraryListResponse>(path, options);
   }
 
-  async function getLibraryBook(bookId: number): Promise<LibraryBookDetail> {
+  async function getLibraryBook(
+    bookId: number,
+    options?: ApiRequestOptions,
+  ): Promise<LibraryBookDetail> {
     const normalizedBookId = normalizeBookId(bookId);
-    return requestJson<LibraryBookDetail>(`/api/library/${normalizedBookId}`);
+    return requestJson<LibraryBookDetail>(`/api/library/${normalizedBookId}`, options);
   }
 
   async function createDesktopQueryToken(
     payload: DesktopQueryTokenRequest,
+    options?: ApiRequestOptions,
   ): Promise<DesktopQueryTokenResponse> {
     const requestPayload: DesktopQueryTokenRequest =
       payload.scope === "audio"
@@ -337,38 +554,46 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     return requestJson<DesktopQueryTokenResponse>("/api/desktop/query-token", {
       method: "POST",
       body: JSON.stringify(requestPayload),
+      ...options,
     });
   }
 
   async function updateLibraryBook(
     bookId: number,
     payload: LibraryBookUpdateRequest,
+    options?: ApiRequestOptions,
   ): Promise<LibraryBookDetail> {
     const normalizedBookId = normalizeBookId(bookId);
     return requestJson<LibraryBookDetail>(`/api/library/${normalizedBookId}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
+      ...options,
     });
   }
 
   async function getCleaningPreview(
     bookId: number,
     chapterNumber: number,
+    options?: ApiRequestOptions,
   ): Promise<CleaningPreviewResponse> {
     const normalizedBookId = normalizeBookId(bookId);
     const normalizedChapter = Math.max(1, Math.floor(Number(chapterNumber) || 0));
     return requestJson<CleaningPreviewResponse>(
       `/api/library/${normalizedBookId}/chapters/${normalizedChapter}/cleaning-preview`,
+      options,
     );
   }
 
-  async function getLibraryAudioUrl(bookId: number): Promise<string> {
+  async function getLibraryAudioUrl(bookId: number, options?: ApiRequestOptions): Promise<string> {
     const normalizedBookId = normalizeBookId(bookId);
     const resolved = resolveUrl(resolvedBaseUrl, `/api/library/${normalizedBookId}/audio`);
     const url = new URL(resolved, window.location.origin);
 
     if (usesDesktopAuth) {
-      const queryToken = await createDesktopQueryToken({ scope: "audio", book_id: normalizedBookId });
+      const queryToken = await createDesktopQueryToken(
+        { scope: "audio", book_id: normalizedBookId },
+        options,
+      );
       if (queryToken.token.trim()) {
         url.searchParams.set("token", queryToken.token);
       }
@@ -380,6 +605,7 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
   async function updateBookPlaybackPosition(
     bookId: number,
     positionSec: number,
+    options?: ApiRequestOptions,
   ): Promise<PlaybackPositionUpdateResponse> {
     const normalizedBookId = normalizeBookId(bookId);
     const normalizedPosition = Number(positionSec);
@@ -392,38 +618,48 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
       {
         method: "PUT",
         body: JSON.stringify({ position_sec: normalizedPosition }),
+        ...options,
       },
     );
   }
 
-  async function openBookFolder(bookId: number): Promise<OpenBookFolderResponse> {
+  async function openBookFolder(
+    bookId: number,
+    options?: ApiRequestOptions,
+  ): Promise<OpenBookFolderResponse> {
     const normalizedBookId = normalizeBookId(bookId);
     return requestJson<OpenBookFolderResponse>(`/api/library/${normalizedBookId}/open-folder`, {
       method: "POST",
+      ...options,
     });
   }
 
-  async function deleteBook(bookId: number): Promise<DeleteBookResponse> {
+  async function deleteBook(bookId: number, options?: ApiRequestOptions): Promise<DeleteBookResponse> {
     const normalizedBookId = normalizeBookId(bookId);
     return requestJson<DeleteBookResponse>(`/api/library/${normalizedBookId}`, {
       method: "DELETE",
+      ...options,
     });
   }
 
-  async function getMaintenanceDiagnostics(): Promise<MaintenanceDiagnosticsResponse> {
-    return requestJson<MaintenanceDiagnosticsResponse>("/api/maintenance/diagnostics");
+  async function getMaintenanceDiagnostics(
+    options?: ApiRequestOptions,
+  ): Promise<MaintenanceDiagnosticsResponse> {
+    return requestJson<MaintenanceDiagnosticsResponse>("/api/maintenance/diagnostics", options);
   }
 
-  async function backupDatabase(): Promise<MaintenanceBackupResponse> {
+  async function backupDatabase(options?: ApiRequestOptions): Promise<MaintenanceBackupResponse> {
     return requestJson<MaintenanceBackupResponse>("/api/maintenance/backup", {
       method: "POST",
+      ...options,
     });
   }
 
-  async function cleanupStorage(): Promise<MaintenanceCleanupResponse> {
+  async function cleanupStorage(options?: ApiRequestOptions): Promise<MaintenanceCleanupResponse> {
     return requestJson<MaintenanceCleanupResponse>("/api/maintenance/cleanup", {
       method: "POST",
       body: JSON.stringify({ confirm: "cleanup" }),
+      ...options,
     });
   }
 
