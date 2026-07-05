@@ -161,7 +161,6 @@ class TestConversionPipeline:
              patch("modules.tts.factory.TTSEngineFactory.create") as mock_tts_factory, \
              patch("modules.tts.engine.TTSEngine") as mock_tts, \
              patch("modules.tts.engine.concatenate_audio_files") as mock_concat, \
-             patch("modules.audio.processor.AudioProcessor") as mock_proc, \
              patch("modules.audio.encoder.AudioEncoder") as mock_enc, \
              patch("modules.audio.packager.M4BPackager") as mock_packager:
              
@@ -217,8 +216,6 @@ class TestConversionPipeline:
                 return Path(output_path)
             mock_concat.side_effect = mock_concat_side_effect
             
-            mock_proc.return_value.load.return_value = MagicMock()
-            mock_proc.return_value.normalize_volume.return_value = MagicMock()
             
             mock_enc.return_value.get_duration.return_value = 10.0 # 10 seconds
             
@@ -249,7 +246,6 @@ class TestConversionPipeline:
                 "tts": mock_tts,
                 "tts_factory": mock_tts_factory,
                 "concat": mock_concat,
-                "processor": mock_proc,
                 "encoder": mock_enc,
                 "packager": mock_packager,
             }

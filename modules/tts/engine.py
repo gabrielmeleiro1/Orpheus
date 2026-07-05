@@ -536,33 +536,6 @@ class TTSEngine:
         self._update_synthesis_stats(start_time, len(text))
         return written_path
 
-    def synthesize_batch(
-        self,
-        items: list[BatchItem],
-        progress_callback: Optional[Callable[[int, int], None]] = None,
-    ) -> list[BatchResult]:
-        """
-        Synthesize multiple text chunks through grouped multi-item scheduling.
-
-        Items are processed in scheduler-sized groups based on current VRAM
-        guidance. Each item still flows through `_synthesize_single()`, which
-        reaches the same per-item synthesis path used by `synthesize()`.
-        Current Kokoro execution does not call a native batched MLX inference API.
-
-        Args:
-            items: List of BatchItem to synthesize
-            progress_callback: Called with (completed, total) after each item
-
-        Returns:
-            List of BatchResult in the same order as input items
-        """
-        return list(
-            self.iter_synthesize_batch(
-                items=items,
-                progress_callback=progress_callback,
-            )
-        )
-
     def iter_synthesize_batch(
         self,
         items: list[BatchItem],
@@ -652,33 +625,6 @@ class TTSEngine:
                 audio=None, index=item.index, error=str(e), duration_ms=0
             )
 
-    def synthesize_to_file(
-        self,
-        text: str,
-        output_path: Path | str,
-        voice: Optional[str] = None,
-        speed: float = 1.0,
-    ) -> Path:
-        """
-        Synthesize speech and save to WAV file.
-
-        Args:
-            text: Text to synthesize
-            output_path: Path for output WAV file
-            voice: Voice ID
-            speed: Speech speed multiplier
-
-        Returns:
-            Path to generated WAV file
-        """
-        return engine_output.synthesize_to_file(
-            self,
-            text=text,
-            output_path=output_path,
-            voice=voice,
-            speed=speed,
-        )
-
     def unload_model(self, keep_in_cache: bool = True) -> None:
         """
         Unload the model and free memory.
@@ -689,29 +635,6 @@ class TTSEngine:
             keep_in_cache: If True, model stays in global cache for reuse
         """
         engine_runtime.unload_model(self, keep_in_cache=keep_in_cache)
-
-    def register_for_idle_timeout(self, timeout_seconds: float = 300.0) -> None:
-        """
-        Register this engine for automatic idle timeout unloading.
-
-        The model will be automatically unloaded after the specified
-        idle time to free VRAM.
-
-        Args:
-            timeout_seconds: Idle time before unload (default 5 minutes)
-        """
-        if self._memory_manager:
-            self._memory_manager.register_for_idle_timeout(
-                "tts_engine", lambda: self.unload_model(keep_in_cache=False)
-            )
-            # Ensure monitoring is started
-            self._memory_manager.start()
-            logger.info("TTS Engine registered for idle timeout (%ss)", timeout_seconds)
-
-    def clear_cache(self) -> None:
-        """Clear the global model cache and free memory."""
-        _clear_model_cache()
-        logger.info("TTS model cache cleared")
 
     def get_metrics(self) -> dict[str, float | int | None]:
         """Return runtime performance counters for observability."""
@@ -735,33 +658,3 @@ KOKORO_VOICES = kokoro_voice_lookup()
 def list_voices() -> dict[str, str]:
     """List all available voices with descriptions."""
     return KOKORO_VOICES.copy()
-
-
-def test_synthesis() -> bool:
-    """
-    Quick test of TTS synthesis.
-
-    Returns:
-        True if test passes
-    """
-    try:
-        engine = TTSEngine()
-        engine.load_model()
-
-        audio = engine.synthesize("Hello, this is a test.", voice="am_adam")
-
-        if len(audio) == 0:
-            print("Test failed: Empty audio output")
-            return False
-
-        print(f"Test passed: Generated {len(audio)} samples")
-        engine.unload_model()
-        return True
-
-    except Exception as e:
-        print(f"Test failed: {e}")
-        return False
-
-
-if __name__ == "__main__":
-    test_synthesis()

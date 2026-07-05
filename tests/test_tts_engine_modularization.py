@@ -528,9 +528,11 @@ def test_tts_engine_batch_synthesis_uses_sequential_scheduler_for_serial_mlx_run
         return SynthesisResult(audio=[0.0], index=item.index, error=None, duration_ms=1)
 
     with patch.object(tts, "_synthesize_single", side_effect=_fake_synthesize_single):
-        results = tts.synthesize_batch(
-            items,
-            progress_callback=lambda completed, total: progress.append((completed, total)),
+        results = list(
+            tts.iter_synthesize_batch(
+                items,
+                progress_callback=lambda completed, total: progress.append((completed, total)),
+            )
         )
 
     assert [result.index for result in results] == [0, 1, 2]

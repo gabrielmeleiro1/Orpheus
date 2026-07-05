@@ -33,8 +33,8 @@ def test_timed_conversion_pipeline_populates_parse_and_package_metrics(
     ) as mock_cleaner, patch("modules.tts.chunker.TextChunker") as mock_chunker, patch(
         "modules.tts.factory.TTSEngineFactory.create"
     ) as mock_tts_factory, patch("modules.tts.engine.concatenate_audio_files") as mock_concat, patch(
-        "modules.audio.processor.AudioProcessor"
-    ) as mock_proc, patch("modules.audio.encoder.AudioEncoder") as mock_enc, patch(
+        "modules.audio.encoder.AudioEncoder"
+    ) as mock_enc, patch(
         "modules.audio.packager.M4BPackager"
     ) as mock_packager:
         from modules.ingestion.models import Chapter, Document
@@ -80,8 +80,6 @@ def test_timed_conversion_pipeline_populates_parse_and_package_metrics(
             return Path(output_path)
 
         mock_concat.side_effect = mock_concat_side_effect
-        mock_proc.return_value.load.return_value = MagicMock()
-        mock_proc.return_value.normalize_volume.return_value = MagicMock()
         mock_enc.return_value.get_duration.return_value = 10.0
 
         def wav_to_mp3_side_effect(wav_path, output_path, bitrate="128k"):

@@ -13,7 +13,6 @@ from pathlib import Path
 
 import modules.audio as audio_module
 
-from modules.audio.processor import AudioProcessor
 from modules.audio.encoder import AudioEncoder
 from modules.audio.ffmpeg import (
     atomic_output_path,
@@ -122,94 +121,6 @@ class TestFFmpegBinaryDiscovery:
         assert captured_kwargs["errors"] == "replace"
         assert captured_kwargs["text"] is True
 
-
-class TestAudioProcessor:
-    @patch("modules.audio.processor.AudioSegment")
-    def test_concatenate(self, _mock_audiosegment):
-        processor = AudioProcessor()
-        # Create mock audio segments
-        seg1 = MagicMock()
-        seg2 = MagicMock()
-        # Setup addition result
-        seg1.__add__.return_value = seg1 
-        
-        processor.concatenate([seg1, seg2])
-        seg1.__add__.assert_called()
-
-    @patch("modules.audio.processor.AudioSegment")
-    def test_normalize_volume(self, _mock_audiosegment):
-        processor = AudioProcessor()
-        audio = MagicMock()
-        audio.__len__.return_value = 1000 # 1 second
-        audio.dBFS = -20.0
-        audio.apply_gain.return_value = audio
-        
-        # Target -16, current -20, gain should be +4
-        processor.normalize_volume(audio, target_dBFS=-16.0)
-        audio.apply_gain.assert_called_with(4.0)
-
-    @patch("modules.audio.processor.get_buffer_pool")
-    @patch("modules.audio.processor.BUFFER_POOL_AVAILABLE", True)
-    def test_to_numpy_returns_caller_owned_array_with_pooling(self, mock_get_pool):
-        processor = AudioProcessor()
-        audio = MagicMock()
-        audio.get_array_of_samples.return_value = [0, 32768, -32768]
-
-        pooled_array = np.empty((3,), dtype=np.float32)
-        pooled_buffer = MagicMock()
-        pooled_buffer.array = pooled_array
-        pooled_buffer.__enter__.return_value = pooled_buffer
-        pooled_buffer.__exit__.return_value = False
-
-        mock_pool = MagicMock()
-        mock_pool.acquire_managed.return_value = pooled_buffer
-        mock_get_pool.return_value = mock_pool
-
-        first = processor.to_numpy(audio, use_buffer_pool=True)
-        second = processor.to_numpy(audio, use_buffer_pool=True)
-
-        assert first is not pooled_array
-        assert second is not pooled_array
-        assert first is not second
-        np.testing.assert_allclose(first, np.array([0.0, 1.0, -1.0], dtype=np.float32))
-        np.testing.assert_allclose(second, np.array([0.0, 1.0, -1.0], dtype=np.float32))
-        assert mock_pool.acquire_managed.call_count == 2
-
-    @patch("modules.audio.processor.get_buffer_pool")
-    @patch("modules.audio.processor.BUFFER_POOL_AVAILABLE", True)
-    def test_from_numpy_uses_managed_buffer_context(self, mock_get_pool):
-        processor = AudioProcessor()
-        audio = np.array([0.0, 0.5, -0.5], dtype=np.float32)
-
-        pooled_array = np.empty((3,), dtype=np.int16)
-        pooled_buffer = MagicMock()
-        pooled_buffer.array = pooled_array
-        pooled_buffer.__enter__.return_value = pooled_buffer
-        pooled_buffer.__exit__.return_value = False
-
-        mock_pool = MagicMock()
-        mock_pool.acquire_managed.return_value = pooled_buffer
-        mock_get_pool.return_value = mock_pool
-
-        _ = processor.from_numpy(audio, use_buffer_pool=True)
-
-        mock_pool.acquire_managed.assert_called_once_with(audio.shape, np.int16)
-        pooled_buffer.__enter__.assert_called_once()
-        pooled_buffer.__exit__.assert_called_once()
-
-    @patch("modules.audio.processor.AudioSegment")
-    def test_from_numpy_clips_out_of_range_samples_before_int16_cast(self, mock_audiosegment):
-        processor = AudioProcessor()
-        audio = np.array([-2.0, -1.0, 0.0, 1.0, 2.0], dtype=np.float32)
-
-        processor.from_numpy(audio, use_buffer_pool=False)
-
-        audio_bytes = mock_audiosegment.call_args.args[0]
-        samples = np.frombuffer(audio_bytes, dtype=np.int16)
-        np.testing.assert_array_equal(
-            samples,
-            np.array([-32767, -32767, 0, 32767, 32767], dtype=np.int16),
-        )
 
 class TestAudioEncoder:
     @patch("shutil.which")
@@ -787,11 +698,11 @@ class TestM4BPackager:
         assert float(chapters[1]["end_time"]) == pytest.approx(0.7, abs=0.08)
 
 
-def test_importing_modules_audio_does_not_eagerly_load_processor():
+def test_importing_modules_audio_does_not_eagerly_load_submodules():
     code = """
 import sys
 import modules.audio
-print("modules.audio.processor" in sys.modules)
+print("modules.audio.encoder" in sys.modules, "modules.audio.packager" in sys.modules)
 """
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -802,7 +713,7 @@ print("modules.audio.processor" in sys.modules)
         timeout=30,
     )
 
-    assert result.stdout.strip() == "False"
+    assert result.stdout.strip() == "False False"
 
 
 def test_importing_packager_module_does_not_import_pydub():

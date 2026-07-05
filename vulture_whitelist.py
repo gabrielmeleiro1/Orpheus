@@ -49,7 +49,6 @@ _.healthcheck
 _.is_available
 _.get_voice
 _.add_silence_between_chapters
-_.get_buffer_pool_stats
 _.capture_signals
 _.chunk_generator
 _.model_context
@@ -98,4 +97,3 @@ _.mock_parser_deps
 reset_web_controller_state
 
 # Memory-test helper intentionally kept for explicit diagnostic coverage.
-verify_memory_freed

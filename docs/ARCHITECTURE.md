@@ -22,13 +22,13 @@ types and tests listed in [TESTING.md](TESTING.md#focused-checks).
 | Cleaner policy and backends | `modules/tts/cleaner.py`, `cleaner_config.py`, `cleaner_backends/` (`mlx`, `cuda`, `api`) | `modules/pipeline/stages/cleaning.py`; env `CLEANER_BACKEND`; tests `tests/test_cleaner*.py` |
 | TTS runtime options | `modules/tts/runtime_spec.py`, `runtime_options.py`, `factory.py`, `strategies/`, `runtimes/` | `modules/pipeline/models.py` (`PipelineConfig`); `modules/app/services/runtime_capability_service.py`; tests `tests/test_tts*.py` |
 | Frontend conversion form | `desktop/src/features/conversion/` (`ConversionPanel*.tsx`, `useConversionSubmitPayload.ts`, `useTtsOptions.ts`, `useCleanerOptions.ts`) | `desktop/src/types/api.ts`; capabilities from `GET /api/system/capabilities` |
-| API request/response payloads | `modules/web/routes/conversions.py`, `options.py`, `uploads.py`, `library.py`; `modules/web/serializers.py` | `modules/app/services/conversion_runtime.py` (`ConversionRuntimeOptions`); `desktop/src/types/api.ts` and `api/client.ts` |
+| API request/response payloads | `modules/web/routes/conversions.py`, `options.py`, `uploads.py`, `library.py`; `modules/web/serializers.py` | `modules/contracts/conversion_runtime_options.py` (`ConversionRuntimeOptions`); `desktop/src/types/api.ts` and `api/client.ts` |
 | Storage schema and library paths | `modules/storage/migrations.py`, `models.py`, `sqlite_repo.py`, `maintenance.py` | `modules/app/services/library_service.py`, `conversion_paths.py`; tests `tests/test_storage_*.py`, `tests/test_library_service.py` |
 
 Known cross-layer drift risks (keep these aligned when editing the rows above):
 
-- Source suffix lists: Tauri file picker, `library_service.SUPPORTED_UPLOAD_SUFFIXES`, `ingestion/preflight.py`, and conversion UI copy.
-- Conversion runtime options: `types/api.ts` ↔ FastAPI Pydantic models ↔ `ConversionRuntimeOptions` ↔ `PipelineConfig`.
+- Source suffix lists: derived from `modules/contracts/source_extensions.py`; the Tauri file picker and conversion UI copy must match it.
+- Conversion runtime options: `types/api.ts` ↔ FastAPI Pydantic models ↔ `ConversionRuntimeOptions` (`modules/contracts/conversion_runtime_options.py`) ↔ `PipelineConfig`.
 - Progress stage names: `modules/app/events.py` / pipeline progress ↔ `ProgressStageName` in `types/api.ts`.
 
 ## Repository Shape
@@ -119,12 +119,21 @@ Desktop process lifecycle contract:
 
 3. Domain/Processing Layer
 - `modules/pipeline/orchestrator.py` coordinates ingest -> chunk -> clean -> synthesize -> encode -> package.
+- Per-chapter work is decomposed under `modules/pipeline/`: `chapter_dispatch.py`
+  (sequential vs parallel routing), `chapter_processor.py` (per-chapter state
+  machine), `model_lifecycle.py` (engine/cleaner reuse), `pool_manager.py` +
+  `worker_*.py` (process-pool workers), and `memory_policy.py`.
 - `modules/pipeline/stages/*` contains stage-focused helpers used by orchestrator composition:
+  - `ingestion.py`
   - `cleaning.py`
-  - `synthesis.py`
+  - `synthesis.py` (plus `overlap_synthesis.py` for cleaner/TTS pipelining)
   - `encoding.py`
   - `packaging.py`
 - `modules/ingestion/*`, `modules/tts/*`, `modules/audio/*` implement stage logic.
+- TTS engines are registered via `modules/tts/factory.py` (strategy registry) and
+  provider runtimes via `modules/tts/runtimes/` (`kokoro_mlx.py` wraps the legacy
+  MLX `engine.py` facade; `kokoro_package.py` adapts upstream `kokoro.KPipeline`
+  for CPU/CUDA).
 
 4. Persistence Layer
 - `modules/storage/*` persists books/chapters/jobs.

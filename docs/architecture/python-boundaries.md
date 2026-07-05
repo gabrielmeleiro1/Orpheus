@@ -63,7 +63,7 @@ directly.
 |--------|----------|-----------|
 | `AppController` | `controller.py` | `modules/web`, tests, desktop via API |
 | `AppConfig` | `config.py` | Controller, services |
-| `ConversionRuntimeOptions` | `services/conversion_runtime.py` (re-exported via `services/conversion_service.py` and `app.__init__`) | Web routes, conversion start/repair |
+| `ConversionRuntimeOptions` | `modules/contracts/conversion_runtime_options.py` (re-exported via `services/conversion_runtime.py`, `services/conversion_service.py`, and `app.__init__`) | Web routes, conversion start/repair |
 | `ConversionCallbacks`, event types | `controller.py`, `events.py` | Web SSE bridge |
 | `LibraryService`, `ConversionService`, `VoiceService`, `RuntimeCapabilityService` | `services/` | Controller only (intended) |
 
