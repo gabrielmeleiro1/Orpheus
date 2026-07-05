@@ -32,6 +32,7 @@ export function useConversionPanelState({
   health,
   statusMessage,
   conversionJob,
+  startCommandRef,
 }: UseConversionPanelStateArgs): ConversionPanelViewModel {
   const isDocumentMode = activeTab === "document";
   const conversionMode: ConversionMode = isDocumentMode ? "document_audio" : "audiobook";
@@ -130,6 +131,22 @@ export function useConversionPanelState({
     optionState.cleanerRuntimeError ||
     (requiresCleanerApiKey && !optionState.cleanerApiKey.trim()) ||
     (optionState.cleanerModelOptions.length > 0 && !optionState.cleanerModel);
+
+  useEffect(() => {
+    if (!startCommandRef) {
+      return;
+    }
+    startCommandRef.current = () => {
+      if (!startDisabled) {
+        void queueRunner.onStartConversion();
+      }
+    };
+    return () => {
+      if (startCommandRef.current) {
+        startCommandRef.current = null;
+      }
+    };
+  }, [queueRunner.onStartConversion, startCommandRef, startDisabled]);
 
   const cancelDisabled = !conversionJob.activeJobId || conversionJob.isCancelling;
   const mergedFormError = conversionJob.formError || optionState.error;
