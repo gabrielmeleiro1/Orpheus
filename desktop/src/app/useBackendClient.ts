@@ -9,10 +9,10 @@ import {
 import {
   BACKEND_HEALTH_CHECK_INTERVAL_MS,
   describeDesktopBackendStatus,
-  isTauriRuntime,
   readDesktopBackendStatus,
   waitForDesktopEndpoint,
 } from "../features/dashboard/dashboardHelpers";
+import { isTauriRuntime } from "../platform/tauriRuntime";
 import type {
   BackendConnectionState,
   HealthResponse,
