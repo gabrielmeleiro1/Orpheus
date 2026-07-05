@@ -19,6 +19,19 @@ const PROGRESS_STAGE_NAMES: ProgressStageName[] = [
   "encoding",
   "packaging",
 ];
+const BACKEND_STAGE_NAME_MAP: Record<string, ProgressStageName | ""> = {
+  idle: "",
+  ingesting: "ingestion",
+  chunking: "chunking",
+  cleaning: "cleaning",
+  synthesizing: "synthesis",
+  encoding: "encoding",
+  packaging: "packaging",
+  complete: "packaging",
+  completed: "packaging",
+  error: "",
+  cancelled: "",
+};
 
 export interface EventStreamModelState {
   uiState: ConversionJobStatus;
@@ -221,6 +234,9 @@ function formatTimestamp(value: string | undefined, fallbackTimestamp = ""): str
 
 function normalizeStageName(stage: string): ProgressStageName | "" {
   const stageValue = stage.toLowerCase();
+  if (stageValue in BACKEND_STAGE_NAME_MAP) {
+    return BACKEND_STAGE_NAME_MAP[stageValue];
+  }
   if (stageValue.includes("ingest")) {
     return "ingestion";
   }

@@ -165,3 +165,42 @@ describe("api client errors", () => {
     );
   });
 });
+
+describe("api client request contracts", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("sends favorite library filters when provided", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(jsonResponse({ items: [], count: 0 }))
+      .mockResolvedValueOnce(jsonResponse({ items: [], count: 0 }));
+    const client = createApiClient({ baseUrl: "http://127.0.0.1" });
+
+    await client.getLibrary("", undefined, { favorite: false });
+    await client.getLibrary("dune", 20, { conversionMode: "audiobook", favorite: true });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "http://127.0.0.1/api/library?favorite=false",
+      expect.any(Object),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "http://127.0.0.1/api/library?search=dune&limit=20&conversion_mode=audiobook&favorite=true",
+      expect.any(Object),
+    );
+  });
+
+  it("only sends the OpenAI API key when fetching model IDs", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(jsonResponse({ provider: "openai", base_url: "https://api.openai.com/v1", models: [] }));
+    const client = createApiClient({ baseUrl: "http://127.0.0.1" });
+
+    await client.fetchOpenAiModelIds(" sk-test ");
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ api_key: "sk-test" });
+  });
+});
