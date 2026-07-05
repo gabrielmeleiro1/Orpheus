@@ -10,6 +10,7 @@ import type {
 import { buildCleanerRuntimePayloadFields } from "./cleanerBackendHelpers";
 import { normalizeQuantizationValue } from "./conversionPanelHelpers";
 import type { PersistedSettings } from "./conversionOptionsShared";
+import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
 
 const DEFAULT_PARALLEL_WORKER_MODE = "manual";
 const DEFAULT_PARALLEL_WORKER_LIMIT = 4;
@@ -72,6 +73,7 @@ export function useParallelWorkers({
   const [parallelWorkerStatus, setParallelWorkerStatus] = useState("Worker recommendation unavailable.");
   const [parallelWorkerError, setParallelWorkerError] = useState(false);
   const [parallelWarmupLoading, setParallelWarmupLoading] = useState(false);
+  const beginParallelWarmup = useLatestRequest();
 
   const manualParallelWorkerUpperBound = useMemo(() => {
     return Math.max(
@@ -168,6 +170,7 @@ export function useParallelWorkers({
     setParallelWarmupLoading(true);
     setParallelWorkerError(false);
     setParallelWorkerStatus("Running model warm-up memory calibration...");
+    const isLatest = beginParallelWarmup();
     try {
       const quantization = normalizeQuantizationValue(selectedQuantization);
       const requestedWarmupMax =
@@ -192,6 +195,9 @@ export function useParallelWorkers({
         ...cleanerFields,
         max_parallel_chapters: requestedWarmupMax,
       });
+      if (!isLatest()) {
+        return;
+      }
       setParallelRecommendation(recommendation);
       setParallelManualMaxState(String(recommendation.requested_parallel_chapters));
       setParallelWorkerStatus(
@@ -199,13 +205,18 @@ export function useParallelWorkers({
       );
       setParallelWorkerError(!recommendation.memory_measurement_available);
     } catch (warmupError: unknown) {
-      setParallelWorkerError(true);
-      setParallelWorkerStatus(warmupError instanceof Error ? warmupError.message : "Parallel warm-up failed.");
+      if (isLatest() && !isAbortLikeError(warmupError)) {
+        setParallelWorkerError(true);
+        setParallelWorkerStatus(warmupError instanceof Error ? warmupError.message : "Parallel warm-up failed.");
+      }
     } finally {
-      setParallelWarmupLoading(false);
+      if (isLatest()) {
+        setParallelWarmupLoading(false);
+      }
     }
   }, [
     apiClient,
+    beginParallelWarmup,
     parallelManualMax,
     parallelRecommendation,
     parallelWorkerMode,

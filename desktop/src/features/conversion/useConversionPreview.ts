@@ -8,6 +8,7 @@ import {
   normalizeQuantizationValue,
 } from "./conversionPanelHelpers";
 import type { useConversionOptions } from "./useConversionOptions";
+import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
 
 type ConversionOptionState = ReturnType<typeof useConversionOptions>;
 
@@ -16,6 +17,7 @@ interface UseConversionPreviewArgs {
   optionState: ConversionOptionState;
   sourcePath: string;
   selectedPreflight: SourcePreflight | null;
+  sampleText: string | null;
 }
 
 export function useConversionPreview({
@@ -23,6 +25,7 @@ export function useConversionPreview({
   optionState,
   sourcePath,
   selectedPreflight,
+  sampleText,
 }: UseConversionPreviewArgs) {
   const [voiceSuggestBusy, setVoiceSuggestBusy] = useState(false);
   const [voiceSuggestStatus, setVoiceSuggestStatus] = useState("recommendation idle");
@@ -33,6 +36,8 @@ export function useConversionPreview({
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
+  const beginPreviewRequest = useLatestRequest();
+  const beginVoiceSuggestRequest = useLatestRequest();
 
   const applyPreviewSample = useCallback((sample: string) => {
     setPreviewText(compactSample(sample, 220));
@@ -46,6 +51,12 @@ export function useConversionPreview({
     };
   }, []);
 
+  useEffect(() => {
+    if (sampleText) {
+      setPreviewText(sampleText);
+    }
+  }, [sampleText]);
+
   const onPreviewVoice = useCallback(async () => {
     if (!apiClient || !optionState.selectedVoice) {
       setPreviewError(true);
@@ -57,6 +68,7 @@ export function useConversionPreview({
     setPreviewError(false);
     setPreviewStatus("Generating preview...");
     const quantization = normalizeQuantizationValue(optionState.selectedQuantization);
+    const isLatest = beginPreviewRequest();
 
     try {
       const blob = await apiClient.requestBlob("/api/voices/preview", {
@@ -71,6 +83,9 @@ export function useConversionPreview({
           tts_options: { quantization },
         }),
       });
+      if (!isLatest()) {
+        return;
+      }
 
       const audio = previewAudioRef.current;
       if (!audio) {
@@ -88,13 +103,18 @@ export function useConversionPreview({
       await audio.play();
       setPreviewStatus(`Previewing ${optionState.selectedVoice}`);
     } catch (error: unknown) {
-      setPreviewError(true);
-      setPreviewStatus(error instanceof Error ? error.message : "Voice preview failed");
+      if (isLatest() && !isAbortLikeError(error)) {
+        setPreviewError(true);
+        setPreviewStatus(error instanceof Error ? error.message : "Voice preview failed");
+      }
     } finally {
-      setPreviewBusy(false);
+      if (isLatest()) {
+        setPreviewBusy(false);
+      }
     }
   }, [
     apiClient,
+    beginPreviewRequest,
     optionState.selectedEngine,
     optionState.selectedQuantization,
     optionState.selectedVoice,
@@ -114,6 +134,7 @@ export function useConversionPreview({
 
     setVoiceSuggestBusy(true);
     setVoiceSuggestStatus("Analyzing first chapters...");
+    const isLatest = beginVoiceSuggestRequest();
     try {
       const response = await apiClient.suggestVoice(
         sourcePath.trim(),
@@ -122,6 +143,9 @@ export function useConversionPreview({
       const voiceId = response.voice_suggestion?.recommended_voice_id?.trim();
       if (!voiceId) {
         throw new Error("voice recommendation did not include a voice id");
+      }
+      if (!isLatest()) {
+        return;
       }
       optionState.setSelectedVoice(voiceId);
       const excerpt = response.book_sample?.excerpt || selectedPreflight?.sample || previewText;
@@ -133,13 +157,18 @@ export function useConversionPreview({
         response.voice_suggestion?.reasoning || "Selected from the available desktop voices.";
       setVoiceSuggestStatus(`${voiceId} / ${style}. ${reason}`);
     } catch (error: unknown) {
-      setVoiceSuggestStatus(error instanceof Error ? error.message : "voice recommendation failed");
+      if (isLatest() && !isAbortLikeError(error)) {
+        setVoiceSuggestStatus(error instanceof Error ? error.message : "voice recommendation failed");
+      }
     } finally {
-      setVoiceSuggestBusy(false);
+      if (isLatest()) {
+        setVoiceSuggestBusy(false);
+      }
     }
   }, [
     apiClient,
     applyPreviewSample,
+    beginVoiceSuggestRequest,
     optionState,
     previewText,
     selectedPreflight?.sample,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type {
@@ -11,6 +11,10 @@ interface UseConversionJobArgs {
   apiClient: ApiClient | null;
   baseUrl: string;
 }
+
+export type StartConversionResult =
+  | { ok: true; jobId: string }
+  | { ok: false; error: string };
 
 function normalizeErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) {
@@ -36,6 +40,7 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
   const eventStream = useEventStream({ apiClient, baseUrl });
   const [isStarting, setIsStarting] = useState(false);
   const [formError, setFormError] = useState("");
+  const startInFlightRef = useRef(false);
 
   const clearFormError = useCallback(() => {
     setFormError("");
@@ -46,28 +51,43 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
   }, [eventStream.refreshActiveConversionState]);
 
   const startConversion = useCallback(
-    async (payload: StartConversionRequest): Promise<string | null> => {
+    async (payload: StartConversionRequest): Promise<StartConversionResult> => {
+      if (startInFlightRef.current) {
+        const error = "conversion already starting";
+        setFormError(error);
+        return { ok: false, error };
+      }
+
       const validationError = validateStartPayload(payload);
       if (validationError) {
         setFormError(validationError);
-        return null;
+        return { ok: false, error: validationError };
       }
 
       if (!apiClient) {
-        setFormError("Backend is not connected.");
-        return null;
+        const error = "Backend is not connected.";
+        setFormError(error);
+        return { ok: false, error };
       }
 
+      startInFlightRef.current = true;
       setIsStarting(true);
       setFormError("");
 
       try {
         const response = await apiClient.startConversion(payload);
-        return response.job_id || null;
+        if (!response.job_id) {
+          const error = "conversion failed to start";
+          setFormError(error);
+          return { ok: false, error };
+        }
+        return { ok: true, jobId: response.job_id };
       } catch (error: unknown) {
-        setFormError(normalizeErrorMessage(error));
-        return null;
+        const message = normalizeErrorMessage(error);
+        setFormError(message);
+        return { ok: false, error: message };
       } finally {
+        startInFlightRef.current = false;
         setIsStarting(false);
       }
     },
