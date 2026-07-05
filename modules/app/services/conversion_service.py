@@ -183,6 +183,7 @@ class ConversionService:
                 except Exception:
                     self._cleanup_partial_durable_source(durable_path)
                     raise
+                self._delete_consumed_upload(source_path, upload_root)
                 return durable_path
             except FileExistsError:
                 durable_path = sources_dir / f"{source_path.stem}_{index}{source_path.suffix}"
@@ -190,6 +191,24 @@ class ConversionService:
             except Exception:
                 self._cleanup_partial_durable_source(durable_path)
                 raise
+
+    @staticmethod
+    def _delete_consumed_upload(source_path: Path, upload_root: Path) -> None:
+        """Delete a temp web-upload after it has been copied into durable storage.
+
+        Guards against removing user-owned paths: only files that resolve inside
+        the server-owned ``web_uploads`` root are eligible.
+        """
+        try:
+            source_path.resolve().relative_to(upload_root)
+        except ValueError:
+            return
+        try:
+            source_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning(
+                "Failed to remove consumed temp upload: %s", source_path, exc_info=True
+            )
 
     @staticmethod
     def _cleanup_partial_durable_source(path: Path) -> None:
@@ -252,8 +271,12 @@ class ConversionService:
             kwargs=kwargs or {},
             daemon=True,
         )
-        job._thread = thread
-        job.status = self._status.RUNNING
+        begin_running = getattr(job, "begin_running", None)
+        if callable(begin_running):
+            begin_running(thread)
+        else:
+            job._thread = thread
+            job.status = self._status.RUNNING
         thread.start()
         if callbacks and callbacks.on_event:
             callbacks.on_event(make_state_event(JobState.RUNNING, job.id, started_message))
@@ -500,12 +523,17 @@ class ConversionService:
         callbacks: Optional[Any],
         conversion_mode: ConversionMode | str = ConversionMode.AUDIOBOOK,
     ) -> None:
-        job.status = self._status.COMPLETED
-        job.book_id = self._persist_conversion_library_records(
+        book_id = self._persist_conversion_library_records(
             source_path,
             pipeline_result,
             conversion_mode=conversion_mode,
         )
+        complete = getattr(job, "complete", None)
+        if callable(complete):
+            complete(book_id)
+        else:
+            job.status = self._status.COMPLETED
+            job.book_id = book_id
         if callbacks and callbacks.on_complete and job.result is not None:
             callbacks.on_complete(job.result)
         if callbacks and callbacks.on_event:
@@ -518,18 +546,23 @@ class ConversionService:
         error_message: str,
         callbacks: Optional[Any],
     ) -> None:
-        job.status = self._status.FAILED
-        job.error = error_message
-        existing_result = getattr(job, "result", None)
-        if existing_result is None or bool(getattr(existing_result, "success", False)):
-            job.result = ConversionResult(
-                success=False,
-                output_path=None,
-                total_duration_ms=0,
-                error_message=error_message,
-                chapters_completed=0,
-                chapters_total=0,
-            )
+        failure_result = ConversionResult(
+            success=False,
+            output_path=None,
+            total_duration_ms=0,
+            error_message=error_message,
+            chapters_completed=0,
+            chapters_total=0,
+        )
+        fail = getattr(job, "fail", None)
+        if callable(fail):
+            fail(error_message, failure_result)
+        else:
+            job.status = self._status.FAILED
+            job.error = error_message
+            existing_result = getattr(job, "result", None)
+            if existing_result is None or bool(getattr(existing_result, "success", False)):
+                job.result = failure_result
         if callbacks and callbacks.on_error:
             callbacks.on_error(error_message)
         if callbacks and callbacks.on_event:
@@ -542,8 +575,12 @@ class ConversionService:
         callbacks: Optional[Any],
         message: str = "conversion cancelled",
     ) -> None:
-        job.status = self._status.CANCELLED
-        job.error = message
+        mark_cancelled = getattr(job, "mark_cancelled", None)
+        if callable(mark_cancelled):
+            mark_cancelled(message)
+        else:
+            job.status = self._status.CANCELLED
+            job.error = message
         if callbacks and callbacks.on_event:
             callbacks.on_event(make_state_event(JobState.CANCELLED, job.id, message))
 
@@ -601,8 +638,8 @@ class ConversionService:
                 verbose_callback=on_verbose,
             )
             self._tts_session.attach(pipeline)
-            job.pipeline = pipeline
-            if getattr(job, "cancel_requested", False):
+            cancel_requested = self._attach_pipeline_to_job(job, pipeline)
+            if cancel_requested:
                 pipeline.cancel()
                 self._handle_conversion_cancelled(job=job, callbacks=callbacks)
                 return
@@ -613,7 +650,7 @@ class ConversionService:
                 emit_chapter_mp3_artifacts=pipeline_config.emit_chapter_mp3_artifacts,
                 require_packaged_output=True,
             )
-            job.result = controller_result
+            self._set_job_result(job, controller_result)
 
             if command.is_cancelled_result(pipeline_result):
                 self._handle_conversion_cancelled(
@@ -650,8 +687,32 @@ class ConversionService:
                 pipeline,
                 cleanup_first=bool(pipeline is not None and command.cleanup_first(pipeline)),
             )
-            job.pipeline = None
+            self._detach_pipeline_from_job(job)
             self._emit_conversion_summary(callbacks)
+
+    @staticmethod
+    def _attach_pipeline_to_job(job: Any, pipeline: Any) -> bool:
+        attach_pipeline = getattr(job, "attach_pipeline", None)
+        if callable(attach_pipeline):
+            return bool(attach_pipeline(pipeline))
+        job.pipeline = pipeline
+        return bool(getattr(job, "cancel_requested", False))
+
+    @staticmethod
+    def _detach_pipeline_from_job(job: Any) -> None:
+        detach_pipeline = getattr(job, "detach_pipeline", None)
+        if callable(detach_pipeline):
+            detach_pipeline()
+        else:
+            job.pipeline = None
+
+    @staticmethod
+    def _set_job_result(job: Any, result: Any) -> None:
+        set_result = getattr(job, "set_result", None)
+        if callable(set_result):
+            set_result(result)
+        else:
+            job.result = result
 
     def _run_repair(
         self,

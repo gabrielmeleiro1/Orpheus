@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-MAX_BOOK_TITLE_LENGTH = 200
+
 MAX_BOOK_TITLE_PATH_BYTES = 120
 UNTITLED_BOOK_DIR = "Untitled"
 

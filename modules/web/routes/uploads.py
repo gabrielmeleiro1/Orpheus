@@ -5,7 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 
-from modules.app.services.library_service import MAX_UPLOAD_BYTES, UploadTooLargeError
+from modules.contracts.limits import MAX_UPLOAD_BYTES
+from modules.contracts.upload_errors import UploadTooLargeError
 from modules.web.deps import ControllerDep
 
 router = APIRouter()
