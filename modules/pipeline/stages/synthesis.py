@@ -55,15 +55,31 @@ class ChapterAudioAccumulator:
         self._segments: list[np.ndarray] = []
         self._sample_count = 0
         self._writer: Any = None
+        self._pcm16_square_sum = 0.0
+        self._pcm16_sample_count = 0
 
     @property
     def is_streaming(self) -> bool:
         return self._writer is not None
 
+    def pcm16_rms(self) -> float | None:
+        """Return the PCM16 RMS of streamed audio, matching a post-hoc WAV scan."""
+        if self._pcm16_sample_count == 0:
+            return None
+        return float(
+            np.sqrt(self._pcm16_square_sum / self._pcm16_sample_count) / 32768.0
+        )
+
+    def _track_pcm16(self, pcm16: np.ndarray) -> None:
+        if pcm16.size == 0:
+            return
+        self._pcm16_square_sum += float(np.sum(np.square(pcm16.astype(np.float64))))
+        self._pcm16_sample_count += int(pcm16.size)
+
     def add_segment(self, audio: np.ndarray) -> None:
         audio_array = np.asarray(audio, dtype=np.float32)
         if self.is_streaming:
-            _write_audio_segment(self._writer, audio_array)
+            self._track_pcm16(_write_audio_segment(self._writer, audio_array))
             return
 
         projected_sample_count = self._sample_count + int(len(audio_array))
@@ -73,12 +89,14 @@ class ChapterAudioAccumulator:
             return
 
         self.spill_to_disk()
-        _write_audio_segment(self._writer, audio_array)
+        self._track_pcm16(_write_audio_segment(self._writer, audio_array))
 
     def add_file(self, audio_path: Path) -> None:
         if not self.is_streaming:
             self.spill_to_disk()
-        _write_wav_file_segment(self._writer, audio_path, self.sample_rate)
+        self._track_pcm16(
+            _write_wav_file_segment(self._writer, audio_path, self.sample_rate)
+        )
 
     def spill_to_disk(self) -> None:
         if self.is_streaming:
@@ -86,7 +104,7 @@ class ChapterAudioAccumulator:
 
         self._writer = _open_chapter_wav_writer(self.output_path, self.sample_rate)
         for buffered in self._segments:
-            _write_audio_segment(self._writer, buffered)
+            self._track_pcm16(_write_audio_segment(self._writer, buffered))
         self._segments.clear()
         self._sample_count = 0
 
@@ -133,14 +151,15 @@ def _open_chapter_wav_writer(output_path: Path, sample_rate: int = 24000):
     return writer
 
 
-def _write_audio_segment(writer: Any, audio: np.ndarray) -> None:
-    """Write one mono segment to a streamed WAV writer."""
+def _write_audio_segment(writer: Any, audio: np.ndarray) -> np.ndarray:
+    """Write one mono segment to a streamed WAV writer and return its PCM16 samples."""
     pcm = np.clip(np.asarray(audio, dtype=np.float32).reshape(-1), -1.0, 1.0)
     pcm16 = (pcm * 32767.0).astype(np.int16, copy=False)
     writer.writeframes(pcm16.tobytes())
+    return pcm16
 
 
-def _write_wav_file_segment(writer: Any, audio_path: Path, sample_rate: int) -> None:
+def _write_wav_file_segment(writer: Any, audio_path: Path, sample_rate: int) -> np.ndarray:
     """Append one mono PCM WAV file to an already-open chapter writer."""
     with wave.open(str(audio_path), "rb") as reader:
         if reader.getnchannels() != 1:
@@ -153,7 +172,9 @@ def _write_wav_file_segment(writer: Any, audio_path: Path, sample_rate: int) -> 
             raise ValueError(
                 f"Expected 16-bit PCM WAV chunk, got {reader.getsampwidth() * 8}-bit"
             )
-        writer.writeframes(reader.readframes(reader.getnframes()))
+        raw = reader.readframes(reader.getnframes())
+    writer.writeframes(raw)
+    return np.frombuffer(raw, dtype=np.int16)
 
 
 def _wav_file_sample_count(audio_path: Path) -> int:
@@ -392,6 +413,18 @@ def _finalize_incremental_batch_validation(
 
 def _consume_batch_result_audio(accumulator: ChapterAudioAccumulator, batch_result: Any) -> None:
     audio_path = getattr(batch_result, "audio_path", None)
+    if batch_result.audio is not None and len(batch_result.audio) > 0:
+        # Prefer in-memory audio; a chunk file, when also present, is only a
+        # byproduct and re-reading it would duplicate work.
+        accumulator.add_segment(batch_result.audio)
+        batch_result.audio = None
+        if isinstance(audio_path, Path):
+            try:
+                audio_path.unlink()
+            except Exception:
+                pass
+            batch_result.audio_path = None
+        return
     if isinstance(audio_path, Path):
         accumulator.add_file(audio_path)
         try:
@@ -399,10 +432,6 @@ def _consume_batch_result_audio(accumulator: ChapterAudioAccumulator, batch_resu
         except Exception:
             pass
         batch_result.audio_path = None
-        batch_result.audio = None
-        return
-    if batch_result.audio is not None:
-        accumulator.add_segment(batch_result.audio)
         batch_result.audio = None
 
 
@@ -480,6 +509,7 @@ def _create_batch_audio_accumulator(
 def _finalize_chapter_audio(
     runtime: PipelineRuntimeProtocol,
     accumulator: ChapterAudioAccumulator,
+    chapter_result: Any | None = None,
 ) -> Optional[Path | np.ndarray]:
     try:
         return accumulator.finalize()
@@ -494,6 +524,8 @@ def _finalize_chapter_audio(
         return accumulator.finalize()
     finally:
         accumulator.close()
+        if chapter_result is not None:
+            chapter_result.pcm_rms = accumulator.pcm16_rms()
 
 
 def build_batch_items(runtime: PipelineRuntimeProtocol, *, chunks: list[str]):
@@ -558,54 +590,6 @@ def make_batch_progress_callback(
     return on_batch_progress
 
 
-def save_batch_chunk_audio(
-    runtime: PipelineRuntimeProtocol,
-    *,
-    chapter_number: int,
-    batch_results: list[Any],
-) -> list[Path]:
-    """Write successful chunk synthesis outputs to temp WAV files."""
-    chapter_temp_dir = runtime.config.temp_dir / f"ch_{chapter_number:03d}"
-    chapter_temp_dir.mkdir(parents=True, exist_ok=True)
-
-    chunk_files: list[Path] = []
-    sample_rate = _pipeline_sample_rate(runtime)
-    for i, batch_result in enumerate(batch_results):
-        if batch_result.error:
-            runtime.log_verbose(f"[TTS] Error on chunk {i + 1}: {batch_result.error}", "error")
-            continue
-
-        chunk_wav = chapter_temp_dir / f"chunk_{i:04d}.wav"
-        writer = _open_chapter_wav_writer(chunk_wav, sample_rate)
-        try:
-            _write_audio_segment(writer, batch_result.audio)
-        finally:
-            try:
-                writer.close()
-            except Exception:
-                pass
-        chunk_files.append(chunk_wav)
-
-    return chunk_files
-
-
-def cleanup_chunk_files(chunk_files: list[Path]) -> None:
-    """Best-effort cleanup for temporary chunk WAV files."""
-    parent_dirs: set[Path] = set()
-    for chunk_file in chunk_files:
-        parent_dirs.add(chunk_file.parent)
-        try:
-            chunk_file.unlink()
-        except Exception:
-            pass
-
-    for parent_dir in parent_dirs:
-        try:
-            parent_dir.rmdir()
-        except Exception:
-            pass
-
-
 def _synthesize_batch_results_to_chapter_audio(
     runtime: PipelineRuntimeProtocol,
     *,
@@ -645,7 +629,7 @@ def _synthesize_batch_results_to_chapter_audio(
         for batch_result in valid_batch.results:
             _consume_batch_result_audio(accumulator, batch_result)
 
-        return _finalize_chapter_audio(runtime, accumulator)
+        return _finalize_chapter_audio(runtime, accumulator, chapter_result)
     except Exception:
         if accumulator is not None:
             accumulator.close()
@@ -743,7 +727,7 @@ def _synthesize_chapter_chunks_incrementally(
             f"[TTS] Generation complete - {valid_count} audio segments",
             "success",
         )
-        return _finalize_chapter_audio(runtime, accumulator)
+        return _finalize_chapter_audio(runtime, accumulator, chapter_result)
     except Exception:
         if accumulator is not None:
             accumulator.close()
@@ -817,6 +801,7 @@ def clean_and_synthesize_with_overlap(
     total_chapters: int,
     chunks: list[str],
     output_dir: Path,
+    chapter_result: Any | None = None,
 ) -> tuple[Optional[Path | np.ndarray], bool]:
     """
     Overlap cleaner production and chunk synthesis with a bounded queue.
@@ -833,4 +818,5 @@ def clean_and_synthesize_with_overlap(
         total_chapters=total_chapters,
         chunks=chunks,
         output_dir=output_dir,
+        chapter_result=chapter_result,
     ).run()

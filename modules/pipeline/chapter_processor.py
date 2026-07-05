@@ -11,7 +11,7 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from modules.async_bridge import run_coroutine_sync
+from modules.async_bridge import run_coroutine_sync as _run_coroutine_sync
 
 from .models import ChapterResult, PipelineStage
 from .result_validation import (
@@ -44,15 +44,6 @@ class ChapterProcessor:
         previous_stage_timings: dict[str, float] | None,
     ) -> None:
         self._stage_timings = previous_stage_timings
-
-    def process_chapter(
-        self,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        output_dir: Path,
-    ) -> ChapterResult:
-        return self._process_chapter(chapter, chapter_idx, total_chapters, output_dir)
 
     @staticmethod
     def process_chapter_worker(
@@ -101,8 +92,9 @@ class ChapterProcessor:
 
         return is_infrastructure_runtime_error(error)
 
-    def _clean_chunk_safely(
+    def clean_chunk_safely(
         self,
+        *,
         cleaner: Any,
         chunk: str,
         llm_cleaning_enabled: bool,
@@ -119,23 +111,7 @@ class ChapterProcessor:
             llm_cleaning_enabled=llm_cleaning_enabled,
         )
 
-    def clean_chunk_safely(
-        self,
-        *,
-        cleaner: Any,
-        chunk: str,
-        llm_cleaning_enabled: bool,
-    ) -> tuple[str, bool, Optional[dict[str, Any]]]:
-        """
-        Clean a chunk and degrade to rule-based mode on infrastructure-level LLM failures.
-        """
-        return self._clean_chunk_safely(
-            cleaner=cleaner,
-            chunk=chunk,
-            llm_cleaning_enabled=llm_cleaning_enabled,
-        )
-
-    def _retry_batch_results_serially(
+    def retry_batch_results_serially(
         self,
         *,
         batch_items: list[Any],
@@ -156,37 +132,16 @@ class ChapterProcessor:
             on_batch_progress=on_batch_progress,
         )
 
-    def retry_batch_results_serially(
-        self,
-        *,
-        batch_items: list[Any],
-        batch_results: list[Any],
-        total_chunks: int,
-        on_batch_progress: Callable[[int, int], None],
-    ) -> list[Any]:
-        """
-        Retry chunk synthesis serially when grouped synthesis fails for all chunks.
-        """
-        return self._retry_batch_results_serially(
-            batch_items=batch_items,
-            batch_results=batch_results,
-            total_chunks=total_chunks,
-            on_batch_progress=on_batch_progress,
-        )
-
     @timed_stage("tts_model_load")
-    def _ensure_chapter_tts_engine(self):
+    def ensure_chapter_tts_engine(self):
         """Create or reuse the chapter TTS engine based on execution mode."""
         from .model_lifecycle import ensure_chapter_tts_engine
 
         return ensure_chapter_tts_engine(self.runtime)
 
-    def ensure_chapter_tts_engine(self):
-        """Create or reuse the chapter TTS engine based on execution mode."""
-        return self._ensure_chapter_tts_engine()
-
-    def _chunk_chapter_content(
+    def chunk_chapter_content(
         self,
+        *,
         chapter: Any,
         chapter_idx: int,
         total_chapters: int,
@@ -207,21 +162,7 @@ class ChapterProcessor:
         self.runtime.log_verbose(f"[CHUNKER] Split into {len(chunks)} chunks", "info")
         return chunks
 
-    def chunk_chapter_content(
-        self,
-        *,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-    ) -> list[str]:
-        """Run chapter chunking stage and return text chunks."""
-        return self._chunk_chapter_content(
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-        )
-
-    def _get_text_cleaner_for_chapter(self):
+    def get_text_cleaner_for_chapter(self):
         """
         Return cleaner for chapter processing.
 
@@ -232,17 +173,9 @@ class ChapterProcessor:
 
         return get_text_cleaner_for_chapter(self.runtime)
 
-    def get_text_cleaner_for_chapter(self):
-        """
-        Return cleaner for chapter processing.
-
-        In sequential mode the cleaner is cached; in parallel mode each worker uses
-        a fresh cleaner instance.
-        """
-        return self._get_text_cleaner_for_chapter()
-
-    def _save_pre_clean_markdown(
+    def save_pre_clean_markdown(
         self,
+        *,
         chapter: Any,
         output_dir: Path,
         original_chunks: list[str],
@@ -252,20 +185,6 @@ class ChapterProcessor:
 
         save_pre_clean_markdown(
             runtime=self.runtime,
-            chapter=chapter,
-            output_dir=output_dir,
-            original_chunks=original_chunks,
-        )
-
-    def save_pre_clean_markdown(
-        self,
-        *,
-        chapter: Any,
-        output_dir: Path,
-        original_chunks: list[str],
-    ) -> None:
-        """Persist pre-clean chunk text for debugging when enabled."""
-        self._save_pre_clean_markdown(
             chapter=chapter,
             output_dir=output_dir,
             original_chunks=original_chunks,
@@ -290,14 +209,9 @@ class ChapterProcessor:
         )
 
     @staticmethod
-    def _run_coroutine_sync(coro):
-        """Run coroutine from sync pipeline code, even when a loop already exists."""
-        return run_coroutine_sync(coro)
-
-    @staticmethod
     def run_coroutine_sync(coro):
         """Run coroutine from sync pipeline code, even when a loop already exists."""
-        return ChapterProcessor._run_coroutine_sync(coro)
+        return _run_coroutine_sync(coro)
 
     @staticmethod
     def _summarize_incomplete_chapters(
@@ -320,19 +234,14 @@ class ChapterProcessor:
         return validate_chapter_result_structure(expected_chapters, chapter_results)
 
     @staticmethod
-    def _maybe_capture_cleaner_stats(cleaner: Any) -> Optional[dict[str, int]]:
+    def maybe_capture_cleaner_stats(cleaner: Any) -> Optional[dict[str, int]]:
         """Capture cleaner stats snapshot if supported by cleaner runtime."""
         stats_snapshot_fn = getattr(cleaner, "stats_snapshot", None)
         if not callable(stats_snapshot_fn):
             return None
         return stats_snapshot_fn()
 
-    @staticmethod
-    def maybe_capture_cleaner_stats(cleaner: Any) -> Optional[dict[str, int]]:
-        """Capture cleaner stats snapshot if supported by cleaner runtime."""
-        return ChapterProcessor._maybe_capture_cleaner_stats(cleaner)
-
-    def _log_cleaner_stats_delta(
+    def log_cleaner_stats_delta(
         self,
         stats_start: Optional[dict[str, int]],
         stats_end: Optional[dict[str, int]],
@@ -346,16 +255,9 @@ class ChapterProcessor:
             stats_end=stats_end,
         )
 
-    def log_cleaner_stats_delta(
+    def save_cleaning_artifacts(
         self,
-        stats_start: Optional[dict[str, int]],
-        stats_end: Optional[dict[str, int]],
-    ) -> None:
-        """Log cleaner usage deltas between two stats snapshots."""
-        self._log_cleaner_stats_delta(stats_start, stats_end)
-
-    def _save_cleaning_artifacts(
-        self,
+        *,
         chapter: Any,
         output_dir: Path,
         cleaned_chunks: list[str],
@@ -374,27 +276,10 @@ class ChapterProcessor:
             cleaning_trace_rows=cleaning_trace_rows,
         )
 
-    def save_cleaning_artifacts(
+    @timed_stage("clean")
+    def clean_chapter_content(
         self,
         *,
-        chapter: Any,
-        output_dir: Path,
-        cleaned_chunks: list[str],
-        llm_input_chunks: list[str],
-        cleaning_trace_rows: list[dict[str, Any]],
-    ) -> None:
-        """Persist cleaned output and optional debug artifacts."""
-        self._save_cleaning_artifacts(
-            chapter=chapter,
-            output_dir=output_dir,
-            cleaned_chunks=cleaned_chunks,
-            llm_input_chunks=llm_input_chunks,
-            cleaning_trace_rows=cleaning_trace_rows,
-        )
-
-    @timed_stage("clean")
-    def _clean_chapter_content(
-        self,
         chapter: Any,
         chapter_idx: int,
         total_chapters: int,
@@ -410,7 +295,7 @@ class ChapterProcessor:
         self.runtime.set_stage(PipelineStage.CLEANING)
 
         original_chunks = chunks.copy()
-        self._save_pre_clean_markdown(
+        self.save_pre_clean_markdown(
             chapter=chapter,
             output_dir=output_dir,
             original_chunks=original_chunks,
@@ -419,7 +304,7 @@ class ChapterProcessor:
         text_cleaner = self.get_text_cleaner_for_chapter()
 
         self.runtime.log_verbose("[STATUS] LLM (Text Cleaner) running...", "process")
-        cleaner_stats_start = self._maybe_capture_cleaner_stats(text_cleaner)
+        cleaner_stats_start = self.maybe_capture_cleaner_stats(text_cleaner)
 
         cleaned_chunks, llm_input_chunks, cleaning_trace_rows, was_cancelled = (
             self._clean_chunks_with_trace(
@@ -432,10 +317,10 @@ class ChapterProcessor:
         if was_cancelled:
             return cleaned_chunks, True
 
-        cleaner_stats_end = self._maybe_capture_cleaner_stats(text_cleaner)
-        self._log_cleaner_stats_delta(cleaner_stats_start, cleaner_stats_end)
+        cleaner_stats_end = self.maybe_capture_cleaner_stats(text_cleaner)
+        self.log_cleaner_stats_delta(cleaner_stats_start, cleaner_stats_end)
 
-        self._save_cleaning_artifacts(
+        self.save_cleaning_artifacts(
             chapter=chapter,
             output_dir=output_dir,
             cleaned_chunks=cleaned_chunks,
@@ -445,25 +330,7 @@ class ChapterProcessor:
 
         return cleaned_chunks, False
 
-    def clean_chapter_content(
-        self,
-        *,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        chunks: list[str],
-        output_dir: Path,
-    ) -> tuple[list[str], bool]:
-        """Clean a chapter's chunks and return cleaned text plus cancellation state."""
-        return self._clean_chapter_content(
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            chunks=chunks,
-            output_dir=output_dir,
-        )
-
-    def _log_tts_stage_start(self, *, is_cached: bool) -> None:
+    def log_tts_stage_start(self, *, is_cached: bool) -> None:
         """Emit consistent TTS stage start logs."""
         if is_cached:
             self.runtime.log_verbose(
@@ -486,65 +353,17 @@ class ChapterProcessor:
                 "[TTS] Model loaded - Starting multi-chunk synthesis", "success"
             )
 
-    def log_tts_stage_start(self, *, is_cached: bool) -> None:
-        """Emit consistent TTS stage start logs."""
-        self._log_tts_stage_start(is_cached=is_cached)
-
-    def _build_batch_items(self, chunks: list[str]):
-        """Build TTS batch items from cleaned chunks."""
-        from .stages.synthesis import build_batch_items
-
-        return build_batch_items(self.runtime, chunks=chunks)
-
-    def _make_batch_progress_callback(
-        self,
-        chapter_idx: int,
-        total_chapters: int,
-        total_chunks: int,
-        chunks: list[str],
-    ):
-        """Create per-batch progress callback for synthesis updates."""
-        from .stages.synthesis import make_batch_progress_callback
-
-        return make_batch_progress_callback(
-            self.runtime,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            total_chunks=total_chunks,
-            chunks=chunks,
-        )
-
-    def _save_batch_chunk_audio(
-        self, chapter_number: int, batch_results: list[Any]
-    ) -> list[Path]:
-        """Write successful chunk synthesis outputs to temp WAV files."""
-        from .stages.synthesis import save_batch_chunk_audio
-
-        chunk_files = save_batch_chunk_audio(
-            self.runtime,
-            chapter_number=chapter_number,
-            batch_results=batch_results,
-        )
-        for chunk_file in chunk_files:
-            self.runtime.track_temp_cleanup_path(chunk_file.parent)
-        return chunk_files
-
-    @staticmethod
-    def _cleanup_chunk_files(chunk_files: list[Path]) -> None:
-        """Best-effort cleanup for temporary chunk WAV files."""
-        from .stages.synthesis import cleanup_chunk_files
-
-        cleanup_chunk_files(chunk_files)
-
     @timed_stage("tts")
-    def _synthesize_chapter_chunks(
+    def synthesize_chapter_chunks(
         self,
+        *,
         chapter: Any,
         chapter_idx: int,
         total_chapters: int,
         chunks: list[str],
         chapter_result: ChapterResult | None = None,
     ) -> Optional[Path | np.ndarray]:
+        """Run TTS stage for chapter chunks and return chapter audio payload."""
         from .stages.synthesis import synthesize_chapter_chunks
 
         return synthesize_chapter_chunks(
@@ -557,33 +376,18 @@ class ChapterProcessor:
             chapter_result=chapter_result,
         )
 
-    def synthesize_chapter_chunks(
+    @timed_stage("clean_tts_overlap")
+    def clean_and_synthesize_with_overlap(
         self,
         *,
         chapter: Any,
         chapter_idx: int,
         total_chapters: int,
         chunks: list[str],
-        chapter_result: ChapterResult | None = None,
-    ) -> Optional[Path | np.ndarray]:
-        """Run TTS stage for chapter chunks and return chapter audio payload."""
-        return self._synthesize_chapter_chunks(
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            chunks=chunks,
-            chapter_result=chapter_result,
-        )
-
-    @timed_stage("clean_tts_overlap")
-    def _clean_and_synthesize_with_overlap(
-        self,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        chunks: list[str],
         output_dir: Path,
+        chapter_result: ChapterResult | None = None,
     ) -> tuple[Optional[Path | np.ndarray], bool]:
+        """Overlap cleaner production and TTS synthesis for a chapter."""
         from .stages.synthesis import clean_and_synthesize_with_overlap
 
         return clean_and_synthesize_with_overlap(
@@ -594,24 +398,7 @@ class ChapterProcessor:
             total_chapters=total_chapters,
             chunks=chunks,
             output_dir=output_dir,
-        )
-
-    def clean_and_synthesize_with_overlap(
-        self,
-        *,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        chunks: list[str],
-        output_dir: Path,
-    ) -> tuple[Optional[Path | np.ndarray], bool]:
-        """Overlap cleaner production and TTS synthesis for a chapter."""
-        return self._clean_and_synthesize_with_overlap(
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            chunks=chunks,
-            output_dir=output_dir,
+            chapter_result=chapter_result,
         )
 
     def _record_tts_throughput(self, chunks: list[str], elapsed_seconds: float) -> None:
@@ -627,11 +414,12 @@ class ChapterProcessor:
             return
         self.runtime.record_encode_throughput(elapsed_seconds)
 
-    def _record_parallel_stage_throughput(
+    def record_parallel_stage_throughput(
         self,
         results: list[ChapterResult],
         chapters: list[Any],
     ) -> None:
+        """Record throughput from completed parallel chapter results."""
         chapters_by_number = {
             int(getattr(chapter, "number", index + 1)): chapter
             for index, chapter in enumerate(chapters)
@@ -649,23 +437,18 @@ class ChapterProcessor:
             if encode_seconds > 0:
                 self._record_encode_throughput(encode_seconds)
 
-    def record_parallel_stage_throughput(
-        self,
-        results: list[ChapterResult],
-        chapters: list[Any],
-    ) -> None:
-        """Record throughput from completed parallel chapter results."""
-        self._record_parallel_stage_throughput(results, chapters)
-
     @timed_stage("encode")
-    def _encode_chapter_audio(
+    def encode_chapter_audio(
         self,
+        *,
         chapter: Any,
         chapter_idx: int,
         total_chapters: int,
         output_dir: Path,
         chapter_wav: Path | np.ndarray,
+        precomputed_rms: float | None = None,
     ) -> tuple[Path, int]:
+        """Encode chapter WAV/audio payload to MP3 and return path plus duration."""
         from .stages.encoding import EncodingStageContext, encode_chapter_audio
 
         sample_rate = self.runtime.tts_sample_rate()
@@ -685,6 +468,7 @@ class ChapterProcessor:
             total_chapters=total_chapters,
             output_dir=output_dir,
             chapter_wav=chapter_wav,
+            precomputed_rms=precomputed_rms,
         )
 
     def _ensure_chapter_aac(
@@ -715,6 +499,7 @@ class ChapterProcessor:
                 context=context,
                 chapter=chapter,
                 chapter_wav=encoding_source,
+                precomputed_rms=result.pcm_rms,
             )
 
         if bool(getattr(self.runtime.config, "enable_background_chapter_aac_encoding", True)):
@@ -728,25 +513,7 @@ class ChapterProcessor:
         result.aac_path = encode()
         self.runtime.track_temp_cleanup_path(result.aac_path)
 
-    def encode_chapter_audio(
-        self,
-        *,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        output_dir: Path,
-        chapter_wav: Path | np.ndarray,
-    ) -> tuple[Path, int]:
-        """Encode chapter WAV/audio payload to MP3 and return path plus duration."""
-        return self._encode_chapter_audio(
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            output_dir=output_dir,
-            chapter_wav=chapter_wav,
-        )
-
-    def _prepare_chapter_audio(
+    def prepare_chapter_audio(
         self,
         *,
         chapter: Any,
@@ -771,7 +538,7 @@ class ChapterProcessor:
         if chapter_idx == 0:
             self.runtime.log_verbose(
                 f"[STATUS] Starting first chapter: {chapter.title}", "process"
-        )
+            )
 
         try:
             self.ensure_chapter_tts_engine()
@@ -796,6 +563,7 @@ class ChapterProcessor:
                     total_chapters=total_chapters,
                     chunks=chunks,
                     output_dir=output_dir,
+                    chapter_result=result,
                 )
                 tts_seconds = time.perf_counter() - tts_started
                 if was_cancelled:
@@ -845,23 +613,7 @@ class ChapterProcessor:
             logger.exception(f"Chapter {chapter.number} preparation failed")
             return result, None, False
 
-    def prepare_chapter_audio(
-        self,
-        *,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        output_dir: Path,
-    ) -> tuple[ChapterResult, Optional[Path | np.ndarray], bool]:
-        """Prepare chapter audio up to the public runner handoff boundary."""
-        return self._prepare_chapter_audio(
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            output_dir=output_dir,
-        )
-
-    def _finalize_chapter_encoding(
+    def finalize_chapter_encoding(
         self,
         *,
         result: ChapterResult,
@@ -925,6 +677,7 @@ class ChapterProcessor:
             total_chapters=total_chapters,
             output_dir=output_dir,
             chapter_wav=encoding_source,
+            precomputed_rms=result.pcm_rms,
         )
         self._record_encode_throughput(time.perf_counter() - encode_started)
         result.mp3_path = chapter_mp3
@@ -950,29 +703,9 @@ class ChapterProcessor:
 
         return result
 
-    def finalize_chapter_encoding(
+    def process_chapter(
         self,
-        *,
-        result: ChapterResult,
-        chapter_wav: Path | np.ndarray,
         chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        output_dir: Path,
-    ) -> ChapterResult:
-        """Finalize chapter audio by recording WAV payload and optional MP3 artifact."""
-        return self._finalize_chapter_encoding(
-            result=result,
-            chapter_wav=chapter_wav,
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            output_dir=output_dir,
-        )
-
-    def _process_chapter(
-        self,
-        chapter,
         chapter_idx: int,
         total_chapters: int,
         output_dir: Path,

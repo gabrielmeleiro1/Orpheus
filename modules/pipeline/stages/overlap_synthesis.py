@@ -200,6 +200,7 @@ class OverlapSynthesisRunner:
         chunks: list[str],
         output_dir: Path,
         queue_poll_seconds: float = 0.1,
+        chapter_result: Any | None = None,
     ) -> None:
         self.runtime = runtime
         self.hooks = hooks
@@ -208,6 +209,7 @@ class OverlapSynthesisRunner:
         self.total_chapters = total_chapters
         self.chunks = chunks
         self.output_dir = output_dir
+        self.chapter_result = chapter_result
         self.total_chunks = len(chunks)
         self.queue_poll_seconds = max(0.01, float(queue_poll_seconds))
         self.work_queue: queue.Queue[Any] = queue.Queue(maxsize=4)
@@ -296,6 +298,9 @@ class OverlapSynthesisRunner:
                 accumulator.add_segment(audio_array)
                 synthesized_chunks += 1
                 self.runtime.add_processed_chars(len(record.cleaned_chunk))
+        except BaseException:
+            accumulator.close()
+            raise
         finally:
             self.cancel_event.set()
             producer_thread.join(timeout=0.05 if was_cancelled else 1.0)
@@ -322,7 +327,7 @@ class OverlapSynthesisRunner:
             accumulator.close()
             return None, False
 
-        return _finalize_chapter_audio(self.runtime, accumulator), False
+        return _finalize_chapter_audio(self.runtime, accumulator, self.chapter_result), False
 
     def _next_queue_item(self) -> Any:
         while True:

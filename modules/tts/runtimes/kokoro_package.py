@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import time
 import wave
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Iterator
 
 import numpy as np
 
+from modules.tts import model_cache
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 from modules.tts.runtimes.kokoro_base import KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.strategies.base import (
@@ -17,9 +20,23 @@ from modules.tts.strategies.base import (
     SynthesisResult,
 )
 
+logger = logging.getLogger(__name__)
+
+_TORCH_COMPILE_ENV_VAR = "AUDIOBOOK_TTS_TORCH_COMPILE"
+
+
+def _torch_compile_requested(runtime_options: dict[str, object] | None) -> bool:
+    # An explicit runtime option wins in both directions; the env var only
+    # applies when the option is absent.
+    if runtime_options and "torch_compile" in runtime_options:
+        return str(runtime_options["torch_compile"]).strip().lower() in ("1", "true", "yes")
+    return os.environ.get(_TORCH_COMPILE_ENV_VAR, "").strip().lower() in ("1", "true", "yes")
+
 
 class PackageKokoroRuntime:
     """Adapter around the upstream ``kokoro.KPipeline`` package."""
+
+    supports_file_batch_results = False
 
     def __init__(self, config: KokoroRuntimeConfig) -> None:
         self._config = config
@@ -43,8 +60,21 @@ class PackageKokoroRuntime:
             return 0.0
         return self._total_chunk_time_ms / self._chunks_processed
 
+    def _cache_key(self) -> str:
+        compiled = _torch_compile_requested(self._config.runtime_options)
+        return (
+            f"kokoro-package:{self._pipeline_kwargs()!r}:"
+            f"{self._config.runtime_spec.cache_key()!r}:compile={compiled}"
+        )
+
     def load(self) -> None:
         if self._pipeline is not None:
+            return
+
+        cached_pipeline = model_cache.get_cached_model(self._cache_key())
+        if cached_pipeline is not None:
+            self._pipeline = cached_pipeline
+            logger.info("Package Kokoro runtime loaded from cache")
             return
 
         try:
@@ -75,6 +105,41 @@ class PackageKokoroRuntime:
             self._pipeline = KPipeline(**kwargs)
         except Exception as exc:
             raise TTSRuntimeUnavailable(f"Package Kokoro runtime failed to load: {exc}") from exc
+
+        self._maybe_compile_pipeline_model()
+        model_cache.set_cached_model(self._cache_key(), self._pipeline)
+
+    def _maybe_compile_pipeline_model(self) -> None:
+        """Optionally torch.compile the vocoder decoder (opt-in, CUDA-oriented).
+
+        Compilation trades a one-time warmup cost (tens of seconds, amortized by
+        the inductor on-disk cache) for ~1.4x faster synthesis, so it only pays
+        off for longer conversions. Only the decoder is compiled: prosody and
+        durations stay eager and unchanged, while the compiled vocoder draws a
+        different (statistically equivalent) noise realization for aspiration.
+
+        torch.compile() itself is lazy — backend failures (no triton, unusable
+        inductor) only surface at the first forward — so a probe synthesis runs
+        before the pipeline is published, and any failure restores the eager
+        decoder.
+        """
+        if not _torch_compile_requested(self._config.runtime_options):
+            return
+        model = getattr(self._pipeline, "model", None)
+        if model is None:
+            return
+        eager_decoder = model.decoder
+        try:
+            import torch
+
+            model.decoder = torch.compile(model.decoder, dynamic=True)
+            probe_voice = self._voice_arg(self._config.default_voice)
+            for _ in self._pipeline("compile check", voice=probe_voice):
+                pass
+            logger.info("Package Kokoro runtime enabled torch.compile for the decoder")
+        except Exception as exc:
+            model.decoder = eager_decoder
+            logger.warning("torch.compile unavailable; using eager synthesis: %s", exc)
 
     def _local_model_dir(self) -> Path | None:
         model_name = self._config.runtime_spec.resolved_model()
@@ -123,7 +188,8 @@ class PackageKokoroRuntime:
         sf.write(str(output_path), audio, self.sample_rate)
 
     def unload(self, *, keep_in_cache: bool = True) -> None:
-        _ = keep_in_cache
+        if not keep_in_cache:
+            model_cache.pop_cached_model(self._cache_key())
         self._pipeline = None
 
     def warmup(

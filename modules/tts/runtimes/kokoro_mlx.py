@@ -21,6 +21,9 @@ class MLXKokoroRuntime:
     """Provider-neutral adapter around the legacy MLX TTSEngine facade."""
 
     provider = "mlx"
+    # mlx-audio writes chunk audio to files natively, so file-batch results
+    # avoid holding chunk arrays in memory.
+    supports_file_batch_results = True
 
     def __init__(self, config: KokoroRuntimeConfig) -> None:
         self._engine = self._create_engine(config)

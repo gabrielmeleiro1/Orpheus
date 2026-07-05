@@ -74,6 +74,10 @@ class KokoroRuntime(Protocol):
     provider: str
     sample_rate: int
     is_loaded: bool
+    # True when the runtime writes chunk audio files natively; runtimes that
+    # only return in-memory audio should leave this False so the pipeline
+    # never requests a write+readback round-trip.
+    supports_file_batch_results: bool
 
     @property
     def chunks_processed(self) -> int: ...

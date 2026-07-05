@@ -30,6 +30,12 @@ def set_cached_model(model_path: str, model: Any) -> None:
             _model_cache.popitem(last=False)
 
 
+def pop_cached_model(model_path: str) -> Optional[Any]:
+    """Remove and return a cached model, if present."""
+    with _model_cache_lock:
+        return _model_cache.pop(model_path, None)
+
+
 def clear_model_cache(mx_module: Any = None, mlx_available: bool = False) -> None:
     """Clear cache and optionally clear MLX cache."""
     with _model_cache_lock:

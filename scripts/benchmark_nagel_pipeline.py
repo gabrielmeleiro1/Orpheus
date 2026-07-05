@@ -817,7 +817,11 @@ def _install_tts_chunk_profiler(pipeline: Any, profiler: TTSChunkProfiler) -> No
     stages = getattr(pipeline, "stages", None)
     processor = getattr(stages, "chapter_processor", None) if stages is not None else None
     target = processor if processor is not None else pipeline
-    original_ensure = getattr(target, "_ensure_chapter_tts_engine", None)
+    ensure_attr = "ensure_chapter_tts_engine"
+    original_ensure = getattr(target, ensure_attr, None)
+    if not callable(original_ensure):
+        ensure_attr = "_ensure_chapter_tts_engine"
+        original_ensure = getattr(target, ensure_attr, None)
 
     if callable(original_ensure):
 
@@ -826,7 +830,7 @@ def _install_tts_chunk_profiler(pipeline: Any, profiler: TTSChunkProfiler) -> No
             profiler.wrap_engine(getattr(pipeline, "_tts_engine", None))
             return result
 
-        setattr(target, "_ensure_chapter_tts_engine", profiled_ensure)
+        setattr(target, ensure_attr, profiled_ensure)
 
     profiler.wrap_engine(getattr(pipeline, "_tts_engine", None))
 
@@ -841,16 +845,16 @@ def _create_timed_pipeline(
         processor = stages.chapter_processor
         time_instance_method(stages, "ingest", "parse", timings)
         time_instance_method(stages, "package", "package", timings)
-        time_instance_method(processor, "_clean_chapter_content", "clean", timings)
-        time_instance_method(processor, "_synthesize_chapter_chunks", "tts", timings)
+        time_instance_method(processor, "clean_chapter_content", "clean", timings)
+        time_instance_method(processor, "synthesize_chapter_chunks", "tts", timings)
         time_instance_method(
             processor,
-            "_clean_and_synthesize_with_overlap",
+            "clean_and_synthesize_with_overlap",
             "clean_tts_overlap",
             timings,
         )
-        time_instance_method(processor, "_encode_chapter_audio", "encode", timings)
-        time_instance_method(processor, "_ensure_chapter_tts_engine", "tts_model_load", timings)
+        time_instance_method(processor, "encode_chapter_audio", "encode", timings)
+        time_instance_method(processor, "ensure_chapter_tts_engine", "tts_model_load", timings)
         return pipeline
 
     time_instance_method(pipeline, "_ingest", "parse", timings)

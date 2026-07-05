@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
-import numpy as np
 import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -1210,10 +1209,10 @@ def _test_api_backend_prefers_batch_cleaning() -> None:
         )
         pipeline = ConversionPipeline(config=cfg)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor._get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
+        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
 
         chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor._clean_chapter_content(
+        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
             chapter=chapter,
             chapter_idx=0,
             total_chapters=1,
@@ -1271,10 +1270,10 @@ def _test_custom_backend_prefers_trace_batch_cleaning() -> None:
         )
         pipeline = ConversionPipeline(config=cfg)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor._get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
+        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
 
         chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor._clean_chapter_content(
+        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
             chapter=chapter,
             chapter_idx=0,
             total_chapters=1,
@@ -1338,10 +1337,10 @@ def test_mlx_cleaning_uses_per_chunk_trace_cleaning_for_live_progress() -> None:
         )
         pipeline = ConversionPipeline(config=cfg, progress_callback=_capture_progress)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor._get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
+        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
 
         chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor._clean_chapter_content(
+        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
             chapter=chapter,
             chapter_idx=0,
             total_chapters=1,
@@ -1393,10 +1392,10 @@ def _test_batch_cleaning_falls_back_to_per_chunk_when_shape_mismatch() -> None:
         )
         pipeline = ConversionPipeline(config=cfg)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor._get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
+        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
 
         chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor._clean_chapter_content(
+        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
             chapter=chapter,
             chapter_idx=0,
             total_chapters=1,
@@ -1410,31 +1409,6 @@ def _test_batch_cleaning_falls_back_to_per_chunk_when_shape_mismatch() -> None:
         assert cleaner.single_calls == 2
 
     print("✓ cleaner batch mismatch falls back to per-chunk mode")
-
-
-def _test_temp_chunk_files_are_namespaced_per_chapter() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            save_cleaning_debug=False,
-        )
-        pipeline = ConversionPipeline(config=cfg)
-
-        batch_results = [
-            SimpleNamespace(
-                error=None, audio=np.array([0.1, 0.2, 0.3], dtype=np.float32)
-            )
-        ]
-        chunk_files = pipeline.stages._chapter_processor._save_batch_chunk_audio(1, batch_results)
-        assert chunk_files, "expected one chunk file"
-        assert chunk_files[0].parent.name == "ch_001"
-
-        pipeline.stages._chapter_processor._cleanup_chunk_files(chunk_files)
-        assert not chunk_files[0].parent.exists()
-
-    print("✓ chunk temp files are namespaced and cleaned")
 
 
 def _test_adaptive_parallel_guard_for_tiny_chapters() -> None:
@@ -1476,7 +1450,6 @@ def test_parallel_fallback() -> bool:
     _test_api_backend_prefers_batch_cleaning()
     _test_custom_backend_prefers_trace_batch_cleaning()
     _test_batch_cleaning_falls_back_to_per_chunk_when_shape_mismatch()
-    _test_temp_chunk_files_are_namespaced_per_chapter()
     _test_adaptive_parallel_guard_for_tiny_chapters()
 
     print("\n" + "=" * 50)
