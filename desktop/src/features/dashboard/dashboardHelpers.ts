@@ -15,17 +15,6 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-export function formatTimeValue(seconds: number): string {
-  const whole = Math.max(0, Math.floor(Number(seconds) || 0));
-  const minutes = Math.floor(whole / 60);
-  const remainder = whole % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
-}
-
-export function isTauriRuntime(): boolean {
-  return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
-}
-
 export async function readDesktopBackendStatus(): Promise<DesktopBackendStatus> {
   return invoke<DesktopBackendStatus>("backend_status");
 }

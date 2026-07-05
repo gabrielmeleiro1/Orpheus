@@ -1,11 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import type { CleaningPreviewResponse, LibraryChapterDetail } from "../../types/api";
+import { formatDurationClock } from "../../format/time";
 import { TermSelect } from "../conversion/TermSelect";
-import { isTauriRuntime } from "../conversion/conversionPanelHelpers";
 import type { UseLibraryResult } from "./useLibrary";
 import { formatLibraryMeta } from "./useLibrary";
+import { useLibraryPanelState } from "./useLibraryPanelState";
 import "./library.css";
 
 interface LibraryPanelProps {
@@ -13,16 +13,6 @@ interface LibraryPanelProps {
   library: UseLibraryResult;
   currentChapterNumber?: number | null;
   onJumpToChapter?: (chapter: LibraryChapterDetail) => void;
-}
-
-function formatDurationMs(durationMs: number | null): string {
-  if (!durationMs || durationMs <= 0) {
-    return "--:--";
-  }
-  const seconds = Math.floor(durationMs / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
 function previewText(preview: CleaningPreviewResponse | null): string {
@@ -47,34 +37,17 @@ export function LibraryPanel({ hidden, library, currentChapterNumber, onJumpToCh
   const showEmpty = !library.loadingList && !library.errorMessage && library.items.length === 0;
   const selected = library.selectedBookDetail;
   const chapters = useMemo(() => selected?.chapters ?? [], [selected?.chapters]);
-  const [editTitle, setEditTitle] = useState("");
-  const [editAuthor, setEditAuthor] = useState("");
-  const [editTags, setEditTags] = useState("");
-  const [cleaningPreview, setCleaningPreview] = useState<CleaningPreviewResponse | null>(null);
-  const [cleaningPreviewLoading, setCleaningPreviewLoading] = useState(false);
-
-  useEffect(() => {
-    setEditTitle(selected?.title ?? "");
-    setEditAuthor(selected?.author ?? "");
-    setEditTags(selected?.tags ?? "");
-    setCleaningPreview(null);
-  }, [selected?.id, selected?.title, selected?.author, selected?.tags]);
-
-  const openAppDataFolder = async () => {
-    if (isTauriRuntime()) {
-      await invoke("open_app_data_folder");
-    }
-  };
-
-  const loadCleaningPreview = async (chapterNumber: number) => {
-    setCleaningPreviewLoading(true);
-    try {
-      const preview = await library.loadCleaningPreview(chapterNumber);
-      setCleaningPreview(preview);
-    } finally {
-      setCleaningPreviewLoading(false);
-    }
-  };
+  const {
+    editTitle,
+    editAuthor,
+    editTags,
+    setEditTitle,
+    setEditAuthor,
+    setEditTags,
+    cleaningPreview,
+    cleaningPreviewLoading,
+    loadCleaningPreview,
+  } = useLibraryPanelState({ library });
 
   return (
     <section
@@ -293,7 +266,7 @@ export function LibraryPanel({ hidden, library, currentChapterNumber, onJumpToCh
                       <span className="chapter-title">
                         {chapter.title || `Chapter ${chapter.number}`}{isCurrent ? " / playing" : ""}
                       </span>
-                      <span className="chapter-duration">{formatDurationMs(chapter.duration_ms)}</span>
+                      <span className="chapter-duration">{formatDurationClock(chapter.duration_ms)}</span>
                     </button>
                     <button
                       className="btn btn-compact"
@@ -326,7 +299,7 @@ export function LibraryPanel({ hidden, library, currentChapterNumber, onJumpToCh
               <button className="btn btn-compact" type="button" disabled={library.maintenanceLoading} onClick={() => void library.cleanupStorage()}>
                 safe cleanup
               </button>
-              <button className="btn btn-compact" type="button" disabled={!isTauriRuntime()} onClick={() => void openAppDataFolder()}>
+              <button className="btn btn-compact" type="button" disabled={!library.canOpenAppData} onClick={() => void library.openAppDataFolder()}>
                 open app data
               </button>
             </div>

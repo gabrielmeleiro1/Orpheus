@@ -3,11 +3,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
   compactSample,
   extractDroppedPaths,
-  isTauriRuntime,
   normalizeQuantizationValue,
   nowStatus,
   splitPath,
 } from "./conversionPanelHelpers";
+import { isTauriRuntime } from "../../platform/tauriRuntime";
 
 describe("conversion panel helpers", () => {
   it("maps backend connection state to status text", () => {

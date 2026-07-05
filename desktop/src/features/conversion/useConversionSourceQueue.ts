@@ -11,10 +11,8 @@ import {
 
 import type { ApiClient } from "../../api/client";
 import type { ConversionMode } from "../../types/api";
-import {
-  extractDroppedPaths,
-  isTauriRuntime,
-} from "./conversionPanelHelpers";
+import { extractDroppedPaths } from "./conversionPanelHelpers";
+import { isTauriRuntime } from "../../platform/tauriRuntime";
 import { createQueueItem } from "./conversionPanelModel";
 import type { ConversionJobController } from "./useConversionJob";
 import type { useConversionQueueController } from "./useConversionQueueController";
