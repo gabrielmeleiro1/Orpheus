@@ -45,7 +45,6 @@ class KokoroTTSStrategy(TTSStrategy):
     """
 
     supports_incremental_batch_results = True
-    supports_file_batch_results = True
 
     def __init__(
         self,
@@ -99,6 +98,22 @@ class KokoroTTSStrategy(TTSStrategy):
             )
             for entry in KOKORO_VOICE_CATALOG
         ]
+
+    @property
+    def supports_file_batch_results(self) -> bool:
+        """Whether the active runtime writes chunk files natively.
+
+        Runtimes that only return in-memory audio (the CPU/CUDA package
+        adapter) leave this False so the pipeline never requests a pure
+        write+readback round-trip on the synthesis hot path.
+        """
+        if self._runtime is not None:
+            return bool(getattr(self._runtime, "supports_file_batch_results", False))
+        # Before load, fall back to the provider default; an unresolved spec
+        # defaults to MLX, matching the capabilities property.
+        runtime_spec = self._config.runtime_spec
+        provider = runtime_spec.provider if runtime_spec is not None else "mlx"
+        return provider == "mlx"
 
     @property
     def supports_batching(self) -> bool:

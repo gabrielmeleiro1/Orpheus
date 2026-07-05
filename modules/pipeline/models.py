@@ -275,6 +275,9 @@ class ChapterResult:
     duration_ms: int = 0
     error: Optional[str] = None
     stage_timings: dict[str, float] = field(default_factory=dict)
+    # PCM16 RMS of the streamed chapter WAV, recorded during synthesis so
+    # encoding can derive the normalization gain without rescanning the file.
+    pcm_rms: Optional[float] = None
 
 
 @dataclass

@@ -123,8 +123,7 @@ def _measure_pcm16_wav_rms(wav_path: Path, *, chunk_frames: int = _WAV_RMS_CHUNK
     return float(np.sqrt(total_square / total_samples) / 32768.0)
 
 
-def _normalization_filter_for_wav(wav_path: Path, *, target_dBFS: float) -> str | None:
-    rms = _measure_pcm16_wav_rms(wav_path)
+def _normalization_filter_from_rms(rms: float, *, target_dBFS: float) -> str | None:
     if rms <= 0.0:
         return None
 
@@ -133,6 +132,20 @@ def _normalization_filter_for_wav(wav_path: Path, *, target_dBFS: float) -> str 
     if abs(gain_db) < 1e-6:
         return None
     return f"volume={gain_db:.6f}dB"
+
+
+def _normalization_filter_for_wav(
+    wav_path: Path,
+    *,
+    target_dBFS: float,
+    precomputed_rms: float | None = None,
+) -> str | None:
+    if precomputed_rms is not None:
+        return _normalization_filter_from_rms(precomputed_rms, target_dBFS=target_dBFS)
+    return _normalization_filter_from_rms(
+        _measure_pcm16_wav_rms(wav_path),
+        target_dBFS=target_dBFS,
+    )
 
 
 def write_wav_from_array(audio: np.ndarray, output_path: Path, *, sample_rate: int) -> Path:
@@ -186,6 +199,8 @@ def encode_chapter_audio(
     total_chapters: int,
     output_dir: Path,
     chapter_wav: Path | np.ndarray,
+    *,
+    precomputed_rms: float | None = None,
 ) -> tuple[Path, int]:
     """Encode chapter WAV to MP3 and return (mp3_path, duration_ms)."""
     from modules.audio.encoder import AudioEncoder
@@ -216,6 +231,7 @@ def encode_chapter_audio(
         audio_filter = _normalization_filter_for_wav(
             chapter_wav,
             target_dBFS=context.config.target_dbfs,
+            precomputed_rms=precomputed_rms,
         )
 
     # Normalize volume without writing a normalized WAV back to disk.
@@ -275,6 +291,8 @@ def encode_chapter_aac(
     context: EncodingStageContext | Any,
     chapter: Any,
     chapter_wav: Path | np.ndarray,
+    *,
+    precomputed_rms: float | None = None,
 ) -> Path:
     """Encode chapter WAV/audio payload to AAC/M4A for stream-copy packaging."""
     from modules.audio.encoder import AudioEncoder
@@ -290,6 +308,7 @@ def encode_chapter_aac(
         audio_filter = _normalization_filter_for_wav(
             chapter_wav,
             target_dBFS=context.config.target_dbfs,
+            precomputed_rms=precomputed_rms,
         )
 
     if context.config.normalize_volume and audio_array is not None:
