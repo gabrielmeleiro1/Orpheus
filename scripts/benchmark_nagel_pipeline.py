@@ -31,6 +31,7 @@ import re
 import sys
 import time
 import wave
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -137,6 +138,7 @@ BENCHMARK_SCHEMA_KEYS = (
     "artifact_quality",
     "cleaner_gate_rule_only_chunks",
     "cleaner_gate_llm_needed_chunks",
+    "cleaner_gate_llm_reason_counts",
     "cleaner_gate_artifact_issue_count",
     "cleaner_gate_artifact_issue_types",
     "cleaner_gate_artifact_issues",
@@ -671,6 +673,7 @@ def _run_cleaner_gate(
     detected_issues: list[dict[str, Any]] = []
     rule_only_chunks = 0
     llm_needed_chunks = 0
+    llm_reason_counts: Counter[str] = Counter()
     cleaned_chars = 0
 
     for index, chunk in enumerate(chunks, start=1):
@@ -684,6 +687,9 @@ def _run_cleaner_gate(
         needs_llm = bool(chunk_issues) or cleaner_rules_backend.needs_llm_cleaning(rule_based_text)
         if needs_llm:
             llm_needed_chunks += 1
+            llm_reason_counts[
+                cleaner_rules_backend.describe_llm_cleaning_reason(rule_based_text)
+            ] += 1
         else:
             rule_only_chunks += 1
 
@@ -691,6 +697,7 @@ def _run_cleaner_gate(
     return {
         "cleaner_gate_rule_only_chunks": rule_only_chunks,
         "cleaner_gate_llm_needed_chunks": llm_needed_chunks,
+        "cleaner_gate_llm_reason_counts": dict(sorted(llm_reason_counts.items())),
         "cleaner_gate_artifact_issue_count": len(detected_issues),
         "cleaner_gate_artifact_issue_types": issue_types,
         "cleaner_gate_artifact_issues": detected_issues,
@@ -973,6 +980,7 @@ def _base_metrics(
         },
         "cleaner_gate_rule_only_chunks": 0,
         "cleaner_gate_llm_needed_chunks": 0,
+        "cleaner_gate_llm_reason_counts": {},
         "cleaner_gate_artifact_issue_count": 0,
         "cleaner_gate_artifact_issue_types": [],
         "cleaner_gate_artifact_issues": [],
