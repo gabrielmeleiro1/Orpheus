@@ -203,4 +203,40 @@ describe("api client request contracts", () => {
 
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ api_key: "sk-test" });
   });
+
+  it("uploads source files as multipart form data", async () => {
+    const response = {
+      source_handle: "upload://source/book.pdf",
+      original_name: "book.pdf",
+      size_bytes: 12,
+      preflight: {
+        title: "Book",
+        author: null,
+        chapter_count: 1,
+        source_type: "pdf",
+        sample: "Sample",
+        warnings: [],
+        size_bytes: 12,
+        requires_ocr: false,
+        pdf_text_layer: null,
+      },
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(response));
+    const client = createApiClient({ baseUrl: "http://127.0.0.1" });
+    const file = new File(["hello"], "book.pdf", { type: "application/pdf" });
+
+    await expect(client.uploadSourceFile(file, { timeoutMs: 1000 })).resolves.toEqual(response);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1/api/uploads/source",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.any(FormData),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    const body = fetchMock.mock.calls[0][1]?.body;
+    expect(body).toBeInstanceOf(FormData);
+    expect((body as FormData).get("file")).toBe(file);
+  });
 });

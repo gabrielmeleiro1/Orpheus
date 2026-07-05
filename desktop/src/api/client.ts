@@ -93,6 +93,7 @@ export interface ApiClient {
   getSystemCapabilities(options?: ApiRequestOptions): Promise<SystemCapabilitiesResponse>;
   warmupParallelWorkers(payload: ParallelWarmupRequest, options?: ApiRequestOptions): Promise<ParallelWorkerRecommendation>;
   preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight>;
+  uploadSourceFile(file: File, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
   uploadSourceText(payload: SourceTextUploadRequest, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
   suggestVoice(sourcePath: string, engine?: string | null, options?: ApiRequestOptions): Promise<VoiceSuggestionResponse>;
   startConversion(payload: StartConversionRequest, options?: ApiRequestOptions): Promise<StartConversionResponse>;
@@ -445,6 +446,16 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     });
   }
 
+  async function uploadSourceFile(file: File, options?: ApiRequestOptions): Promise<SourceUploadResponse> {
+    const formData = new FormData();
+    formData.set("file", file);
+    return requestJson<SourceUploadResponse>("/api/uploads/source", {
+      method: "POST",
+      body: formData,
+      ...options,
+    });
+  }
+
   async function suggestVoice(
     sourcePath: string,
     engine?: string | null,
@@ -676,6 +687,7 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     getSystemCapabilities,
     warmupParallelWorkers,
     preflightSource,
+    uploadSourceFile,
     uploadSourceText,
     suggestVoice,
     startConversion,

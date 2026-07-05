@@ -6,6 +6,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type ChangeEvent,
 } from "react";
 
 import type { ApiClient } from "../../api/client";
@@ -41,6 +42,7 @@ export function useConversionSourceQueue({
 
   const applySourcePathsRef = useRef<(paths: string[]) => void>(() => {});
   const hasSelectedSourceRef = useRef(false);
+  const browserFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     hasSelectedSourceRef.current = Boolean(
@@ -131,8 +133,45 @@ export function useConversionSourceQueue({
       return;
     }
 
-    queueController.setPreflightStatus("Desktop file picker unavailable; launch the Tauri app.");
+    browserFileInputRef.current?.click();
   }, [applySourcePaths, queueController]);
+
+  const onBrowserFilesSelected = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files ?? []);
+      event.target.value = "";
+      if (files.length === 0) {
+        return;
+      }
+      if (!apiClient) {
+        queueController.setPreflightStatus("Backend is not connected.");
+        return;
+      }
+
+      queueController.setPreflightStatus(`Uploading ${files.length === 1 ? files[0].name : `${files.length} sources`}...`);
+      try {
+        const responses = await Promise.all(files.map((file) => apiClient.uploadSourceFile(file)));
+        const items = responses.map((response) =>
+          createQueueItem(
+            response.source_handle,
+            conversionMode,
+            response.original_name,
+            response.preflight,
+          ),
+        );
+        queueController.addQueueItems(items, {
+          selectFirst: !hasSelectedSourceRef.current,
+        });
+        queueController.setPreflightStatus(
+          files.length === 1 ? "Source uploaded." : `${files.length} sources uploaded.`,
+        );
+        conversionJob.clearFormError();
+      } catch (error: unknown) {
+        queueController.setPreflightStatus(error instanceof Error ? error.message : "source upload failed");
+      }
+    },
+    [apiClient, conversionJob, conversionMode, queueController],
+  );
 
   const onAddPastedText = useCallback(async () => {
     if (!apiClient) {
@@ -254,7 +293,9 @@ export function useConversionSourceQueue({
     pasteStatus,
     dragging,
     setDragging,
+    browserFileInputRef,
     onBrowse,
+    onBrowserFilesSelected,
     onAddPastedText,
     onDropZoneDrop,
     onInspectCurrentSource,
