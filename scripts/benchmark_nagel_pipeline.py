@@ -643,9 +643,19 @@ _ARTIFACT_ISSUE_DETAILS = {
 }
 
 
-def _scan_text_for_leakage(path: Path, text: str) -> list[dict[str, Any]]:
+def _scan_text_for_leakage(
+    path: Path,
+    text: str,
+    *,
+    source_type: str | None = None,
+    llm_output: bool = True,
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    for artifact in scan_cleaner_handoff_artifacts(text):
+    for artifact in scan_cleaner_handoff_artifacts(
+        text,
+        source_type=source_type,
+        llm_output=llm_output,
+    ):
         issues.append(
             _issue(
                 artifact.issue_type,
@@ -669,6 +679,7 @@ def _run_cleaner_gate(
     """Score chunks after rule-based cleanup without loading cleaner or TTS models."""
     if document is None:
         document = _parse_document(source_path, config)
+    source_type = source_path.suffix.lower().lstrip(".")
     chunks = _document_chunks(document, config)
     detected_issues: list[dict[str, Any]] = []
     rule_only_chunks = 0
@@ -682,13 +693,21 @@ def _run_cleaner_gate(
         chunk_issues = _scan_text_for_leakage(
             Path(f"cleaner_gate#chunk:{index}"),
             rule_based_text,
+            source_type=source_type,
+            llm_output=False,
         )
         detected_issues.extend(chunk_issues)
-        needs_llm = bool(chunk_issues) or cleaner_rules_backend.needs_llm_cleaning(rule_based_text)
+        needs_llm = bool(chunk_issues) or cleaner_rules_backend.needs_llm_cleaning(
+            rule_based_text,
+            source_type=source_type,
+        )
         if needs_llm:
             llm_needed_chunks += 1
             llm_reason_counts[
-                cleaner_rules_backend.describe_llm_cleaning_reason(rule_based_text)
+                cleaner_rules_backend.describe_llm_cleaning_reason(
+                    rule_based_text,
+                    source_type=source_type,
+                )
             ] += 1
         else:
             rule_only_chunks += 1
@@ -711,8 +730,8 @@ def _run_cleaner_gate(
     }
 
 
-def _read_cleaned_trace_texts(path: Path) -> list[str]:
-    texts: list[str] = []
+def _read_cleaned_trace_texts(path: Path) -> list[tuple[str, bool]]:
+    texts: list[tuple[str, bool]] = []
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
@@ -720,7 +739,7 @@ def _read_cleaned_trace_texts(path: Path) -> list[str]:
             payload = json.loads(line)
             cleaned_text = payload.get("cleaned_text")
             if isinstance(cleaned_text, str):
-                texts.append(cleaned_text)
+                texts.append((cleaned_text, bool(payload.get("llm_used"))))
     except Exception:
         return texts
     return texts
@@ -730,6 +749,7 @@ def scan_artifact_quality(
     output_dir: Path | str,
     *,
     source_chars: int | None = None,
+    source_type: str | None = None,
 ) -> dict[str, Any]:
     """Scan benchmark artifacts for cleaner/TTS handoff quality regressions."""
     root = Path(output_dir)
@@ -739,12 +759,28 @@ def scan_artifact_quality(
     before_chars_total = 0
 
     cleaned_paths = sorted(root.rglob("chapter_*_cleaned.md"))
+    trace_paths = sorted(root.rglob("chapter_*_cleaning_trace.jsonl"))
+    chapter_llm_used: dict[str, bool] = {}
+    for trace_path in trace_paths:
+        chapter_key = trace_path.name.replace("_cleaning_trace.jsonl", "")
+        chapter_llm_used[chapter_key] = any(
+            llm_used for _cleaned_text, llm_used in _read_cleaned_trace_texts(trace_path)
+        )
+
     for cleaned_path in cleaned_paths:
         checked_files.append(str(cleaned_path))
         cleaned_text = cleaned_path.read_text(encoding="utf-8", errors="replace")
         cleaned_body = _strip_markdown_headings(cleaned_text)
         cleaned_chars_total += len(cleaned_body)
-        issues.extend(_scan_text_for_leakage(cleaned_path, cleaned_body))
+        chapter_key = cleaned_path.name.replace("_cleaned.md", "")
+        issues.extend(
+            _scan_text_for_leakage(
+                cleaned_path,
+                cleaned_body,
+                source_type=source_type,
+                llm_output=chapter_llm_used.get(chapter_key, True),
+            )
+        )
 
         before_path = cleaned_path.with_name(
             cleaned_path.name.replace("_cleaned.md", "_before_cleaning.md")
@@ -763,7 +799,6 @@ def scan_artifact_quality(
                     )
                 )
 
-    trace_paths = sorted(root.rglob("chapter_*_cleaning_trace.jsonl"))
     if not cleaned_paths and not trace_paths:
         issues.append(
             _issue(
@@ -775,11 +810,16 @@ def scan_artifact_quality(
 
     for trace_path in trace_paths:
         checked_files.append(str(trace_path))
-        for index, cleaned_text in enumerate(_read_cleaned_trace_texts(trace_path), start=1):
+        for index, (cleaned_text, llm_used) in enumerate(
+            _read_cleaned_trace_texts(trace_path),
+            start=1,
+        ):
             issues.extend(
                 _scan_text_for_leakage(
                     Path(f"{trace_path}#cleaned_text:{index}"),
                     cleaned_text,
+                    source_type=source_type,
+                    llm_output=llm_used,
                 )
             )
 
@@ -1202,6 +1242,7 @@ def run_benchmark(
             estimated_worker_bytes=4 * 1024**3,
             enable_warmup_calibration=False,
         )
+    config.source_type = source_path.suffix.lower().lstrip(".")
     metrics = _base_metrics(
         source_path=source_path,
         output_dir=output_dir,
@@ -1249,6 +1290,7 @@ def run_benchmark(
             quality = scan_artifact_quality(
                 output_dir,
                 source_chars=int(metrics.get("extracted_chars") or 0),
+                source_type=source_path.suffix.lower().lstrip("."),
             )
             metrics["artifact_quality"] = quality
             if not quality["success"]:

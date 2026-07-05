@@ -179,6 +179,7 @@ class PipelineConfig:
     cleaner_api_model: Optional[str] = "gpt-5-nano"
     save_cleaning_debug: bool = True
     cleaner_skip_llm_when_not_needed: bool = True
+    source_type: Optional[str] = None
     pdf_extraction_backend: str = "fitz"
     voice: str = "am_adam"
     speed: float = 1.0

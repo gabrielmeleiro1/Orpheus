@@ -44,6 +44,7 @@ def _serialize_worker_model_fields(config: PipelineConfig) -> dict[str, Any]:
         "cleaner_api_global_concurrency": config.cleaner_api_global_concurrency,
         "cleaner_api_global_limiter": config.cleaner_api_global_limiter,
         "cleaner_skip_llm_when_not_needed": config.cleaner_skip_llm_when_not_needed,
+        "source_type": getattr(config, "source_type", None),
     }
 
 
@@ -133,6 +134,7 @@ def build_worker_pipeline_config(
             "cleaner_skip_llm_when_not_needed",
             True,
         ),
+        source_type=serialized_config.get("source_type"),
         save_cleaning_debug=serialized_config["save_cleaning_debug"],
         voice=serialized_config["voice"],
         speed=serialized_config["speed"],
@@ -225,6 +227,7 @@ def build_shared_pool_fingerprint(
             config.cleaner_api_key,
             config.cleaner_api_model,
             config.cleaner_skip_llm_when_not_needed,
+            getattr(config, "source_type", None),
             config.cleaner_api_global_concurrency,
             max_workers,
         ]

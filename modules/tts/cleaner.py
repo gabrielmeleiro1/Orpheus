@@ -371,9 +371,15 @@ class TextCleaner:
         """Apply rule-based text cleaning (fast, always runs)."""
         return cleaner_rules_backend.rule_based_clean(text)
 
-    def _needs_llm_cleaning(self, text: str) -> bool:
+    def _needs_llm_cleaning(self, text: str, *, source_type: str | None = None) -> bool:
         """Check if text needs LLM-based cleaning."""
-        return cleaner_rules_backend.needs_llm_cleaning(text)
+        resolved_source_type = source_type
+        if resolved_source_type is None:
+            resolved_source_type = getattr(self.config, "source_type", None)
+        return cleaner_rules_backend.needs_llm_cleaning(
+            text,
+            source_type=resolved_source_type,
+        )
     
     def _extract_result(self, response: str) -> str:
         """Extract cleaned text from LLM response."""

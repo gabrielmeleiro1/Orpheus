@@ -61,6 +61,7 @@ class CleanerConfig:
     api_allow_insecure_ssl: bool = False
     artifact_gate_light_threshold: float = 0.20
     artifact_gate_heavy_threshold: float = 0.55
+    source_type: Optional[str] = None
 
 
 @dataclass
@@ -146,6 +147,7 @@ def build_cleaner_config_from_pipeline(config: Any) -> CleanerConfig:
         api_batch_concurrency=config.cleaner_api_global_concurrency,
         api_global_limiter=config.cleaner_api_global_limiter,
         skip_llm_when_not_needed=config.cleaner_skip_llm_when_not_needed,
+        source_type=getattr(config, "source_type", None),
         cache_model=True,
     )
 
@@ -170,6 +172,7 @@ def build_cleaner_config_from_worker_init(worker_init_config: dict[str, Any]) ->
             "cleaner_skip_llm_when_not_needed",
             True,
         ),
+        source_type=worker_init_config.get("source_type"),
         cache_model=True,
     )
 

@@ -49,6 +49,38 @@ def test_resume_done_slugs_are_skipped(tmp_path: Path) -> None:
     assert [book.slug for book in selected] == ["new"]
 
 
+def test_resume_keys_books_by_source_filename(tmp_path: Path) -> None:
+    ledger_path = tmp_path / "ledger.jsonl"
+    _write_ledger(
+        ledger_path,
+        [{"source_key": "alice-in-wonderland.epub", "slug": "alice-in-wonderland"}],
+    )
+    books = [
+        stress_corpus.BookSource(
+            slug="alice-in-wonderland",
+            source_key="alice-in-wonderland.epub",
+            output_slug="alice-in-wonderland.epub",
+            path=tmp_path / "alice-in-wonderland.epub",
+            size_bytes=12,
+        ),
+        stress_corpus.BookSource(
+            slug="alice-in-wonderland",
+            source_key="alice-in-wonderland.txt",
+            output_slug="alice-in-wonderland.txt",
+            path=tmp_path / "alice-in-wonderland.txt",
+            size_bytes=12,
+        ),
+    ]
+
+    selected = stress_corpus.apply_resume_filter(
+        books,
+        ledger_path=ledger_path,
+        resume=True,
+    )
+
+    assert [book.source_key for book in selected] == ["alice-in-wonderland.txt"]
+
+
 def test_include_exclude_filters_are_deterministic(tmp_path: Path) -> None:
     for name in ("moby-dick.epub", "dracula.epub", "notes.txt", "ignored.jpg"):
         (tmp_path / name).write_text("content", encoding="utf-8")
@@ -60,6 +92,26 @@ def test_include_exclude_filters_are_deterministic(tmp_path: Path) -> None:
     )
 
     assert [book.slug for book in books] == ["moby-dick"]
+
+
+def test_discover_books_keeps_suffix_distinct_for_outputs(tmp_path: Path) -> None:
+    for name in ("alice-in-wonderland.epub", "alice-in-wonderland.txt"):
+        (tmp_path / name).write_text("content", encoding="utf-8")
+
+    books = stress_corpus.discover_books(tmp_path)
+
+    assert [book.slug for book in books] == [
+        "alice-in-wonderland",
+        "alice-in-wonderland",
+    ]
+    assert [book.source_key for book in books] == [
+        "alice-in-wonderland.epub",
+        "alice-in-wonderland.txt",
+    ]
+    assert [book.output_slug for book in books] == [
+        "alice-in-wonderland.epub",
+        "alice-in-wonderland.txt",
+    ]
 
 
 def test_report_aggregation_groups_taxonomy_and_percentiles(tmp_path: Path) -> None:

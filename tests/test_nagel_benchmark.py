@@ -216,7 +216,7 @@ def test_cleaner_gate_reuses_already_limited_document_without_reslicing(
             [
                 "# Chapter 1\n\nSafe opening prose. " * 20,
                 "# Chapter 2\n\nSafe second prose. " * 20,
-                "# Chapter 3\n\nThis held-out chapter has experi- ence leakage. " * 20,
+                "# Chapter 3\n\nThis held-out chapter has Iwanted leakage. " * 20,
                 "# Chapter 4\n\nSafe fourth prose. " * 20,
                 "# Chapter 5\n\nSafe fifth prose. " * 20,
             ]
@@ -237,7 +237,7 @@ def test_cleaner_gate_reuses_already_limited_document_without_reslicing(
     assert metrics["chapter_titles"] == ["Chapter 3", "Chapter 4"]
     assert metrics["success"] is False
     assert metrics["cleaner_gate_artifact_issue_count"] >= 1
-    assert "pdf_hyphenation_leakage" in metrics["cleaner_gate_artifact_issue_types"]
+    assert "joined_word_leakage" in metrics["cleaner_gate_artifact_issue_types"]
 
 
 def test_parse_document_honors_non_prose_skip_opt_out(
@@ -1449,6 +1449,24 @@ def test_artifact_quality_scan_flags_pdf_hyphenation_leakage(tmp_path: Path) -> 
     assert any(issue["type"] == "pdf_hyphenation_leakage" for issue in quality["issues"])
 
 
+def test_artifact_quality_scan_skips_pdf_hyphenation_for_epub_source(
+    tmp_path: Path,
+) -> None:
+    from scripts.benchmark_nagel_pipeline import scan_artifact_quality
+
+    chapters_dir = tmp_path / "Book" / "chapters"
+    chapters_dir.mkdir(parents=True)
+    (chapters_dir / "chapter_01_cleaned.md").write_text(
+        "# Chapter 1\n\nHel- lo, sirree- bob, said the deliberate typography.",
+        encoding="utf-8",
+    )
+
+    quality = scan_artifact_quality(tmp_path, source_type="epub")
+
+    assert quality["success"] is True
+    assert not any(issue["type"].startswith("pdf_") for issue in quality["issues"])
+
+
 def test_artifact_quality_scan_allows_suspended_hyphenation(
     tmp_path: Path,
 ) -> None:
@@ -1519,6 +1537,64 @@ def test_cleaner_gate_quality_fails_on_rule_only_artifact_leakage(
     assert any(
         issue["type"] == "pdf_hyphenation_leakage"
         for issue in result["artifact_quality"]["issues"]
+    )
+
+
+def test_cleaner_gate_excludes_llm_only_commentary_checks(
+    tmp_path: Path,
+) -> None:
+    from scripts.benchmark_nagel_pipeline import _run_cleaner_gate
+    from modules.ingestion.models import Chapter, Document
+    from modules.pipeline.models import PipelineConfig
+
+    document = Document(
+        title="Gate Test",
+        chapters=[
+            Chapter(
+                number=1,
+                title="One",
+                content="The text has been transmitted carefully in this commentary.",
+            )
+        ],
+    )
+
+    result = _run_cleaner_gate(
+        source_path=tmp_path / "book.txt",
+        config=PipelineConfig(),
+        document=document,
+    )
+
+    assert result["artifact_quality"]["success"] is True
+    assert result["cleaner_gate_artifact_issue_types"] == []
+
+
+def test_artifact_quality_scan_applies_llm_checks_only_to_llm_used_trace_rows(
+    tmp_path: Path,
+) -> None:
+    from scripts.benchmark_nagel_pipeline import scan_artifact_quality
+
+    chapters_dir = tmp_path / "Book" / "chapters"
+    chapters_dir.mkdir(parents=True)
+    (chapters_dir / "chapter_01_cleaning_trace.jsonl").write_text(
+        "\n".join(
+            [
+                '{"cleaned_text":"The text has been transmitted carefully.","llm_used":false}',
+                '{"cleaned_text":"Cleaned text: I corrected the line breaks.","llm_used":true}',
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    quality = scan_artifact_quality(tmp_path, source_type="txt")
+
+    assert quality["success"] is False
+    issues = quality["issues"]
+    assert any(issue["type"] == "model_commentary_leakage" for issue in issues)
+    assert all(
+        "cleaned_text:1" not in issue["path"]
+        for issue in issues
+        if issue["type"] == "model_commentary_leakage"
     )
 
 
@@ -1706,7 +1782,7 @@ def test_cleaner_gate_benchmark_reports_rule_only_and_llm_needed_chunks(
         (
             "This ordinary narration sentence has no extraction artifacts. "
             "It should be safe for deterministic cleanup only. "
-            "The next sentence contains 44I comprehension residue from a PDF page."
+            "The next sentence contains Iwanted residue from extraction."
         ),
         encoding="utf-8",
     )
@@ -1732,15 +1808,15 @@ def test_cleaner_gate_benchmark_reports_rule_only_and_llm_needed_chunks(
     assert metrics["clean_seconds_total"] == 0
     assert metrics["tts_seconds_total"] == 0
     assert metrics["cleaner_gate_artifact_issue_count"] >= 1
-    assert "pdf_page_footnote_leakage" in metrics["cleaner_gate_artifact_issue_types"]
+    assert "joined_word_leakage" in metrics["cleaner_gate_artifact_issue_types"]
     assert metrics["cleaner_gate_artifact_issues"]
     assert any(
-        issue["type"] == "pdf_page_footnote_leakage"
+        issue["type"] == "joined_word_leakage"
         for issue in metrics["cleaner_gate_artifact_issues"]
     )
     assert metrics["artifact_quality"]["success"] is False
     assert any(
-        issue["type"] == "pdf_page_footnote_leakage"
+        issue["type"] == "joined_word_leakage"
         for issue in metrics["artifact_quality"]["issues"]
     )
 
@@ -1768,7 +1844,7 @@ def test_cleaner_gate_benchmark_reuses_parse_metrics_document(
                 SimpleNamespace(
                     content=(
                         "This ordinary narration sentence has no extraction artifacts. "
-                        "The next sentence contains 44I comprehension residue from a PDF page."
+                        "The next sentence contains Iwanted residue from extraction."
                     )
                 )
             ],

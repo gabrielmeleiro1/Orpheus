@@ -260,8 +260,19 @@ def rule_based_clean(text: str) -> str:
     return text.strip()
 
 
-def needs_llm_cleaning(text: str) -> bool:
-    """Heuristic gate for when LLM cleanup should be attempted."""
+def _is_pdf_source_type(source_type: str | None) -> bool:
+    if source_type is None:
+        return True
+    return str(source_type).strip().lower().lstrip(".") == "pdf"
+
+
+def needs_llm_cleaning(text: str, *, source_type: str | None = None) -> bool:
+    """Heuristic gate for when LLM cleanup should be attempted.
+
+    ``source_type`` scopes PDF extraction-artifact triggers. Unknown source
+    type keeps legacy behavior; known EPUB/TXT/MD input is authoritative for
+    hyphenation and PDF page residue, so those triggers are skipped.
+    """
     normalized = text.strip()
     if not normalized:
         return False
@@ -272,14 +283,15 @@ def needs_llm_cleaning(text: str) -> bool:
     if re.search(r"(?<!^)\s#\s*[A-Za-z]\b", normalized):
         return True
 
-    if has_pdf_hyphenation_leakage(normalized):
-        return True
+    if _is_pdf_source_type(source_type):
+        if has_pdf_hyphenation_leakage(normalized):
+            return True
 
-    if has_pdf_page_footnote_leakage(normalized):
-        return True
+        if has_pdf_page_footnote_leakage(normalized):
+            return True
 
-    if has_pdf_joined_dash_leakage(normalized):
-        return True
+        if has_pdf_joined_dash_leakage(normalized):
+            return True
 
     if has_joined_first_person_leakage(normalized):
         return True
@@ -287,7 +299,7 @@ def needs_llm_cleaning(text: str) -> bool:
     return False
 
 
-def describe_llm_cleaning_reason(text: str) -> str:
+def describe_llm_cleaning_reason(text: str, *, source_type: str | None = None) -> str:
     """Return a concise reason for sending this chunk to the LLM cleaner."""
     normalized = text.strip()
     if not normalized:
@@ -296,14 +308,15 @@ def describe_llm_cleaning_reason(text: str) -> str:
     if re.search(r"(?<!^)\s#\s*[A-Za-z]\b", normalized):
         return "mid-sentence markdown heading marker"
 
-    if has_pdf_hyphenation_leakage(normalized):
-        return "possible PDF line-break hyphenation"
+    if _is_pdf_source_type(source_type):
+        if has_pdf_hyphenation_leakage(normalized):
+            return "possible PDF line-break hyphenation"
 
-    if has_pdf_page_footnote_leakage(normalized):
-        return "possible PDF page or footnote residue"
+        if has_pdf_page_footnote_leakage(normalized):
+            return "possible PDF page or footnote residue"
 
-    if has_pdf_joined_dash_leakage(normalized):
-        return "possible joined PDF dash line-break artifact"
+        if has_pdf_joined_dash_leakage(normalized):
+            return "possible joined PDF dash line-break artifact"
 
     if has_joined_first_person_leakage(normalized):
         return "possible joined first-person word extraction artifact"

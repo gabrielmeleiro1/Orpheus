@@ -96,5 +96,31 @@ def test_rule_based_clean_strips_simple_trailing_source_note() -> None:
     assert cleaner._needs_llm_cleaning(cleaned) is False
 
 
+def test_heuristic_scopes_pdf_artifact_triggers_to_pdf_sources() -> None:
+    cleaner = _make_rule_only_cleaner()
+    text = "The bat has expe- rience and This content downloaded from a mirror."
+
+    assert cleaner._needs_llm_cleaning(text, source_type="pdf") is True
+    assert cleaner._needs_llm_cleaning(text, source_type=None) is True
+    assert cleaner._needs_llm_cleaning(text, source_type="epub") is False
+    assert cleaner._needs_llm_cleaning(text, source_type="txt") is False
+    assert cleaner._needs_llm_cleaning(text, source_type="md") is False
+
+
+def test_heuristic_reason_scopes_pdf_artifact_triggers_to_pdf_sources() -> None:
+    from modules.tts import cleaner_rules as cleaner_rules_backend
+
+    text = "The bat has expe- rience."
+
+    assert (
+        cleaner_rules_backend.describe_llm_cleaning_reason(text, source_type="pdf")
+        == "possible PDF line-break hyphenation"
+    )
+    assert (
+        cleaner_rules_backend.describe_llm_cleaning_reason(text, source_type="epub")
+        == "default conservative cleanup pass"
+    )
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v", "-o", "addopts="]))

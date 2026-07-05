@@ -155,7 +155,10 @@ def _start_trace_decision_flow(
 
     prompt = build_cleaner_prompt(
         rule_based_text,
-        reason=cleaner_rules_backend.describe_llm_cleaning_reason(rule_based_text),
+        reason=cleaner_rules_backend.describe_llm_cleaning_reason(
+            rule_based_text,
+            source_type=getattr(getattr(cleaner, "config", None), "source_type", None),
+        ),
     )
     return TraceDecisionRequest(
         original_text=original_text,

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import is_dataclass, replace
+import logging
 import re
 import string
 from typing import Iterable
 
+from modules.errors import ChapterTooLongError
 from modules.ingestion.models import Chapter, Document
 from modules.ingestion.content_filter import (
     SkippedSection,
@@ -16,6 +18,8 @@ from modules.ingestion.content_filter import (
     serialize_skipped_section,
 )
 
+LOGGER = logging.getLogger(__name__)
+DEFAULT_MAX_CHAPTER_WORDS = 50_000
 _PAGE_NUMBER_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdmIVXLCDM]{1,12})\s*$")
 _LOWERCASE_HYPHEN_BREAK_RE = re.compile(r"([a-z])-\s*\n\s*([a-z])")
 _BACKLINK_RE = re.compile(
@@ -155,13 +159,67 @@ def _renumber(chapters: list[Chapter]) -> list[Chapter]:
     return renumbered
 
 
+def _paragraphs_for_split(content: str) -> list[str]:
+    return [paragraph.strip() for paragraph in re.split(r"\n\s*\n+", content) if paragraph.strip()]
+
+
+def _split_overlong_chapter(chapter: Chapter, *, max_chapter_words: int) -> list[Chapter]:
+    word_count = len(str(chapter.content).split())
+    if word_count <= max_chapter_words:
+        return [chapter]
+
+    paragraphs = _paragraphs_for_split(str(chapter.content))
+    if not paragraphs:
+        return [chapter]
+
+    for paragraph in paragraphs:
+        paragraph_word_count = len(paragraph.split())
+        if paragraph_word_count > max_chapter_words:
+            raise ChapterTooLongError(chapter.number, paragraph_word_count, max_chapter_words)
+
+    parts: list[str] = []
+    current: list[str] = []
+    current_words = 0
+    for paragraph in paragraphs:
+        paragraph_words = len(paragraph.split())
+        if current and current_words + paragraph_words > max_chapter_words:
+            parts.append("\n\n".join(current))
+            current = [paragraph]
+            current_words = paragraph_words
+        else:
+            current.append(paragraph)
+            current_words += paragraph_words
+    if current:
+        parts.append("\n\n".join(current))
+
+    if len(parts) <= 1:
+        return [chapter]
+
+    LOGGER.info(
+        "Split chapter %s (%s words) into %s parts at paragraph boundaries",
+        chapter.number,
+        word_count,
+        len(parts),
+    )
+    return [
+        replace(chapter, title=f"{chapter.title} (part {index})", content=part)
+        for index, part in enumerate(parts, start=1)
+    ]
+
+
 def normalize_extracted_document(
     document: Document,
     *,
     source_type: str,
     skip_non_prose_sections: bool = True,
+    max_chapter_words: int = DEFAULT_MAX_CHAPTER_WORDS,
 ) -> Document:
-    """Return a copy of ``document`` after parser-specific deterministic cleanup."""
+    """Return a copy of ``document`` after parser-specific deterministic cleanup.
+
+    Chapters above ``max_chapter_words`` are split at paragraph boundaries
+    before downstream chunking/validation. A single paragraph above the cap
+    remains pathological and raises ``ChapterTooLongError``.
+    """
     if not is_dataclass(document):
         return document
 
@@ -209,7 +267,13 @@ def normalize_extracted_document(
         else:
             content = _normalize_text_like_chapter(content)
         if content.strip():
-            normalized_chapters.append(replace(chapter, content=content))
+            normalized_chapter = replace(chapter, content=content)
+            normalized_chapters.extend(
+                _split_overlong_chapter(
+                    normalized_chapter,
+                    max_chapter_words=max_chapter_words,
+                )
+            )
 
     renumbered_chapters = _renumber(normalized_chapters)
     if skip_non_prose_sections:

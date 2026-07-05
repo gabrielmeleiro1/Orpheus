@@ -39,6 +39,8 @@ class BookSource:
     slug: str
     path: Path
     size_bytes: int
+    source_key: str = ""
+    output_slug: str = ""
 
 
 def _ascii_safe(text: str) -> str:
@@ -48,6 +50,11 @@ def _ascii_safe(text: str) -> str:
 def _slug_from_path(path: Path) -> str:
     cleaned = "".join(char if char.isalnum() or char in "._-" else "-" for char in path.stem)
     return cleaned.strip(".-_") or "book"
+
+
+def _source_key_from_path(path: Path) -> str:
+    cleaned = "".join(char if char.isalnum() or char in "._-" else "-" for char in path.name)
+    return cleaned.strip(".-_") or f"book{path.suffix.lower()}"
 
 
 def load_manifest(path: Path = DEFAULT_MANIFEST_PATH) -> list[ManifestRow]:
@@ -87,7 +94,16 @@ def discover_books(
             continue
         if any(fnmatch(name, pattern) or fnmatch(slug, pattern) for pattern in exclude_patterns):
             continue
-        discovered.append(BookSource(slug=slug, path=path, size_bytes=path.stat().st_size))
+        source_key = _source_key_from_path(path)
+        discovered.append(
+            BookSource(
+                slug=slug,
+                source_key=source_key,
+                output_slug=source_key,
+                path=path,
+                size_bytes=path.stat().st_size,
+            )
+        )
     return discovered
 
 
@@ -109,8 +125,16 @@ def apply_resume_filter(
 ) -> list[BookSource]:
     if not resume:
         return books
-    done = {str(row.get("slug")) for row in _load_ledger_rows(ledger_path) if row.get("slug")}
-    return [book for book in books if book.slug not in done]
+    done = {
+        str(row.get("source_key") or row.get("slug"))
+        for row in _load_ledger_rows(ledger_path)
+        if row.get("source_key") or row.get("slug")
+    }
+    return [
+        book
+        for book in books
+        if (book.source_key or book.slug) not in done
+    ]
 
 
 def _percentile(values: list[float], percentile: float) -> float | None:
@@ -476,8 +500,9 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
     for index, book in enumerate(books, start=1):
         started_perf = time.perf_counter()
         started_at = datetime.now(UTC).isoformat()
-        output_dir = run_root / "books" / book.slug / "output"
-        temp_dir = run_root / "books" / book.slug / "temp"
+        book_dir = book.output_slug or book.source_key or book.slug
+        output_dir = run_root / "books" / book_dir / "output"
+        temp_dir = run_root / "books" / book_dir / "temp"
         metrics: dict[str, Any]
         try:
             metrics = runner.run_benchmark(
@@ -502,8 +527,12 @@ def run_sweep(args: argparse.Namespace) -> dict[str, Any]:
                 "artifact_quality": {"success": False, "issues": []},
             }
         elapsed = round(time.perf_counter() - started_perf, 4)
+        source_key = book.source_key or book.path.name
         row = {
-            "slug": book.slug,
+            "slug": source_key,
+            "display_slug": book.slug,
+            "source_key": source_key,
+            "output_slug": book.output_slug or book.source_key or book.slug,
             "source_file": str(book.path),
             "file_size_bytes": book.size_bytes,
             "mode": args.mode,

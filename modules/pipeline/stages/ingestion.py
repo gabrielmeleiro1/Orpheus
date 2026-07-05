@@ -26,6 +26,7 @@ def _select_configured_chapter_range(document: Any, config: Any) -> Any:
 def ingest_source(runtime: Any, source_path: Path):
     """Parse source file and extract document structure."""
     suffix = source_path.suffix.lower()
+    runtime.config.source_type = suffix.lstrip(".")
     runtime.log_verbose(f"[PARSER] Ingesting file: {source_path.name}", "process")
     runtime.log_verbose(f"[PARSER] File type: {suffix}", "info")
 

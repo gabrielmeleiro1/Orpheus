@@ -130,6 +130,7 @@ class EPUBParser:
             ChapterTooLongError: If chapter exceeds max_chapter_words
         """
         max_words = max_chapter_words or self.MAX_CHAPTER_WORDS
+        enforce_max_words = max_chapter_words is not None
         sections = self._extract_sections()
         chapters: list[Chapter] = []
 
@@ -141,7 +142,7 @@ class EPUBParser:
                 continue
 
             word_count = len(content_stripped.split())
-            if word_count > max_words:
+            if enforce_max_words and word_count > max_words:
                 raise ChapterTooLongError(chapter_num, word_count, max_words)
 
             chapters.append(Chapter(

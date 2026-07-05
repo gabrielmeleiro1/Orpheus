@@ -102,9 +102,42 @@ def has_joined_first_person_leakage(text: str) -> bool:
     return JOINED_FIRST_PERSON_LEAK_RE.search(text) is not None
 
 
-def scan_cleaner_handoff_artifacts(text: str) -> list[ExtractionArtifactIssue]:
-    """Return leakage issues detected in cleaned or TTS handoff text."""
+_PDF_ARTIFACT_ISSUES = frozenset(
+    {
+        "pdf_hyphenation_leakage",
+        "pdf_internal_hyphen_fragment",
+        "pdf_page_footnote_leakage",
+        "pdf_joined_dash_leakage",
+    }
+)
+_LLM_OUTPUT_ISSUES = frozenset(
+    {
+        "prompt_delimiter_leakage",
+        "model_commentary_leakage",
+    }
+)
+
+
+def _normalized_source_type(source_type: str | None) -> str | None:
+    if source_type is None:
+        return None
+    return str(source_type).strip().lower().lstrip(".") or None
+
+
+def scan_cleaner_handoff_artifacts(
+    text: str,
+    *,
+    source_type: str | None = None,
+    llm_output: bool = True,
+) -> list[ExtractionArtifactIssue]:
+    """Return leakage issues detected in cleaned or TTS handoff text.
+
+    PDF artifact checks only run for known PDF sources. ``source_type=None``
+    preserves legacy behavior for callers that cannot identify the source.
+    LLM-output failure detectors are skipped when ``llm_output`` is false.
+    """
     issues: list[ExtractionArtifactIssue] = []
+    normalized_source_type = _normalized_source_type(source_type)
     checks: tuple[tuple[str, re.Pattern[str]], ...] = (
         ("prompt_delimiter_leakage", PROMPT_DELIMITER_RE),
         ("model_commentary_leakage", MODEL_COMMENTARY_RE),
@@ -117,6 +150,14 @@ def scan_cleaner_handoff_artifacts(text: str) -> list[ExtractionArtifactIssue]:
         ("garbled_repeated_token_leakage", GARBLED_REPEATED_TOKEN_RE),
     )
     for issue_type, pattern in checks:
+        if (
+            normalized_source_type is not None
+            and normalized_source_type != "pdf"
+            and issue_type in _PDF_ARTIFACT_ISSUES
+        ):
+            continue
+        if not llm_output and issue_type in _LLM_OUTPUT_ISSUES:
+            continue
         match = pattern.search(text)
         if match:
             issues.append(

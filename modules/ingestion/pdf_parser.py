@@ -141,6 +141,7 @@ class PDFParser:
         import fitz
         
         max_words = max_chapter_words or self.MAX_CHAPTER_WORDS
+        enforce_max_words = max_chapter_words is not None
         
         try:
             pages_data = self._extract_pages()
@@ -217,7 +218,7 @@ class PDFParser:
             
             # Check for extremely long chapter
             word_count = len(content_stripped.split())
-            if word_count > max_words:
+            if enforce_max_words and word_count > max_words:
                 raise ChapterTooLongError(chapter.number, word_count, max_words)
             
             valid_chapters.append(chapter)
