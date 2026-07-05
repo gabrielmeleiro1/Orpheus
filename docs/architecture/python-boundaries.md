@@ -30,8 +30,8 @@ story or extract it into `modules/ingestion` in a later pass.
 
 | Source | Imports |
 |--------|---------|
-| `app` | `app`, `errors`, `ingestion`, `openai_compat`, `pipeline`, `storage`, `tts` |
-| `web` | `app`, `pipeline`, `tts`, `web` |
+| `app` | `app`, `contracts`, `errors`, `ingestion`, `openai_compat`, `pipeline`, `storage`, `tts` |
+| `web` | `app`, `contracts`, `web` |
 | `pipeline` | `async_bridge`, `audio`, `ingestion`, `pipeline`, `text`, `tts` |
 | `tts` | `async_bridge`, `audio`, `errors`, `openai_compat`, `pipeline`, `tts` |
 | `ingestion` | `errors` |
@@ -88,7 +88,8 @@ directly.
 
 Constants duplicated elsewhere:
 
-- `SUPPORTED_UPLOAD_SUFFIXES`, `MAX_UPLOAD_BYTES` in `library_service.py` (also referenced from `web/routes/uploads.py`)
+- `SUPPORTED_UPLOAD_SUFFIXES` in `library_service.py` (sourced from `modules/contracts/source_extensions.py`)
+- `MAX_UPLOAD_BYTES` now canonical in `modules/contracts/limits.py`; `library_service.py` re-exports it and `web/routes/uploads.py` imports it from contracts
 - Default voice `am_adam` in `conversion_runtime.py` and web route models
 
 ---
@@ -118,13 +119,16 @@ request/response serializers. No conversion business logic beyond delegation to
 
 - Pydantic request models in `routes/conversions.py` and `routes/options.py`
   mirror `ConversionRuntimeOptions` field-for-field — centralize (Workstream 2).
-- Known web-layer violations:
-  - `routes/conversions.py` imports `MAX_BOOK_TITLE_LENGTH` from
-    `modules.pipeline.book_workspace`; move title policy to `modules/contracts`.
-  - `routes/options.py` imports `fetch_openai_model_ids`,
-    `list_cleaner_backend_options`, `DEFAULT_API_BASE_URL`, and
-    `list_cuda_cleaner_models` from `modules.tts`; expose this through app
-    services or shared contracts so `modules.web` stays a thin interface layer.
+- Web-layer import violations (resolved):
+  - `routes/conversions.py` now imports `MAX_BOOK_TITLE_LENGTH` from
+    `modules.contracts.limits` (pipeline re-exports it from there).
+  - `routes/uploads.py` now imports `MAX_UPLOAD_BYTES` and `UploadTooLargeError`
+    from `modules.contracts` (app `library_service` re-exports them).
+  - `routes/options.py` no longer imports from `modules.tts`; the OpenAI model
+    listing, CUDA cleaner models, and cleaner-backend option listing are exposed
+    via `AppController.list_openai_models`, `get_cuda_cleaner_models`, and
+    `get_cleaner_backend_options`. Enforced by
+    `tests/test_web_import_boundaries.py`.
 
 ---
 
@@ -296,9 +300,10 @@ interface. No business rules about conversion options.
 ## Recommended Import Rules (for later enforcement)
 
 1. `ingestion`, `audio`, `storage` must not import `app`, `web`, or `pipeline`.
-2. `web` must not import `pipeline` or `tts`; current exceptions in
-   `routes/conversions.py` and `routes/options.py` are known violations to move
-   behind `modules/contracts` or app services.
+2. `web` must not import `pipeline` or `tts`. Resolved: pure limits and the
+   upload error type live in `modules/contracts`, and tts option/model listing
+   is exposed via `AppController`. Enforced by
+   `tests/test_web_import_boundaries.py`.
 3. `tts` must not import `pipeline` (resolve `device_memory` / `cleaner_memory` split).
 4. `pipeline` may import `ingestion`, `tts`, `audio`, `text`; not `web` or `app`.
 5. Benchmarks and scripts should prefer package `__init__` exports or documented

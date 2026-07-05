@@ -4,16 +4,20 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+from modules.contracts.limits import MAX_UPLOAD_BYTES
 from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
+from modules.contracts.upload_errors import UploadTooLargeError
 from modules.errors import sanitize_filename
 from modules.ingestion.preflight import preflight_source as inspect_source
 from modules.pipeline.book_workspace import sanitize_book_title
@@ -24,14 +28,18 @@ from modules.storage.repository import IBookRepository
 MANAGED_UPLOAD_ROOT_NAME = "web_uploads"
 UPLOAD_HANDLE_PREFIX = "upload:"
 SUPPORTED_UPLOAD_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
-MAX_UPLOAD_BYTES = 500 * 1024 * 1024
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
 DEFAULT_PASTE_TITLE = "Pasted Document"
 MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S+", re.MULTILINE)
 
+logger = logging.getLogger(__name__)
 
-class UploadTooLargeError(ValueError):
-    """Raised when an uploaded source exceeds the configured size limit."""
+# Delete server-owned uploads left untouched for longer than this (seconds).
+WEB_UPLOAD_TTL_SECONDS = 24 * 60 * 60
+
+# Re-exported for backward compatibility; canonical definitions live in
+# ``modules.contracts``.
+__all__ = ["MAX_UPLOAD_BYTES", "UploadTooLargeError", "LibraryService"]
 
 
 def _default_folder_opener(folder: Path) -> None:
@@ -88,6 +96,37 @@ class LibraryService:
     def _upload_root(self) -> Path:
         return self._temp_dir / MANAGED_UPLOAD_ROOT_NAME
 
+    def sweep_stale_uploads(self, ttl_seconds: float = WEB_UPLOAD_TTL_SECONDS) -> int:
+        """Opportunistically delete web uploads older than ``ttl_seconds``.
+
+        Only files directly under the server-owned ``web_uploads`` root are
+        considered. Returns the number of files removed. Never raises; sweep
+        failures are best-effort and logged.
+        """
+        upload_root = self._upload_root()
+        if not upload_root.exists():
+            return 0
+
+        cutoff = time.time() - max(0.0, float(ttl_seconds))
+        removed = 0
+        try:
+            entries = list(upload_root.iterdir())
+        except OSError:
+            logger.debug("Failed to list web uploads for sweep", exc_info=True)
+            return 0
+
+        for entry in entries:
+            try:
+                if not entry.is_file():
+                    continue
+                if entry.stat().st_mtime >= cutoff:
+                    continue
+                entry.unlink(missing_ok=True)
+                removed += 1
+            except OSError:
+                logger.debug("Failed to remove stale web upload: %s", entry, exc_info=True)
+        return removed
+
     @staticmethod
     def _source_handle(stored_name: str) -> str:
         return f"{UPLOAD_HANDLE_PREFIX}{stored_name}"
@@ -143,6 +182,8 @@ class LibraryService:
         file_obj,
         max_bytes: int = MAX_UPLOAD_BYTES,
     ) -> dict:
+        self.sweep_stale_uploads()
+
         original_name = Path(filename or "").name
         if not original_name:
             raise ValueError("Missing uploaded filename")
@@ -182,6 +223,8 @@ class LibraryService:
         title: str | None = None,
         max_bytes: int = MAX_UPLOAD_BYTES,
     ) -> dict:
+        self.sweep_stale_uploads()
+
         normalized_title = (title or "").strip() or DEFAULT_PASTE_TITLE
         normalized_text = text.strip()
         if not normalized_text:

@@ -61,7 +61,12 @@ def test_openai_model_list_route_fetches_models_with_pasted_key(monkeypatch):
 
     monkeypatch.setattr(cleaner_api_module.urlrequest, "urlopen", fake_urlopen)
 
-    client = _make_client_with_controller(SimpleNamespace())
+    from modules.app.controller import AppController
+
+    controller = SimpleNamespace(
+        list_openai_models=lambda *, api_key: AppController.list_openai_models(None, api_key)
+    )
+    client = _make_client_with_controller(controller)
     response = client.post("/api/options/openai/models", json={"api_key": "sk-test"})
 
     assert response.status_code == 200
@@ -815,6 +820,16 @@ def test_model_options_expose_kokoro_conversion_capabilities():
 
         def get_available_api_cleaner_models(self):
             return ["gpt-5-nano"]
+
+        def get_cuda_cleaner_models(self):
+            from modules.tts.cleaner_config import list_cuda_cleaner_models
+
+            return list_cuda_cleaner_models()
+
+        def get_cleaner_backend_options(self):
+            from modules.tts.cleaner_backends.metadata import list_cleaner_backend_options
+
+            return list_cleaner_backend_options()
 
     client = _make_client_with_controller(_Controller())
     response = client.get("/api/options/models")

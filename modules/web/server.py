@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Callable, Optional
 
@@ -20,6 +21,25 @@ DESKTOP_CORS_ORIGIN_RE = (
     r"tauri://localhost)$"
 )
 DESKTOP_DEV_ORIGIN = "http://localhost:5173"
+
+logger = logging.getLogger(__name__)
+
+
+def _sweep_stale_uploads_on_startup(controller: object) -> None:
+    sweep = getattr(controller, "sweep_stale_uploads", None)
+    if not callable(sweep):
+        return
+    try:
+        sweep()
+    except Exception:
+        logger.warning("Startup stale-upload sweep failed", exc_info=True)
+
+
+def _shutdown_event_broker(app: FastAPI) -> None:
+    broker = getattr(app.state, "event_broker", None)
+    shutdown = getattr(broker, "shutdown", None)
+    if callable(shutdown):
+        shutdown()
 
 
 def _cleanup_owned_controller(app: FastAPI) -> None:
@@ -86,10 +106,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        get_controller_from_app(app)
+        controller = get_controller_from_app(app)
+        _sweep_stale_uploads_on_startup(controller)
         try:
             yield
         finally:
+            _shutdown_event_broker(app)
             _cleanup_owned_controller(app)
 
     app = FastAPI(title="Orpheus Desktop API", version="0.1.0", lifespan=lifespan)
