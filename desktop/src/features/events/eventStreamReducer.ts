@@ -36,6 +36,23 @@ export interface EventStreamModelState {
   cancelledJobId: string | null;
   cancellingJobId: string | null;
   runningJobId: string | null;
+  terminalJobIds: string[];
+}
+
+// Bounds how many finished job ids we remember. Jobs run sequentially and ids
+// are unique, so a small window is enough to drop late events for a job that
+// already reached a terminal state without growing without bound.
+const TERMINAL_JOB_HISTORY_LIMIT = 16;
+
+function appendTerminalJobId(terminalJobIds: string[], jobId: string): string[] {
+  const normalized = normalizeString(jobId);
+  if (!normalized || terminalJobIds.includes(normalized)) {
+    return terminalJobIds;
+  }
+  const next = [...terminalJobIds, normalized];
+  return next.length > TERMINAL_JOB_HISTORY_LIMIT
+    ? next.slice(next.length - TERMINAL_JOB_HISTORY_LIMIT)
+    : next;
 }
 
 export type EventStreamAction =
@@ -73,6 +90,7 @@ export function createInitialEventStreamState(): EventStreamModelState {
     cancelledJobId: null,
     cancellingJobId: null,
     runningJobId: null,
+    terminalJobIds: [],
   };
 }
 
@@ -94,6 +112,9 @@ function reduceProgressEvent(
   payload: DesktopEventPayload,
 ): EventStreamModelState {
   const jobId = normalizeString(payload.job_id);
+  if (jobId && state.terminalJobIds.includes(jobId)) {
+    return state;
+  }
   if (state.cancelledJobId && (!jobId || jobId === state.cancelledJobId)) {
     return state;
   }
@@ -164,6 +185,17 @@ function reduceStateEvent(
   const message = normalizeString(payload.message);
   const jobId = normalizeString(payload.job_id);
   const normalizedState = normalizeState(rawState);
+  const isTerminalState =
+    normalizedState === "completed" ||
+    normalizedState === "failed" ||
+    normalizedState === "cancelled";
+
+  // A job id that already reached a terminal state cannot resume. Drop any late
+  // non-terminal event for it so a stale progress/running event cannot flip the
+  // UI back to "running"; a different (new) job id still transitions normally.
+  if (!isTerminalState && jobId && state.terminalJobIds.includes(jobId)) {
+    return { state, ignored: true };
+  }
 
   if (
     normalizedState === "running" &&
@@ -181,9 +213,16 @@ function reduceStateEvent(
 
   if (normalizedState === "cancelled") {
     return {
-      state: markJobCanceled(next, jobId),
+      state: markJobCanceled(
+        { ...next, terminalJobIds: appendTerminalJobId(next.terminalJobIds, jobId) },
+        jobId,
+      ),
       terminalEvent: terminalEventFromStatePayload(payload),
     };
+  }
+
+  if (isTerminalState) {
+    next = { ...next, terminalJobIds: appendTerminalJobId(next.terminalJobIds, jobId) };
   }
 
   next = { ...next, uiState: normalizedState };

@@ -28,6 +28,32 @@ function messageFromUnknown(error: unknown, fallback: string): string {
   return fallback;
 }
 
+// In browser/dev mode the desktop lifecycle is not observable, so a dead
+// backend surfaces only as repeated health-poll failures. We wait for a few
+// consecutive failures before declaring an error to avoid flapping on a single
+// blip, and recover automatically once a poll succeeds again.
+export const BROWSER_HEALTH_FAILURE_THRESHOLD = 3;
+
+export interface BrowserHealthState {
+  failures: number;
+  connectionState: BackendConnectionState;
+}
+
+export function nextBrowserHealthState(
+  previousFailures: number,
+  outcome: "success" | "failure",
+  threshold: number = BROWSER_HEALTH_FAILURE_THRESHOLD,
+): BrowserHealthState {
+  if (outcome === "success") {
+    return { failures: 0, connectionState: "connected" };
+  }
+  const failures = previousFailures + 1;
+  return {
+    failures,
+    connectionState: failures >= threshold ? "error" : "checking",
+  };
+}
+
 export interface BackendMonitorFailureResolution {
   clearClient: boolean;
   connectionState: BackendConnectionState;
@@ -145,6 +171,7 @@ export function useBackendClient() {
 
     let cancelled = false;
     let intervalId: number | null = null;
+    let browserHealthFailures = 0;
 
     const markBackendUnavailable = (message: string) => {
       if (cancelled) {
@@ -180,11 +207,24 @@ export function useBackendClient() {
         if (cancelled) {
           return;
         }
+        browserHealthFailures = 0;
         setHealth(response);
         setConnectionState("connected");
         setStatusMessage("backend connected");
       } catch (error: unknown) {
         if (cancelled) {
+          return;
+        }
+        if (!isTauriRuntime()) {
+          const outcome = nextBrowserHealthState(browserHealthFailures, "failure");
+          browserHealthFailures = outcome.failures;
+          setHealth(null);
+          setConnectionState(outcome.connectionState);
+          setStatusMessage(
+            outcome.connectionState === "error"
+              ? messageFromUnknown(error, "backend health check failed")
+              : `checking ${backendBaseUrl}/health`,
+          );
           return;
         }
         const resolution = resolveBackendMonitorFailure(status, error);

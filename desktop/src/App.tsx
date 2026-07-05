@@ -20,7 +20,7 @@ import {
 } from "./navigation/tabs";
 import type { DashboardTab } from "./types/api";
 
-export { resolveBackendMonitorFailure } from "./app/useBackendClient";
+export { nextBrowserHealthState, resolveBackendMonitorFailure } from "./app/useBackendClient";
 
 function App() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");

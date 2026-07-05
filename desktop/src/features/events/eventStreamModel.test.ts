@@ -257,6 +257,84 @@ describe("event stream reducer actions", () => {
   });
 });
 
+describe("event stream terminal job filtering", () => {
+  function runJob(jobId: string) {
+    return eventStreamReducer(createInitialEventStreamState(), {
+      type: "state",
+      payload: { event_type: "state", state: "running", job_id: jobId, message: "started" },
+    }).state;
+  }
+
+  it("ignores a late progress event after the same job is cancelled", () => {
+    const running = runJob("job-1");
+    const cancelled = eventStreamReducer(running, {
+      type: "state",
+      payload: { event_type: "state", state: "cancelled", job_id: "job-1" },
+    }).state;
+    expect(cancelled.uiState).toBe("cancelled");
+
+    const late = eventStreamReducer(cancelled, {
+      type: "progress",
+      payload: { event_type: "progress", job_id: "job-1", stage: "synthesis", progress: 42 },
+    });
+    expect(late.state.uiState).toBe("cancelled");
+    expect(late.state).toBe(cancelled);
+  });
+
+  it("ignores a late progress event after the same job completes", () => {
+    const running = runJob("job-1");
+    const completed = eventStreamReducer(running, {
+      type: "state",
+      payload: { event_type: "state", state: "completed", job_id: "job-1", message: "done" },
+    }).state;
+    expect(completed.uiState).toBe("completed");
+
+    const late = eventStreamReducer(completed, {
+      type: "progress",
+      payload: { event_type: "progress", job_id: "job-1", stage: "synthesis", progress: 88 },
+    });
+    expect(late.state.uiState).toBe("completed");
+    expect(late.state).toBe(completed);
+  });
+
+  it("ignores a late running state event for a finished job", () => {
+    const running = runJob("job-1");
+    const cancelled = eventStreamReducer(running, {
+      type: "state",
+      payload: { event_type: "state", state: "cancelled", job_id: "job-1" },
+    }).state;
+
+    const lateRunning = eventStreamReducer(cancelled, {
+      type: "state",
+      payload: { event_type: "state", state: "running", job_id: "job-1", message: "resumed" },
+    });
+    expect(lateRunning.ignored).toBe(true);
+    expect(lateRunning.state.uiState).toBe("cancelled");
+  });
+
+  it("still honors the start of a different job after cancellation", () => {
+    const running = runJob("job-1");
+    const cancelled = eventStreamReducer(running, {
+      type: "state",
+      payload: { event_type: "state", state: "cancelled", job_id: "job-1" },
+    }).state;
+
+    const newRunning = eventStreamReducer(cancelled, {
+      type: "state",
+      payload: { event_type: "state", state: "running", job_id: "job-2", message: "started" },
+    });
+    expect(newRunning.ignored).toBeUndefined();
+    expect(newRunning.state.uiState).toBe("running");
+    expect(newRunning.state.activeJobId).toBe("job-2");
+
+    const progress = eventStreamReducer(newRunning.state, {
+      type: "progress",
+      payload: { event_type: "progress", job_id: "job-2", stage: "synthesis", progress: 10 },
+    });
+    expect(progress.state.uiState).toBe("running");
+  });
+});
+
 describe("terminal state helpers", () => {
   it("normalizes only terminal statuses", () => {
     expect(normalizeTerminalStatus(" completed ")).toBe("completed");

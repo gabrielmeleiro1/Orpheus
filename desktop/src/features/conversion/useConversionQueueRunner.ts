@@ -38,20 +38,72 @@ export function useConversionQueueRunner({
       return;
     }
     startCommandInFlightRef.current = true;
-    const payload = buildStartPayload(selectedQueueItem ?? undefined);
+    const targetItem = selectedQueueItem;
+    const payload = buildStartPayload(targetItem ?? undefined);
     try {
-      if (selectedQueueItem) {
+      if (targetItem) {
         syncSelectedQueueEdits({
           sourcePath: payload.source_path,
           title: payload.title ?? "",
           author: payload.author ?? "",
         });
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "converting",
+          error: "",
+        }));
       }
-      await conversionJob.startConversion(payload);
+
+      const startResult = await conversionJob.startConversion(payload);
+      if (!targetItem) {
+        return;
+      }
+
+      if (!startResult.ok) {
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "failed",
+          error: startResult.error,
+        }));
+        return;
+      }
+
+      updateQueueItem(targetItem.id, (current) => ({
+        ...current,
+        jobId: startResult.jobId,
+        status: "converting",
+      }));
+
+      const finalStatus = (await conversionJob.waitForTerminalState(startResult.jobId)).status;
+      if (finalStatus === "completed") {
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "done",
+          error: "",
+        }));
+        return;
+      }
+
+      const message =
+        finalStatus === "cancelled" ? "conversion cancelled" : `conversion ${finalStatus}`;
+      updateQueueItem(targetItem.id, (current) => ({
+        ...current,
+        status: "failed",
+        error: message,
+      }));
+    } catch (error: unknown) {
+      if (targetItem) {
+        const message = error instanceof Error ? error.message : "conversion failed";
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "failed",
+          error: message,
+        }));
+      }
     } finally {
       startCommandInFlightRef.current = false;
     }
-  }, [buildStartPayload, conversionJob, selectedQueueItem, syncSelectedQueueEdits]);
+  }, [buildStartPayload, conversionJob, selectedQueueItem, syncSelectedQueueEdits, updateQueueItem]);
 
   const onRunQueue = useCallback(async () => {
     if (!apiClient) {

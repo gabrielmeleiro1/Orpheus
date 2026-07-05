@@ -105,6 +105,80 @@ describe("useConversionQueueRunner", () => {
     cleanup();
   });
 
+  it("transitions the selected queue item to done on a successful single start", async () => {
+    const item = createQueueItem("/tmp/book.epub", "audiobook");
+    item.status = "ready";
+    const conversionJob = createConversionJobMock({
+      startConversion: vi.fn(async (): Promise<StartConversionResult> => ({
+        ok: true,
+        jobId: "job-7",
+      })),
+      waitForTerminalState: vi.fn(async (jobId: string) => ({
+        jobId,
+        status: "completed" as const,
+        message: "",
+      })),
+    });
+    const statuses: string[] = [];
+    const updateQueueItem = vi.fn((itemId, updater) => {
+      expect(itemId).toBe(item.id);
+      const nextItem = updater(item);
+      statuses.push(nextItem.status);
+    });
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [item],
+      selectedQueueItem: item,
+      buildStartPayload: () => payload(),
+      updateQueueItem,
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    await result.current?.onStartConversion();
+
+    expect(conversionJob.waitForTerminalState).toHaveBeenCalledWith("job-7");
+    expect(statuses).toEqual(["converting", "converting", "done"]);
+    cleanup();
+  });
+
+  it("marks the selected queue item failed when a single start fails to launch", async () => {
+    const item = createQueueItem("/tmp/book.epub", "audiobook");
+    item.status = "ready";
+    const conversionJob = createConversionJobMock({
+      startConversion: vi.fn(async (): Promise<StartConversionResult> => ({
+        ok: false,
+        error: "backend rejected start",
+      })),
+    });
+    const statuses: string[] = [];
+    const errors: string[] = [];
+    const updateQueueItem = vi.fn((itemId, updater) => {
+      expect(itemId).toBe(item.id);
+      const nextItem = updater(item);
+      statuses.push(nextItem.status);
+      errors.push(nextItem.error);
+    });
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [item],
+      selectedQueueItem: item,
+      buildStartPayload: () => payload(),
+      updateQueueItem,
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    await result.current?.onStartConversion();
+
+    expect(conversionJob.waitForTerminalState).not.toHaveBeenCalled();
+    expect(statuses).toEqual(["converting", "failed"]);
+    expect(errors[errors.length - 1]).toBe("backend rejected start");
+    cleanup();
+  });
+
   it("prevents concurrent direct start commands", async () => {
     const item = createQueueItem("/tmp/book.epub", "audiobook");
     let resolveStart!: (value: StartConversionResult) => void;
