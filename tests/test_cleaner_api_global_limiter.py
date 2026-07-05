@@ -54,7 +54,11 @@ def _worker_hold_raw_value_semaphore(
 @pytest.mark.parallel
 def test_global_api_limiter_enforces_cross_process_cap() -> None:
     limiter = GlobalAPILimiter(max_concurrency=2)
-    manager = mp.Manager()
+    try:
+        manager = mp.Manager()
+    except (EOFError, OSError) as exc:
+        limiter.shutdown()
+        pytest.skip(f"multiprocessing manager unavailable: {exc}")
     active = manager.Value("i", 0)
     peak = manager.Value("i", 0)
     lock = manager.Lock()

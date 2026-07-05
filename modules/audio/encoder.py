@@ -88,7 +88,6 @@ class AudioEncoder:
                 "-b:a", bitrate,
                 "-ar", str(self.sample_rate),
                 "-ac", "1",  # Mono
-                "-q:a", "2",  # High quality
                 str(temp_output_path),
             ])
 
@@ -134,7 +133,6 @@ class AudioEncoder:
                 "-b:a", bitrate,
                 "-ar", str(self.sample_rate),
                 "-ac", "1",
-                "-q:a", "2",
                 str(temp_output_path),
             ]
 

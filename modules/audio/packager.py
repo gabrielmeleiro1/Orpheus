@@ -151,23 +151,22 @@ class M4BPackager:
                 "-i", str(concat_file),
                 "-f", "ffmetadata",
                 "-i", str(chapter_file),
-                "-map_metadata", "1",
-                "-map_chapters", "1",
             ]
+            if has_cover:
+                final_cmd.extend(["-i", str(metadata.cover_path)])
+            final_cmd.extend(["-map_metadata", "1", "-map_chapters", "1"])
             if use_stream_copy:
                 final_cmd.extend(["-c:a", "copy"])
             else:
                 final_cmd.extend(["-c:a", "aac", "-b:a", "128k"])
-            final_cmd.extend(["-movflags", "+faststart"])
-
             if has_cover:
                 final_cmd.extend([
-                    "-i", str(metadata.cover_path),
                     "-map", "0:a",
                     "-map", "2:v",
                     "-c:v", "mjpeg",
                     "-disposition:v", "attached_pic",
                 ])
+            final_cmd.extend(["-movflags", "+faststart"])
             
             with atomic_output_path(output_path) as temp_output_path:
                 final_cmd.append(str(temp_output_path))

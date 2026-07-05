@@ -459,12 +459,15 @@ def test_shared_pool_real_process_pool_runs_worker_tasks_concurrently() -> None:
     manager = SharedWorkerPoolManager(max_workers=2)
 
     try:
-        results = manager.run_parallel(
-            chapters=chapters,
-            process_func=_process_with_real_process_probe,
-            config_fingerprint="real-process-concurrency",
-            worker_init_config={},
-        )
+        try:
+            results = manager.run_parallel(
+                chapters=chapters,
+                process_func=_process_with_real_process_probe,
+                config_fingerprint="real-process-concurrency",
+                worker_init_config={},
+            )
+        except PermissionError as exc:
+            pytest.skip(f"real process pool unavailable: {exc}")
     finally:
         manager.shutdown(timeout_seconds=0.5, cancel_futures=True)
 

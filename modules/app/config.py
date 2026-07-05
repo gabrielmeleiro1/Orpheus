@@ -141,6 +141,7 @@ class AppConfig:
     
     # Audio settings
     mp3_bitrate: str = "128k"
+    emit_chapter_mp3_artifacts: bool = False
     normalize_volume: bool = True
     target_dbfs: float = -16.0
     
@@ -206,12 +207,15 @@ class AppConfig:
                 self.cleaner_api_global_concurrency = max(1, int(env_global_concurrency))
             except ValueError:
                 pass
-        env_pool_reuse = os.getenv("WORKER_POOL_REUSE_ENABLED")
+        env_pool_reuse = _read_bool_env("WORKER_POOL_REUSE_ENABLED")
         if env_pool_reuse is not None:
-            self.worker_pool_reuse_enabled = env_pool_reuse.strip().lower() not in {"0", "false", "no", "off"}
-        env_debug = os.getenv("SAVE_CLEANING_DEBUG")
+            self.worker_pool_reuse_enabled = env_pool_reuse
+        env_debug = _read_bool_env("SAVE_CLEANING_DEBUG")
         if env_debug is not None:
-            self.save_cleaning_debug = env_debug.strip().lower() not in {"0", "false", "no", "off"}
+            self.save_cleaning_debug = env_debug
+        env_emit_chapter_mp3 = _read_bool_env("AUDIOBOOK_EMIT_CHAPTER_MP3_ARTIFACTS")
+        if env_emit_chapter_mp3 is not None:
+            self.emit_chapter_mp3_artifacts = env_emit_chapter_mp3
         env_pdf_backend = os.getenv("PDF_EXTRACTION_BACKEND")
         if env_pdf_backend is not None:
             requested_backend = env_pdf_backend.strip().lower()
@@ -303,6 +307,7 @@ class AppConfig:
             "keep_tts_engine_warm": self.keep_tts_engine_warm,
             "tts_idle_timeout_seconds": self.tts_idle_timeout_seconds,
             "mp3_bitrate": self.mp3_bitrate,
+            "emit_chapter_mp3_artifacts": self.emit_chapter_mp3_artifacts,
             "normalize_volume": self.normalize_volume,
             "target_dbfs": self.target_dbfs,
             "db_path": str(self.db_path) if self.db_path else None,

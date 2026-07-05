@@ -46,7 +46,7 @@ class CleanerConfig:
     temperature: float = 0.1
     batch_size: int = 1
     cache_model: bool = True
-    skip_llm_when_not_needed: bool = False
+    skip_llm_when_not_needed: bool = True
     backend: str = "mlx"
     cuda_device: str = "cuda"
     cuda_quantization: str = "4bit"
@@ -55,7 +55,7 @@ class CleanerConfig:
     api_key: Optional[str] = None
     api_timeout_seconds: int = 120
     api_model: Optional[str] = DEFAULT_API_MODEL
-    api_batch_concurrency: int = 4
+    api_batch_concurrency: int = 6
     api_global_limiter: Optional[Any] = None
     api_ca_bundle: Optional[str] = None
     api_allow_insecure_ssl: bool = False
@@ -163,7 +163,7 @@ def build_cleaner_config_from_worker_init(worker_init_config: dict[str, Any]) ->
         api_model=worker_init_config["cleaner_api_model"],
         api_batch_concurrency=worker_init_config.get(
             "cleaner_api_global_concurrency",
-            4,
+            6,
         ),
         api_global_limiter=worker_init_config.get("cleaner_api_global_limiter"),
         skip_llm_when_not_needed=worker_init_config.get(

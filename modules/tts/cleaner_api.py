@@ -140,21 +140,28 @@ def urlopen_is_patched() -> bool:
     return getattr(urlopen_fn, "__module__", "urllib.request") != "urllib.request"
 
 
+def resolve_api_ssl_options(config: Any) -> tuple[bool, str | None]:
+    """Resolve cleaner API SSL settings from config first, then env fallback."""
+    insecure_env = os.getenv("CLEANER_API_INSECURE_SSL")
+    insecure_from_env = (
+        insecure_env is not None
+        and insecure_env.strip().lower() in {"1", "true", "yes", "on"}
+    )
+    allow_insecure = bool(config.api_allow_insecure_ssl or insecure_from_env)
+    ca_bundle = (config.api_ca_bundle or os.getenv("CLEANER_API_CA_BUNDLE", "")).strip()
+    return allow_insecure, ca_bundle or None
+
+
 def build_api_ssl_context(config: Any) -> ssl.SSLContext:
     """Build SSL context for cleaner API calls with optional custom CA support."""
     context = ssl.create_default_context()
 
-    insecure_env = os.getenv("CLEANER_API_INSECURE_SSL")
-    insecure_from_env = (
-        insecure_env is not None and insecure_env.strip().lower() in {"1", "true", "yes", "on"}
-    )
-    allow_insecure = config.api_allow_insecure_ssl or insecure_from_env
+    allow_insecure, ca_bundle = resolve_api_ssl_options(config)
     if allow_insecure:
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
         return context
 
-    ca_bundle = (config.api_ca_bundle or os.getenv("CLEANER_API_CA_BUNDLE", "")).strip()
     if ca_bundle:
         try:
             context.load_verify_locations(cafile=ca_bundle)

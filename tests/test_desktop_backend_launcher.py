@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import stat
 import sys
@@ -16,6 +17,14 @@ from typing import TextIO
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _skip_if_loopback_bind_unavailable() -> None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+    except PermissionError as exc:
+        pytest.skip(f"loopback bind unavailable: {exc}")
 
 
 def _build_env(env_overrides: dict[str, str] | None = None) -> dict[str, str]:
@@ -94,6 +103,7 @@ def _read_ready_payload(process: subprocess.Popen[str]) -> dict[str, object]:
 
 
 def test_desktop_backend_launcher_emits_ready_json_for_ephemeral_port(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
     process = _launch_desktop_backend("--host", "127.0.0.1", "--port", "0", cwd=tmp_path)
     try:
         payload = _read_ready_payload(process)
@@ -115,6 +125,7 @@ def test_desktop_backend_launcher_emits_ready_json_for_ephemeral_port(tmp_path: 
 
 
 def test_desktop_backend_launcher_writes_ready_file_for_packaged_handoff(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
     ready_file = tmp_path / "runtime" / "backend-ready.json"
     process = _launch_desktop_backend(
         "--host",
@@ -137,6 +148,7 @@ def test_desktop_backend_launcher_writes_ready_file_for_packaged_handoff(tmp_pat
 
 
 def test_desktop_backend_launcher_exits_cleanly_on_sigterm(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
     if os.name == "nt":
         pytest.skip("POSIX SIGTERM exit-code contract is not available on Windows")
     process = _launch_desktop_backend("--host", "127.0.0.1", "--port", "0", cwd=tmp_path)

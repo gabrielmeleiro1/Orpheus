@@ -19,6 +19,14 @@ from modules.app.config import AppConfig
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def _skip_if_loopback_bind_unavailable() -> None:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+    except PermissionError as exc:
+        pytest.skip(f"loopback bind unavailable: {exc}")
+
+
 def _reserve_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -123,6 +131,7 @@ def _clear_desktop_path_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_desktop_backend_ready_payload_for_ephemeral_port(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
     process, payload = _launch_desktop_backend(host="127.0.0.1", port=0, cwd=tmp_path)
     try:
         assert payload["event"] == "ready"
@@ -136,6 +145,7 @@ def test_desktop_backend_ready_payload_for_ephemeral_port(tmp_path: Path) -> Non
 
 
 def test_desktop_backend_binds_requested_loopback_port(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
     requested_port = _reserve_port()
     process, payload = _launch_desktop_backend(host="127.0.0.1", port=requested_port, cwd=tmp_path)
     try:
@@ -146,6 +156,7 @@ def test_desktop_backend_binds_requested_loopback_port(tmp_path: Path) -> None:
 
 
 def test_desktop_backend_token_can_reach_health(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
     process, payload = _launch_desktop_backend(host="127.0.0.1", port=0, cwd=tmp_path)
     try:
         health = _health_with_bearer_token(
@@ -159,6 +170,7 @@ def test_desktop_backend_token_can_reach_health(tmp_path: Path) -> None:
 
 
 def test_desktop_runtime_paths_can_be_injected_without_cwd_change(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
     runtime_root = tmp_path / "desktop-runtime"
     data_dir = runtime_root / "state" / "data"
     output_dir = runtime_root / "state" / "output"
@@ -261,4 +273,3 @@ def test_app_config_does_not_override_explicit_constructor_paths(
     assert explicit_data_dir.is_dir()
     assert explicit_output_dir.is_dir()
     assert explicit_temp_dir.is_dir()
-

@@ -46,7 +46,7 @@ def _make_rule_only_cleaner() -> TextCleaner:
 def _make_mlx_cleaner_with_fake_llm(fake_response: str) -> TextCleaner:
     """Create a TextCleaner with a fake LLM that returns *fake_response*."""
     cleaner = _make_rule_only_cleaner()
-    cleaner.config = CleanerConfig(backend="mlx")
+    cleaner.config = CleanerConfig(backend="mlx", skip_llm_when_not_needed=False)
     cleaner._loaded = True
     return cleaner
 
@@ -404,7 +404,7 @@ class TestTraceCapturesError:
 
     def test_trace_records_error_message(self):
         cleaner = _make_rule_only_cleaner()
-        cleaner.config = CleanerConfig(backend="mlx")
+        cleaner.config = CleanerConfig(backend="mlx", skip_llm_when_not_needed=False)
         cleaner._loaded = True
 
         def _exploding_generate(*args, **kwargs):

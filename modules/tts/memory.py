@@ -6,15 +6,28 @@ Ensures models are properly loaded and unloaded sequentially.
 """
 
 import gc
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 from contextlib import contextmanager
 
-# MLX imports
-try:
-    import mlx.core as mx
-    MLX_AVAILABLE = True
-except ImportError:
-    MLX_AVAILABLE = False
+MLX_AVAILABLE: Optional[bool] = None
+mx: Any = None
+
+
+def _get_mlx_core() -> Any:
+    """Import MLX lazily so API/test imports do not initialize Metal."""
+    global MLX_AVAILABLE, mx
+    if MLX_AVAILABLE is not None:
+        return mx
+
+    try:
+        import mlx.core as mlx_core
+    except ImportError:
+        MLX_AVAILABLE = False
+        mx = None
+    else:
+        MLX_AVAILABLE = True
+        mx = mlx_core
+    return mx
 
 
 class VRAMManager:
@@ -112,9 +125,10 @@ def clear_vram() -> None:
     gc.collect()
     
     # Clear MLX cache if available
-    if MLX_AVAILABLE:
+    mlx_core = _get_mlx_core()
+    if MLX_AVAILABLE and mlx_core is not None:
         try:
-            mx.clear_cache()
+            mlx_core.clear_cache()
         except Exception:
             pass
     

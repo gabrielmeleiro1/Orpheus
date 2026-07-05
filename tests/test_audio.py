@@ -183,8 +183,14 @@ class TestAudioEncoder:
         process.wait.side_effect = fake_wait
 
         encoder = AudioEncoder()
-        encoder.array_to_mp3(np.linspace(-1, 1, 200_000, dtype=np.float32), tmp_path / "out.mp3")
+        encoder.array_to_mp3(
+            np.linspace(-1, 1, 200_000, dtype=np.float32),
+            tmp_path / "out.mp3",
+        )
 
+        args = mock_popen.call_args.args[0]
+        assert args[args.index("-b:a") + 1] == "128k"
+        assert "-q:a" not in args
         assert process.stdin.write.call_count > 1
         assert all(isinstance(call.args[0], bytes) for call in process.stdin.write.call_args_list)
 
@@ -242,6 +248,7 @@ class TestAudioEncoder:
         assert args[0] == "/usr/bin/ffmpeg"
         assert "-b:a" in args
         assert "128k" in args
+        assert "-q:a" not in args
         assert "-af" not in args
 
     @patch("subprocess.run")
@@ -428,21 +435,32 @@ class TestM4BPackager:
         assert mock_run.call_count == 1
         final_args = mock_run.call_args_list[0].args[0]
 
-        assert final_args[0] == "/usr/bin/ffmpeg"
-        concat_f_index = final_args.index("-f")
-        assert final_args[concat_f_index + 1] == "concat"
-        assert final_args[concat_f_index + 2] == "-safe"
-        assert final_args[concat_f_index + 4] == "-i"
-        assert final_args[final_args.index("-c:a") + 1] == "aac"
-        assert final_args[final_args.index("-b:a") + 1] == "128k"
-        assert final_args[final_args.index("-movflags") + 1] == "+faststart"
-        ffmetadata_f_index = final_args.index("-f")
-        ffmetadata_f_index = final_args.index("-f", ffmetadata_f_index + 1)
-        assert final_args[ffmetadata_f_index + 1] == "ffmetadata"
-        assert final_args[ffmetadata_f_index + 2] == "-i"
-        assert final_args[final_args.index("-map_metadata") + 1] == "1"
-        assert final_args[final_args.index("-map_chapters") + 1] == "1"
         temp_output = Path(final_args[-1])
+        assert final_args == [
+            "/usr/bin/ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            final_args[7],
+            "-f",
+            "ffmetadata",
+            "-i",
+            final_args[11],
+            "-map_metadata",
+            "1",
+            "-map_chapters",
+            "1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            str(temp_output),
+        ]
         assert temp_output.parent == output.parent
         assert temp_output.name.startswith(f".{output.name}.")
         assert temp_output.name.endswith(f".tmp{output.suffix}")
@@ -537,10 +555,42 @@ class TestM4BPackager:
 
         assert mock_run.call_count == 1
         final_args = mock_run.call_args_list[-1].args[0]
-        assert "-disposition:v" in final_args
-        assert final_args[final_args.index("-disposition:v") + 1] == "attached_pic"
-        assert "-map" in final_args
-        assert "2:v" in [final_args[index + 1] for index, value in enumerate(final_args[:-1]) if value == "-map"]
+        temp_output = Path(final_args[-1])
+        assert final_args == [
+            "/usr/bin/ffmpeg",
+            "-y",
+            "-f",
+            "concat",
+            "-safe",
+            "0",
+            "-i",
+            final_args[7],
+            "-f",
+            "ffmetadata",
+            "-i",
+            final_args[11],
+            "-i",
+            str(cover_file),
+            "-map_metadata",
+            "1",
+            "-map_chapters",
+            "1",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-map",
+            "0:a",
+            "-map",
+            "2:v",
+            "-c:v",
+            "mjpeg",
+            "-disposition:v",
+            "attached_pic",
+            "-movflags",
+            "+faststart",
+            str(temp_output),
+        ]
 
     @patch("shutil.which")
     def test_generate_chapter_markers_uses_supplied_durations_without_probe(self, mock_which):

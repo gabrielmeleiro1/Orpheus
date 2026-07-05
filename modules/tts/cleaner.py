@@ -19,7 +19,6 @@ contention guard (single worker).
 
 import asyncio
 import logging
-import os
 import ssl
 import threading
 import time
@@ -359,12 +358,7 @@ class TextCleaner:
 
     def _build_api_ssl_context(self) -> ssl.SSLContext:
         """Build SSL context for cleaner API calls with optional custom CA support."""
-        cache_key = (
-            bool(getattr(self.config, "api_allow_insecure_ssl", False)),
-            str(getattr(self.config, "api_ca_bundle", "") or ""),
-            os.getenv("CLEANER_API_CA_BUNDLE", ""),
-            os.getenv("CLEANER_API_INSECURE_SSL", ""),
-        )
+        cache_key = cleaner_api_backend.resolve_api_ssl_options(self.config)
         cached = getattr(self, "_api_ssl_context_cache", None)
         if cached is not None and cached[0] == cache_key:
             return cached[1]

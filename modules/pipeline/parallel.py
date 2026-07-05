@@ -198,6 +198,8 @@ class ParallelPipelineOrchestrator:
             cancel_requested is not None and bool(cancel_requested())
         ):
             return []
+        if not chapters:
+            return []
 
         pool_manager = self._get_pool_manager()
         try:

@@ -82,7 +82,7 @@ directly.
 |------|-------|-------|
 | `controller.py` | ~597 | Façade + job registry + capability passthrough; split delegate surface from job state |
 | `services/conversion_service.py` | ~719 | **>700 lines** — mixes threading, pipeline invocation, storage updates, events |
-| `services/library_service.py` | ~601 | Upload limits, preflight, folder open, CRUD in one module |
+| `services/library_service.py` | ~607 | Upload limits, preflight, folder open, CRUD in one module |
 | `services/runtime_capability_service.py` | ~407 | Duplicates cleaner/TTS probe logic also exposed on controller |
 | `ConversionRuntimeOptions` vs web `ConversionRuntimeOptionsRequest` | — | Parallel schema definitions (Workstream 2) |
 
@@ -141,7 +141,7 @@ dispatch, stage execution, parallel workers, repair, progress, result validation
 
 ### Private helpers
 
-- `chapter_processor.py` (**1027 lines — exceeds 1k rule**), `chapter_runners.py`, `chapter_dispatch.py`
+- `chapter_processor.py` (749 lines), `chapter_runners.py`, `chapter_dispatch.py`
 - `pipeline_stages.py`, `stages/*` — per-stage implementations
 - `worker_runtime.py`, `worker_config.py`, `worker_errors.py` — multiprocessing workers
 - `book_workspace.py`, `conversion_lifecycle.py`, `repair.py`, `retry.py`
@@ -161,9 +161,9 @@ dispatch, stage execution, parallel workers, repair, progress, result validation
 
 | File | Lines | Issue |
 |------|-------|-------|
-| `chapter_processor.py` | 1027 | **Must decompose** — chunk/clean/synth/encode orchestration |
-| `stages/synthesis.py` | 819 | Stage + profiling + overlap logic |
-| `orchestrator.py` | 652 | Run lifecycle + parallel fallback branches |
+| `chapter_processor.py` | 749 | Chunk/clean/synth/encode orchestration |
+| `stages/synthesis.py` | 822 | Stage + profiling + overlap logic |
+| `orchestrator.py` | 648 | Run lifecycle + parallel fallback branches |
 | `pool_manager.py` | 691 | Worker pool + VRAM bookkeeping |
 | `models.py` | — | Embeds TTS runtime resolution; blurs pipeline vs tts contract |
 | `cleaner_memory` vs `tts.device_memory` | — | Split ownership causes `pipeline` ↔ `tts` near-cycle |
@@ -286,7 +286,7 @@ interface. No business rules about conversion options.
 - `ConversionResult` exists in both `storage.models` and `pipeline.models` —
   adapter in `conversion_result_adapter.py` maps between them; rename or namespace
   to prevent mistaken imports.
-- `maintenance.py` (453 lines) — split audit vs prune vs path helpers if growing.
+- `maintenance.py` (462 lines) — split audit vs prune vs path helpers if growing.
 
 ---
 
@@ -306,7 +306,7 @@ interface. No business rules about conversion options.
 
 | File | Lines |
 |------|-------|
-| `modules/pipeline/chapter_processor.py` | 1027 |
+| — | None currently |
 
 Additional files between 700–999 lines are listed per package above; prioritize
-`chapter_processor.py` before any other pipeline split.
+`stages/synthesis.py` and `chapter_processor.py` before smaller pipeline splits.

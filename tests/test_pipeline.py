@@ -34,9 +34,23 @@ def test_benchmark_backed_kokoro_defaults():
     assert pipeline_config.tts_idle_timeout_seconds == 300.0
     assert AppConfig().chunk_size == 700
     assert AppConfig().enable_tts_file_batch_results is False
+    assert AppConfig().emit_chapter_mp3_artifacts is False
     assert ChunkConfig().max_tokens == 700
     assert StrategyTTSConfig().max_chunk_tokens == 700
     assert LegacyTTSConfig().max_chunk_tokens == 700
+
+
+def test_app_config_emit_chapter_mp3_artifacts_env_and_serialization(monkeypatch, tmp_path):
+    from modules.app.config import AppConfig
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUDIOBOOK_EMIT_CHAPTER_MP3_ARTIFACTS", "yes")
+
+    config = AppConfig()
+
+    assert config.emit_chapter_mp3_artifacts is True
+    assert config.to_dict()["emit_chapter_mp3_artifacts"] is True
+    assert AppConfig.from_dict(config.to_dict()).emit_chapter_mp3_artifacts is True
 
 
 def test_conversion_cleanup_keeps_kokoro_hot_until_forced(tmp_path):

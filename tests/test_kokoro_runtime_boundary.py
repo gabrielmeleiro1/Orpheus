@@ -348,6 +348,47 @@ def test_package_kokoro_runtime_delegates_to_kpipeline(monkeypatch, tmp_path: Pa
     ]
 
 
+def test_package_kokoro_runtime_warns_when_retry_drops_repo_and_device(
+    caplog,
+    monkeypatch,
+) -> None:
+    from modules.tts import model_cache
+    from modules.tts.runtimes.kokoro_package import PackageKokoroRuntime
+
+    model_cache.clear_model_cache()
+
+    class _FakePipeline:
+        calls: list[dict[str, Any]] = []
+
+        def __init__(self, **kwargs: Any) -> None:
+            if "repo_id" in kwargs or "device" in kwargs:
+                raise TypeError("unexpected kwarg")
+            self.calls.append(kwargs)
+
+    monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KPipeline=_FakePipeline))
+    strategy = KokoroTTSStrategy(
+        KokoroConfig(
+            runtime_spec=TTSRuntimeSpec(
+                provider="cuda",
+                engine="kokoro",
+                model="hexgrad/Kokoro-82M",
+                quantization="bf16",
+                device="cuda:0",
+            )
+        )
+    )
+    runtime = PackageKokoroRuntime(
+        KokoroRuntimeConfig.from_strategy_config(strategy.config)
+    )
+
+    with caplog.at_level("WARNING", logger="modules.tts.runtimes.kokoro_package"):
+        runtime.load()
+
+    assert _FakePipeline.calls == [{"lang_code": "a"}]
+    assert "repo_id, device" in caplog.text
+    model_cache.clear_model_cache()
+
+
 def test_package_kokoro_runtime_writes_output_without_soundfile(
     monkeypatch,
     tmp_path: Path,

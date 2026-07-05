@@ -22,16 +22,28 @@ from enum import Enum, auto
 from collections import deque
 import warnings
 
-# MLX imports
-try:
-    import mlx.core as mx
-    MLX_AVAILABLE = True
-except ImportError:
-    mx = None
-    MLX_AVAILABLE = False
+mx: Any = None
+MLX_AVAILABLE: Optional[bool] = None
 
 if TYPE_CHECKING:
     pass
+
+
+def _get_mlx_core() -> Any:
+    """Import MLX lazily so module import does not initialize Metal."""
+    global MLX_AVAILABLE, mx
+    if MLX_AVAILABLE is not None:
+        return mx
+
+    try:
+        import mlx.core as mlx_core
+    except ImportError:
+        mx = None
+        MLX_AVAILABLE = False
+    else:
+        mx = mlx_core
+        MLX_AVAILABLE = True
+    return mx
 
 
 class VRAMPressureLevel(Enum):
@@ -70,7 +82,7 @@ def _read_mlx_byte_count(mlx_core: Any, *names: str) -> int:
 
 def _sample_mlx_memory(mlx_core: Any = None) -> tuple[int, int, int]:
     if mlx_core is None:
-        mlx_core = mx if MLX_AVAILABLE else None
+        mlx_core = _get_mlx_core()
     if not mlx_core:
         return 0, 0, 0
     return (
@@ -419,15 +431,16 @@ class VRAMMonitor:
     
     def _check_vram(self) -> None:
         """Check VRAM usage and adjust batch sizes."""
-        if not MLX_AVAILABLE:
+        mlx_core = _get_mlx_core()
+        if not MLX_AVAILABLE or mlx_core is None:
             self._refresh_memory_budget()
             return
         
         try:
             # Get current VRAM stats
-            active = mx.get_active_memory()
-            peak = mx.get_peak_memory()
-            cache = mx.get_cache_memory()
+            active = mlx_core.get_active_memory()
+            peak = mlx_core.get_peak_memory()
+            cache = mlx_core.get_cache_memory()
             self._refresh_memory_budget(
                 mlx_active_bytes=active,
                 mlx_cache_bytes=cache,
@@ -502,9 +515,10 @@ class VRAMMonitor:
         # Force garbage collection on high/critical
         if level in (VRAMPressureLevel.HIGH, VRAMPressureLevel.CRITICAL):
             gc.collect()
-            if MLX_AVAILABLE:
+            mlx_core = _get_mlx_core()
+            if MLX_AVAILABLE and mlx_core is not None:
                 try:
-                    mx.clear_cache()
+                    mlx_core.clear_cache()
                 except Exception:
                     pass
     

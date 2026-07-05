@@ -100,8 +100,17 @@ class PackageKokoroRuntime:
                 kwargs.pop("repo_id", None)
             self._pipeline = KPipeline(**kwargs)
         except TypeError:
-            kwargs.pop("repo_id", None)
-            kwargs.pop("device", None)
+            dropped_kwargs = [
+                key for key in ("repo_id", "device") if key in kwargs
+            ]
+            for key in dropped_kwargs:
+                kwargs.pop(key, None)
+            if dropped_kwargs:
+                logger.warning(
+                    "Installed kokoro package does not accept KPipeline kwargs %s; "
+                    "retrying without them",
+                    ", ".join(dropped_kwargs),
+                )
             self._pipeline = KPipeline(**kwargs)
         except Exception as exc:
             raise TTSRuntimeUnavailable(f"Package Kokoro runtime failed to load: {exc}") from exc
