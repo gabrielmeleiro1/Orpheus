@@ -1,4 +1,4 @@
-import type { Dispatch, DragEvent, Ref, SetStateAction } from "react";
+import type { Dispatch, DragEvent, MutableRefObject, Ref, SetStateAction } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type {
@@ -19,6 +19,7 @@ export interface UseConversionPanelStateArgs {
   health: HealthResponse | null;
   statusMessage: string;
   conversionJob: ConversionJobController;
+  startCommandRef?: MutableRefObject<(() => void) | null>;
 }
 
 export type QueueEditPatch = Partial<

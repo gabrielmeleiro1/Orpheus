@@ -5,7 +5,10 @@ import type {
   ConversionJobTerminalEvent,
   DesktopEventPayload,
 } from "../../types/api";
-import { normalizeTerminalStatus } from "./eventStreamModel";
+import {
+  pollTerminalState as pollTerminalStateFromClient,
+  TERMINAL_MISSING_POLL_THRESHOLD,
+} from "./terminalStateWaiterModel";
 
 const TERMINAL_POLL_MS = 1500;
 
@@ -90,29 +93,27 @@ export function useTerminalStateWaiters({
           },
         };
 
-        const pollTerminalState = async () => {
+        let missingPollCount = 0;
+
+        const runTerminalStatePoll = async () => {
           if (!apiClient || settled) {
             return;
           }
           try {
-            const response = await apiClient.getActiveConversion();
+            const result = await pollTerminalStateFromClient({
+              apiClient,
+              jobId: normalizedJobId,
+              missingPollCount,
+              missingPollThreshold: TERMINAL_MISSING_POLL_THRESHOLD,
+              onTerminalStatus,
+            });
             if (settled) {
               return;
             }
-            const activeJob = response.job;
-            if (!activeJob || activeJob.id !== normalizedJobId) {
-              return;
+            missingPollCount = result.missingPollCount;
+            if (result.kind === "missing-threshold") {
+              waiter.finish(result.event);
             }
-            const terminalStatus = normalizeTerminalStatus(activeJob.status);
-            if (!terminalStatus) {
-              return;
-            }
-            onTerminalStatus({
-              event_type: "state",
-              job_id: normalizedJobId,
-              state: terminalStatus,
-              message: activeJob.error || `conversion ${terminalStatus}`,
-            });
           } catch {
             // SSE remains the primary path; this is only a resilience fallback.
           }
@@ -129,9 +130,9 @@ export function useTerminalStateWaiters({
         const waiters = terminalWaitersRef.current.get(normalizedJobId) ?? [];
         terminalWaitersRef.current.set(normalizedJobId, [...waiters, waiter]);
         pollId = window.setInterval(() => {
-          void pollTerminalState();
+          void runTerminalStatePoll();
         }, TERMINAL_POLL_MS);
-        void pollTerminalState();
+        void runTerminalStatePoll();
       });
     },
     [apiClient, onTerminalStatus],
