@@ -1,9 +1,9 @@
-import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
 
 import type { ConversionMode } from "../../types/api";
 import { useConversionOptions } from "./useConversionOptions";
-import { useConversionPreflight } from "./useConversionPreflight";
 import { useConversionPreview } from "./useConversionPreview";
+import { useConversionQueueController } from "./useConversionQueueController";
 import { useConversionQueueRunner } from "./useConversionQueueRunner";
 import { useConversionSourceQueue } from "./useConversionSourceQueue";
 import { useConversionSubmitPayload } from "./useConversionSubmitPayload";
@@ -12,7 +12,6 @@ import type {
   QueueEditPatch,
   UseConversionPanelStateArgs,
 } from "./conversionPanelStateTypes";
-import type { ConversionQueueItem } from "./conversionPanelModel";
 
 export type {
   ConversionPanelActions,
@@ -45,78 +44,42 @@ export function useConversionPanelState({
     ? "/absolute/path/to/document.md"
     : "/absolute/path/to/book.epub";
 
-  const runPreflightQueueRef = useRef<
-    (
-      items: ConversionQueueItem[],
-      options?: { selectedItemId?: string | null },
-    ) => Promise<void>
-  >(async () => {});
-  const runPreflightForItemRef = useRef<
-    (item: ConversionQueueItem, options?: { updateSelected?: boolean }) => Promise<void>
-  >(async () => {});
-  const setPreflightStatusRef = useRef<(status: string) => void>(() => {});
-  const previewSetTextRef = useRef<(text: string) => void>(() => {});
+  const queueController = useConversionQueueController({
+    apiClient,
+  });
 
   const sourceQueue = useConversionSourceQueue({
     apiClient,
     conversionMode,
     conversionJob,
-    runPreflightQueue: (items, options) => runPreflightQueueRef.current(items, options),
-    runPreflightForItem: (item, options) =>
-      runPreflightForItemRef.current(item, options),
-    setPreflightStatus: (status) => setPreflightStatusRef.current(status),
-    setPreviewText: (text) => previewSetTextRef.current(text),
+    queueController,
   });
 
   const preview = useConversionPreview({
     apiClient,
     optionState,
-    sourcePath: sourceQueue.sourcePath,
-    selectedPreflight: sourceQueue.selectedQueueItem?.preflight ?? null,
+    sourcePath: queueController.sourcePath,
+    selectedPreflight: queueController.selectedQueueItem?.preflight ?? null,
+    sampleText: queueController.previewText,
   });
-  useEffect(() => {
-    previewSetTextRef.current = preview.setPreviewText;
-  }, [preview.setPreviewText]);
 
-  const preflight = useConversionPreflight({
-    apiClient,
-    setSelectedQueueId: (itemId) => sourceQueue.setSelectedQueueId(itemId),
-    setSourcePath: (sourcePath) => sourceQueue.setSourcePath(sourcePath),
-    setSourceFileLabel: (label) => sourceQueue.setSourceFileLabel(label),
-    setTitleOverride: (updater) =>
-      sourceQueue.setTitleOverride(updater as SetStateAction<string>),
-    setAuthorOverride: (updater) =>
-      sourceQueue.setAuthorOverride(updater as SetStateAction<string>),
-    setPreviewText: preview.setPreviewText,
-    updateQueueItem: (itemId, updater) => sourceQueue.updateQueueItem(itemId, updater),
-  });
-  useEffect(() => {
-    runPreflightQueueRef.current = preflight.runPreflightQueue;
-    runPreflightForItemRef.current = preflight.runPreflightForItem;
-    setPreflightStatusRef.current = preflight.setPreflightStatus;
-  }, [
-    preflight.runPreflightForItem,
-    preflight.runPreflightQueue,
-    preflight.setPreflightStatus,
-  ]);
-
-  const selectedPreflight = sourceQueue.selectedQueueItem?.preflight ?? null;
+  const selectedPreflight = queueController.selectedQueueItem?.preflight ?? null;
   const payload = useConversionSubmitPayload({
     optionState,
     conversionMode,
-    sourcePath: sourceQueue.sourcePath,
-    titleOverride: sourceQueue.titleOverride,
-    authorOverride: sourceQueue.authorOverride,
+    sourcePath: queueController.sourcePath,
+    titleOverride: queueController.titleOverride,
+    authorOverride: queueController.authorOverride,
   });
   const queueRunner = useConversionQueueRunner({
     apiClient,
     conversionJob,
-    queueItems: sourceQueue.queueItems,
-    selectedQueueItem: sourceQueue.selectedQueueItem,
+    queueItems: queueController.queueItems,
+    selectedQueueItem: queueController.selectedQueueItem,
     buildStartPayload: payload.buildStartPayload,
-    updateQueueItem: sourceQueue.updateQueueItem,
-    syncSelectedQueueEdits: sourceQueue.syncSelectedQueueEdits,
-    setQueueStatus: sourceQueue.setQueueStatus,
+    updateQueueItem: queueController.updateQueueItem,
+    syncSelectedQueueEdits: queueController.syncSelectedQueueEdits,
+    setQueueStatus: queueController.setQueueStatus,
   });
 
   const requiresCleanerApiKey = optionState.selectedCleanerBackend?.requires_api_key ?? false;
@@ -125,7 +88,7 @@ export function useConversionPanelState({
     !apiClient ||
     queueRunner.queueRunning ||
     conversionJob.isStarting ||
-    !sourceQueue.sourcePath.trim() ||
+    !queueController.sourcePath.trim() ||
     !optionState.selectedEngine ||
     !optionState.selectedVoice ||
     optionState.cleanerRuntimeError ||
@@ -172,10 +135,10 @@ export function useConversionPanelState({
       runtimeStatusClass,
     },
     form: {
-      sourcePath: sourceQueue.sourcePath,
-      sourceFileLabel: sourceQueue.sourceFileLabel,
-      titleOverride: sourceQueue.titleOverride,
-      authorOverride: sourceQueue.authorOverride,
+      sourcePath: queueController.sourcePath,
+      sourceFileLabel: queueController.sourceFileLabel,
+      titleOverride: queueController.titleOverride,
+      authorOverride: queueController.authorOverride,
       selectedPreflight,
       dragging: sourceQueue.dragging,
       pasteTitle: sourceQueue.pasteTitle,
@@ -184,7 +147,7 @@ export function useConversionPanelState({
       pasteStatus: sourceQueue.pasteStatus,
       voiceSuggestBusy: preview.voiceSuggestBusy,
       voiceSuggestStatus: preview.voiceSuggestStatus,
-      preflightStatus: preflight.preflightStatus,
+      preflightStatus: queueController.preflightStatus,
       previewText: preview.previewText,
       previewBusy: preview.previewBusy,
       previewStatus: preview.previewStatus,
@@ -192,15 +155,15 @@ export function useConversionPanelState({
       previewAudioRef: preview.previewAudioRef,
     },
     queue: {
-      queueItems: sourceQueue.queueItems,
-      selectedQueueId: sourceQueue.selectedQueueId,
+      queueItems: queueController.queueItems,
+      selectedQueueId: queueController.selectedQueueId,
       queueRunning: queueRunner.queueRunning,
-      queueStatus: sourceQueue.queueStatus,
+      queueStatus: queueController.queueStatus,
     },
     actions: {
-      setSourcePath: sourceQueue.setSourcePath,
-      setTitleOverride: sourceQueue.setTitleOverride as Dispatch<SetStateAction<string>>,
-      setAuthorOverride: sourceQueue.setAuthorOverride as Dispatch<SetStateAction<string>>,
+      setSourcePath: queueController.setSourcePath,
+      setTitleOverride: queueController.setTitleOverride as Dispatch<SetStateAction<string>>,
+      setAuthorOverride: queueController.setAuthorOverride as Dispatch<SetStateAction<string>>,
       setDragging: sourceQueue.setDragging,
       setPasteTitle: sourceQueue.setPasteTitle,
       setPastedText: sourceQueue.setPastedText,
@@ -213,11 +176,11 @@ export function useConversionPanelState({
       onRecommendVoice: preview.onRecommendVoice,
       onRunQueue: queueRunner.onRunQueue,
       onStartConversion: queueRunner.onStartConversion,
-      applySelectedQueueItem: sourceQueue.applySelectedQueueItem,
-      moveQueueItem: sourceQueue.moveQueueItem,
-      removeQueueItem: sourceQueue.removeQueueItem,
+      applySelectedQueueItem: queueController.applySelectedQueueItem,
+      moveQueueItem: queueController.moveQueueItem,
+      removeQueueItem: queueController.removeQueueItem,
       syncSelectedQueueEdits: (patch: QueueEditPatch) =>
-        sourceQueue.syncSelectedQueueEdits(patch),
+        queueController.syncSelectedQueueEdits(patch),
     },
   };
 }

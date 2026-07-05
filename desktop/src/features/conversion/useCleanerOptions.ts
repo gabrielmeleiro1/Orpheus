@@ -14,6 +14,7 @@ import {
   selectedCleanerBackendOption,
 } from "./cleanerBackendHelpers";
 import type { PersistedSettings } from "./conversionOptionsShared";
+import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
 
 export interface UseCleanerOptionsArgs {
   apiClient: ApiClient | null;
@@ -114,6 +115,7 @@ export function useCleanerOptions({
 
   const [cleanerRuntimeStatus, setCleanerRuntimeStatus] = useState("Checking cleaner runtime...");
   const [cleanerRuntimeError, setCleanerRuntimeError] = useState(false);
+  const beginOpenAiModelFetch = useLatestRequest();
 
   const availableCleanerBackendOptions = useMemo(
     () => filterAvailableCleanerBackendOptions(resolveCleanerBackendOptions(modelOptions), systemCapabilities),
@@ -297,9 +299,13 @@ export function useCleanerOptions({
     setOpenAiModelFetchLoading(true);
     setOpenAiModelFetchError(false);
     setOpenAiModelFetchStatus(`Fetching ${selectedCleanerBackend.display_name} models...`);
+    const isLatest = beginOpenAiModelFetch();
 
     try {
       const modelIds = await apiClient.fetchOpenAiModelIds(normalizedKey);
+      if (!isLatest()) {
+        return;
+      }
       const options = modelIds.map((model) => ({ value: model, label: model }));
       setFetchedOpenAiModelOptions(options);
       setOpenAiModelFetchStatus(
@@ -309,12 +315,16 @@ export function useCleanerOptions({
       );
       setOpenAiModelFetchError(options.length === 0);
     } catch (fetchError: unknown) {
-      setOpenAiModelFetchError(true);
-      setOpenAiModelFetchStatus(fetchError instanceof Error ? fetchError.message : "Cleaner model fetch failed.");
+      if (isLatest() && !isAbortLikeError(fetchError)) {
+        setOpenAiModelFetchError(true);
+        setOpenAiModelFetchStatus(fetchError instanceof Error ? fetchError.message : "Cleaner model fetch failed.");
+      }
     } finally {
-      setOpenAiModelFetchLoading(false);
+      if (isLatest()) {
+        setOpenAiModelFetchLoading(false);
+      }
     }
-  }, [apiClient, cleanerApiKey, selectedCleanerBackend]);
+  }, [apiClient, beginOpenAiModelFetch, cleanerApiKey, selectedCleanerBackend]);
 
   return {
     cleanerBackend,

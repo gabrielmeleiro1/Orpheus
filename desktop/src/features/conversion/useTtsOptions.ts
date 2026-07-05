@@ -11,6 +11,7 @@ import {
   parseSpeed,
   type PersistedSettings,
 } from "./conversionOptionsShared";
+import { isAbortLikeError } from "./useLatestRequest";
 
 const VOICE_FILTER_DEBOUNCE_MS = 180;
 
@@ -166,53 +167,49 @@ export function useTtsOptions({
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
 
     const loadVoices = async () => {
       try {
-        const response = await apiClient.getVoiceOptions(selectedEngine);
-        if (cancelled) {
+        const response = await apiClient.getVoiceOptions(selectedEngine, {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) {
           return;
         }
 
         const mapped = response.voices.map((voice) => mapVoiceOption(voice));
         setAllVoiceOptions(mapped);
-
-        const preferred = persistedSettingsRef.current.voice;
-        const nextVoice =
-          [selectedVoice, preferred]
-            .map((value) => String(value ?? "").trim())
-            .find((candidate) => candidate && mapped.some((voice) => voice.value === candidate)) ??
-          mapped[0]?.value ??
-          "";
-
-        setSelectedVoiceState(nextVoice);
-      } catch {
-        if (cancelled) {
+      } catch (loadError: unknown) {
+        if (controller.signal.aborted || isAbortLikeError(loadError)) {
           return;
         }
 
         const fallbackVoices = findEngine(modelOptions, selectedEngine)?.voices ?? [];
         const mapped = fallbackVoices.map((voice) => mapVoiceOption(voice));
         setAllVoiceOptions(mapped);
-
-        const preferred = persistedSettingsRef.current.voice;
-        const nextVoice =
-          [selectedVoice, preferred]
-            .map((value) => String(value ?? "").trim())
-            .find((candidate) => candidate && mapped.some((voice) => voice.value === candidate)) ??
-          mapped[0]?.value ??
-          "";
-        setSelectedVoiceState(nextVoice);
       }
     };
 
     void loadVoices();
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [apiClient, modelOptions, persistedSettingsRef, selectedEngine, selectedVoice]);
+  }, [apiClient, modelOptions, selectedEngine]);
+
+  useEffect(() => {
+    setSelectedVoiceState((current) => {
+      const preferred = persistedSettingsRef.current.voice;
+      return (
+        [current, preferred]
+          .map((value) => String(value ?? "").trim())
+          .find((candidate) => candidate && allVoiceOptions.some((voice) => voice.value === candidate)) ??
+        allVoiceOptions[0]?.value ??
+        ""
+      );
+    });
+  }, [allVoiceOptions, persistedSettingsRef]);
 
   useEffect(() => {
     setSelectedQuantizationState((previous) => {
