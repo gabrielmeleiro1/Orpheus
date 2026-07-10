@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
+import { usePrimaryRuntime } from "./app/usePrimaryRuntime";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
@@ -38,6 +39,7 @@ function App() {
     backendDisconnected: connectionState === "error",
   });
 
+  const primaryRuntime = usePrimaryRuntime(apiClient);
   const player = useAudioPlayer({ apiClient, library });
   const previousUiStateRef = useRef<string>("idle");
 
@@ -133,7 +135,7 @@ function App() {
         <header className="studio-status">
           <div>
             <h1>orpheus.local</h1>
-            <p>{`local / mlx / ${library.items.length} books indexed`}</p>
+            <p>{`local${primaryRuntime ? ` / ${primaryRuntime}` : ""} / ${library.items.length} books indexed`}</p>
           </div>
           <div className="studio-controls">
             {conversionJob.uiState === "running" ? (
