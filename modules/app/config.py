@@ -142,6 +142,7 @@ class AppConfig:
     # Audio settings
     mp3_bitrate: str = "128k"
     emit_chapter_mp3_artifacts: bool = False
+    enable_chapter_aac_packaging: bool = True
     normalize_volume: bool = True
     target_dbfs: float = -16.0
     
@@ -216,6 +217,9 @@ class AppConfig:
         env_emit_chapter_mp3 = _read_bool_env("AUDIOBOOK_EMIT_CHAPTER_MP3_ARTIFACTS")
         if env_emit_chapter_mp3 is not None:
             self.emit_chapter_mp3_artifacts = env_emit_chapter_mp3
+        env_chapter_aac = _read_bool_env("AUDIOBOOK_ENABLE_CHAPTER_AAC_PACKAGING")
+        if env_chapter_aac is not None:
+            self.enable_chapter_aac_packaging = env_chapter_aac
         env_pdf_backend = os.getenv("PDF_EXTRACTION_BACKEND")
         if env_pdf_backend is not None:
             requested_backend = env_pdf_backend.strip().lower()
@@ -308,6 +312,7 @@ class AppConfig:
             "tts_idle_timeout_seconds": self.tts_idle_timeout_seconds,
             "mp3_bitrate": self.mp3_bitrate,
             "emit_chapter_mp3_artifacts": self.emit_chapter_mp3_artifacts,
+            "enable_chapter_aac_packaging": self.enable_chapter_aac_packaging,
             "normalize_volume": self.normalize_volume,
             "target_dbfs": self.target_dbfs,
             "db_path": str(self.db_path) if self.db_path else None,

@@ -98,6 +98,28 @@ def test_tts_engine_precedence_explicit_over_config(tmp_path) -> None:
     assert spec.engine == "explicit-engine"
 
 
+def test_runtime_config_enables_chapter_aac_packaging_from_app_config(tmp_path) -> None:
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+        enable_chapter_aac_packaging=True,
+    )
+    resolver = RuntimeOptionsResolver(
+        config=config,
+        cleaner_api_limiter=MagicMock(),
+        runtime_validator=lambda *args, **kwargs: None,
+    )
+
+    pipeline_config = resolver.create_pipeline_config(
+        runtime_options=ConversionRuntimeOptions(voice="am_adam", speed=1.0),
+    )
+
+    assert pipeline_config.enable_chapter_aac_packaging is True
+    assert pipeline_config.enable_background_chapter_aac_encoding is True
+
+
 def test_runtime_options_precedence_prefers_explicit_quantization_over_payload(
     tmp_path,
 ) -> None:

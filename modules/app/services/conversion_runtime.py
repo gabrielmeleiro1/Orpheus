@@ -327,6 +327,7 @@ class RuntimeOptionsResolver:
             temp_dir=self._config.temp_dir,
             mp3_bitrate=self._config.mp3_bitrate,
             emit_chapter_mp3_artifacts=self._config.emit_chapter_mp3_artifacts,
+            enable_chapter_aac_packaging=self._config.enable_chapter_aac_packaging,
             normalize_volume=self._config.normalize_volume,
             target_dbfs=self._config.target_dbfs,
             chunk_size=self._config.chunk_size,
