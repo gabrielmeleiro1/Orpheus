@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { ModelOptionsResponse, SystemCapabilitiesResponse, TermSelectOption } from "../../types/api";
@@ -11,8 +11,17 @@ import {
   parseSpeed,
   type PersistedSettings,
 } from "./conversionOptionsShared";
+import { isAbortLikeError } from "./useLatestRequest";
 
 const VOICE_FILTER_DEBOUNCE_MS = 180;
+
+// The backend's local-runtime probe finishes a few seconds after startup and
+// reports runtime_probe.state === "pending"/"stale" until it does. We re-fetch
+// capabilities with modest backoff until the probe reports "fresh" so that
+// local backends stop looking unavailable, giving up after a bounded window.
+const CAPABILITIES_PROBE_POLL_BASE_MS = 1500;
+const CAPABILITIES_PROBE_POLL_MAX_MS = 6000;
+const CAPABILITIES_PROBE_MAX_WAIT_MS = 60000;
 
 export interface UseTtsOptionsArgs {
   apiClient: ApiClient | null;
@@ -52,6 +61,7 @@ export function useTtsOptions({
   const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
   const [allVoiceOptions, setAllVoiceOptions] = useState<TermSelectOption[]>([]);
+  const probeStateRef = useRef<string | undefined>(undefined);
 
   const [selectedEngine, setSelectedEngineState] = useState("");
   const [selectedVoice, setSelectedVoiceState] = useState("");
@@ -94,6 +104,7 @@ export function useTtsOptions({
   useEffect(() => {
     if (!apiClient) {
       settingsHydratedRef.current = false;
+      probeStateRef.current = undefined;
       setLoading(false);
       setError("");
       setModelOptions(null);
@@ -121,6 +132,7 @@ export function useTtsOptions({
 
         setModelOptions(models);
         setSystemCapabilities(capabilities);
+        probeStateRef.current = capabilities.runtime_probe?.state;
 
         const persisted = persistedSettingsRef.current;
 
@@ -160,59 +172,111 @@ export function useTtsOptions({
   }, [apiClient, persistedSettingsRef, settingsHydratedRef]);
 
   useEffect(() => {
+    if (!apiClient) {
+      return;
+    }
+
+    let cancelled = false;
+    let timer: number | null = null;
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    let attempt = 0;
+
+    const scheduleNext = () => {
+      if (cancelled || probeStateRef.current === "fresh") {
+        return;
+      }
+      if (Date.now() - startedAt >= CAPABILITIES_PROBE_MAX_WAIT_MS) {
+        return;
+      }
+      const delay = Math.min(
+        CAPABILITIES_PROBE_POLL_BASE_MS * 2 ** attempt,
+        CAPABILITIES_PROBE_POLL_MAX_MS,
+      );
+      attempt += 1;
+      timer = window.setTimeout(() => void poll(), delay);
+    };
+
+    const poll = async () => {
+      if (cancelled || probeStateRef.current === "fresh") {
+        return;
+      }
+      try {
+        const capabilities = await apiClient.getSystemCapabilities({ signal: controller.signal });
+        if (cancelled) {
+          return;
+        }
+        probeStateRef.current = capabilities.runtime_probe?.state;
+        setSystemCapabilities(capabilities);
+      } catch (pollError: unknown) {
+        if (cancelled || isAbortLikeError(pollError)) {
+          return;
+        }
+      }
+      scheduleNext();
+    };
+
+    scheduleNext();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [apiClient]);
+
+  useEffect(() => {
     if (!apiClient || !selectedEngine.trim()) {
       setAllVoiceOptions([]);
       setSelectedVoiceState("");
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
 
     const loadVoices = async () => {
       try {
-        const response = await apiClient.getVoiceOptions(selectedEngine);
-        if (cancelled) {
+        const response = await apiClient.getVoiceOptions(selectedEngine, {
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted) {
           return;
         }
 
         const mapped = response.voices.map((voice) => mapVoiceOption(voice));
         setAllVoiceOptions(mapped);
-
-        const preferred = persistedSettingsRef.current.voice;
-        const nextVoice =
-          [selectedVoice, preferred]
-            .map((value) => String(value ?? "").trim())
-            .find((candidate) => candidate && mapped.some((voice) => voice.value === candidate)) ??
-          mapped[0]?.value ??
-          "";
-
-        setSelectedVoiceState(nextVoice);
-      } catch {
-        if (cancelled) {
+      } catch (loadError: unknown) {
+        if (controller.signal.aborted || isAbortLikeError(loadError)) {
           return;
         }
 
         const fallbackVoices = findEngine(modelOptions, selectedEngine)?.voices ?? [];
         const mapped = fallbackVoices.map((voice) => mapVoiceOption(voice));
         setAllVoiceOptions(mapped);
-
-        const preferred = persistedSettingsRef.current.voice;
-        const nextVoice =
-          [selectedVoice, preferred]
-            .map((value) => String(value ?? "").trim())
-            .find((candidate) => candidate && mapped.some((voice) => voice.value === candidate)) ??
-          mapped[0]?.value ??
-          "";
-        setSelectedVoiceState(nextVoice);
       }
     };
 
     void loadVoices();
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [apiClient, modelOptions, persistedSettingsRef, selectedEngine, selectedVoice]);
+  }, [apiClient, modelOptions, selectedEngine]);
+
+  useEffect(() => {
+    setSelectedVoiceState((current) => {
+      const preferred = persistedSettingsRef.current.voice;
+      return (
+        [current, preferred]
+          .map((value) => String(value ?? "").trim())
+          .find((candidate) => candidate && allVoiceOptions.some((voice) => voice.value === candidate)) ??
+        allVoiceOptions[0]?.value ??
+        ""
+      );
+    });
+  }, [allVoiceOptions, persistedSettingsRef]);
 
   useEffect(() => {
     setSelectedQuantizationState((previous) => {

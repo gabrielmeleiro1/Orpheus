@@ -924,7 +924,8 @@ def test_conversion_service_copies_temp_web_upload_before_worker_starts(tmp_path
     )
 
     assert started_with["source_path"] == durable_path
-    assert source_path.is_file()
+    # The temp web upload is consumed (deleted) once copied into durable storage.
+    assert not source_path.exists()
     assert durable_path.is_file()
 
 
@@ -1050,7 +1051,8 @@ def test_conversion_service_persists_durable_source_path_for_temp_web_upload(tmp
 
     assert job.status == _JobStatus.COMPLETED
     assert repo.created_book.source_path == str(durable_path)
-    assert upload_source.is_file()
+    # The temp web upload is consumed (deleted) once copied into durable storage.
+    assert not upload_source.exists()
     assert durable_path.is_file()
 
 

@@ -1,19 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
-import {
-  createApiClientFromDesktopEndpoint,
-  type ApiClient,
-} from "./api/client";
+import { useBackendClient } from "./app/useBackendClient";
+import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
+import { usePrimaryRuntime } from "./app/usePrimaryRuntime";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
-import {
-  BACKEND_HEALTH_CHECK_INTERVAL_MS,
-  THEME_STORAGE_KEY,
-  describeDesktopBackendStatus,
-  isTauriRuntime,
-  readDesktopBackendStatus,
-  waitForDesktopEndpoint,
-} from "./features/dashboard/dashboardHelpers";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
 import { LiveClock } from "./features/dashboard/LiveClock";
 import { LibraryPanel } from "./features/library/LibraryPanel";
@@ -27,207 +18,36 @@ import {
   DashboardTabIcon,
   conversionPanelTabForDashboardTab,
 } from "./navigation/tabs";
-import type {
-  BackendConnectionState,
-  DashboardTab,
-  HealthResponse,
-  ThemeMode,
-} from "./types/api";
+import type { DashboardTab } from "./types/api";
+import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
 
-function messageFromUnknown(error: unknown, fallback: string): string {
-  if (error instanceof Error && error.message.trim()) {
-    return error.message;
-  }
-  if (typeof error === "string" && error.trim()) {
-    return error.trim();
-  }
-  return fallback;
-}
-
-export interface BackendMonitorFailureResolution {
-  clearClient: boolean;
-  connectionState: BackendConnectionState;
-  health: HealthResponse | null;
-  statusMessage: string;
-}
-
-export function resolveBackendMonitorFailure(
-  status: Awaited<ReturnType<typeof readDesktopBackendStatus>> | null,
-  error: unknown,
-): BackendMonitorFailureResolution {
-  if (status?.lifecycle === "failed" || status?.lifecycle === "stopped") {
-    return {
-      clearClient: true,
-      connectionState: "error",
-      health: null,
-      statusMessage: describeDesktopBackendStatus(status),
-    };
-  }
-
-  return {
-    clearClient: false,
-    connectionState: "checking",
-    health: null,
-    statusMessage: messageFromUnknown(error, "backend health check failed"),
-  };
-}
+export { nextBrowserHealthState, resolveBackendMonitorFailure } from "./app/useBackendClient";
 
 function App() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
-  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
-    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
-    return stored === "light" ? "light" : "dark";
-  });
-  const [connectionState, setConnectionState] = useState<BackendConnectionState>("checking");
-  const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>("resolving backend endpoint");
-  const [backendBaseUrl, setBackendBaseUrl] = useState<string>("");
-  const [apiClient, setApiClient] = useState<ApiClient | null>(null);
+  const {
+    apiClient,
+    backendBaseUrl,
+    connectionState,
+    health,
+    statusMessage,
+  } = useBackendClient();
+  const startCommandRef = useRef<(() => void) | null>(null);
 
   const library = useLibrary({
     apiClient,
     backendDisconnected: connectionState === "error",
   });
 
+  const primaryRuntime = usePrimaryRuntime(apiClient);
   const player = useAudioPlayer({ apiClient, library });
   const previousUiStateRef = useRef<string>("idle");
-
-  useEffect(() => {
-    document.body.setAttribute("data-theme", themeMode);
-    window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
-  }, [themeMode]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const bootstrap = async () => {
-      setConnectionState("checking");
-      setHealth(null);
-      setStatusMessage("resolving backend endpoint");
-
-      if (!isTauriRuntime()) {
-        setApiClient(null);
-        setBackendBaseUrl("");
-        setConnectionState("error");
-        setStatusMessage("desktop runtime unavailable; launch the Tauri app");
-        return;
-      }
-
-      try {
-        const endpoint = await waitForDesktopEndpoint();
-        if (cancelled) {
-          return;
-        }
-        if (!endpoint) {
-          setApiClient(null);
-          setBackendBaseUrl("");
-          setConnectionState("error");
-          setStatusMessage("desktop backend startup timed out after 60s");
-          return;
-        }
-
-        setBackendBaseUrl(endpoint.base_url);
-        setApiClient(createApiClientFromDesktopEndpoint(endpoint));
-      } catch (error: unknown) {
-        if (cancelled) {
-          return;
-        }
-        setApiClient(null);
-        setBackendBaseUrl("");
-        setConnectionState("error");
-        setStatusMessage(messageFromUnknown(error, "failed to request desktop backend endpoint"));
-      }
-    };
-
-    void bootstrap();
-
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!apiClient || !backendBaseUrl) {
-      return;
-    }
-
-    let cancelled = false;
-    let intervalId: number | null = null;
-
-    const markBackendUnavailable = (message: string) => {
-      if (cancelled) {
-        return;
-      }
-      setHealth(null);
-      setApiClient(null);
-      setBackendBaseUrl("");
-      setConnectionState("error");
-      setStatusMessage(message);
-    };
-
-    const checkBackend = async () => {
-      let status: Awaited<ReturnType<typeof readDesktopBackendStatus>> | null = null;
-
-      try {
-        status = await readDesktopBackendStatus();
-        if (cancelled) {
-          return;
-        }
-        if (status.lifecycle === "failed" || status.lifecycle === "stopped") {
-          markBackendUnavailable(describeDesktopBackendStatus(status));
-          return;
-        }
-        if (status.lifecycle !== "ready") {
-          setHealth(null);
-          setConnectionState("checking");
-          setStatusMessage(describeDesktopBackendStatus(status));
-          return;
-        }
-
-        const response = await apiClient.getHealth();
-        if (cancelled) {
-          return;
-        }
-        setHealth(response);
-        setConnectionState("connected");
-        setStatusMessage("backend connected");
-      } catch (error: unknown) {
-        if (cancelled) {
-          return;
-        }
-        const resolution = resolveBackendMonitorFailure(status, error);
-        setHealth(resolution.health);
-        setConnectionState(resolution.connectionState);
-        setStatusMessage(resolution.statusMessage);
-        if (resolution.clearClient) {
-          setApiClient(null);
-          setBackendBaseUrl("");
-        }
-      }
-    };
-
-    setConnectionState("checking");
-    setStatusMessage(`checking ${backendBaseUrl}/health`);
-
-    void checkBackend();
-    intervalId = window.setInterval(() => {
-      void checkBackend();
-    }, BACKEND_HEALTH_CHECK_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      if (intervalId !== null) {
-        window.clearInterval(intervalId);
-      }
-    };
-  }, [apiClient, backendBaseUrl]);
 
   const conversionJob = useConversionJob({
     apiClient,
     baseUrl: backendBaseUrl,
   });
   const refreshLibrary = library.refreshLibrary;
-  const cancelActiveConversion = conversionJob.cancelActiveConversion;
 
   useEffect(() => {
     const previous = previousUiStateRef.current;
@@ -245,47 +65,14 @@ function App() {
   }, [conversionJob.uiState, refreshLibrary]);
 
   const { playRelative, seekBy, seekTo, togglePlay } = player;
-
-  useEffect(() => {
-    const onGlobalKeydown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase() || "";
-      if (tag === "input" || tag === "textarea" || tag === "button" || target?.isContentEditable) {
-        return;
-      }
-      if (event.metaKey || event.ctrlKey || event.altKey) {
-        return;
-      }
-
-      const key = String(event.key || "").toLowerCase();
-      if (key === "s") {
-        const startButton = activeTab === "convert" || activeTab === "document" ? document.getElementById("start-btn") : null;
-        if (startButton instanceof HTMLButtonElement && !startButton.disabled) {
-          startButton.click();
-        }
-      } else if (key === "r") {
-        void refreshLibrary();
-      } else if (key === " ") {
-        event.preventDefault();
-        void togglePlay();
-      } else if (key === "arrowleft") {
-        event.preventDefault();
-        seekBy(-10);
-      } else if (key === "arrowright") {
-        event.preventDefault();
-        seekBy(10);
-      } else if (key === "n") {
-        void playRelative(1);
-      } else if (key === "p") {
-        void playRelative(-1);
-      }
-    };
-
-    document.addEventListener("keydown", onGlobalKeydown);
-    return () => {
-      document.removeEventListener("keydown", onGlobalKeydown);
-    };
-  }, [activeTab, cancelActiveConversion, playRelative, refreshLibrary, seekBy, togglePlay]);
+  useGlobalShortcuts({
+    activeTab,
+    startCommandRef,
+    refreshLibrary,
+    playRelative,
+    seekBy,
+    togglePlay,
+  });
 
   const isConversionPanelVisible = activeTab === "convert" || activeTab === "document" || activeTab === "settings";
   const conversionPanelTab = conversionPanelTabForDashboardTab(activeTab);
@@ -294,7 +81,7 @@ function App() {
     <main className="app-frame" role="application" aria-label="Orpheus dashboard">
       <aside className="rail" aria-label="Orpheus navigation">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">A</span>
+          <span className="brand-mark" aria-hidden="true">O</span>
           <span className="brand-name">Orpheus</span>
         </div>
 
@@ -325,24 +112,10 @@ function App() {
             className="rail-action stop"
             type="button"
             disabled={!conversionJob.activeJobId || conversionJob.isCancelling}
-            onClick={() => void cancelActiveConversion()}
+            onClick={() => void conversionJob.cancelActiveConversion()}
           >
             <span className="rail-dot" aria-hidden="true" />
             <span>{conversionJob.isCancelling ? "Stopping" : "Stop job"}</span>
-          </button>
-          <button
-            id="theme-toggle"
-            className="rail-action"
-            type="button"
-            onClick={() => setThemeMode((mode) => (mode === "dark" ? "light" : "dark"))}
-          >
-            <span className="rail-action-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M12 4v3M12 17v3M4 12h3M17 12h3" />
-                <path d="M7.5 7.5l2 2M14.5 14.5l2 2M16.5 7.5l-2 2M9.5 14.5l-2 2" />
-              </svg>
-            </span>
-            <span>{themeMode === "dark" ? "Light mode" : "Dark mode"}</span>
           </button>
           <button className="rail-action" type="button" onClick={() => void refreshLibrary()}>
             <span className="rail-action-icon" aria-hidden="true">
@@ -362,9 +135,15 @@ function App() {
         <header className="studio-status">
           <div>
             <h1>orpheus.local</h1>
-            <p>{`local / mlx / ${library.items.length} books indexed`}</p>
+            <p>{`local${primaryRuntime ? ` / ${primaryRuntime}` : ""} / ${library.items.length} books indexed`}</p>
           </div>
           <div className="studio-controls">
+            {conversionJob.uiState === "running" ? (
+              <span className="control converting-control">
+                <BrailleSpinner active />
+                <span>converting</span>
+              </span>
+            ) : null}
             <span className={`status-dot${connectionState === "connected" ? " is-connected" : ""}`} title={connectionState} aria-hidden="true" />
             <span className="sr-only" role="status">{`backend ${connectionState}`}</span>
             <span className="control clock-control"><LiveClock /></span>
@@ -399,6 +178,7 @@ function App() {
             health={health}
             statusMessage={statusMessage}
             conversionJob={conversionJob}
+            startCommandRef={startCommandRef}
           />
 
           <section

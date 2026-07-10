@@ -37,11 +37,17 @@ from modules.storage.models import BookSummary, ConversionResult
 from modules.storage.repository import IBookRepository
 from modules.storage.sqlite_repo import SQLiteRepository
 from modules.tts.api_rate_limit import GlobalAPILimiter
+from modules.tts.cleaner_api import fetch_openai_model_ids
+from modules.tts.cleaner_backends.metadata import list_cleaner_backend_options
 from modules.tts.cleaner_backends.registry import (
     available_cleaner_backends,
     requires_api_key_cleaner_backend,
 )
-from modules.tts.cleaner_config import list_cleaner_backends
+from modules.tts.cleaner_config import (
+    DEFAULT_API_BASE_URL,
+    list_cleaner_backends,
+    list_cuda_cleaner_models,
+)
 from modules.tts.device_memory import get_device_memory_policy
 from modules.tts.factory import TTSEngineFactory
 from modules.tts.runtime_spec import TTSRuntimeSpec
@@ -59,7 +65,15 @@ class JobStatus(Enum):
 
 @dataclass
 class ConversionJob:
-    """Handle for an active conversion job."""
+    """Handle for an active conversion job.
+
+    All status/pipeline/result fields are mutated from the worker thread while
+    the request thread reads snapshots (/active, SSE) and requests cancellation.
+    A single per-job lock guards every compound transition and multi-field read
+    so callers never observe a torn state. The lock is never held across
+    ``pipeline.cancel()`` or other long operations: the pipeline reference is
+    copied out under the lock and the call happens after release.
+    """
 
     id: str
     book_id: Optional[int]
@@ -69,24 +83,71 @@ class ConversionJob:
     error: Optional[str] = None
     cancel_requested: bool = False
     _thread: Optional[threading.Thread] = field(default=None, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def cancel(self) -> bool:
-        if self.status not in {JobStatus.IDLE, JobStatus.RUNNING}:
-            return False
-
-        self.cancel_requested = True
-        if self.pipeline:
-            self.pipeline.cancel()
+        with self._lock:
+            if self.status not in {JobStatus.IDLE, JobStatus.RUNNING}:
+                return False
+            self.cancel_requested = True
+            pipeline = self.pipeline
+        if pipeline is not None:
+            pipeline.cancel()
         return True
 
     def is_active(self) -> bool:
-        return self.status in {JobStatus.IDLE, JobStatus.RUNNING}
+        with self._lock:
+            return self.status in {JobStatus.IDLE, JobStatus.RUNNING}
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         if self._thread is None:
             return True
         self._thread.join(timeout=timeout)
         return not self._thread.is_alive()
+
+    # ---- Synchronized transitions (called by the worker thread) ----
+
+    def begin_running(self, thread: Optional[threading.Thread] = None) -> None:
+        with self._lock:
+            if thread is not None:
+                self._thread = thread
+            self.status = JobStatus.RUNNING
+
+    def attach_pipeline(self, pipeline: Any) -> bool:
+        """Attach the running pipeline; return True if cancel was already asked."""
+        with self._lock:
+            self.pipeline = pipeline
+            return self.cancel_requested
+
+    def detach_pipeline(self) -> None:
+        with self._lock:
+            self.pipeline = None
+
+    def set_result(self, result: Optional[ConversionResult]) -> None:
+        with self._lock:
+            self.result = result
+
+    def complete(self, book_id: Optional[int]) -> None:
+        with self._lock:
+            self.status = JobStatus.COMPLETED
+            self.book_id = book_id
+
+    def fail(self, error_message: str, failure_result: ConversionResult) -> None:
+        with self._lock:
+            self.status = JobStatus.FAILED
+            self.error = error_message
+            if self.result is None or bool(getattr(self.result, "success", False)):
+                self.result = failure_result
+
+    def mark_cancelled(self, message: str) -> None:
+        with self._lock:
+            self.status = JobStatus.CANCELLED
+            self.error = message
+
+    def read_state(self) -> tuple[str, Optional[int], JobStatus, Optional[str]]:
+        """Return a consistent (id, book_id, status, error) snapshot."""
+        with self._lock:
+            return (self.id, self.book_id, self.status, self.error)
 
 
 @dataclass
@@ -187,6 +248,9 @@ class AppController:
 
     def preflight_source(self, source_path: Path | str) -> dict:
         return self._library_service.preflight_source(source_path)
+
+    def sweep_stale_uploads(self) -> int:
+        return self._library_service.sweep_stale_uploads()
 
     def get_book_playback_file(self, book_id: int) -> Optional[Path]:
         return self._library_service.get_book_playback_file(book_id)
@@ -430,6 +494,20 @@ class AppController:
 
     def get_available_api_cleaner_models(self) -> list[str]:
         return self._voice_service.get_available_api_cleaner_models()
+
+    def get_cuda_cleaner_models(self) -> list[str]:
+        return list_cuda_cleaner_models()
+
+    def get_cleaner_backend_options(self) -> list[dict[str, Any]]:
+        return list_cleaner_backend_options()
+
+    def list_openai_models(self, api_key: str) -> dict[str, Any]:
+        models = fetch_openai_model_ids(api_key=api_key, base_url=DEFAULT_API_BASE_URL)
+        return {
+            "provider": "openai",
+            "base_url": DEFAULT_API_BASE_URL,
+            "models": models,
+        }
 
     def get_system_capabilities(self) -> dict[str, Any]:
         runtime_probe = self._runtime_capability_service.get_system_runtime_snapshot()

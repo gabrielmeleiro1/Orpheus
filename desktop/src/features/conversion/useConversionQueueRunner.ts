@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { StartConversionRequest } from "../../types/api";
@@ -31,18 +31,79 @@ export function useConversionQueueRunner({
   setQueueStatus,
 }: UseConversionQueueRunnerArgs) {
   const [queueRunning, setQueueRunning] = useState(false);
+  const startCommandInFlightRef = useRef(false);
 
   const onStartConversion = useCallback(async () => {
-    const payload = buildStartPayload(selectedQueueItem ?? undefined);
-    if (selectedQueueItem) {
-      syncSelectedQueueEdits({
-        sourcePath: payload.source_path,
-        title: payload.title ?? "",
-        author: payload.author ?? "",
-      });
+    if (startCommandInFlightRef.current) {
+      return;
     }
-    await conversionJob.startConversion(payload);
-  }, [buildStartPayload, conversionJob, selectedQueueItem, syncSelectedQueueEdits]);
+    startCommandInFlightRef.current = true;
+    const targetItem = selectedQueueItem;
+    const payload = buildStartPayload(targetItem ?? undefined);
+    try {
+      if (targetItem) {
+        syncSelectedQueueEdits({
+          sourcePath: payload.source_path,
+          title: payload.title ?? "",
+          author: payload.author ?? "",
+        });
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "converting",
+          error: "",
+        }));
+      }
+
+      const startResult = await conversionJob.startConversion(payload);
+      if (!targetItem) {
+        return;
+      }
+
+      if (!startResult.ok) {
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "failed",
+          error: startResult.error,
+        }));
+        return;
+      }
+
+      updateQueueItem(targetItem.id, (current) => ({
+        ...current,
+        jobId: startResult.jobId,
+        status: "converting",
+      }));
+
+      const finalStatus = (await conversionJob.waitForTerminalState(startResult.jobId)).status;
+      if (finalStatus === "completed") {
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "done",
+          error: "",
+        }));
+        return;
+      }
+
+      const message =
+        finalStatus === "cancelled" ? "conversion cancelled" : `conversion ${finalStatus}`;
+      updateQueueItem(targetItem.id, (current) => ({
+        ...current,
+        status: "failed",
+        error: message,
+      }));
+    } catch (error: unknown) {
+      if (targetItem) {
+        const message = error instanceof Error ? error.message : "conversion failed";
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "failed",
+          error: message,
+        }));
+      }
+    } finally {
+      startCommandInFlightRef.current = false;
+    }
+  }, [buildStartPayload, conversionJob, selectedQueueItem, syncSelectedQueueEdits, updateQueueItem]);
 
   const onRunQueue = useCallback(async () => {
     if (!apiClient) {
@@ -79,17 +140,17 @@ export function useConversionQueueRunner({
         }));
         const payload = buildStartPayload(item);
         try {
-          const jobId = await conversionJob.startConversion(payload);
-          if (!jobId) {
-            throw new Error(conversionJob.formError || "conversion failed to start");
+          const startResult = await conversionJob.startConversion(payload);
+          if (!startResult.ok) {
+            throw new Error(startResult.error);
           }
           updateQueueItem(item.id, (current) => ({
             ...current,
-            jobId,
+            jobId: startResult.jobId,
             status: "converting",
           }));
           setQueueStatus(`Converting ${item.label}...`);
-          const finalStatus = (await conversionJob.waitForTerminalState(jobId)).status;
+          const finalStatus = (await conversionJob.waitForTerminalState(startResult.jobId)).status;
           if (finalStatus === "completed") {
             updateQueueItem(item.id, (current) => ({
               ...current,

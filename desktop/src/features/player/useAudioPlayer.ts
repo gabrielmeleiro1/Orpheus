@@ -1,66 +1,17 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactEventHandler,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
-import { formatTimeValue, PLAYBACK_SAVE_INTERVAL_SEC } from "../dashboard/dashboardHelpers";
+import { formatClock } from "../../format/time";
 import type { UseLibraryResult } from "../library/useLibrary";
 import type { LibraryBookDetail, LibraryChapterDetail } from "../../types/api";
+import { chapterStartSeconds, currentChapterForPosition } from "./chapterPositionModel";
 import { useAudioAnalyser } from "./useAudioAnalyser";
-
-interface PersistPlaybackOptions {
-  bookId?: number | null;
-  positionSec?: number;
-  force?: boolean;
-  silent?: boolean;
-}
+import { useAudioElementBindings } from "./useAudioElementBindings";
+import { usePlaybackPersistence } from "./playbackPersistence";
 
 interface UseAudioPlayerArgs {
   apiClient: ApiClient | null;
   library: UseLibraryResult;
-}
-
-const PLAYBACK_UI_UPDATE_INTERVAL_MS = 1000;
-
-function chapterStartSeconds(chapters: LibraryChapterDetail[], targetNumber: number): number {
-  let cursor = 0;
-  for (const chapter of chapters) {
-    if (chapter.number === targetNumber) {
-      return cursor;
-    }
-    cursor += Math.max(0, Number(chapter.duration_ms || 0) / 1000);
-  }
-  return 0;
-}
-
-function currentChapterForPosition(
-  chapters: LibraryChapterDetail[],
-  elapsedSeconds: number,
-): LibraryChapterDetail | null {
-  if (chapters.length === 0) {
-    return null;
-  }
-
-  let cursor = 0;
-  let fallback = chapters[0];
-  for (const chapter of chapters) {
-    const duration = Math.max(0, Number(chapter.duration_ms || 0) / 1000);
-    if (duration <= 0) {
-      fallback = chapter;
-      continue;
-    }
-    if (elapsedSeconds >= cursor && elapsedSeconds < cursor + duration) {
-      return chapter;
-    }
-    cursor += duration;
-    fallback = chapter;
-  }
-  return fallback;
 }
 
 export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
@@ -76,13 +27,12 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   const [playerTitle, setPlayerTitle] = useState("player: unavailable");
   const audioVisualizer = useAudioAnalyser(audioRef, isPlaying);
 
-  const pendingResumeBookIdRef = useRef<number | null>(null);
-  const pendingResumePositionSecRef = useRef(0);
-  const lastSavedPlaybackBookIdRef = useRef<number | null>(null);
-  const lastSavedPlaybackSecRef = useRef<number | null>(null);
-  const lastPlaybackUiUpdateMsRef = useRef(0);
-  const lastPlaybackUiSecondRef = useRef(-1);
   const previousSelectedBookIdRef = useRef<number | null>(null);
+  // Monotonic load id + latest-selection mirror guard loadBookAudio against
+  // rapid next/previous: an older in-flight load must never set src/state late.
+  const loadSequenceRef = useRef(0);
+  const selectedBookIdLatestRef = useRef<number | null>(library.selectedBookId);
+  selectedBookIdLatestRef.current = library.selectedBookId;
 
   const playerEligible = Boolean(library.selectedBookId && library.selectedBookPlayable);
   const playerVisible = Boolean(playerEligible && library.selectedBookId !== playerDismissedBookId);
@@ -116,8 +66,27 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       return;
     }
 
-    setPlayerTitle(`player: ${audio.paused ? "paused" : "playing"} @ ${formatTimeValue(audio.currentTime || 0)}`);
+    setPlayerTitle(`player: ${audio.paused ? "paused" : "playing"} @ ${formatClock(audio.currentTime || 0)}`);
   }, [library.selectedBookId, loadedBookId, playerEligible]);
+
+  const onSaveFailed = useCallback(() => {
+    setPlayerTitle("playback save failed");
+  }, []);
+
+  const {
+    persistLoadedBookPlaybackPosition,
+    restorePendingResumePosition,
+    waitForAudioReady,
+    setPendingResume,
+    clearPendingResume,
+    markPlaybackSaved,
+  } = usePlaybackPersistence({
+    apiClient,
+    library,
+    audioRef,
+    loadedBookId,
+    onSaveFailed,
+  });
 
   const clearAudioSource = useCallback(() => {
     const audio = audioRef.current;
@@ -130,144 +99,27 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     setAudioSrc(null);
     loadedBookIdRef.current = null;
     setLoadedBookId(null);
-    pendingResumeBookIdRef.current = null;
-    pendingResumePositionSecRef.current = 0;
+    clearPendingResume();
     setIsPlaying(false);
     setElapsedSec(0);
     setTotalSec(0);
     updatePlayerStatus();
-  }, [updatePlayerStatus]);
+  }, [clearPendingResume, updatePlayerStatus]);
 
-  const persistBookPlaybackPosition = useCallback(
-    async (bookId: number, positionSec: number, options: PersistPlaybackOptions = {}): Promise<number | null> => {
-      if (!apiClient || !bookId) {
-        return null;
-      }
-
-      const normalizedPosition = Math.max(0, Math.round((Number(positionSec) || 0) * 10) / 10);
-      const force = Boolean(options.force);
-
-      if (
-        !force &&
-        lastSavedPlaybackBookIdRef.current === bookId &&
-        lastSavedPlaybackSecRef.current !== null &&
-        Math.abs(normalizedPosition - lastSavedPlaybackSecRef.current) < PLAYBACK_SAVE_INTERVAL_SEC
-      ) {
-        return lastSavedPlaybackSecRef.current;
-      }
-
-      lastSavedPlaybackBookIdRef.current = bookId;
-      lastSavedPlaybackSecRef.current = normalizedPosition;
-
-      try {
-        const response = await apiClient.updateBookPlaybackPosition(bookId, normalizedPosition);
-        const savedPosition = Number(response.position_sec);
-        const resolved = Number.isFinite(savedPosition) ? savedPosition : normalizedPosition;
-        lastSavedPlaybackSecRef.current = resolved;
-        if (library.selectedBookId === bookId) {
-          library.setSelectedPlaybackPosition(resolved);
-        }
-        return resolved;
-      } catch {
-        if (!options.silent) {
-          setPlayerTitle("playback save failed");
-        }
-        return null;
-      }
-    },
-    [apiClient, library],
-  );
-
-  const persistLoadedBookPlaybackPosition = useCallback(
-    async (options: PersistPlaybackOptions = {}): Promise<number | null> => {
-      const bookId = options.bookId ?? loadedBookId;
-      if (!bookId) {
-        return null;
-      }
-
+  const handleAudioMetadata = useCallback(
+    (expectedBookId?: number | null) => {
       const audio = audioRef.current;
-      const fallbackPosition =
-        library.selectedBookId === bookId
-          ? Number(library.selectedBookDetail?.playback_position_sec || 0)
-          : 0;
-
-      const resolvedPosition =
-        typeof options.positionSec === "number"
-          ? options.positionSec
-          : audio && loadedBookId === bookId && audio.src
-            ? Number(audio.currentTime || 0)
-            : fallbackPosition;
-
-      return persistBookPlaybackPosition(bookId, resolvedPosition, options);
-    },
-    [library.selectedBookDetail?.playback_position_sec, library.selectedBookId, loadedBookId, persistBookPlaybackPosition],
-  );
-
-  const waitForAudioReady = useCallback((audio: HTMLAudioElement | null): Promise<void> => {
-    if (!audio || audio.readyState >= 1) {
-      return Promise.resolve();
-    }
-
-    return new Promise((resolve) => {
-      let settled = false;
-      let timeoutId: number | null = null;
-
-      const finish = () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        audio.removeEventListener("loadedmetadata", finish);
-        audio.removeEventListener("durationchange", finish);
-        audio.removeEventListener("canplay", finish);
-        audio.removeEventListener("error", finish);
-        if (timeoutId !== null) {
-          window.clearTimeout(timeoutId);
-        }
-        resolve();
-      };
-
-      audio.addEventListener("loadedmetadata", finish, { once: true });
-      audio.addEventListener("durationchange", finish, { once: true });
-      audio.addEventListener("canplay", finish, { once: true });
-      audio.addEventListener("error", finish, { once: true });
-      timeoutId = window.setTimeout(finish, 2000);
-    });
-  }, []);
-
-  const restorePendingResumePosition = useCallback((audio: HTMLAudioElement | null, expectedBookId?: number | null) => {
-    const resolvedBookId = expectedBookId ?? loadedBookId;
-    if (!audio || pendingResumeBookIdRef.current !== resolvedBookId) {
-      return;
-    }
-
-    const target = Math.max(0, Number(pendingResumePositionSecRef.current || 0));
-    const duration = Number.isFinite(audio.duration) ? audio.duration : target;
-    const safeTarget = Math.max(0, Math.min(duration || target, target));
-
-    if (safeTarget > 0) {
-      try {
-        audio.currentTime = safeTarget;
-      } catch {
+      if (!audio) {
         return;
       }
-    }
 
-    pendingResumeBookIdRef.current = null;
-    pendingResumePositionSecRef.current = 0;
-  }, [loadedBookId]);
-
-  const handleAudioMetadata = useCallback((expectedBookId?: number | null) => {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-
-    restorePendingResumePosition(audio, expectedBookId);
-    setTotalSec(Number.isFinite(audio.duration) && audio.duration > 0 ? Math.floor(audio.duration) : 0);
-    setElapsedSec(Math.floor(audio.currentTime || 0));
-    updatePlayerStatus();
-  }, [restorePendingResumePosition, updatePlayerStatus]);
+      restorePendingResumePosition(audio, expectedBookId);
+      setTotalSec(Number.isFinite(audio.duration) && audio.duration > 0 ? Math.floor(audio.duration) : 0);
+      setElapsedSec(Math.floor(audio.currentTime || 0));
+      updatePlayerStatus();
+    },
+    [restorePendingResumePosition, updatePlayerStatus],
+  );
 
   const loadBookAudio = useCallback(
     async (bookId: number | null, detail: LibraryBookDetail | null, autoPlay: boolean): Promise<void> => {
@@ -280,11 +132,19 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
         return;
       }
 
-      if (loadedBookId !== bookId || !audio.src) {
-        pendingResumeBookIdRef.current = bookId;
-        pendingResumePositionSecRef.current = Number(detail.playback_position_sec || 0);
+      const requestId = ++loadSequenceRef.current;
+      const isStale = () =>
+        loadSequenceRef.current !== requestId || selectedBookIdLatestRef.current !== bookId;
 
-        const nextAudioUrl = new URL(await apiClient.getLibraryAudioUrl(bookId));
+      if (loadedBookId !== bookId || !audio.src) {
+        setPendingResume(bookId, Number(detail.playback_position_sec || 0));
+
+        const audioUrl = await apiClient.getLibraryAudioUrl(bookId);
+        if (isStale()) {
+          return;
+        }
+
+        const nextAudioUrl = new URL(audioUrl);
         nextAudioUrl.searchParams.set("v", String(Date.now()));
 
         audio.crossOrigin = "anonymous";
@@ -295,11 +155,17 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
         audio.load();
 
         await waitForAudioReady(audio);
+        if (isStale()) {
+          return;
+        }
         restorePendingResumePosition(audio, bookId);
         handleAudioMetadata(bookId);
       }
 
       if (autoPlay) {
+        if (isStale()) {
+          return;
+        }
         try {
           await audio.play();
         } catch {
@@ -312,6 +178,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       handleAudioMetadata,
       loadedBookId,
       restorePendingResumePosition,
+      setPendingResume,
       waitForAudioReady,
     ],
   );
@@ -507,127 +374,26 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   }, [clearAudioSource, library.selectedBookPlayable, updatePlayerStatus]);
 
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) {
-      return;
-    }
-
-    audio.volume = Math.max(0, Math.min(100, volume)) / 100;
-    audio.muted = volume === 0;
-  }, [volume]);
-
-  useEffect(() => {
     updatePlayerStatus();
   }, [elapsedSec, isPlaying, totalSec, updatePlayerStatus]);
 
-  useEffect(() => {
-    const onBeforeUnload = () => {
-      void persistLoadedBookPlaybackPosition({ force: true, silent: true });
-    };
-
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => {
-      window.removeEventListener("beforeunload", onBeforeUnload);
-    };
-  }, [persistLoadedBookPlaybackPosition]);
-
-  const audioProps = useMemo(() => {
-    const handleTimeUpdate: ReactEventHandler<HTMLAudioElement> = () => {
-      const audio = audioRef.current;
-      if (!audio) {
-        return;
-      }
-
-      const nextElapsedSec = Math.floor(audio.currentTime || 0);
-      const nowMs = window.performance.now();
-      const shouldUpdateUi =
-        nextElapsedSec !== lastPlaybackUiSecondRef.current ||
-        nowMs - lastPlaybackUiUpdateMsRef.current >= PLAYBACK_UI_UPDATE_INTERVAL_MS;
-
-      if (!shouldUpdateUi) {
-        return;
-      }
-
-      lastPlaybackUiSecondRef.current = nextElapsedSec;
-      lastPlaybackUiUpdateMsRef.current = nowMs;
-      setElapsedSec(nextElapsedSec);
-      if (Number.isFinite(audio.duration) && audio.duration > 0) {
-        setTotalSec(Math.floor(audio.duration));
-      }
-
-      if (!audio.paused) {
-        void persistLoadedBookPlaybackPosition({ force: false, silent: true });
-      }
-
-      updatePlayerStatus();
-    };
-
-    return {
-      src: audioSrc,
-      preload: "metadata" as const,
-      onLoadedMetadata: () => {
-        handleAudioMetadata();
-      },
-      onDurationChange: () => {
-        handleAudioMetadata();
-      },
-      onPlay: () => {
-        setIsPlaying(true);
-        updatePlayerStatus();
-      },
-      onPause: () => {
-        setIsPlaying(false);
-        updatePlayerStatus();
-      },
-      onTimeUpdate: handleTimeUpdate,
-      onVolumeChange: () => {
-        const audio = audioRef.current;
-        if (!audio) {
-          return;
-        }
-
-        const nextVolume = audio.muted ? 0 : Math.round((audio.volume || 0) * 100);
-        setVolume(nextVolume);
-        updatePlayerStatus();
-      },
-      onEmptied: () => {
-        setIsPlaying(false);
-        setElapsedSec(0);
-        setTotalSec(0);
-        updatePlayerStatus();
-      },
-      onEnded: () => {
-        setIsPlaying(false);
-        const finishedBookId = loadedBookId;
-        if (finishedBookId) {
-          lastSavedPlaybackBookIdRef.current = finishedBookId;
-          lastSavedPlaybackSecRef.current = 0;
-          void persistLoadedBookPlaybackPosition({
-            bookId: finishedBookId,
-            positionSec: 0,
-            force: true,
-            silent: true,
-          });
-        }
-        if (library.selectedBookId === finishedBookId) {
-          library.setSelectedPlaybackPosition(0);
-        }
-        updatePlayerStatus();
-        void playRelative(1);
-      },
-      onError: () => {
-        setPlayerTitle("playback failed");
-      },
-    };
-  }, [
+  const audioProps = useAudioElementBindings({
+    audioRef,
     audioSrc,
-    handleAudioMetadata,
-    library,
     loadedBookId,
+    volume,
+    library,
     persistLoadedBookPlaybackPosition,
-    playRelative,
+    markPlaybackSaved,
+    handleAudioMetadata,
     updatePlayerStatus,
-  ]);
+    playRelative,
+    setIsPlaying,
+    setElapsedSec,
+    setTotalSec,
+    setVolume,
+    setPlayerTitle,
+  });
 
   return {
     audioRef,

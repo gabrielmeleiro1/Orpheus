@@ -12,9 +12,6 @@ from modules.contracts.conversion_runtime_options import (
     parallel_warmup_runtime_option_specs,
 )
 from modules.web.deps import ControllerDep
-from modules.tts.cleaner_api import fetch_openai_model_ids
-from modules.tts.cleaner_backends.metadata import list_cleaner_backend_options
-from modules.tts.cleaner_config import DEFAULT_API_BASE_URL, list_cuda_cleaner_models
 
 router = APIRouter()
 
@@ -36,8 +33,8 @@ def get_model_options(controller: ControllerDep) -> dict:
         "tts_engines": controller.get_available_tts_engines(),
         "cleaner_models": controller.get_available_cleaner_models(),
         "api_cleaner_models": controller.get_available_api_cleaner_models(),
-        "cuda_cleaner_models": list_cuda_cleaner_models(),
-        "cleaner_backend_options": list_cleaner_backend_options(),
+        "cuda_cleaner_models": controller.get_cuda_cleaner_models(),
+        "cleaner_backend_options": controller.get_cleaner_backend_options(),
     }
 
 
@@ -53,13 +50,8 @@ def get_voice_options(controller: ControllerDep, engine: Optional[str] = None) -
 
 
 @router.post("/api/options/openai/models")
-def list_openai_models(payload: OpenAIModelListRequest) -> dict:
-    models = fetch_openai_model_ids(api_key=payload.api_key, base_url=DEFAULT_API_BASE_URL)
-    return {
-        "provider": "openai",
-        "base_url": DEFAULT_API_BASE_URL,
-        "models": models,
-    }
+def list_openai_models(payload: OpenAIModelListRequest, controller: ControllerDep) -> dict:
+    return controller.list_openai_models(api_key=payload.api_key)
 
 
 @router.post("/api/options/parallel/warmup")

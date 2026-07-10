@@ -1,7 +1,8 @@
 .drop-zone {
   align-items: center;
-  background: var(--panel-deep);
-  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
   cursor: pointer;
   display: grid;
   gap: var(--density-panel-gap);
@@ -9,15 +10,24 @@
   margin: 0 0 12px;
   min-height: 104px;
   padding: 14px 16px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
 }
 
 .drop-zone-icon {
   align-items: center;
   border: 1px solid var(--border-strong);
-  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   display: grid;
   height: 40px;
   justify-items: center;
+  transition: border-color 120ms ease, color 120ms ease;
   width: 40px;
 }
 
@@ -25,9 +35,9 @@
   fill: none;
   height: 20px;
   stroke: currentColor;
-  stroke-linecap: square;
-  stroke-linejoin: miter;
-  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
   width: 20px;
 }
 
@@ -43,7 +53,7 @@
 }
 
 .drop-zone-copy span {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   font-size: 11px;
 }
 
@@ -53,8 +63,8 @@
 
 .drop-zone:hover .drop-zone-icon,
 .drop-zone.drag-over .drop-zone-icon {
-  border-color: var(--text-muted);
-  color: var(--text);
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  color: var(--accent);
 }
 
 .source-file-label {
@@ -74,12 +84,15 @@
 .queue-header,
 .preflight-title {
   align-items: center;
-  color: var(--text-muted);
+  color: var(--text-tertiary);
   display: flex;
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 600;
   gap: 10px;
   justify-content: space-between;
+  letter-spacing: 0.06em;
   margin-bottom: 10px;
+  text-transform: uppercase;
 }
 
 .paste-grid {
@@ -102,28 +115,33 @@
 
 .queue-row {
   align-items: center;
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   display: grid;
   gap: var(--density-panel-gap);
   grid-template-columns: minmax(0, 1fr) max-content;
   min-height: 38px;
-  padding: 7px 9px;
+  padding: 7px 10px;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.queue-row:hover {
+  background: var(--surface-hover);
 }
 
 .queue-row.is-selected {
-  border-color: var(--border-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .queue-item-main,
 .chapter-main {
   background: transparent;
   border: 0;
-  color: var(--text-dim);
+  color: var(--text-secondary);
   cursor: pointer;
   display: grid;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12px;
+  font-size: 13px;
   gap: 6px;
   min-width: 0;
   padding: 0;
@@ -153,8 +171,18 @@
 .queue-item-status,
 .chapter-number,
 .chapter-duration {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.queue-item-status.status-converting {
+  color: var(--accent);
+}
+
+.queue-spinner {
+  margin-right: 5px;
 }
 
 .chapter-duration {
@@ -174,9 +202,11 @@
 
 .voice-suggest-output,
 .preflight-sample {
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
   font-size: 11px;
   line-height: 1.5;
   margin: 8px 0 10px;
@@ -196,7 +226,7 @@
 
 .advanced-settings summary,
 .book-detail-toggle summary {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 11px;
   list-style: none;
@@ -206,9 +236,16 @@
 
 .advanced-settings summary {
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   display: inline-flex;
   min-height: 38px;
   padding: 10px 14px;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.advanced-settings summary:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .advanced-settings summary::-webkit-details-marker,

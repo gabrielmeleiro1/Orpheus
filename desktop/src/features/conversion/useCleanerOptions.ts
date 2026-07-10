@@ -10,10 +10,13 @@ import {
   deriveCleanerRuntimeStatus,
   filterAvailableCleanerBackendOptions,
   mapCleanerBackendOptionToTermSelect,
+  preferredCleanerBackendId,
   resolveCleanerBackendOptions,
+  resolveInitialCleanerBackendId,
   selectedCleanerBackendOption,
 } from "./cleanerBackendHelpers";
 import type { PersistedSettings } from "./conversionOptionsShared";
+import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
 
 export interface UseCleanerOptionsArgs {
   apiClient: ApiClient | null;
@@ -45,30 +48,20 @@ export interface UseCleanerOptionsResult {
   cleanerRuntimeError: boolean;
 }
 
-interface InitialBackendSelection {
-  backendId: string;
-  restoredPersistedBackend: boolean;
-}
-
 function resolveInitialBackendSelection(
   modelOptions: ModelOptionsResponse | null,
   systemCapabilities: SystemCapabilitiesResponse | null,
   persisted: PersistedSettings,
-): InitialBackendSelection {
+) {
   const availableOptions = filterAvailableCleanerBackendOptions(
     resolveCleanerBackendOptions(modelOptions),
     systemCapabilities,
   );
-  const fallbackBackend = availableOptions[0]?.id ?? "";
 
   const hasConfiguredCleanerBackend = Boolean(persisted.cleaner_backend_configured);
   const persistedBackend = hasConfiguredCleanerBackend ? String(persisted.cleaner_backend ?? "").trim() : "";
 
-  if (persistedBackend && availableOptions.some((option) => option.id === persistedBackend)) {
-    return { backendId: persistedBackend, restoredPersistedBackend: true };
-  }
-
-  return { backendId: fallbackBackend, restoredPersistedBackend: false };
+  return resolveInitialCleanerBackendId(availableOptions, persistedBackend);
 }
 
 function resolveInitialCudaDevice(
@@ -114,6 +107,7 @@ export function useCleanerOptions({
 
   const [cleanerRuntimeStatus, setCleanerRuntimeStatus] = useState("Checking cleaner runtime...");
   const [cleanerRuntimeError, setCleanerRuntimeError] = useState(false);
+  const beginOpenAiModelFetch = useLatestRequest();
 
   const availableCleanerBackendOptions = useMemo(
     () => filterAvailableCleanerBackendOptions(resolveCleanerBackendOptions(modelOptions), systemCapabilities),
@@ -205,15 +199,28 @@ export function useCleanerOptions({
     }
 
     const isAvailable = availableCleanerBackendOptions.some((option) => option.id === cleanerBackend);
-    if (isAvailable) {
+    // When the user has explicitly configured a backend we only intervene if it
+    // drops out of availability. When the selection is still an auto-default we
+    // keep tracking the preferred (local-first) option as the runtime probe
+    // finishes and local backends flip from unavailable to available.
+    if (isAvailable && cleanerBackendConfigured) {
       return;
     }
 
-    const nextBackend = availableCleanerBackendOptions[0]?.id ?? "";
+    const nextBackend = cleanerBackendConfigured
+      ? availableCleanerBackendOptions[0]?.id ?? ""
+      : preferredCleanerBackendId(availableCleanerBackendOptions);
     if (nextBackend !== cleanerBackend) {
       selectCleanerBackend(nextBackend);
     }
-  }, [apiClient, availableCleanerBackendOptions, cleanerBackend, modelOptions, selectCleanerBackend]);
+  }, [
+    apiClient,
+    availableCleanerBackendOptions,
+    cleanerBackend,
+    cleanerBackendConfigured,
+    modelOptions,
+    selectCleanerBackend,
+  ]);
 
   useEffect(() => {
     setCleanerModelState((previous) => {
@@ -297,9 +304,13 @@ export function useCleanerOptions({
     setOpenAiModelFetchLoading(true);
     setOpenAiModelFetchError(false);
     setOpenAiModelFetchStatus(`Fetching ${selectedCleanerBackend.display_name} models...`);
+    const isLatest = beginOpenAiModelFetch();
 
     try {
       const modelIds = await apiClient.fetchOpenAiModelIds(normalizedKey);
+      if (!isLatest()) {
+        return;
+      }
       const options = modelIds.map((model) => ({ value: model, label: model }));
       setFetchedOpenAiModelOptions(options);
       setOpenAiModelFetchStatus(
@@ -309,12 +320,16 @@ export function useCleanerOptions({
       );
       setOpenAiModelFetchError(options.length === 0);
     } catch (fetchError: unknown) {
-      setOpenAiModelFetchError(true);
-      setOpenAiModelFetchStatus(fetchError instanceof Error ? fetchError.message : "Cleaner model fetch failed.");
+      if (isLatest() && !isAbortLikeError(fetchError)) {
+        setOpenAiModelFetchError(true);
+        setOpenAiModelFetchStatus(fetchError instanceof Error ? fetchError.message : "Cleaner model fetch failed.");
+      }
     } finally {
-      setOpenAiModelFetchLoading(false);
+      if (isLatest()) {
+        setOpenAiModelFetchLoading(false);
+      }
     }
-  }, [apiClient, cleanerApiKey, selectedCleanerBackend]);
+  }, [apiClient, beginOpenAiModelFetch, cleanerApiKey, selectedCleanerBackend]);
 
   return {
     cleanerBackend,

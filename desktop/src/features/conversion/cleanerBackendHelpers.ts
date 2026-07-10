@@ -120,6 +120,39 @@ export function mapCleanerBackendOptionToTermSelect(option: CleanerBackendOption
   };
 }
 
+// A "local" cleaner backend runs on-device and needs no API key (mlx/cuda),
+// so it can start converting without extra credentials. The server declares
+// backends api-first, so we cannot rely on declaration order to find one.
+export function isLocalCleanerBackendOption(option: CleanerBackendOption): boolean {
+  return option.is_local || !option.requires_api_key;
+}
+
+// Prefer an available local backend (keeping server order among locals as the
+// tie-break), falling back to the first available option only when no local
+// backend is available.
+export function preferredCleanerBackendId(availableOptions: CleanerBackendOption[]): string {
+  const localOption = availableOptions.find(isLocalCleanerBackendOption);
+  return (localOption ?? availableOptions[0])?.id ?? "";
+}
+
+export interface InitialCleanerBackendSelection {
+  backendId: string;
+  restoredPersistedBackend: boolean;
+}
+
+// Pure selection policy: a persisted, still-available choice always wins;
+// otherwise default to the preferred (local-first) available backend.
+export function resolveInitialCleanerBackendId(
+  availableOptions: CleanerBackendOption[],
+  persistedBackendId: string,
+): InitialCleanerBackendSelection {
+  const normalizedPersisted = String(persistedBackendId ?? "").trim();
+  if (normalizedPersisted && availableOptions.some((option) => option.id === normalizedPersisted)) {
+    return { backendId: normalizedPersisted, restoredPersistedBackend: true };
+  }
+  return { backendId: preferredCleanerBackendId(availableOptions), restoredPersistedBackend: false };
+}
+
 export function defaultCleanerCudaDevice(option: CleanerBackendOption | null): string {
   return String(option?.default_device ?? "").trim();
 }

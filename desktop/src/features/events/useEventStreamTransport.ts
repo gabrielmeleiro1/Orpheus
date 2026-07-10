@@ -3,6 +3,11 @@ import { useEffect, useState } from "react";
 import type { ApiClient } from "../../api/client";
 import type { DesktopEventPayload, EventStreamConnectionState } from "../../types/api";
 import { normalizeEventPayload } from "./eventStreamModel";
+import {
+  createTransportBackoff,
+  shouldRefreshQueryToken,
+  type CachedQueryToken,
+} from "./transportBackoff";
 
 interface UseEventStreamTransportArgs {
   apiClient: ApiClient | null;
@@ -40,6 +45,8 @@ export function useEventStreamTransport({
     let closed = false;
     let eventSource: EventSource | null = null;
     let reconnectTimer: number | null = null;
+    let cachedQueryToken: CachedQueryToken | null = null;
+    const backoff = createTransportBackoff();
     setStreamState("connecting");
 
     const closeEventSource = () => {
@@ -56,10 +63,11 @@ export function useEventStreamTransport({
       if (reconnectTimer !== null) {
         window.clearTimeout(reconnectTimer);
       }
+      const delayMs = backoff.nextDelayMs();
       reconnectTimer = window.setTimeout(() => {
         reconnectTimer = null;
         void connect();
-      }, 1000);
+      }, delayMs);
     };
 
     const connect = async (): Promise<void> => {
@@ -71,8 +79,14 @@ export function useEventStreamTransport({
       let queryToken = "";
       if (apiClient.usesDesktopAuth) {
         try {
-          const response = await apiClient.createDesktopQueryToken({ scope: "events" });
-          queryToken = response.token;
+          if (shouldRefreshQueryToken(cachedQueryToken, Date.now())) {
+            const response = await apiClient.createDesktopQueryToken({ scope: "events" });
+            cachedQueryToken = {
+              token: response.token,
+              expiresAt: response.expires_at * 1000,
+            };
+          }
+          queryToken = cachedQueryToken?.token ?? "";
         } catch {
           if (!closed) {
             setStreamState("error");
@@ -95,6 +109,7 @@ export function useEventStreamTransport({
           return;
         }
         setStreamState("open");
+        backoff.reset();
         onOpen();
       };
 

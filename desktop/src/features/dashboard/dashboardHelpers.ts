@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { DesktopBackendEndpoint, DesktopBackendStatus } from "../../types/api";
 
-export const THEME_STORAGE_KEY = "orpheus.dashboard.theme";
 export const PLAYBACK_SAVE_INTERVAL_SEC = 15;
 export const BACKEND_HEALTH_CHECK_INTERVAL_MS = 2_000;
 
@@ -13,17 +12,6 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     window.setTimeout(resolve, ms);
   });
-}
-
-export function formatTimeValue(seconds: number): string {
-  const whole = Math.max(0, Math.floor(Number(seconds) || 0));
-  const minutes = Math.floor(whole / 60);
-  const remainder = whole % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
-}
-
-export function isTauriRuntime(): boolean {
-  return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
 }
 
 export async function readDesktopBackendStatus(): Promise<DesktopBackendStatus> {
