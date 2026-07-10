@@ -75,7 +75,7 @@ export function TermSelect({ id, label, value, options, placeholder, disabled, o
                 aria-selected={isSelected}
                 onClick={() => choose(index)}
                 onMouseEnter={() => highlightTo(index)}
-                style={isActive ? { background: "var(--hover)" } : undefined}
+                style={isActive ? { background: "var(--surface-hover)" } : undefined}
               >
                 <span className="term-select-option-mark" aria-hidden="true" />
                 <span className="term-select-option-label">{option.label}</span>

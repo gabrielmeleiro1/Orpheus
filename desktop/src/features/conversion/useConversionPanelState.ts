@@ -156,6 +156,7 @@ export function useConversionPanelState({
       title: item.title || item.label,
       statusText: `${item.status}${item.error ? ` / ${item.error}` : ""}`,
       statusClassName: `queue-item-status status-${item.status}`,
+      converting: item.status === "converting",
       selected,
       canMoveUp: index !== 0 && !queueRunner.queueRunning,
       canMoveDown: index !== queueController.queueItems.length - 1 && !queueRunner.queueRunning,

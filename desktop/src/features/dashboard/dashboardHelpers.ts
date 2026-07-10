@@ -2,7 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type { DesktopBackendEndpoint, DesktopBackendStatus } from "../../types/api";
 
-export const THEME_STORAGE_KEY = "orpheus.dashboard.theme";
 export const PLAYBACK_SAVE_INTERVAL_SEC = 15;
 export const BACKEND_HEALTH_CHECK_INTERVAL_MS = 2_000;
 

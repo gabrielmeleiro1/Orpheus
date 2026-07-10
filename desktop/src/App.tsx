@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 
 import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
-import { useThemeMode } from "./app/useThemeMode";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
@@ -19,12 +18,12 @@ import {
   conversionPanelTabForDashboardTab,
 } from "./navigation/tabs";
 import type { DashboardTab } from "./types/api";
+import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
 
 export { nextBrowserHealthState, resolveBackendMonitorFailure } from "./app/useBackendClient";
 
 function App() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
-  const { themeMode, setThemeMode } = useThemeMode();
   const {
     apiClient,
     backendBaseUrl,
@@ -80,7 +79,7 @@ function App() {
     <main className="app-frame" role="application" aria-label="Orpheus dashboard">
       <aside className="rail" aria-label="Orpheus navigation">
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">A</span>
+          <span className="brand-mark" aria-hidden="true">O</span>
           <span className="brand-name">Orpheus</span>
         </div>
 
@@ -116,20 +115,6 @@ function App() {
             <span className="rail-dot" aria-hidden="true" />
             <span>{conversionJob.isCancelling ? "Stopping" : "Stop job"}</span>
           </button>
-          <button
-            id="theme-toggle"
-            className="rail-action"
-            type="button"
-            onClick={() => setThemeMode((mode) => (mode === "dark" ? "light" : "dark"))}
-          >
-            <span className="rail-action-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M12 4v3M12 17v3M4 12h3M17 12h3" />
-                <path d="M7.5 7.5l2 2M14.5 14.5l2 2M16.5 7.5l-2 2M9.5 14.5l-2 2" />
-              </svg>
-            </span>
-            <span>{themeMode === "dark" ? "Light mode" : "Dark mode"}</span>
-          </button>
           <button className="rail-action" type="button" onClick={() => void refreshLibrary()}>
             <span className="rail-action-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
@@ -151,6 +136,12 @@ function App() {
             <p>{`local / mlx / ${library.items.length} books indexed`}</p>
           </div>
           <div className="studio-controls">
+            {conversionJob.uiState === "running" ? (
+              <span className="control converting-control">
+                <BrailleSpinner active />
+                <span>converting</span>
+              </span>
+            ) : null}
             <span className={`status-dot${connectionState === "connected" ? " is-connected" : ""}`} title={connectionState} aria-hidden="true" />
             <span className="sr-only" role="status">{`backend ${connectionState}`}</span>
             <span className="control clock-control"><LiveClock /></span>

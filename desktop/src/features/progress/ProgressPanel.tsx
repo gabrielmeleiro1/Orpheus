@@ -1,4 +1,5 @@
 import type { ConversionJobStatus, PerformanceSnapshot, ProgressStageView } from "../../types/api";
+import { GlyphProgress } from "../../ui/ascii/GlyphProgress";
 import "./progress.css";
 
 interface ProgressPanelProps {
@@ -137,6 +138,7 @@ export function ProgressPanel({
 
         <div className="progress-focus-meta">
           <span id="status-text">{statusText || uiState}</span>
+          <GlyphProgress pct={boundedProgress} className="progress-glyphs" />
           <span id="eta-text">{etaText || "eta: --:--"}</span>
         </div>
 

@@ -1,0 +1,42 @@
+.braille-spinner {
+  color: var(--accent);
+  display: inline-block;
+  font-family: var(--font-mono);
+  line-height: 1;
+  text-align: center;
+  width: 1ch;
+}
+
+.glyph-activity {
+  color: var(--text-tertiary);
+  display: block;
+  font-family: var(--font-mono);
+  line-height: 1;
+  overflow: hidden;
+  transition: color 180ms ease;
+  white-space: nowrap;
+}
+
+.glyph-activity.is-active {
+  color: var(--accent);
+}
+
+.glyph-progress {
+  font-family: var(--font-mono);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.glyph-progress-filled {
+  color: var(--accent);
+}
+
+.glyph-progress-empty {
+  color: var(--surface-active);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .glyph-activity {
+    transition: none;
+  }
+}
