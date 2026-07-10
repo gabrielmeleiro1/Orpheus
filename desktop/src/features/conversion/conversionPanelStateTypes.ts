@@ -109,6 +109,7 @@ export interface QueueItemViewModel {
   title: string;
   statusText: string;
   statusClassName: string;
+  converting: boolean;
   selected: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;

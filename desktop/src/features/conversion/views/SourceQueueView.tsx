@@ -3,6 +3,7 @@ import type {
   ConversionPanelActions,
   SourceQueueViewModel,
 } from "../conversionPanelStateTypes";
+import { BrailleSpinner } from "../../../ui/ascii/BrailleSpinner";
 
 interface SourceQueueViewProps {
   sourceQueue: SourceQueueViewModel;
@@ -123,7 +124,10 @@ export function SourceQueueView({
               <div key={item.id} className={`queue-row${item.selected ? " is-selected" : ""}`}>
                 <button className="queue-item-main" type="button" onClick={() => actions.selectQueueItem(item.id)}>
                   <span className="queue-item-title">{item.title}</span>
-                  <span className={item.statusClassName}>{item.statusText}</span>
+                  <span className={item.statusClassName}>
+                    {item.converting ? <BrailleSpinner active className="queue-spinner" /> : null}
+                    {item.statusText}
+                  </span>
                 </button>
                 <div className="queue-item-actions">
                   <button className="btn btn-compact" type="button" disabled={!item.canMoveUp} onClick={() => actions.moveQueueItem(item.id, -1)}>

@@ -6,7 +6,7 @@
 }
 
 .v-panel {
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   min-width: 0;
 }
 
@@ -30,29 +30,34 @@
 .book-title {
   color: var(--text);
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   line-height: 1.2;
   overflow-wrap: anywhere;
 }
 
 .panel-subtitle,
 .book-subtitle {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   font-size: 12px;
   margin-top: 4px;
   overflow-wrap: anywhere;
 }
 
 .tiny-badge {
-  background: var(--panel-soft);
-  border: 1px solid var(--border);
-  color: var(--text-muted);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
   display: inline-block;
   flex-shrink: 0;
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
   min-width: 36px;
-  padding: 4px 6px;
+  padding: 3px 6px;
   text-align: center;
+  text-transform: uppercase;
 }
 
 .wave-card {
@@ -64,7 +69,7 @@
 
 .wave-grid {
   background-image:
-    linear-gradient(to bottom, transparent 0, transparent 46px, rgba(255, 255, 255, 0.1) 47px, transparent 50px);
+    linear-gradient(to bottom, transparent 0, transparent 46px, rgba(255, 255, 255, 0.05) 47px, transparent 50px);
   background-size: 100% 42px;
   min-height: 132px;
   overflow: hidden;
@@ -99,11 +104,12 @@
 }
 
 .metric {
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   min-height: 48px;
   min-width: 0;
-  padding: 8px;
+  padding: 8px 10px;
 }
 
 .metric-label,
@@ -112,10 +118,11 @@
 .status-label,
 .pipeline-head,
 .service-group {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: block;
-  font-size: 11px;
-  letter-spacing: 0.24em;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   margin-bottom: 6px;
   text-transform: uppercase;
 }
@@ -124,8 +131,10 @@
 .metric-value {
   color: var(--text);
   display: block;
-  font-size: 13px;
-  font-weight: 700;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
   overflow-wrap: anywhere;
 }
 
@@ -141,25 +150,29 @@
 }
 
 .status-card::after {
-  background: var(--text);
+  background: var(--accent);
+  border-radius: 50%;
   content: "";
-  height: 7px;
+  height: 6px;
   position: absolute;
   right: 12px;
   top: 12px;
-  width: 7px;
+  width: 6px;
 }
 
 .status-number {
   color: var(--text);
   display: block;
-  font-size: 20px;
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
   line-height: 1;
   margin-bottom: 10px;
 }
 
 .status-detail {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: block;
   font-size: 12px;
   overflow-wrap: anywhere;
@@ -184,10 +197,11 @@
   --conversion-activity-progress: 0%;
   align-self: stretch;
   background:
-    linear-gradient(to bottom, rgba(236, 238, 231, 0.03), transparent 42%),
-    repeating-linear-gradient(to bottom, var(--panel-soft) 0, var(--panel-soft) 1px, transparent 1px, transparent 18px),
-    var(--panel-deep);
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02), transparent 42%),
+    repeating-linear-gradient(to bottom, var(--surface-hover) 0, var(--surface-hover) 1px, transparent 1px, transparent 18px),
+    var(--bg-elevated);
   border: 1px solid var(--border);
+  border-radius: var(--radius);
   display: grid;
   gap: 10px;
   grid-template-rows: minmax(112px, 1fr) 10px auto;
@@ -198,7 +212,7 @@
 }
 
 .conversion-activity::before {
-  background: linear-gradient(90deg, transparent, rgba(236, 238, 231, 0.22), transparent);
+  background: linear-gradient(90deg, transparent, rgba(201, 160, 108, 0.16), transparent);
   content: "";
   inset: 0;
   opacity: 0;
@@ -211,81 +225,25 @@
   opacity: 0.7;
 }
 
-.conversion-activity-grid {
+.conversion-activity-glyphs {
   align-items: end;
-  display: grid;
-  gap: 5px;
-  grid-template-columns: repeat(10, minmax(0, 1fr));
+  display: flex;
   min-height: 112px;
+  overflow: hidden;
   position: relative;
   z-index: 1;
 }
 
-.conversion-activity-bar {
-  background: var(--text-faint);
-  display: block;
-  height: 24%;
-  min-height: 18px;
-  opacity: 0.55;
-}
-
-.conversion-activity-bar:nth-child(2n) {
-  height: 52%;
-}
-
-.conversion-activity-bar:nth-child(3n) {
-  height: 76%;
-}
-
-.conversion-activity-bar:nth-child(5n) {
-  height: 38%;
-}
-
-.conversion-activity.is-running .conversion-activity-bar {
-  animation: conversion-activity-bar 1.15s ease-in-out infinite;
-  background: var(--text-muted);
-  opacity: 0.88;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(2) {
-  animation-delay: 90ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(3) {
-  animation-delay: 180ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(4) {
-  animation-delay: 270ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(5) {
-  animation-delay: 360ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(6) {
-  animation-delay: 450ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(7) {
-  animation-delay: 540ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(8) {
-  animation-delay: 630ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(9) {
-  animation-delay: 720ms;
-}
-
-.conversion-activity.is-running .conversion-activity-bar:nth-child(10) {
-  animation-delay: 810ms;
+.conversion-activity-glyphs .glyph-activity {
+  font-size: 24px;
+  letter-spacing: 3px;
+  width: 100%;
 }
 
 .conversion-activity-progress {
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--border);
+  border-radius: 5px;
   overflow: hidden;
   position: relative;
   z-index: 1;
@@ -300,12 +258,14 @@
 }
 
 .conversion-activity-readout {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: flex;
+  font-family: var(--font-mono);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
   gap: 6px;
   justify-content: space-between;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.05em;
   min-width: 0;
   position: relative;
   text-transform: uppercase;
@@ -362,31 +322,35 @@
 }
 
 .pipeline-meta {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: block;
   font-size: 11px;
 }
 
 .dashboard-bar {
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
+  border-radius: 4px;
   display: block;
-  height: 10px;
+  height: 8px;
   min-width: 0;
   overflow: hidden;
   width: 100%;
 }
 
 .dashboard-bar span {
-  background: var(--text-muted);
+  background: var(--accent);
+  border-radius: 3px;
   display: block;
   height: 100%;
   transition: width 450ms ease;
 }
 
 .percent {
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
   font-size: 12px;
+  font-variant-numeric: tabular-nums;
   text-align: right;
 }
 
@@ -403,7 +367,17 @@
 }
 
 .recent-list {
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.recent-row {
+  transition: background 100ms ease;
+}
+
+.recent-row:hover {
+  background: var(--surface-hover);
 }
 
 .recent-row {
@@ -421,9 +395,10 @@
 }
 
 .square {
-  background: var(--text);
-  height: 8px;
-  width: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+  height: 7px;
+  width: 7px;
 }
 
 .recent-title,
@@ -443,7 +418,7 @@
 .recent-meta,
 .recent-state,
 .service-meta {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: block;
   font-size: 11px;
   overflow: hidden;
@@ -470,7 +445,7 @@
 
 .service-status {
   align-self: center;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 11px;
   text-align: right;
 }
@@ -491,17 +466,6 @@
 
   to {
     transform: translateX(120%);
-  }
-}
-
-@keyframes conversion-activity-bar {
-  0%,
-  100% {
-    transform: scaleY(0.58);
-  }
-
-  50% {
-    transform: scaleY(1);
   }
 }
 
@@ -536,8 +500,8 @@
 @media (prefers-reduced-motion: reduce) {
   .dashboard-bar span,
   .conversion-activity::before,
-  .conversion-activity-bar,
   .conversion-activity-progress-fill,
+  .recent-row,
   .audio-waveform-canvas {
     animation: none;
     transition: none;

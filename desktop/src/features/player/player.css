@@ -1,6 +1,6 @@
 .player-bar {
-  background: var(--bg);
-  border-top: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  border-top: 1px solid var(--border);
   flex-shrink: 0;
   height: auto;
   min-height: 64px;
@@ -22,7 +22,14 @@
 }
 
 .btn-play {
-  border-color: var(--text-muted);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+}
+
+.btn-play:hover {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 .player-close-btn {
@@ -43,7 +50,7 @@
 }
 
 .player-track-title {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   font-size: 11px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -58,8 +65,10 @@
 }
 
 .player-time {
-  color: var(--text-muted);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
   text-align: center;
 }
 
@@ -67,11 +76,11 @@
 .player-volume {
   -webkit-appearance: none;
   appearance: none;
-  background: var(--panel-deep);
-  border: 1px solid var(--border);
-  border-radius: 0;
+  background: var(--surface-active);
+  border: 0;
+  border-radius: 3px;
   cursor: pointer;
-  height: 8px;
+  height: 5px;
   outline: none;
   width: 100%;
 }
@@ -79,11 +88,17 @@
 .player-seek::-webkit-slider-thumb,
 .player-volume::-webkit-slider-thumb {
   -webkit-appearance: none;
-  background: var(--text);
-  border-radius: 0;
+  background: var(--accent);
+  border-radius: 50%;
   cursor: pointer;
   height: 12px;
+  transition: transform 120ms ease;
   width: 12px;
+}
+
+.player-seek::-webkit-slider-thumb:hover,
+.player-volume::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
 }
 
 .player-volume-wrap {
@@ -94,9 +109,19 @@
 }
 
 .player-volume-label {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .player-seek::-webkit-slider-thumb,
+  .player-volume::-webkit-slider-thumb {
+    transition: none;
+  }
 }
 
 @media (max-width: 800px) {

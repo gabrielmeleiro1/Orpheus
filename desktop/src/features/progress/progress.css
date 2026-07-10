@@ -5,17 +5,19 @@
 }
 
 .progress-strip {
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
+  border-radius: 5px;
   display: block;
-  height: 10px;
+  height: 9px;
   min-width: 0;
   overflow: hidden;
   width: 100%;
 }
 
 .progress-strip-fill {
-  background: var(--text-muted);
+  background: var(--accent-muted);
+  border-radius: 4px;
   display: block;
   height: 100%;
   transition: width 450ms ease;
@@ -26,13 +28,13 @@
 }
 
 .progress-focus.is-canceled {
-  border-color: var(--error);
+  border-color: var(--negative);
 }
 
 .progress-focus.is-canceled .progress-percent,
 .progress-focus.is-canceled .progress-title,
 .progress-focus.is-canceled #status-text {
-  color: var(--error);
+  color: var(--negative);
 }
 
 .progress-focus-header {
@@ -46,14 +48,18 @@
 .progress-title {
   color: var(--text);
   font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
 .progress-percent {
   color: var(--accent);
+  font-family: var(--font-mono);
   font-size: 24px;
-  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
   line-height: 1;
 }
 
@@ -62,12 +68,20 @@
 }
 
 .progress-focus-meta {
-  color: var(--text-muted);
+  align-items: center;
+  color: var(--text-secondary);
   display: flex;
+  font-family: var(--font-mono);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   gap: 14px;
   justify-content: space-between;
   margin-bottom: 14px;
+}
+
+.progress-glyphs {
+  font-size: 12px;
+  letter-spacing: 1px;
 }
 
 .subtask-list {
@@ -86,12 +100,14 @@
 
 .subtask-label,
 .subtask-value {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: 11px;
   overflow-wrap: anywhere;
 }
 
 .subtask-value {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -111,34 +127,39 @@
 .performance-item strong {
   color: var(--text);
   display: block;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
   margin-bottom: 4px;
   overflow-wrap: anywhere;
 }
 
 .performance-item span:last-child {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: block;
   font-size: 11px;
   overflow-wrap: anywhere;
 }
 
 #stage-list {
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   margin-bottom: 14px;
   padding: var(--density-panel-pad);
 }
 
 .stage-row {
   align-items: center;
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: grid;
   font-size: 11px;
   gap: var(--density-panel-gap);
   grid-template-columns: 96px 130px minmax(120px, 1fr) 48px;
   min-height: 30px;
   padding: 4px 0;
+  transition: color 120ms ease;
 }
 
 .stage-active {
@@ -156,8 +177,10 @@
 }
 
 .stage-status {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
   font-size: 11px;
+  font-variant-numeric: tabular-nums;
   text-align: right;
 }
 

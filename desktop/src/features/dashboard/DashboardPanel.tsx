@@ -9,6 +9,7 @@ import type {
 import type { UseLibraryResult } from "../library/useLibrary";
 import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
 import { AudioWaveformCanvas } from "./AudioWaveformCanvas";
+import { GlyphActivity } from "../../ui/ascii/GlyphActivity";
 import { formatClockWithHours, formatDurationClockWithHours } from "../../format/time";
 import "./dashboard.css";
 
@@ -53,7 +54,6 @@ function progressWidth(value: number): { width: string } {
   return { width: `${clampPercent(value)}%` };
 }
 
-const conversionActivityBars = Array.from({ length: 10 }, (_, index) => index);
 
 export function DashboardPanel({
   hidden,
@@ -167,10 +167,8 @@ export function DashboardPanel({
               style={conversionActivityStyle}
               aria-hidden="true"
             >
-              <div className="conversion-activity-grid">
-                {conversionActivityBars.map((bar) => (
-                  <span className="conversion-activity-bar" key={bar} />
-                ))}
+              <div className="conversion-activity-glyphs">
+                <GlyphActivity active={conversionIsActive} />
               </div>
               <div className="conversion-activity-progress">
                 <span className="conversion-activity-progress-fill" />
