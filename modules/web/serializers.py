@@ -41,11 +41,25 @@ def job_status_value(job) -> str:
 
 
 def job_payload(job) -> dict:
+    read_state = getattr(job, "read_state", None)
+    if callable(read_state):
+        job_id, book_id, status, error = read_state()
+    else:
+        job_id = job.id
+        book_id = getattr(job, "book_id", None)
+        status = getattr(job, "status", None)
+        error = getattr(job, "error", None)
+
+    if hasattr(status, "value"):
+        status_value = status.value
+    else:
+        status_value = str(status) if status is not None else "unknown"
+
     return {
-        "id": job.id,
-        "book_id": getattr(job, "book_id", None),
-        "status": job_status_value(job),
-        "error": getattr(job, "error", None),
+        "id": job_id,
+        "book_id": book_id,
+        "status": status_value,
+        "error": error,
     }
 
 

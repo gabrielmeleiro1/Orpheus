@@ -12,10 +12,6 @@ export function nowStatus(connectionState: BackendConnectionState): string {
   return "error";
 }
 
-export function isTauriRuntime(): boolean {
-  return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
-}
-
 export function splitPath(path: string): string {
   const segments = path.split(/[\\/]+/).filter(Boolean);
   return segments.length > 0 ? segments[segments.length - 1] : path;

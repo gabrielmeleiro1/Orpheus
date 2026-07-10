@@ -14,7 +14,7 @@ from modules.contracts.conversion_runtime_options import (
     conversion_runtime_option_field_names,
 )
 from modules.contracts.conversion_runtime import merge_runtime_options
-from modules.pipeline.book_workspace import MAX_BOOK_TITLE_LENGTH
+from modules.contracts.limits import MAX_BOOK_TITLE_LENGTH
 from modules.web.deps import ControllerDep, EventBrokerDep, TempDirDep, call_with_http_errors
 from modules.web.serializers import job_payload, job_status_value
 from modules.web.source_handles import resolve_source_reference

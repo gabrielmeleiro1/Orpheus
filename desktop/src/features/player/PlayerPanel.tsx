@@ -3,17 +3,11 @@ import {
   type ReactEventHandler,
   type Ref,
 } from "react";
+import { formatClock } from "../../format/time";
 import "./player.css";
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
-}
-
-function formatPlayerTime(seconds: number): string {
-  const totalSeconds = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-  const minutes = Math.floor(totalSeconds / 60);
-  const remainder = totalSeconds % 60;
-  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
 }
 
 interface PlayerPanelAudioProps {
@@ -168,7 +162,7 @@ export function PlayerPanel({
           </div>
           <div className="player-timeline">
             <span id="player-elapsed" className="player-time">
-              {formatPlayerTime(normalizedElapsedSec)}
+              {formatClock(normalizedElapsedSec)}
             </span>
             <input
               id="player-seek"
@@ -183,7 +177,7 @@ export function PlayerPanel({
               onChange={handleSeekChange}
             />
             <span id="player-duration" className="player-time">
-              {formatPlayerTime(normalizedDurationSec)}
+              {formatClock(normalizedDurationSec)}
             </span>
           </div>
         </div>

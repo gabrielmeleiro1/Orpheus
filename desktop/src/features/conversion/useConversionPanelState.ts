@@ -1,9 +1,11 @@
-import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
 
 import type { ConversionMode } from "../../types/api";
+import { cleanerBackendUsesCudaFields } from "./cleanerBackendHelpers";
+import { compactSample, nowStatus, splitPath } from "./conversionPanelHelpers";
 import { useConversionOptions } from "./useConversionOptions";
-import { useConversionPreflight } from "./useConversionPreflight";
 import { useConversionPreview } from "./useConversionPreview";
+import { useConversionQueueController } from "./useConversionQueueController";
 import { useConversionQueueRunner } from "./useConversionQueueRunner";
 import { useConversionSourceQueue } from "./useConversionSourceQueue";
 import { useConversionSubmitPayload } from "./useConversionSubmitPayload";
@@ -16,13 +18,22 @@ import type { ConversionQueueItem } from "./conversionPanelModel";
 
 export type {
   ConversionPanelActions,
-  ConversionPanelFormState,
-  ConversionPanelQueueState,
-  ConversionPanelShellState,
   ConversionPanelViewModel,
   QueueEditPatch,
   UseConversionPanelStateArgs,
 } from "./conversionPanelStateTypes";
+
+const BROWSER_SOURCE_ACCEPT = ".pdf,.epub,.txt,.md";
+
+function preflightMeta(preflight: NonNullable<ConversionQueueItem["preflight"]>): string {
+  const count = Number(preflight.chapter_count || 0);
+  const chapterText = count === 1 ? "1 chapter" : `${count} chapters`;
+  const sizeText =
+    preflight.size_bytes > 1024 * 1024
+      ? `${(preflight.size_bytes / (1024 * 1024)).toFixed(1)} MB`
+      : `${Math.max(1, Math.round(preflight.size_bytes / 1024))} KB`;
+  return `${preflight.source_type || "source"} / ${chapterText} / ${sizeText}`;
+}
 
 export function useConversionPanelState({
   activeTab,
@@ -32,6 +43,7 @@ export function useConversionPanelState({
   health,
   statusMessage,
   conversionJob,
+  startCommandRef,
 }: UseConversionPanelStateArgs): ConversionPanelViewModel {
   const isDocumentMode = activeTab === "document";
   const conversionMode: ConversionMode = isDocumentMode ? "document_audio" : "audiobook";
@@ -44,78 +56,42 @@ export function useConversionPanelState({
     ? "/absolute/path/to/document.md"
     : "/absolute/path/to/book.epub";
 
-  const runPreflightQueueRef = useRef<
-    (
-      items: ConversionQueueItem[],
-      options?: { selectedItemId?: string | null },
-    ) => Promise<void>
-  >(async () => {});
-  const runPreflightForItemRef = useRef<
-    (item: ConversionQueueItem, options?: { updateSelected?: boolean }) => Promise<void>
-  >(async () => {});
-  const setPreflightStatusRef = useRef<(status: string) => void>(() => {});
-  const previewSetTextRef = useRef<(text: string) => void>(() => {});
+  const queueController = useConversionQueueController({
+    apiClient,
+  });
 
   const sourceQueue = useConversionSourceQueue({
     apiClient,
     conversionMode,
     conversionJob,
-    runPreflightQueue: (items, options) => runPreflightQueueRef.current(items, options),
-    runPreflightForItem: (item, options) =>
-      runPreflightForItemRef.current(item, options),
-    setPreflightStatus: (status) => setPreflightStatusRef.current(status),
-    setPreviewText: (text) => previewSetTextRef.current(text),
+    queueController,
   });
 
   const preview = useConversionPreview({
     apiClient,
     optionState,
-    sourcePath: sourceQueue.sourcePath,
-    selectedPreflight: sourceQueue.selectedQueueItem?.preflight ?? null,
+    sourcePath: queueController.sourcePath,
+    selectedPreflight: queueController.selectedQueueItem?.preflight ?? null,
+    sampleText: queueController.previewText,
   });
-  useEffect(() => {
-    previewSetTextRef.current = preview.setPreviewText;
-  }, [preview.setPreviewText]);
 
-  const preflight = useConversionPreflight({
-    apiClient,
-    setSelectedQueueId: (itemId) => sourceQueue.setSelectedQueueId(itemId),
-    setSourcePath: (sourcePath) => sourceQueue.setSourcePath(sourcePath),
-    setSourceFileLabel: (label) => sourceQueue.setSourceFileLabel(label),
-    setTitleOverride: (updater) =>
-      sourceQueue.setTitleOverride(updater as SetStateAction<string>),
-    setAuthorOverride: (updater) =>
-      sourceQueue.setAuthorOverride(updater as SetStateAction<string>),
-    setPreviewText: preview.setPreviewText,
-    updateQueueItem: (itemId, updater) => sourceQueue.updateQueueItem(itemId, updater),
-  });
-  useEffect(() => {
-    runPreflightQueueRef.current = preflight.runPreflightQueue;
-    runPreflightForItemRef.current = preflight.runPreflightForItem;
-    setPreflightStatusRef.current = preflight.setPreflightStatus;
-  }, [
-    preflight.runPreflightForItem,
-    preflight.runPreflightQueue,
-    preflight.setPreflightStatus,
-  ]);
-
-  const selectedPreflight = sourceQueue.selectedQueueItem?.preflight ?? null;
+  const selectedPreflight = queueController.selectedQueueItem?.preflight ?? null;
   const payload = useConversionSubmitPayload({
     optionState,
     conversionMode,
-    sourcePath: sourceQueue.sourcePath,
-    titleOverride: sourceQueue.titleOverride,
-    authorOverride: sourceQueue.authorOverride,
+    sourcePath: queueController.sourcePath,
+    titleOverride: queueController.titleOverride,
+    authorOverride: queueController.authorOverride,
   });
   const queueRunner = useConversionQueueRunner({
     apiClient,
     conversionJob,
-    queueItems: sourceQueue.queueItems,
-    selectedQueueItem: sourceQueue.selectedQueueItem,
+    queueItems: queueController.queueItems,
+    selectedQueueItem: queueController.selectedQueueItem,
     buildStartPayload: payload.buildStartPayload,
-    updateQueueItem: sourceQueue.updateQueueItem,
-    syncSelectedQueueEdits: sourceQueue.syncSelectedQueueEdits,
-    setQueueStatus: sourceQueue.setQueueStatus,
+    updateQueueItem: queueController.updateQueueItem,
+    syncSelectedQueueEdits: queueController.syncSelectedQueueEdits,
+    setQueueStatus: queueController.setQueueStatus,
   });
 
   const requiresCleanerApiKey = optionState.selectedCleanerBackend?.requires_api_key ?? false;
@@ -124,71 +100,201 @@ export function useConversionPanelState({
     !apiClient ||
     queueRunner.queueRunning ||
     conversionJob.isStarting ||
-    !sourceQueue.sourcePath.trim() ||
+    !queueController.sourcePath.trim() ||
     !optionState.selectedEngine ||
     !optionState.selectedVoice ||
     optionState.cleanerRuntimeError ||
     (requiresCleanerApiKey && !optionState.cleanerApiKey.trim()) ||
     (optionState.cleanerModelOptions.length > 0 && !optionState.cleanerModel);
 
+  useEffect(() => {
+    if (!startCommandRef) {
+      return;
+    }
+    startCommandRef.current = () => {
+      if (!startDisabled) {
+        void queueRunner.onStartConversion();
+      }
+    };
+    return () => {
+      if (startCommandRef.current) {
+        startCommandRef.current = null;
+      }
+    };
+  }, [queueRunner.onStartConversion, startCommandRef, startDisabled]);
+
   const cancelDisabled = !conversionJob.activeJobId || conversionJob.isCancelling;
   const mergedFormError = conversionJob.formError || optionState.error;
   const runtimeStatusClass = optionState.cleanerRuntimeError
     ? "field-hint is-error"
     : "field-hint";
+  const selectedCleanerBackend = optionState.selectedCleanerBackend;
+  const showCleanerCudaControls = cleanerBackendUsesCudaFields(selectedCleanerBackend);
+  const cleanerCudaQuantizationOptions =
+    selectedCleanerBackend?.supported_quantizations?.map((quantization) => ({
+      value: quantization,
+      label: quantization,
+    })) ?? [];
+  const canRunQueue =
+    !queueRunner.queueRunning &&
+    Boolean(apiClient) &&
+    queueController.queueItems.some((item) => item.status === "ready" || item.status === "warning");
+  const selectedPreflightCard = selectedPreflight
+    ? {
+        title: selectedPreflight.title || splitPath(queueController.sourcePath) || "untitled source",
+        meta: preflightMeta(selectedPreflight),
+        author: selectedPreflight.author || "unknown",
+        sourceType: selectedPreflight.source_type || "unknown",
+        warnings: selectedPreflight.warnings,
+        sample: selectedPreflight.sample ? compactSample(selectedPreflight.sample, 360) : "No readable sample found.",
+      }
+    : null;
+  const queueItemViewModels = queueController.queueItems.map((item, index) => {
+    const selected = item.id === queueController.selectedQueueId;
+    return {
+      id: item.id,
+      title: item.title || item.label,
+      statusText: `${item.status}${item.error ? ` / ${item.error}` : ""}`,
+      statusClassName: `queue-item-status status-${item.status}`,
+      converting: item.status === "converting",
+      selected,
+      canMoveUp: index !== 0 && !queueRunner.queueRunning,
+      canMoveDown: index !== queueController.queueItems.length - 1 && !queueRunner.queueRunning,
+      canRemove: !queueRunner.queueRunning,
+    };
+  });
 
   return {
     shell: {
       activeTab,
       hidden,
-      apiClient,
-      connectionState,
-      health,
-      statusMessage,
-      conversionJob,
-      optionState,
       isDocumentMode,
-      sourcePathPlaceholder,
-      startDisabled,
-      cancelDisabled,
-      mergedFormError,
-      runtimeStatusClass,
     },
-    form: {
-      sourcePath: sourceQueue.sourcePath,
-      sourceFileLabel: sourceQueue.sourceFileLabel,
-      titleOverride: sourceQueue.titleOverride,
-      authorOverride: sourceQueue.authorOverride,
-      selectedPreflight,
+    capabilities: {
+      canAddPastedText: Boolean(apiClient) && !sourceQueue.pasteBusy && Boolean(sourceQueue.pastedText.trim()),
+      canFetchCleanerModels:
+        Boolean(apiClient) &&
+        !optionState.openAiModelFetchLoading &&
+        Boolean(optionState.cleanerApiKey.trim()),
+      canInspectSource: Boolean(apiClient) && Boolean(queueController.sourcePath.trim()),
+      canPreviewVoice: !preview.previewBusy && Boolean(optionState.selectedVoice) && Boolean(apiClient),
+      canRecommendVoice:
+        Boolean(apiClient) &&
+        !preview.voiceSuggestBusy &&
+        Boolean(queueController.sourcePath.trim()) &&
+        Boolean(optionState.selectedEngine),
+      canRunParallelWarmup: Boolean(apiClient) && !optionState.parallelWarmupLoading,
+      canRunQueue,
+      canStartConversion: !startDisabled,
+      canCancelJob: !cancelDisabled,
+      canRefreshJob: Boolean(apiClient),
+    },
+    sourceQueue: {
+      isDocumentMode,
+      sourcePath: queueController.sourcePath,
+      sourceFileLabel: queueController.sourceFileLabel,
+      titleOverride: queueController.titleOverride,
+      authorOverride: queueController.authorOverride,
       dragging: sourceQueue.dragging,
       pasteTitle: sourceQueue.pasteTitle,
       pastedText: sourceQueue.pastedText,
       pasteBusy: sourceQueue.pasteBusy,
       pasteStatus: sourceQueue.pasteStatus,
+      queueItems: queueItemViewModels,
+      queueCount: queueController.queueItems.length,
+      queueRunning: queueRunner.queueRunning,
+      queueStatus: queueController.queueStatus,
+      formError: mergedFormError,
+      sourcePathPlaceholder,
+      preflightCard: selectedPreflightCard,
+      preflightStatus: queueController.preflightStatus,
+      browserFileInputRef: sourceQueue.browserFileInputRef,
+      browserFileAccept: BROWSER_SOURCE_ACCEPT,
+    },
+    ttsOptions: {
+      selectedEngine: optionState.selectedEngine,
+      engineOptions: optionState.engineOptions,
+      engineDisabled: optionState.loading || optionState.engineOptions.length === 0,
+      voiceFilter: optionState.voiceFilter,
+      selectedVoice: optionState.selectedVoice,
+      filteredVoiceOptions: optionState.filteredVoiceOptions,
+      voiceSelectDisabled: optionState.loading || optionState.filteredVoiceOptions.length === 0,
       voiceSuggestBusy: preview.voiceSuggestBusy,
       voiceSuggestStatus: preview.voiceSuggestStatus,
-      preflightStatus: preflight.preflightStatus,
       previewText: preview.previewText,
       previewBusy: preview.previewBusy,
       previewStatus: preview.previewStatus,
       previewError: preview.previewError,
       previewAudioRef: preview.previewAudioRef,
     },
-    queue: {
-      queueItems: sourceQueue.queueItems,
-      selectedQueueId: sourceQueue.selectedQueueId,
-      queueRunning: queueRunner.queueRunning,
-      queueStatus: sourceQueue.queueStatus,
+    cleanerOptions: {
+      selectedBackendDisplayName: selectedCleanerBackend?.display_name ?? "",
+      cleanerBackend: optionState.cleanerBackend,
+      cleanerBackendOptions: optionState.cleanerBackendOptions,
+      cleanerRuntimeStatus: optionState.cleanerRuntimeStatus,
+      runtimeStatusClass,
+      cleanerModel: optionState.cleanerModel,
+      cleanerModelOptions: optionState.cleanerModelOptions,
+      showCleanerCudaControls,
+      cleanerCudaDevice: optionState.cleanerCudaDevice,
+      cleanerCudaDevicePlaceholder: selectedCleanerBackend?.default_device || "cuda:0",
+      cleanerCudaQuantization: optionState.cleanerCudaQuantization,
+      cleanerCudaQuantizationOptions,
+      requiresApiKey: Boolean(selectedCleanerBackend?.requires_api_key),
+      cleanerApiKey: optionState.cleanerApiKey,
+      openAiModelFetchLoading: optionState.openAiModelFetchLoading,
+      openAiModelFetchError: optionState.openAiModelFetchError,
+      openAiModelFetchStatus: optionState.openAiModelFetchStatus,
+    },
+    advancedOptions: {
+      speedInput: optionState.speedInput,
+      selectedQuantization: optionState.selectedQuantization,
+      quantizationOptions: optionState.quantizationOptions,
+      parallelWorkerMode: optionState.parallelWorkerMode,
+      manualParallelWorkerUpperBound: optionState.manualParallelWorkerUpperBound,
+      selectedParallelWorkerLimit: optionState.selectedParallelWorkerLimit,
+      parallelManualMax: optionState.parallelManualMax,
+      parallelWarmupLoading: optionState.parallelWarmupLoading,
+      parallelWorkerError: optionState.parallelWorkerError,
+      parallelWorkerStatus: optionState.parallelWorkerStatus,
+    },
+    conversionActions: {
+      backendStatus: nowStatus(connectionState),
+      healthStatus: health ? `status=${health.status}` : "unavailable",
+      jobStatus: conversionJob.activeJobId
+        ? `${conversionJob.activeJobStatus} (${conversionJob.activeJobId})`
+        : "no active conversion",
+      detailStatus: conversionJob.statusText || statusMessage,
+      startLabel: conversionJob.isStarting
+        ? "starting..."
+        : queueController.queueItems.length > 1
+          ? "start selected conversion"
+          : "start conversion",
+      cancelLabel: conversionJob.isCancelling ? "cancelling..." : "cancel",
+      isStarting: conversionJob.isStarting,
     },
     actions: {
-      setSourcePath: sourceQueue.setSourcePath,
-      setTitleOverride: sourceQueue.setTitleOverride as Dispatch<SetStateAction<string>>,
-      setAuthorOverride: sourceQueue.setAuthorOverride as Dispatch<SetStateAction<string>>,
+      setSourcePath: queueController.setSourcePath,
+      setTitleOverride: queueController.setTitleOverride as Dispatch<SetStateAction<string>>,
+      setAuthorOverride: queueController.setAuthorOverride as Dispatch<SetStateAction<string>>,
       setDragging: sourceQueue.setDragging,
       setPasteTitle: sourceQueue.setPasteTitle,
       setPastedText: sourceQueue.setPastedText,
       setPreviewText: preview.setPreviewText,
+      setCleanerBackend: optionState.setCleanerBackend,
+      setCleanerModel: optionState.setCleanerModel,
+      setCleanerCudaDevice: optionState.setCleanerCudaDevice,
+      setCleanerCudaQuantization: optionState.setCleanerCudaQuantization,
+      setCleanerApiKey: optionState.setCleanerApiKey,
+      setSelectedEngine: optionState.setSelectedEngine,
+      setVoiceFilter: optionState.setVoiceFilter,
+      setSelectedVoice: optionState.setSelectedVoice,
+      setSpeed: optionState.setSpeed,
+      setSelectedQuantization: optionState.setSelectedQuantization,
+      setParallelWorkerMode: optionState.setParallelWorkerMode,
+      setParallelManualMax: optionState.setParallelManualMax,
       onBrowse: sourceQueue.onBrowse,
+      onBrowserFilesSelected: sourceQueue.onBrowserFilesSelected,
       onAddPastedText: sourceQueue.onAddPastedText,
       onDropZoneDrop: sourceQueue.onDropZoneDrop,
       onInspectCurrentSource: sourceQueue.onInspectCurrentSource,
@@ -196,11 +302,21 @@ export function useConversionPanelState({
       onRecommendVoice: preview.onRecommendVoice,
       onRunQueue: queueRunner.onRunQueue,
       onStartConversion: queueRunner.onStartConversion,
-      applySelectedQueueItem: sourceQueue.applySelectedQueueItem,
-      moveQueueItem: sourceQueue.moveQueueItem,
-      removeQueueItem: sourceQueue.removeQueueItem,
+      onFetchCleanerModels: optionState.fetchOpenAiModelIds,
+      onRunParallelWarmup: optionState.runParallelWarmup,
+      onRefreshJob: conversionJob.refreshActiveConversion,
+      onCancelJob: conversionJob.cancelActiveConversion,
+      clearFormError: conversionJob.clearFormError,
+      selectQueueItem: (itemId: string) => {
+        const item = queueController.queueItems.find((candidate) => candidate.id === itemId);
+        if (item) {
+          queueController.applySelectedQueueItem(item);
+        }
+      },
+      moveQueueItem: queueController.moveQueueItem,
+      removeQueueItem: queueController.removeQueueItem,
       syncSelectedQueueEdits: (patch: QueueEditPatch) =>
-        sourceQueue.syncSelectedQueueEdits(patch),
+        queueController.syncSelectedQueueEdits(patch),
     },
   };
 }

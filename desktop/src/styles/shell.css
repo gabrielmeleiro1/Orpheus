@@ -8,8 +8,8 @@
 }
 
 .rail {
-  background: var(--rail);
-  border-right: 1px solid var(--border-strong);
+  background: var(--bg-elevated);
+  border-right: 1px solid var(--border);
   display: grid;
   grid-template-rows: 58px minmax(0, 1fr) auto;
   min-width: 0;
@@ -17,29 +17,32 @@
 
 .brand {
   align-items: center;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--border-light);
   display: flex;
-  gap: 9px;
-  padding: 0 14px;
+  gap: 10px;
+  padding: 0 16px;
 }
 
 .brand-mark {
   align-items: center;
-  border: 2px solid var(--text);
-  color: var(--text);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
   display: grid;
-  font-size: 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
   font-weight: 700;
-  height: 22px;
+  height: 24px;
   justify-items: center;
   line-height: 1;
-  width: 22px;
+  width: 24px;
 }
 
 .brand-name {
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -47,8 +50,10 @@
 }
 
 .rail-nav {
-  border-top: 1px solid var(--border);
-  padding-top: 4px;
+  align-content: start;
+  display: grid;
+  gap: 2px;
+  padding: 10px 8px;
 }
 
 .rail-tab,
@@ -56,27 +61,32 @@
   align-items: center;
   background: transparent;
   border: 0;
-  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   cursor: pointer;
   display: grid;
-  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 500;
   gap: 10px;
   grid-template-columns: 18px minmax(0, 1fr);
   min-width: 0;
   text-align: left;
+  transition: background 100ms ease, color 100ms ease;
 }
 
 .rail-tab {
-  height: 38px;
-  padding: 0 14px;
+  height: 32px;
+  padding: 0 8px;
   width: 100%;
 }
 
 .rail-tab.active {
-  background: var(--panel-soft);
+  background: var(--surface-active);
   color: var(--text);
+}
+
+.rail-tab.active .rail-icon {
+  color: var(--accent);
 }
 
 .rail-tab:focus-visible,
@@ -85,13 +95,13 @@
 .btn-player:focus-visible,
 .term-select-btn:focus-visible,
 .book-row:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 1px solid var(--accent-muted);
   outline-offset: -1px;
 }
 
 .rail-tab:hover,
 .rail-action:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--surface-hover);
   color: var(--text);
 }
 
@@ -109,12 +119,12 @@
 .rail-action-icon svg {
   display: block;
   fill: none;
-  height: 18px;
+  height: 16px;
   stroke: currentColor;
-  stroke-linecap: square;
-  stroke-linejoin: miter;
-  stroke-width: 1.9;
-  width: 18px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  width: 16px;
 }
 
 .rail-label {
@@ -124,15 +134,16 @@
 }
 
 .rail-bottom {
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--border-light);
   display: grid;
-  gap: 10px;
-  padding: 14px;
+  gap: 2px;
+  padding: 10px 8px;
 }
 
 .rail-action {
-  font-size: 13px;
-  min-height: 24px;
+  font-size: 12px;
+  min-height: 28px;
+  padding: 0 8px;
 }
 
 .rail-action:disabled {
@@ -141,14 +152,21 @@
 }
 
 .rail-action.stop {
-  color: var(--error);
+  color: var(--negative);
+}
+
+.rail-action.stop:hover:not(:disabled) {
+  background: var(--negative-soft);
+  color: var(--negative);
 }
 
 .rail-dot {
   background: currentColor;
+  border-radius: 50%;
   display: block;
-  height: 14px;
-  width: 14px;
+  height: 8px;
+  margin: 0 auto;
+  width: 8px;
 }
 
 .workspace-shell {
@@ -161,27 +179,29 @@
 
 .studio-status {
   align-items: center;
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--border);
+  border-radius: var(--radius);
   display: flex;
   flex-shrink: 0;
   justify-content: space-between;
-  margin: 18px var(--density-page-x) 0;
+  margin: 16px var(--density-page-x) 0;
   min-height: var(--density-status-height);
-  padding: 12px;
+  padding: 12px 16px;
 }
 
 .studio-status h1 {
-  font-size: 22px;
-  font-weight: 400;
-  letter-spacing: 0.02em;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   line-height: 1;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .studio-status p {
-  color: var(--text-soft);
+  color: var(--text-secondary);
   font-size: 12px;
+  line-height: 1.4;
 }
 
 .studio-controls {
@@ -194,23 +214,25 @@
 
 .control {
   align-items: center;
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   display: flex;
-  font-size: 10px;
+  font-size: 11px;
+  font-weight: 500;
   gap: 7px;
   min-height: var(--density-control-height);
   justify-content: center;
-  letter-spacing: 0.24em;
+  letter-spacing: 0.02em;
   min-width: 44px;
   padding: 0 10px;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
 button.control {
   cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
 }
 
 button.control:hover {
@@ -231,18 +253,38 @@ button.control:hover {
 }
 
 .status-dot {
-  background: var(--text-faint);
+  background: var(--text-tertiary);
+  border-radius: 50%;
   display: block;
   height: 8px;
   width: 8px;
 }
 
 .status-dot.is-connected {
-  background: var(--accent);
+  animation: status-dot-pulse 2.4s ease-in-out infinite;
+  background: var(--positive);
+}
+
+@keyframes status-dot-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--positive-soft);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--positive-soft);
+  }
 }
 
 .clock-control {
-  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.converting-control {
+  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--accent);
 }
 
 .main-workspace {
@@ -264,9 +306,9 @@ button.control:hover {
 #book-detail,
 #cleaning-preview,
 .maintenance-grid div {
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--border);
-  box-shadow: inset 0 0 0 1px rgba(236, 238, 231, 0.02);
+  border-radius: var(--radius);
 }
 
 .v-section,
@@ -276,13 +318,14 @@ button.control:hover {
 
 .section-title {
   align-items: center;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-soft);
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-tertiary);
   display: flex;
-  font-size: 11px;
+  font-size: 10px;
+  font-weight: 600;
   gap: 12px;
   justify-content: space-between;
-  letter-spacing: 0.36em;
+  letter-spacing: 0.07em;
   min-height: 30px;
   padding: 6px var(--density-panel-pad);
   text-transform: uppercase;
@@ -294,13 +337,14 @@ button.control:hover {
 
 .panel-header {
   align-items: center;
-  border-bottom: 1px solid var(--border);
-  color: var(--text-soft);
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text-tertiary);
   display: flex;
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 600;
   gap: 12px;
   justify-content: space-between;
-  letter-spacing: 0.34em;
+  letter-spacing: 0.07em;
   margin-bottom: 12px;
   min-height: 34px;
   padding: 8px var(--density-panel-pad);
@@ -308,10 +352,12 @@ button.control:hover {
 }
 
 .panel-header-meta {
-  color: var(--text-faint);
+  color: var(--text-tertiary);
   flex: 1 1 auto;
-  font-size: 11px;
-  letter-spacing: 0.18em;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
   min-width: 0;
   overflow: hidden;
   text-align: right;
@@ -343,8 +389,8 @@ button.control:hover {
   }
 
   .rail-bottom {
-    padding-left: 0;
-    padding-right: 0;
+    padding-left: 8px;
+    padding-right: 8px;
   }
 }
 
@@ -353,15 +399,23 @@ button.control:hover {
     align-items: flex-start;
     flex-direction: column;
     gap: 16px;
-    margin: 18px 16px 0;
-  }
-
-  .studio-status h1 {
-    font-size: 26px;
+    margin: 16px 16px 0;
   }
 
   .main-workspace {
     padding-left: 16px;
     padding-right: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rail-tab,
+  .rail-action,
+  button.control {
+    transition: none;
+  }
+
+  .status-dot.is-connected {
+    animation: none;
   }
 }

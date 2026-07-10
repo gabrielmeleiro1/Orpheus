@@ -181,7 +181,7 @@ fn choose_source_files() -> Vec<String> {
     rfd::FileDialog::new()
         .add_filter(
             "Orpheus Sources",
-            &["pdf", "epub", "txt", "md", "markdown"],
+            &["pdf", "epub", "txt", "md"],
         )
         .pick_files()
         .unwrap_or_default()

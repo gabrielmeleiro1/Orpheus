@@ -10,16 +10,24 @@ from modules.contracts.conversion_runtime_options import (
     CONVERSION_RUNTIME_OPTION_SPECS,
     conversion_runtime_option_field_names,
 )
+from modules.contracts.limits import (
+    MAX_BOOK_TITLE_LENGTH,
+    MAX_UPLOAD_BYTES,
+)
 from modules.contracts.source_extensions import (
     FEEDBACK_LOOP_SOURCE_SUFFIXES,
     SUPPORTED_SOURCE_SUFFIXES,
     source_type_to_suffix,
 )
+from modules.contracts.upload_errors import UploadTooLargeError
 
 __all__ = [
     "CONVERSION_RUNTIME_OPTION_SPECS",
     "FEEDBACK_LOOP_SOURCE_SUFFIXES",
+    "MAX_BOOK_TITLE_LENGTH",
+    "MAX_UPLOAD_BYTES",
     "SUPPORTED_SOURCE_SUFFIXES",
+    "UploadTooLargeError",
     "conversion_runtime_option_field_names",
     "from_api_payload",
     "merge_runtime_options",

@@ -14,8 +14,8 @@ interface AudioWaveformCanvasProps {
 
 interface WaveformColors {
   baseline: string;
-  rust: string;
-  rustSoft: string;
+  accent: string;
+  accentSoft: string;
 }
 
 function cssColor(canvas: HTMLCanvasElement, name: string, fallback: string): string {
@@ -24,9 +24,9 @@ function cssColor(canvas: HTMLCanvasElement, name: string, fallback: string): st
 
 function resolveCanvasColors(canvas: HTMLCanvasElement): WaveformColors {
   return {
-    baseline: cssColor(canvas, "--text-soft", "rgba(207, 208, 196, 0.42)"),
-    rust: cssColor(canvas, "--accent", "#9b4328"),
-    rustSoft: cssColor(canvas, "--accent-soft", "rgba(155, 67, 40, 0.42)"),
+    baseline: cssColor(canvas, "--text-tertiary", "#5e5a56"),
+    accent: cssColor(canvas, "--accent", "#c9a06c"),
+    accentSoft: cssColor(canvas, "--accent-muted", "#b08d5e"),
   };
 }
 
@@ -107,19 +107,19 @@ function drawFrame(
   context.lineJoin = "round";
 
   context.globalAlpha = rendering === "fallback" ? 0.18 : 0.22;
-  context.strokeStyle = colors.rustSoft;
+  context.strokeStyle = colors.accentSoft;
   context.lineWidth = 7;
   drawWavePath(context, samples, width, height, amplitude * 0.72);
   context.stroke();
 
   context.globalAlpha = rendering === "fallback" ? 0.34 : 0.54;
-  context.strokeStyle = colors.rustSoft;
+  context.strokeStyle = colors.accentSoft;
   context.lineWidth = 3;
   drawWavePath(context, samples, width, height, amplitude * 0.9);
   context.stroke();
 
   context.globalAlpha = rendering === "fallback" ? 0.62 : 0.92;
-  context.strokeStyle = colors.rust;
+  context.strokeStyle = colors.accent;
   context.lineWidth = 2;
   drawWavePath(context, samples, width, height, amplitude);
   context.stroke();
@@ -151,9 +151,9 @@ export function AudioWaveformCanvas({ visualizer, playing, active, className }: 
   const sampleBufferRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const smoothSamplesRef = useRef<Float32Array | null>(null);
   const colorsRef = useRef<WaveformColors>({
-    baseline: "rgba(207, 208, 196, 0.42)",
-    rust: "#9b4328",
-    rustSoft: "rgba(155, 67, 40, 0.42)",
+    baseline: "#5e5a56",
+    accent: "#c9a06c",
+    accentSoft: "#b08d5e",
   });
   const [reducedMotion, setReducedMotion] = useState(() =>
     window.matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -197,15 +197,8 @@ export function AudioWaveformCanvas({ visualizer, playing, active, className }: 
     });
     observer.observe(canvas);
 
-    const themeObserver = new MutationObserver(() => {
-      colorsRef.current = resolveCanvasColors(canvas);
-      drawCalmFrame(canvas, smoothSamplesRef, playing && visualizer.status !== "ready" ? "fallback" : "paused", colorsRef.current);
-    });
-    themeObserver.observe(document.body, { attributes: true, attributeFilter: ["data-theme"] });
-
     return () => {
       observer.disconnect();
-      themeObserver.disconnect();
     };
   }, [playing, visualizer.status]);
 

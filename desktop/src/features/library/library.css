@@ -52,29 +52,31 @@
 
 .book-row {
   align-items: center;
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
-  color: var(--text-dim);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
   cursor: pointer;
   display: grid;
-  font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 12px;
+  font-size: 13px;
   gap: 3px 10px;
   grid-template-columns: 8px minmax(0, 1fr);
   min-height: 50px;
-  padding: 7px 9px;
+  padding: 7px 10px;
   position: relative;
   text-align: left;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
   width: 100%;
 }
 
 .book-row::before {
-  background: var(--text-soft);
+  background: var(--text-tertiary);
+  border-radius: 50%;
   content: "";
   display: block;
   grid-row: 1 / span 2;
-  height: 8px;
-  width: 8px;
+  height: 7px;
+  width: 7px;
 }
 
 .book-row:hover,
@@ -83,14 +85,18 @@
   color: var(--text);
 }
 
+.book-row:hover {
+  background: var(--surface-hover);
+}
+
 .book-row:focus-visible {
-  outline: 1px solid var(--accent);
+  outline: 1px solid var(--accent-muted);
   outline-offset: -1px;
 }
 
 .book-row.is-selected {
-  background: var(--panel);
-  border-color: var(--border-strong);
+  background: var(--surface-active);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .book-row.is-selected::before {
@@ -100,7 +106,7 @@
 .book-title {
   display: block;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 600;
   grid-column: 2;
   overflow: hidden;
   overflow-wrap: normal;
@@ -109,8 +115,10 @@
 }
 
 .book-meta {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
   font-size: 10px;
+  font-variant-numeric: tabular-nums;
   grid-column: 2;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -119,7 +127,7 @@
 
 .library-detail-header {
   align-items: flex-start;
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--border);
   display: flex;
   gap: 12px;
@@ -133,7 +141,7 @@
 }
 
 .library-detail-header > span {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   max-width: 260px;
   text-align: right;
 }
@@ -141,7 +149,8 @@
 .library-title-mirror {
   color: var(--text);
   display: block;
-  font-weight: 700;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   margin-bottom: 8px;
 }
 
@@ -163,7 +172,7 @@
 }
 
 .library-detail-actions {
-  background: var(--panel);
+  background: var(--surface);
   border: 1px solid var(--border);
   margin-bottom: 0;
   padding: var(--density-panel-pad);
@@ -183,24 +192,30 @@
 
 .chapter-row {
   align-items: center;
-  background: var(--panel-deep);
+  background: var(--bg-elevated);
   border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   display: grid;
   gap: var(--density-panel-gap);
   grid-template-columns: minmax(0, 1fr) max-content;
   min-height: 38px;
-  padding: 7px 9px;
+  padding: 7px 10px;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.chapter-row:hover {
+  background: var(--surface-hover);
 }
 
 .chapter-row.is-current {
-  border-color: var(--border-strong);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 #book-detail,
 #cleaning-preview {
-  background: var(--panel-deep);
-  color: var(--text-muted);
-  font-family: "JetBrains Mono", ui-monospace, monospace;
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
   font-size: 11px;
   max-height: 360px;
   overflow: auto;
@@ -225,15 +240,18 @@
 }
 
 .maintenance-grid span {
-  color: var(--text-soft);
+  color: var(--text-tertiary);
   display: block;
   font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .maintenance-grid strong {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   display: block;
+  font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 400;
   overflow-wrap: anywhere;

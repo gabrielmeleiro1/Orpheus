@@ -9,6 +9,8 @@ import type {
 import type { UseLibraryResult } from "../library/useLibrary";
 import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
 import { AudioWaveformCanvas } from "./AudioWaveformCanvas";
+import { GlyphActivity } from "../../ui/ascii/GlyphActivity";
+import { formatClockWithHours, formatDurationClockWithHours } from "../../format/time";
 import "./dashboard.css";
 
 interface DashboardPanelProps {
@@ -37,25 +39,6 @@ function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
-function formatTimeValue(seconds: number): string {
-  const totalSeconds = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const remainder = totalSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}:${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
-  }
-  return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
-}
-
-function formatDurationMs(durationMs: number | null): string {
-  if (!durationMs || durationMs <= 0) {
-    return "--:--";
-  }
-  return formatTimeValue(durationMs / 1000);
-}
-
 function normalizedStatus(state: BackendConnectionState, health: HealthResponse | null): string {
   if (state === "connected" && health?.status) {
     return health.status;
@@ -71,7 +54,6 @@ function progressWidth(value: number): { width: string } {
   return { width: `${clampPercent(value)}%` };
 }
 
-const conversionActivityBars = Array.from({ length: 10 }, (_, index) => index);
 
 export function DashboardPanel({
   hidden,
@@ -140,11 +122,11 @@ export function DashboardPanel({
             <div className="metric-row">
               <div className="metric">
                 <span className="metric-label">elapsed</span>
-                <strong>{formatTimeValue(elapsedSec)}</strong>
+                <strong>{formatClockWithHours(elapsedSec)}</strong>
               </div>
               <div className="metric">
                 <span className="metric-label">duration</span>
-                <strong>{durationSec > 0 ? formatTimeValue(durationSec) : formatTimeValue(selectedDurationSec)}</strong>
+                <strong>{durationSec > 0 ? formatClockWithHours(durationSec) : formatClockWithHours(selectedDurationSec)}</strong>
               </div>
               <div className="metric">
                 <span className="metric-label">chapters</span>
@@ -185,10 +167,8 @@ export function DashboardPanel({
               style={conversionActivityStyle}
               aria-hidden="true"
             >
-              <div className="conversion-activity-grid">
-                {conversionActivityBars.map((bar) => (
-                  <span className="conversion-activity-bar" key={bar} />
-                ))}
+              <div className="conversion-activity-glyphs">
+                <GlyphActivity active={conversionIsActive} />
               </div>
               <div className="conversion-activity-progress">
                 <span className="conversion-activity-progress-fill" />
@@ -275,7 +255,7 @@ export function DashboardPanel({
                       <span className="recent-title">{book.title || "untitled"}</span>
                       <span className="recent-meta">{`${book.author || "unknown"} / ${book.total_chapters || 0} chapters`}</span>
                     </div>
-                    <span className="recent-state">{formatDurationMs(selected?.id === book.id ? selectedDurationSec * 1000 : null)}</span>
+                    <span className="recent-state">{formatDurationClockWithHours(selected?.id === book.id ? selectedDurationSec * 1000 : null)}</span>
                     <span className="recent-state">{book.completed_chapters >= book.total_chapters ? "ready" : "partial"}</span>
                     <div className="dashboard-bar"><span style={progressWidth(pct)} /></div>
                   </div>
