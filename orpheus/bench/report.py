@@ -439,19 +439,3 @@ def run_report_cli(argv: list[str] | None = None) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     return 1 if report["status"] == "fail" else 0
-
-
-def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("summary_path", type=Path)
-    parser.add_argument("--baseline", type=Path)
-    parser.add_argument("--output-dir", type=Path, required=True)
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    return run_report_cli(argv)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

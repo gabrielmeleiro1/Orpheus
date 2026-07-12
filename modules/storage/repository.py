@@ -229,19 +229,3 @@ class IBookRepository(ABC):
             Updated chapter if found
         """
         pass
-    
-    # ==================== Statistics ====================
-    
-    @abstractmethod
-    def get_library_stats(self) -> dict:
-        """
-        Get library statistics.
-        
-        Returns:
-            Dict with:
-                - total_books: int
-                - total_chapters: int
-                - total_duration_ms: int
-                - books_by_type: dict
-        """
-        pass

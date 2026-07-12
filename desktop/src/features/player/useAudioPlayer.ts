@@ -8,6 +8,7 @@ import { chapterStartSeconds, currentChapterForPosition } from "./chapterPositio
 import { useAudioAnalyser } from "./useAudioAnalyser";
 import { useAudioElementBindings } from "./useAudioElementBindings";
 import { usePlaybackPersistence } from "./playbackPersistence";
+import { resolvePlayerCanSeek, resolvePlayerDurationSec, seekAudioIfReady } from "./playerDurationModel";
 
 interface UseAudioPlayerArgs {
   apiClient: ApiClient | null;
@@ -47,7 +48,24 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   const currentChapterLabel = currentChapter
     ? `chapter ${currentChapter.number}: ${currentChapter.title || "untitled"}`
     : "chapter unknown";
-
+  const bookDurationMs = useMemo(() => {
+    const chapters = library.selectedBookDetail?.chapters ?? [];
+    if (chapters.length === 0) {
+      return null;
+    }
+    return chapters.reduce((total, chapter) => total + Math.max(0, Number(chapter.duration_ms || 0)), 0);
+  }, [library.selectedBookDetail?.chapters]);
+  const durationSec = resolvePlayerDurationSec({
+    audioDurationSec: totalSec,
+    bookDurationMs,
+    // Secondary only: whole-book sum is preferred for the packaged stream slider.
+    chapterDurationMs: bookDurationMs && bookDurationMs > 0 ? null : (currentChapter?.duration_ms ?? null),
+  });
+  const canSeek = resolvePlayerCanSeek({
+    audioSrc,
+    loadedBookId,
+    selectedBookId: library.selectedBookId,
+  });
   const updatePlayerStatus = useCallback(() => {
     const audio = audioRef.current;
 
@@ -139,7 +157,18 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       if (loadedBookId !== bookId || !audio.src) {
         setPendingResume(bookId, Number(detail.playback_position_sec || 0));
 
-        const audioUrl = await apiClient.getLibraryAudioUrl(bookId);
+        // All callers invoke playback actions fire-and-forget (`void ...`), so
+        // a rejection here would surface as an unhandled rejection and a dead
+        // play button. Fail soft: report and bail instead of throwing.
+        let audioUrl: string;
+        try {
+          audioUrl = await apiClient.getLibraryAudioUrl(bookId);
+        } catch {
+          if (!isStale()) {
+            setPlayerTitle("playback failed");
+          }
+          return;
+        }
         if (isStale()) {
           return;
         }
@@ -259,32 +288,54 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   const seekBy = useCallback(
     (deltaSeconds: number): void => {
       const audio = audioRef.current;
-      if (!audio || !audio.src) {
+      const positionSeconds = Math.max(0, (audio?.currentTime || 0) + deltaSeconds);
+      if (
+        !seekAudioIfReady({
+          audio,
+          loadedBookId,
+          selectedBookId: library.selectedBookId,
+          positionSeconds,
+        })
+      ) {
         return;
       }
 
-      audio.currentTime = Math.max(0, (audio.currentTime || 0) + deltaSeconds);
-      setElapsedSec(Math.floor(audio.currentTime || 0));
+      setElapsedSec(Math.floor(audio!.currentTime || 0));
       updatePlayerStatus();
       void persistLoadedBookPlaybackPosition({ force: true, silent: true });
     },
-    [persistLoadedBookPlaybackPosition, updatePlayerStatus],
+    [
+      library.selectedBookId,
+      loadedBookId,
+      persistLoadedBookPlaybackPosition,
+      updatePlayerStatus,
+    ],
   );
 
   const seekTo = useCallback(
     (positionSeconds: number): void => {
       const audio = audioRef.current;
-      if (!audio || !audio.src) {
+      if (
+        !seekAudioIfReady({
+          audio,
+          loadedBookId,
+          selectedBookId: library.selectedBookId,
+          positionSeconds,
+        })
+      ) {
         return;
       }
 
-      const duration = Number.isFinite(audio.duration) ? audio.duration : positionSeconds;
-      audio.currentTime = Math.max(0, Math.min(duration, positionSeconds));
-      setElapsedSec(Math.floor(audio.currentTime || 0));
+      setElapsedSec(Math.floor(audio!.currentTime || 0));
       updatePlayerStatus();
       void persistLoadedBookPlaybackPosition({ force: true, silent: true });
     },
-    [persistLoadedBookPlaybackPosition, updatePlayerStatus],
+    [
+      library.selectedBookId,
+      loadedBookId,
+      persistLoadedBookPlaybackPosition,
+      updatePlayerStatus,
+    ],
   );
 
   const jumpToChapter = useCallback(
@@ -407,7 +458,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       ? `${library.selectedBookDetail.title} · ${currentChapterLabel}`
       : playerTitle,
     elapsedSec,
-    durationSec: totalSec,
+    durationSec,
+    canSeek,
     volume,
     currentChapter,
     currentChapterLabel,

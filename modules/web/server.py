@@ -115,6 +115,7 @@ def create_app(
             _cleanup_owned_controller(app)
 
     app = FastAPI(title="Orpheus Desktop API", version="0.1.0", lifespan=lifespan)
+    uploads.add_upload_size_limit_middleware(app)
     app.state.event_broker = event_broker
     app.state.controller = controller
     app.state.controller_factory = build_controller

@@ -1,5 +1,6 @@
 use super::{
-    build_dev_launch_config, parse_ready_line, read_ready_payload_from_file, resolve_sidecar_path,
+    backend_shutdown_force_kill_max, backend_shutdown_graceful_timeout, build_dev_launch_config,
+    parse_ready_line, parse_shutdown_line, read_ready_payload_from_file, resolve_sidecar_path,
     sidecar_binary_stem, sidecar_source_filename, BackendLifecycle, BackendManager,
 };
 use crate::paths::DesktopRuntimePaths;
@@ -124,6 +125,52 @@ fn ready_backend_stdout_eof_marks_unexpected_exit_failed() {
 }
 
 #[test]
+fn ready_backend_shutdown_ack_before_eof_marks_stopped() {
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let launch = super::ProcessLaunchConfig {
+        program: super::python_program(),
+        args: vec![
+            "-c".to_string(),
+            concat!(
+                "print('{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9000,\"token\":\"token-1\"}', flush=True); ",
+                "print('{\"event\":\"shutdown\"}', flush=True)"
+            )
+            .to_string(),
+        ],
+        cwd: None,
+        env: Vec::new(),
+    };
+    let running = super::launch_backend(Arc::clone(&manager), launch)
+        .expect("expected backend fixture to launch");
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let terminal_status = loop {
+        let status = manager.lock().expect("expected manager lock").status();
+        if matches!(
+            status.lifecycle,
+            BackendLifecycle::Failed | BackendLifecycle::Stopped
+        ) {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected acknowledged shutdown to update lifecycle before timeout, got {:?}",
+            status
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
+
+    running.stop(&manager);
+
+    assert_eq!(terminal_status.lifecycle, BackendLifecycle::Stopped);
+    assert!(terminal_status.error.is_none());
+}
+
+#[test]
 fn build_dev_launch_config_matches_desktop_runtime_contract() {
     let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/tmp/audiobook-app");
     let config = build_dev_launch_config(&runtime_paths);
@@ -142,7 +189,7 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
     );
     let cwd = config.cwd.expect("dev launcher should have repository cwd");
     assert!(
-        cwd.ends_with("Orpheus"),
+        cwd.join("apps").is_dir() && cwd.join("desktop").is_dir(),
         "expected cwd to point at repository root, got {}",
         cwd.display()
     );
@@ -165,7 +212,11 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
     );
     assert_eq!(
         env.get("AUDIOBOOK_DB_PATH").map(PathBuf::from),
-        Some(PathBuf::from("/tmp/audiobook-app").join("data").join("audiobooks.db"))
+        Some(
+            PathBuf::from("/tmp/audiobook-app")
+                .join("data")
+                .join("audiobooks.db")
+        )
     );
     assert_eq!(
         env.get("AUDIOBOOK_DESKTOP_READY_FILE").map(PathBuf::from),
@@ -347,6 +398,8 @@ while True:
         child,
         stdout_thread,
         stderr_thread,
+        shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        generation: 0,
         process_group_id: None,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
@@ -395,8 +448,12 @@ while True:
         .expect("expected test process to launch");
 
     thread::sleep(Duration::from_millis(150));
-    let outcome =
-        super::terminate_backend_process(&mut child, Duration::from_millis(250), Some(i32::MAX));
+    let outcome = super::terminate_backend_process(
+        &mut child,
+        Duration::from_millis(250),
+        None,
+        Some(i32::MAX),
+    );
 
     assert_eq!(outcome, super::ShutdownOutcome::GracefulTerminated);
     let marker_contents =
@@ -406,9 +463,129 @@ while True:
     let _ = fs::remove_file(&marker_path);
 }
 
+#[test]
+fn backend_shutdown_graceful_timeout_matches_documented_cleanup_budget() {
+    let graceful = backend_shutdown_graceful_timeout();
+    assert!(
+        graceful > std::time::Duration::from_millis(5000),
+        "graceful shutdown timeout {:?} must exceed the backend's documented 5.0s cleanup budget",
+        graceful
+    );
+    assert!(
+        graceful + super::backend_shutdown_ack_extension() <= backend_shutdown_force_kill_max(),
+        "force-kill ceiling {:?} must cover the graceful timeout {:?} plus the ack extension {:?}",
+        backend_shutdown_force_kill_max(),
+        graceful,
+        super::backend_shutdown_ack_extension()
+    );
+}
+
+#[test]
+fn parse_shutdown_line_accepts_valid_json_payload() {
+    let payload =
+        parse_shutdown_line("{\"event\":\"shutdown\"}").expect("expected shutdown payload");
+    assert_eq!(payload.event, "shutdown");
+}
+
+#[test]
+fn parse_shutdown_line_rejects_non_shutdown_event() {
+    let error = parse_shutdown_line(
+        "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":1,\"token\":\"x\"}",
+    )
+    .expect_err("expected non-shutdown event to fail");
+    assert!(error.contains("unexpected desktop event"));
+}
+
 #[cfg(unix)]
 #[test]
-fn running_backend_stop_forces_unresponsive_backend_without_long_quit_delay() {
+fn running_backend_stop_allows_slow_cleanup_within_budget() {
+    use std::fs;
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("expected system time after unix epoch")
+        .as_nanos();
+    let marker_path =
+        std::env::temp_dir().join(format!("audiobook-tauri-slow-cleanup-{unique}.txt"));
+    let _ = fs::remove_file(&marker_path);
+
+    let script = r#"import pathlib, signal, sys, time
+marker = pathlib.Path(sys.argv[1])
+def on_term(sig, frame):
+    time.sleep(2.5)
+    marker.write_text("cleanup_done")
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, on_term)
+print("ready", flush=True)
+while True:
+    time.sleep(0.1)
+"#;
+
+    let mut child = Command::new(super::python_program())
+        .arg("-c")
+        .arg(script)
+        .arg(marker_path.to_string_lossy().into_owned())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("expected test process to launch");
+    let stdout = child.stdout.take().expect("expected stdout pipe");
+    let stderr = child.stderr.take().expect("expected stderr pipe");
+
+    let mut stdout_reader = BufReader::new(stdout);
+    let mut ready_line = String::new();
+    stdout_reader
+        .read_line(&mut ready_line)
+        .expect("expected backend child readiness line");
+    assert_eq!(ready_line.trim(), "ready");
+
+    let stdout_thread = thread::spawn(
+        move || {
+            for _ in stdout_reader.lines().map_while(Result::ok) {}
+        },
+    );
+    let stderr_thread = thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for _ in reader.lines().map_while(Result::ok) {}
+    });
+
+    let running = super::RunningBackend {
+        child,
+        stdout_thread,
+        stderr_thread,
+        shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        generation: 0,
+        process_group_id: None,
+    };
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let started_at = Instant::now();
+
+    running.stop(&manager);
+
+    assert!(
+        started_at.elapsed() >= Duration::from_millis(2400),
+        "stop should wait for simulated cleanup to finish"
+    );
+    assert!(
+        started_at.elapsed() < backend_shutdown_force_kill_max(),
+        "slow cleanup should exit gracefully before the force-kill ceiling"
+    );
+
+    let marker_contents =
+        fs::read_to_string(&marker_path).expect("expected slow cleanup to complete before exit");
+    assert_eq!(marker_contents, "cleanup_done");
+    let _ = fs::remove_file(&marker_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn running_backend_stop_forces_unresponsive_backend_within_bounded_limit() {
     use std::io::{BufRead, BufReader};
     use std::process::{Command, Stdio};
     use std::sync::{Arc, Mutex};
@@ -449,6 +626,8 @@ while True:
         child,
         stdout_thread,
         stderr_thread,
+        shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        generation: 0,
         process_group_id: None,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
@@ -457,8 +636,12 @@ while True:
     running.stop(&manager);
 
     assert!(
-        started_at.elapsed() < Duration::from_secs(2),
-        "backend stop should not hold desktop quit for the old five-second fallback budget"
+        started_at.elapsed() >= backend_shutdown_graceful_timeout(),
+        "unresponsive backend should receive the full graceful shutdown window"
+    );
+    assert!(
+        started_at.elapsed() < backend_shutdown_force_kill_max() + Duration::from_millis(500),
+        "backend stop must force-kill hung backends within the bounded ceiling"
     );
 }
 
@@ -505,7 +688,8 @@ while True:
         "expected timeout test process to still be running before stop"
     );
 
-    let outcome = super::terminate_backend_process(&mut child, Duration::from_millis(250), None);
+    let outcome =
+        super::terminate_backend_process(&mut child, Duration::from_millis(250), None, None);
     assert_eq!(outcome, super::ShutdownOutcome::ForcedKill);
 
     let marker_contents =
@@ -616,4 +800,230 @@ while True:
     );
 
     let _ = fs::remove_dir_all(&temp_root);
+}
+
+
+#[test]
+fn stale_process_generation_cannot_mutate_newer_lifecycle() {
+    let mut manager = BackendManager::default();
+
+    let generation_one = manager.mark_starting();
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Starting);
+
+    // Simulate a restart: a new child claims the shared manager.
+    let generation_two = manager.mark_starting();
+    assert_ne!(generation_one, generation_two);
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Starting);
+
+    // Late EOF / shutdown from the previous reader must not clobber the new start.
+    manager.mark_stopped_for_generation(generation_one);
+    assert_eq!(
+        manager.status().lifecycle,
+        BackendLifecycle::Starting,
+        "stale stop must not move a newer Starting generation"
+    );
+
+    manager.mark_failed_for_generation(generation_one, "stale reader exit");
+    assert_eq!(
+        manager.status().lifecycle,
+        BackendLifecycle::Starting,
+        "stale failure must not move a newer Starting generation"
+    );
+
+    let payload = parse_ready_line(
+        "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9000,\"token\":\"token-2\"}",
+    )
+    .expect("expected valid ready payload");
+    manager.mark_ready_for_generation(generation_two, payload.clone());
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Ready);
+    assert_eq!(
+        manager.endpoint().expect("endpoint").token,
+        "token-2"
+    );
+
+    // A stale ready from the old generation must not overwrite the new endpoint.
+    let stale_payload = parse_ready_line(
+        "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":1111,\"token\":\"stale\"}",
+    )
+    .expect("expected valid ready payload");
+    // Force lifecycle back to Starting under generation_two would be wrong; instead
+    // verify stale ready is ignored while Ready under generation_two.
+    manager.mark_ready_for_generation(generation_one, stale_payload);
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Ready);
+    assert_eq!(
+        manager.endpoint().expect("endpoint").token,
+        "token-2",
+        "stale ready must not replace the current generation endpoint"
+    );
+
+    manager.mark_failed_for_generation(generation_one, "stale after ready");
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Ready);
+    assert!(manager.endpoint().is_some());
+}
+
+#[test]
+fn starting_backend_fails_after_startup_deadline() {
+    use std::time::Duration;
+
+    let mut manager = BackendManager::default();
+    manager.mark_starting();
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Starting);
+
+    // A far-future deadline leaves a fresh startup untouched.
+    assert!(!manager.fail_if_startup_timed_out(Duration::from_secs(3600)));
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Starting);
+
+    // A zero deadline force-fails a wedged startup so it can be restarted.
+    assert!(manager.fail_if_startup_timed_out(Duration::from_millis(0)));
+    let status = manager.status();
+    assert_eq!(status.lifecycle, BackendLifecycle::Failed);
+    assert!(status.endpoint.is_none());
+    assert!(status
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("did not become ready"));
+
+    // Idempotent once the backend is no longer `Starting`.
+    assert!(!manager.fail_if_startup_timed_out(Duration::from_millis(0)));
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Failed);
+}
+
+#[test]
+fn startup_deadline_tracks_latest_generation_only() {
+    use std::time::Duration;
+
+    let mut manager = BackendManager::default();
+    let first = manager.mark_starting();
+
+    // A restart supersedes the first generation and resets the startup clock.
+    let second = manager.mark_starting();
+    assert_ne!(first, second);
+
+    // The fresh generation must not be failed by a long deadline: the timeout
+    // tracks the newest `started_at`, so a superseded generation can never fail
+    // the one that replaced it.
+    assert!(!manager.fail_if_startup_timed_out(Duration::from_secs(3600)));
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Starting);
+
+    let payload = parse_ready_line(
+        "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9100,\"token\":\"gen2\"}",
+    )
+    .expect("expected valid ready payload");
+    manager.mark_ready_for_generation(second, payload);
+    assert_eq!(manager.status().lifecycle, BackendLifecycle::Ready);
+    assert_eq!(manager.endpoint().expect("endpoint").token, "gen2");
+}
+
+#[cfg(unix)]
+#[test]
+fn replace_running_backend_stops_displaced_child() {
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("expected system time after unix epoch")
+        .as_nanos();
+    let marker_path = std::env::temp_dir().join(format!("audiobook-tauri-replace-{unique}.txt"));
+    let _ = fs::remove_file(&marker_path);
+
+    // The displaced child writes a marker on SIGTERM, proving it was stopped
+    // rather than silently dropped and orphaned when a new backend replaces it.
+    let displaced_script = r#"import pathlib, signal, sys, time
+marker = pathlib.Path(sys.argv[1])
+def on_term(sig, frame):
+    marker.write_text("stopped")
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, on_term)
+print('{"event":"ready","host":"127.0.0.1","port":9000,"token":"first"}', flush=True)
+while True:
+    time.sleep(0.1)
+"#;
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let slot: Mutex<Option<super::RunningBackend>> = Mutex::new(None);
+
+    let first = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".to_string(),
+                displaced_script.to_string(),
+                marker_path.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("expected first backend fixture to launch");
+    super::replace_running_backend(&slot, &manager, first).expect("expected first install");
+
+    // The SIGTERM handler is installed before the ready line is printed, so
+    // waiting for `Ready` guarantees the marker path will be written on stop.
+    let ready_deadline = Instant::now() + Duration::from_secs(3);
+    while manager.lock().expect("manager lock").status().lifecycle != BackendLifecycle::Ready {
+        assert!(
+            Instant::now() < ready_deadline,
+            "expected first backend to become ready before replacement"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    let second_script = concat!(
+        "import time\n",
+        "print('{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9001,\"token\":\"second\"}', flush=True)\n",
+        "while True:\n",
+        "    time.sleep(0.1)\n",
+    );
+    let second = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec!["-c".to_string(), second_script.to_string()],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("expected second backend fixture to launch");
+
+    // Installing the second backend must synchronously stop the first.
+    super::replace_running_backend(&slot, &manager, second)
+        .expect("expected second install to stop the displaced child");
+
+    let marker =
+        fs::read_to_string(&marker_path).expect("displaced backend must be stopped, not orphaned");
+    assert_eq!(marker, "stopped");
+
+    // The displaced child's generation-fenced stop must not clobber the new one.
+    let ready_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let status = manager.lock().expect("manager lock").status();
+        if status.lifecycle == BackendLifecycle::Ready {
+            assert_eq!(
+                manager
+                    .lock()
+                    .expect("manager lock")
+                    .endpoint()
+                    .expect("endpoint")
+                    .token,
+                "second"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < ready_deadline,
+            "expected replacement backend to become ready, got {:?}",
+            status
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    if let Some(second) = slot.lock().expect("slot lock").take() {
+        second.stop(&manager);
+    }
+    let _ = fs::remove_file(&marker_path);
 }

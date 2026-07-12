@@ -41,6 +41,9 @@
       }
     ],
     "expected_texts": [
+      "The essence of experience is something it is like.\nMind and body-\n why this matters should keep the dash.\n\nBut if experience does not have an objective nature that can be apprehended from\nI The problem I am going to raise should not remain\nwithin a larger human point of view.\n\nmany different points of view, then how can it be supposed?"
+    ],
+    "known_corpus_expected_texts": [
       "The essence of experience is something it is like.\nMind and body-\n why this matters should keep the dash.\n\nBut if experience does not have an objective nature that can be apprehended from\nmany different points of view, then how can it be supposed?"
     ]
   },

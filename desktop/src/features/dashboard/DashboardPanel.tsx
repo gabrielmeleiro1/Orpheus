@@ -11,6 +11,7 @@ import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
 import { AudioWaveformCanvas } from "./AudioWaveformCanvas";
 import { GlyphActivity } from "../../ui/ascii/GlyphActivity";
 import { formatClockWithHours, formatDurationClockWithHours } from "../../format/time";
+import { dashboardNowStageLabel } from "../progress/progressTerminalPresentation";
 import "./dashboard.css";
 
 interface DashboardPanelProps {
@@ -30,6 +31,7 @@ interface DashboardPanelProps {
   audioVisualizer: AudioAnalyserHandle;
   elapsedSec: number;
   durationSec: number;
+  onStartConvert?: () => void;
 }
 
 function clampPercent(value: number): number {
@@ -72,11 +74,12 @@ export function DashboardPanel({
   audioVisualizer,
   elapsedSec,
   durationSec,
+  onStartConvert,
 }: DashboardPanelProps) {
   const selected = library.selectedBookDetail;
   const recentBooks = library.items.slice(0, 3);
   const completedStageCount = stages.filter((stage) => stage.state === "done").length;
-  const activeStage = stages.find((stage) => stage.state === "active") ?? stages.find((stage) => stage.pct > 0);
+  const nowLabel = dashboardNowStageLabel(uiState, stages);
   const selectedChapterCount = selected?.chapters.length ?? 0;
   const selectedDurationSec =
     selected?.chapters.reduce((total, chapter) => total + Math.max(0, Number(chapter.duration_ms || 0) / 1000), 0) ?? 0;
@@ -87,14 +90,16 @@ export function DashboardPanel({
     "--conversion-activity-progress": `${conversionPercent}%`,
   } as CSSProperties;
   const queueText =
-    typeof performance?.max_workers === "number"
+    uiState === "running" && typeof performance?.max_workers === "number"
       ? `${performance.active_workers ?? 0}/${performance.max_workers} workers`
-      : `${performance?.queued_chapters ?? 0} queued`;
+      : uiState === "running"
+        ? `${performance?.queued_chapters ?? 0} queued`
+        : "idle";
   const chapterText =
     selectedChapterCount > 0
       ? `${selectedChapterCount} ${selectedChapterCount === 1 ? "chapter" : "chapters"}`
       : "no chapters selected";
-
+  const showEmptyLibraryAction = recentBooks.length === 0 && Boolean(onStartConvert);
   return (
     <section id="tab-dashboard" className="dashboard-panel" role="tabpanel" aria-label="Dashboard" hidden={hidden}>
       <section className="panel-section v-section dashboard-hero" aria-label="Audiobook overview">
@@ -175,7 +180,7 @@ export function DashboardPanel({
               </div>
               <div className="conversion-activity-readout">
                 <span>{conversionIsActive ? "run" : "idle"}</span>
-                <span>{stageName(activeStage)}</span>
+                <span>{nowLabel}</span>
               </div>
             </div>
             <div className="book-main">
@@ -195,7 +200,7 @@ export function DashboardPanel({
               <div className="metric-row">
                 <div className="metric">
                   <span className="metric-label">now</span>
-                  <strong>{stageName(activeStage)}</strong>
+                  <strong>{nowLabel}</strong>
                 </div>
                 <div className="metric">
                   <span className="metric-label">eta</span>
@@ -238,7 +243,14 @@ export function DashboardPanel({
                 <span className="square" />
                 <div>
                   <span className="recent-title">No converted books yet</span>
-                  <span className="recent-meta">drop a source in Convert to begin</span>
+                  <span className="recent-meta">
+                    {showEmptyLibraryAction ? "convert a source to populate the library" : "drop a source in Convert to begin"}
+                  </span>
+                  {showEmptyLibraryAction ? (
+                    <button className="btn btn-compact" type="button" onClick={onStartConvert}>
+                      Convert a source
+                    </button>
+                  ) : null}
                 </div>
                 <span className="recent-state">--:--</span>
                 <span className="recent-state">empty</span>

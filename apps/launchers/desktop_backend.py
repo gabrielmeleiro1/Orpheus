@@ -13,6 +13,7 @@ import secrets
 import signal
 import socket
 import sys
+import tempfile
 import threading
 from collections.abc import Generator
 from pathlib import Path
@@ -22,6 +23,75 @@ import uvicorn
 from uvicorn.server import HANDLED_SIGNALS
 
 from modules.web.server import create_app
+
+# libespeak-ng POSIX path_home buffer (speech.h N_PATH_HOME).
+# Limit is filesystem bytes (C char buffer), not Python string code points.
+_LIBESPEAK_PATH_HOME_LIMIT = 160
+
+
+def _path_filesystem_byte_length(path: Path | str) -> int:
+    """Return path length in filesystem-encoded bytes (libespeak buffer units)."""
+    return len(os.fsencode(os.fspath(path)))
+
+
+def _frozen_espeak_runtime_base() -> Path:
+    """Short per-user cache dir for the espeak-ng-data symlink bridge."""
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "Orpheus" / "espeak"
+    xdg_cache = os.environ.get("XDG_CACHE_HOME")
+    if xdg_cache:
+        return Path(xdg_cache) / "orpheus" / "espeak"
+    return Path.home() / ".cache" / "orpheus" / "espeak"
+
+
+def _ensure_short_espeak_data_path(packaged_data: Path) -> Path:
+    """Expose packaged espeak-ng-data via a path within N_PATH_HOME, without copying."""
+    packaged_data = packaged_data.resolve()
+    if _path_filesystem_byte_length(packaged_data) < _LIBESPEAK_PATH_HOME_LIMIT:
+        return packaged_data
+
+    candidates = (
+        _frozen_espeak_runtime_base() / "espeak-ng-data",
+        Path(tempfile.gettempdir()) / "orpheus-espeak" / "espeak-ng-data",
+    )
+    for link_path in candidates:
+        if _path_filesystem_byte_length(link_path) >= _LIBESPEAK_PATH_HOME_LIMIT:
+            continue
+        try:
+            link_path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        try:
+            if link_path.is_symlink() and link_path.resolve() == packaged_data:
+                return link_path
+        except OSError:
+            pass
+
+        # Replace only symlinks/files. Never delete a real directory tree.
+        try:
+            if link_path.is_symlink() or link_path.is_file():
+                link_path.unlink()
+            elif link_path.exists():
+                continue
+            link_path.symlink_to(packaged_data, target_is_directory=True)
+        except FileExistsError:
+            try:
+                if link_path.is_symlink() and link_path.resolve() == packaged_data:
+                    return link_path
+            except OSError:
+                continue
+            continue
+        except OSError:
+            continue
+
+        try:
+            if link_path.resolve() == packaged_data:
+                return link_path
+        except OSError:
+            continue
+
+    # Last resort: return packaged path (may still truncate in libespeak).
+    return packaged_data
 
 
 def _parse_host(raw_value: str) -> str:
@@ -148,7 +218,55 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def configure_frozen_espeak_runtime() -> None:
+    """Point phonemizer/espeak at packaged data before TTS imports (PyInstaller only).
+
+    The bundled libespeak-ng defaults to its compile-time CI data path. Misaki
+    configures phonemizer from espeakng_loader getters at import time, so the
+    frozen sidecar must retarget those getters and EspeakWrapper before any
+    misaki/phonemizer/TTS import can lock in the missing path.
+
+    Nested .app paths often exceed libespeak POSIX N_PATH_HOME (160 filesystem
+    bytes). When the packaged data path is too long, expose it through a short
+    symlink bridge in a per-user cache location (no data-tree copy) and set
+    ESPEAK_DATA_PATH / PHONEMIZER_* consistently for parent and spawn-worker
+    re-entry.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    from modules.tts.mlx_compat import patch_frozen_espeakng_loader_paths
+
+    patch_frozen_espeakng_loader_paths()
+
+    try:
+        import espeakng_loader
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+    except ImportError:
+        return
+
+    library_path = Path(espeakng_loader.get_library_path())
+    packaged_data = Path(espeakng_loader.get_data_path())
+    if not library_path.is_file() or not packaged_data.is_dir():
+        return
+
+    data_path = _ensure_short_espeak_data_path(packaged_data)
+    library = str(library_path)
+    data = str(data_path)
+
+    espeakng_loader.get_library_path = lambda library=library: library
+    espeakng_loader.get_data_path = lambda data=data: data
+    EspeakWrapper.set_library(library)
+    EspeakWrapper.set_data_path(data)
+    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = library
+    os.environ["PHONEMIZER_ESPEAK_DATA_PATH"] = data
+    os.environ["ESPEAK_DATA_PATH"] = data
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Configure packaged espeak paths before freeze_support: multiprocessing
+    # children re-enter main and never return from freeze_support.
+    configure_frozen_espeak_runtime()
     # Required for PyInstaller-frozen multiprocessing helper subprocesses
     # (resource tracker / forkserver / worker bootstrap) so they don't fall
     # through to CLI arg parsing.

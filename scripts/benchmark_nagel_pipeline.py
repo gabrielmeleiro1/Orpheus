@@ -41,11 +41,15 @@ if str(REPO_ROOT) not in sys.path:
 
 from modules.ingestion.epub_parser import EPUBParser  # noqa: E402
 from modules.ingestion.markdown_parser import MarkdownParser  # noqa: E402
+from modules.ingestion.pdf_artifact_normalizer import (  # noqa: E402
+    KNOWN_CORPUS_PDF_ARTIFACT_POLICIES,
+)
 from modules.ingestion.pdf_preflight import analyze_pdf_text_layer  # noqa: E402
 from modules.ingestion.pdf_parser import PDFParser  # noqa: E402
 from modules.text.document_normalizer import normalize_extracted_document  # noqa: E402
 from modules.ingestion.text_parser import TextParser  # noqa: E402
 from modules.errors import OCRRequiredPDFError  # noqa: E402
+from modules.app.config import AppConfig  # noqa: E402
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
 from modules.pipeline.memory_policy import SafeMemoryPolicy, sample_memory_snapshot  # noqa: E402
 from modules.pipeline.stage_metrics import StageTimings, time_instance_method  # noqa: E402
@@ -69,9 +73,25 @@ def cleaner_cuda_quantization_choices() -> tuple[str, ...]:
     return cleaner_config.CUDA_CLEANER_QUANTIZATIONS
 
 
-BENCHMARK_SCHEMA_VERSION = 3
+BENCHMARK_PROFILE_PRODUCTION = "production"
+BENCHMARK_PROFILE_MINIMAL = "minimal"
+BENCHMARK_SCHEMA_VERSION = 4
+ATTRIBUTED_TIMING_KEYS = (
+    "parse_seconds",
+    "chunk_seconds",
+    "pipeline_parse_seconds",
+    "model_warmup_seconds_total",
+    "clean_seconds_total",
+    "tts_seconds_total",
+    "tts_model_load_seconds_total",
+    "clean_tts_overlap_seconds_total",
+    "encode_seconds_total",
+    "package_seconds_total",
+)
 BENCHMARK_SCHEMA_KEYS = (
     "schema_version",
+    "benchmark_profile",
+    "effective_options",
     "source_path",
     "source_hash",
     "source_size_bytes",
@@ -120,6 +140,7 @@ BENCHMARK_SCHEMA_KEYS = (
     "skipped_non_prose_sections",
     "clean_seconds_total",
     "clean_seconds_per_chunk",
+    "model_warmup_seconds_total",
     "tts_model_load_seconds_total",
     "tts_seconds_total",
     "tts_seconds_per_chunk",
@@ -130,6 +151,8 @@ BENCHMARK_SCHEMA_KEYS = (
     "pipeline_parse_seconds",
     "wall_time_seconds",
     "processing_time_seconds",
+    "attributed_seconds_total",
+    "residual_seconds_total",
     "total_duration_ms",
     "output_path",
     "output_dir",
@@ -153,6 +176,100 @@ _HEADING_RE = re.compile(r"(?m)^\s*#{1,6}\s+.*$")
 
 class BenchmarkValidationError(RuntimeError):
     """Raised when a benchmark artifact is not valid for comparison."""
+
+
+def _production_profile_defaults() -> dict[str, Any]:
+    """Benchmark defaults aligned with production ``AppConfig``."""
+    app = AppConfig()
+    return {
+        "enable_chapter_aac_packaging": app.enable_chapter_aac_packaging,
+        "emit_chapter_mp3_artifacts": app.emit_chapter_mp3_artifacts,
+        "enable_tts_file_batch_results": app.enable_tts_file_batch_results,
+        "enable_background_chapter_aac_encoding": True,
+        "enable_chunk_overlap": False,
+        "cleaner_skip_llm_when_not_needed": True,
+    }
+
+
+def _minimal_profile_defaults() -> dict[str, Any]:
+    """Fast/minimal benchmark defaults for parse-only and unit tests."""
+    return {
+        "enable_chapter_aac_packaging": False,
+        "emit_chapter_mp3_artifacts": False,
+        "enable_tts_file_batch_results": True,
+        "enable_background_chapter_aac_encoding": True,
+        "enable_chunk_overlap": False,
+        "cleaner_skip_llm_when_not_needed": True,
+    }
+
+
+def resolve_benchmark_profile_defaults(profile: str) -> dict[str, Any]:
+    if profile == BENCHMARK_PROFILE_PRODUCTION:
+        return _production_profile_defaults()
+    if profile == BENCHMARK_PROFILE_MINIMAL:
+        return _minimal_profile_defaults()
+    raise BenchmarkValidationError(f"unknown benchmark profile: {profile!r}")
+
+
+def _coalesce_profile_option(explicit: Any, profile_default: Any) -> Any:
+    return profile_default if explicit is None else explicit
+
+
+def serialize_effective_options(
+    config: PipelineConfig,
+    *,
+    benchmark_profile: str,
+) -> dict[str, Any]:
+    """Record the effective benchmark/pipeline options used for a run."""
+    return {
+        "benchmark_profile": benchmark_profile,
+        "enable_chapter_aac_packaging": config.enable_chapter_aac_packaging,
+        "enable_background_chapter_aac_encoding": config.enable_background_chapter_aac_encoding,
+        "emit_chapter_mp3_artifacts": config.emit_chapter_mp3_artifacts,
+        "enable_chunk_overlap": config.enable_chunk_overlap,
+        "enable_tts_file_batch_results": config.enable_tts_file_batch_results,
+        "cleaner_skip_llm_when_not_needed": config.cleaner_skip_llm_when_not_needed,
+        "cleaner_backend": config.cleaner_backend,
+        "cleaner_model_name": config.cleaner_model_name,
+        "tts_engine": config.tts_engine,
+        "tts_model_name": config.tts_model_name,
+        "tts_quantization": config.tts_quantization,
+        "voice": config.voice,
+        "chunk_size": config.chunk_size,
+        "chapter_start": getattr(config, "chapter_start", 1),
+        "chapter_limit": config.chapter_limit,
+        "enable_parallel": config.enable_parallel,
+        "max_parallel_chapters": config.max_parallel_chapters,
+        "parallel_worker_mode": getattr(config, "parallel_worker_mode", "auto"),
+        "pdf_extraction_backend": config.pdf_extraction_backend,
+        "keep_tts_engine_warm": getattr(config, "keep_tts_engine_warm", True),
+    }
+
+
+def compute_timing_attribution(metrics: dict[str, Any]) -> tuple[float, float]:
+    """Return attributed and residual seconds for a benchmark metrics payload.
+
+    When clean and TTS run concurrently the same wall-clock span is recorded
+    three ways -- ``clean_seconds_total``, ``tts_seconds_total`` and
+    ``clean_tts_overlap_seconds_total`` -- yet it consumed wall time only once.
+    Summing all three triple-counts the overlap and pushes ``attributed`` past
+    the wall clock, silently zeroing the residual. Discount the shared span so
+    the concurrent region is attributed once; the sequential path (overlap == 0)
+    is left unchanged.
+    """
+    attributed = sum(float(metrics.get(key) or 0) for key in ATTRIBUTED_TIMING_KEYS)
+    clean = float(metrics.get("clean_seconds_total") or 0)
+    tts = float(metrics.get("tts_seconds_total") or 0)
+    overlap = float(metrics.get("clean_tts_overlap_seconds_total") or 0)
+    # The overlapped span is embedded in clean, tts, AND the overlap key; remove
+    # the two duplicate counts so it contributes to `attributed` exactly once.
+    shared = min(overlap, clean, tts)
+    attributed -= 2 * shared
+    baseline = float(metrics.get("wall_time_seconds") or 0)
+    if baseline <= 0:
+        baseline = float(metrics.get("processing_time_seconds") or 0)
+    residual = max(0.0, baseline - attributed)
+    return _round_seconds(attributed), _round_seconds(residual)
 
 
 def _tts_chunk_profile_summary(
@@ -374,6 +491,7 @@ def _build_config(
     *,
     output_dir: Path,
     temp_dir: Path,
+    benchmark_profile: str = BENCHMARK_PROFILE_PRODUCTION,
     tts_engine: str | None = None,
     tts_model_name: str | None = None,
     tts_quantization: str | None = None,
@@ -381,21 +499,22 @@ def _build_config(
     cleaner_model_name: str | None = None,
     cleaner_cuda_device: str | None = None,
     cleaner_cuda_quantization: str | None = None,
-    cleaner_skip_llm_when_not_needed: bool = True,
+    cleaner_skip_llm_when_not_needed: bool | None = None,
     pdf_extraction_backend: str = "fitz",
     voice: str | None = None,
     chunk_size: int | None = None,
     chapter_start: int | None = None,
     chapter_limit: int | None = None,
-    emit_chapter_mp3_artifacts: bool = False,
-    enable_chapter_aac_packaging: bool = False,
-    enable_background_chapter_aac_encoding: bool = True,
-    enable_chunk_overlap: bool | None = False,
-    enable_tts_file_batch_results: bool = True,
+    emit_chapter_mp3_artifacts: bool | None = None,
+    enable_chapter_aac_packaging: bool | None = None,
+    enable_background_chapter_aac_encoding: bool | None = None,
+    enable_chunk_overlap: bool | None = None,
+    enable_tts_file_batch_results: bool | None = None,
     enable_parallel: bool = True,
     max_parallel_chapters: int = 2,
     parallel_worker_mode: str = "auto",
 ) -> PipelineConfig:
+    profile_defaults = resolve_benchmark_profile_defaults(benchmark_profile)
     config = _default_pipeline_config(
         output_dir=output_dir,
         temp_dir=temp_dir,
@@ -415,7 +534,12 @@ def _build_config(
         config.cleaner_cuda_device = cleaner_cuda_device
     if cleaner_cuda_quantization is not None:
         config.cleaner_cuda_quantization = cleaner_cuda_quantization
-    config.cleaner_skip_llm_when_not_needed = cleaner_skip_llm_when_not_needed
+    config.cleaner_skip_llm_when_not_needed = bool(
+        _coalesce_profile_option(
+            cleaner_skip_llm_when_not_needed,
+            profile_defaults["cleaner_skip_llm_when_not_needed"],
+        )
+    )
     if voice is not None:
         config.voice = voice
     if chunk_size is not None:
@@ -424,12 +548,35 @@ def _build_config(
         config.chapter_start = max(1, int(chapter_start))
     if chapter_limit is not None:
         config.chapter_limit = max(1, int(chapter_limit))
-    config.emit_chapter_mp3_artifacts = bool(emit_chapter_mp3_artifacts)
-    config.enable_chapter_aac_packaging = bool(enable_chapter_aac_packaging)
-    config.enable_background_chapter_aac_encoding = bool(enable_background_chapter_aac_encoding)
-    requested_enable_chunk_overlap = enable_chunk_overlap
-    config.enable_chunk_overlap = bool(enable_chunk_overlap)
-    config.enable_tts_file_batch_results = bool(enable_tts_file_batch_results)
+    config.emit_chapter_mp3_artifacts = bool(
+        _coalesce_profile_option(
+            emit_chapter_mp3_artifacts,
+            profile_defaults["emit_chapter_mp3_artifacts"],
+        )
+    )
+    config.enable_chapter_aac_packaging = bool(
+        _coalesce_profile_option(
+            enable_chapter_aac_packaging,
+            profile_defaults["enable_chapter_aac_packaging"],
+        )
+    )
+    config.enable_background_chapter_aac_encoding = bool(
+        _coalesce_profile_option(
+            enable_background_chapter_aac_encoding,
+            profile_defaults["enable_background_chapter_aac_encoding"],
+        )
+    )
+    requested_enable_chunk_overlap = _coalesce_profile_option(
+        enable_chunk_overlap,
+        profile_defaults["enable_chunk_overlap"],
+    )
+    config.enable_chunk_overlap = bool(requested_enable_chunk_overlap)
+    config.enable_tts_file_batch_results = bool(
+        _coalesce_profile_option(
+            enable_tts_file_batch_results,
+            profile_defaults["enable_tts_file_batch_results"],
+        )
+    )
     config.enable_parallel = enable_parallel
     config.max_parallel_chapters = int(max_parallel_chapters)
     config.requested_parallel_chapters = int(max_parallel_chapters)
@@ -438,8 +585,6 @@ def _build_config(
         config,
         explicit_cleaner_model=cleaner_model_name is not None,
     )
-    if requested_enable_chunk_overlap is None:
-        config.enable_chunk_overlap = False
     return config
 
 
@@ -492,6 +637,7 @@ def _parse_document(source_path: Path, config: PipelineConfig) -> Any:
         document = PDFParser(
             source_path,
             extraction_backend=config.pdf_extraction_backend,
+            artifact_policies=KNOWN_CORPUS_PDF_ARTIFACT_POLICIES,
         ).parse()
     elif suffix == ".epub":
         document = EPUBParser(source_path).parse()
@@ -902,6 +1048,10 @@ def _create_timed_pipeline(
         )
         time_instance_method(processor, "encode_chapter_audio", "encode", timings)
         time_instance_method(processor, "ensure_chapter_tts_engine", "tts_model_load", timings)
+        if hasattr(stages, "warmup_models"):
+            time_instance_method(stages, "warmup_models", "model_warmup", timings)
+        if hasattr(pipeline, "warmup_models"):
+            time_instance_method(pipeline, "warmup_models", "model_warmup", timings)
         return pipeline
 
     time_instance_method(pipeline, "_ingest", "parse", timings)
@@ -916,6 +1066,8 @@ def _create_timed_pipeline(
     time_instance_method(pipeline, "_encode_chapter_audio", "encode", timings)
     time_instance_method(pipeline, "_package", "package", timings)
     time_instance_method(pipeline, "_ensure_chapter_tts_engine", "tts_model_load", timings)
+    if hasattr(pipeline, "warmup_models"):
+        time_instance_method(pipeline, "warmup_models", "model_warmup", timings)
     return pipeline
 
 
@@ -933,6 +1085,7 @@ def _base_metrics(
     output_dir: Path,
     temp_dir: Path,
     config: PipelineConfig,
+    benchmark_profile: str,
     parse_only: bool,
     cleaner_gate: bool,
     profile_tts_chunks: bool = False,
@@ -941,6 +1094,11 @@ def _base_metrics(
     effective_pdf_backend = config.pdf_extraction_backend if source_suffix == ".pdf" else None
     return {
         "schema_version": BENCHMARK_SCHEMA_VERSION,
+        "benchmark_profile": benchmark_profile,
+        "effective_options": serialize_effective_options(
+            config,
+            benchmark_profile=benchmark_profile,
+        ),
         "source_path": str(source_path),
         "source_hash": _sha256_file(source_path),
         "source_size_bytes": source_path.stat().st_size,
@@ -993,6 +1151,7 @@ def _base_metrics(
         "skipped_non_prose_sections": [],
         "clean_seconds_total": 0.0,
         "clean_seconds_per_chunk": None,
+        "model_warmup_seconds_total": 0.0,
         "tts_model_load_seconds_total": 0.0,
         "tts_seconds_total": 0.0,
         "tts_seconds_per_chunk": None,
@@ -1006,6 +1165,8 @@ def _base_metrics(
         "pipeline_parse_seconds": 0.0,
         "wall_time_seconds": 0.0,
         "processing_time_seconds": 0.0,
+        "attributed_seconds_total": 0.0,
+        "residual_seconds_total": 0.0,
         "total_duration_ms": 0,
         "output_path": None,
         "output_dir": str(output_dir),
@@ -1077,9 +1238,16 @@ def _apply_full_result_metrics(
             "clean_tts_overlap",
             "encode",
             "tts_model_load",
+            "model_warmup",
         ):
             value = stage_timings.get(key)
-            if isinstance(value, (int, float)) and value > 0:
+            # Prefer instrumented method timings; only fill gaps from chapter
+            # stage_timings to avoid double-counting the same work.
+            if (
+                isinstance(value, (int, float))
+                and value > 0
+                and timings.get(key) <= 0
+            ):
                 timings.add(key, float(value))
 
     chunks = int(metrics.get("chunks") or 0)
@@ -1136,6 +1304,7 @@ def _apply_full_result_metrics(
             ),
             "clean_seconds_total": _round_seconds(clean_total),
             "clean_seconds_per_chunk": timings.per_chunk(clean_total, chunks),
+            "model_warmup_seconds_total": timings.rounded("model_warmup"),
             "tts_model_load_seconds_total": timings.rounded("tts_model_load"),
             "tts_seconds_total": _round_seconds(tts_total),
             "tts_seconds_per_chunk": timings.per_chunk(tts_total, chunks),
@@ -1174,6 +1343,7 @@ def run_benchmark(
     output_dir: Path,
     temp_dir: Path,
     parse_only: bool = True,
+    benchmark_profile: str = BENCHMARK_PROFILE_PRODUCTION,
     tts_engine: str | None = None,
     tts_model_name: str | None = None,
     tts_quantization: str | None = None,
@@ -1181,18 +1351,18 @@ def run_benchmark(
     cleaner_model_name: str | None = None,
     cleaner_cuda_device: str | None = None,
     cleaner_cuda_quantization: str | None = None,
-    cleaner_skip_llm_when_not_needed: bool = True,
+    cleaner_skip_llm_when_not_needed: bool | None = None,
     cleaner_gate: bool = False,
     pdf_extraction_backend: str = "fitz",
     voice: str | None = None,
     chunk_size: int | None = None,
     chapter_limit: int | None = None,
     chapter_start: int | None = None,
-    emit_chapter_mp3_artifacts: bool = False,
-    enable_chapter_aac_packaging: bool = False,
-    enable_background_chapter_aac_encoding: bool = True,
-    enable_chunk_overlap: bool | None = False,
-    enable_tts_file_batch_results: bool = True,
+    emit_chapter_mp3_artifacts: bool | None = None,
+    enable_chapter_aac_packaging: bool | None = None,
+    enable_background_chapter_aac_encoding: bool | None = None,
+    enable_chunk_overlap: bool | None = None,
+    enable_tts_file_batch_results: bool | None = None,
     min_extracted_chars: int = 1,
     enable_parallel: bool = True,
     max_parallel_chapters: int = 2,
@@ -1212,6 +1382,7 @@ def run_benchmark(
     config = _build_config(
         output_dir=output_dir,
         temp_dir=temp_dir,
+        benchmark_profile=benchmark_profile,
         tts_engine=tts_engine,
         tts_model_name=tts_model_name,
         tts_quantization=tts_quantization,
@@ -1248,6 +1419,7 @@ def run_benchmark(
         output_dir=output_dir,
         temp_dir=temp_dir,
         config=config,
+        benchmark_profile=benchmark_profile,
         parse_only=parse_only,
         cleaner_gate=cleaner_gate,
         profile_tts_chunks=profile_tts_chunks,
@@ -1315,9 +1487,16 @@ def run_benchmark(
         if tts_chunk_profiler is not None:
             tts_chunk_profiler.write()
             metrics["tts_chunk_profile"] = tts_chunk_profiler.summary()
+        metrics["effective_options"] = serialize_effective_options(
+            config,
+            benchmark_profile=benchmark_profile,
+        )
         metrics["wall_time_seconds"] = _round_seconds(time.perf_counter() - benchmark_start)
         if not metrics.get("processing_time_seconds"):
             metrics["processing_time_seconds"] = metrics["wall_time_seconds"]
+        attributed, residual = compute_timing_attribution(metrics)
+        metrics["attributed_seconds_total"] = attributed
+        metrics["residual_seconds_total"] = residual
         _write_metrics(metrics, output_dir)
 
     return metrics
@@ -1411,6 +1590,7 @@ def run_worker_selection_comparison(
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     defaults = PipelineConfig()
+    production_defaults = resolve_benchmark_profile_defaults(BENCHMARK_PROFILE_PRODUCTION)
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1421,6 +1601,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--full", action="store_true", help="Run full conversion")
     parser.add_argument("--parse-only", action="store_true", help="Run parse/chunk benchmark only")
     parser.add_argument("--cleaner-gate", action="store_true", help="Run parse/chunk plus rule-based cleaner gate only")
+    parser.add_argument(
+        "--benchmark-profile",
+        choices=[BENCHMARK_PROFILE_PRODUCTION, BENCHMARK_PROFILE_MINIMAL],
+        default=BENCHMARK_PROFILE_PRODUCTION,
+        help="Named benchmark profile; production aligns packaging defaults with AppConfig.",
+    )
     parser.add_argument("--pdf-backend", default=defaults.pdf_extraction_backend, choices=["fitz", "pymupdf4llm", "auto"])
     parser.add_argument("--tts-engine", default=defaults.tts_engine)
     parser.add_argument("--tts-model", default=None)
@@ -1453,7 +1639,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--chapter-start", type=int, default=1)
     parser.add_argument("--chapter-limit", type=int, default=None)
     parser.add_argument("--emit-chapter-mp3-artifacts", action="store_true")
-    parser.add_argument("--enable-chapter-aac-packaging", action="store_true")
+    parser.add_argument(
+        "--enable-chapter-aac-packaging",
+        action=argparse.BooleanOptionalAction,
+        default=production_defaults["enable_chapter_aac_packaging"],
+    )
     parser.add_argument(
         "--enable-background-chapter-aac-encoding",
         action=argparse.BooleanOptionalAction,
@@ -1537,6 +1727,7 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
         temp_dir=args.temp_dir,
         parse_only=parse_only,
+        benchmark_profile=args.benchmark_profile,
         tts_engine=args.tts_engine,
         tts_model_name=args.tts_model,
         tts_quantization=args.tts_quantization,

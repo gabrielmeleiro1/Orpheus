@@ -24,6 +24,11 @@ export function CleanerOptionsView({
         <span>configuration</span>
       </div>
 
+      <p className="field-hint config-runtime-copy">
+        TTS runtime synthesizes speech (shown in the header as TTS). Cleaner runtime prepares text before
+        synthesis and is chosen independently — selecting Cloud API here does not change the TTS engine.
+      </p>
+
       <div className="config-grid">
         <div className="panel-section config-panel-section">
           <div className="section-title">

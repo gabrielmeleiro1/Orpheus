@@ -36,6 +36,14 @@ def download_corpus(*, books_dir: Path, manifest_path: Path, retries: int = 3) -
             try:
                 print(f"download {row.slug}: attempt {attempt}", file=sys.stderr)
                 with urllib.request.urlopen(url, timeout=60) as response:
+                    status = getattr(response, "status", 200)
+                    content_type = (response.headers.get("Content-Type") or "").lower()
+                    if status != 200 or "text/html" in content_type:
+                        # Do not persist error/rate-limit pages as .epub files.
+                        raise OSError(
+                            f"unexpected response for {url}: "
+                            f"status={status} content_type={content_type or 'unknown'}"
+                        )
                     data = response.read()
                 target.write_bytes(data)
                 downloaded += 1

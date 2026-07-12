@@ -127,8 +127,7 @@
   text-transform: uppercase;
 }
 
-.metric strong,
-.metric-value {
+.metric strong {
   color: var(--text);
   display: block;
   font-family: var(--font-mono);

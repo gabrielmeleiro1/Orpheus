@@ -265,7 +265,7 @@ mapping lives in `desktop/src/features/events/progressStageModel.ts`.
 |------|----------|
 | API client + App helpers | `desktop/src/App.test.ts` |
 | Cleaner helpers | `desktop/src/features/conversion/cleanerBackendHelpers.test.ts` |
-| Event stream model | `desktop/scripts/test-event-stream-model.mjs` |
+| Event stream model | `desktop/src/features/events/eventStreamModel.test.ts` |
 | Tauri backend contract | `desktop/src-tauri/src/backend_tests.rs` |
 | Python desktop contract | `tests/test_desktop_runtime_contract.py`, `test_desktop_backend_launcher.py` |
 

@@ -43,6 +43,8 @@ export interface ConversionCapabilities {
   canStartConversion: boolean;
   canCancelJob: boolean;
   canRefreshJob: boolean;
+  showRunQueue: boolean;
+  showStartConversion: boolean;
 }
 
 export interface CleanerOptionsViewModel {

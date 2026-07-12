@@ -160,9 +160,67 @@ cargo check
 
 What this exercises:
 - TypeScript contracts and React production build
-- Vitest desktop unit coverage
+- Vitest desktop unit coverage, including the UI workflow behavioral journey
+  (`desktop/src/app/uiWorkflowJourney.test.ts`) that composes production
+  reducers/presentation helpers (primary actions, terminal progress semantics,
+  playback labels/duration, tab keyboard mapping, log filtering) without
+  Playwright/WebDriver. App shell auto-routing to Progress/Library is not
+  asserted there; confirm that in native smoke.
 - Tauri/Rust shell lifecycle and path handling tests
 - frontend assets as bundled for the desktop app
+
+### Desktop runtime smoke (Python sidecar/API)
+
+Fast default smoke (no model download, no GPU conversion):
+
+```bash
+python scripts/desktop_runtime_smoke.py
+python -m pytest --no-cov tests/test_desktop_runtime_smoke.py -q -o addopts=
+```
+
+What the default smoke proves:
+- Backend launch on an ephemeral loopback port with bearer token handshake
+- Health, authenticated library, text/source upload, invalid conversion reject,
+  active-job empty state, optional SSE ping
+- Always tears down the backend and temporary runtime directories
+
+Opt-in production-contract conversion journey (capability-aware; skips the
+model-backed portion unless an **explicit** runtime-ready signal is present —
+`runtime_probe.tts.available === true` and/or `mlx_runtime_available === true`.
+Factory catalog fields like `available_tts_engines` / `default_tts_engine` are
+**not** sufficient and must not trigger downloads). When the probe is still
+`pending` / `refresh_in_progress`, the journey polls `/api/system/capabilities`
+up to `--probe-wait-seconds` (default 25) before skipping with a distinct
+timeout reason. An explicit finished-unavailable probe skips immediately.
+
+The journey launches the child backend with Hugging Face / Transformers offline
+flags (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`) so model resolution cannot
+surprise-download weights. Cached local weights are required for a successful
+model-backed conversion; missing weights fail (or skip only when the probe
+already reports unavailable) rather than reaching the network. The journey also
+tracks the started job id and resulting `book_id` / title
+(`Conversion Journey Smoke`) instead of assuming library item zero:
+
+```bash
+python scripts/desktop_runtime_smoke.py --conversion-journey --conversion-timeout-seconds 180 --probe-wait-seconds 25
+```
+
+When a positive runtime probe is present and conversion runs, this also verifies
+the matching library item (by terminal `book_id` or unique expected title) and a
+non-empty authenticated audio response. Otherwise the upload/preflight contract
+still runs and the conversion portion prints an explicit skip reason.
+
+The Vitest UI workflow journey (`desktop/src/app/uiWorkflowJourney.test.ts`)
+composes production reducers/presentation helpers. It does **not** claim to
+prove App shell tab routing; Progress/Library auto-navigation remains a native
+manual smoke.
+
+### What still requires native manual release smoke
+
+- Packaged installer launch/quit
+- File picker / drag-drop UX inside Tauri
+- Real GPU/ANE conversion quality and listen-through
+- Visual confirmation of the workflow-clarity UI fixes after a real conversion
 
 ## Desktop Release Readiness Verification
 

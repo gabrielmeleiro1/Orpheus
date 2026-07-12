@@ -94,6 +94,7 @@ export function useTerminalStateWaiters({
         };
 
         let missingPollCount = 0;
+        let errorPollCount = 0;
 
         const runTerminalStatePoll = async () => {
           if (!apiClient || settled) {
@@ -104,6 +105,7 @@ export function useTerminalStateWaiters({
               apiClient,
               jobId: normalizedJobId,
               missingPollCount,
+              errorPollCount,
               missingPollThreshold: TERMINAL_MISSING_POLL_THRESHOLD,
               onTerminalStatus,
             });
@@ -111,11 +113,14 @@ export function useTerminalStateWaiters({
               return;
             }
             missingPollCount = result.missingPollCount;
+            errorPollCount = result.errorPollCount;
             if (result.kind === "missing-threshold") {
               waiter.finish(result.event);
             }
           } catch {
             // SSE remains the primary path; this is only a resilience fallback.
+            // Poll exceptions are counted inside pollTerminalState; this catch
+            // only guards against unexpected synchronous failures.
           }
         };
 
@@ -138,6 +143,10 @@ export function useTerminalStateWaiters({
     [apiClient, onTerminalStatus],
   );
 
+  // Flush pending waiters whenever the apiClient identity changes (backend
+  // restart mints a new port/token) and on unmount: waiters closed over the
+  // old client can never observe the terminal event, so resolving them as
+  // "unknown" lets callers re-sync instead of hanging until the poll/timeout.
   useEffect(
     () => () => {
       const pendingWaiters = Array.from(terminalWaitersRef.current.entries());
@@ -152,7 +161,7 @@ export function useTerminalStateWaiters({
       }
       terminalWaitersRef.current.clear();
     },
-    [],
+    [apiClient],
   );
 
   return {

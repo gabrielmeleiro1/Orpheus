@@ -16,16 +16,6 @@ export const DASHBOARD_TAB_CONFIGS: DashboardTabConfig[] = [
   { id: "settings", label: "Settings", panelId: "tab-config" },
 ];
 
-export const DASHBOARD_TABS = DASHBOARD_TAB_CONFIGS.map((tab) => tab.id);
-
-export function dashboardTabLabel(tab: DashboardTab): string {
-  return DASHBOARD_TAB_CONFIGS.find((config) => config.id === tab)?.label ?? tab;
-}
-
-export function dashboardTabPanelId(tab: DashboardTab): string {
-  return DASHBOARD_TAB_CONFIGS.find((config) => config.id === tab)?.panelId ?? `tab-${tab}`;
-}
-
 export function conversionPanelTabForDashboardTab(tab: DashboardTab): DashboardTab | "config" {
   return tab === "settings" ? "config" : tab;
 }

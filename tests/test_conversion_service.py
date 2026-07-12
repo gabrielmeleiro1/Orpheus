@@ -50,6 +50,16 @@ class _RepositoryStub:
         self.created_chapters = chapters
         return SimpleNamespace(id=123), []
 
+    def get_book_with_chapters(self, book_id):  # noqa: ANN001, ANN201
+        book = SimpleNamespace(
+            id=book_id,
+            title="Stub Book",
+            author="Stub",
+            source_path="/tmp/stub.md",
+            conversion_runtime_options=None,
+        )
+        return book, []
+
 
 class _LimiterStub:
     semaphore = object()
@@ -382,6 +392,7 @@ def test_conversion_service_manual_worker_selection_uses_static_memory_policy(tm
         runtime_options=ConversionRuntimeOptions(
             voice="am_adam",
             speed=1.0,
+            tts_provider="mlx",
             parallel_worker_mode="manual",
             enable_parallel=True,
             max_parallel_chapters=3,
@@ -404,6 +415,7 @@ def test_conversion_service_auto_worker_selection_enables_warmup_policy(tmp_path
         runtime_options=ConversionRuntimeOptions(
             voice="am_adam",
             speed=1.0,
+            tts_provider="mlx",
             parallel_worker_mode="auto",
             enable_parallel=True,
             max_parallel_chapters=4,
@@ -1876,6 +1888,7 @@ def test_conversion_service_passes_canonical_runtime_spec_to_validation_and_conf
         runtime_options=ConversionRuntimeOptions(
             tts_engine="kokoro",
             tts_quantization="bf16",
+            tts_provider="mlx",
             tts_options={
                 "dtype": "fp16",
                 "model_name": "Kokoro-82M",
@@ -1886,6 +1899,7 @@ def test_conversion_service_passes_canonical_runtime_spec_to_validation_and_conf
         runtime_options=ConversionRuntimeOptions(
             tts_engine="kokoro",
             tts_quantization="bf16",
+            tts_provider="mlx",
             tts_options={
                 "dtype": "fp16",
                 "model_name": "Kokoro-82M",
@@ -2108,6 +2122,9 @@ def test_repair_validates_quantization_from_tts_options(tmp_path):
                 tts_engine="kokoro",
                 tts_quantization=None,
                 tts_options={"quantization": "bf16"},
+            ),
+            runtime_fields_set=frozenset(
+                {"voice", "speed", "tts_engine", "tts_quantization", "tts_options"}
             ),
         )
 
@@ -2569,6 +2586,108 @@ def test_app_controller_pipeline_config_wrapper_preserves_worker_selection(tmp_p
     assert pipeline_config.requested_parallel_chapters == 3
 
 
+def test_resolve_repair_context_forces_mp3_artifacts_for_mp3_backed_books(tmp_path):
+    from modules.app.services.conversion_commands import (
+        RepairRunCommand,
+        resolve_repair_context,
+    )
+    from modules.pipeline.orchestrator import PipelineConfig
+
+    source = tmp_path / "book.epub"
+    source.write_bytes(b"%EPUB")
+    kept_mp3 = tmp_path / "output" / "Book" / "chapters" / "01_one.mp3"
+    kept_mp3.parent.mkdir(parents=True)
+    kept_mp3.write_bytes(b"ID3")
+
+    book = SimpleNamespace(title="Book", author=None, source_path=str(source))
+    chapters = [
+        SimpleNamespace(id=1, chapter_number=1, title="One", mp3_path=str(kept_mp3)),
+        SimpleNamespace(id=2, chapter_number=2, title="Two", mp3_path=None),
+    ]
+    service = SimpleNamespace(
+        _repository=SimpleNamespace(get_book_with_chapters=lambda _book_id: (book, chapters)),
+        _config=SimpleNamespace(
+            db_path=tmp_path / "data" / "app.db",
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+        ),
+        _repair_output_dirs=lambda _book, _chapters: (
+            tmp_path / "output" / "Book",
+            tmp_path / "output" / "Book" / "chapters",
+        ),
+    )
+
+    context = resolve_repair_context(service, book_id=77)
+    assert context.requires_mp3_artifacts is True
+
+    command = RepairRunCommand(
+        job=SimpleNamespace(),
+        callbacks=None,
+        runtime_options=ConversionRuntimeOptions(),
+        conversion_mode="audiobook",
+        failure_message="Repair failed",
+        invalid_artifacts_message="Invalid repair artifacts",
+        cancel_message_text="repair cancelled",
+        book_id=77,
+        repair_context=context,
+    )
+    pipeline_config = PipelineConfig(enable_chapter_aac_packaging=True)
+    command.adjust_pipeline_config(pipeline_config)
+    assert pipeline_config.emit_chapter_mp3_artifacts is True
+    assert pipeline_config.enable_chapter_aac_packaging is False
+
+    # Books with no surviving MP3 chapters keep the AAC-era defaults.
+    kept_mp3.unlink()
+    context = resolve_repair_context(service, book_id=77)
+    assert context.requires_mp3_artifacts is False
+    aac_config = PipelineConfig(enable_chapter_aac_packaging=True)
+    RepairRunCommand(
+        job=SimpleNamespace(),
+        callbacks=None,
+        runtime_options=ConversionRuntimeOptions(),
+        conversion_mode="audiobook",
+        failure_message="Repair failed",
+        invalid_artifacts_message="Invalid repair artifacts",
+        cancel_message_text="repair cancelled",
+        book_id=77,
+        repair_context=context,
+    ).adjust_pipeline_config(aac_config)
+    assert aac_config.emit_chapter_mp3_artifacts is False
+    assert aac_config.enable_chapter_aac_packaging is True
+
+
+def test_app_controller_cleanup_storage_rejects_active_conversion(tmp_path):
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    controller = AppController(config=config, repository=_RepositoryStub())
+
+    def _begin_storage_cleanup():
+        raise RuntimeError("Cannot clean up storage while a conversion is queued or running")
+
+    controller._conversion_service = SimpleNamespace(  # noqa: SLF001 - injected app service
+        begin_storage_cleanup=_begin_storage_cleanup,
+        end_storage_cleanup=lambda: None,
+    )
+
+    with pytest.raises(RuntimeError, match="conversion is queued or running"):
+        controller.cleanup_storage(confirm="cleanup")
+
+
+def test_conversion_service_has_active_job_reflects_job_state(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+    assert service.has_active_job() is False
+
+    service._active_job = SimpleNamespace(status=_JobStatus.RUNNING)  # noqa: SLF001
+    assert service.has_active_job() is True
+
+    service._active_job = SimpleNamespace(status=_JobStatus.COMPLETED)  # noqa: SLF001
+    assert service.has_active_job() is False
+
+
 def test_app_controller_start_conversion_preserves_frontend_selection_kwargs(tmp_path):
     config = AppConfig(
         data_dir=tmp_path / "data",
@@ -2978,6 +3097,74 @@ def test_conversion_service_persists_document_audio_mode_for_txt_source(tmp_path
     assert repo.created_book.conversion_mode == ConversionMode.DOCUMENT_AUDIO
 
 
+def test_conversion_service_persists_effective_runtime_options_from_app_defaults(tmp_path):
+    import json
+
+    repo = _RepositoryStub()
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+        default_voice="am_adam",
+        default_speed=1.0,
+        tts_engine="kokoro",
+        tts_quantization="bf16",
+        tts_provider="mlx",
+        cleaner_backend="mlx",
+        cleaner_model_name="mlx-community/Llama-3.2-3B-Instruct-4bit",
+    )
+    service = ConversionService(
+        config=config,
+        repository=repo,
+        job_cls=SimpleNamespace,
+        status_enum=_JobStatus,
+        cleaner_api_limiter=_LimiterStub(),
+        runtime_validator=lambda *args, **kwargs: None,
+        shared_worker_pool_manager=None,
+        pipeline_cls=_PipelineStub,
+    )
+    chapter_one_mp3 = tmp_path / "output" / "chapter_01.mp3"
+    chapter_one_mp3.parent.mkdir(parents=True, exist_ok=True)
+    chapter_one_mp3.write_bytes(b"mp3")
+    pipeline_result = PipelineConversionResult(
+        success=True,
+        title="Notes",
+        author="Author",
+        output_path=None,
+        chapters=[
+            ChapterResult(
+                chapter_number=1,
+                chapter_title="One",
+                mp3_path=chapter_one_mp3,
+                duration_ms=1000,
+            )
+        ],
+        total_duration_ms=1000,
+    )
+
+    # Request omits engine/quantization/cleaner/device; persistence must store
+    # the effective values resolved from AppConfig, not the sparse request.
+    service._persist_conversion_library_records(  # noqa: SLF001
+        source_path=Path("/tmp/notes.md"),
+        pipeline_result=pipeline_result,
+        conversion_mode=ConversionMode.AUDIOBOOK,
+        runtime_options=ConversionRuntimeOptions(voice="af_bella", speed=1.25),
+    )
+
+    assert repo.created_book is not None
+    assert repo.created_book.conversion_runtime_options is not None
+    persisted = json.loads(repo.created_book.conversion_runtime_options)
+    assert persisted["voice"] == "af_bella"
+    assert persisted["speed"] == 1.25
+    assert persisted["tts_engine"] == "kokoro"
+    assert persisted["tts_quantization"] == "bf16"
+    assert persisted["cleaner_backend"] == "mlx"
+    assert persisted["cleaner_model"] == "mlx-community/Llama-3.2-3B-Instruct-4bit"
+    assert persisted.get("tts_provider") == "mlx"
+    assert "tts_quantization" in persisted
+
+
 def test_conversion_service_repair_delegates_to_pipeline_repair_entrypoint(tmp_path):
     source_path = tmp_path / "source.md"
     source_path.write_text("# One\n\nText one.", encoding="utf-8")
@@ -3096,6 +3283,252 @@ def test_conversion_service_repair_delegates_to_pipeline_repair_entrypoint(tmp_p
     assert len(_RepairEntryPipeline.repair_calls) == 1
     assert _RepairEntryPipeline.repair_calls[0]["plan"].source_path == source_path
     assert repo.book_updates[-1][1]["playback_status"] == PlaybackStatus.PACKAGED
+
+
+def test_conversion_service_repair_uses_persisted_runtime_and_auto_worker_plan(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from modules.app.services.repair_runtime import serialize_persisted_runtime_options
+
+    # The persisted settings use the API cleaner; repair requires a usable key.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+
+    source_path = tmp_path / "source.md"
+    source_path.write_text("# One\n\nText one.", encoding="utf-8")
+    persisted = serialize_persisted_runtime_options(
+        ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.35,
+            tts_engine="kokoro",
+            tts_quantization="bf16",
+            cleaner_backend="api",
+            cleaner_api_model="gpt-5-nano",
+            tts_options={"quantization": "bf16"},
+            parallel_worker_mode="manual",
+            enable_parallel=True,
+            max_parallel_chapters=4,
+        )
+    )
+
+    class _RepairRepository:
+        def __init__(self) -> None:
+            self.book = Book(
+                id=77,
+                title="Repair Book",
+                author="Tester",
+                source_path=str(source_path),
+                source_type=SourceType.MD,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.MISSING,
+                playback_position_sec=0.0,
+                created_at=__import__("datetime").datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=__import__("datetime").datetime(2026, 4, 1, 9, 5, 0),
+                conversion_runtime_options=json.dumps(persisted),
+            )
+            self.chapters = [Chapter(1, 77, 1, "One", None, None)]
+
+        def get_book(self, book_id):
+            return self.book if book_id == 77 else None
+
+        def get_book_with_chapters(self, book_id):
+            if book_id != 77:
+                return None
+            return self.book, list(self.chapters)
+
+        def apply_repair_result(
+            self,
+            book_id,
+            *,
+            repaired_chapter_updates,
+            playback_path,
+            playback_status,
+            total_chapters,
+        ):
+            _ = (book_id, repaired_chapter_updates, playback_path, playback_status, total_chapters)
+            return self.book
+
+    class _RepairConfigPipeline:
+        captured_config = None
+
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            type(self).captured_config = kwargs["config"]
+
+        def repair(self, **kwargs) -> RepairResult:  # noqa: ANN003
+            plan = kwargs["plan"]
+            output_dir = plan.output_dir
+            final = output_dir / "Repair Book.m4b"
+            final.parent.mkdir(parents=True, exist_ok=True)
+            final.write_bytes(b"m4b")
+            return RepairResult(
+                success=True,
+                title="Repair Book",
+                author="Tester",
+                output_path=final,
+                chapters=[
+                    ChapterResult(
+                        chapter_number=1,
+                        chapter_title="One",
+                        duration_ms=1000,
+                    )
+                ],
+                total_duration_ms=1000,
+            )
+
+    repo = _RepairRepository()
+    service = ConversionService(
+        config=AppConfig(
+            data_dir=tmp_path / "data",
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            db_path=tmp_path / "data" / "app.db",
+        ),
+        repository=repo,
+        job_cls=ConversionJob,
+        status_enum=JobStatus,
+        cleaner_api_limiter=_LimiterStub(),
+        runtime_validator=lambda *args, **kwargs: None,
+        shared_worker_pool_manager=None,
+        pipeline_cls=_RepairConfigPipeline,
+    )
+
+    job = service.start_repair(
+        book_id=77,
+        runtime_options=ConversionRuntimeOptions(),
+        runtime_fields_set=frozenset(),
+    )
+    assert job.wait(timeout=3.0)
+
+    captured = _RepairConfigPipeline.captured_config
+    assert job.status == JobStatus.COMPLETED
+    assert captured is not None
+    assert captured.voice == "af_bella"
+    assert captured.speed == 1.35
+    assert captured.tts_engine == "kokoro"
+    assert captured.parallel_worker_mode == "auto"
+    assert captured.worker_plan.worker_mode == "auto"
+    service.cleanup()
+
+
+def test_conversion_service_repair_without_fields_set_reuses_persisted_v7_options(
+    tmp_path, monkeypatch
+):
+    """BUG2: controller/direct repair (runtime_fields_set=None) must reuse
+    persisted book narration settings instead of ConversionRuntimeOptions defaults."""
+    import json
+
+    from modules.app.services.repair_runtime import serialize_persisted_runtime_options
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+
+    source_path = tmp_path / "source.md"
+    source_path.write_text("# One\n\nText one.", encoding="utf-8")
+    persisted = serialize_persisted_runtime_options(
+        ConversionRuntimeOptions(
+            voice="af_bella",
+            speed=1.35,
+            tts_engine="kokoro",
+            tts_quantization="bf16",
+            cleaner_backend="api",
+            cleaner_api_model="gpt-5-nano",
+        )
+    )
+
+    class _RepairRepository:
+        def __init__(self) -> None:
+            self.book = Book(
+                id=77,
+                title="Repair Book",
+                author="Tester",
+                source_path=str(source_path),
+                source_type=SourceType.MD,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.MISSING,
+                playback_position_sec=0.0,
+                created_at=__import__("datetime").datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=__import__("datetime").datetime(2026, 4, 1, 9, 5, 0),
+                conversion_runtime_options=json.dumps(persisted),
+            )
+            self.chapters = [Chapter(1, 77, 1, "One", None, None)]
+
+        def get_book_with_chapters(self, book_id):
+            if book_id != 77:
+                return None
+            return self.book, list(self.chapters)
+
+        def apply_repair_result(self, book_id, **kwargs):  # noqa: ANN003
+            _ = (book_id, kwargs)
+            return self.book
+
+    class _RepairConfigPipeline:
+        captured_config = None
+
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            type(self).captured_config = kwargs["config"]
+            self.config = kwargs["config"]
+            self._tts_engine = None
+            self._selected_parallel_chapters = 1
+
+        def repair(self, **kwargs) -> RepairResult:  # noqa: ANN003
+            plan = kwargs["plan"]
+            final = plan.output_dir / "Repair Book.m4b"
+            final.parent.mkdir(parents=True, exist_ok=True)
+            final.write_bytes(b"m4b")
+            return RepairResult(
+                success=True,
+                title="Repair Book",
+                author="Tester",
+                output_path=final,
+                chapters=[
+                    ChapterResult(
+                        chapter_number=1,
+                        chapter_title="One",
+                        duration_ms=1000,
+                    )
+                ],
+                total_duration_ms=1000,
+            )
+
+        def stage_cleanup_models(self, *, force: bool = False) -> None:
+            _ = force
+
+    service = ConversionService(
+        config=AppConfig(
+            data_dir=tmp_path / "data",
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            db_path=tmp_path / "data" / "app.db",
+            default_voice="am_adam",
+            default_speed=1.0,
+        ),
+        repository=_RepairRepository(),
+        job_cls=ConversionJob,
+        status_enum=JobStatus,
+        cleaner_api_limiter=_LimiterStub(),
+        runtime_validator=lambda *args, **kwargs: None,
+        shared_worker_pool_manager=None,
+        pipeline_cls=_RepairConfigPipeline,
+    )
+
+    # Direct/controller path: omit runtime_fields_set (defaults to None).
+    job = service.start_repair(
+        book_id=77,
+        runtime_options=ConversionRuntimeOptions(),
+    )
+    assert job.wait(timeout=3.0)
+
+    captured = _RepairConfigPipeline.captured_config
+    assert job.status == JobStatus.COMPLETED
+    assert captured is not None
+    assert captured.voice == "af_bella"
+    assert captured.speed == 1.35
+    assert captured.tts_engine == "kokoro"
+    service.cleanup()
 
 
 def test_conversion_service_repair_late_cancel_after_packaging_persists_completed_output(tmp_path):
@@ -3897,7 +4330,9 @@ def test_conversion_service_repair_packages_wav_only_chapter_results(tmp_path):
     assert job.result is not None
     assert job.result.success is True
     assert job.result.output_path == str(output_dir / "Repair Book.m4b")
-    assert repo.chapter_updates == []
+    # Repaired chapters without a durable MP3 still persist duration and
+    # clear the stale chapter audio reference.
+    assert repo.chapter_updates == [(1, 1000, None), (2, 2000, None)]
     assert repo.book_updates[-1][1]["playback_path"] == str(output_dir / "Repair Book.m4b")
     assert repo.book_updates[-1][1]["playback_status"] == PlaybackStatus.PACKAGED
     assert len(_WavOnlyRepairPipeline.package_inputs) == 1
@@ -4566,3 +5001,260 @@ def test_conversion_service_repair_fails_when_stored_chapter_title_mismatches_so
     assert job.error is not None
     assert "title mismatch" in str(job.error).lower()
     assert "chapter 2" in str(job.error).lower()
+
+
+class _ExplodingPipelineStub:
+    def __init__(self, **kwargs) -> None:  # noqa: ANN003
+        _ = kwargs
+
+    def convert(self, **kwargs):  # noqa: ANN003, ANN201
+        raise RuntimeError("instant pipeline failure")
+
+
+def test_conversion_service_emits_running_event_before_instant_failure(tmp_path, monkeypatch):
+    service = _make_service(tmp_path, _ExplodingPipelineStub)
+    source = tmp_path / "book.md"
+    source.write_text("# Book", encoding="utf-8")
+
+    # Run the worker inline so the failure happens during thread.start():
+    # the RUNNING state event must already be published by then.
+    monkeypatch.setattr(threading.Thread, "start", threading.Thread.run)
+
+    state_events = []
+
+    def _capture(event):  # noqa: ANN001, ANN202
+        if getattr(event, "event_type", None) == EventType.STATE:
+            state_events.append(event.state)
+
+    service.start_conversion(
+        source_path=source,
+        callbacks=ConversionCallbacks(on_event=_capture),
+        runtime_options=_default_runtime_options(),
+    )
+
+    assert JobState.RUNNING in state_events
+    assert JobState.FAILED in state_events
+    assert state_events.index(JobState.RUNNING) < state_events.index(JobState.FAILED)
+
+
+def test_conversion_service_copies_upload_into_durable_storage_without_holding_job_lock(
+    tmp_path, monkeypatch
+):
+    import modules.app.services.conversion_service as conversion_service_module
+
+    service = _make_service(tmp_path, _PipelineStub)
+    upload_dir = service._config.temp_dir / "web_uploads"  # noqa: SLF001
+    upload_dir.mkdir(parents=True)
+    source_path = upload_dir / "book.epub"
+    source_path.write_text("uploaded source", encoding="utf-8")
+
+    lock_held_during_copy = []
+    real_copyfileobj = conversion_service_module.shutil.copyfileobj
+
+    def _probe_copy(fsrc, fdst, *args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        lock_held_during_copy.append(service._job_lock.locked())  # noqa: SLF001
+        return real_copyfileobj(fsrc, fdst, *args, **kwargs)
+
+    monkeypatch.setattr(conversion_service_module.shutil, "copyfileobj", _probe_copy)
+    monkeypatch.setattr(threading.Thread, "start", lambda thread: None)
+
+    service.start_conversion(
+        source_path=source_path,
+        runtime_options=_default_runtime_options(),
+    )
+
+    assert lock_held_during_copy == [False]
+
+
+def test_conversion_service_releases_job_slot_when_durable_copy_fails(tmp_path, monkeypatch):
+    import modules.app.services.conversion_service as conversion_service_module
+
+    service = _make_service(tmp_path, _PipelineStub)
+    upload_dir = service._config.temp_dir / "web_uploads"  # noqa: SLF001
+    upload_dir.mkdir(parents=True)
+    source_path = upload_dir / "book.epub"
+    source_path.write_text("uploaded source", encoding="utf-8")
+
+    def _fail_copy(*_args, **_kwargs):  # noqa: ANN002, ANN003, ANN202
+        raise OSError("disk full")
+
+    monkeypatch.setattr(conversion_service_module.shutil, "copyfileobj", _fail_copy)
+    monkeypatch.setattr(threading.Thread, "start", lambda thread: None)
+
+    with pytest.raises(OSError, match="disk full"):
+        service.start_conversion(
+            source_path=source_path,
+            runtime_options=_default_runtime_options(),
+        )
+
+    assert service.get_active_job() is None
+    assert service.has_active_job() is False
+
+    # The reserved slot is free again: a fresh (external-source) start succeeds.
+    external_source = tmp_path / "external.md"
+    external_source.write_text("# External", encoding="utf-8")
+    job = service.start_conversion(
+        source_path=external_source,
+        runtime_options=_default_runtime_options(),
+    )
+    assert job is not None
+
+
+def test_repair_success_uses_synchronized_job_transitions(tmp_path):
+    from modules.app.services.conversion_commands import RepairRunCommand
+
+    class _SpyJob:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            self.status = None
+            self.book_id = None
+            self.result = None
+
+        def set_result(self, result):  # noqa: ANN001, ANN202
+            self.calls.append("set_result")
+            self.result = result
+
+        def complete(self, book_id):  # noqa: ANN001, ANN202
+            self.calls.append("complete")
+            self.status = _JobStatus.COMPLETED
+            self.book_id = book_id
+
+    job = _SpyJob()
+    service = SimpleNamespace(
+        _repository=SimpleNamespace(apply_repair_result=lambda *args, **kwargs: None),
+        _status=_JobStatus,
+    )
+    command = RepairRunCommand(
+        job=job,
+        callbacks=None,
+        runtime_options=ConversionRuntimeOptions(),
+        conversion_mode="audiobook",
+        failure_message="Repair failed",
+        invalid_artifacts_message="Invalid repair artifacts",
+        cancel_message_text="repair cancelled",
+        book_id=7,
+        repair_context=SimpleNamespace(),
+    )
+
+    command.handle_success(
+        service,
+        SimpleNamespace(
+            output_path=str(tmp_path / "book.m4b"),
+            repaired_chapter_updates=[],
+            total_duration_ms=1200,
+            chapters=[1, 2],
+        ),
+        SimpleNamespace(chapters_completed=2),
+        pipeline_config=None,
+    )
+
+    # Result must be installed via the synchronized setter before the job is
+    # marked COMPLETED, so readers never observe COMPLETED with result=None.
+    assert job.calls == ["set_result", "complete"]
+    assert job.status == _JobStatus.COMPLETED
+    assert job.book_id == 7
+    assert job.result is not None and job.result.success is True
+
+
+def test_conversion_service_start_refuses_while_storage_cleanup_in_flight(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+    source = tmp_path / "book.md"
+    source.write_text("# Book", encoding="utf-8")
+
+    service.begin_storage_cleanup()
+    try:
+        with pytest.raises(RuntimeError, match="storage cleanup"):
+            service.start_conversion(
+                source_path=source,
+                runtime_options=_default_runtime_options(),
+            )
+    finally:
+        service.end_storage_cleanup()
+
+    job = service.start_conversion(
+        source_path=source,
+        runtime_options=_default_runtime_options(),
+    )
+    assert job.wait(timeout=3.0) if hasattr(job, "wait") else True
+
+
+def test_conversion_service_begin_storage_cleanup_rejects_active_job(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+    service._active_job = SimpleNamespace(status=_JobStatus.RUNNING)  # noqa: SLF001
+
+    with pytest.raises(RuntimeError, match="queued or running"):
+        service.begin_storage_cleanup()
+
+
+def test_app_controller_cleanup_storage_guards_conversion_starts_during_prune(
+    tmp_path, monkeypatch
+):
+    import modules.app.controller as controller_module
+
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    controller = AppController(config=config, repository=_RepositoryStub())
+    source = tmp_path / "book.md"
+    source.write_text("# Book", encoding="utf-8")
+
+    observed = {}
+
+    def _fake_prune(**kwargs):  # noqa: ANN003, ANN202
+        with pytest.raises(RuntimeError, match="storage cleanup"):
+            controller._conversion_service.start_conversion(  # noqa: SLF001
+                source_path=source,
+                runtime_options=_default_runtime_options(),
+            )
+        observed["guarded"] = True
+        return {"actions": {}}
+
+    monkeypatch.setattr(controller_module, "prune_stale_records_and_files", _fake_prune)
+
+    report = controller.cleanup_storage(confirm="cleanup")
+
+    assert observed == {"guarded": True}
+    assert report == {"actions": {}}
+    # The guard is lifted after cleanup completes.
+    assert controller._conversion_service._storage_cleanup_active is False  # noqa: SLF001
+
+
+def test_app_controller_delete_book_rejects_book_with_active_job(tmp_path):
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    controller = AppController(config=config, repository=_RepositoryStub())
+    controller._conversion_service = SimpleNamespace(  # noqa: SLF001 - injected app service
+        get_active_job=lambda: SimpleNamespace(book_id=42),
+        has_active_job=lambda: True,
+    )
+
+    with pytest.raises(RuntimeError, match="converted or repaired"):
+        controller.delete_book(42)
+
+
+def test_app_controller_delete_book_allows_other_books_while_job_active(tmp_path):
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    controller = AppController(config=config, repository=_RepositoryStub())
+    controller._conversion_service = SimpleNamespace(  # noqa: SLF001 - injected app service
+        get_active_job=lambda: SimpleNamespace(book_id=41),
+        has_active_job=lambda: True,
+    )
+    deleted: list[int] = []
+    controller._library_service = SimpleNamespace(  # noqa: SLF001 - injected app service
+        delete_book=lambda book_id: deleted.append(book_id) or True,
+    )
+
+    assert controller.delete_book(42) is True
+    assert deleted == [42]

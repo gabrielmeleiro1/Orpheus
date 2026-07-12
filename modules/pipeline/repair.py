@@ -48,11 +48,19 @@ def _existing_repair_result(
     stored_chapter: Any,
     chapter_audio: Path,
 ) -> ChapterResult:
+    # Classify the stored audio by container so packaging homogeneity checks
+    # compare kept chapters against repaired ones on the right field.
+    suffix = chapter_audio.suffix.lower()
+    audio_field = "mp3_path"
+    if suffix == ".m4a":
+        audio_field = "aac_path"
+    elif suffix == ".wav":
+        audio_field = "wav_path"
     return ChapterResult(
         chapter_number=_chapter_number(stored_chapter, 0),
         chapter_title=str(getattr(stored_chapter, "title", "")),
-        mp3_path=chapter_audio,
         duration_ms=int(getattr(stored_chapter, "duration_ms", 0) or 0),
+        **{audio_field: chapter_audio},
     )
 
 
@@ -271,7 +279,7 @@ def execute_repair_plan(
         )
 
         results_by_number: dict[int, ChapterResult] = {}
-        repaired_updates: list[RepairedChapterUpdate] = []
+        repaired_records: list[tuple[Any, ChapterResult]] = []
         stored_by_number = {
             _chapter_number(stored_chapter, index + 1): stored_chapter
             for index, stored_chapter in enumerate(stored_chapters)
@@ -312,14 +320,14 @@ def execute_repair_plan(
                 runtime.set_stage(PipelineStage.CANCELLED)
                 return _cancelled_result(plan)
             stored_chapter = stored_by_number.get(chapter_number)
-            if stored_chapter is not None and not repaired.error and repaired.mp3_path is not None:
-                repaired_updates.append(
-                    RepairedChapterUpdate(
-                        chapter_id=int(getattr(stored_chapter, "id")),
-                        duration_ms=repaired.duration_ms,
-                        mp3_path=str(repaired.mp3_path),
-                    )
-                )
+            if stored_chapter is not None and not repaired.error:
+                # Defer building the update until after packaging: in the
+                # background-AAC default the chapter returns with mp3_path=None
+                # and only aac_future set, and package_results backfills the
+                # durable .m4a onto mp3_path. Capturing mp3_path here would
+                # persist None, dropping the durable reference and re-triggering
+                # repair forever.
+                repaired_records.append((stored_chapter, repaired))
 
         for stored_chapter in stored_chapters:
             chapter_number = _chapter_number(stored_chapter, 0)
@@ -350,6 +358,20 @@ def execute_repair_plan(
             plan.author,
             plan.output_dir,
         )
+        # Packaging has now resolved any background AAC futures, so mp3_path
+        # reflects the durable per-chapter audio (.m4a or .mp3).
+        repaired_updates = [
+            RepairedChapterUpdate(
+                chapter_id=int(getattr(stored_chapter, "id")),
+                duration_ms=repaired.duration_ms,
+                mp3_path=(
+                    str(repaired.mp3_path)
+                    if repaired.mp3_path is not None
+                    else None
+                ),
+            )
+            for stored_chapter, repaired in repaired_records
+        ]
         result = RepairResult(
             success=True,
             title=plan.title,

@@ -7,7 +7,6 @@ from dataclasses import is_dataclass, replace
 import logging
 import re
 import string
-from typing import Iterable
 
 from modules.errors import ChapterTooLongError
 from modules.ingestion.models import Chapter, Document
@@ -20,7 +19,31 @@ from modules.ingestion.content_filter import (
 
 LOGGER = logging.getLogger(__name__)
 DEFAULT_MAX_CHAPTER_WORDS = 50_000
-_PAGE_NUMBER_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdmIVXLCDM]{1,12})\s*$")
+# Hard caps admit short headers and longer Title-by-Author running headers.
+# Title-like typography (not these caps alone) gates membership in the set.
+_MAX_HEADER_LENGTH = 120
+_MAX_HEADER_WORDS = 18
+_TITLE_SMALL_WORDS = frozenset(
+    {"a", "an", "the", "and", "or", "of", "by", "for", "in", "on", "to", "at", "from", "with"}
+)
+_DIGIT_PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
+# Lowercase roman page numbers use only i/v/x/l/c: front-matter pagination
+# never reaches the d/m (500/1000) range, and the strict canonical form keeps
+# real words like "ill", "mix", "did", "civic" out. Uppercase words built from
+# these letters ("I", "DID", "MIX") are always body text, never page furniture.
+_ROMAN_PAGE_NUMBER_RE = re.compile(
+    r"^(?=[ivxlc])c{0,3}(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$"
+)
+
+
+def _is_page_number(line: str) -> bool:
+    """True only for digit page numbers and lowercase canonical roman numerals."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    if _DIGIT_PAGE_NUMBER_RE.fullmatch(stripped):
+        return True
+    return bool(_ROMAN_PAGE_NUMBER_RE.fullmatch(stripped))
 _LOWERCASE_HYPHEN_BREAK_RE = re.compile(r"([a-z])-\s*\n\s*([a-z])")
 _BACKLINK_RE = re.compile(
     r"(?im)(?:^\s*|\s+)(?:back to (?:top|contents)|return to (?:top|contents))\s*[↩\u21a9]?\s*$"
@@ -50,31 +73,160 @@ def _normalize_repeated_candidate(line: str) -> str:
     return re.sub(r"\s+", " ", lowered).strip()
 
 
-def _iter_lines(chapters: Iterable[Chapter]) -> Iterable[str]:
-    for chapter in chapters:
-        yield from str(chapter.content).splitlines()
+def _looks_like_running_header_text(line: str) -> bool:
+    """Typographic cues that separate running headers from body refrains."""
+    stripped = line.strip()
+    if re.search(r"\sby\s", stripped, re.IGNORECASE):
+        return True
+    letters = [char for char in stripped if char.isalpha()]
+    if letters and all(char.isupper() for char in letters):
+        return True
+    words = stripped.split()
+    if not words:
+        return False
+    significant = [
+        word
+        for word in words
+        if word.lower().strip(string.punctuation) not in _TITLE_SMALL_WORDS
+    ] or words
+    capitalized = sum(1 for word in significant if word[:1].isupper())
+    # Strict majority keeps mixed-case prose ("Never again") out while
+    # admitting real Title Case headers ("Example Book", "Running Header").
+    return capitalized * 2 > len(significant)
+
+
+def _looks_like_strong_header_text(line: str) -> bool:
+    """Confident running-header typography: ALL CAPS or a "Title by Author" line.
+
+    Plain Title Case ("The Wind Rises", "Summary") is deliberately excluded --
+    on its own it is far too weak to justify deleting a line from every chapter.
+    """
+    stripped = line.strip()
+    if re.search(r"\sby\s", stripped, re.IGNORECASE):
+        return True
+    letters = [char for char in stripped if char.isalpha()]
+    return bool(letters) and all(char.isupper() for char in letters)
+
+
+def _is_page_number_adjacent(lines: list[str], index: int) -> bool:
+    """True when a page number sits within a line or two of ``index``.
+
+    A running header paired with its page number is strong page-furniture
+    corroboration that a bare Title-Case line cannot supply on its own.
+    """
+    for offset in range(1, min(3, index + 1)):
+        neighbor = lines[index - offset].strip()
+        if not neighbor:
+            continue
+        if _is_page_number(neighbor):
+            return True
+        break
+    for offset in range(1, min(3, len(lines) - index)):
+        neighbor = lines[index + offset].strip()
+        if not neighbor:
+            continue
+        if _is_page_number(neighbor):
+            return True
+        break
+    return False
+
+
+def _is_page_edge_position(lines: list[str], index: int) -> bool:
+    """True when a line sits at a chapter/page edge rather than mid-prose."""
+    previous_blank = index == 0 or not lines[index - 1].strip()
+    next_blank = index == len(lines) - 1 or not lines[index + 1].strip()
+    if not (previous_blank or next_blank):
+        return False
+
+    # Page numbers often sit one blank away from the running header/footer.
+    if _is_page_number_adjacent(lines, index):
+        return True
+
+    non_empty = [i for i, line in enumerate(lines) if line.strip()]
+    if index == non_empty[0] or index == non_empty[-1]:
+        return True
+
+    # Isolated blank-surrounded lines often mark page breaks in PDF text.
+    return previous_blank and next_blank
+
+
+def _standalone_header_like_lines(content: str) -> list[tuple[str, bool]]:
+    """Return ``(stripped_line, has_strong_evidence)`` for page-edge header lines.
+
+    ``has_strong_evidence`` is True only when the line carries confident header
+    corroboration -- ALL CAPS / "by Author" typography, or an adjacent page
+    number. A bare Title-Case line surrounded by blanks reports ``False`` so it
+    cannot, by itself, promote a body refrain into the running-header set.
+    """
+    lines = content.splitlines()
+    candidates: list[tuple[str, bool]] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not _is_plausible_page_edge_header(stripped):
+            continue
+        if not _is_page_edge_position(lines, index):
+            continue
+        strong = _looks_like_strong_header_text(stripped) or _is_page_number_adjacent(
+            lines, index
+        )
+        candidates.append((stripped, strong))
+    return candidates
+
+
+def _raw_variants_differ_only_by_digits(variants: set[str]) -> bool:
+    if len(variants) <= 1:
+        return False
+    digit_stripped = {re.sub(r"\d+", "", variant).strip() for variant in variants}
+    return len(digit_stripped) == 1
+
+
+def _is_plausible_page_edge_header(line: str) -> bool:
+    stripped = line.strip()
+    if not 4 <= len(stripped) <= _MAX_HEADER_LENGTH:
+        return False
+    word_count = len(stripped.split())
+    if word_count > _MAX_HEADER_WORDS:
+        return False
+    # Sentence punctuation marks body prose, not running headers/footers.
+    if stripped.endswith((".", "!", "?", "…")):
+        return False
+    # Typographic gate: Title Case / ALL CAPS / "by Author" — not bare
+    # length/word caps — so lowercase body refrains stay out of the set.
+    return _looks_like_running_header_text(stripped)
 
 
 def _detect_repeated_headers(chapters: list[Chapter]) -> set[str]:
-    candidates: list[str] = []
-    for line in _iter_lines(chapters):
-        stripped = line.strip()
-        if not 4 <= len(stripped) <= 120:
-            continue
-        normalized = _normalize_repeated_candidate(stripped)
-        if normalized and not normalized.startswith("chapter "):
-            candidates.append(normalized)
+    occurrence_counts: Counter[str] = Counter()
+    normalized_to_raw: dict[str, set[str]] = {}
+    normalized_has_strong: dict[str, bool] = {}
 
-    if not candidates:
+    for chapter in chapters:
+        for stripped, strong in _standalone_header_like_lines(str(chapter.content)):
+            normalized = _normalize_repeated_candidate(stripped)
+            if not normalized or normalized.startswith("chapter "):
+                continue
+            occurrence_counts[normalized] += 1
+            normalized_to_raw.setdefault(normalized, set()).add(stripped)
+            normalized_has_strong[normalized] = (
+                normalized_has_strong.get(normalized, False) or strong
+            )
+
+    if not occurrence_counts:
         return set()
 
-    counts = Counter(candidates)
     threshold = max(2, int(len(chapters) * 0.30))
-    dominant_body_limit = max(10, int(len(candidates) * 0.50))
+    # A recurring line is treated as a running header only when it is frequent
+    # AND at least one occurrence carries strong evidence (ALL CAPS / "by
+    # Author" typography, or an adjacent page number). Plain Title-Case body
+    # refrains and subheadings ("The Wind Rises", "Summary") lack that evidence
+    # and are kept -- silently dropping body text is worse than narrating a
+    # stray header. No frequency upper bound: a real header dominates the pool.
     return {
-        candidate
-        for candidate, count in counts.items()
-        if threshold <= count <= dominant_body_limit
+        normalized
+        for normalized, count in occurrence_counts.items()
+        if threshold <= count
+        and normalized_has_strong.get(normalized, False)
+        and not _raw_variants_differ_only_by_digits(normalized_to_raw.get(normalized, set()))
     }
 
 
@@ -113,7 +265,7 @@ def _normalize_pdf_chapter(text: str, repeated_headers: set[str]) -> str:
         if not stripped:
             kept_lines.append("")
             continue
-        if _PAGE_NUMBER_RE.fullmatch(stripped):
+        if _is_page_number(stripped):
             continue
         normalized = _normalize_repeated_candidate(stripped)
         if normalized in repeated_headers:

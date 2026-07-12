@@ -200,7 +200,6 @@
   margin-bottom: 12px;
 }
 
-.voice-suggest-output,
 .preflight-sample {
   background: var(--bg-elevated);
   border: 1px solid var(--border);

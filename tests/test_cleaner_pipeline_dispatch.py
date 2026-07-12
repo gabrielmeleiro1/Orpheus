@@ -13,6 +13,7 @@ from modules.tts.cleaner_backends.registry import (
     requires_api_key_cleaner_backend,
 )
 from modules.tts.cleaner_config import CleanTrace
+from modules.tts.runtime_spec import TTSRuntimeSpec
 from tests.fixtures.fake_cleaner_backend import FakeLocalCleanerBackend
 
 
@@ -58,6 +59,12 @@ def test_build_worker_plan_cuda_local_gpu_contention():
         cleaner_backend="cuda",
         cleaner_cuda_device="cuda:0",
         cleaner_cuda_quantization="4bit",
+        tts_runtime=TTSRuntimeSpec.from_legacy(
+            "kokoro",
+            "bf16",
+            provider="cuda",
+            device="cuda:0",
+        ),
         tts_worker_auto_mode="memory_safe",
         tts_process_safe=False,
     )
@@ -65,7 +72,7 @@ def test_build_worker_plan_cuda_local_gpu_contention():
     plan = build_worker_plan(config)
 
     assert plan.max_workers == 1
-    assert plan.initial_reason == "local GPU model contention guard"
+    assert plan.initial_reason == "CUDA TTS + CUDA cleaner same-device contention guard"
 
 
 def test_build_worker_plan_skips_local_gpu_guard_for_api_backend():

@@ -19,6 +19,7 @@ venv/
 # Local tool state
 .artifacts/
 docs/plans/
+.claude/
 
 # Coverage and test output
 .coverage

@@ -44,6 +44,7 @@ class BookCreate:
     total_chapters: int = 0
     playback_path: Optional[str] = None
     playback_status: PlaybackStatus = PlaybackStatus.MISSING
+    conversion_runtime_options: Optional[str] = None
     tags: str = ""
     favorite: bool = False
 
@@ -63,6 +64,7 @@ class Book:
     playback_position_sec: float
     created_at: datetime
     updated_at: datetime
+    conversion_runtime_options: Optional[str] = None
     tags: str = ""
     favorite: bool = False
 
@@ -111,8 +113,6 @@ class BookFilters:
     source_type: Optional[SourceType] = None
     conversion_mode: Optional[ConversionMode] = None
     favorite: Optional[bool] = None
-    created_after: Optional[datetime] = None
-    created_before: Optional[datetime] = None
     limit: int = 50
     offset: int = 0
 

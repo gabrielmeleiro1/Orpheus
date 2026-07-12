@@ -8,6 +8,9 @@ import type {
 
 const SETTINGS_KEY = "orpheus.desktop.settings.v1";
 
+/** Same-document notification when desktop settings persistence changes. */
+export const DESKTOP_SETTINGS_CHANGED_EVENT = "orpheus:desktop-settings-changed";
+
 export interface PersistedSettings {
   tts_engine?: string;
   voice?: string;
@@ -37,6 +40,7 @@ export function readPersistedSettings(): PersistedSettings {
 export function savePersistedSettings(settings: PersistedSettings): void {
   try {
     window.localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+    window.dispatchEvent(new CustomEvent(DESKTOP_SETTINGS_CHANGED_EVENT));
   } catch {
     // Ignore storage failures.
   }

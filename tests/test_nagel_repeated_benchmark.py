@@ -3,6 +3,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+
+def test_repeated_benchmark_rejects_removed_chunk_size_flag(tmp_path: Path) -> None:
+    from scripts import benchmark_nagel_repeated
+
+    with pytest.raises(SystemExit):
+        benchmark_nagel_repeated.parse_args(
+            [str(tmp_path / "book.txt"), "--chunk-size", "700"]
+        )
+
 
 def test_repeated_benchmark_default_case_writes_expected_summary(
     tmp_path: Path,

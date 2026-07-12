@@ -21,20 +21,20 @@ class ChunkConfig:
 class TextChunker:
     """
     Intelligent text chunker for TTS processing.
-    
+
     Splits long text into chunks at natural sentence boundaries
     to ensure smooth audio generation without VRAM overflow.
     """
-    
+
     def __init__(self, config: ChunkConfig | None = None):
         """
         Initialize the text chunker.
-        
+
         Args:
             config: Chunk configuration (uses defaults if None)
         """
         self.config = config or ChunkConfig()
-        
+
         # Sentence boundary patterns
         # Matches: . ! ? followed by space or end, with optional quotes
         self._sentence_end = re.compile(
@@ -67,26 +67,26 @@ class TextChunker:
         while start > 0 and not text[start - 1].isspace():
             start -= 1
         return text[start:end]
-        
+
     def estimate_tokens(self, text: str) -> int:
         """
         Estimate token count for text.
-        
+
         Args:
             text: Input text
-            
+
         Returns:
             Estimated token count
         """
         return int(len(text) / self.config.chars_per_token)
-    
+
     def _find_sentence_boundaries(self, text: str) -> list[int]:
         """
         Find all sentence boundary positions in text.
-        
+
         Args:
             text: Input text
-            
+
         Returns:
             List of character positions where sentences end
         """
@@ -97,6 +97,20 @@ class TextChunker:
                 continue
             boundaries.append(match.start())
         return boundaries
+
+    def _enforce_max_chars(self, text: str, max_chars: int) -> list[str]:
+        """
+        Ensure text fits within max_chars, hard-splitting when needed.
+
+        Uses word boundaries via ``_hard_split`` with deterministic character
+        fallback for individual overlong tokens.
+        """
+        stripped = text.strip()
+        if not stripped:
+            return []
+        if len(stripped) <= max_chars:
+            return [stripped]
+        return self._hard_split(stripped, max_chars)
 
     def _merge_small_chunks(self, chunks: list[str], max_chars: int) -> list[str]:
         """Merge tiny chunks with neighbors when doing so stays under the limit."""
@@ -121,27 +135,34 @@ class TextChunker:
                 merged.append(current)
             i += 1
         return merged
-    
+
     def _split_at_boundaries(
-        self, 
-        text: str, 
+        self,
+        text: str,
         max_chars: int
     ) -> list[str]:
         """
         Split text at sentence boundaries respecting max length.
-        
+
         Args:
             text: Text to split
             max_chars: Maximum characters per chunk
-            
+
         Returns:
-            List of text chunks
+            List of text chunks, each no longer than ``max_chars`` except when
+            a single grapheme cluster exceeds the limit (handled by character
+            fallback in ``_hard_split``).
+
+        Whitespace contract: callers that normalize whitespace (see ``chunk``)
+        can rejoin chunks and recover all characters in order. Hard splits
+        within an overlong token may introduce spaces at split seams when
+        chunks are joined with single spaces.
         """
         if len(text) <= max_chars:
             return [text]
-        
+
         boundaries = self._find_sentence_boundaries(text)
-        
+
         if not boundaries:
             # No sentence boundaries found - split by paragraph or hard limit
             paragraphs = text.split('\n\n')
@@ -149,55 +170,54 @@ class TextChunker:
                 return self._split_paragraphs(paragraphs, max_chars)
             # Last resort: hard split
             return self._hard_split(text, max_chars)
-        
+
         chunks = []
         current_start = 0
         current_end = 0
-        
+
         for boundary in boundaries:
             # Check if adding this sentence would exceed limit
             potential_end = boundary + 1
             potential_chunk = text[current_start:potential_end].strip()
-            
+
             if len(potential_chunk) <= max_chars:
                 current_end = potential_end
             else:
-                # Save current chunk and start new one
                 if current_end > current_start:
                     chunk = text[current_start:current_end].strip()
                     if chunk:
-                        chunks.append(chunk)
+                        chunks.extend(self._enforce_max_chars(chunk, max_chars))
                     current_start = current_end
+
+                overflow = text[current_start:potential_end].strip()
+                if len(overflow) <= max_chars:
                     current_end = potential_end
                 else:
-                    # Single sentence too long - need to split differently
+                    chunks.extend(self._enforce_max_chars(overflow, max_chars))
+                    current_start = potential_end
                     current_end = potential_end
-        
+
         # Add remaining text
         remaining = text[current_start:].strip()
         if remaining:
-            if len(remaining) <= max_chars:
-                chunks.append(remaining)
-            else:
-                # Recursively split remaining
-                chunks.extend(self._hard_split(remaining, max_chars))
-        
+            chunks.extend(self._enforce_max_chars(remaining, max_chars))
+
         return chunks
-    
+
     def _split_paragraphs(
-        self, 
-        paragraphs: list[str], 
+        self,
+        paragraphs: list[str],
         max_chars: int
     ) -> list[str]:
         """Split paragraphs into chunks."""
         chunks = []
         current_chunk = ""
-        
+
         for para in paragraphs:
             para = para.strip()
             if not para:
                 continue
-                
+
             if len(current_chunk) + len(para) + 2 <= max_chars:
                 if current_chunk:
                     current_chunk += "\n\n" + para
@@ -206,7 +226,7 @@ class TextChunker:
             else:
                 if current_chunk:
                     chunks.append(current_chunk)
-                
+
                 if len(para) <= max_chars:
                     current_chunk = para
                 else:
@@ -217,20 +237,20 @@ class TextChunker:
                         current_chunk = para_chunks[-1]
                     else:
                         current_chunk = ""
-        
+
         if current_chunk:
             chunks.append(current_chunk)
-        
+
         return chunks
-    
+
     def _hard_split(self, text: str, max_chars: int) -> list[str]:
         """
         Hard split text at word boundaries when no sentence breaks.
-        
+
         Args:
             text: Text to split
             max_chars: Maximum characters per chunk
-            
+
         Returns:
             List of chunks
         """
@@ -238,7 +258,7 @@ class TextChunker:
         chunks = []
         current_chunk = []
         current_len = 0
-        
+
         for word in words:
             word_len = len(word) + 1  # +1 for space
 
@@ -252,7 +272,7 @@ class TextChunker:
                     for start in range(0, len(word), max_chars)
                 )
                 continue
-            
+
             if current_len + word_len <= max_chars:
                 current_chunk.append(word)
                 current_len += word_len
@@ -261,55 +281,56 @@ class TextChunker:
                     chunks.append(" ".join(current_chunk))
                 current_chunk = [word]
                 current_len = len(word)
-        
+
         if current_chunk:
             chunks.append(" ".join(current_chunk))
-        
+
         return chunks
-    
+
     def chunk(
-        self, 
-        text: str, 
+        self,
+        text: str,
         max_tokens: int | None = None
     ) -> list[str]:
         """
         Split text into chunks suitable for TTS processing.
-        
+
         Args:
             text: Input text to chunk
             max_tokens: Maximum tokens per chunk (uses config default if None)
-            
+
         Returns:
             List of text chunks
         """
         if not text or not text.strip():
             return []
-        
+
         configured_max_tokens = max_tokens if max_tokens is not None else self.config.max_tokens
         max_tokens = configured_max_tokens if configured_max_tokens and configured_max_tokens > 0 else 700
         max_chars = int(max_tokens * self.config.chars_per_token)
-        
+
         # Clean up whitespace
         text = ' '.join(text.split())
-        
-        # Check if chunking needed
-        if self.estimate_tokens(text) <= max_tokens:
+
+        # Char ceiling is authoritative for VRAM safety; token estimate alone can
+        # under-count and skip hard-splitting an overlong span.
+        if len(text) <= max_chars and self.estimate_tokens(text) <= max_tokens:
             return [text]
-        
+
         return self._merge_small_chunks(self._split_at_boundaries(text, max_chars), max_chars)
-    
+
     def chunk_generator(
-        self, 
-        text: str, 
+        self,
+        text: str,
         max_tokens: int | None = None
     ) -> Generator[str, None, None]:
         """
         Generate chunks one at a time for memory efficiency.
-        
+
         Args:
             text: Input text to chunk
             max_tokens: Maximum tokens per chunk
-            
+
         Yields:
             Text chunks one at a time
         """
@@ -318,67 +339,18 @@ class TextChunker:
 
 
 def chunk_text(
-    text: str, 
+    text: str,
     max_tokens: int = 700
 ) -> list[str]:
     """
     Convenience function to chunk text.
-    
+
     Args:
         text: Input text
         max_tokens: Maximum tokens per chunk
-        
+
     Returns:
         List of text chunks
     """
     chunker = TextChunker(ChunkConfig(max_tokens=max_tokens))
     return chunker.chunk(text)
-
-
-def test_chunker() -> bool:
-    """
-    Test the text chunker.
-    
-    Returns:
-        True if all tests pass
-    """
-    chunker = TextChunker()
-    
-    # Test 1: Short text (no chunking needed)
-    short_text = "Hello, this is a short test."
-    chunks = chunker.chunk(short_text)
-    if len(chunks) != 1 or chunks[0] != short_text:
-        print("Test 1 failed: Short text handling")
-        return False
-    print("✓ Test 1 passed: Short text")
-    
-    # Test 2: Long text with sentences
-    long_text = "First sentence here. " * 50  # ~950 chars
-    chunks = chunker.chunk(long_text, max_tokens=100)
-    if len(chunks) < 2:
-        print("Test 2 failed: Long text not chunked")
-        return False
-    print(f"✓ Test 2 passed: Long text split into {len(chunks)} chunks")
-    
-    # Test 3: Dialogue handling
-    dialogue = '"Hello there!" she said. "How are you today?" He replied, "I am doing well."'
-    chunks = chunker.chunk(dialogue)
-    if len(chunks) != 1:
-        print("Test 3 failed: Dialogue split unexpectedly")
-        return False
-    print("✓ Test 3 passed: Dialogue preserved")
-    
-    # Test 4: Token estimation
-    test_text = "word " * 100  # ~500 chars, ~125 tokens
-    tokens = chunker.estimate_tokens(test_text)
-    if not (100 <= tokens <= 150):
-        print(f"Test 4 failed: Token estimation off ({tokens})")
-        return False
-    print(f"✓ Test 4 passed: Token estimation ({tokens} tokens)")
-    
-    print("\nAll chunker tests passed!")
-    return True
-
-
-if __name__ == "__main__":
-    test_chunker()

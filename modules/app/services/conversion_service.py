@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import threading
@@ -27,6 +28,11 @@ from modules.app.services.conversion_runtime import (
     ConversionRuntimeOptions,
     NormalizedConversionRuntimeOptions,
     RuntimeOptionsResolver,
+)
+from modules.app.services.repair_runtime import (
+    effective_runtime_options_for_persistence,
+    resolve_repair_runtime_options,
+    serialize_persisted_runtime_options,
 )
 from modules.app.services.progress_math import build_progress_snapshot
 from modules.app.services.tts_session import TtsEngineSession
@@ -85,6 +91,7 @@ class ConversionService:
         self._active_job = None
         self._job_lock = threading.Lock()
         self._job_sequence = count()
+        self._storage_cleanup_active = False
         self._tts_session = TtsEngineSession()
 
     def _job_is_active_or_pending(self, job: Any) -> bool:
@@ -122,6 +129,30 @@ class ConversionService:
     def cleanup(self) -> None:
         self._tts_session.cleanup()
 
+    def _ensure_job_slot_available_locked(self) -> None:
+        """Refuse new jobs while one is active or a storage cleanup runs.
+
+        Caller must hold ``self._job_lock``.
+        """
+        if self._storage_cleanup_active:
+            raise RuntimeError("A storage cleanup is in progress")
+        if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
+            raise RuntimeError("A conversion is already in progress")
+
+    def begin_storage_cleanup(self) -> None:
+        """Atomically verify no job is active and block new starts until
+        :meth:`end_storage_cleanup` — closes the check-then-prune race."""
+        with self._job_lock:
+            if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
+                raise RuntimeError(
+                    "Cannot clean up storage while a conversion is queued or running"
+                )
+            self._storage_cleanup_active = True
+
+    def end_storage_cleanup(self) -> None:
+        with self._job_lock:
+            self._storage_cleanup_active = False
+
     def start_conversion(
         self,
         source_path: Path,
@@ -138,12 +169,22 @@ class ConversionService:
         self._validate_requested_tts_runtime(runtime_options=runtime_options)
 
         with self._job_lock:
-            if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
-                raise RuntimeError("A conversion is already in progress")
-            source_path = self._durable_source_path_for_conversion(source_path)
+            self._ensure_job_slot_available_locked()
             job_id = f"conv_{time.time_ns()}_{next(self._job_sequence)}"
             job = self._job_cls(id=job_id, book_id=None, status=self._status.IDLE)
             self._active_job = job
+
+        # Copying a large upload into durable storage must not run under the
+        # job lock: status reads (/active), cancel, and cleanup guards would
+        # block for the whole copy. The reserved IDLE job above keeps
+        # concurrent starts out while the copy runs.
+        try:
+            source_path = self._durable_source_path_for_conversion(source_path)
+        except Exception:
+            with self._job_lock:
+                if self._active_job is job:
+                    self._active_job = None
+            raise
 
         return self._start_pipeline_job(
             job=job,
@@ -222,13 +263,30 @@ class ConversionService:
         book_id: int,
         callbacks: Optional[Any] = None,
         runtime_options: Optional[ConversionRuntimeOptions] = None,
+        runtime_fields_set: Optional[set[str] | frozenset[str]] = None,
     ) -> Any:
-        runtime_options = runtime_options or ConversionRuntimeOptions()
-        self._validate_requested_tts_runtime(runtime_options=runtime_options)
+        request_options = runtime_options or ConversionRuntimeOptions()
+
+        # None means "no explicit overrides" (controller/direct callers), same as
+        # an empty HTTP payload's fields_set — reuse persisted v7 / app defaults.
+        fields_set = (
+            runtime_fields_set if runtime_fields_set is not None else frozenset()
+        )
+        detail = self._repository.get_book_with_chapters(book_id)
+        if detail is None:
+            raise ValueError("Book not found")
+        book, _chapters = detail
+        resolved_options = resolve_repair_runtime_options(
+            book=book,
+            request_options=request_options,
+            request_fields_set=fields_set,
+            app_config=self._config,
+        )
+
+        self._validate_requested_tts_runtime(runtime_options=resolved_options)
 
         with self._job_lock:
-            if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
-                raise RuntimeError("A conversion is already in progress")
+            self._ensure_job_slot_available_locked()
             job_id = f"repair_{book_id}_{time.time_ns()}_{next(self._job_sequence)}"
             job = self._job_cls(id=job_id, book_id=book_id, status=self._status.IDLE)
             self._active_job = job
@@ -240,7 +298,7 @@ class ConversionService:
                 "job": job,
                 "book_id": book_id,
                 "callbacks": callbacks,
-                "runtime_options": runtime_options,
+                "runtime_options": resolved_options,
             },
             callbacks=callbacks,
             started_message="repair started",
@@ -277,25 +335,12 @@ class ConversionService:
         else:
             job._thread = thread
             job.status = self._status.RUNNING
-        thread.start()
+        # Publish RUNNING before the worker thread can emit a terminal state;
+        # otherwise an instantly-failing job would surface FAILED then RUNNING.
         if callbacks and callbacks.on_event:
             callbacks.on_event(make_state_event(JobState.RUNNING, job.id, started_message))
+        thread.start()
         return job
-
-    def _resolve_tts_runtime_options(
-        self,
-        *,
-        runtime_options: Optional[ConversionRuntimeOptions] = None,
-        tts_engine: Optional[str] = None,
-        tts_quantization: Optional[str] = None,
-        tts_options: Optional[dict[str, Any]] = None,
-    ) -> tuple[str, str]:
-        return self._runtime_options_resolver.resolve_tts_runtime_options(
-            runtime_options=runtime_options,
-            tts_engine=tts_engine,
-            tts_quantization=tts_quantization,
-            tts_options=tts_options,
-        )
 
     def _normalize_runtime_options(
         self,
@@ -303,13 +348,15 @@ class ConversionService:
     ) -> _NormalizedConversionRuntimeOptions:
         return self._runtime_options_resolver.normalize(runtime_options)
 
-    @staticmethod
-    def _validate_conversion_tts_engine(tts_engine: str) -> None:
-        RuntimeOptionsResolver.validate_conversion_tts_engine(tts_engine)
-
     def get_active_job(self) -> Any:
         with self._job_lock:
             return self._active_job
+
+    def has_active_job(self) -> bool:
+        with self._job_lock:
+            return self._active_job is not None and self._job_is_active_or_pending(
+                self._active_job
+            )
 
     def cancel_conversion(self) -> bool:
         with self._job_lock:
@@ -479,6 +526,7 @@ class ConversionService:
         source_path: Path,
         pipeline_result: PipelineConversionResult,
         conversion_mode: ConversionMode | str = ConversionMode.AUDIOBOOK,
+        runtime_options: Optional[ConversionRuntimeOptions] = None,
     ) -> int:
         try:
             source_type = SourceType(source_path.suffix.lower().lstrip("."))
@@ -489,6 +537,29 @@ class ConversionService:
             conversion_mode = ConversionMode(str(conversion_mode))
 
         playback_path, playback_status = playback_metadata_for_pipeline_result(pipeline_result)
+        persisted_runtime = None
+        if runtime_options is not None:
+            try:
+                normalized = self._normalize_runtime_options(runtime_options)
+                effective_options = effective_runtime_options_for_persistence(
+                    request_options=runtime_options,
+                    normalized=normalized,
+                )
+                persisted_runtime = json.dumps(
+                    serialize_persisted_runtime_options(effective_options)
+                )
+            except Exception:
+                # Persisting runtime options is best-effort: a completed
+                # conversion (audio already on disk) must still get its library
+                # record even if these repair-fidelity settings fail to
+                # normalize or serialize. Repair falls back to legacy defaults
+                # when they are absent.
+                logger.warning(
+                    "Failed to serialize conversion runtime options; "
+                    "persisting book without them",
+                    exc_info=True,
+                )
+                persisted_runtime = None
 
         book, _ = self._repository.create_book_with_chapters(
             BookCreate(
@@ -500,6 +571,7 @@ class ConversionService:
                 total_chapters=len(pipeline_result.chapters),
                 playback_path=playback_path,
                 playback_status=playback_status,
+                conversion_runtime_options=persisted_runtime,
             ),
             [
                 ChapterCreate(
@@ -522,11 +594,13 @@ class ConversionService:
         pipeline_result: PipelineConversionResult,
         callbacks: Optional[Any],
         conversion_mode: ConversionMode | str = ConversionMode.AUDIOBOOK,
+        runtime_options: Optional[ConversionRuntimeOptions] = None,
     ) -> None:
         book_id = self._persist_conversion_library_records(
             source_path,
             pipeline_result,
             conversion_mode=conversion_mode,
+            runtime_options=runtime_options,
         )
         complete = getattr(job, "complete", None)
         if callable(complete):
@@ -631,6 +705,7 @@ class ConversionService:
         callbacks = command.callbacks
         try:
             pipeline_config = self._create_pipeline_config(**command.pipeline_config_kwargs())
+            command.adjust_pipeline_config(pipeline_config)
             on_progress, on_verbose = self._create_pipeline_callbacks(callbacks)
             pipeline = self._pipeline_cls(
                 config=pipeline_config,

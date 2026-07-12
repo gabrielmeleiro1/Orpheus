@@ -59,9 +59,7 @@ class SQLiteRepository(IBookRepository):
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        self._conn.execute("PRAGMA journal_mode = WAL")
-        self._conn.execute("PRAGMA synchronous = NORMAL")
+        # PRAGMAs are applied by run_migrations() -> configure_connection().
         self._init_schema()
 
     @contextmanager
@@ -119,6 +117,7 @@ class SQLiteRepository(IBookRepository):
             playback_position_sec=float(row["playback_position_sec"] or 0),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+            conversion_runtime_options=row["conversion_runtime_options"],
             tags=row["tags"] or "",
             favorite=bool(row["favorite"] or 0),
         )
@@ -151,10 +150,11 @@ class SQLiteRepository(IBookRepository):
                     total_chapters,
                     playback_path,
                     playback_status,
+                    conversion_runtime_options,
                     tags,
                     favorite
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     book.title,
@@ -165,6 +165,7 @@ class SQLiteRepository(IBookRepository):
                     book.total_chapters,
                     book.playback_path,
                     book.playback_status.value,
+                    book.conversion_runtime_options,
                     book.tags,
                     int(bool(book.favorite)),
                 ),
@@ -194,10 +195,11 @@ class SQLiteRepository(IBookRepository):
                     total_chapters,
                     playback_path,
                     playback_status,
+                    conversion_runtime_options,
                     tags,
                     favorite
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     book.title,
@@ -208,6 +210,7 @@ class SQLiteRepository(IBookRepository):
                     book.total_chapters,
                     book.playback_path,
                     book.playback_status.value,
+                    book.conversion_runtime_options,
                     book.tags,
                     int(bool(book.favorite)),
                 ),
@@ -318,8 +321,13 @@ class SQLiteRepository(IBookRepository):
         params: list[object] = []
 
         if filters.search_query:
-            where_clauses.append("(title LIKE ? OR author LIKE ?)")
-            search_pattern = f"%{filters.search_query}%"
+            where_clauses.append(r"(title LIKE ? ESCAPE '\' OR author LIKE ? ESCAPE '\')")
+            escaped_query = (
+                filters.search_query.replace("\\", "\\\\")
+                .replace("%", r"\%")
+                .replace("_", r"\_")
+            )
+            search_pattern = f"%{escaped_query}%"
             params.extend([search_pattern, search_pattern])
 
         if filters.source_type:
@@ -333,14 +341,6 @@ class SQLiteRepository(IBookRepository):
         if filters.favorite is not None:
             where_clauses.append("favorite = ?")
             params.append(1 if filters.favorite else 0)
-
-        if filters.created_after:
-            where_clauses.append("created_at >= ?")
-            params.append(filters.created_after.isoformat())
-
-        if filters.created_before:
-            where_clauses.append("created_at <= ?")
-            params.append(filters.created_before.isoformat())
 
         where_sql = " AND ".join(where_clauses)
         query = f"""
@@ -418,6 +418,7 @@ class SQLiteRepository(IBookRepository):
             "playback_path",
             "playback_status",
             "conversion_mode",
+            "conversion_runtime_options",
         }
         filtered_updates = {k: v for k, v in updates.items() if k in allowed_fields}
 
@@ -617,28 +618,3 @@ class SQLiteRepository(IBookRepository):
             ).fetchone()
             return self._row_to_chapter(row) if row else None
 
-    # ==================== Statistics ====================
-
-    def get_library_stats(self) -> dict:
-        """Get library statistics."""
-        with self._connection() as conn:
-            total_books = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
-            total_chapters = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()[0]
-            total_duration = conn.execute(
-                "SELECT COALESCE(SUM(duration_ms), 0) FROM chapters"
-            ).fetchone()[0]
-            rows = conn.execute(
-                """
-                SELECT source_type, COUNT(*) as count
-                FROM books
-                GROUP BY source_type
-                """
-            ).fetchall()
-            books_by_type = {row["source_type"]: row["count"] for row in rows}
-
-            return {
-                "total_books": total_books,
-                "total_chapters": total_chapters,
-                "total_duration_ms": total_duration,
-                "books_by_type": books_by_type,
-            }

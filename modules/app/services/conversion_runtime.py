@@ -255,14 +255,18 @@ class RuntimeOptionsResolver:
             )
 
         return NormalizedConversionRuntimeOptions(
-            voice=runtime_options.voice,
-            speed=runtime_options.speed,
+            voice=runtime_options.voice or self._config.default_voice,
+            speed=(
+                float(runtime_options.speed)
+                if runtime_options.speed is not None
+                else float(self._config.default_speed)
+            ),
             tts_engine=effective_tts_engine,
             tts_quantization=effective_tts_quantization,
             tts_model_name=effective_tts_model_name,
             tts_runtime=tts_runtime,
             tts_runtime_options=tts_runtime_options,
-            cleaner_model=runtime_options.cleaner_model,
+            cleaner_model=resolved_cleaner_model,
             cleaner_backend=effective_cleaner_backend,
             cleaner_cuda_device=effective_cuda_device,
             cleaner_cuda_quantization=effective_cuda_quantization,
@@ -300,11 +304,7 @@ class RuntimeOptionsResolver:
             tts_quantization=normalized_options.tts_quantization,
             tts_runtime=normalized_options.tts_runtime,
             tts_runtime_options=normalized_options.tts_runtime_options,
-            cleaner_model_name=resolve_cleaner_model_name(
-                backend=normalized_options.cleaner_backend,
-                requested_model=normalized_options.cleaner_model,
-                configured_model=self._config.cleaner_model_name,
-            ),
+            cleaner_model_name=normalized_options.cleaner_model,
             cleaner_backend=normalized_options.cleaner_backend,
             cleaner_cuda_device=normalized_options.cleaner_cuda_device,
             cleaner_cuda_quantization=normalized_options.cleaner_cuda_quantization,

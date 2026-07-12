@@ -6,8 +6,11 @@ Ensures models are properly loaded and unloaded sequentially.
 """
 
 import gc
+import logging
 from typing import Any, Optional, Callable
 from contextlib import contextmanager
+
+logger = logging.getLogger(__name__)
 
 MLX_AVAILABLE: Optional[bool] = None
 mx: Any = None
@@ -92,7 +95,7 @@ class VRAMManager:
             model_name: Name of model about to be loaded
         """
         if self._current_model and self._current_model != model_name:
-            print(f"Unloading {self._current_model} to load {model_name}")
+            logger.info(f"Unloading {self._current_model} to load {model_name}")
             self.unload_current()
     
     @contextmanager

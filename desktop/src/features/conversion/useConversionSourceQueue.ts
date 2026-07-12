@@ -132,7 +132,7 @@ export function useConversionSourceQueue({
     }
 
     browserFileInputRef.current?.click();
-  }, [applySourcePaths, queueController]);
+  }, [applySourcePaths]);
 
   const onBrowserFilesSelected = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -228,7 +228,21 @@ export function useConversionSourceQueue({
           .split("\n")
           .map((line) => line.trim())
           .filter(Boolean)
-          .map((line) => line.replace(/^file:\/\//, ""));
+          .map((line) => {
+            if (!line.startsWith("file://")) {
+              return line;
+            }
+            // file:// URIs percent-encode spaces etc., and Windows drive paths
+            // arrive as file:///C:/... -> /C:/... with a spurious leading slash.
+            const stripped = line.replace(/^file:\/\//, "");
+            let decoded = stripped;
+            try {
+              decoded = decodeURIComponent(stripped);
+            } catch {
+              // Keep the raw path when the URI contains malformed escapes.
+            }
+            return /^\/[A-Za-z]:[\\/]/.test(decoded) ? decoded.slice(1) : decoded;
+          });
         if (paths.length > 0) {
           applySourcePaths(paths);
           return;

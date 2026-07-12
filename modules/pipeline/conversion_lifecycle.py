@@ -30,6 +30,7 @@ def finish_conversion_run(runtime, *, cleanup_models, cleanup_temp) -> None:
     if executor is not None:
         executor.shutdown(wait=True)
         runtime.state.chapter_aac_executor = None
+        runtime.state.chapter_aac_pending_future = None
     try:
         cleanup_models()
         cleanup_temp()

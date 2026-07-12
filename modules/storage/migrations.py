@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import sqlite3
 
-LATEST_SCHEMA_VERSION = 6
+LATEST_SCHEMA_VERSION = 7
 
 
 def configure_connection(conn: sqlite3.Connection) -> None:
@@ -65,6 +65,7 @@ def _bootstrap_schema_v5(conn: sqlite3.Connection) -> None:
             playback_path TEXT,
             playback_status TEXT CHECK(playback_status IN ('packaged', 'chapter_audio', 'missing')),
             playback_position_sec REAL NOT NULL DEFAULT 0,
+            conversion_runtime_options TEXT,
             tags TEXT NOT NULL DEFAULT '',
             favorite INTEGER NOT NULL DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -248,11 +249,20 @@ def _migrate_to_v5(conn: sqlite3.Connection) -> None:
     has_playback_path = _column_exists(conn, "books", "playback_path")
     has_playback_status = _column_exists(conn, "books", "playback_status")
     has_conversion_mode = _column_exists(conn, "books", "conversion_mode")
+    # A modern database rebuilt through the legacy path (schema_migrations
+    # lost) already has these later-version columns; carry their values
+    # forward instead of resetting them.
+    has_tags = _column_exists(conn, "books", "tags")
+    has_favorite = _column_exists(conn, "books", "favorite")
+    has_runtime_options = _column_exists(conn, "books", "conversion_runtime_options")
 
     select_playback_position = "playback_position_sec" if has_playback_position else "0"
     select_playback_path = "playback_path" if has_playback_path else "NULL"
     select_playback_status = "playback_status" if has_playback_status else "'missing'"
     select_conversion_mode = "conversion_mode" if has_conversion_mode else "'audiobook'"
+    select_tags = "COALESCE(tags, '')" if has_tags else "''"
+    select_favorite = "COALESCE(favorite, 0)" if has_favorite else "0"
+    select_runtime_options = "conversion_runtime_options" if has_runtime_options else "NULL"
 
     conn.execute("DROP INDEX IF EXISTS idx_books_source_path")
     conn.execute("DROP INDEX IF EXISTS idx_books_created_at")
@@ -269,6 +279,7 @@ def _migrate_to_v5(conn: sqlite3.Connection) -> None:
                 playback_path TEXT,
                 playback_status TEXT CHECK(playback_status IN ('packaged', 'chapter_audio', 'missing')),
                 playback_position_sec REAL NOT NULL DEFAULT 0,
+                conversion_runtime_options TEXT,
                 tags TEXT NOT NULL DEFAULT '',
                 favorite INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -289,6 +300,7 @@ def _migrate_to_v5(conn: sqlite3.Connection) -> None:
                 playback_path,
                 playback_status,
                 playback_position_sec,
+                conversion_runtime_options,
                 tags,
                 favorite,
                 created_at,
@@ -305,8 +317,9 @@ def _migrate_to_v5(conn: sqlite3.Connection) -> None:
                 {select_playback_path},
                 COALESCE({select_playback_status}, 'missing'),
                 COALESCE({select_playback_position}, 0),
-                '',
-                0,
+                {select_runtime_options},
+                {select_tags},
+                {select_favorite},
                 created_at,
                 updated_at
             FROM books
@@ -333,6 +346,7 @@ def run_migrations(conn: sqlite3.Connection) -> int:
         _apply_migration(conn, 4, _migrate_to_v4)
         _apply_migration(conn, 5, _migrate_to_v5, disable_foreign_keys=True)
         _apply_migration(conn, 6, _migrate_to_v6)
+        _apply_migration(conn, 7, _migrate_to_v7)
         return LATEST_SCHEMA_VERSION
 
     # Fresh database path.
@@ -360,6 +374,10 @@ def run_migrations(conn: sqlite3.Connection) -> int:
         _apply_migration(conn, 6, _migrate_to_v6)
         version = 6
 
+    if version < 7:
+        _apply_migration(conn, 7, _migrate_to_v7)
+        version = 7
+
     return version
 
 
@@ -382,5 +400,20 @@ def _migrate_to_v6(conn: sqlite3.Connection) -> None:
             """
             ALTER TABLE books
             ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0
+            """
+        )
+
+
+def _migrate_to_v7(conn: sqlite3.Connection) -> None:
+    """Persist conversion runtime settings needed for consistent repair."""
+    if not _table_exists(conn, "books"):
+        _bootstrap_schema_v5(conn)
+        return
+
+    if not _column_exists(conn, "books", "conversion_runtime_options"):
+        conn.execute(
+            """
+            ALTER TABLE books
+            ADD COLUMN conversion_runtime_options TEXT
             """
         )

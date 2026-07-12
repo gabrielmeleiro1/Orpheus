@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar
 import numpy as np
 
-from modules.audio.concat import concatenate_audio_files as concatenate_audio_files
 from modules.errors import TTSModelError, SynthesisError, VRAMOverflowError
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.voices import kokoro_voice_lookup

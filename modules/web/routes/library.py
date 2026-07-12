@@ -56,16 +56,20 @@ def list_library(
     conversion_mode: Optional[str] = None,
     favorite: Optional[bool] = None,
     limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
     books = controller.get_library_books(
         search=search,
         limit=limit,
+        offset=offset,
         conversion_mode=conversion_mode,
         favorite=favorite,
     )
     return {
         "items": [book_summary_to_dict(book) for book in books],
         "count": len(books),
+        "limit": limit,
+        "offset": offset,
     }
 
 
@@ -141,7 +145,10 @@ def open_library_book_folder(book_id: int, controller: ControllerDep) -> dict:
 
 @router.delete("/api/library/{book_id}")
 def delete_library_book(book_id: int, controller: ControllerDep) -> dict:
-    deleted = call_with_http_errors(lambda: controller.delete_book(book_id))
+    deleted = call_with_http_errors(
+        lambda: controller.delete_book(book_id),
+        runtime_status=409,
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="Book not found")
 

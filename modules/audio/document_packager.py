@@ -50,6 +50,11 @@ class DocumentAudioPackager:
                 "-i",
                 str(concat_file),
                 "-vn",
+                # document_audio is one continuous narration split into sections
+                # with no natural pauses. Stream-copying independently encoded AAC
+                # sections would re-bake each segment's encoder priming/padding at
+                # every seam, inserting audible mid-narration gaps/clicks. Always
+                # single-pass re-encode so the joined audio stays gapless.
                 "-c:a",
                 "aac",
                 "-b:a",

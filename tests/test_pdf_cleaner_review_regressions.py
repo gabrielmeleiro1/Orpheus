@@ -90,7 +90,7 @@ def test_review_repairs_known_multihyphen_pdf_line_break_words() -> None:
         "imperial can too."
     )
 
-    repaired = repair_line_break_hyphenation(text)
+    repaired = repair_line_break_hyphenation(text, known_corpus_repairs=True)
 
     assert "auto-suggestion" in repaired
     assert "proto-legend" in repaired

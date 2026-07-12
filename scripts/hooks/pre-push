@@ -70,8 +70,7 @@ run_with_timeout 120 "$PYTHON" -m ruff check .
 echo ""
 echo "> Python contract tests"
 run_with_timeout 600 "$PYTHON" -m pytest tests \
-  -m "not property and not benchmark and not slow and not ui" \
-  -k "not test_memory_error_degrades_to_sequential and not test_orchestrator_creates_and_shuts_down_owned_manager and not test_conversion_service_repair_cancelled_chapter_result_finishes_cancelled"
+  -m "not property and not benchmark and not slow and not ui"
 
 echo ""
 echo "> Desktop dependencies"

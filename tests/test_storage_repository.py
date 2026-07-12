@@ -178,18 +178,6 @@ def test_storage_repository() -> bool:
         print(f"✗ Failed cascade delete: {e}")
         return False
 
-    # Test 8: stats API
-    print("\n[8] Testing get_library_stats()...")
-    try:
-        stats = repo.get_library_stats()
-        assert stats["total_books"] >= 1
-        assert stats["total_chapters"] >= 0
-        assert "books_by_type" in stats
-        print(f"✓ Stats validated: {stats}")
-    except Exception as e:
-        print(f"✗ Failed stats validation: {e}")
-        return False
-
     # Test 9: completed chapter summaries only count playable chapter rows
     print("\n[9] Testing list_books() completed chapter summaries...")
     try:
@@ -715,3 +703,39 @@ def test_list_books_many_synthetic_rows_returns_correct_state_within_budget(tmp_
     titles = {item.title for item in summaries}
     assert titles == {f"Synthetic Book {index:04d}" for index in range(row_count)}
     assert sum(1 for item in summaries if item.favorite) == row_count // 10
+
+
+def test_list_books_search_escapes_like_wildcards(tmp_path):
+    repo = SQLiteRepository(tmp_path / "repository.db")
+    percent_book = repo.create_book(
+        BookCreate(
+            title="100% Complete Guide",
+            source_path="/tmp/percent.pdf",
+            source_type=SourceType.PDF,
+        )
+    )
+    literal_underscore = repo.create_book(
+        BookCreate(
+            title="AB_CD",
+            source_path="/tmp/underscore.pdf",
+            source_type=SourceType.PDF,
+        )
+    )
+    repo.create_book(
+        BookCreate(
+            title="ABXCD",
+            source_path="/tmp/lookalike.pdf",
+            source_type=SourceType.PDF,
+        )
+    )
+
+    # "%" must match only titles containing a literal percent sign.
+    percent_matches = repo.list_books(BookFilters(search_query="%"))
+    assert [book.id for book in percent_matches] == [percent_book.id]
+
+    # An embedded "%" must not act as a multi-character wildcard.
+    assert repo.list_books(BookFilters(search_query="100%Guide")) == []
+
+    # "_" must not act as a single-character wildcard.
+    underscore_matches = repo.list_books(BookFilters(search_query="AB_CD"))
+    assert [book.id for book in underscore_matches] == [literal_underscore.id]

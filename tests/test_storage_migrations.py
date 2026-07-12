@@ -141,7 +141,7 @@ def test_storage_migrations() -> bool:
             assert "idx_books_source_path" in book_index_names
 
             version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-            assert version == 6
+            assert version == 7
 
             playback_position = conn.execute(
                 "SELECT playback_position_sec FROM books WHERE id = 1"
@@ -158,7 +158,7 @@ def test_storage_migrations() -> bool:
         finally:
             conn.close()
 
-        print("✓ Legacy schema migrated to v6")
+        print("✓ Legacy schema migrated to v7")
         print("✓ processing_jobs removed")
         print("✓ chapters.start_time_ms removed")
         print("✓ books.playback_position_sec added with default")
@@ -199,7 +199,7 @@ def test_legacy_schema_migrates_playback_position_column(tmp_path):
         conn.close()
 
     assert "playback_position_sec" in book_columns
-    assert version == 6
+    assert version == 7
     assert float(playback_position) == 0.0
 
 
@@ -358,7 +358,7 @@ def test_legacy_schema_migrates_conversion_mode_with_audiobook_default(tmp_path)
         conn.close()
 
     assert "conversion_mode" in book_columns
-    assert version == 6
+    assert version == 7
     assert stored_conversion_mode == ConversionMode.AUDIOBOOK.value
     assert book is not None
     assert book.conversion_mode == ConversionMode.AUDIOBOOK
@@ -388,8 +388,8 @@ def test_schema_v6_adds_library_organization_columns(tmp_path):
         conn.close()
         repo.close()
 
-    assert {"tags", "favorite"}.issubset(columns)
-    assert version == 6
+    assert {"tags", "favorite", "conversion_runtime_options"}.issubset(columns)
+    assert version == 7
     assert stored == ("fiction,night", 1)
 
 
@@ -430,3 +430,49 @@ def test_interrupted_v5_migration_rolls_back_without_partial_schema(tmp_path, mo
     assert "conversion_mode" not in book_columns
     assert book_count == 1
     assert chapter_count == 1
+
+
+def test_legacy_rebuild_of_modern_db_preserves_tags_favorite_and_runtime_options(tmp_path):
+    """A modern (v7-shaped) DB that lost its schema_migrations table takes the
+    legacy rebuild path; it must carry organization metadata and persisted
+    conversion runtime options forward instead of resetting them."""
+    db_path = tmp_path / "modern.db"
+
+    conn = sqlite3.connect(db_path)
+    try:
+        migrations.run_migrations(conn)
+        conn.execute(
+            """
+            INSERT INTO books (
+                title, source_path, source_type, conversion_mode,
+                tags, favorite, conversion_runtime_options
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "Kept Book",
+                "/tmp/kept.epub",
+                "epub",
+                "audiobook",
+                "fiction,long",
+                1,
+                '{"voice": "af_bella"}',
+            ),
+        )
+        conn.commit()
+        conn.execute("DROP TABLE schema_migrations")
+        conn.commit()
+    finally:
+        conn.close()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        version = migrations.run_migrations(conn)
+        assert version == migrations.LATEST_SCHEMA_VERSION
+        row = conn.execute(
+            "SELECT tags, favorite, conversion_runtime_options FROM books"
+        ).fetchone()
+    finally:
+        conn.close()
+
+    assert row == ("fiction,long", 1, '{"voice": "af_bella"}')

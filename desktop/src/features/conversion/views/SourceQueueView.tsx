@@ -1,21 +1,44 @@
+import { useEffect, useRef } from "react";
+
 import type {
   ConversionCapabilities,
   ConversionPanelActions,
   SourceQueueViewModel,
 } from "../conversionPanelStateTypes";
+import { scrollConversionReviewAnchor, nextConversionReviewScrollState } from "../scrollConversionReviewAnchor";
 import { BrailleSpinner } from "../../../ui/ascii/BrailleSpinner";
 
 interface SourceQueueViewProps {
   sourceQueue: SourceQueueViewModel;
   capabilities: ConversionCapabilities;
   actions: ConversionPanelActions;
+  hidden?: boolean;
 }
 
 export function SourceQueueView({
   sourceQueue,
   capabilities,
   actions,
+  hidden = false,
 }: SourceQueueViewProps) {
+  const reviewAnchorRef = useRef<HTMLDivElement | null>(null);
+  const previousReadyKeyRef = useRef("");
+
+  useEffect(() => {
+    const readyKey = sourceQueue.preflightCard
+      ? `${sourceQueue.sourcePath}|${sourceQueue.preflightCard.title}|${sourceQueue.queueCount}`
+      : "";
+    const next = nextConversionReviewScrollState({
+      readyKey,
+      acknowledgedReadyKey: previousReadyKeyRef.current,
+      hidden,
+    });
+    previousReadyKeyRef.current = next.acknowledgedReadyKey;
+    if (next.shouldScroll) {
+      scrollConversionReviewAnchor(reviewAnchorRef.current);
+    }
+  }, [hidden, sourceQueue.preflightCard, sourceQueue.queueCount, sourceQueue.sourcePath]);
+
   return (
     <>
       <input
@@ -109,15 +132,17 @@ export function SourceQueueView({
         <div className="panel-section queue-panel" aria-label="Conversion queue">
           <div className="queue-header">
             <span>queue: {sourceQueue.queueCount}</span>
-            <button
-              id="run-queue-btn"
-              className="btn btn-compact"
-              type="button"
-              disabled={!capabilities.canRunQueue}
-              onClick={() => void actions.onRunQueue()}
-            >
-              {sourceQueue.queueRunning ? "running..." : "run queue"}
-            </button>
+            {capabilities.showRunQueue ? (
+              <button
+                id="run-queue-btn"
+                className="btn btn-primary"
+                type="button"
+                disabled={!capabilities.canRunQueue}
+                onClick={() => void actions.onRunQueue()}
+              >
+                {sourceQueue.queueRunning ? "running..." : "run queue"}
+              </button>
+            ) : null}
           </div>
           <div className="queue-list">
             {sourceQueue.queueItems.map((item) => (
@@ -151,7 +176,7 @@ export function SourceQueueView({
         {sourceQueue.formError}
       </div>
 
-      <div className="panel-section form-section">
+      <div ref={reviewAnchorRef} id="conversion-review-anchor" className="panel-section form-section">
         <div className="form-row">
           <span className="form-row-label">source</span>
           <div className="form-row-field">
@@ -200,9 +225,11 @@ export function SourceQueueView({
               </div>
             ) : null}
             <p className="preflight-sample">{sourceQueue.preflightCard.sample}</p>
-            <button className="btn btn-compact" type="button" disabled={!capabilities.canStartConversion} onClick={() => void actions.onStartConversion()}>
-              looks good, convert
-            </button>
+            <p className="field-hint">
+              {capabilities.showStartConversion
+                ? "Source ready — use Start conversion below."
+                : "Source ready — use Run queue above."}
+            </p>
           </div>
         ) : sourceQueue.preflightStatus ? (
           <div className="field-hint preflight-status">{sourceQueue.preflightStatus}</div>

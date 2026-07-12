@@ -122,22 +122,20 @@ class TestTextChunkerProperties:
     @settings(max_examples=100, deadline=5000)
     def test_chunk_size_honored(self, text, max_tokens):
         """
-        Chunks should respect the max_tokens limit (with some tolerance).
-        
-        Note: We allow some tolerance because the chunker tries to split
-        at sentence boundaries, which may exceed the exact token limit.
+        Every chunk must respect the documented max_chars ceiling.
+
+        Whitespace is normalized to single spaces before chunking; rejoining
+        chunks with one space recovers that normalized text. No 50% overflow
+        tolerance — overlong sentences are hard-split at word boundaries.
         """
         config = ChunkConfig(max_tokens=max_tokens)
         chunker = TextChunker(config)
         chunks = chunker.chunk(text)
-        
-        chars_per_token = config.chars_per_token
-        max_chars = int(max_tokens * chars_per_token * 1.5)  # 50% tolerance for sentence boundaries
-        
+
+        max_chars = int(max_tokens * config.chars_per_token)
+
         for chunk in chunks:
-            # Each chunk should be within reasonable bounds
-            # (allowing extra for sentence boundary preservation)
-            assert len(chunk) <= max_chars or len(chunk) < len(text) * 0.5, (
+            assert len(chunk) <= max_chars, (
                 f"Chunk too long: {len(chunk)} chars, limit was {max_chars}"
             )
     

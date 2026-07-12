@@ -187,6 +187,40 @@ def test_conversion_routes_forward_parallel_worker_options_on_start_and_repair()
     assert controller.repair_kwargs["runtime_options"].max_parallel_chapters == 4
 
 
+def test_repair_route_forwards_empty_payload_for_backend_runtime_resolution():
+    class _Status:
+        value = "running"
+
+    class _Job:
+        id = "job-1"
+        book_id = None
+        status = _Status()
+        error = None
+
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
+            self.repair_kwargs = None
+
+        def repair_conversion(self, **kwargs):  # noqa: ANN003
+            self.repair_kwargs = kwargs
+            job = _Job()
+            job.book_id = kwargs["book_id"]
+            return job
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    response = client.post("/api/conversions/repair/42", json={})
+
+    assert response.status_code == 200
+    assert controller.repair_kwargs["book_id"] == 42
+    # Empty payload must forward an empty fields_set so the service can resolve
+    # persisted / app-config narration settings (not request-model defaults).
+    assert controller.repair_kwargs["runtime_fields_set"] == set()
+    assert controller.repair_kwargs["runtime_options"].parallel_worker_mode is None
+
+
 def test_start_conversion_rejects_overlong_title_before_controller_call():
     class _Controller:
         def __init__(self):
@@ -1073,8 +1107,10 @@ def test_web_api() -> bool:
             self.job.status = _Status("cancelled")
             return True
 
-        def get_library_books(self, search=None, limit=200, conversion_mode=None, favorite=None):
-            self.library_searches.append((search, limit, conversion_mode, favorite))
+        def get_library_books(
+            self, search=None, limit=200, offset=0, conversion_mode=None, favorite=None
+        ):
+            self.library_searches.append((search, limit, offset, conversion_mode, favorite))
 
             class _BookSummary:
                 def __init__(self):
@@ -1400,7 +1436,7 @@ def test_web_api() -> bool:
 
         filtered = fake_client.get("/api/library", params={"search": "murakami", "limit": 10})
         assert filtered.status_code == 200
-        assert fake_controller.library_searches[-1] == ("murakami", 10, None, None)
+        assert fake_controller.library_searches[-1] == ("murakami", 10, 0, None, None)
         print("✓ /api/library search passthrough")
 
         voice_options = fake_client.get("/api/options/voices", params={"engine": "kokoro"})
@@ -1465,12 +1501,13 @@ def test_web_api() -> bool:
             params={
                 "search": "murakami",
                 "limit": 10,
+                "offset": 5,
                 "conversion_mode": "audiobook",
                 "favorite": "true",
             },
         )
         assert filtered.status_code == 200
-        assert fake_controller.library_searches[-1] == ("murakami", 10, "audiobook", True)
+        assert fake_controller.library_searches[-1] == ("murakami", 10, 5, "audiobook", True)
         print("✓ /api/library filters passthrough")
 
         update_book = fake_client.patch(
@@ -1642,3 +1679,17 @@ def test_web_api() -> bool:
 if __name__ == "__main__":
     success = test_web_api()
     sys.exit(0 if success else 1)
+
+
+def test_delete_library_book_returns_409_while_book_job_active():
+    class _Controller:
+        def delete_book(self, book_id):  # noqa: ANN001, ANN201
+            raise RuntimeError(
+                "Cannot delete a book while it is being converted or repaired"
+            )
+
+    client = _make_client_with_controller(_Controller())
+    response = client.delete("/api/library/7")
+
+    assert response.status_code == 409
+    assert "converted or repaired" in response.json()["detail"]

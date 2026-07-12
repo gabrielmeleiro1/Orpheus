@@ -27,4 +27,7 @@ def post_maintenance_backup(controller: ControllerDep) -> dict:
 
 @router.post("/api/maintenance/cleanup")
 def post_maintenance_cleanup(payload: CleanupStorageRequest, controller: ControllerDep) -> dict:
-    return call_with_http_errors(lambda: controller.cleanup_storage(confirm=payload.confirm))
+    return call_with_http_errors(
+        lambda: controller.cleanup_storage(confirm=payload.confirm),
+        runtime_status=409,
+    )

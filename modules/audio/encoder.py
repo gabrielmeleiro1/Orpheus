@@ -1,8 +1,7 @@
 """
 Audio Encoder Module
 ====================
-FFmpeg-based audio encoding for WAV to MP3 conversion.
-Optimized for audiobook production with hardware acceleration.
+FFmpeg-based audio encoding for audiobook production (MP3 and AAC/M4A).
 """
 
 from __future__ import annotations
@@ -29,9 +28,8 @@ from .ffmpeg import (
 class AudioEncoder:
     """
     FFmpeg-based audio encoder for audiobook production.
-    
-    Converts WAV files to MP3 with configurable bitrate.
-    Optimized for Apple Silicon with hardware acceleration.
+
+    Converts WAV files or in-memory PCM to MP3/AAC with configurable bitrate.
     """
     
     def __init__(self, bitrate: str = "128k", sample_rate: int = 24000):
@@ -171,9 +169,10 @@ class AudioEncoder:
                     raise RuntimeError(
                         f"FFmpeg encoding from array failed: timed out after {timeout:g}s"
                     )
-                if write_error:
-                    raise write_error[0]
 
+                # A failed stdin write is usually a symptom (ffmpeg died from a
+                # real error such as a full disk). Wait for the process and read
+                # stderr first so the root cause is reported, not "broken pipe".
                 remaining_timeout = max(0.001, deadline - time.monotonic())
                 return_code = wait_for_ffmpeg_process(
                     process,
@@ -188,7 +187,12 @@ class AudioEncoder:
 
             if return_code != 0:
                 stderr = stderr_bytes.decode("utf-8", errors="replace")
-                raise RuntimeError(f"FFmpeg encoding from array failed: {stderr}")
+                error = RuntimeError(f"FFmpeg encoding from array failed: {stderr}")
+                if write_error:
+                    raise error from write_error[0]
+                raise error
+            if write_error:
+                raise write_error[0]
         return output_path
 
     def wav_to_aac(
@@ -307,9 +311,10 @@ class AudioEncoder:
                     raise RuntimeError(
                         f"FFmpeg AAC encoding from array failed: timed out after {timeout:g}s"
                     )
-                if write_error:
-                    raise write_error[0]
 
+                # A failed stdin write is usually a symptom (ffmpeg died from a
+                # real error such as a full disk). Wait for the process and read
+                # stderr first so the root cause is reported, not "broken pipe".
                 remaining_timeout = max(0.001, deadline - time.monotonic())
                 return_code = wait_for_ffmpeg_process(
                     process,
@@ -324,7 +329,12 @@ class AudioEncoder:
 
             if return_code != 0:
                 stderr = stderr_bytes.decode("utf-8", errors="replace")
-                raise RuntimeError(f"FFmpeg AAC encoding from array failed: {stderr}")
+                error = RuntimeError(f"FFmpeg AAC encoding from array failed: {stderr}")
+                if write_error:
+                    raise error from write_error[0]
+                raise error
+            if write_error:
+                raise write_error[0]
         return output_path
     
     def get_duration(self, file_path: Path | str) -> float:
@@ -358,72 +368,3 @@ class AudioEncoder:
         
         data = json.loads(result.stdout)
         return float(data["format"]["duration"])
-    
-    def get_duration_formatted(self, file_path: Path | str) -> str:
-        """
-        Get audio duration as formatted string (HH:MM:SS).
-        
-        Args:
-            file_path: Path to audio file
-            
-        Returns:
-            Duration as formatted string
-        """
-        duration_sec = self.get_duration(file_path)
-        hours = int(duration_sec // 3600)
-        minutes = int((duration_sec % 3600) // 60)
-        seconds = int(duration_sec % 60)
-        
-        if hours > 0:
-            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes:02d}:{seconds:02d}"
-    
-    def batch_encode(
-        self,
-        input_files: list[Path | str],
-        output_dir: Path | str,
-        bitrate: Optional[str] = None
-    ) -> list[Path]:
-        """
-        Encode multiple WAV files to MP3.
-        
-        Args:
-            input_files: List of input WAV file paths
-            output_dir: Output directory for MP3 files
-            bitrate: Override default bitrate
-            
-        Returns:
-            List of paths to generated MP3 files
-        """
-        output_dir = Path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        output_files = []
-        for input_file in input_files:
-            input_path = Path(input_file)
-            output_path = output_dir / input_path.with_suffix(".mp3").name
-            
-            self.wav_to_mp3(input_path, output_path, bitrate)
-            output_files.append(output_path)
-        
-        return output_files
-    
-    def check_hardware_acceleration(self) -> dict[str, bool]:
-        """
-        Check available hardware acceleration options.
-        
-        Returns:
-            Dict of acceleration options and availability
-        """
-        result = run_ffmpeg_command(
-            [self.ffmpeg_path, "-hwaccels"],
-            failure_message="FFmpeg hardware acceleration probe failed",
-        )
-        
-        output = result.stdout + result.stderr
-        
-        return {
-            "videotoolbox": "videotoolbox" in output.lower(),
-            "cuda": "cuda" in output.lower(),
-            "vaapi": "vaapi" in output.lower(),
-        }

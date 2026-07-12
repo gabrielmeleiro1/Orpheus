@@ -6,6 +6,8 @@ Central façade that delegates business logic to focused app services.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 from dataclasses import dataclass, field
 from enum import Enum
@@ -169,6 +171,10 @@ class AppController:
     _CLEANUP_CONVERSION_CANCEL_TIMEOUT_SECONDS = 2.0
     _CLEANUP_WORKER_SHUTDOWN_TIMEOUT_SECONDS = 2.0
     _CLEANUP_POST_WORKER_CANCEL_TIMEOUT_SECONDS = 0.5
+    # Desktop supervisor should allow at least this budget after SIGTERM so cleanup
+    # can cancel active conversions, shut down workers, and close SQLite safely.
+    DESKTOP_SHUTDOWN_CLEANUP_BUDGET_SECONDS = 5.0
+    DESKTOP_SHUTDOWN_ACK_EVENT = "shutdown"
 
     def __init__(
         self,
@@ -279,13 +285,19 @@ class AppController:
         return self._library_service.get_chapter_cleaning_preview(book_id, chapter_number)
 
     def delete_book(self, book_id: int) -> bool:
+        active_job = self._conversion_service.get_active_job()
+        if (
+            active_job is not None
+            and getattr(active_job, "book_id", None) == book_id
+            and self._conversion_service.has_active_job()
+        ):
+            raise RuntimeError(
+                "Cannot delete a book while it is being converted or repaired"
+            )
         return self._library_service.delete_book(book_id)
 
     def open_book_folder(self, book_id: int) -> Optional[Path]:
         return self._library_service.open_book_folder(book_id)
-
-    def get_library_stats(self) -> dict:
-        return self._library_service.get_library_stats()
 
     def get_storage_diagnostics(self) -> dict:
         db_path = Path(self.config.db_path)
@@ -308,12 +320,18 @@ class AppController:
     def cleanup_storage(self, *, confirm: str) -> dict:
         if str(confirm).strip().lower() != "cleanup":
             raise ValueError("Cleanup requires confirm='cleanup'")
-        return prune_stale_records_and_files(
-            db_path=self.config.db_path,
-            output_dir=self.config.output_dir,
-            temp_dir=self.config.temp_dir,
-            aggressive=True,
-        )
+        # begin_storage_cleanup atomically rejects an active job and blocks new
+        # conversion starts until cleanup finishes (no check-then-prune race).
+        self._conversion_service.begin_storage_cleanup()
+        try:
+            return prune_stale_records_and_files(
+                db_path=self.config.db_path,
+                output_dir=self.config.output_dir,
+                temp_dir=self.config.temp_dir,
+                aggressive=True,
+            )
+        finally:
+            self._conversion_service.end_storage_cleanup()
 
     # ==================== Conversion ====================
 
@@ -346,11 +364,13 @@ class AppController:
         book_id: int,
         callbacks: Optional[ConversionCallbacks] = None,
         runtime_options: Optional[ConversionRuntimeOptions] = None,
+        runtime_fields_set: Optional[set[str] | frozenset[str]] = None,
     ) -> ConversionJob:
         return self._conversion_service.start_repair(
             book_id=book_id,
             callbacks=callbacks,
             runtime_options=runtime_options,
+            runtime_fields_set=runtime_fields_set,
         )
 
     # Compatibility wrappers retained for tests/patching internals.
@@ -673,3 +693,15 @@ class AppController:
             close = getattr(self.repository, "close", None)
             if callable(close):
                 close()
+        self._emit_desktop_shutdown_ack()
+
+    def _emit_desktop_shutdown_ack(self) -> None:
+        if not os.environ.get("AUDIOBOOK_DESKTOP_READY_FILE", "").strip():
+            return
+        print(
+            json.dumps(
+                {"event": self.DESKTOP_SHUTDOWN_ACK_EVENT},
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )

@@ -203,7 +203,7 @@ dependency (wrong direction for a layered tool tree).
 |------|------|
 | `scripts/build_desktop_backend.py` | Sidecar binary |
 | `desktop/backend-sidecar.spec` | PyInstaller spec |
-| `desktop/scripts/test-event-stream-model.mjs` | Node test for SSE parsing |
+| `desktop/src/features/events/eventStreamModel.test.ts` | Vitest test for SSE parsing |
 | `desktop/package.json` scripts | `typecheck`, `test`, vite dev |
 
 Tauri resource dir: `desktop/src-tauri/binaries/` (gitkept `.gitkeep`; binaries generated).

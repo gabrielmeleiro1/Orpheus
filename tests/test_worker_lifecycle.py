@@ -43,6 +43,12 @@ def restore_worker_runtime_state():
         "_WORKER_DEVICE": worker_runtime._WORKER_DEVICE,
     }
     try:
+        worker_runtime._WORKER_TTS_ENGINE = None
+        worker_runtime._WORKER_TEXT_CLEANER = None
+        worker_runtime._WORKER_PIPELINE_CONFIG = None
+        worker_runtime._WORKER_INIT_STATUS = None
+        worker_runtime._WORKER_PROVIDER = "unknown"
+        worker_runtime._WORKER_DEVICE = None
         yield
     finally:
         for name, value in original_state.items():

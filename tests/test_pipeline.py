@@ -174,7 +174,6 @@ class TestConversionPipeline:
              patch("modules.tts.chunker.TextChunker") as mock_chunker, \
              patch("modules.tts.factory.TTSEngineFactory.create") as mock_tts_factory, \
              patch("modules.tts.engine.TTSEngine") as mock_tts, \
-             patch("modules.tts.engine.concatenate_audio_files") as mock_concat, \
              patch("modules.audio.encoder.AudioEncoder") as mock_enc, \
              patch("modules.audio.packager.M4BPackager") as mock_packager:
              
@@ -223,14 +222,6 @@ class TestConversionPipeline:
             mock_tts.return_value = mock_tts_instance
             mock_tts_factory.return_value = mock_tts_instance
             
-            # Mock concatenate_audio_files to just create the output file
-            def mock_concat_side_effect(file_paths, output_path, use_memmap=True):
-                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-                Path(output_path).write_bytes(b"fake wav content")
-                return Path(output_path)
-            mock_concat.side_effect = mock_concat_side_effect
-            
-            
             mock_enc.return_value.get_duration.return_value = 10.0 # 10 seconds
             
             # Make encoder.wav_to_mp3 actually create the file
@@ -259,7 +250,6 @@ class TestConversionPipeline:
                 "chunker": mock_chunker,
                 "tts": mock_tts,
                 "tts_factory": mock_tts_factory,
-                "concat": mock_concat,
                 "encoder": mock_enc,
                 "packager": mock_packager,
             }
@@ -946,7 +936,6 @@ class TestConversionPipeline:
         )
 
         assert isinstance(chapter_wav, Path)
-        assert mock_components["concat"].call_count == 0
         with wave.open(str(chapter_wav), "rb") as wav_file:
             assert wav_file.getnframes() == 6
             assert wav_file.getframerate() == 24000
@@ -1550,7 +1539,6 @@ class TestConversionPipeline:
 
         assert was_cancelled is False
         assert isinstance(chapter_wav, Path)
-        assert mock_components["concat"].call_count == 0
         with wave.open(str(chapter_wav), "rb") as wav_file:
             assert wav_file.getnframes() == 6
             assert wav_file.getframerate() == 24000

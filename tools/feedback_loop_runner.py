@@ -144,7 +144,27 @@ def _delta(after: dict[str, int], before: dict[str, int], key: str) -> int:
     return after.get(key, 0) - before.get(key, 0)
 
 
+def validate_api_backend_args(args: argparse.Namespace) -> None:
+    """Require explicit API endpoint configuration; there is no default endpoint."""
+    if args.cleaner_backend != "api":
+        return
+    missing = [
+        flag
+        for flag, value in (
+            ("--cleaner-api-base-url", args.cleaner_api_base_url),
+            ("--cleaner-api-key-env", args.cleaner_api_key_env),
+        )
+        if not value
+    ]
+    if missing:
+        raise SystemExit(
+            "cleaner backend 'api' requires explicit configuration; "
+            f"missing: {', '.join(missing)}"
+        )
+
+
 def run_feedback_loop(args: argparse.Namespace) -> int:
+    validate_api_backend_args(args)
     source_file = resolve_source(Path(args.source).expanduser().resolve(), args.contains)
     print(f"[runner] source: {source_file}")
 
@@ -154,6 +174,12 @@ def run_feedback_loop(args: argparse.Namespace) -> int:
         cleaner_cuda_quantization=args.cleaner_cuda_quantization,
     )
 
+    api_overrides = {}
+    if args.cleaner_api_base_url:
+        api_overrides["cleaner_api_base_url"] = args.cleaner_api_base_url
+    if args.cleaner_api_key_env:
+        api_overrides["cleaner_api_key_env"] = args.cleaner_api_key_env
+
     config = PipelineConfig(
         tts_engine="kokoro",
         tts_model_name="mlx-community/Kokoro-82M",
@@ -162,8 +188,7 @@ def run_feedback_loop(args: argparse.Namespace) -> int:
         cleaner_backend=args.cleaner_backend,
         cleaner_cuda_device=args.cleaner_cuda_device,
         cleaner_cuda_quantization=args.cleaner_cuda_quantization,
-        cleaner_api_base_url=args.cleaner_api_base_url,
-        cleaner_api_key_env=args.cleaner_api_key_env,
+        **api_overrides,
         cleaner_api_model=args.cleaner_api_model,
         save_cleaning_debug=not args.no_cleaning_debug,
         voice=args.voice,
@@ -380,13 +405,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--cleaner-api-base-url",
-        default="https://api.moonshot.cn/v1",
-        help="OpenAI-compatible API base URL (used when --cleaner-backend=api)",
+        default=None,
+        help=(
+            "OpenAI-compatible API base URL "
+            "(required when --cleaner-backend=api; no default endpoint)"
+        ),
     )
     parser.add_argument(
         "--cleaner-api-key-env",
-        default="KIMI_API_KEY",
-        help="Environment variable that holds cleaner API key (backend=api)",
+        default=None,
+        help=(
+            "Environment variable that holds the cleaner API key "
+            "(required when --cleaner-backend=api)"
+        ),
     )
     parser.add_argument(
         "--cleaner-api-model",

@@ -1,5 +1,6 @@
 import type { ConversionJobStatus, PerformanceSnapshot, ProgressStageView } from "../../types/api";
 import { GlyphProgress } from "../../ui/ascii/GlyphProgress";
+import { buildProgressTerminalPresentation } from "./progressTerminalPresentation";
 import "./progress.css";
 
 interface ProgressPanelProps {
@@ -36,24 +37,6 @@ function stageStatus(stage: ProgressStageView): string {
     return `${clampPercent(stage.pct)}%`;
   }
   return "queued";
-}
-
-function formatMetric(value: number | undefined, suffix = ""): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "--";
-  }
-  const formatted = value >= 100 ? Math.round(value).toString() : value.toFixed(value >= 10 ? 1 : 2);
-  return suffix ? `${formatted} ${suffix}` : formatted;
-}
-
-function formatSeconds(value: number | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "--";
-  }
-  const total = Math.max(0, Math.round(value));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
 }
 
 function ProgressBar({
@@ -97,29 +80,33 @@ export function ProgressPanel({
   const boundedProgress = clampPercent(progressPct);
   const activeStage = stages.find((stage) => stage.state === "active") ?? null;
   const canCancel = uiState === "running" && Boolean(activeJobId) && !isCancelling;
-  const activeStageName = stageLabel(activeStage?.name || currentStage || "waiting");
   const stageDetails = activeStage?.detail ?? [];
   const activeTitles = performance?.active_chapter_titles ?? [];
   const progressFocusClass = uiState === "cancelled" ? "panel-section progress-focus is-canceled" : "panel-section progress-focus";
-  const workerText =
-    typeof performance?.max_workers === "number"
-      ? `${performance.active_workers ?? 0}/${performance.max_workers}`
-      : "--";
+  const presentation = buildProgressTerminalPresentation({
+    uiState,
+    stages,
+    currentStage,
+    currentMessage,
+    performance,
+    progressPct,
+  });
   const requestedParallelText =
-    typeof performance?.requested_parallel_chapters === "number"
+    presentation.showLiveWorkers && typeof performance?.requested_parallel_chapters === "number"
       ? `requested ${performance.requested_parallel_chapters}`
-      : "requested --";
+      : presentation.showLiveWorkers
+        ? "requested --"
+        : presentation.snapshotKind === "final"
+          ? "final snapshot"
+          : "not applicable";
   const effectiveParallelText =
-    typeof performance?.effective_parallel_chapters === "number"
+    presentation.showLiveWorkers && typeof performance?.effective_parallel_chapters === "number"
       ? `effective ${performance.effective_parallel_chapters}`
-      : "effective --";
-  const selectedWorkerMode = performance?.parallel_worker_mode || "waiting";
-  const queueText = `${performance?.running_chapters ?? 0} running / ${performance?.queued_chapters ?? 0} queued`;
-  const throughputText = [
-    `${formatMetric(performance?.cleaner_chunks_per_second, "chunk/s")} clean`,
-    `${formatMetric(performance?.tts_chars_per_second, "char/s")} tts`,
-    `${formatMetric(performance?.encoder_chapters_per_second, "chapter/s")} encode`,
-  ].join(" · ");
+      : presentation.showLiveWorkers
+        ? "effective --"
+        : presentation.snapshotKind === "neutral"
+          ? "metrics unavailable"
+          : "job finished";
 
   return (
     <>
@@ -127,7 +114,7 @@ export function ProgressPanel({
         <div className="progress-focus-header">
           <div>
             <span className="progress-kicker">current operation</span>
-            <h2 className="progress-title">{activeStageName}</h2>
+            <h2 className="progress-title">{presentation.operationTitle}</h2>
           </div>
           <span id="progress-pct" className="progress-percent">{`${boundedProgress}%`}</span>
         </div>
@@ -139,11 +126,11 @@ export function ProgressPanel({
         <div className="progress-focus-meta">
           <span id="status-text">{statusText || uiState}</span>
           <GlyphProgress pct={boundedProgress} className="progress-glyphs" />
-          <span id="eta-text">{etaText || "eta: --:--"}</span>
+          <span id="eta-text">{uiState === "running" ? etaText || "eta: --:--" : "eta: —"}</span>
         </div>
 
         <div className="subtask-list" aria-label="Active stage detail">
-          {stageDetails.length > 0 ? (
+          {presentation.showLiveActiveTask && stageDetails.length > 0 ? (
             stageDetails.map((detail) => (
               <div className="subtask-row" key={`${detail.label}-${detail.value}`}>
                 <span className="subtask-label">{detail.label}</span>
@@ -154,8 +141,12 @@ export function ProgressPanel({
           ) : (
             <div className="subtask-row">
               <span className="subtask-label">task</span>
-              <ProgressBar pct={activeStage?.pct ?? 0} active={uiState === "running"} label="active task progress" />
-              <span className="subtask-value">{currentMessage || "waiting for updates"}</span>
+              {presentation.showLiveActiveTask ? (
+                <ProgressBar pct={activeStage?.pct ?? 0} active={uiState === "running"} label="active task progress" />
+              ) : (
+                <span className="field-hint" aria-hidden="true" />
+              )}
+              <span className="subtask-value">{presentation.activeTaskSummary}</span>
             </div>
           )}
         </div>
@@ -165,23 +156,35 @@ export function ProgressPanel({
         <div className="performance-grid">
           <div className="performance-item">
             <span className="performance-label">workers</span>
-            <strong>{workerText}</strong>
-            <span>{`${requestedParallelText} / ${effectiveParallelText} · ${queueText}`}</span>
+            <strong>{presentation.workerSummary}</strong>
+            <span>{`${requestedParallelText} / ${effectiveParallelText} · ${presentation.queueSummary}`}</span>
           </div>
           <div className="performance-item">
             <span className="performance-label">throughput</span>
-            <strong>{throughputText}</strong>
-            <span>{`elapsed ${formatSeconds(performance?.elapsed_seconds)}`}</span>
+            <strong>{presentation.throughputSummary}</strong>
+            <span>{presentation.elapsedSummary}</span>
           </div>
           <div className="performance-item">
-            <span className="performance-label">active chapters</span>
-            <strong>{activeTitles.length > 0 ? activeTitles.slice(0, 3).join(", ") : "none"}</strong>
-            <span>{`${performance?.completed_chapters ?? 0} done / ${performance?.failed_chapters ?? 0} failed`}</span>
+            <span className="performance-label">{presentation.showLiveWorkers ? "active chapters" : "chapters"}</span>
+            <strong>
+              {presentation.showLiveWorkers
+                ? activeTitles.length > 0
+                  ? activeTitles.slice(0, 3).join(", ")
+                  : "none"
+                : "—"}
+            </strong>
+            <span>{presentation.chaptersSummary}</span>
           </div>
           <div className="performance-item">
             <span className="performance-label">mode</span>
-            <strong>{`${selectedWorkerMode} / ${performance?.pipeline_mode || "waiting"}`}</strong>
-            <span>{performance?.fallback_reason ? `fallback: ${performance.fallback_reason}` : `eta ${formatSeconds(performance?.eta_seconds)}`}</span>
+            <strong>{presentation.modeSummary}</strong>
+            <span>
+              {presentation.showLiveWorkers && performance?.fallback_reason
+                ? `fallback: ${performance.fallback_reason}`
+                : presentation.showLiveWorkers
+                  ? `eta ${typeof performance?.eta_seconds === "number" ? `${Math.round(performance.eta_seconds)}s` : "--"}`
+                  : `${presentation.snapshotKind} summary`}
+            </span>
           </div>
         </div>
       </div>

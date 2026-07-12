@@ -98,7 +98,11 @@ mod tests {
         );
         assert_eq!(
             env.get("AUDIOBOOK_DB_PATH").map(PathBuf::from),
-            Some(PathBuf::from("/tmp/audiobook-app").join("data").join("audiobooks.db"))
+            Some(
+                PathBuf::from("/tmp/audiobook-app")
+                    .join("data")
+                    .join("audiobooks.db")
+            )
         );
         assert_eq!(
             env.get("AUDIOBOOK_DESKTOP_READY_FILE").map(PathBuf::from),

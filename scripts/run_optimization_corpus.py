@@ -17,30 +17,75 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.benchmark_nagel_pipeline import run_benchmark  # noqa: E402
+from scripts.benchmark_nagel_pipeline import (  # noqa: E402
+    BENCHMARK_PROFILE_PRODUCTION,
+    resolve_benchmark_profile_defaults,
+    run_benchmark,
+)
+
+CORPUS_STAGE_TIMING_KEYS = (
+    "parse_seconds",
+    "chunk_seconds",
+    "pipeline_parse_seconds",
+    "model_warmup_seconds_total",
+    "clean_seconds_total",
+    "tts_seconds_total",
+    "tts_model_load_seconds_total",
+    "encode_seconds_total",
+    "package_seconds_total",
+    "attributed_seconds_total",
+    "residual_seconds_total",
+)
+
+
+def _stage_timing_stats(values: list[float]) -> dict[str, float | None]:
+    if not values:
+        return {"median": None, "mean": None, "worst": None, "total": None}
+    return {
+        "median": round(statistics.median(values), 4),
+        "mean": round(statistics.mean(values), 4),
+        "worst": round(max(values), 4),
+        "total": round(sum(values), 4),
+    }
+
+
+def _aggregate_stage_seconds(cases: list[dict[str, Any]]) -> dict[str, dict[str, float | None]]:
+    stage_seconds: dict[str, dict[str, float | None]] = {}
+    for key in CORPUS_STAGE_TIMING_KEYS:
+        values = [
+            float(case[key])
+            for case in cases
+            if isinstance(case.get(key), (int, float))
+        ]
+        stage_key = key.removesuffix("_seconds_total").removesuffix("_seconds")
+        stage_seconds[stage_key] = _stage_timing_stats(values)
+    return stage_seconds
+
 
 CORPUS_CASES = (
     {
         "book_key": "self-reliance",
         "source_env": "ORPHEUS_BENCH_SELF_RELIANCE",
-        "default_source": r"C:\Users\iavas\Documents\Books\self-reliance.pdf",
     },
     {
         "book_key": "notes-underground",
         "source_env": "ORPHEUS_BENCH_NOTES_UNDERGROUND",
-        "default_source": r"C:\Users\iavas\Documents\Books\notes-underground.pdf",
     },
     {
         "book_key": "frederick-second",
         "source_env": "ORPHEUS_BENCH_FREDERICK_SECOND",
-        "default_source": r"C:\Users\iavas\Documents\Books\frederick-second.epub",
     },
 )
 
 
 def _resolve_source(case: dict[str, str]) -> Path:
     override = os.environ.get(case["source_env"], "").strip()
-    path = Path(override or case["default_source"])
+    if not override:
+        raise RuntimeError(
+            f"environment variable {case['source_env']} must be set to the "
+            f"source file path for corpus case {case['book_key']!r}"
+        )
+    path = Path(override)
     if not path.exists():
         raise FileNotFoundError(f"benchmark source not found: {path}")
     return path.resolve()
@@ -124,9 +169,16 @@ def _extract_case_metrics(metrics: dict[str, Any], *, book_key: str, chapter_lim
         "wall_time_seconds": metrics.get("wall_time_seconds"),
         "processing_time_seconds": metrics.get("processing_time_seconds"),
         "parse_seconds": metrics.get("parse_seconds"),
+        "chunk_seconds": metrics.get("chunk_seconds"),
+        "pipeline_parse_seconds": metrics.get("pipeline_parse_seconds"),
+        "model_warmup_seconds_total": metrics.get("model_warmup_seconds_total"),
         "clean_seconds_total": metrics.get("clean_seconds_total"),
         "tts_seconds_total": metrics.get("tts_seconds_total"),
+        "tts_model_load_seconds_total": metrics.get("tts_model_load_seconds_total"),
+        "encode_seconds_total": metrics.get("encode_seconds_total"),
         "package_seconds_total": metrics.get("package_seconds_total"),
+        "attributed_seconds_total": metrics.get("attributed_seconds_total"),
+        "residual_seconds_total": metrics.get("residual_seconds_total"),
         "chunks": metrics.get("chunks"),
         "cleaned_chars": artifact_quality.get("cleaned_chars"),
         "artifact_quality": {
@@ -168,7 +220,48 @@ def _aggregate(cases: list[dict[str, Any]]) -> dict[str, Any]:
             "worst": round(max(wall_times), 4) if wall_times else None,
             "total": round(sum(wall_times), 4) if wall_times else None,
         },
+        "stage_seconds": _aggregate_stage_seconds(cases),
     }
+
+
+def _run_stage_total(run: dict[str, Any], stage_key: str) -> float:
+    return sum(
+        float(case.get(stage_key) or 0)
+        for case in run.get("cases", [])
+        if isinstance(case.get(stage_key), (int, float))
+    )
+
+
+def _cold_warm_run_aggregate(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    if not runs:
+        return {}
+    cold_run = runs[0]
+    warm_runs = runs[1:]
+    result: dict[str, Any] = {
+        "cold_run": {
+            **(cold_run.get("aggregate") or {}),
+            "model_warmup_seconds": {
+                "total": round(
+                    _run_stage_total(cold_run, "model_warmup_seconds_total"),
+                    4,
+                )
+            },
+        }
+    }
+    if warm_runs:
+        warm_wall_totals = [
+            float(((run.get("aggregate") or {}).get("wall_time_seconds") or {}).get("total") or 0)
+            for run in warm_runs
+        ]
+        warm_warmup_totals = [
+            _run_stage_total(run, "model_warmup_seconds_total") for run in warm_runs
+        ]
+        result["warm_runs"] = {
+            "repeat_count": len(warm_runs),
+            "wall_time_seconds": _stage_timing_stats(warm_wall_totals),
+            "model_warmup_seconds": _stage_timing_stats(warm_warmup_totals),
+        }
+    return result
 
 
 def _repeat_aggregate(runs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -201,6 +294,7 @@ def _repeat_aggregate(runs: list[dict[str, Any]]) -> dict[str, Any]:
             "best": round(min(totals), 4) if totals else None,
             "worst": round(max(totals), 4) if totals else None,
         },
+        **_cold_warm_run_aggregate(runs),
     }
 
 
@@ -210,8 +304,9 @@ def run_corpus(
     chapter_start: int = 1,
     chapter_limit: int = 3,
     chunk_size: int | None = None,
-    enable_chapter_aac_packaging: bool = False,
-    enable_background_chapter_aac_encoding: bool = True,
+    benchmark_profile: str = BENCHMARK_PROFILE_PRODUCTION,
+    enable_chapter_aac_packaging: bool | None = None,
+    enable_background_chapter_aac_encoding: bool | None = None,
     artifacts_root: Path | None = None,
     cleaner_backend: str = "cuda",
     cleaner_cuda_device: str = "cuda:0",
@@ -219,6 +314,16 @@ def run_corpus(
     expected_source_hashes: dict[str, str] | None = None,
     allow_source_hash_mismatch: bool = False,
 ) -> dict[str, Any]:
+    profile_defaults = resolve_benchmark_profile_defaults(benchmark_profile)
+    if enable_chapter_aac_packaging is None:
+        enable_chapter_aac_packaging = bool(
+            profile_defaults["enable_chapter_aac_packaging"]
+        )
+    if enable_background_chapter_aac_encoding is None:
+        enable_background_chapter_aac_encoding = bool(
+            profile_defaults["enable_background_chapter_aac_encoding"]
+        )
+
     artifacts_root = artifacts_root or (REPO_ROOT / ".artifacts" / "benchmarks")
     run_root = artifacts_root / run_name
     output_parent = run_root / "output"
@@ -245,6 +350,7 @@ def run_corpus(
             output_dir=output_dir,
             temp_dir=temp_dir,
             parse_only=False,
+            benchmark_profile=benchmark_profile,
             cleaner_backend=cleaner_backend,
             cleaner_cuda_device=cleaner_cuda_device,
             cleaner_cuda_quantization=cleaner_cuda_quantization,
@@ -258,13 +364,24 @@ def run_corpus(
             _extract_case_metrics(metrics, book_key=book_key, chapter_limit=chapter_limit)
         )
 
+    effective_options = metrics.get("effective_options") if cases else {}
     summary = {
         "run_name": run_name,
+        "benchmark_profile": benchmark_profile,
+        "effective_options": effective_options,
         "chapter_start": chapter_start,
         "chapter_limit": chapter_limit,
         "chunk_size": chunk_size,
-        "enable_chapter_aac_packaging": enable_chapter_aac_packaging,
-        "enable_background_chapter_aac_encoding": enable_background_chapter_aac_encoding,
+        "enable_chapter_aac_packaging": (
+            effective_options.get("enable_chapter_aac_packaging")
+            if isinstance(effective_options, dict)
+            else enable_chapter_aac_packaging
+        ),
+        "enable_background_chapter_aac_encoding": (
+            effective_options.get("enable_background_chapter_aac_encoding")
+            if isinstance(effective_options, dict)
+            else enable_background_chapter_aac_encoding
+        ),
         "cleaner_backend": cleaner_backend,
         "cleaner_cuda_device": cleaner_cuda_device,
         "cleaner_cuda_quantization": cleaner_cuda_quantization,
@@ -319,7 +436,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--chapter-start", type=int, default=1)
     parser.add_argument("--chapter-limit", type=int, default=3)
     parser.add_argument("--chunk-size", type=int, default=None)
-    parser.add_argument("--enable-chapter-aac-packaging", action="store_true")
+    parser.add_argument(
+        "--benchmark-profile",
+        default=BENCHMARK_PROFILE_PRODUCTION,
+        choices=[BENCHMARK_PROFILE_PRODUCTION, "minimal"],
+    )
+    parser.add_argument(
+        "--enable-chapter-aac-packaging",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument(
         "--enable-background-chapter-aac-encoding",
         action=argparse.BooleanOptionalAction,
@@ -354,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
         chapter_start=args.chapter_start,
         chapter_limit=args.chapter_limit,
         chunk_size=args.chunk_size,
+        benchmark_profile=args.benchmark_profile,
         enable_chapter_aac_packaging=args.enable_chapter_aac_packaging,
         enable_background_chapter_aac_encoding=args.enable_background_chapter_aac_encoding,
         artifacts_root=args.artifacts_root,

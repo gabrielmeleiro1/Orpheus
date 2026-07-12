@@ -36,17 +36,12 @@ def _pipeline(*, target_dbfs: float = -16.0) -> SimpleNamespace:
     )
 
 
-def test_file_backed_normalization_uses_ffmpeg_filter_without_numpy_read(
+def test_file_backed_normalization_uses_ffmpeg_filter(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     wav_path = tmp_path / "chapter.wav"
     _write_pcm16_wav(wav_path, np.full(24000, 8192, dtype=np.int16))
-
-    def _raise_on_full_read(_wav_path: Path) -> np.ndarray:
-        raise AssertionError("file-backed normalization should stream RMS chunks")
-
-    monkeypatch.setattr(encoding, "_read_wav_as_float_array", _raise_on_full_read)
 
     captured: dict[str, object] = {}
 
@@ -90,17 +85,12 @@ def test_file_backed_normalization_uses_ffmpeg_filter_without_numpy_read(
     assert gain_db == pytest.approx(expected_gain_db, abs=1e-4)
 
 
-def test_silent_file_backed_normalization_skips_filter_without_numpy_read(
+def test_silent_file_backed_normalization_skips_filter(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     wav_path = tmp_path / "silent.wav"
     _write_pcm16_wav(wav_path, np.zeros(24000, dtype=np.int16))
-
-    def _raise_on_full_read(_wav_path: Path) -> np.ndarray:
-        raise AssertionError("silent file-backed normalization should not load WAV")
-
-    monkeypatch.setattr(encoding, "_read_wav_as_float_array", _raise_on_full_read)
 
     captured: dict[str, object] = {}
 
@@ -133,3 +123,40 @@ def test_silent_file_backed_normalization_skips_filter_without_numpy_read(
     assert duration_ms == 1000
     assert captured["input_path"] == wav_path
     assert captured["audio_filter"] is None
+
+
+def _successful_ffmpeg_run_for_encoding_stage(cmd, **_kwargs):  # noqa: ANN001, ANN202
+    from unittest.mock import MagicMock
+
+    output_path = Path(cmd[-1])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_bytes(b"audio")
+    return MagicMock(returncode=0, stdout="", stderr="")
+
+
+def test_encode_chapter_aac_uses_single_encode_for_short_wav(
+    tmp_path: Path,
+) -> None:
+    from unittest.mock import patch
+
+    wav_path = tmp_path / "chapter.wav"
+    _write_pcm16_wav(wav_path, np.zeros(24_000, dtype=np.int16))
+
+    pipeline = _pipeline()
+    pipeline.config.temp_dir = tmp_path / "temp"
+    pipeline.config.temp_dir.mkdir(parents=True, exist_ok=True)
+
+    with patch("shutil.which", return_value="/usr/bin/ffmpeg"), patch(
+        "subprocess.run",
+        side_effect=_successful_ffmpeg_run_for_encoding_stage,
+    ) as mock_run:
+        chapter_aac = encoding.encode_chapter_aac(
+            pipeline,
+            SimpleNamespace(number=1, title="Chapter 1"),
+            chapter_wav=wav_path,
+        )
+
+    assert chapter_aac.exists()
+    assert mock_run.call_count == 1
+    encode_args = mock_run.call_args_list[0].args[0]
+    assert encode_args[encode_args.index("-c:a") + 1] == "aac"

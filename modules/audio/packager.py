@@ -11,15 +11,31 @@ from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
 import json
+import logging
+import subprocess
 import tempfile
 
-from .ffmpeg import atomic_output_path, require_ffmpeg_binary, run_ffmpeg_command
+from .ffmpeg import (
+    atomic_output_path,
+    ffmpeg_timeout_seconds,
+    kill_ffmpeg_process,
+    require_ffmpeg_binary,
+    run_ffmpeg_command,
+    wait_for_ffmpeg_process,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def quote_ffmpeg_concat_path(path: Path | str) -> str:
-    """Quote a path for FFmpeg concat demuxer list files."""
-    escaped_path = str(Path(path).absolute())
-    escaped_path = escaped_path.replace("\\", "\\\\").replace("'", "'\\''")
+    """Quote a path for FFmpeg concat demuxer list files.
+
+    The concat demuxer copies bytes verbatim inside single quotes, so the only
+    character that needs escaping is the single quote itself (close the quote,
+    emit an escaped quote, reopen). Backslashes must be left untouched or
+    Windows drive and UNC paths point at nonexistent files.
+    """
+    escaped_path = str(Path(path).absolute()).replace("'", "'\\''")
     return f"'{escaped_path}'"
 
 
@@ -132,52 +148,93 @@ class M4BPackager:
             concat_file = temp_path / "concat.txt"
             write_ffmpeg_concat_file(concat_file, audio_files)
 
-            # Generate chapter markers
-            chapters = self._generate_chapter_markers(
-                audio_files,
-                chapter_names,
-                chapter_durations_ms=chapter_durations_ms,
-            )
-            chapter_file = temp_path / "chapters.txt"
-            self._write_ffmetadata(chapter_file, chapters, metadata)
-
             has_cover = bool(metadata.cover_path and Path(metadata.cover_path).exists())
             use_stream_copy = audio_files_support_stream_copy(audio_files)
 
-            final_cmd = [
-                self.ffmpeg_path, "-y",
-                "-f", "concat",
-                "-safe", "0",
-                "-i", str(concat_file),
-                "-f", "ffmetadata",
-                "-i", str(chapter_file),
-            ]
-            if has_cover:
-                final_cmd.extend(["-i", str(metadata.cover_path)])
-            final_cmd.extend(["-map_metadata", "1", "-map_chapters", "1"])
             if use_stream_copy:
-                final_cmd.extend(["-c:a", "copy"])
+                # Stream-copied AAC chapters keep the fast copy path, but the concat
+                # demuxer re-bakes each segment's encoder priming/padding into the
+                # joined presentation timeline. Source WAV durations therefore no
+                # longer describe where chapters land, so markers derived from them
+                # progressively lag the real audio. Concatenate first, read each
+                # chapter's true start offset from the encoded timeline, then mux the
+                # markers onto the copied audio.
+                stream_copy_audio = temp_path / "chapters_streamcopy.m4a"
+                concat_cmd = [
+                    self.ffmpeg_path, "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(concat_file),
+                    "-vn",
+                    "-c:a", "copy",
+                    str(stream_copy_audio),
+                ]
+                run_ffmpeg_command(concat_cmd, failure_message="M4B stream-copy concat failed")
+
+                chapters = self._stream_copy_chapter_markers(
+                    stream_copy_audio,
+                    audio_files,
+                    chapter_names,
+                    fallback_durations_ms=chapter_durations_ms,
+                )
+                chapter_file = temp_path / "chapters.txt"
+                self._write_ffmetadata(chapter_file, chapters, metadata)
+
+                final_cmd = [
+                    self.ffmpeg_path, "-y",
+                    "-i", str(stream_copy_audio),
+                    "-f", "ffmetadata",
+                    "-i", str(chapter_file),
+                ]
+                if has_cover:
+                    final_cmd.extend(["-i", str(metadata.cover_path)])
+                final_cmd.extend(["-map_metadata", "1", "-map_chapters", "1", "-c:a", "copy"])
+                if has_cover:
+                    final_cmd.extend([
+                        "-map", "0:a",
+                        "-map", "2:v",
+                        "-c:v", "mjpeg",
+                        "-disposition:v", "attached_pic",
+                    ])
+                final_cmd.extend(["-movflags", "+faststart"])
             else:
-                final_cmd.extend(["-c:a", "aac", "-b:a", "128k"])
-            if has_cover:
-                final_cmd.extend([
-                    "-map", "0:a",
-                    "-map", "2:v",
-                    "-c:v", "mjpeg",
-                    "-disposition:v", "attached_pic",
-                ])
-            final_cmd.extend(["-movflags", "+faststart"])
-            
+                # Re-encode path (WAV/MP3 -> single continuous encode): the encoder
+                # lays down one gapless stream, so source durations already describe
+                # the timeline correctly.
+                chapters = self._generate_chapter_markers(
+                    audio_files,
+                    chapter_names,
+                    chapter_durations_ms=chapter_durations_ms,
+                )
+                chapter_file = temp_path / "chapters.txt"
+                self._write_ffmetadata(chapter_file, chapters, metadata)
+
+                final_cmd = [
+                    self.ffmpeg_path, "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(concat_file),
+                    "-f", "ffmetadata",
+                    "-i", str(chapter_file),
+                ]
+                if has_cover:
+                    final_cmd.extend(["-i", str(metadata.cover_path)])
+                final_cmd.extend(["-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a", "128k"])
+                if has_cover:
+                    final_cmd.extend([
+                        "-map", "0:a",
+                        "-map", "2:v",
+                        "-c:v", "mjpeg",
+                        "-disposition:v", "attached_pic",
+                    ])
+                final_cmd.extend(["-movflags", "+faststart"])
+
             with atomic_output_path(output_path) as temp_output_path:
                 final_cmd.append(str(temp_output_path))
                 run_ffmpeg_command(final_cmd, failure_message="M4B creation failed")
-        
+
         return output_path
 
-    def _run_concat_command(self, _concat_file: Path, concat_cmd: list[str]) -> None:
-        """Run the FFmpeg concat command."""
-        run_ffmpeg_command(concat_cmd, failure_message="Concatenation failed")
-    
     def _generate_chapter_markers(
         self,
         audio_files: list[Path],
@@ -203,7 +260,17 @@ class M4BPackager:
         encoder = AudioEncoder()
 
         for audio_file, chapter_name in zip(audio_files, chapter_names):
-            duration_sec = encoder.get_duration(audio_file)
+            try:
+                duration_sec = encoder.get_duration(audio_file)
+            except (RuntimeError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "Could not probe duration of %s (%s); marking chapter %r with a "
+                    "zero-length span so packaging can continue",
+                    audio_file,
+                    exc,
+                    chapter_name,
+                )
+                duration_sec = 0.0
             duration_ms = int(duration_sec * 1000)
             
             chapters.append(ChapterMarker(
@@ -213,9 +280,176 @@ class M4BPackager:
             ))
             
             current_ms += duration_ms
-        
+
         return chapters
-    
+
+    def _stream_copy_chapter_markers(
+        self,
+        concat_path: Path,
+        audio_files: list[Path],
+        chapter_names: list[str],
+        fallback_durations_ms: Optional[list[int]] = None,
+    ) -> list[ChapterMarker]:
+        """Derive chapter markers from a stream-copied AAC concat's real timeline.
+
+        Stream-copied segments contribute their encoder priming/padding to the
+        joined presentation timeline, so per-source-WAV durations drift from where
+        chapters actually begin. Read the true per-chapter start offsets from the
+        encoded concat instead. Falls back to source-derived markers if the
+        timeline cannot be probed, so packaging never fails on probe issues.
+        """
+        offsets = self._probe_stream_copy_offsets_ms(concat_path, audio_files)
+        if offsets is None:
+            logger.warning(
+                "Could not probe stream-copied chapter timeline for %s; "
+                "falling back to source-derived chapter markers",
+                concat_path,
+            )
+            return self._generate_chapter_markers(
+                audio_files,
+                chapter_names,
+                chapter_durations_ms=fallback_durations_ms,
+            )
+
+        starts_ms, total_ms = offsets
+        chapters: list[ChapterMarker] = []
+        for index, (chapter_name, start_ms) in enumerate(zip(chapter_names, starts_ms)):
+            end_ms = starts_ms[index + 1] if index + 1 < len(starts_ms) else total_ms
+            chapters.append(ChapterMarker(
+                title=chapter_name,
+                start_ms=start_ms,
+                end_ms=max(start_ms, end_ms),
+            ))
+        return chapters
+
+    def _probe_stream_copy_offsets_ms(
+        self,
+        concat_path: Path,
+        audio_files: list[Path],
+    ) -> Optional[tuple[list[int], int]]:
+        """Return (per-chapter start ms, total ms) for a stream-copied concat.
+
+        Stream copy preserves every input packet in order, so each chapter starts
+        at the joined presentation-timestamp of its first packet. That timestamp
+        cannot be predicted from any single input file (the concat demuxer
+        redistributes priming/padding at seams), so probe the encoded concat itself
+        and index it by each input's packet count.
+        """
+        try:
+            ffprobe = require_ffmpeg_binary("ffprobe")
+
+            segment_packet_counts: list[int] = []
+            for audio_file in audio_files:
+                count_result = run_ffmpeg_command(
+                    [
+                        ffprobe, "-v", "error",
+                        "-select_streams", "a",
+                        "-count_packets",
+                        "-show_entries", "stream=nb_read_packets",
+                        "-of", "csv=p=0",
+                        str(audio_file),
+                    ],
+                    failure_message="FFprobe failed",
+                )
+                count_lines = [
+                    line.strip() for line in count_result.stdout.splitlines() if line.strip()
+                ]
+                if not count_lines:
+                    return None
+                segment_packet_counts.append(int(count_lines[0]))
+
+            boundary_indices: set[int] = set()
+            boundary_index = 0
+            for count in segment_packet_counts:
+                boundary_indices.add(boundary_index)
+                boundary_index += count
+
+            boundary_pts, packet_count = self._probe_concat_packet_starts(
+                ffprobe, concat_path, boundary_indices
+            )
+            if packet_count == 0 or len(boundary_pts) != len(boundary_indices):
+                return None
+
+            duration_result = run_ffmpeg_command(
+                [
+                    ffprobe, "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0",
+                    str(concat_path),
+                ],
+                failure_message="FFprobe failed",
+            )
+            total_ms = int(round(float(duration_result.stdout.strip()) * 1000))
+
+            starts_ms = [
+                int(round(boundary_pts[index] * 1000)) for index in sorted(boundary_pts)
+            ]
+            return starts_ms, total_ms
+        except (
+            RuntimeError,
+            ValueError,
+            KeyError,
+            TypeError,
+            IndexError,
+            MemoryError,
+            json.JSONDecodeError,
+        ) as exc:
+            logger.warning(
+                "Stream-copy chapter timeline probe failed for %s: %s", concat_path, exc
+            )
+            return None
+
+    def _probe_concat_packet_starts(
+        self,
+        ffprobe_path: str,
+        concat_path: Path,
+        boundary_indices: set[int],
+    ) -> tuple[dict[int, float], int]:
+        """Stream packet pts_time values, keeping only chapter-boundary timestamps.
+
+        A whole-book packet probe emits one line per AAC packet (hundreds of
+        thousands of lines), so parse the CSV stream incrementally instead of
+        materializing a JSON document for every packet.
+        """
+        process = subprocess.Popen(
+            [
+                ffprobe_path, "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "packet=pts_time",
+                "-of", "csv=p=0",
+                str(concat_path),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        boundary_pts: dict[int, float] = {}
+        packet_index = 0
+        try:
+            if process.stdout is None:  # pragma: no cover - defensive guard
+                raise RuntimeError("FFprobe stdout pipe is unavailable")
+            for line in process.stdout:
+                value = line.strip().rstrip(",")
+                if not value or value == "N/A":
+                    continue
+                if packet_index in boundary_indices:
+                    boundary_pts[packet_index] = float(value)
+                packet_index += 1
+        except Exception:
+            if process.poll() is None:
+                kill_ffmpeg_process(process)
+            raise
+        return_code = wait_for_ffmpeg_process(
+            process,
+            failure_message="FFprobe failed",
+            timeout_seconds=ffmpeg_timeout_seconds(),
+        )
+        if return_code != 0:
+            raise RuntimeError("FFprobe failed while probing concat packet timestamps")
+        return boundary_pts, packet_index
+
     def _write_ffmetadata(
         self,
         output_path: Path,

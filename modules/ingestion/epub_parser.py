@@ -205,33 +205,9 @@ class EPUBParser:
         
         return metadata
     
-    def _html_to_text(self, html_content: str) -> str:
-        """
-        Convert HTML content to clean text.
-        
-        Args:
-            html_content: Raw HTML string
-            
-        Returns:
-            Cleaned text content
-        """
-        return self._soup_to_text(self._parse_markup(html_content))
-
     def _soup_to_text(self, soup: BeautifulSoup) -> str:
         """Convert parsed HTML content to clean text."""
         return soup_to_epub_text(soup)
-    
-    def _extract_title(self, html_content: str) -> Optional[str]:
-        """
-        Extract chapter title from HTML.
-        
-        Args:
-            html_content: Raw HTML string
-            
-        Returns:
-            Title string or None
-        """
-        return self._extract_title_from_soup(self._parse_markup(html_content))
 
     def _extract_title_from_soup(self, soup: BeautifulSoup) -> Optional[str]:
         """Extract chapter title from parsed HTML."""

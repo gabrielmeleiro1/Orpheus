@@ -352,6 +352,23 @@ export function eventStreamReducer(
         },
       };
     case "refreshActive":
+      // The fallback reconcile poll keeps seeing a non-terminal "running" job
+      // while the backend winds down a cancellation that was already accepted
+      // for this job. Preserve the "cancellation requested…" status/uiState
+      // instead of clobbering it with "active job: running"; the poll still
+      // flips the UI once the job reaches a terminal state (a state event).
+      if (
+        state.isCancelling &&
+        state.cancellingJobId === action.job.id &&
+        action.job.status === "running"
+      ) {
+        return {
+          state:
+            state.activeJobId === action.job.id
+              ? state
+              : { ...state, activeJobId: action.job.id },
+        };
+      }
       return {
         state: {
           ...state,

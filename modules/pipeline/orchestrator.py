@@ -136,13 +136,9 @@ class ConversionPipeline:
 
     _stage = _RunStateField("stage")
     _cancelled = _RunStateField("cancelled", coerce=_coerce_bool)
-    _start_time = _RunStateField("start_time")
-    _chars_processed = _RunStateField("chars_processed", coerce=_coerce_int)
     _total_chars = _RunStateField("total_chars", coerce=_coerce_int)
     _tts_engine = _RunStateField("tts_engine")
     _text_cleaner = _RunStateField("text_cleaner")
-    _tts_idle_timer = _RunStateField("tts_idle_timer")
-    _tts_idle_lock = _RunStateField("tts_idle_lock")
     _parallel_execution_active = _RunStateField(
         "parallel_execution_active",
         coerce=_coerce_bool,
@@ -153,15 +149,6 @@ class ConversionPipeline:
     )
     _selected_parallel_worker_count_reason = _RunStateField(
         "selected_parallel_worker_count_reason",
-    )
-    _performance_active_chapters = _RunStateField("performance_active_chapters")
-    _performance_completed_chapters = _RunStateField(
-        "performance_completed_chapters",
-        coerce=_coerce_int,
-    )
-    _performance_failed_chapters = _RunStateField(
-        "performance_failed_chapters",
-        coerce=_coerce_int,
     )
     _performance_tts_chars = _RunStateField(
         "performance_tts_chars",
@@ -179,7 +166,6 @@ class ConversionPipeline:
         "performance_encode_seconds",
         coerce=_coerce_float,
     )
-    _temp_cleanup_paths = _RunStateField("temp_cleanup_paths")
 
     def __init__(
         self,
@@ -581,17 +567,6 @@ class ConversionPipeline:
     def stages(self):
         """Pipeline stage execution collaborator."""
         return self._stages
-
-    def _memory_policy_reason(self) -> Optional[str]:
-        """Return active memory safe-mode reason for progress metadata."""
-        memory_policy = self.config.memory_policy
-        if memory_policy is None:
-            return None
-        reason = getattr(memory_policy, "safe_mode_reason", None)
-        manual_worker_mode = self.config.worker_plan.worker_mode == "manual"
-        if manual_worker_mode and reason != "memory pressure error":
-            return None
-        return str(reason) if reason else None
 
     def _track_temp_cleanup_path(self, path: Path) -> None:
         """Track a temp artifact created by this pipeline run."""

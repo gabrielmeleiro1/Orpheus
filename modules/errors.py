@@ -251,16 +251,19 @@ def validate_pdf(file_path: Path) -> bool:
         raise FileNotFoundError(f"File not found: {file_path}")
     
     # Check file size (minimum valid PDF is ~25 bytes)
-    if file_path.stat().st_size < 25:
+    file_size = file_path.stat().st_size
+    if file_size < 25:
         raise CorruptedFileError("File too small to be a valid PDF", file_path)
-    
+
     # Check PDF header
     with open(file_path, 'rb') as f:
         header = f.read(8)
         if not header.startswith(b'%PDF-'):
             raise CorruptedFileError("Invalid PDF header - file may be corrupted", file_path)
-        
-        f.seek(-1024, 2)  # Seek to last 1KB
+
+        # Read the last 1KB; a relative seek from the end raises OSError for
+        # valid PDFs smaller than the window.
+        f.seek(max(0, file_size - 1024))
         tail = f.read()
         if b'%%EOF' not in tail:
             raise CorruptedFileError("Missing PDF EOF marker - file may be truncated", file_path)

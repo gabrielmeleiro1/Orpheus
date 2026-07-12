@@ -471,19 +471,57 @@ class ChapterProcessor:
             precomputed_rms=precomputed_rms,
         )
 
+    def _chapter_aac_output_path(self, chapter: Any, output_dir: Path) -> Path:
+        """Choose temp vs durable AAC output based on whether MP3s are emitted.
+
+        AAC-only conversions persist the per-chapter .m4a under the chapters
+        output dir (reused as chapters.mp3_path) so repair can resolve it after
+        temp cleanup. When MP3 artifacts are emitted, AAC stays packaging-only
+        under temp_dir.
+        """
+        if self.runtime.config.emit_chapter_mp3_artifacts:
+            return self.runtime.config.temp_dir / f"chapter_{chapter.number:02d}.m4a"
+        safe_title = "".join(
+            c if c.isalnum() or c in " -_" else "_"
+            for c in str(getattr(chapter, "title", "") or "")
+        )[:50]
+        return output_dir / f"{int(chapter.number):02d}_{safe_title}.m4a"
+
+    def _await_chapter_aac_slot(self) -> None:
+        """Wait for the in-flight background AAC encode before queueing another."""
+        pending = self.runtime.state.chapter_aac_pending_future
+        if pending is None:
+            return
+        try:
+            pending.result()
+        except Exception:
+            # Encoder failures are surfaced when packaging resolves chapter futures.
+            pass
+        finally:
+            self.runtime.state.chapter_aac_pending_future = None
+
     def _ensure_chapter_aac(
         self,
         *,
         result: ChapterResult,
         chapter: Any,
-        encoding_source: Path | np.ndarray,
+        encoding_source: Path,
+        output_dir: Path,
     ) -> None:
         if not getattr(self.runtime.config, "enable_chapter_aac_packaging", False):
             return
         if result.aac_path is not None and result.aac_path.exists():
+            if (
+                not self.runtime.config.emit_chapter_mp3_artifacts
+                and result.mp3_path is None
+            ):
+                result.mp3_path = result.aac_path
             return
 
         from .stages.encoding import EncodingStageContext, encode_chapter_aac
+
+        aac_output = self._chapter_aac_output_path(chapter, output_dir)
+        durable_chapter_audio = not self.runtime.config.emit_chapter_mp3_artifacts
 
         def encode() -> Path:
             sample_rate = self.runtime.tts_sample_rate()
@@ -500,17 +538,29 @@ class ChapterProcessor:
                 chapter=chapter,
                 chapter_wav=encoding_source,
                 precomputed_rms=result.pcm_rms,
+                output_path=aac_output,
             )
 
         if bool(getattr(self.runtime.config, "enable_background_chapter_aac_encoding", True)):
+            if self.runtime.check_cancelled():
+                return
+            self._await_chapter_aac_slot()
             executor = self.runtime.state.chapter_aac_executor
             if executor is None:
                 executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chapter-aac")
                 self.runtime.state.chapter_aac_executor = executor
+            # Track the temp output at submit time: failed or cancelled runs never
+            # reach packaging (the only other place that tracks it), which would
+            # orphan the encoded .m4a in the temp root. The tracker ignores paths
+            # outside temp_dir, so durable repair chapter audio stays exempt.
+            self.runtime.track_temp_cleanup_path(aac_output)
             result.aac_future = executor.submit(encode)
+            self.runtime.state.chapter_aac_pending_future = result.aac_future
             return
 
         result.aac_path = encode()
+        if durable_chapter_audio:
+            result.mp3_path = result.aac_path
         self.runtime.track_temp_cleanup_path(result.aac_path)
 
     def prepare_chapter_audio(
@@ -640,7 +690,7 @@ class ChapterProcessor:
                 sample_rate=sample_rate,
             )
             self.runtime.track_temp_cleanup_path(master_dir)
-            encoding_source = chapter_wav
+            encoding_source = result.wav_path
 
         if not self.runtime.config.emit_chapter_mp3_artifacts:
             from .stages.encoding import _measure_source_duration_ms
@@ -655,6 +705,7 @@ class ChapterProcessor:
                 result=result,
                 chapter=chapter,
                 encoding_source=encoding_source,
+                output_dir=output_dir,
             )
             self._record_encode_throughput(time.perf_counter() - encode_started)
             self.runtime.log_verbose(
@@ -686,6 +737,7 @@ class ChapterProcessor:
             result=result,
             chapter=chapter,
             encoding_source=encoding_source,
+            output_dir=output_dir,
         )
 
         self.runtime.log_verbose(

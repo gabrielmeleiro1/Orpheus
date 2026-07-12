@@ -82,10 +82,11 @@ class PDFParser:
         file_path: Path | str,
         validate: bool = True,
         extraction_backend: PDFExtractionBackend = "auto",
+        artifact_policies: tuple | None = None,
     ):
         """
         Initialize the parser with a PDF file.
-        
+
         Args:
             file_path: Path to the PDF file
             validate: Whether to validate the PDF structure
@@ -93,6 +94,9 @@ class PDFParser:
                 for plain text PDFs, ``pymupdf4llm`` preserves legacy markdown
                 extraction, and ``auto`` falls back to ``fitz`` when markdown
                 coverage is clearly incomplete.
+            artifact_policies: Optional artifact normalization policy override
+                (e.g. KNOWN_CORPUS_PDF_ARTIFACT_POLICIES for the benchmark
+                corpus). Defaults to the parser-safe default policies.
         """
         self.file_path = Path(file_path)
         if not self.file_path.exists():
@@ -113,8 +117,8 @@ class PDFParser:
         if extraction_backend not in {"pymupdf4llm", "fitz", "auto"}:
             raise ValueError(f"Unsupported PDF extraction backend: {extraction_backend}")
         self.extraction_backend = extraction_backend
+        self.artifact_policies = artifact_policies
 
-        self._doc = None
         self._toc = None
         self._markdown = None
         self._metadata = None
@@ -170,7 +174,10 @@ class PDFParser:
                 text_chars=text_layer.text_chars,
             )
 
-        pages_data = normalize_pdf_artifacts(pages_data)
+        if self.artifact_policies is not None:
+            pages_data = normalize_pdf_artifacts(pages_data, self.artifact_policies)
+        else:
+            pages_data = normalize_pdf_artifacts(pages_data)
         
         # Combine full markdown for the document record
         self._markdown = "\n\n".join(p["text"] for p in pages_data)
@@ -430,7 +437,13 @@ class PDFParser:
         chapters: list[Chapter] = []
         ordered_entries = sorted(entries, key=lambda item: item[1])
         for i, (title, start_page) in enumerate(ordered_entries):
-            end_page = ordered_entries[i + 1][1] - 1 if i + 1 < len(ordered_entries) else total_pages
+            # Two TOC entries can start on the same page; never let the
+            # previous chapter's end slip before its own start page.
+            end_page = (
+                max(start_page, ordered_entries[i + 1][1] - 1)
+                if i + 1 < len(ordered_entries)
+                else total_pages
+            )
             if start_page > end_page:
                 start_page = end_page
             chapters.append(

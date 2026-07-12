@@ -341,7 +341,16 @@ class TestPDFParser:
             mock_doc.get_toc.return_value = [[1, "Chapter 1", 1]]
             mock_open.return_value.__enter__.return_value = mock_doc
 
-            parser = PDFParser(sample_pdf)
+            # Inline footnote stripping is corpus-specific and opt-in; default
+            # policies must not delete numbered headings from user PDFs.
+            from modules.ingestion.pdf_artifact_normalizer import (
+                KNOWN_CORPUS_PDF_ARTIFACT_POLICIES,
+            )
+
+            parser = PDFParser(
+                sample_pdf,
+                artifact_policies=KNOWN_CORPUS_PDF_ARTIFACT_POLICIES,
+            )
             doc = parser.parse()
 
         content = doc.chapters[0].content

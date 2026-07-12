@@ -1139,6 +1139,7 @@ def test_optimization_corpus_forwards_chunk_size(monkeypatch, tmp_path: Path) ->
     source.write_text("text", encoding="utf-8")
     calls: list[dict[str, object]] = []
 
+    monkeypatch.setenv("ORPHEUS_TEST_BOOK", str(source))
     monkeypatch.setattr(
         run_optimization_corpus,
         "CORPUS_CASES",
@@ -1146,7 +1147,6 @@ def test_optimization_corpus_forwards_chunk_size(monkeypatch, tmp_path: Path) ->
             {
                 "book_key": "book",
                 "source_env": "ORPHEUS_TEST_BOOK",
-                "default_source": str(source),
             },
         ),
     )
@@ -1184,6 +1184,7 @@ def test_optimization_corpus_repeat_summarizes_total_wall_time(
     source.write_text("text", encoding="utf-8")
     calls: list[dict[str, object]] = []
 
+    monkeypatch.setenv("ORPHEUS_TEST_BOOK", str(source))
     monkeypatch.setattr(
         run_optimization_corpus,
         "CORPUS_CASES",
@@ -1191,7 +1192,6 @@ def test_optimization_corpus_repeat_summarizes_total_wall_time(
             {
                 "book_key": "book",
                 "source_env": "ORPHEUS_TEST_BOOK",
-                "default_source": str(source),
             },
         ),
     )
@@ -1244,6 +1244,7 @@ def test_optimization_corpus_clears_case_dirs_and_counts_quality_only_for_succes
     source = tmp_path / "book.txt"
     source.write_text("text", encoding="utf-8")
 
+    monkeypatch.setenv("ORPHEUS_TEST_BOOK", str(source))
     monkeypatch.setattr(
         run_optimization_corpus,
         "CORPUS_CASES",
@@ -1251,7 +1252,6 @@ def test_optimization_corpus_clears_case_dirs_and_counts_quality_only_for_succes
             {
                 "book_key": "book",
                 "source_env": "ORPHEUS_TEST_BOOK",
-                "default_source": str(source),
             },
         ),
     )
@@ -1295,6 +1295,8 @@ def test_optimization_corpus_requires_complete_expected_hash_manifest(
 
     source = tmp_path / "book.txt"
     source.write_text("text", encoding="utf-8")
+    monkeypatch.setenv("ORPHEUS_TEST_BOOK", str(source))
+    monkeypatch.setenv("ORPHEUS_TEST_OTHER", str(source))
     monkeypatch.setattr(
         run_optimization_corpus,
         "CORPUS_CASES",
@@ -1302,12 +1304,10 @@ def test_optimization_corpus_requires_complete_expected_hash_manifest(
             {
                 "book_key": "book",
                 "source_env": "ORPHEUS_TEST_BOOK",
-                "default_source": str(source),
             },
             {
                 "book_key": "other",
                 "source_env": "ORPHEUS_TEST_OTHER",
-                "default_source": str(source),
             },
         ),
     )
@@ -1317,6 +1317,17 @@ def test_optimization_corpus_requires_complete_expected_hash_manifest(
             run_name="hash-test",
             artifacts_root=tmp_path / "artifacts",
             expected_source_hashes={"book": "abc"},
+        )
+
+
+def test_optimization_corpus_requires_source_env_var(monkeypatch) -> None:
+    from scripts import run_optimization_corpus
+
+    monkeypatch.delenv("ORPHEUS_TEST_BOOK", raising=False)
+
+    with pytest.raises(RuntimeError, match="ORPHEUS_TEST_BOOK"):
+        run_optimization_corpus._resolve_source(
+            {"book_key": "book", "source_env": "ORPHEUS_TEST_BOOK"}
         )
 
 

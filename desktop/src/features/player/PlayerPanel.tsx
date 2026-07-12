@@ -32,6 +32,8 @@ interface PlayerPanelProps {
   statusText?: string;
   elapsedSec: number;
   durationSec: number;
+  /** Explicit seek readiness; do not infer from duration alone (seeded duration may precede audio load). */
+  canSeek: boolean;
   volume: number;
   canGoPrevious?: boolean;
   canGoNext?: boolean;
@@ -55,6 +57,7 @@ export function PlayerPanel({
   statusText,
   elapsedSec,
   durationSec,
+  canSeek,
   volume,
   canGoPrevious = false,
   canGoNext = false,
@@ -82,7 +85,7 @@ export function PlayerPanel({
     100,
   );
 
-  const seekDisabled = !enabled || normalizedDurationSec <= 0;
+  const seekDisabled = !enabled || !canSeek;
   const volumeDisabled = !enabled;
   const prevDisabled = !enabled || !canGoPrevious;
   const nextDisabled = !enabled || !canGoNext;

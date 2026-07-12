@@ -228,8 +228,6 @@ def test_synthesis_iterator_releases_chunk_audio_incrementally(tmp_path: Path) -
 
 @pytest.mark.benchmark
 def test_file_backed_normalization_avoids_full_wav_read(tmp_path: Path) -> None:
-    from modules.pipeline.stages import encoding
-
     wav_path = tmp_path / "chapter.wav"
     with wave.open(str(wav_path), "wb") as wav_file:
         wav_file.setnchannels(1)
@@ -257,11 +255,7 @@ def test_file_backed_normalization_avoids_full_wav_read(tmp_path: Path) -> None:
     fake_encoder.wav_to_mp3.side_effect = _wav_to_mp3
     fake_encoder.array_to_mp3.side_effect = AssertionError("file-backed WAV should stream via ffmpeg")
 
-    with patch.object(
-        encoding,
-        "_read_wav_as_float_array",
-        side_effect=AssertionError("file-backed normalization must not load the whole WAV"),
-    ), patch("modules.audio.encoder.AudioEncoder", return_value=fake_encoder):
+    with patch("modules.audio.encoder.AudioEncoder", return_value=fake_encoder):
         mp3_path, duration_ms = pipeline.stages.chapter_processor.encode_chapter_audio(
             chapter=SimpleNamespace(number=1, title="Chapter 1"),
             chapter_idx=0,

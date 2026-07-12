@@ -193,6 +193,51 @@ def test_copy_sidecar_for_tauri_copies_resolved_ffmpeg_binaries_under_bin(
         assert (copied_bin / "ffprobe").stat().st_mode & stat.S_IXUSR
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are the packaging failure mode")
+def test_copy_ffmpeg_binaries_adds_owner_write_when_source_is_readonly_executable(
+    tmp_path: Path,
+) -> None:
+    """Tauri resource processing needs owner-write on bundled Mach-O binaries."""
+    readonly_mode = (
+        stat.S_IRUSR
+        | stat.S_IXUSR
+        | stat.S_IRGRP
+        | stat.S_IXGRP
+        | stat.S_IROTH
+        | stat.S_IXOTH
+    )  # 0o555
+    ffmpeg_source = tmp_path / "source" / "ffmpeg"
+    ffprobe_source = tmp_path / "source" / "ffprobe"
+    for path, content in ((ffmpeg_source, "ffmpeg"), (ffprobe_source, "ffprobe")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        path.chmod(readonly_mode)
+
+    sidecar_dir = tmp_path / "sidecar"
+    build_desktop_backend._copy_ffmpeg_binaries(  # noqa: SLF001
+        sidecar_dir,
+        {"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
+        target_triple="aarch64-apple-darwin",
+    )
+
+    for name in ("ffmpeg", "ffprobe"):
+        source = tmp_path / "source" / name
+        destination = sidecar_dir / "bin" / name
+        source_mode = source.stat().st_mode
+        destination_mode = destination.stat().st_mode
+
+        assert source_mode & readonly_mode == readonly_mode
+        assert not (source_mode & stat.S_IWUSR)
+        assert destination.read_text(encoding="utf-8") == name
+        assert destination_mode & stat.S_IRUSR
+        assert destination_mode & stat.S_IWUSR
+        assert destination_mode & stat.S_IXUSR
+        assert destination_mode & stat.S_IRGRP
+        assert destination_mode & stat.S_IXGRP
+        assert destination_mode & stat.S_IROTH
+        assert destination_mode & stat.S_IXOTH
+
+
 def test_validate_sidecar_resources_requires_packaged_ffmpeg_and_ffprobe(tmp_path: Path) -> None:
     sidecar_dir = tmp_path / "sidecar"
     _write_required_pyinstaller_resources(sidecar_dir)

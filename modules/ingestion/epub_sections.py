@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import PurePosixPath
+import codecs
 import re
 from typing import Any, Callable, Iterable, Optional
 from urllib.parse import unquote
@@ -50,6 +51,22 @@ _PART_DIVIDER_TITLE_RE = re.compile(
     r"^part\s+(?:[ivxlcdm]+|\d+)\b",
     re.IGNORECASE,
 )
+_XML_PROLOG_ENCODING_RE = re.compile(
+    rb"<\?xml[^>]*?\bencoding=[\"']([A-Za-z0-9._-]+)[\"']"
+)
+_META_CHARSET_RE = re.compile(
+    rb"<meta[^>]*?\bcharset\s*=\s*[\"']?\s*([A-Za-z0-9._-]+)",
+    re.IGNORECASE,
+)
+
+
+def _declared_markup_encoding(content: bytes) -> Optional[str]:
+    """Sniff the encoding declared in an XML prolog or meta charset tag."""
+    head = content[:1024]
+    match = _XML_PROLOG_ENCODING_RE.search(head) or _META_CHARSET_RE.search(head)
+    if match is None:
+        return None
+    return match.group(1).decode("ascii")
 
 
 @dataclass
@@ -617,7 +634,19 @@ class _EPUBSectionBuilder:
         try:
             return content.decode("utf-8")
         except UnicodeDecodeError:
-            return content.decode("latin-1")
+            pass
+        if content.startswith(codecs.BOM_UTF16_LE) or content.startswith(codecs.BOM_UTF16_BE):
+            try:
+                return content.decode("utf-16")
+            except UnicodeDecodeError:
+                pass
+        declared = _declared_markup_encoding(content)
+        if declared:
+            try:
+                return content.decode(declared)
+            except (UnicodeDecodeError, LookupError):
+                pass
+        return content.decode("latin-1")
 
     @staticmethod
     def _item_key(item: Any) -> str:
@@ -700,10 +729,13 @@ def _normalize_title(title: Optional[str]) -> str:
 
 def _is_structural_title(title: Optional[str], source_name: str = "") -> bool:
     normalized = _normalize_title(title)
-    if normalized and _STRUCTURAL_TITLE_RE.match(normalized):
-        return True
-    if normalized.startswith("copyright "):
-        return True
+    if normalized:
+        # A real title decides on its own; a structural-looking file stem
+        # (index, notes, ...) must not veto a narrative TOC/heading title.
+        return bool(
+            _STRUCTURAL_TITLE_RE.match(normalized)
+            or normalized.startswith("copyright ")
+        )
 
     stem = PurePosixPath(_normalize_href(source_name)).stem.lower()
     stem = re.sub(r"[_-]+", " ", stem)

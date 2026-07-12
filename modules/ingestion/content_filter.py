@@ -133,12 +133,6 @@ def _content_lines(content: str) -> list[str]:
     return [line.strip() for line in content.splitlines() if line.strip()]
 
 
-def _line_ratio(lines: list[str], pattern: re.Pattern[str]) -> float:
-    if not lines:
-        return 0.0
-    return sum(1 for line in lines if pattern.search(line)) / len(lines)
-
-
 def _has_heading(title: str, lines: list[str], pattern: re.Pattern[str]) -> bool:
     heading_text = "\n".join([title, *lines[:8]])
     return bool(pattern.search(heading_text))

@@ -94,7 +94,16 @@ def test_kokoro_strategy_import_does_not_import_mlx_engine(monkeypatch) -> None:
 
 def test_mlx_runtime_import_failure_is_deferred_until_load(monkeypatch) -> None:
     kokoro = importlib.import_module("modules.tts.strategies.kokoro")
-    strategy = kokoro.KokoroTTSStrategy()
+    strategy = kokoro.KokoroTTSStrategy(
+        kokoro.KokoroConfig(
+            runtime_spec=TTSRuntimeSpec.from_legacy(
+                "kokoro",
+                "bf16",
+                model="mlx-community/Kokoro-82M",
+                provider="mlx",
+            )
+        )
+    )
     real_import = builtins.__import__
 
     assert strategy.supported_voices
@@ -673,6 +682,11 @@ def test_engine_runtime_helpers_cover_warmup_and_metrics_contract() -> None:
 def test_app_controller_capabilities_use_runtime_probe_service(monkeypatch) -> None:
     monkeypatch.setattr("modules.tts.runtime_spec.platform.system", lambda: "Linux")
     monkeypatch.setattr("modules.tts.runtime_spec.platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "cuda_available_on_current_platform",
+        staticmethod(lambda: False),
+    )
     controller = AppController.__new__(AppController)
     controller.config = SimpleNamespace(
         tts_engine="kokoro",
@@ -784,6 +798,7 @@ def test_worker_init_warms_tts_model_before_reporting_ready() -> None:
             "kokoro",
             "bf16",
             model="mlx-community/Kokoro-82M",
+            provider="mlx",
         ).to_dict(),
         "tts_engine": "kokoro",
         "tts_model_name": "mlx-community/Kokoro-82M",
@@ -825,6 +840,7 @@ def test_worker_init_records_warmup_failure_without_dropping_loaded_engine() -> 
             "kokoro",
             "bf16",
             model="mlx-community/Kokoro-82M",
+            provider="mlx",
         ).to_dict(),
         "tts_engine": "kokoro",
         "tts_model_name": "mlx-community/Kokoro-82M",

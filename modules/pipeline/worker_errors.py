@@ -298,7 +298,3 @@ class WorkerRuntimeUnavailableError(Exception):
     ) -> None:
         super().__init__(message)
         self.status = status
-
-
-class WorkerCancelledError(Exception):
-    """Raised when parallel worker execution is cancelled."""

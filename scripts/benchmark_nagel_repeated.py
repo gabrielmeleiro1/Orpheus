@@ -323,7 +323,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--output-root", type=Path, default=Path("output/nagel_repeated"))
     parser.add_argument("--temp-root", type=Path, default=Path("temp/nagel_repeated"))
-    parser.add_argument("--chunk-size", type=int, default=700)
     parser.add_argument(
         "--case",
         action="append",

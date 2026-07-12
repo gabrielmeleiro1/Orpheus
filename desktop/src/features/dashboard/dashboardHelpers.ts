@@ -18,6 +18,10 @@ export async function readDesktopBackendStatus(): Promise<DesktopBackendStatus> 
   return invoke<DesktopBackendStatus>("backend_status");
 }
 
+export async function restartDesktopBackend(): Promise<void> {
+  await invoke("restart_backend");
+}
+
 export function describeDesktopBackendStatus(status: DesktopBackendStatus): string {
   const error = status.error?.trim();
   if (status.lifecycle === "failed") {

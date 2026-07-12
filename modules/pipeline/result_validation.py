@@ -116,15 +116,6 @@ def _packaging_missing_audio_reason(result: Any) -> str:
     return "missing chapter audio path"
 
 
-def _preflight_missing_audio_reason(result: Any) -> Optional[str]:
-    mp3_path = getattr(result, "mp3_path", None)
-    if mp3_path is None:
-        return "missing chapter audio output"
-    if _path_missing_if_checkable(mp3_path):
-        return f"missing MP3 file at {mp3_path}"
-    return None
-
-
 def _repair_missing_audio_reason(result: Any) -> str:
     wav_path = getattr(result, "wav_path", None)
     mp3_path = getattr(result, "mp3_path", None)

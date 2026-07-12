@@ -57,23 +57,6 @@ def _measure_source_duration_ms(chapter_wav: Path | np.ndarray, *, sample_rate: 
     return int(len(audio) / sample_rate * 1000)
 
 
-def _read_wav_as_float_array(wav_path: Path) -> np.ndarray:
-    """Read a mono PCM WAV file into a float32 numpy array."""
-    with wave.open(str(wav_path), "rb") as wav_file:
-        frames = wav_file.getnframes()
-        channels = wav_file.getnchannels()
-        sample_width = wav_file.getsampwidth()
-        raw = wav_file.readframes(frames)
-
-    if channels != 1:
-        raise ValueError(f"Expected mono WAV input, got {channels} channels")
-    if sample_width != 2:
-        raise ValueError(f"Expected 16-bit WAV input, got {sample_width * 8}-bit")
-
-    pcm = np.frombuffer(raw, dtype=np.int16)
-    return (pcm.astype(np.float32) / 32768.0).reshape(-1)
-
-
 def _normalize_audio_array(audio: np.ndarray, *, target_dBFS: float) -> np.ndarray:
     """Normalize mono float audio in numpy space."""
     samples = np.asarray(audio, dtype=np.float32).reshape(-1)
@@ -293,8 +276,13 @@ def encode_chapter_aac(
     chapter_wav: Path | np.ndarray,
     *,
     precomputed_rms: float | None = None,
+    output_path: Path | None = None,
 ) -> Path:
-    """Encode chapter WAV/audio payload to AAC/M4A for stream-copy packaging."""
+    """Encode chapter WAV/audio payload to AAC/M4A for stream-copy packaging.
+
+    When ``output_path`` is provided, the AAC lands there (durable chapters dir
+    for AAC-only conversions). Otherwise it is written under ``temp_dir``.
+    """
     from modules.audio.encoder import AudioEncoder
 
     context = _coerce_encoding_context(context)
@@ -317,7 +305,11 @@ def encode_chapter_aac(
             target_dBFS=context.config.target_dbfs,
         )
 
-    chapter_aac = context.config.temp_dir / f"chapter_{chapter.number:02d}.m4a"
+    if output_path is not None:
+        chapter_aac = Path(output_path)
+        chapter_aac.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        chapter_aac = context.config.temp_dir / f"chapter_{chapter.number:02d}.m4a"
     encoder = AudioEncoder(
         bitrate=context.config.mp3_bitrate,
         sample_rate=sample_rate,

@@ -25,25 +25,28 @@ class _FakeBookSummary:
     created_at: datetime
 
 
-class _FakeController:
-    def __init__(self, playback_path: Path, *, output_dir: Path | None = None) -> None:
-        self._playback_path = playback_path
-        self.config = SimpleNamespace(
-            output_dir=output_dir or playback_path.parent,
-            temp_dir=(output_dir or playback_path.parent) / "temp",
-        )
+class _FakeLibraryRepository:
+    def __init__(self) -> None:
+        self.list_calls: list[dict[str, object]] = []
 
-    def get_library_books(  # noqa: ANN001,ANN201
+    def list_books(  # noqa: ANN001,ANN201
         self,
+        *,
         search=None,
         limit=200,
+        offset=0,
         conversion_mode=None,
         favorite=None,
     ):
-        _ = search
-        _ = limit
-        _ = conversion_mode
-        _ = favorite
+        self.list_calls.append(
+            {
+                "search": search,
+                "limit": limit,
+                "offset": offset,
+                "conversion_mode": conversion_mode,
+                "favorite": favorite,
+            }
+        )
         return [
             _FakeBookSummary(
                 id=1,
@@ -54,6 +57,32 @@ class _FakeController:
                 created_at=datetime.now(timezone.utc),
             )
         ]
+
+
+class _FakeController:
+    def __init__(self, playback_path: Path, *, output_dir: Path | None = None) -> None:
+        self._playback_path = playback_path
+        self._repository = _FakeLibraryRepository()
+        self.config = SimpleNamespace(
+            output_dir=output_dir or playback_path.parent,
+            temp_dir=(output_dir or playback_path.parent) / "temp",
+        )
+
+    def get_library_books(  # noqa: ANN001,ANN201
+        self,
+        search=None,
+        limit=200,
+        offset=0,
+        conversion_mode=None,
+        favorite=None,
+    ):
+        return self._repository.list_books(
+            search=search,
+            limit=limit,
+            offset=offset,
+            conversion_mode=conversion_mode,
+            favorite=favorite,
+        )
 
     def get_book(self, book_id: int):  # noqa: ANN201
         if book_id != 1:
@@ -148,6 +177,28 @@ def test_desktop_mode_library_requires_bearer_token(tmp_path: Path) -> None:
     assert authed.status_code == 200
     assert authed.json()["count"] == 1
 
+
+def test_desktop_mode_library_forwards_offset_to_repository(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.m4b"
+    audio_path.write_bytes(b"ID3desktop-audio")
+    controller = _FakeController(audio_path)
+
+    with _make_desktop_client(controller) as client:
+        response = client.get(
+            "/api/library?offset=25&limit=10",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+
+    assert response.status_code == 200
+    assert controller._repository.list_calls == [  # noqa: SLF001
+        {
+            "search": None,
+            "limit": 10,
+            "offset": 25,
+            "conversion_mode": None,
+            "favorite": None,
+        }
+    ]
 
 def test_desktop_mode_allows_packaged_tauri_origin_for_api_cors(tmp_path: Path) -> None:
     audio_path = tmp_path / "sample.m4b"
@@ -350,3 +401,31 @@ def test_non_desktop_mode_remains_unauthenticated(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert response.json()["count"] == 1
+
+
+def _forged_query_token(scope: str) -> str:
+    import base64
+    import time
+
+    encoded_scope = base64.urlsafe_b64encode(scope.encode("utf-8")).decode("ascii").rstrip("=")
+    expires_at = int(time.time()) + 60
+    return f"v1.{encoded_scope}.{expires_at}.nonce.signature"
+
+
+def test_query_token_with_non_ascii_scope_is_rejected_without_error() -> None:
+    from modules.web.desktop_auth import validate_desktop_query_token
+
+    # ``hmac.compare_digest`` raises TypeError on non-ASCII str inputs; an
+    # attacker-controlled decoded scope must yield False, not an exception.
+    assert validate_desktop_query_token(_forged_query_token("évents"), TOKEN, "events") is False
+
+
+def test_desktop_mode_non_ascii_scope_query_token_returns_401(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.m4b"
+    audio_path.write_bytes(b"ID3desktop-audio")
+    controller = _FakeController(audio_path)
+
+    with _make_desktop_client(controller) as client:
+        response = client.get(f"/api/events/stream?token={_forged_query_token('évents')}")
+
+    assert response.status_code == 401

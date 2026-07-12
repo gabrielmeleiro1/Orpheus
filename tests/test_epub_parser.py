@@ -614,6 +614,125 @@ def test_epub_parser_recovers_chapters_when_toc_targets_empty_split_markers(tmp_
     assert "Second chapter body text" in chapters[3].content
 
 
+def test_epub_single_index_document_with_real_toc_title_is_kept(tmp_path: Path) -> None:
+    """A structural-looking file stem must not veto a real TOC chapter title."""
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("single-index-document")
+    book.set_title("Single Index Document Fixture")
+    book.set_language("en")
+    book.add_author("Fixture Author")
+
+    chapter = epub.EpubHtml(title="The Whole Story", file_name="index.xhtml", lang="en")
+    chapter.content = """
+    <html><body>
+      <h1>The Whole Story</h1>
+      <p>Chapter body text that is comfortably long enough to clear the
+      minimum readable length threshold used by the section builder.</p>
+      <p>More narrative body text keeps this well above the filter.</p>
+    </body></html>
+    """
+    book.add_item(chapter)
+    book.toc = (epub.Link("index.xhtml", "The Whole Story", "the-whole-story"),)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", chapter]
+
+    sample_epub = tmp_path / "single-index.epub"
+    epub.write_epub(str(sample_epub), book)
+
+    chapters = EPUBParser(sample_epub).extract_chapters()
+
+    assert [chapter.title for chapter in chapters] == ["The Whole Story"]
+    assert "Chapter body text" in chapters[0].content
+
+
+def test_epub_notes_document_with_narrative_toc_title_is_kept(tmp_path: Path) -> None:
+    """notes.xhtml with a narrative TOC title is content, not back matter."""
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("narrative-notes-document")
+    book.set_title("Narrative Notes Fixture")
+    book.set_language("en")
+    book.add_author("Fixture Author")
+
+    chapter_one = epub.EpubHtml(title="Chapter One", file_name="chapter1.xhtml", lang="en")
+    chapter_one.content = """
+    <html><body>
+      <h1>Chapter One</h1>
+      <p>First chapter body text long enough to be treated as a readable
+      section by the parser and its length threshold.</p>
+      <p>Additional prose keeps the chapter above the minimum.</p>
+    </body></html>
+    """
+
+    notes = epub.EpubHtml(title="Notes on a Winter Journey", file_name="notes.xhtml", lang="en")
+    notes.content = """
+    <html><body>
+      <h1>Notes on a Winter Journey</h1>
+      <p>This narrative chapter happens to live in notes.xhtml but is real
+      story content that must survive section filtering.</p>
+      <p>More narrative text keeps this section above the minimum length.</p>
+    </body></html>
+    """
+
+    for document in [chapter_one, notes]:
+        book.add_item(document)
+    book.toc = (
+        epub.Link("chapter1.xhtml", "Chapter One", "chapter-one"),
+        epub.Link("notes.xhtml", "Notes on a Winter Journey", "winter-notes"),
+    )
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", chapter_one, notes]
+
+    sample_epub = tmp_path / "narrative-notes.epub"
+    epub.write_epub(str(sample_epub), book)
+
+    chapters = EPUBParser(sample_epub).extract_chapters()
+
+    assert [chapter.title for chapter in chapters] == [
+        "Chapter One",
+        "Notes on a Winter Journey",
+    ]
+    assert "story content that must survive section filtering" in chapters[1].content
+
+
+def test_epub_chapter_decode_honors_declared_encoding(tmp_path: Path) -> None:
+    from modules.ingestion.epub_sections import _EPUBSectionBuilder
+
+    class _Item:
+        def __init__(self, content: bytes) -> None:
+            self._content = content
+
+        def get_content(self) -> bytes:
+            return self._content
+
+    shift_jis_markup = (
+        '<?xml version="1.0" encoding="Shift_JIS"?>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml">'
+        "<body><p>吾輩は猫である。名前はまだ無い。</p></body></html>"
+    )
+    decoded = _EPUBSectionBuilder._decode_item(_Item(shift_jis_markup.encode("shift_jis")))
+    assert "吾輩は猫である。名前はまだ無い。" in decoded
+
+    meta_charset_markup = (
+        "<html><head><meta charset=\"gbk\"/></head>"
+        "<body><p>你好，世界。这是一章。</p></body></html>"
+    )
+    decoded = _EPUBSectionBuilder._decode_item(_Item(meta_charset_markup.encode("gbk")))
+    assert "你好，世界。这是一章。" in decoded
+
+    utf16_markup = (
+        '<?xml version="1.0" encoding="utf-16"?>\n'
+        "<html><body><p>UTF-16 chapter body text.</p></body></html>"
+    )
+    decoded = _EPUBSectionBuilder._decode_item(_Item(utf16_markup.encode("utf-16")))
+    assert "UTF-16 chapter body text." in decoded
+
+
 def test_epub_parser():
     """Run all EPUB parser tests."""
     
@@ -733,8 +852,8 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
         """
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            text = parser._html_to_text(xhtml)
-            title = parser._extract_title(xhtml)
+            text = parser._soup_to_text(parser._parse_markup(xhtml))
+            title = parser._extract_title_from_soup(parser._parse_markup(xhtml))
 
         assert "Body text." in text
         assert title == "XHTML Chapter"

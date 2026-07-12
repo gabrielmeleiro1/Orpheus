@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import type { CleaningPreviewResponse, LibraryChapterDetail } from "../../types/api";
 import { formatDurationClock } from "../../format/time";
 import { TermSelect } from "../conversion/TermSelect";
+import { chapterPlaybackStatusLabel } from "../player/chapterPlaybackLabel";
 import type { UseLibraryResult } from "./useLibrary";
 import { formatLibraryMeta } from "./useLibrary";
 import { useLibraryPanelState } from "./useLibraryPanelState";
@@ -12,7 +13,9 @@ interface LibraryPanelProps {
   hidden: boolean;
   library: UseLibraryResult;
   currentChapterNumber?: number | null;
+  playing?: boolean;
   onJumpToChapter?: (chapter: LibraryChapterDetail) => void;
+  onStartConvert?: () => void;
 }
 
 function previewText(preview: CleaningPreviewResponse | null): string {
@@ -33,7 +36,14 @@ const LIBRARY_MODE_OPTIONS = [
   { value: "document_audio", label: "document audio" },
 ];
 
-export function LibraryPanel({ hidden, library, currentChapterNumber, onJumpToChapter }: LibraryPanelProps) {
+export function LibraryPanel({
+  hidden,
+  library,
+  currentChapterNumber,
+  playing = false,
+  onJumpToChapter,
+  onStartConvert,
+}: LibraryPanelProps) {
   const showEmpty = !library.loadingList && !library.errorMessage && library.items.length === 0;
   const selected = library.selectedBookDetail;
   const chapters = useMemo(() => selected?.chapters ?? [], [selected?.chapters]);
@@ -118,7 +128,16 @@ export function LibraryPanel({ hidden, library, currentChapterNumber, onJumpToCh
 
           <div id="library-list" className="library-list">
             {library.loadingList ? <div className="log-line">Loading library...</div> : null}
-            {showEmpty ? <div className="log-line">No converted books yet.</div> : null}
+            {showEmpty ? (
+              <div className="library-empty">
+                <div className="log-line">No converted books yet.</div>
+                {onStartConvert ? (
+                  <button className="btn btn-compact" type="button" onClick={onStartConvert}>
+                    Convert a source
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
             {library.items.map((item, index) => {
               const isSelected = item.id === library.selectedBookId;
               return (
@@ -254,6 +273,7 @@ export function LibraryPanel({ hidden, library, currentChapterNumber, onJumpToCh
             <div id="chapter-list" className="chapter-list">
               {chapters.map((chapter) => {
                 const isCurrent = chapter.number === currentChapterNumber;
+                const playbackLabel = chapterPlaybackStatusLabel({ isCurrent, playing });
                 return (
                   <div key={chapter.id} className={`chapter-row${isCurrent ? " is-current" : ""}`}>
                     <button
@@ -264,7 +284,8 @@ export function LibraryPanel({ hidden, library, currentChapterNumber, onJumpToCh
                     >
                       <span className="chapter-number">{String(chapter.number).padStart(2, "0")}</span>
                       <span className="chapter-title">
-                        {chapter.title || `Chapter ${chapter.number}`}{isCurrent ? " / playing" : ""}
+                        {chapter.title || `Chapter ${chapter.number}`}
+                        {playbackLabel ? ` / ${playbackLabel.toLowerCase()}` : ""}
                       </span>
                       <span className="chapter-duration">{formatDurationClock(chapter.duration_ms)}</span>
                     </button>

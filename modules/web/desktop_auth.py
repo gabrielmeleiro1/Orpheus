@@ -51,10 +51,6 @@ def _path_requires_auth(path: str) -> bool:
     return path.startswith("/api/")
 
 
-def _path_allows_query_token(path: str) -> bool:
-    return _query_token_scope_for_path(path) is not None
-
-
 def _is_valid_token(candidate: str | None, expected: str) -> bool:
     return bool(candidate) and hmac.compare_digest(candidate, expected)
 
@@ -118,7 +114,9 @@ def validate_desktop_query_token(candidate: str | None, secret: str, required_sc
     except (UnicodeDecodeError, ValueError):
         return False
 
-    if not hmac.compare_digest(scope, required_scope):
+    # Compare as bytes: ``compare_digest`` raises TypeError for non-ASCII str
+    # inputs and the decoded scope is attacker-controlled.
+    if not hmac.compare_digest(scope.encode("utf-8"), required_scope.encode("utf-8")):
         return False
 
     payload = ".".join(parts[:4])

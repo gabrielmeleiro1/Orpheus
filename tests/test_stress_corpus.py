@@ -213,3 +213,47 @@ def test_report_aggregation_groups_taxonomy_and_percentiles(tmp_path: Path) -> N
     ] == 1
     assert report["llm_gating"]["corpus"]["llm_routed_percent"] == 25.0
     assert report["llm_gating"]["reason_counts"]["possible PDF page or footnote residue"] == 2
+
+
+def test_download_corpus_does_not_persist_error_pages(tmp_path: Path, monkeypatch) -> None:
+    import io
+    import urllib.request
+
+    from scripts import download_stress_corpus
+
+    manifest = tmp_path / "manifest.tsv"
+    manifest.write_text(
+        "gutenberg_id\tslug\tstress_dimension\n123\thtml-error\ttest\n",
+        encoding="utf-8",
+    )
+
+    class FakeResponse(io.BytesIO):
+        status = 200
+
+        def __init__(self) -> None:
+            super().__init__(b"<html>rate limited</html>")
+            self.headers = {"Content-Type": "text/html; charset=utf-8"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda url, timeout=None: FakeResponse()
+    )
+    monkeypatch.setattr(download_stress_corpus, "MIN_EXISTING_BYTES", 0)
+    monkeypatch.setattr(
+        download_stress_corpus.time, "sleep", lambda seconds: None
+    )
+
+    books_dir = tmp_path / "books"
+    summary = download_stress_corpus.download_corpus(
+        books_dir=books_dir,
+        manifest_path=manifest,
+        retries=2,
+    )
+
+    assert summary == {"downloaded": 0, "skipped": 0, "failed": 1}
+    assert not (books_dir / "html-error.epub").exists()

@@ -141,6 +141,7 @@ export interface ApiClient {
 export interface LibraryQueryOptions {
   conversionMode?: ConversionMode | "";
   favorite?: boolean;
+  offset?: number;
 }
 
 function resolveUrl(baseUrl: string, path: string): string {
@@ -540,6 +541,10 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
 
     if (filters.favorite !== undefined) {
       params.set("favorite", String(filters.favorite));
+    }
+
+    if (Number.isInteger(filters.offset) && (filters.offset ?? 0) > 0) {
+      params.set("offset", String(filters.offset));
     }
 
     const query = params.toString();

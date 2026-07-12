@@ -25,6 +25,8 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       canStartConversion: true,
       canCancelJob: false,
       canRefreshJob: true,
+      showRunQueue: false,
+      showStartConversion: true,
     },
     sourceQueue: {
       isDocumentMode: true,

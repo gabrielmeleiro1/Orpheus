@@ -4,19 +4,35 @@ mod backend;
 mod paths;
 
 use backend::{
-    launch_dev_backend, launch_sidecar_backend, read_ready_payload_from_file, resolve_sidecar_path,
-    BackendEndpoint, BackendManager, BackendStatus, RunningBackend,
+    launch_dev_backend, launch_sidecar_backend, read_ready_payload_from_file, replace_running_backend,
+    resolve_sidecar_path, BackendEndpoint, BackendManager, BackendStatus, RunningBackend,
 };
 use paths::DesktopRuntimePaths;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{Manager, State};
+
+// A `Starting` backend that never emits a ready payload (wedged startup) is
+// force-failed after this deadline so the UI can recover it via restart instead
+// of requiring a full app relaunch. Generous enough to cover a cold sidecar
+// unpack plus model load; the transition is generation-fenced.
+const BACKEND_STARTUP_DEADLINE: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
 struct AppState {
     backend_manager: Arc<Mutex<BackendManager>>,
     backend_process: Mutex<Option<RunningBackend>>,
     backend_ready_file: Mutex<Option<PathBuf>>,
+    // Serializes the stop+start of every lifecycle transition (restart, app-exit
+    // shutdown, initial launch). Held across the whole stop-then-start so two
+    // concurrent restarts, or a restart racing app exit, can never interleave and
+    // orphan a live sidecar or spawn a survivor.
+    restart_lock: Mutex<()>,
+    // Latched once app exit begins. A restart that loses the race to acquire
+    // `restart_lock` observes this and refuses to spawn a survivor backend.
+    shutting_down: AtomicBool,
 }
 
 fn env_flag(name: &str) -> bool {
@@ -28,6 +44,20 @@ fn env_flag(name: &str) -> bool {
 
 impl AppState {
     fn start_backend(&self, app_handle: &tauri::AppHandle) -> Result<(), String> {
+        let _restart = self
+            .restart_lock
+            .lock()
+            .map_err(|_| "backend restart lock poisoned".to_string())?;
+        self.start_backend_inner(app_handle)
+    }
+
+    // Launch a new backend and install it, stopping any child it displaces.
+    // Caller must hold `restart_lock`.
+    fn start_backend_inner(&self, app_handle: &tauri::AppHandle) -> Result<(), String> {
+        if self.shutting_down.load(Ordering::SeqCst) {
+            return Err("desktop backend is shutting down".to_string());
+        }
+
         let app_data_dir = app_handle
             .path()
             .app_data_dir()
@@ -58,11 +88,10 @@ impl AppState {
             )?
         };
 
-        let mut running = self
-            .backend_process
-            .lock()
-            .map_err(|_| "backend process lock poisoned".to_string())?;
-        *running = Some(process);
+        // Never overwrite a live child: `replace_running_backend` stops whatever
+        // it displaces instead of dropping it. Under `restart_lock` the slot is
+        // normally already empty, but this is the last-line orphan guard.
+        replace_running_backend(&self.backend_process, &self.backend_manager, process)?;
 
         let mut ready_file = self
             .backend_ready_file
@@ -72,31 +101,45 @@ impl AppState {
         Ok(())
     }
 
-    fn stop_backend(&self) -> Result<(), String> {
+    // Latch shutdown then stop the backend, so no restart can spawn a survivor.
+    fn shutdown(&self) {
+        // On exit take the lock even if poisoned; cleanup still has to run.
+        let _restart = match self.restart_lock.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.shutting_down.store(true, Ordering::SeqCst);
+        if let Err(error) = self.stop_backend_inner() {
+            eprintln!("failed to stop desktop backend: {error}");
+        }
+    }
+
+    // Stop and clear the current child. Takes the child out from under the lock
+    // and stops it outside the lock so status polling isn't blocked for the whole
+    // (multi-second) graceful shutdown. Caller must hold `restart_lock`.
+    fn stop_backend_inner(&self) -> Result<(), String> {
         let ready_file_path = self
             .backend_ready_file
             .lock()
             .map_err(|_| "backend ready file lock poisoned".to_string())?
             .take();
 
-        let mut running = self
+        let process = self
             .backend_process
             .lock()
-            .map_err(|_| "backend process lock poisoned".to_string())?;
+            .map_err(|_| "backend process lock poisoned".to_string())?
+            .take();
 
-        if let Some(process) = running.take() {
+        if let Some(process) = process {
             process.stop(&self.backend_manager);
-            if let Some(path) = ready_file_path {
-                let _ = std::fs::remove_file(path);
-            }
-            return Ok(());
+        } else {
+            let mut manager = self
+                .backend_manager
+                .lock()
+                .map_err(|_| "backend manager lock poisoned".to_string())?;
+            manager.mark_stopped();
         }
 
-        let mut manager = self
-            .backend_manager
-            .lock()
-            .map_err(|_| "backend manager lock poisoned".to_string())?;
-        manager.mark_stopped();
         if let Some(path) = ready_file_path {
             let _ = std::fs::remove_file(path);
         }
@@ -117,20 +160,23 @@ impl AppState {
             return Ok(());
         }
 
-        let ready_file_path = self
+        // Hold the ready-file lock across the existence check, read, and delete:
+        // two concurrent status commands could otherwise both pass `is_file()`
+        // and the loser's read/delete would fail with NotFound, surfacing as a
+        // bootstrap error to the frontend.
+        let ready_file = self
             .backend_ready_file
             .lock()
-            .map_err(|_| "backend ready file lock poisoned".to_string())?
-            .clone();
+            .map_err(|_| "backend ready file lock poisoned".to_string())?;
 
-        let Some(path) = ready_file_path else {
+        let Some(path) = ready_file.as_ref() else {
             return Ok(());
         };
         if !path.is_file() {
             return Ok(());
         }
 
-        let payload = read_ready_payload_from_file(&path)?;
+        let payload = read_ready_payload_from_file(path)?;
         let mut manager = self
             .backend_manager
             .lock()
@@ -152,12 +198,28 @@ impl AppState {
         }
         Ok(())
     }
+
+    // Force-fail a wedged `Starting` backend once it exceeds the startup
+    // deadline, so a hung startup becomes recoverable via restart.
+    fn refresh_backend_startup_deadline(&self) -> Result<(), String> {
+        let mut manager = self
+            .backend_manager
+            .lock()
+            .map_err(|_| "backend manager lock poisoned".to_string())?;
+        manager.fail_if_startup_timed_out(BACKEND_STARTUP_DEADLINE);
+        Ok(())
+    }
 }
 
+// Backend lifecycle commands are `async` so Tauri runs them off the main
+// thread: `restart_backend` in particular blocks for the whole graceful stop
+// (several seconds against a wedged backend) and would freeze the UI as a
+// sync command. The bodies stay synchronous; only the executor changes.
 #[tauri::command]
-fn backend_status(state: State<'_, AppState>) -> Result<BackendStatus, String> {
+async fn backend_status(state: State<'_, AppState>) -> Result<BackendStatus, String> {
     state.refresh_backend_ready_from_file()?;
     state.refresh_backend_process_exit()?;
+    state.refresh_backend_startup_deadline()?;
     let manager = state
         .backend_manager
         .lock()
@@ -166,9 +228,10 @@ fn backend_status(state: State<'_, AppState>) -> Result<BackendStatus, String> {
 }
 
 #[tauri::command]
-fn backend_endpoint(state: State<'_, AppState>) -> Result<Option<BackendEndpoint>, String> {
+async fn backend_endpoint(state: State<'_, AppState>) -> Result<Option<BackendEndpoint>, String> {
     state.refresh_backend_ready_from_file()?;
     state.refresh_backend_process_exit()?;
+    state.refresh_backend_startup_deadline()?;
     let manager = state
         .backend_manager
         .lock()
@@ -177,12 +240,47 @@ fn backend_endpoint(state: State<'_, AppState>) -> Result<Option<BackendEndpoint
 }
 
 #[tauri::command]
+async fn restart_backend(
+    app_handle: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    // Hold the restart lock across the entire stop+start so a second restart
+    // (double-click) or the app-exit shutdown cannot interleave with this one.
+    let _restart = state
+        .restart_lock
+        .lock()
+        .map_err(|_| "backend restart lock poisoned".to_string())?;
+
+    if state.shutting_down.load(Ordering::SeqCst) {
+        return Err("desktop backend is shutting down".to_string());
+    }
+
+    // Bring the lifecycle up to date (process exit, startup timeout) and re-check
+    // it while still holding `restart_lock`, so the decision to restart cannot be
+    // raced by the stop/start we are about to perform.
+    state.refresh_backend_process_exit()?;
+    state.refresh_backend_startup_deadline()?;
+    {
+        let manager = state
+            .backend_manager
+            .lock()
+            .map_err(|_| "backend manager lock poisoned".to_string())?;
+        let lifecycle = manager.status().lifecycle;
+        if !matches!(
+            lifecycle,
+            backend::BackendLifecycle::Failed | backend::BackendLifecycle::Stopped
+        ) {
+            return Err("backend is not in a failed or stopped state".to_string());
+        }
+    }
+    state.stop_backend_inner()?;
+    state.start_backend_inner(&app_handle)
+}
+
+#[tauri::command]
 fn choose_source_files() -> Vec<String> {
     rfd::FileDialog::new()
-        .add_filter(
-            "Orpheus Sources",
-            &["pdf", "epub", "txt", "md"],
-        )
+        .add_filter("Orpheus Sources", &["pdf", "epub", "txt", "md"])
         .pick_files()
         .unwrap_or_default()
         .into_iter()
@@ -220,6 +318,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             backend_status,
             backend_endpoint,
+            restart_backend,
             choose_source_files,
             open_app_data_folder
         ])
@@ -232,9 +331,7 @@ fn main() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
             if let Some(state) = app_handle.try_state::<AppState>() {
-                if let Err(error) = state.stop_backend() {
-                    eprintln!("failed to stop desktop backend: {error}");
-                }
+                state.shutdown();
             }
         }
     });

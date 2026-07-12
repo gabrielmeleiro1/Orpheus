@@ -77,20 +77,6 @@ export function cleanerBackendRequiresApiKey(
   return selectedCleanerBackendOption(modelOptions, backendId)?.requires_api_key ?? false;
 }
 
-export function cleanerBackendRequiresModel(
-  modelOptions: ModelOptionsResponse | null,
-  backendId: string,
-): boolean {
-  return selectedCleanerBackendOption(modelOptions, backendId)?.requires_model ?? false;
-}
-
-export function cleanerBackendIsLocal(
-  modelOptions: ModelOptionsResponse | null,
-  backendId: string,
-): boolean {
-  return selectedCleanerBackendOption(modelOptions, backendId)?.is_local ?? false;
-}
-
 export function isCleanerBackendRuntimeAvailable(
   option: CleanerBackendOption,
   capabilities: SystemCapabilitiesResponse | null,
@@ -123,7 +109,7 @@ export function mapCleanerBackendOptionToTermSelect(option: CleanerBackendOption
 // A "local" cleaner backend runs on-device and needs no API key (mlx/cuda),
 // so it can start converting without extra credentials. The server declares
 // backends api-first, so we cannot rely on declaration order to find one.
-export function isLocalCleanerBackendOption(option: CleanerBackendOption): boolean {
+function isLocalCleanerBackendOption(option: CleanerBackendOption): boolean {
   return option.is_local || !option.requires_api_key;
 }
 
@@ -135,7 +121,7 @@ export function preferredCleanerBackendId(availableOptions: CleanerBackendOption
   return (localOption ?? availableOptions[0])?.id ?? "";
 }
 
-export interface InitialCleanerBackendSelection {
+interface InitialCleanerBackendSelection {
   backendId: string;
   restoredPersistedBackend: boolean;
 }
@@ -162,7 +148,7 @@ export function defaultCleanerCudaQuantization(option: CleanerBackendOption | nu
   return quantizations[0] ?? "";
 }
 
-export interface CleanerRuntimePayloadInput {
+interface CleanerRuntimePayloadInput {
   selectedBackend: CleanerBackendOption | null;
   cleanerBackend: string;
   cleanerModel: string;
@@ -171,7 +157,7 @@ export interface CleanerRuntimePayloadInput {
   cleanerCudaQuantization: string;
 }
 
-export interface CleanerRuntimePayloadFields {
+interface CleanerRuntimePayloadFields {
   cleaner_backend?: string | null;
   cleaner_model?: string | null;
   cleaner_api_model?: string | null;

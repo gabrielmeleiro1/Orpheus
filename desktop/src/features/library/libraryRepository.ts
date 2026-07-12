@@ -13,10 +13,15 @@ import type {
   StartConversionResponse,
 } from "../../types/api";
 
-// Default worker limit used when repairing missing chapters from the library.
-const DEFAULT_REPAIR_PARALLEL_WORKER_LIMIT = 4;
-
 export type LibraryModeFilter = "all" | ConversionMode;
+
+// Page size for library listing. The backend caps a single request at 1000
+// items; we page in chunks and stop on the first short page so libraries
+// larger than one page are no longer silently truncated.
+export const LIBRARY_PAGE_SIZE = 500;
+// Hard stop so a misbehaving backend that keeps returning full pages cannot
+// loop forever (50 pages = 25k books).
+const LIBRARY_MAX_PAGES = 50;
 
 /**
  * Thin, React-free wrappers over the API client for every library and
@@ -46,10 +51,19 @@ export interface LibraryRepository {
 
 export function createLibraryRepository(apiClient: ApiClient): LibraryRepository {
   return {
-    listBooks(search, modeFilter, options) {
-      return apiClient.getLibrary(search || undefined, undefined, {
-        conversionMode: modeFilter === "all" ? "" : modeFilter,
-      }, options);
+    async listBooks(search, modeFilter, options) {
+      const items: LibraryListResponse["items"] = [];
+      for (let page = 0; page < LIBRARY_MAX_PAGES; page += 1) {
+        const response = await apiClient.getLibrary(search || undefined, LIBRARY_PAGE_SIZE, {
+          conversionMode: modeFilter === "all" ? "" : modeFilter,
+          offset: page * LIBRARY_PAGE_SIZE,
+        }, options);
+        items.push(...response.items);
+        if (response.items.length < LIBRARY_PAGE_SIZE) {
+          break;
+        }
+      }
+      return { items, count: items.length };
     },
     getBook(bookId, options) {
       return apiClient.getLibraryBook(bookId, options);
@@ -67,25 +81,9 @@ export function createLibraryRepository(apiClient: ApiClient): LibraryRepository
       return apiClient.openBookFolder(bookId, options);
     },
     repairBook(bookId, options) {
-      return apiClient.repairConversion(
-        bookId,
-        {
-          runtime_options: {
-            voice: "am_adam",
-            speed: 1,
-            tts_engine: null,
-            tts_quantization: null,
-            cleaner_model: null,
-            cleaner_backend: null,
-            cleaner_api_model: null,
-            tts_options: null,
-            parallel_worker_mode: "manual",
-            max_parallel_chapters: DEFAULT_REPAIR_PARALLEL_WORKER_LIMIT,
-            enable_parallel: DEFAULT_REPAIR_PARALLEL_WORKER_LIMIT > 1,
-          },
-        },
-        options,
-      );
+      // Omit narration/worker fields so the backend reuses persisted conversion
+      // settings and forces safe automatic worker planning.
+      return apiClient.repairConversion(bookId, {}, options);
     },
     getMaintenanceDiagnostics(options) {
       return apiClient.getMaintenanceDiagnostics(options);

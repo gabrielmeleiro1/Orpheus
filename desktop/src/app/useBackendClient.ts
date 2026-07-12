@@ -10,6 +10,7 @@ import {
   BACKEND_HEALTH_CHECK_INTERVAL_MS,
   describeDesktopBackendStatus,
   readDesktopBackendStatus,
+  restartDesktopBackend,
   waitForDesktopEndpoint,
 } from "../features/dashboard/dashboardHelpers";
 import { isTauriRuntime } from "../platform/tauriRuntime";
@@ -31,8 +32,50 @@ function messageFromUnknown(error: unknown, fallback: string): string {
 // In browser/dev mode the desktop lifecycle is not observable, so a dead
 // backend surfaces only as repeated health-poll failures. We wait for a few
 // consecutive failures before declaring an error to avoid flapping on a single
-// blip, and recover automatically once a poll succeeds again.
-export const BROWSER_HEALTH_FAILURE_THRESHOLD = 3;
+// blip, and recover automatically once a poll succeeds again. The Tauri path
+// reuses the same threshold: a hung-but-alive backend keeps lifecycle "ready"
+// while every health probe fails, and only an "error" connection state lets
+// the recovery effect restart it.
+const BROWSER_HEALTH_FAILURE_THRESHOLD = 3;
+
+// Bound each health probe so a hung backend surfaces as a failed poll instead
+// of an await that never settles (which left the UI in "checking" forever).
+const BACKEND_HEALTH_CHECK_TIMEOUT_MS = 5_000;
+
+// Delay before asking the desktop supervisor to relaunch a failed/stopped
+// backend and rerunning endpoint acquisition. Keeps repeated crash loops from
+// hammering the supervisor while still recovering without a manual reload.
+const BACKEND_RECOVERY_RETRY_DELAY_MS = 3_000;
+
+// Cap automatic relaunch attempts so a permanently-broken backend eventually
+// stops hammering the supervisor and surfaces a terminal error instead of
+// restarting every few seconds forever. The counter resets on any successful
+// health connection, so transient crashes still recover indefinitely.
+const BACKEND_RECOVERY_MAX_ATTEMPTS = 5;
+
+export type BackendRecoveryDecision =
+  | { action: "restart"; consumeAttempt: true }
+  | { action: "wait"; consumeAttempt: false }
+  | { action: "give_up" };
+
+/**
+ * Decide whether recovery should restart the desktop backend process.
+ * Restart attempts are only consumed for failed/stopped lifecycles; a still-
+ * starting backend must keep waiting so a slow boot cannot burn the restart cap.
+ */
+export function decideBackendRecovery(
+  lifecycle: DesktopBackendStatus["lifecycle"],
+  recoveryAttempts: number,
+  maxAttempts: number = BACKEND_RECOVERY_MAX_ATTEMPTS,
+): BackendRecoveryDecision {
+  if (lifecycle === "failed" || lifecycle === "stopped") {
+    if (recoveryAttempts >= maxAttempts) {
+      return { action: "give_up" };
+    }
+    return { action: "restart", consumeAttempt: true };
+  }
+  return { action: "wait", consumeAttempt: false };
+}
 
 export interface BrowserHealthState {
   failures: number;
@@ -64,6 +107,8 @@ export interface BackendMonitorFailureResolution {
 export function resolveBackendMonitorFailure(
   status: DesktopBackendStatus | null,
   error: unknown,
+  consecutiveFailures = 1,
+  failureThreshold: number = BROWSER_HEALTH_FAILURE_THRESHOLD,
 ): BackendMonitorFailureResolution {
   if (status?.lifecycle === "failed" || status?.lifecycle === "stopped") {
     return {
@@ -71,6 +116,17 @@ export function resolveBackendMonitorFailure(
       connectionState: "error",
       health: null,
       statusMessage: describeDesktopBackendStatus(status),
+    };
+  }
+
+  // Lifecycle still looks alive but health checks keep failing: after enough
+  // consecutive failures, escalate to error so the recovery effect can act.
+  if (consecutiveFailures >= failureThreshold) {
+    return {
+      clearClient: true,
+      connectionState: "error",
+      health: null,
+      statusMessage: messageFromUnknown(error, "backend health check failed"),
     };
   }
 
@@ -107,6 +163,8 @@ export function useBackendClient() {
   const [statusMessage, setStatusMessage] = useState<string>("resolving backend endpoint");
   const [backendBaseUrl, setBackendBaseUrl] = useState<string>("");
   const [apiClient, setApiClient] = useState<ApiClient | null>(null);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
+  const [recoveryAttempts, setRecoveryAttempts] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,7 +220,52 @@ export function useBackendClient() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [bootstrapAttempt]);
+
+  // A failed or stopped backend clears the client but the one-time bootstrap
+  // never reran, so recovery used to require reloading the UI. Ask the
+  // supervisor to relaunch the process, then rerun endpoint acquisition.
+  // Only consume restart attempts when we actually restart; a still-starting
+  // backend keeps waiting/re-bootstrapping without burning the restart cap.
+  useEffect(() => {
+    if (apiClient || connectionState !== "error" || !isTauriRuntime()) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      let decision: BackendRecoveryDecision = { action: "wait", consumeAttempt: false };
+      try {
+        const status = await readDesktopBackendStatus();
+        if (cancelled) {
+          return;
+        }
+        decision = decideBackendRecovery(status.lifecycle, recoveryAttempts);
+        if (decision.action === "give_up") {
+          setStatusMessage(
+            "backend failed to recover after multiple restart attempts; reload the app to retry",
+          );
+          return;
+        }
+        if (decision.action === "restart") {
+          await restartDesktopBackend();
+        }
+      } catch {
+        // Best effort: bootstrap below reports the failure state either way.
+      }
+      if (!cancelled) {
+        if (decision.action === "restart") {
+          setRecoveryAttempts((attempt) => attempt + 1);
+        }
+        setBootstrapAttempt((attempt) => attempt + 1);
+      }
+    }, BACKEND_RECOVERY_RETRY_DELAY_MS);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [apiClient, bootstrapAttempt, connectionState, recoveryAttempts]);
 
   useEffect(() => {
     if (!apiClient || !backendBaseUrl) {
@@ -171,7 +274,11 @@ export function useBackendClient() {
 
     let cancelled = false;
     let intervalId: number | null = null;
-    let browserHealthFailures = 0;
+    let healthFailures = 0;
+    // Guard against ticks piling up while a probe is still in flight (e.g. a
+    // slow backend close to the timeout); overlapping checks would race their
+    // state updates and inflate the failure count.
+    let checkInFlight = false;
 
     const markBackendUnavailable = (message: string) => {
       if (cancelled) {
@@ -185,6 +292,10 @@ export function useBackendClient() {
     };
 
     const checkBackend = async () => {
+      if (checkInFlight) {
+        return;
+      }
+      checkInFlight = true;
       let status: Awaited<ReturnType<typeof readDesktopBackendStatus>> | null = null;
 
       try {
@@ -203,11 +314,14 @@ export function useBackendClient() {
           return;
         }
 
-        const response = await apiClient.getHealth();
+        const response = await apiClient.getHealth({
+          timeoutMs: BACKEND_HEALTH_CHECK_TIMEOUT_MS,
+        });
         if (cancelled) {
           return;
         }
-        browserHealthFailures = 0;
+        healthFailures = 0;
+        setRecoveryAttempts(0);
         setHealth(response);
         setConnectionState("connected");
         setStatusMessage("backend connected");
@@ -216,8 +330,8 @@ export function useBackendClient() {
           return;
         }
         if (!isTauriRuntime()) {
-          const outcome = nextBrowserHealthState(browserHealthFailures, "failure");
-          browserHealthFailures = outcome.failures;
+          const outcome = nextBrowserHealthState(healthFailures, "failure");
+          healthFailures = outcome.failures;
           setHealth(null);
           setConnectionState(outcome.connectionState);
           setStatusMessage(
@@ -227,14 +341,17 @@ export function useBackendClient() {
           );
           return;
         }
-        const resolution = resolveBackendMonitorFailure(status, error);
+        healthFailures += 1;
+        const resolution = resolveBackendMonitorFailure(status, error, healthFailures);
+        if (resolution.clearClient) {
+          markBackendUnavailable(resolution.statusMessage);
+          return;
+        }
         setHealth(resolution.health);
         setConnectionState(resolution.connectionState);
         setStatusMessage(resolution.statusMessage);
-        if (resolution.clearClient) {
-          setApiClient(null);
-          setBackendBaseUrl("");
-        }
+      } finally {
+        checkInFlight = false;
       }
     };
 

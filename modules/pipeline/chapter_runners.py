@@ -679,14 +679,7 @@ class ParallelChapterRunner:
         return True
 
     def _memory_policy_reason(self) -> Optional[str]:
-        memory_policy = self.runtime.config.memory_policy
-        if memory_policy is None:
-            return None
-        reason = getattr(memory_policy, "safe_mode_reason", None)
-        manual_worker_mode = self.runtime.config.worker_plan.worker_mode == "manual"
-        if manual_worker_mode and reason != "memory pressure error":
-            return None
-        return str(reason) if reason else None
+        return self.runtime.memory_policy_reason()
 
     def _degrade_to_sequential_memory_mode(self) -> None:
         memory_policy = self.runtime.config.memory_policy

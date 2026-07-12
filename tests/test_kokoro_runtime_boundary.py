@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import builtins
 import importlib
 import sys
@@ -22,21 +21,6 @@ from modules.tts.runtimes.kokoro_package import PackageKokoroRuntime
 from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.strategies.kokoro import KokoroConfig, KokoroTTSStrategy
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _imports_runtime_provider(module_path: Path) -> bool:
-    tree = ast.parse(module_path.read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "modules.tts.runtime_provider":
-                    return True
-        elif isinstance(node, ast.ImportFrom) and node.module == "modules.tts.runtime_provider":
-            return True
-    return False
-
 
 def test_runtime_boundary_registry_registers_mlx_kokoro() -> None:
     assert ("mlx", "kokoro") in KokoroRuntimeFactory.registered_keys()
@@ -130,12 +114,6 @@ def test_package_kokoro_runtime_loads_local_model_dir_without_repo_id(
     }
     assert "repo_id" not in calls["pipeline"]
     assert calls["synthesis"]["voice"] == str(voices_dir / "am_adam.pt")
-
-
-def test_kokoro_strategy_does_not_import_legacy_runtime_provider() -> None:
-    kokoro_path = REPO_ROOT / "modules" / "tts" / "strategies" / "kokoro.py"
-
-    assert not _imports_runtime_provider(kokoro_path)
 
 
 def test_runtimes_package_import_does_not_load_engine(monkeypatch) -> None:

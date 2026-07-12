@@ -21,11 +21,17 @@ from modules.contracts.upload_errors import UploadTooLargeError
 from modules.errors import sanitize_filename
 from modules.ingestion.preflight import preflight_source as inspect_source
 from modules.pipeline.book_workspace import sanitize_book_title
-from modules.storage.maintenance import resolve_stored_path
+from modules.storage.maintenance import (
+    is_app_owned_durable_source,
+    resolve_app_owned_sources_root,
+    resolve_stored_path,
+    unique_destination_path,
+)
 from modules.storage.models import BookFilters, BookSummary, ConversionMode
 from modules.storage.repository import IBookRepository
 
 MANAGED_UPLOAD_ROOT_NAME = "web_uploads"
+DELETE_STAGING_DIR_NAME = "delete_staging"
 UPLOAD_HANDLE_PREFIX = "upload:"
 SUPPORTED_UPLOAD_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
@@ -43,10 +49,17 @@ __all__ = ["MAX_UPLOAD_BYTES", "UploadTooLargeError", "LibraryService"]
 
 
 def _default_folder_opener(folder: Path) -> None:
+    if os.name == "nt":
+        # ``explorer.exe`` exits non-zero even when it opens the folder, so a
+        # checked subprocess call would report failure on every success.
+        try:
+            os.startfile(str(folder))  # noqa: S606 - opening a local folder
+        except OSError as exc:
+            raise RuntimeError(f"failed to open folder: {folder}") from exc
+        return
+
     if sys.platform == "darwin":
         command = ["open", str(folder)]
-    elif os.name == "nt":
-        command = ["explorer", str(folder)]
     else:
         command = ["xdg-open", str(folder)]
 
@@ -272,7 +285,7 @@ class LibraryService:
 
     def _source_path_exists(self, raw_path: Optional[str]) -> bool:
         if not raw_path:
-            return True
+            return False
         source_path = self._resolve_stored_path(raw_path)
         return bool(source_path and source_path.exists())
 
@@ -296,10 +309,99 @@ class LibraryService:
             self._temp_dir / MANAGED_UPLOAD_ROOT_NAME,
         )
 
-    def _is_managed_upload_reference(self, path: Path) -> bool:
-        if self._is_managed_source_path(path):
-            return True
-        return path.parent.name == MANAGED_UPLOAD_ROOT_NAME and path.parent.parent.name == "temp"
+    def _app_owned_sources_root(self) -> Path:
+        return resolve_app_owned_sources_root(self._workspace_root())
+
+    def _is_app_owned_durable_source_path(self, path: Path) -> bool:
+        return is_app_owned_durable_source(path, self._app_owned_sources_root())
+
+    def _is_managed_deletable_source_path(self, path: Path) -> bool:
+        # App-owned durable sources and real server uploads are the only
+        # managed (deletable) source locations.
+        return self._is_app_owned_durable_source_path(path) or self._is_managed_source_path(path)
+
+    def _is_source_referenced_by_other_books(
+        self,
+        source_path: Path,
+        *,
+        exclude_book_id: int,
+    ) -> bool:
+        list_books = getattr(self._repository, "list_books", None)
+        if list_books is None:
+            return False
+
+        target = source_path.resolve()
+        # Page through the entire library rather than capping the scan: a shared
+        # source referenced by a book beyond an arbitrary limit must not be
+        # deleted out from under that book.
+        page_size = 1_000
+        offset = 0
+        while True:
+            books = list_books(BookFilters(limit=page_size, offset=offset))
+            if not books:
+                return False
+            for book in books:
+                if book.id == exclude_book_id:
+                    continue
+                other_path = self._resolve_stored_path(getattr(book, "source_path", None))
+                if other_path is not None and other_path.resolve() == target:
+                    return True
+            if len(books) < page_size:
+                return False
+            offset += page_size
+
+    def _should_delete_managed_source(self, source_path: Path, *, exclude_book_id: int) -> bool:
+        if not self._is_managed_deletable_source_path(source_path):
+            return False
+        return not self._is_source_referenced_by_other_books(
+            source_path,
+            exclude_book_id=exclude_book_id,
+        )
+
+    def _delete_staging_root(self) -> Path:
+        return self._temp_dir / DELETE_STAGING_DIR_NAME
+
+    def _stage_artifact_for_deletion(self, path: Path, staging_root: Path) -> Path:
+        if not path.exists():
+            return path
+
+        destination = unique_destination_path(staging_root / path.name)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(destination))
+        return destination
+
+    def _restore_staged_artifacts(self, staged: list[tuple[Path, Path]]) -> None:
+        for original, staged_path in reversed(staged):
+            if not staged_path.exists():
+                continue
+            original.parent.mkdir(parents=True, exist_ok=True)
+            if original.exists():
+                logger.warning(
+                    "Skipping staged restore because destination already exists: %s",
+                    original,
+                )
+                continue
+            try:
+                shutil.move(str(staged_path), str(original))
+            except OSError:
+                logger.warning(
+                    "Failed to restore staged artifact from %s to %s",
+                    staged_path,
+                    original,
+                    exc_info=True,
+                )
+
+    def _commit_staged_artifacts(self, staged: list[tuple[Path, Path]]) -> None:
+        for _original, staged_path in staged:
+            if not staged_path.exists():
+                continue
+            try:
+                if staged_path.is_dir():
+                    shutil.rmtree(staged_path)
+                else:
+                    staged_path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise RuntimeError(f"failed to delete staged audiobook artifact: {staged_path}") from exc
 
     def _book_output_dir(self, book, chapters) -> Optional[Path]:
         candidate_paths = []
@@ -324,26 +426,6 @@ class LibraryService:
         if not safe_title:
             return None
         return self._output_dir / safe_title
-
-    def _remove_output_artifacts(self, book, chapters) -> None:
-        output_dirs, output_files = self._output_artifacts_for_deletion(book, chapters)
-
-        for output_dir in sorted(output_dirs, key=lambda path: len(path.parts), reverse=True):
-            if self._is_output_root(output_dir):
-                continue
-            try:
-                shutil.rmtree(output_dir)
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                raise RuntimeError(f"failed to delete audiobook output directory: {output_dir}") from exc
-
-        for output_file in sorted(output_files):
-            if any(self._is_within_root(output_file, output_dir) for output_dir in output_dirs):
-                continue
-            self._unlink_path(output_file)
-
-        self._prune_empty_output_dirs(output_files)
 
     def _output_artifacts_for_deletion(self, book, chapters) -> tuple[set[Path], set[Path]]:
         output_dirs: set[Path] = set()
@@ -403,17 +485,6 @@ class LibraryService:
                     output_dirs.add(fallback_dir)
 
         return output_dirs, output_files
-
-    def _unlink_path(self, path: Path) -> None:
-        try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            else:
-                path.unlink(missing_ok=True)
-        except FileNotFoundError:
-            pass
-        except OSError as exc:
-            raise RuntimeError(f"failed to delete audiobook artifact: {path}") from exc
 
     def _prune_empty_output_dirs(self, paths: set[Path]) -> None:
         for path in sorted(paths, key=lambda item: len(item.parts), reverse=True):
@@ -611,15 +682,69 @@ class LibraryService:
             return False
 
         book, chapters = detail
-        self._remove_output_artifacts(book, chapters)
+        staging_root = self._delete_staging_root() / uuid4().hex
+        staging_root.mkdir(parents=True, exist_ok=True)
+        staged_artifacts: list[tuple[Path, Path]] = []
+        staged_output_files: set[Path] = set()
+        db_deleted = False
 
-        source_path = self._resolve_stored_path(book.source_path)
-        if source_path is not None and (
-            self._is_managed_source_path(source_path) or self._is_managed_upload_reference(source_path)
-        ):
-            self._unlink_path(source_path)
+        try:
+            output_dirs, output_files = self._output_artifacts_for_deletion(book, chapters)
 
-        return self._repository.delete_book(book_id)
+            for output_dir in sorted(output_dirs, key=lambda path: len(path.parts), reverse=True):
+                if self._is_output_root(output_dir):
+                    continue
+                if output_dir.exists():
+                    staged_path = self._stage_artifact_for_deletion(output_dir, staging_root)
+                    staged_artifacts.append((output_dir, staged_path))
+
+            for output_file in sorted(output_files):
+                if any(self._is_within_root(output_file, output_dir) for output_dir in output_dirs):
+                    continue
+                if output_file.exists():
+                    staged_path = self._stage_artifact_for_deletion(output_file, staging_root)
+                    staged_artifacts.append((output_file, staged_path))
+                    staged_output_files.add(output_file)
+
+            source_path = self._resolve_stored_path(book.source_path)
+            if source_path is not None and self._should_delete_managed_source(
+                source_path,
+                exclude_book_id=book_id,
+            ):
+                if source_path.exists():
+                    staged_path = self._stage_artifact_for_deletion(source_path, staging_root)
+                    staged_artifacts.append((source_path, staged_path))
+
+            deleted = self._repository.delete_book(book_id)
+            if not deleted:
+                self._restore_staged_artifacts(staged_artifacts)
+                return False
+
+            db_deleted = True
+            try:
+                self._commit_staged_artifacts(staged_artifacts)
+            except Exception:
+                # DB row is already gone; treat deletion as successful and leave
+                # staged trash for maintenance recovery instead of failing the API.
+                logger.exception(
+                    "Failed to permanently remove staged artifacts after deleting book %s; "
+                    "leaving trash under %s for maintenance",
+                    book_id,
+                    staging_root,
+                )
+                return True
+            self._prune_empty_output_dirs(staged_output_files)
+            return True
+        except Exception:
+            if not db_deleted:
+                self._restore_staged_artifacts(staged_artifacts)
+            raise
+        finally:
+            try:
+                if staging_root.exists() and not any(staging_root.iterdir()):
+                    staging_root.rmdir()
+            except OSError:
+                pass
 
     def open_book_folder(self, book_id: int) -> Optional[Path]:
         detail = self._get_book_record(book_id)
@@ -632,7 +757,7 @@ class LibraryService:
             folder = output_dir
         else:
             source_path = self._resolve_stored_path(book.source_path)
-            if output_dir is not None and source_path is not None and self._is_managed_upload_reference(source_path):
+            if output_dir is not None and source_path is not None and self._is_managed_source_path(source_path):
                 output_dir.mkdir(parents=True, exist_ok=True)
                 folder = output_dir
             elif source_path is not None and source_path.exists():
@@ -645,6 +770,3 @@ class LibraryService:
 
         self._folder_opener(folder)
         return folder
-
-    def get_library_stats(self) -> dict:
-        return self._repository.get_library_stats()

@@ -297,11 +297,16 @@ class ConversionResult:
 
 @dataclass(frozen=True)
 class RepairedChapterUpdate:
-    """Library metadata update produced by a successful chapter repair."""
+    """Library metadata update produced by a successful chapter repair.
+
+    ``mp3_path`` stores the durable per-chapter audio path (``.mp3`` or
+    ``.m4a``). It is None only when repair produced no resolvable chapter
+    file; persisting None clears a stale reference that triggered the repair.
+    """
 
     chapter_id: int
     duration_ms: Optional[int]
-    mp3_path: str
+    mp3_path: Optional[str]
 
 
 @dataclass(frozen=True)

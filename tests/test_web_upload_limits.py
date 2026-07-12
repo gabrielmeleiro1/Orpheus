@@ -121,3 +121,25 @@ def test_text_upload_stores_pasted_content_as_markdown(tmp_path):
     stored_path = upload_root(controller.config.temp_dir) / stored_name
     assert stored_path.suffix == ".md"
     assert stored_path.read_text(encoding="utf-8").startswith("# Web Notes\n\nOpening paragraph.")
+
+
+def test_source_upload_rejects_oversized_content_length_before_reading_body(tmp_path, monkeypatch):
+    monkeypatch.setattr(uploads, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(uploads, "CONTENT_LENGTH_SLACK_BYTES", 0)
+    client, controller = _make_upload_client(tmp_path)
+
+    calls = []
+    monkeypatch.setattr(
+        controller, "upload_source", lambda **kwargs: calls.append(kwargs)
+    )
+
+    response = client.post(
+        "/api/uploads/source",
+        files={"file": ("oversized.txt", b"0" * 64, "text/plain")},
+    )
+
+    assert response.status_code == 413
+    assert "Upload body exceeds" in response.json()["detail"]
+    # The declared Content-Length is rejected before the handler ever runs.
+    assert calls == []
+    assert list(upload_root(controller.config.temp_dir).glob("*")) == []

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
-import { usePrimaryRuntime } from "./app/usePrimaryRuntime";
+import { useRuntimeIdentityLabel } from "./app/usePrimaryRuntime";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
@@ -18,10 +18,9 @@ import {
   DashboardTabIcon,
   conversionPanelTabForDashboardTab,
 } from "./navigation/tabs";
+import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKeyboardNavigation";
 import type { DashboardTab } from "./types/api";
 import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
-
-export { nextBrowserHealthState, resolveBackendMonitorFailure } from "./app/useBackendClient";
 
 function App() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
@@ -33,13 +32,14 @@ function App() {
     statusMessage,
   } = useBackendClient();
   const startCommandRef = useRef<(() => void) | null>(null);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
   const library = useLibrary({
     apiClient,
     backendDisconnected: connectionState === "error",
   });
 
-  const primaryRuntime = usePrimaryRuntime(apiClient);
+  const runtimeIdentity = useRuntimeIdentityLabel(apiClient);
   const player = useAudioPlayer({ apiClient, library });
   const previousUiStateRef = useRef<string>("idle");
 
@@ -76,6 +76,29 @@ function App() {
 
   const isConversionPanelVisible = activeTab === "convert" || activeTab === "document" || activeTab === "settings";
   const conversionPanelTab = conversionPanelTabForDashboardTab(activeTab);
+  const activeTabIndex = DASHBOARD_TAB_CONFIGS.findIndex((tab) => tab.id === activeTab);
+
+  const selectTabAtIndex = (index: number) => {
+    const next = DASHBOARD_TAB_CONFIGS[index];
+    if (!next) {
+      return;
+    }
+    setActiveTab(next.id);
+    tabRefs.current[index]?.focus();
+  };
+
+  const onTabListKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    const nextIndex = nextTabIndexAfterKeyboard({
+      key: event.key,
+      activeIndex: Math.max(0, activeTabIndex),
+      tabCount: DASHBOARD_TAB_CONFIGS.length,
+    });
+    if (nextIndex === null) {
+      return;
+    }
+    event.preventDefault();
+    selectTabAtIndex(nextIndex);
+  };
 
   return (
     <main className="app-frame" role="application" aria-label="Orpheus dashboard">
@@ -85,16 +108,25 @@ function App() {
           <span className="brand-name">Orpheus</span>
         </div>
 
-        <nav className="rail-nav" role="tablist" aria-label="Dashboard sections">
-          {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId }) => {
+        <nav
+          className="rail-nav"
+          role="tablist"
+          aria-label="Dashboard sections"
+          onKeyDown={onTabListKeyDown}
+        >
+          {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId }, index) => {
             const isActive = activeTab === id;
             return (
               <button
                 id={`tab-btn-${id}`}
                 key={id}
+                ref={(node) => {
+                  tabRefs.current[index] = node;
+                }}
                 className={`rail-tab${isActive ? " active" : ""}`}
                 type="button"
                 role="tab"
+                tabIndex={tabButtonTabIndex(activeTabIndex, index)}
                 aria-controls={panelId}
                 aria-label={label}
                 aria-selected={isActive}
@@ -135,7 +167,7 @@ function App() {
         <header className="studio-status">
           <div>
             <h1>orpheus.local</h1>
-            <p>{`local${primaryRuntime ? ` / ${primaryRuntime}` : ""} / ${library.items.length} books indexed`}</p>
+            <p>{`${runtimeIdentity} / ${library.items.length} books indexed`}</p>
           </div>
           <div className="studio-controls">
             {conversionJob.uiState === "running" ? (
@@ -168,6 +200,7 @@ function App() {
             audioVisualizer={player.audioVisualizer}
             elapsedSec={player.elapsedSec}
             durationSec={player.durationSec}
+            onStartConvert={() => setActiveTab("convert")}
           />
 
           <ConversionPanel
@@ -221,9 +254,11 @@ function App() {
             hidden={activeTab !== "library"}
             library={library}
             currentChapterNumber={player.currentChapter?.number ?? null}
+            playing={player.playing}
             onJumpToChapter={(chapter) => {
               void player.jumpToChapter(chapter);
             }}
+            onStartConvert={() => setActiveTab("convert")}
           />
         </div>
 
@@ -235,6 +270,7 @@ function App() {
           statusText={player.statusText}
           elapsedSec={player.elapsedSec}
           durationSec={player.durationSec}
+          canSeek={player.canSeek}
           volume={player.volume}
           canGoPrevious={player.canGoPrevious}
           canGoNext={player.canGoNext}

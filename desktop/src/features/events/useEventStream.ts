@@ -45,9 +45,11 @@ function nowTimestamp(): string {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
 }
 
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
+// After a cancel is accepted the UI normally unlatches on the terminal SSE
+// event. Poll the active-job endpoint as a fallback so a missed or delayed
+// event cannot leave the interface stuck on "cancelling" forever.
+const CANCEL_RECONCILE_INTERVAL_MS = 2_000;
+const CANCEL_RECONCILE_MAX_ATTEMPTS = 30;
 
 export function useEventStream({
   apiClient,
@@ -58,6 +60,7 @@ export function useEventStream({
   const modelStateRef = useRef(initialModelState.current);
   const logSequenceRef = useRef(0);
   const activeJobIdRef = useRef<string | null>(null);
+  const lookupFailedRef = useRef(false);
 
   const nextLogId = useCallback(() => {
     logSequenceRef.current += 1;
@@ -139,6 +142,7 @@ export function useEventStream({
 
     try {
       const response = await apiClient.getActiveConversion();
+      lookupFailedRef.current = false;
       if (response.job) {
         const terminalStatus = normalizeTerminalStatus(response.job.status);
         if (terminalStatus) {
@@ -164,7 +168,15 @@ export function useEventStream({
         },
       });
     } catch {
-      pushLog("warn", "active conversion lookup failed");
+      // The reconcile fallback polls every couple of seconds while a cancel is
+      // in flight; log only the first failure of a streak so a transient (or
+      // persistent) outage cannot spam the log. A later success resets the
+      // latch, and the reconcile loop's max-attempts guard still surfaces a
+      // cancel that never lands.
+      if (!lookupFailedRef.current) {
+        lookupFailedRef.current = true;
+        pushLog("warn", "active conversion lookup failed");
+      }
     }
   }, [apiClient, applyEventPayload, applyReducerAction, pushLog]);
 
@@ -183,6 +195,30 @@ export function useEventStream({
   useEffect(() => {
     void refreshActiveConversionState();
   }, [refreshActiveConversionState]);
+
+  useEffect(() => {
+    if (!modelState.isCancelling || !apiClient) {
+      return undefined;
+    }
+    let attempts = 0;
+    const timer = window.setInterval(() => {
+      attempts += 1;
+      if (attempts > CANCEL_RECONCILE_MAX_ATTEMPTS) {
+        window.clearInterval(timer);
+        pushLog("warn", "cancellation is taking too long; job state may be stale");
+        applyReducerAction({ type: "cancelRejected" });
+        return;
+      }
+      void refreshActiveConversionState();
+    }, CANCEL_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [
+    apiClient,
+    applyReducerAction,
+    modelState.isCancelling,
+    pushLog,
+    refreshActiveConversionState,
+  ]);
 
   const cancelActiveConversion = useCallback(async () => {
     if (!apiClient) {
@@ -245,6 +281,8 @@ export function useEventStream({
     isCancelling: modelState.isCancelling,
     cancelActiveConversion,
     refreshActiveConversionState,
-    waitForTerminalState: (jobId: string) => waitForTerminalState(normalizeString(jobId)),
+    // Stable memoized callback from useTerminalStateWaiters; it normalizes the
+    // job id itself, so no per-render wrapper is needed.
+    waitForTerminalState,
   };
 }

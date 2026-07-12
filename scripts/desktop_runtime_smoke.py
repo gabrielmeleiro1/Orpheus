@@ -15,8 +15,9 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -111,6 +112,17 @@ class ApiCheckMetrics:
 
 
 @dataclass(frozen=True)
+class ConversionJourneyResult:
+    attempted: bool
+    completed: bool
+    skipped: bool
+    reason: str | None = None
+    job_id: str | None = None
+    book_id: int | None = None
+    audio_bytes: int = 0
+
+
+@dataclass(frozen=True)
 class HttpResult:
     status: int
     body: bytes
@@ -121,6 +133,9 @@ class HttpResult:
 
 class SmokeFailure(RuntimeError):
     """Raised when a live smoke check fails."""
+
+
+CONVERSION_JOURNEY_TITLE = "Conversion Journey Smoke"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -177,6 +192,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Run a lightweight real ffmpeg/ffprobe check in the smoke runtime. "
             "This does not start an ML conversion."
+        ),
+    )
+    parser.add_argument(
+        "--conversion-journey",
+        action="store_true",
+        help=(
+            "Opt-in production-contract conversion journey: upload Markdown, "
+            "preflight, and start a bounded conversion only when a local TTS "
+            "engine is already available. Model resolution runs offline "
+            "(HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE); cached weights are required. "
+            "Skips the model-backed portion when required runtime is missing "
+            "(does not download models)."
+        ),
+    )
+    parser.add_argument(
+        "--conversion-timeout-seconds",
+        type=float,
+        default=180.0,
+        help="Timeout for the opt-in conversion journey terminal wait.",
+    )
+    parser.add_argument(
+        "--probe-wait-seconds",
+        type=float,
+        default=25.0,
+        help=(
+            "Bounded wait for asynchronous TTS runtime_probe readiness during "
+            "--conversion-journey. Polls capabilities only while the probe is "
+            "pending/refreshing; does not download models."
         ),
     )
     return parser.parse_args(argv)
@@ -279,7 +322,13 @@ def _format_process_output(stdout: list[str], stderr: list[str]) -> str:
     return f"stdout:\n{recent_stdout}\nstderr:\n{recent_stderr}"
 
 
-def build_child_env(runtime_paths: RuntimePaths, *, reduced_path: bool, backend: str) -> dict[str, str]:
+def build_child_env(
+    runtime_paths: RuntimePaths,
+    *,
+    reduced_path: bool,
+    backend: str,
+    conversion_journey: bool = False,
+) -> dict[str, str]:
     env = os.environ.copy()
     env.update(runtime_paths.as_env())
     if backend == "python":
@@ -291,7 +340,21 @@ def build_child_env(runtime_paths: RuntimePaths, *, reduced_path: bool, backend:
         )
     if reduced_path:
         env["PATH"] = REDUCED_MACOS_PATH
+    if conversion_journey:
+        _ensure_offline_model_resolution_env(env)
     return env
+
+
+def _ensure_offline_model_resolution_env(env: dict[str, str]) -> None:
+    """Force Hugging Face/Transformers offline model resolution for conversion journey.
+
+    Never weakens an already-enabled parent offline setting.
+    """
+    for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
+        current = str(env.get(key, "")).strip().lower()
+        if current in {"1", "true", "yes", "on"}:
+            continue
+        env[key] = "1"
 
 
 def _runtime_command_env(*, reduced_path: bool) -> dict[str, str]:
@@ -433,6 +496,7 @@ def start_backend(
     runtime_paths: RuntimePaths,
     timeout_seconds: float,
     reduced_path: bool,
+    conversion_journey: bool = False,
 ) -> tuple[subprocess.Popen[str], ReadyPayload, list[str], list[str]]:
     command = build_backend_command(
         backend=backend,
@@ -442,7 +506,12 @@ def start_backend(
     process = subprocess.Popen(
         command,
         cwd=REPO_ROOT,
-        env=build_child_env(runtime_paths, reduced_path=reduced_path, backend=backend),
+        env=build_child_env(
+            runtime_paths,
+            reduced_path=reduced_path,
+            backend=backend,
+            conversion_journey=conversion_journey,
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -695,6 +764,455 @@ def run_api_checks(
     )
 
 
+def _first_available_tts_engine(capabilities: dict[str, Any]) -> str | None:
+    engines = capabilities.get("available_tts_engines")
+    if isinstance(engines, list):
+        for engine in engines:
+            value = str(engine).strip()
+            if value:
+                return value
+    default_engine = str(capabilities.get("default_tts_engine") or "").strip()
+    return default_engine or None
+
+
+class TtsProbeReadiness(str, Enum):
+    READY = "ready"
+    UNAVAILABLE = "unavailable"
+    PENDING = "pending"
+
+
+@dataclass(frozen=True)
+class TtsProbeWaitResult:
+    capabilities: dict[str, Any]
+    readiness: TtsProbeReadiness
+    reason: str | None = None
+
+
+def local_tts_runtime_available(capabilities: dict[str, Any]) -> bool:
+    """True only when an explicit runtime-probe/ready flag says TTS can run.
+
+    ``available_tts_engines`` / ``default_tts_engine`` are factory catalog
+    values and must never alone authorize a conversion (they can be present
+    when models are not installed and would trigger downloads).
+    """
+    if capabilities.get("mlx_runtime_available") is True:
+        return True
+
+    probe = capabilities.get("runtime_probe")
+    if isinstance(probe, dict):
+        tts = probe.get("tts")
+        if isinstance(tts, dict) and tts.get("available") is True:
+            return True
+
+    return False
+
+
+def classify_tts_probe_readiness(capabilities: dict[str, Any]) -> TtsProbeReadiness:
+    """Classify whether TTS is ready, definitively unavailable, or still probing."""
+    if local_tts_runtime_available(capabilities):
+        return TtsProbeReadiness.READY
+
+    probe = capabilities.get("runtime_probe")
+    if not isinstance(probe, dict):
+        # Catalog/default fields alone are insufficient — treat as unavailable.
+        return TtsProbeReadiness.UNAVAILABLE
+
+    if probe.get("refresh_in_progress") is True:
+        return TtsProbeReadiness.PENDING
+
+    state = str(probe.get("state") or "").strip().lower()
+    if state in {"pending", "missing"}:
+        return TtsProbeReadiness.PENDING
+
+    # fresh/stale (or unknown finished) without an explicit positive → unavailable
+    return TtsProbeReadiness.UNAVAILABLE
+
+
+def _tts_unavailable_reason(capabilities: dict[str, Any]) -> str:
+    probe = capabilities.get("runtime_probe")
+    detail = ""
+    if isinstance(probe, dict):
+        tts = probe.get("tts") if isinstance(probe.get("tts"), dict) else {}
+        error = str((tts or {}).get("error") or "").strip()
+        state = str(probe.get("state") or "").strip()
+        if error:
+            detail = f" (state={state or 'unknown'}, error={error})"
+        elif state:
+            detail = f" (state={state})"
+    return f"TTS runtime probe finished unavailable{detail}; conversion portion skipped without downloading models"
+
+
+def _tts_probe_timeout_reason(probe_wait_seconds: float, capabilities: dict[str, Any]) -> str:
+    probe = capabilities.get("runtime_probe") if isinstance(capabilities, dict) else None
+    state = ""
+    refreshing = False
+    if isinstance(probe, dict):
+        state = str(probe.get("state") or "").strip()
+        refreshing = bool(probe.get("refresh_in_progress"))
+    detail = f" state={state or 'unknown'} refresh_in_progress={refreshing}"
+    return (
+        f"TTS runtime probe timed out / not ready after {probe_wait_seconds:.1f}s;"
+        f"{detail}; conversion portion skipped without downloading models"
+    )
+
+
+def wait_for_tts_runtime_ready(
+    fetch_capabilities: Callable[[], dict[str, Any]],
+    *,
+    probe_wait_seconds: float,
+    poll_interval_seconds: float = 0.5,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> TtsProbeWaitResult:
+    """Wait only while the TTS runtime probe is pending/refreshing."""
+    capabilities = fetch_capabilities()
+    readiness = classify_tts_probe_readiness(capabilities)
+    if readiness is TtsProbeReadiness.READY:
+        return TtsProbeWaitResult(capabilities=capabilities, readiness=readiness)
+    if readiness is TtsProbeReadiness.UNAVAILABLE:
+        return TtsProbeWaitResult(
+            capabilities=capabilities,
+            readiness=readiness,
+            reason=_tts_unavailable_reason(capabilities),
+        )
+
+    deadline = monotonic() + max(0.0, probe_wait_seconds)
+    while monotonic() < deadline:
+        sleep(max(0.0, poll_interval_seconds))
+        capabilities = fetch_capabilities()
+        readiness = classify_tts_probe_readiness(capabilities)
+        if readiness is TtsProbeReadiness.READY:
+            return TtsProbeWaitResult(capabilities=capabilities, readiness=readiness)
+        if readiness is TtsProbeReadiness.UNAVAILABLE:
+            return TtsProbeWaitResult(
+                capabilities=capabilities,
+                readiness=readiness,
+                reason=_tts_unavailable_reason(capabilities),
+            )
+
+    return TtsProbeWaitResult(
+        capabilities=capabilities,
+        readiness=TtsProbeReadiness.PENDING,
+        reason=_tts_probe_timeout_reason(probe_wait_seconds, capabilities),
+    )
+
+
+def wait_for_conversion_terminal(
+    ready: ReadyPayload,
+    *,
+    job_id: str,
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_payload: dict[str, Any] = {}
+    saw_running = False
+    while time.monotonic() < deadline:
+        active = expect_status(
+            http_request(
+                "GET",
+                f"{ready.base_url}/api/conversions/active",
+                token=ready.token,
+                timeout_seconds=min(10.0, timeout_seconds),
+            ),
+            200,
+            "active conversion poll",
+        ).json()
+        last_payload = active if isinstance(active, dict) else {}
+        job = last_payload.get("job") if isinstance(last_payload.get("job"), dict) else None
+        if job is not None:
+            observed_id = str(job.get("id") or "").strip()
+            if observed_id and observed_id != job_id:
+                # Different job occupies the active slot; keep waiting for ours.
+                time.sleep(0.25)
+                continue
+        status = str((job or {}).get("status") or "").strip().lower()
+        if status == "running" or last_payload.get("active") is True:
+            saw_running = True
+        if job is not None and status in {"completed", "failed", "cancelled"}:
+            book_id = _coerce_positive_book_id(job.get("book_id"))
+            return {"status": status, "payload": last_payload, "book_id": book_id}
+        if saw_running and last_payload.get("active") is False and job is None:
+            # Job cleared from active slot after a run; treat as completed candidate
+            # and let the library/audio checks confirm success via title/book_id.
+            return {"status": "completed", "payload": last_payload, "book_id": None}
+        time.sleep(0.25)
+    raise SmokeFailure(
+        f"conversion journey timed out after {timeout_seconds:.1f}s waiting for job {job_id}; "
+        f"last payload={last_payload!r}"
+    )
+
+
+def _coerce_positive_book_id(raw: Any) -> int | None:
+    try:
+        book_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return book_id if book_id > 0 else None
+
+
+def _find_library_item_by_book_id(items: list[Any], book_id: int) -> dict[str, Any] | None:
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if _coerce_positive_book_id(item.get("id")) == book_id:
+            return item
+    return None
+
+
+def _find_library_items_by_title(items: list[Any], title: str) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("title") or "").strip() == title:
+            matches.append(item)
+    return matches
+
+
+def wait_for_conversion_journey_book(
+    ready: ReadyPayload,
+    *,
+    book_id: int | None,
+    expected_title: str,
+    timeout_seconds: float,
+) -> tuple[int, dict[str, Any]]:
+    """Resolve the converted library item by terminal book_id or unique title."""
+    deadline = time.monotonic() + timeout_seconds
+    last_library: Any = None
+    while time.monotonic() < deadline:
+        library = expect_status(
+            http_request(
+                "GET",
+                f"{ready.base_url}/api/library?limit=20",
+                token=ready.token,
+                timeout_seconds=min(10.0, timeout_seconds),
+            ),
+            200,
+            "conversion journey library",
+        ).json()
+        last_library = library
+        items = library.get("items") if isinstance(library, dict) else None
+        if not isinstance(items, list):
+            time.sleep(0.25)
+            continue
+
+        if book_id is not None:
+            match = _find_library_item_by_book_id(items, book_id)
+            if match is not None:
+                title = str(match.get("title") or "").strip()
+                if title != expected_title:
+                    raise SmokeFailure(
+                        f"library book id={book_id} title={title!r} does not match "
+                        f"expected {expected_title!r}; library={library!r}"
+                    )
+                return book_id, match
+        else:
+            matches = _find_library_items_by_title(items, expected_title)
+            if len(matches) == 1:
+                resolved_id = _coerce_positive_book_id(matches[0].get("id"))
+                if resolved_id is None:
+                    raise SmokeFailure(
+                        f"matching library title {expected_title!r} has invalid id: {matches[0]!r}"
+                    )
+                return resolved_id, matches[0]
+            if len(matches) > 1:
+                raise SmokeFailure(
+                    f"ambiguous library title {expected_title!r}: {matches!r}"
+                )
+        time.sleep(0.25)
+
+    raise SmokeFailure(
+        f"could not establish conversion journey library identity "
+        f"(book_id={book_id!r}, title={expected_title!r}); last library={last_library!r}"
+    )
+
+
+def run_conversion_journey(
+    ready: ReadyPayload,
+    *,
+    timeout_seconds: float,
+    conversion_timeout_seconds: float,
+    probe_wait_seconds: float = 25.0,
+) -> ConversionJourneyResult:
+    """Upload → preflight → optional conversion → library/audio verification.
+
+    Model-backed conversion runs only when capabilities expose an explicit TTS
+    runtime-ready signal (after a bounded wait while the probe is pending).
+    Otherwise the production-contract portion up through preflight still runs
+    and conversion is explicitly skipped (not a fake success).
+    """
+    text_payload = json.dumps(
+        {
+            "title": CONVERSION_JOURNEY_TITLE,
+            "text": (
+                "# Conversion Journey\n\n"
+                "A short deterministic document for the opt-in smoke journey.\n"
+            ),
+        }
+    ).encode("utf-8")
+    upload = expect_status(
+        http_request(
+            "POST",
+            f"{ready.base_url}/api/uploads/text",
+            token=ready.token,
+            data=text_payload,
+            content_type="application/json",
+            timeout_seconds=timeout_seconds,
+        ),
+        200,
+        "conversion journey text upload",
+    ).json()
+    source_handle = str(upload.get("source_handle") or "").strip()
+    if not source_handle.startswith("upload:"):
+        raise SmokeFailure(f"unexpected conversion journey upload payload: {upload!r}")
+
+    preflight = expect_status(
+        http_request(
+            "POST",
+            f"{ready.base_url}/api/sources/preflight",
+            token=ready.token,
+            data=json.dumps({"source_path": source_handle}).encode("utf-8"),
+            content_type="application/json",
+            timeout_seconds=timeout_seconds,
+        ),
+        200,
+        "conversion journey preflight",
+    ).json()
+    if int(preflight.get("chapter_count") or 0) < 1:
+        raise SmokeFailure(f"preflight returned no chapters: {preflight!r}")
+
+    def fetch_capabilities() -> dict[str, Any]:
+        payload = expect_status(
+            http_request(
+                "GET",
+                f"{ready.base_url}/api/system/capabilities",
+                token=ready.token,
+                timeout_seconds=timeout_seconds,
+            ),
+            200,
+            "conversion journey capabilities",
+        ).json()
+        if not isinstance(payload, dict):
+            raise SmokeFailure(f"unexpected capabilities payload: {payload!r}")
+        return payload
+
+    probe_wait = wait_for_tts_runtime_ready(
+        fetch_capabilities,
+        probe_wait_seconds=probe_wait_seconds,
+    )
+    capabilities = probe_wait.capabilities
+    if probe_wait.readiness is not TtsProbeReadiness.READY:
+        return ConversionJourneyResult(
+            attempted=False,
+            completed=False,
+            skipped=True,
+            reason=probe_wait.reason
+            or "TTS runtime probe not ready; conversion portion skipped without downloading models",
+        )
+
+    engine = _first_available_tts_engine(capabilities) or "kokoro"
+    model_options = expect_status(
+        http_request(
+            "GET",
+            f"{ready.base_url}/api/options/models",
+            token=ready.token,
+            timeout_seconds=timeout_seconds,
+        ),
+        200,
+        "conversion journey model options",
+    ).json()
+    voice = "am_adam"
+    engines = model_options.get("tts_engines") if isinstance(model_options, dict) else None
+    if isinstance(engines, list):
+        for item in engines:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("id") or "").strip() != engine:
+                continue
+            voices = item.get("voices")
+            if isinstance(voices, list) and voices:
+                first = voices[0]
+                if isinstance(first, dict):
+                    candidate = str(first.get("id") or "").strip()
+                else:
+                    candidate = str(first).strip()
+                if candidate:
+                    voice = candidate
+                    break
+
+    start_payload = {
+        "source_path": source_handle,
+        "conversion_mode": "document_audio",
+        "title": CONVERSION_JOURNEY_TITLE,
+        "runtime_options": {
+            "voice": voice,
+            "speed": 1.0,
+            "tts_engine": engine,
+            "parallel_worker_mode": "manual",
+            "enable_parallel": False,
+            "max_parallel_chapters": 1,
+        },
+    }
+    started = expect_status(
+        http_request(
+            "POST",
+            f"{ready.base_url}/api/conversions",
+            token=ready.token,
+            data=json.dumps(start_payload).encode("utf-8"),
+            content_type="application/json",
+            timeout_seconds=timeout_seconds,
+        ),
+        200,
+        "conversion journey start",
+    ).json()
+    job_id = str(started.get("job_id") or "").strip()
+    if not job_id:
+        raise SmokeFailure(f"conversion start missing job_id: {started!r}")
+
+    terminal = wait_for_conversion_terminal(
+        ready,
+        job_id=job_id,
+        timeout_seconds=conversion_timeout_seconds,
+    )
+    status = str(terminal.get("status") or "").lower()
+    if status != "completed":
+        raise SmokeFailure(f"conversion journey ended with status={status!r}: {terminal!r}")
+
+    book_id, _book = wait_for_conversion_journey_book(
+        ready,
+        book_id=_coerce_positive_book_id(terminal.get("book_id")),
+        expected_title=CONVERSION_JOURNEY_TITLE,
+        timeout_seconds=min(30.0, max(5.0, conversion_timeout_seconds)),
+    )
+
+    audio_token = fetch_desktop_query_token(
+        ready,
+        scope="audio",
+        timeout_seconds=timeout_seconds,
+        book_id=book_id,
+    )
+    audio = expect_status(
+        http_request(
+            "GET",
+            f"{ready.base_url}/api/library/{book_id}/audio?{urlencode({'token': audio_token})}",
+            timeout_seconds=timeout_seconds,
+        ),
+        200,
+        "conversion journey audio",
+    )
+    if not audio.body:
+        raise SmokeFailure("conversion journey audio response was empty")
+
+    return ConversionJourneyResult(
+        attempted=True,
+        completed=True,
+        skipped=False,
+        job_id=job_id,
+        book_id=book_id,
+        audio_bytes=len(audio.body),
+    )
+
+
 def run_iteration(
     index: int,
     *,
@@ -706,6 +1224,9 @@ def run_iteration(
     reduced_path: bool,
     skip_sse: bool,
     check_ffmpeg_runtime: bool = False,
+    conversion_journey: bool = False,
+    conversion_timeout_seconds: float = 180.0,
+    probe_wait_seconds: float = 25.0,
 ) -> IterationResult:
     start = time.monotonic()
     runtime_paths = RuntimePaths.create()
@@ -719,6 +1240,7 @@ def run_iteration(
             runtime_paths=runtime_paths,
             timeout_seconds=timeout_seconds,
             reduced_path=reduced_path,
+            conversion_journey=conversion_journey,
         )
         ready_seconds = time.monotonic() - ready_started
         api_metrics = run_api_checks(
@@ -735,6 +1257,21 @@ def run_iteration(
                 timeout_seconds=timeout_seconds,
                 reduced_path=reduced_path,
             )
+        if conversion_journey:
+            journey = run_conversion_journey(
+                ready,
+                timeout_seconds=timeout_seconds,
+                conversion_timeout_seconds=conversion_timeout_seconds,
+                probe_wait_seconds=probe_wait_seconds,
+            )
+            if journey.skipped:
+                print(f"  conversion journey skipped: {journey.reason}")
+            elif journey.completed:
+                print(
+                    "  conversion journey completed: "
+                    f"job={journey.job_id} book={journey.book_id} "
+                    f"audio_bytes={journey.audio_bytes}"
+                )
         return IterationResult(
             index=index,
             passed=True,
@@ -763,6 +1300,10 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--requests must be at least 1")
     if args.timeout_seconds <= 0:
         raise ValueError("--timeout-seconds must be positive")
+    if args.conversion_timeout_seconds <= 0:
+        raise ValueError("--conversion-timeout-seconds must be positive")
+    if args.probe_wait_seconds < 0:
+        raise ValueError("--probe-wait-seconds must be non-negative")
     if not 0.0 <= args.min_success_rate <= 1.0:
         raise ValueError("--min-success-rate must be between 0.0 and 1.0")
 
@@ -779,7 +1320,9 @@ def main(argv: list[str] | None = None) -> int:
         "desktop runtime smoke: "
         f"backend={args.backend} iterations={args.iterations} "
         f"requests={args.requests} timeout={args.timeout_seconds:.1f}s "
-        f"ffmpeg_runtime={args.check_ffmpeg_runtime}"
+        f"ffmpeg_runtime={args.check_ffmpeg_runtime} "
+        f"conversion_journey={args.conversion_journey} "
+        f"probe_wait={args.probe_wait_seconds:.1f}s"
     )
     results: list[IterationResult] = []
     for index in range(1, args.iterations + 1):
@@ -793,6 +1336,9 @@ def main(argv: list[str] | None = None) -> int:
             reduced_path=args.reduced_path,
             skip_sse=args.skip_sse,
             check_ffmpeg_runtime=args.check_ffmpeg_runtime,
+            conversion_journey=args.conversion_journey,
+            conversion_timeout_seconds=args.conversion_timeout_seconds,
+            probe_wait_seconds=args.probe_wait_seconds,
         )
         results.append(result)
         status = "PASS" if result.passed else "FAIL"

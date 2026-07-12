@@ -13,6 +13,7 @@ from modules.contracts.conversion_runtime_options import (
     build_runtime_option_pydantic_fields,
     conversion_runtime_option_field_names,
 )
+from modules.app.services.repair_runtime import repair_runtime_fields_set
 from modules.contracts.conversion_runtime import merge_runtime_options
 from modules.contracts.limits import MAX_BOOK_TITLE_LENGTH
 from modules.web.deps import ControllerDep, EventBrokerDep, TempDirDep, call_with_http_errors
@@ -20,13 +21,6 @@ from modules.web.serializers import job_payload, job_status_value
 from modules.web.source_handles import resolve_source_reference
 
 router = APIRouter()
-
-
-def _model_fields_set(model: BaseModel) -> set[str]:
-    fields_set = getattr(model, "model_fields_set", None)
-    if fields_set is None:
-        fields_set = getattr(model, "__fields_set__", set())
-    return set(fields_set)
 
 
 class _ConversionRuntimeOptionsRequestMixin:
@@ -56,7 +50,7 @@ class _RuntimeOptionsRequest(ConversionRuntimeOptionsRequest):
         return merge_runtime_options(
             self.to_app_options(),
             self.runtime_options.to_app_options(),
-            nested_fields_set=_model_fields_set(self.runtime_options),
+            nested_fields_set=set(self.runtime_options.model_fields_set),
         )
 
 
@@ -118,6 +112,7 @@ def repair_conversion(
         lambda: controller.repair_conversion(
             book_id=book_id,
             runtime_options=payload.to_runtime_options(),
+            runtime_fields_set=repair_runtime_fields_set(payload),
             callbacks=ConversionCallbacks(on_event=event_broker.publish),
         ),
         runtime_status=409,

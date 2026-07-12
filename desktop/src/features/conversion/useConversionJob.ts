@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
-import type {
-  ConversionJobTerminalEvent,
-  StartConversionRequest,
-} from "../../types/api";
+import type { StartConversionRequest } from "../../types/api";
 import { useEventStream } from "../events/useEventStream";
 
 interface UseConversionJobArgs {
@@ -94,13 +91,6 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
     [apiClient],
   );
 
-  const waitForTerminalState = useCallback(
-    async (jobId: string): Promise<ConversionJobTerminalEvent> => (
-      eventStream.waitForTerminalState(jobId)
-    ),
-    [eventStream.waitForTerminalState],
-  );
-
   useEffect(() => {
     void refreshActiveConversion();
   }, [refreshActiveConversion]);
@@ -113,7 +103,6 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
     clearFormError,
     startConversion,
     refreshActiveConversion,
-    waitForTerminalState,
   };
 }
 

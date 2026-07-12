@@ -160,6 +160,31 @@ def test_pdf_parser_does_not_split_no_toc_body_lines_that_start_with_lowercase_f
     assert [chapter.title for chapter in document.chapters] == ["Full Document"]
 
 
+def test_chapters_from_entries_keeps_same_page_toc_entries_on_their_page() -> None:
+    chapters = PDFParser._chapters_from_entries(
+        [("Alpha", 5), ("Beta", 5), ("Gamma", 8)],
+        total_pages=10,
+    )
+
+    assert [
+        (chapter.title, chapter.start_page, chapter.end_page) for chapter in chapters
+    ] == [
+        ("Alpha", 5, 5),
+        ("Beta", 5, 7),
+        ("Gamma", 8, 10),
+    ]
+
+
+def test_validate_pdf_accepts_valid_pdf_smaller_than_tail_window(tmp_path: Path) -> None:
+    from modules.errors import validate_pdf
+
+    pdf_path = tmp_path / "tiny.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\n" + b"0" * 64 + b"\n%%EOF\n")
+    assert 25 <= pdf_path.stat().st_size < 1024
+
+    assert validate_pdf(pdf_path) is True
+
+
 def test_pdf_parser():
     """Run all PDF parser tests."""
     

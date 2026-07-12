@@ -1,0 +1,23 @@
+# Coverage configuration (read by coverage.py; pytest-cov discovers this file
+# automatically). Keep coverage settings here, not in pytest.ini -- coverage.py
+# never reads pytest.ini.
+[run]
+source = modules
+parallel = True
+data_file = .artifacts/coverage/.coverage
+omit =
+    */tests/*
+    */test_*
+    */venv/*
+    */__pycache__/*
+
+[report]
+exclude_lines =
+    pragma: no cover
+    def __repr__
+    if __name__ == .__main__.:
+    raise NotImplementedError
+    pass
+    if TYPE_CHECKING:
+    except ImportError:
+    # Debug code

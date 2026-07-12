@@ -84,12 +84,14 @@ class TestPDFParserRobustness:
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
             f.write(data)
             temp_path = Path(f.name)
-        
+
         try:
-            # Should raise an error for malformed input
+            # Should raise an error for malformed input. Construction only
+            # runs a cheap header/EOF validation, so garbage that keeps both
+            # markers is rejected when the content is actually parsed.
             with pytest.raises(Exception) as exc_info:
-                PDFParser(temp_path)
-            
+                PDFParser(temp_path).parse()
+
             # Verify it's one of the expected exception types
             error_type = type(exc_info.value)
             assert error_type in [
@@ -129,7 +131,9 @@ class TestPDFParserRobustness:
         """
         PDF parser should reject text files even with .pdf extension.
         """
-        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False, mode='w') as f:
+        with tempfile.NamedTemporaryFile(
+            suffix=".pdf", delete=False, mode="w", encoding="utf-8"
+        ) as f:
             f.write(content)
             temp_path = Path(f.name)
         
@@ -204,7 +208,9 @@ class TestEPUBParserRobustness:
         """
         EPUB parser should reject text files even with .epub extension.
         """
-        with tempfile.NamedTemporaryFile(suffix=".epub", delete=False, mode='w') as f:
+        with tempfile.NamedTemporaryFile(
+            suffix=".epub", delete=False, mode="w", encoding="utf-8"
+        ) as f:
             f.write(content)
             temp_path = Path(f.name)
         

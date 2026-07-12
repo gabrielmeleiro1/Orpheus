@@ -20,7 +20,12 @@ from modules.audio.ffmpeg import (
     run_ffmpeg_command,
     wait_for_ffmpeg_process,
 )
-from modules.audio.packager import M4BPackager, AudiobookMetadata, ChapterMarker
+from modules.audio.packager import (
+    M4BPackager,
+    AudiobookMetadata,
+    ChapterMarker,
+    quote_ffmpeg_concat_path,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -48,6 +53,88 @@ def _clear_ffmpeg_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FFPROBE_PATH",
     ):
         monkeypatch.delenv(env_var, raising=False)
+
+
+def _write_sine_wav(
+    path: Path,
+    frequency: float,
+    duration_seconds: float,
+    sample_rate: int = 24000,
+    phase_samples: int = 0,
+) -> int:
+    """Write a mono 16-bit sine WAV; return its sample count.
+
+    ``phase_samples`` lets callers chain sections into one phase-continuous tone,
+    which mimics continuous document prose split across sections.
+    """
+    frame_count = int(sample_rate * duration_seconds)
+    t = (np.arange(frame_count, dtype=np.float64) + phase_samples) / sample_rate
+    samples = (np.sin(2 * np.pi * frequency * t) * 0.25 * 32767).astype(np.int16)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes(samples.tobytes())
+    return frame_count
+
+
+def _decoded_duration_ms(path: Path, sample_rate: int = 24000) -> float:
+    """Decoded PCM length in ms (the real, priming-inclusive audible timeline)."""
+    ffmpeg = shutil.which("ffmpeg")
+    pcm = subprocess.run(
+        [ffmpeg, "-v", "quiet", "-i", str(path), "-f", "s16le", "-ac", "1",
+         "-ar", str(sample_rate), "pipe:1"],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    return len(np.frombuffer(pcm, dtype=np.int16)) / sample_rate * 1000.0
+
+
+def _ffprobe_json_cli(path: Path, *args: str) -> dict:
+    ffprobe = shutil.which("ffprobe")
+    out = subprocess.run(
+        [ffprobe, "-v", "error", "-print_format", "json", *args, str(path)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout
+    return json.loads(out)
+
+
+class TestConcatPathQuoting:
+    def test_quote_ffmpeg_concat_path_plain_posix_path(self, tmp_path):
+        audio = tmp_path / "chapter_01.m4a"
+
+        assert quote_ffmpeg_concat_path(audio) == f"'{audio.absolute()}'"
+
+    def test_quote_ffmpeg_concat_path_escapes_apostrophes_by_quote_splicing(self, tmp_path):
+        audio = tmp_path / "chapter one's intro.m4a"
+
+        quoted = quote_ffmpeg_concat_path(audio)
+
+        expected = str(audio.absolute()).replace("'", "'\\''")
+        assert quoted == f"'{expected}'"
+
+    def test_quote_ffmpeg_concat_path_preserves_windows_drive_path_backslashes(self):
+        # The concat demuxer copies bytes verbatim inside single quotes, so
+        # backslashes must never be doubled or Windows paths break.
+        raw = r"C:\Users\reader\Audiobooks\chapter_01.m4a"
+
+        quoted = quote_ffmpeg_concat_path(raw)
+
+        assert quoted == f"'{Path(raw).absolute()}'"
+        assert quoted.count("\\") == raw.count("\\")
+
+    def test_quote_ffmpeg_concat_path_preserves_unc_path_backslashes(self):
+        raw = r"\\fileserver\audiobooks\book one\chapter_01.m4a"
+
+        quoted = quote_ffmpeg_concat_path(raw)
+
+        assert quoted == f"'{Path(raw).absolute()}'"
+        assert quoted.count("\\") == raw.count("\\")
+        assert "\\\\\\\\" not in quoted
 
 
 class TestFFmpegBinaryDiscovery:
@@ -231,18 +318,86 @@ class TestAudioEncoder:
         temp_output = Path(mock_popen.call_args.args[0][-1])
         assert not temp_output.exists()
     
+    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
+    def test_array_to_mp3_surfaces_ffmpeg_stderr_when_stdin_write_breaks(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        # A fake ffmpeg that dies before reading stdin: the writer thread hits
+        # BrokenPipeError, but the real cause must come from ffmpeg's stderr.
+        fake_ffmpeg = _write_executable(
+            tmp_path / "bin" / "ffmpeg",
+            "#!/bin/sh\necho 'simulated disk full while muxing' >&2\nexit 3\n",
+        )
+        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
+
+        encoder = AudioEncoder()
+
+        with pytest.raises(RuntimeError, match="simulated disk full while muxing"):
+            encoder.array_to_mp3(
+                np.zeros(400_000, dtype=np.float32),
+                tmp_path / "out.mp3",
+            )
+
+    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
+    def test_array_to_mp3_reraises_write_error_when_ffmpeg_exits_cleanly(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        # ffmpeg stops reading early but succeeds: the stdin write error is the
+        # only failure left, so it must surface unchanged.
+        fake_ffmpeg = _write_executable(
+            tmp_path / "bin" / "ffmpeg",
+            "#!/bin/sh\n"
+            "for last; do :; done\n"
+            "head -c 1024 > /dev/null\n"
+            'echo audio > "$last"\n'
+            "exit 0\n",
+        )
+        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
+
+        encoder = AudioEncoder()
+
+        with pytest.raises(BrokenPipeError):
+            encoder.array_to_mp3(
+                np.zeros(4_000_000, dtype=np.float32),
+                tmp_path / "out.mp3",
+            )
+
+    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
+    def test_array_to_aac_surfaces_ffmpeg_stderr_when_stdin_write_breaks(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        fake_ffmpeg = _write_executable(
+            tmp_path / "bin" / "ffmpeg",
+            "#!/bin/sh\necho 'simulated aac muxer failure' >&2\nexit 4\n",
+        )
+        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
+
+        encoder = AudioEncoder()
+
+        with pytest.raises(RuntimeError, match="simulated aac muxer failure"):
+            encoder.array_to_aac(
+                np.zeros(400_000, dtype=np.float32),
+                tmp_path / "out.m4a",
+            )
+
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_wav_to_mp3(self, mock_which, mock_run):
+    def test_wav_to_mp3(self, mock_which, mock_run, tmp_path):
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.side_effect = _successful_ffmpeg_run
-        
+
         encoder = AudioEncoder()
-        
+
         # We need to mock input path exists
         with patch("pathlib.Path.exists", return_value=True):
-            encoder.wav_to_mp3("input.wav", "output.mp3")
-            
+            encoder.wav_to_mp3("input.wav", tmp_path / "output.mp3")
+
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
         assert args[0] == "/usr/bin/ffmpeg"
@@ -253,14 +408,16 @@ class TestAudioEncoder:
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_wav_to_mp3_includes_optional_audio_filter(self, mock_which, mock_run):
+    def test_wav_to_mp3_includes_optional_audio_filter(self, mock_which, mock_run, tmp_path):
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.side_effect = _successful_ffmpeg_run
 
         encoder = AudioEncoder()
 
         with patch("pathlib.Path.exists", return_value=True):
-            encoder.wav_to_mp3("input.wav", "output.mp3", audio_filter="volume=3.0dB")
+            encoder.wav_to_mp3(
+                "input.wav", tmp_path / "output.mp3", audio_filter="volume=3.0dB"
+            )
 
         args = mock_run.call_args[0][0]
         assert "-af" in args
@@ -383,6 +540,115 @@ class TestDocumentAudioPackager:
         assert temp_output.name.startswith(f".{output.name}.")
         assert temp_output.name.endswith(f".tmp{output.suffix}")
 
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_create_m4a_reencodes_m4a_inputs_for_gapless_prose(self, mock_which, mock_run, tmp_path):
+        # document_audio is continuous prose. Stream-copying independently encoded
+        # .m4a sections re-bakes AAC priming/padding at every seam, so the packager
+        # must single-pass re-encode to keep the narration gapless.
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.side_effect = _successful_ffmpeg_run
+
+        packager = audio_module.DocumentAudioPackager()
+        metadata = AudiobookMetadata(title="Document", author="Author")
+
+        first = tmp_path / "01_intro.m4a"
+        second = tmp_path / "02_body.m4a"
+        first.write_bytes(b"one")
+        second.write_bytes(b"two")
+
+        output = tmp_path / "Document.m4a"
+        packager.create_m4a(
+            mp3_files=[first, second],
+            metadata=metadata,
+            output_path=output,
+        )
+
+        final_args = mock_run.call_args_list[0].args[0]
+        assert final_args[final_args.index("-c:a") + 1] == "aac"
+        assert "-b:a" in final_args
+        assert "copy" not in final_args
+        assert "-metadata" in final_args
+        assert "title=Document" in final_args
+        temp_output = Path(final_args[-1])
+        assert temp_output.parent == output.parent
+        assert temp_output.name.startswith(f".{output.name}.")
+        assert temp_output.name.endswith(f".tmp{output.suffix}")
+
+    def test_create_m4a_reencode_avoids_streamcopy_accumulated_gap(self, tmp_path):
+        # Real-ffmpeg: continuous prose sections encoded to .m4a, then joined.
+        ffmpeg = shutil.which("ffmpeg")
+        assert ffmpeg, "ffmpeg is required for document_audio gapless coverage"
+
+        encoder = AudioEncoder()
+        section_count = 6
+        section_seconds = 0.30
+        phase = 0
+        sections: list[Path] = []
+        for i in range(section_count):
+            wav = tmp_path / f"section_{i:02d}.wav"
+            phase += _write_sine_wav(wav, 300.0, section_seconds, phase_samples=phase)
+            m4a = tmp_path / f"section_{i:02d}.m4a"
+            encoder.wav_to_aac(wav, m4a, bitrate="128k")
+            sections.append(m4a)
+
+        content_ms = section_count * section_seconds * 1000.0
+
+        # Fixed behavior: single-pass re-encode of the continuous sections.
+        reencoded = tmp_path / "document.m4a"
+        audio_module.DocumentAudioPackager().create_m4a(
+            sections,
+            AudiobookMetadata(title="Doc", author="Author"),
+            reencoded,
+        )
+        reencode_ms = _decoded_duration_ms(reencoded)
+
+        # Baseline: what stream-copy concat of the same sections produces.
+        concat = tmp_path / "concat.txt"
+        with open(concat, "w", encoding="utf-8") as handle:
+            for section in sections:
+                handle.write(f"file '{section}'\n")
+        streamcopy = tmp_path / "streamcopy.m4a"
+        subprocess.run(
+            [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(concat),
+             "-vn", "-c:a", "copy", str(streamcopy)],
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+        streamcopy_ms = _decoded_duration_ms(streamcopy)
+
+        # Stream-copy re-bakes ~2 AAC frames of priming/padding per seam, which
+        # accumulates; the single-pass re-encode carries a clearly smaller gap.
+        assert reencode_ms < streamcopy_ms - 80.0
+        assert (reencode_ms - content_ms) < (streamcopy_ms - content_ms)
+
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_create_m4a_reencodes_for_mp3_inputs(self, mock_which, mock_run, tmp_path):
+        mock_which.return_value = "/usr/bin/ffmpeg"
+        mock_run.side_effect = _successful_ffmpeg_run
+
+        packager = audio_module.DocumentAudioPackager()
+        metadata = AudiobookMetadata(title="Document", author="Author")
+
+        first = tmp_path / "01_intro.mp3"
+        second = tmp_path / "02_body.mp3"
+        first.write_bytes(b"one")
+        second.write_bytes(b"two")
+
+        output = tmp_path / "Document.m4a"
+        packager.create_m4a(
+            mp3_files=[first, second],
+            metadata=metadata,
+            output_path=output,
+            bitrate="96k",
+        )
+
+        final_args = mock_run.call_args_list[0].args[0]
+        assert final_args[final_args.index("-c:a") + 1] == "aac"
+        assert final_args[final_args.index("-b:a") + 1] == "96k"
+
 class TestM4BPackager:
     def test_chapter_marker_creation(self):
         marker = ChapterMarker("Chapter 1", 0, 10000)
@@ -391,22 +657,22 @@ class TestM4BPackager:
         
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_create_m4b(self, mock_which, mock_run):
+    def test_create_m4b(self, mock_which, mock_run, tmp_path):
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.side_effect = _successful_ffmpeg_run
-        
+
         packager = M4BPackager()
         metadata = AudiobookMetadata(title="Test", author="Author")
-        
+
         # Mocking file operations
         with patch("builtins.open", mock_open()), \
              patch("pathlib.Path.mkdir"), \
              patch("pathlib.Path.exists", return_value=True), \
              patch.object(packager, '_generate_chapter_markers', return_value=[]), \
              patch.object(packager, '_write_ffmetadata'):
-             
-             packager.create_m4b(["ch1.mp3"], ["Chapter 1"], metadata, "out.m4b")
-             
+
+             packager.create_m4b(["ch1.mp3"], ["Chapter 1"], metadata, tmp_path / "out.m4b")
+
         assert mock_run.call_count == 1
 
     @patch("subprocess.run")
@@ -467,9 +733,23 @@ class TestM4BPackager:
 
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_create_m4b_uses_stream_copy_for_m4a_inputs(self, mock_which, mock_run, tmp_path):
+    def test_create_m4b_stream_copies_m4a_inputs_in_two_passes(self, mock_which, mock_run, tmp_path):
+        # Stream-copied AAC chapters keep the fast copy path, but chapter markers
+        # must come from the encoded/joined timeline. The packager concatenates
+        # (pass 1) then muxes chapters/metadata onto the copy (pass 2). When the
+        # timeline probe is unavailable it falls back to the supplied durations.
         mock_which.return_value = "/usr/bin/ffmpeg"
-        mock_run.side_effect = _successful_ffmpeg_run
+
+        def fake_run(cmd, **_kwargs):  # noqa: ANN001, ANN202
+            if "-print_format" in cmd or "-show_entries" in cmd:
+                # ffprobe timeline probe: force graceful fallback.
+                return MagicMock(returncode=0, stdout="", stderr="")
+            output_path = Path(cmd[-1])
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(b"audio")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
 
         first = tmp_path / "one.m4a"
         second = tmp_path / "two.m4a"
@@ -488,19 +768,97 @@ class TestM4BPackager:
             chapter_durations_ms=[1000, 1500],
         )
 
-        final_args = mock_run.call_args_list[0].args[0]
-        assert final_args[final_args.index("-c:a") + 1] == "copy"
-        assert "-b:a" not in final_args
-        ffmetadata_f_index = final_args.index("-f")
-        ffmetadata_f_index = final_args.index("-f", ffmetadata_f_index + 1)
-        assert final_args[ffmetadata_f_index + 1] == "ffmetadata"
-        assert final_args[ffmetadata_f_index + 2] == "-i"
-        assert final_args[final_args.index("-map_metadata") + 1] == "1"
-        assert final_args[final_args.index("-map_chapters") + 1] == "1"
-        temp_output = Path(final_args[-1])
+        ffmpeg_calls = [
+            call.args[0]
+            for call in mock_run.call_args_list
+            if "-print_format" not in call.args[0] and "-show_entries" not in call.args[0]
+        ]
+        assert len(ffmpeg_calls) == 2
+        concat_cmd, mux_cmd = ffmpeg_calls
+
+        # Pass 1: stream-copy concat (never re-encodes AAC chapters).
+        assert "concat" in concat_cmd
+        assert concat_cmd[concat_cmd.index("-c:a") + 1] == "copy"
+
+        # Pass 2: mux chapters/metadata onto the copied audio, still stream copy.
+        assert mux_cmd[mux_cmd.index("-c:a") + 1] == "copy"
+        assert "-b:a" not in mux_cmd
+        ffmetadata_f_index = mux_cmd.index("-f")
+        assert mux_cmd[ffmetadata_f_index + 1] == "ffmetadata"
+        assert mux_cmd[mux_cmd.index("-map_metadata") + 1] == "1"
+        assert mux_cmd[mux_cmd.index("-map_chapters") + 1] == "1"
+        temp_output = Path(mux_cmd[-1])
         assert temp_output.parent == output.parent
         assert temp_output.name.startswith(f".{output.name}.")
         assert temp_output.name.endswith(f".tmp{output.suffix}")
+
+    def test_create_m4b_stream_copy_markers_match_encoded_timeline(self, tmp_path):
+        # Real-ffmpeg: stream-copied chapter markers must land on the actual
+        # encoded segment offsets, not the source WAV-duration sums that drift.
+        ffmpeg = shutil.which("ffmpeg")
+        ffprobe = shutil.which("ffprobe")
+        assert ffmpeg and ffprobe, "ffmpeg/ffprobe required for chapter-marker drift coverage"
+
+        encoder = AudioEncoder()
+        specs = [(440.0, 0.30), (660.0, 0.40), (880.0, 0.55)]
+        chapters_m4a: list[Path] = []
+        source_durations_ms: list[int] = []
+        for i, (freq, dur) in enumerate(specs, 1):
+            wav = tmp_path / f"chapter_{i:02d}.wav"
+            _write_sine_wav(wav, freq, dur)
+            m4a = tmp_path / f"chapter_{i:02d}.m4a"
+            encoder.wav_to_aac(wav, m4a, bitrate="128k")
+            chapters_m4a.append(m4a)
+            source_durations_ms.append(int(dur * 1000))
+
+        output = tmp_path / "book.m4b"
+        M4BPackager().create_m4b(
+            chapters_m4a,
+            [f"Chapter {i}" for i in range(1, len(specs) + 1)],
+            AudiobookMetadata(title="Drift Book", author="Author"),
+            output,
+            chapter_durations_ms=source_durations_ms,
+        )
+
+        # Ground truth (independent of the written markers): where each stream-copied
+        # segment actually begins on the joined presentation timeline.
+        segment_packets = [
+            int(
+                _ffprobe_json_cli(
+                    m, "-select_streams", "a", "-count_packets",
+                    "-show_entries", "stream=nb_read_packets",
+                )["streams"][0]["nb_read_packets"]
+            )
+            for m in chapters_m4a
+        ]
+        packet_pts = [
+            float(p["pts_time"])
+            for p in _ffprobe_json_cli(
+                output, "-select_streams", "a", "-show_entries", "packet=pts_time"
+            )["packets"]
+        ]
+        true_start_ms: list[float] = []
+        idx = 0
+        for count in segment_packets:
+            true_start_ms.append(round(packet_pts[idx] * 1000))
+            idx += count
+        container_ms = float(_ffprobe_json_cli(output, "-show_format")["format"]["duration"]) * 1000.0
+
+        marker = M4BPackager().get_chapters(output)
+        marker_starts = [m.start_ms for m in marker]
+
+        # Fixed markers track the real encoded offsets within a few ms.
+        for real, got in zip(true_start_ms, marker_starts):
+            assert abs(got - real) <= 12, f"chapter marker {got}ms drifted from real offset {real}ms"
+        # Last chapter END tracks the true joined duration, not the source-duration sum.
+        assert abs(marker[-1].end_ms - container_ms) <= 15
+
+        # Sanity: naive source-WAV-duration markers genuinely drift here, so this
+        # assertion set actually distinguishes the fix from the regression.
+        source_starts = [0]
+        for duration in source_durations_ms[:-1]:
+            source_starts.append(source_starts[-1] + duration)
+        assert max(abs(s - r) for s, r in zip(source_starts, true_start_ms)) > 20
 
     @patch("shutil.which")
     def test_create_m4b_failure_preserves_existing_output_and_cleans_temp(self, mock_which, tmp_path):
@@ -613,6 +971,133 @@ class TestM4BPackager:
         assert markers[1].start_ms == 1000
         assert markers[1].end_ms == 3500
 
+    @patch("shutil.which")
+    def test_probe_stream_copy_offsets_streams_csv_instead_of_json(self, mock_which, tmp_path):
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        packager = M4BPackager()
+
+        probe_cmds: list[list[str]] = []
+
+        def fake_run_ffmpeg_command(cmd, **_kwargs):  # noqa: ANN001, ANN202
+            probe_cmds.append(list(cmd))
+            if "-count_packets" in cmd:
+                return MagicMock(returncode=0, stdout="2\n", stderr="")
+            return MagicMock(returncode=0, stdout="0.700000\n", stderr="")
+
+        class _FakeProcess:
+            def __init__(self) -> None:
+                self.stdout = iter(["0.000000\n", "0.032000\n", "0.064000\n", "0.096000\n"])
+                self.stderr = None
+
+            def wait(self, timeout=None):  # noqa: ANN001, ANN201
+                return 0
+
+            def poll(self):  # noqa: ANN201
+                return 0
+
+            def kill(self) -> None:
+                return None
+
+        popen_cmds: list[list[str]] = []
+
+        def fake_popen(cmd, **_kwargs):  # noqa: ANN001, ANN202
+            popen_cmds.append(list(cmd))
+            return _FakeProcess()
+
+        with patch(
+            "modules.audio.packager.run_ffmpeg_command",
+            side_effect=fake_run_ffmpeg_command,
+        ), patch("modules.audio.packager.subprocess.Popen", side_effect=fake_popen):
+            offsets = packager._probe_stream_copy_offsets_ms(
+                tmp_path / "concat.m4a",
+                [tmp_path / "one.m4a", tmp_path / "two.m4a"],
+            )
+
+        assert offsets == ([0, 64], 700)
+        for cmd in probe_cmds + popen_cmds:
+            assert "-print_format" not in cmd
+            assert "json" not in cmd
+            assert "csv=p=0" in cmd
+
+    @patch("shutil.which")
+    def test_stream_copy_markers_fall_back_with_warning_on_memory_error(
+        self,
+        mock_which,
+        tmp_path,
+        caplog,
+    ):
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        packager = M4BPackager()
+
+        with patch(
+            "modules.audio.packager.run_ffmpeg_command",
+            side_effect=MemoryError("ffprobe output too large"),
+        ), caplog.at_level("WARNING", logger="modules.audio.packager"):
+            markers = packager._stream_copy_chapter_markers(
+                tmp_path / "concat.m4a",
+                [tmp_path / "one.m4a", tmp_path / "two.m4a"],
+                ["One", "Two"],
+                fallback_durations_ms=[1000, 1500],
+            )
+
+        assert [(m.start_ms, m.end_ms) for m in markers] == [(0, 1000), (1000, 2500)]
+        assert any("fall" in record.getMessage().lower() for record in caplog.records)
+
+    @patch("shutil.which")
+    def test_stream_copy_markers_truncate_when_names_outnumber_probed_offsets(
+        self,
+        mock_which,
+        tmp_path,
+    ):
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        packager = M4BPackager()
+
+        with patch.object(
+            packager,
+            "_probe_stream_copy_offsets_ms",
+            return_value=([0], 900),
+        ):
+            markers = packager._stream_copy_chapter_markers(
+                tmp_path / "concat.m4a",
+                [tmp_path / "one.m4a"],
+                ["One", "Two"],
+            )
+
+        assert [(m.title, m.start_ms, m.end_ms) for m in markers] == [("One", 0, 900)]
+
+    @patch("shutil.which")
+    def test_generate_chapter_markers_degrades_when_duration_probe_fails(
+        self,
+        mock_which,
+        caplog,
+    ):
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        packager = M4BPackager()
+
+        durations = iter([2.0, KeyError("duration"), 3.0])
+
+        def fake_get_duration(_self, _path):  # noqa: ANN001, ANN202
+            value = next(durations)
+            if isinstance(value, Exception):
+                raise value
+            return value
+
+        with patch(
+            "modules.audio.encoder.AudioEncoder.get_duration",
+            new=fake_get_duration,
+        ), caplog.at_level("WARNING", logger="modules.audio.packager"):
+            markers = packager._generate_chapter_markers(
+                [Path("one.mp3"), Path("two.mp3"), Path("three.mp3")],
+                ["One", "Two", "Three"],
+            )
+
+        assert [(m.start_ms, m.end_ms) for m in markers] == [
+            (0, 2000),
+            (2000, 2000),
+            (2000, 5000),
+        ]
+        assert any("duration" in record.getMessage().lower() for record in caplog.records)
+
     @patch("subprocess.run")
     @patch("shutil.which")
     @pytest.mark.skipif(os.name == "nt", reason="backslash is a path separator on Windows")
@@ -639,8 +1124,32 @@ class TestM4BPackager:
              patch.object(packager, "_write_ffmetadata"):
             packager.create_m4b([audio_file], ["Intro"], metadata, tmp_path / "out.m4b")
 
-        escaped_path = str(audio_file.absolute()).replace("\\", "\\\\").replace("'", "'\\''")
+        # Bytes inside single quotes are copied verbatim by the concat demuxer:
+        # apostrophes are escaped by quote splicing, backslashes stay untouched.
+        escaped_path = str(audio_file.absolute()).replace("'", "'\\''")
         assert concat_contents["text"] == f"file '{escaped_path}'\n"
+
+    @pytest.mark.skipif(os.name == "nt", reason="backslash is a path separator on Windows")
+    def test_create_m4b_real_ffmpeg_concats_paths_with_backslash_and_apostrophe(self, tmp_path):
+        # Regression: doubling backslashes inside single-quoted concat entries makes
+        # ffmpeg look for a nonexistent file, so packaging fails outright.
+        ffmpeg = shutil.which("ffmpeg")
+        assert ffmpeg, "ffmpeg is required for concat quoting coverage"
+
+        audio_file = tmp_path / "chapter one's \\ intro.wav"
+        _write_sine_wav(audio_file, 440.0, 0.2)
+
+        output = tmp_path / "book.m4b"
+        M4BPackager().create_m4b(
+            [audio_file],
+            ["Intro"],
+            AudiobookMetadata(title="Quoting Book", author="Author"),
+            output,
+            chapter_durations_ms=[200],
+        )
+
+        assert output.exists()
+        assert output.stat().st_size > 0
 
     @patch("shutil.which")
     def test_ffmetadata_values_are_escaped(self, mock_which, tmp_path):

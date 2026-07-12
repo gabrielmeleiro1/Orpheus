@@ -45,6 +45,7 @@ export function ConversionPanelView({
         sourceQueue={sourceQueue}
         capabilities={capabilities}
         actions={actions}
+        hidden={shell.hidden}
       />
       <TtsOptionsView
         ttsOptions={ttsOptions}

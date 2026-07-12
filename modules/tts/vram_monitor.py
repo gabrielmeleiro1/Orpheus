@@ -13,6 +13,7 @@ Features:
 from __future__ import annotations
 
 import gc
+import logging
 import os
 import threading
 import time
@@ -21,6 +22,8 @@ from typing import Optional, Callable, Dict, TYPE_CHECKING, Any
 from enum import Enum, auto
 from collections import deque
 import warnings
+
+logger = logging.getLogger(__name__)
 
 mx: Any = None
 MLX_AVAILABLE: Optional[bool] = None
@@ -733,7 +736,7 @@ class IdleTimeoutManager:
                 warnings.warn(f"Failed to unload model {name}: {e}")
         
         if unloaded:
-            print(f"Idle timeout: Unloaded models: {', '.join(unloaded)}")
+            logger.info(f"Idle timeout: Unloaded models: {', '.join(unloaded)}")
             for callback in self._on_unload_callbacks:
                 try:
                     callback()
@@ -853,68 +856,3 @@ def get_memory_manager(
         dynamic_config=dynamic_config,
         memory_budget_provider=memory_budget_provider,
     )
-
-
-# Test functions
-def test_vram_monitor():
-    """Test VRAM monitor functionality."""
-    print("Testing VRAMMonitor...")
-    
-    monitor = VRAMMonitor(total_vram_gb=16.0)
-    
-    # Test 1: Initial state
-    assert monitor.get_tts_batch_size() == monitor.config.base_tts_batch_size
-    print("✓ Test 1 passed: Initial batch size correct")
-    
-    # Test 2: Pressure level calculation
-    assert monitor._calculate_pressure_level(0.5) == VRAMPressureLevel.NORMAL
-    assert monitor._calculate_pressure_level(0.75) == VRAMPressureLevel.ELEVATED
-    assert monitor._calculate_pressure_level(0.90) == VRAMPressureLevel.HIGH
-    assert monitor._calculate_pressure_level(0.98) == VRAMPressureLevel.CRITICAL
-    print("✓ Test 2 passed: Pressure level calculation correct")
-    
-    # Test 3: Batch size adjustment
-    monitor._adjust_batch_sizes(VRAMPressureLevel.CRITICAL)
-    assert monitor.get_tts_batch_size() == monitor.config.min_tts_batch_size
-    print("✓ Test 3 passed: Critical pressure reduces batch size")
-    
-    print("VRAMMonitor tests passed!")
-
-
-def test_idle_timeout_manager():
-    """Test idle timeout manager functionality."""
-    print("\nTesting IdleTimeoutManager...")
-    
-    config = IdleTimeoutConfig(
-        idle_timeout_seconds=2.0,
-        check_interval_seconds=0.1,
-        warning_before_unload_seconds=1.0,
-    )
-    
-    manager = IdleTimeoutManager(config=config)
-    
-    # Test 1: Register and activity tracking
-    unloaded = []
-    def mock_unload():
-        unloaded.append(True)
-    
-    manager.register_model("test", mock_unload)
-    manager.record_activity()
-    assert manager.get_idle_time() < 1.0
-    print("✓ Test 1 passed: Activity tracking works")
-    
-    # Test 2: Unload callback
-    manager.start()
-    time.sleep(2.5)  # Wait for timeout
-    manager.stop()
-    
-    assert len(unloaded) >= 1
-    print("✓ Test 2 passed: Idle timeout triggers unload")
-    
-    print("IdleTimeoutManager tests passed!")
-
-
-if __name__ == "__main__":
-    test_vram_monitor()
-    test_idle_timeout_manager()
-    print("\nAll VRAM monitor tests passed!")

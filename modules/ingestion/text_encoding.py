@@ -14,7 +14,9 @@ _BOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
     (codecs.BOM_UTF8, "utf-8-sig"),
 )
 
-_FALLBACK_ENCODINGS = ("utf-8", "utf-8-sig", "cp1252", "latin-1")
+# utf-8-sig is intentionally absent: BOM-prefixed data is handled above, and
+# utf-8-sig accepts exactly the byte strings utf-8 does.
+_FALLBACK_ENCODINGS = ("utf-8", "cp1252", "latin-1")
 
 
 def _decode_with(data: bytes, encoding: str) -> str | None:

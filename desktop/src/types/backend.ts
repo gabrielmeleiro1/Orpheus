@@ -1,7 +1,5 @@
 export type DashboardTab = "dashboard" | "convert" | "document" | "progress" | "library" | "logs" | "settings";
 
-export type ThemeMode = "dark" | "light";
-
 export type BackendConnectionState = "checking" | "connected" | "error";
 
 export type DesktopBackendLifecycle = "stopped" | "starting" | "ready" | "failed";

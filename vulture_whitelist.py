@@ -34,21 +34,17 @@ _.patch_load_weights_compat
 _.patch_generation_result_compat
 _.runtime_error_message
 _.ensure_runtime
-_.get_active_count
 _.current_model
 _.on_pressure_change
 _.on_unload
 _.on_warning
 _.probe_mlx_cleaner_runtime
-_.get_duration_ms
-_.get_duration_seconds
 _.get_book_by_source_path
 _.create_chapter
 _.estimate_duration
 _.healthcheck
 _.is_available
 _.get_voice
-_.add_silence_between_chapters
 _.capture_signals
 _.chunk_generator
 _.model_context
@@ -56,7 +52,6 @@ _.unregister
 _.get_cover
 _.from_dict
 _.get_usage_trend
-_.batch_encode
 
 # FastAPI route handlers and lazy package exports are discovered dynamically.
 get_maintenance_diagnostics
@@ -94,6 +89,3 @@ _.raise_for_status
 _.change_config
 _.chunks_are_valid
 _.mock_parser_deps
-reset_web_controller_state
-
-# Memory-test helper intentionally kept for explicit diagnostic coverage.

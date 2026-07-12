@@ -10,7 +10,38 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from tools.feedback_loop_runner import analyze_cleaned_text, analyze_cleaner_stats
+import pytest
+
+from tools.feedback_loop_runner import (
+    analyze_cleaned_text,
+    analyze_cleaner_stats,
+    build_parser,
+    validate_api_backend_args,
+)
+
+
+def test_api_backend_requires_explicit_endpoint_configuration() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["--source", "book.epub", "--cleaner-backend", "api"])
+
+    assert args.cleaner_api_base_url is None
+    assert args.cleaner_api_key_env is None
+    with pytest.raises(SystemExit, match="--cleaner-api-base-url, --cleaner-api-key-env"):
+        validate_api_backend_args(args)
+
+    args = parser.parse_args(
+        [
+            "--source",
+            "book.epub",
+            "--cleaner-backend",
+            "api",
+            "--cleaner-api-base-url",
+            "https://example.invalid/v1",
+            "--cleaner-api-key-env",
+            "EXAMPLE_API_KEY",
+        ]
+    )
+    validate_api_backend_args(args)
 
 
 def _test_detects_markdown_artifacts() -> None:

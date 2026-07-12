@@ -255,6 +255,51 @@ describe("event stream reducer actions", () => {
       "job-3",
     );
   });
+
+  it("keeps the cancellation status while the reconcile poll still sees the job running", () => {
+    const running = eventStreamReducer(createInitialEventStreamState(), {
+      type: "state",
+      payload: { event_type: "state", state: "running", job_id: "job-1", message: "started" },
+    }).state;
+    const started = eventStreamReducer(running, { type: "cancelStart" }).state;
+    const cancelling = eventStreamReducer(started, {
+      type: "cancelAccepted",
+      jobId: "job-1",
+      logId: 1,
+      fallbackTimestamp: "12:00:00",
+    }).state;
+    expect(cancelling).toMatchObject({
+      isCancelling: true,
+      cancellingJobId: "job-1",
+      statusText: "cancellation requested; waiting for backend to stop",
+    });
+
+    // The fallback reconcile poll fires while the backend is still winding the
+    // job down and reports it as non-terminal "running". It must not clobber the
+    // "cancellation requested…" status with "active job: running".
+    const reconciled = eventStreamReducer(cancelling, {
+      type: "refreshActive",
+      job: { id: "job-1", status: "running" },
+    }).state;
+    expect(reconciled).toMatchObject({
+      uiState: "running",
+      isCancelling: true,
+      cancellingJobId: "job-1",
+      statusText: "cancellation requested; waiting for backend to stop",
+    });
+
+    // Once the backend actually stops the job, the terminal reconcile flips the
+    // UI to the cancelled state as normal.
+    const stopped = eventStreamReducer(reconciled, {
+      type: "state",
+      payload: { event_type: "state", state: "cancelled", job_id: "job-1" },
+    }).state;
+    expect(stopped).toMatchObject({
+      uiState: "cancelled",
+      statusText: "job canceled",
+      isCancelling: false,
+    });
+  });
 });
 
 describe("event stream terminal job filtering", () => {

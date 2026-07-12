@@ -32,7 +32,7 @@ def test_timed_conversion_pipeline_populates_parse_and_package_metrics(
         "modules.tts.cleaner.TextCleaner"
     ) as mock_cleaner, patch("modules.tts.chunker.TextChunker") as mock_chunker, patch(
         "modules.tts.factory.TTSEngineFactory.create"
-    ) as mock_tts_factory, patch("modules.tts.engine.concatenate_audio_files") as mock_concat, patch(
+    ) as mock_tts_factory, patch(
         "modules.audio.encoder.AudioEncoder"
     ) as mock_enc, patch(
         "modules.audio.packager.M4BPackager"
@@ -73,13 +73,6 @@ def test_timed_conversion_pipeline_populates_parse_and_package_metrics(
         mock_tts_instance.sample_rate = 24000
         mock_tts_factory.return_value = mock_tts_instance
 
-        def mock_concat_side_effect(file_paths, output_path, use_memmap=True):
-            _ = file_paths, use_memmap
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(output_path).write_bytes(b"fake wav content")
-            return Path(output_path)
-
-        mock_concat.side_effect = mock_concat_side_effect
         mock_enc.return_value.get_duration.return_value = 10.0
 
         def wav_to_mp3_side_effect(wav_path, output_path, bitrate="128k"):

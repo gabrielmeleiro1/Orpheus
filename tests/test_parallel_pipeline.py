@@ -1846,6 +1846,11 @@ class TestWorkerProgressTotals:
             output_dir=tmp_path / "output",
             temp_dir=tmp_path / "temp",
             total_vram_gb=16.0,
+            tts_runtime=TTSRuntimeSpec.from_legacy(
+                "kokoro",
+                "bf16",
+                provider="mlx",
+            ),
         )
         pipeline = ConversionPipeline(config)
 

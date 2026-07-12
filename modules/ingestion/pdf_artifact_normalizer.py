@@ -33,11 +33,10 @@ _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS = {
     "auto-nomy": "auto-nomy",
     "auto-pause": "auto-pause",
     "auto-pilot": "auto-pilot",
-    "auto-sug-gestion": "auto-suggestion",
     "coming-into-being": "coming-into-being",
     "crypto-political": "crypto-political",
     "gameto-technical": "gameto-technical",
-    "into-just": "into\u2014just",
+    "into-just": "into-just",
     "lacto-ovo": "lacto-ovo",
     "lotto-game": "lotto-game",
     "mosquito-nets": "mosquito-nets",
@@ -49,7 +48,6 @@ _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS = {
     "proto-evolutionary": "proto-evolutionary",
     "proto-imperial": "proto-imperial",
     "proto-intuitionistic": "proto-intuitionistic",
-    "proto-leg-end": "proto-legend",
     "proto-modernist": "proto-modernist",
     "proto-nationalist": "proto-nationalist",
     "proto-palaces": "proto-palaces",
@@ -58,6 +56,14 @@ _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS = {
     "proto-soul": "proto-soul",
     "proto-types": "proto-types",
     "putto-like": "putto-like",
+}
+# Corpus-specific rewrites that change user text; applied only when the
+# known-corpus policies are explicitly requested (see
+# KNOWN_CORPUS_PDF_ARTIFACT_POLICIES), never by default.
+_KNOWN_CORPUS_LINE_BREAK_REPAIRS = {
+    "auto-sug-gestion": "auto-suggestion",
+    "into-just": "into—just",
+    "proto-leg-end": "proto-legend",
 }
 _INLINE_FOOTNOTE_BLOCK_START_RE = re.compile(
     r"^\s*(?:[IVX]{1,4}|\d{1,3})\s+The problem\b"
@@ -191,13 +197,17 @@ def _strip_reference_sections(text: str) -> str:
     return "\n".join(kept).rstrip()
 
 
-def repair_line_break_hyphenation(text: str) -> str:
+def repair_line_break_hyphenation(text: str, *, known_corpus_repairs: bool = False) -> str:
     """Join likely soft hyphenation introduced by PDF line wrapping."""
+
+    known_repairs = _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS
+    if known_corpus_repairs:
+        known_repairs = {**known_repairs, **_KNOWN_CORPUS_LINE_BREAK_REPAIRS}
 
     def _repair_known_compound(match: re.Match[str]) -> str:
         left = match.group("left")
         candidate = f"{left}-{match.group('right')}".casefold()
-        repair = _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS.get(candidate)
+        repair = known_repairs.get(candidate)
         if repair is None:
             return match.group(0)
         if left[:1].isupper():
@@ -505,6 +515,8 @@ class RepeatedPageBoundaryPolicy:
 class PDFLineArtifactPolicy:
     """Repair per-page text artifacts that must be fixed before chunking."""
 
+    known_corpus_repairs: bool = False
+
     def normalize_pages(self, pages_data: list[PageData]) -> list[PageData]:
         cleaned_pages: list[PageData] = []
         for page in pages_data:
@@ -513,7 +525,10 @@ class PDFLineArtifactPolicy:
                 continue
 
             page_text = str(page.get("text", ""))
-            page_text = repair_line_break_hyphenation(page_text)
+            page_text = repair_line_break_hyphenation(
+                page_text,
+                known_corpus_repairs=self.known_corpus_repairs,
+            )
             page_text = _strip_page_number_residue_lines(page_text)
             cleaned_pages.append(_copy_page_with_text(page, page_text.strip()))
         return cleaned_pages
@@ -590,6 +605,18 @@ DEFAULT_PDF_ARTIFACT_POLICIES: tuple[PDFArtifactNormalizationPolicy, ...] = (
     FrontMatterPolicy(),
     RepeatedPageBoundaryPolicy(),
     PDFLineArtifactPolicy(),
+    ReferenceBlockPolicy(),
+    CaptionLinePolicy(),
+    ReferenceSectionPolicy(),
+)
+
+# Opt-in variant for the known benchmark corpus: adds corpus-specific inline
+# footnote stripping and text rewrites that are unsafe for arbitrary user PDFs.
+KNOWN_CORPUS_PDF_ARTIFACT_POLICIES: tuple[PDFArtifactNormalizationPolicy, ...] = (
+    JSTORFrontMatterPolicy(),
+    FrontMatterPolicy(),
+    RepeatedPageBoundaryPolicy(),
+    PDFLineArtifactPolicy(known_corpus_repairs=True),
     KnownCorpusInlineFootnotePolicy(),
     ReferenceBlockPolicy(),
     CaptionLinePolicy(),

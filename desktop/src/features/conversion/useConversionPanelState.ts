@@ -1,6 +1,7 @@
 import { useEffect, type Dispatch, type SetStateAction } from "react";
 
 import type { ConversionMode } from "../../types/api";
+import { resolveConversionPrimaryAction } from "./conversionPrimaryAction";
 import { cleanerBackendUsesCudaFields } from "./cleanerBackendHelpers";
 import { compactSample, nowStatus, splitPath } from "./conversionPanelHelpers";
 import { useConversionOptions } from "./useConversionOptions";
@@ -107,11 +108,27 @@ export function useConversionPanelState({
     (requiresCleanerApiKey && !optionState.cleanerApiKey.trim()) ||
     (optionState.cleanerModelOptions.length > 0 && !optionState.cleanerModel);
 
+  const canRunQueue =
+    !queueRunner.queueRunning &&
+    Boolean(apiClient) &&
+    queueController.queueItems.some((item) => item.status === "ready" || item.status === "warning");
+  const primaryAction = resolveConversionPrimaryAction({
+    queueItemCount: queueController.queueItems.length,
+    canStartConversion: !startDisabled,
+    canRunQueue,
+  });
+
   useEffect(() => {
     if (!startCommandRef) {
       return;
     }
     startCommandRef.current = () => {
+      if (primaryAction.primary === "run_queue") {
+        if (canRunQueue) {
+          void queueRunner.onRunQueue();
+        }
+        return;
+      }
       if (!startDisabled) {
         void queueRunner.onStartConversion();
       }
@@ -121,7 +138,14 @@ export function useConversionPanelState({
         startCommandRef.current = null;
       }
     };
-  }, [queueRunner.onStartConversion, startCommandRef, startDisabled]);
+  }, [
+    canRunQueue,
+    primaryAction.primary,
+    queueRunner.onRunQueue,
+    queueRunner.onStartConversion,
+    startCommandRef,
+    startDisabled,
+  ]);
 
   const cancelDisabled = !conversionJob.activeJobId || conversionJob.isCancelling;
   const mergedFormError = conversionJob.formError || optionState.error;
@@ -135,10 +159,6 @@ export function useConversionPanelState({
       value: quantization,
       label: quantization,
     })) ?? [];
-  const canRunQueue =
-    !queueRunner.queueRunning &&
-    Boolean(apiClient) &&
-    queueController.queueItems.some((item) => item.status === "ready" || item.status === "warning");
   const selectedPreflightCard = selectedPreflight
     ? {
         title: selectedPreflight.title || splitPath(queueController.sourcePath) || "untitled source",
@@ -184,10 +204,12 @@ export function useConversionPanelState({
         Boolean(queueController.sourcePath.trim()) &&
         Boolean(optionState.selectedEngine),
       canRunParallelWarmup: Boolean(apiClient) && !optionState.parallelWarmupLoading,
-      canRunQueue,
-      canStartConversion: !startDisabled,
+      canRunQueue: primaryAction.showRunQueue && canRunQueue,
+      canStartConversion: primaryAction.showStartConversion && !startDisabled,
       canCancelJob: !cancelDisabled,
       canRefreshJob: Boolean(apiClient),
+      showRunQueue: primaryAction.showRunQueue,
+      showStartConversion: primaryAction.showStartConversion,
     },
     sourceQueue: {
       isDocumentMode,
@@ -267,8 +289,8 @@ export function useConversionPanelState({
       detailStatus: conversionJob.statusText || statusMessage,
       startLabel: conversionJob.isStarting
         ? "starting..."
-        : queueController.queueItems.length > 1
-          ? "start selected conversion"
+        : primaryAction.primary === "run_queue"
+          ? "run queue"
           : "start conversion",
       cancelLabel: conversionJob.isCancelling ? "cancelling..." : "cancel",
       isStarting: conversionJob.isStarting,

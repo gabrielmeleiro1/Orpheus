@@ -4,6 +4,7 @@ use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -71,16 +72,34 @@ pub struct BackendManager {
     lifecycle: BackendLifecycle,
     endpoint: Option<BackendEndpoint>,
     error: Option<String>,
+    // Monotonic id for the currently supervised process generation. Reader
+    // threads capture the id at spawn and must not mutate a newer generation
+    // after a restart (stop only joins readers for ~500ms).
+    generation: u64,
+    // When the current generation entered `Starting`. Reset on every
+    // `mark_starting`, so the startup deadline always tracks the newest
+    // generation and can never time out a generation that has been superseded.
+    started_at: Option<Instant>,
 }
 
 impl BackendManager {
-    pub fn mark_starting(&mut self) {
+    pub fn mark_starting(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
         self.lifecycle = BackendLifecycle::Starting;
         self.endpoint = None;
         self.error = None;
+        self.started_at = Some(Instant::now());
+        self.generation
     }
 
     pub fn mark_ready(&mut self, payload: BackendReadyPayload) {
+        self.mark_ready_for_generation(self.generation, payload);
+    }
+
+    pub fn mark_ready_for_generation(&mut self, generation: u64, payload: BackendReadyPayload) {
+        if generation != self.generation {
+            return;
+        }
         if self.lifecycle != BackendLifecycle::Starting {
             return;
         }
@@ -95,15 +114,53 @@ impl BackendManager {
     }
 
     pub fn mark_stopped(&mut self) {
+        self.mark_stopped_for_generation(self.generation);
+    }
+
+    pub fn mark_stopped_for_generation(&mut self, generation: u64) {
+        if generation != self.generation {
+            return;
+        }
         self.lifecycle = BackendLifecycle::Stopped;
         self.endpoint = None;
         self.error = None;
     }
 
     pub fn mark_failed(&mut self, error: impl Into<String>) {
+        self.mark_failed_for_generation(self.generation, error);
+    }
+
+    pub fn mark_failed_for_generation(&mut self, generation: u64, error: impl Into<String>) {
+        if generation != self.generation {
+            return;
+        }
         self.lifecycle = BackendLifecycle::Failed;
         self.endpoint = None;
         self.error = Some(error.into());
+    }
+
+    // Fail a startup that has been stuck in `Starting` for at least `deadline`.
+    // Returns whether the transition happened. This only ever acts on the
+    // manager's current state, and `started_at` is reset by every
+    // `mark_starting`, so it is generation-safe: a superseded generation's
+    // elapsed time is discarded on restart and can never fail a newer one.
+    pub fn fail_if_startup_timed_out(&mut self, deadline: Duration) -> bool {
+        if self.lifecycle != BackendLifecycle::Starting {
+            return false;
+        }
+        let Some(started_at) = self.started_at else {
+            return false;
+        };
+        if started_at.elapsed() < deadline {
+            return false;
+        }
+        self.lifecycle = BackendLifecycle::Failed;
+        self.endpoint = None;
+        self.error = Some(format!(
+            "desktop backend did not become ready within {} seconds",
+            deadline.as_secs()
+        ));
+        true
     }
 
     pub fn status(&self) -> BackendStatus {
@@ -132,11 +189,30 @@ pub struct RunningBackend {
     child: Child,
     stdout_thread: JoinHandle<()>,
     stderr_thread: JoinHandle<()>,
+    // Set by the stdout reader when the backend prints its shutdown
+    // acknowledgement after finishing cleanup; exit is imminent at that point.
+    shutdown_ack: Arc<AtomicBool>,
+    generation: u64,
     #[cfg(unix)]
     process_group_id: Option<i32>,
 }
 
-const BACKEND_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct BackendShutdownPayload {
+    pub event: String,
+}
+
+// The backend documents a 5.0s cleanup budget after SIGTERM
+// (AppController.DESKTOP_SHUTDOWN_CLEANUP_BUDGET_SECONDS); leave real margin
+// above it so a clean shutdown is not force-killed at the deadline.
+const BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT: Duration = Duration::from_millis(6500);
+// Extra wait granted when the backend has already acknowledged shutdown
+// cleanup but has not finished exiting when the graceful deadline passes.
+const BACKEND_SHUTDOWN_ACK_EXTENSION: Duration = Duration::from_millis(1500);
+// Upper bound on how long stop() waits before SIGKILL: the graceful window
+// plus the acknowledgement extension. Asserted by the shutdown-budget tests.
+#[cfg(test)]
+const BACKEND_SHUTDOWN_FORCE_KILL_MAX: Duration = Duration::from_millis(8000);
 const BACKEND_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BACKEND_READER_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
 const BACKEND_READER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -152,25 +228,48 @@ enum ShutdownOutcome {
 fn terminate_backend_process(
     child: &mut Child,
     timeout: Duration,
+    shutdown_ack: Option<&AtomicBool>,
     #[cfg(unix)] process_group_id: Option<i32>,
 ) -> ShutdownOutcome {
-    match child.try_wait() {
-        Ok(Some(_)) => return ShutdownOutcome::AlreadyExited,
-        Ok(None) => {}
-        Err(_) => {}
+    if let Ok(Some(_)) = child.try_wait() {
+        return ShutdownOutcome::AlreadyExited;
     }
 
+    // Deliver a best-effort graceful stop that the backend understands, then
+    // honor the shutdown budget on every platform before force-killing. Only
+    // wait when a graceful signal was actually delivered: if it could not be
+    // sent (e.g. no console on Windows) the backend will not self-exit, so
+    // waiting out the budget would only delay the inevitable force-kill.
+    let graceful_signal_sent;
     #[cfg(unix)]
     {
         let _ = send_sigterm(child, process_group_id);
+        graceful_signal_sent = true;
+    }
+    #[cfg(windows)]
+    {
+        // uvicorn installs a SIGBREAK handler on Windows, so a CTRL_BREAK to the
+        // backend's own process group (created via CREATE_NEW_PROCESS_GROUP)
+        // triggers the same graceful shutdown as SIGTERM on unix.
+        graceful_signal_sent = send_ctrl_break_to_child(child).is_ok();
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        graceful_signal_sent = false;
+    }
+
+    if graceful_signal_sent {
         if wait_for_child_exit(child, timeout) {
             return ShutdownOutcome::GracefulTerminated;
         }
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _ = timeout;
+        // The backend acknowledged that cleanup finished, so its exit is
+        // imminent; grant a short extension instead of force-killing a clean
+        // shutdown at the deadline.
+        if shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
+            && wait_for_child_exit(child, BACKEND_SHUTDOWN_ACK_EXTENSION)
+        {
+            return ShutdownOutcome::GracefulTerminated;
+        }
     }
 
     #[cfg(unix)]
@@ -180,6 +279,27 @@ fn terminate_backend_process(
 
     let _ = child.kill();
     ShutdownOutcome::ForcedKill
+}
+
+// Windows-only graceful stop. The child is spawned with CREATE_NEW_PROCESS_GROUP
+// so its process-group id equals its pid; targeting that group leaves this
+// process (a different group) untouched. Best-effort: in a console-less GUI
+// build GenerateConsoleCtrlEvent fails, and the caller falls back to TerminateProcess.
+#[cfg(windows)]
+fn send_ctrl_break_to_child(child: &Child) -> std::io::Result<()> {
+    const CTRL_BREAK_EVENT: u32 = 1;
+    let result = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
+    if result != 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
 }
 
 #[cfg(unix)]
@@ -223,7 +343,6 @@ fn send_signal_to_process_group(process_group_id: i32, signal: i32) -> std::io::
     }
 }
 
-#[cfg(unix)]
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
@@ -279,14 +398,16 @@ impl RunningBackend {
             .map_err(|_| "backend manager lock poisoned".to_string())?;
         match guard.status().lifecycle {
             BackendLifecycle::Starting => {
-                guard.mark_failed(format!(
-                    "desktop backend exited before ready payload ({exit_status})"
-                ));
+                guard.mark_failed_for_generation(
+                    self.generation,
+                    format!("desktop backend exited before ready payload ({exit_status})"),
+                );
             }
             BackendLifecycle::Ready => {
-                guard.mark_failed(format!(
-                    "desktop backend exited unexpectedly ({exit_status})"
-                ));
+                guard.mark_failed_for_generation(
+                    self.generation,
+                    format!("desktop backend exited unexpectedly ({exit_status})"),
+                );
             }
             BackendLifecycle::Stopped | BackendLifecycle::Failed => {}
         }
@@ -294,9 +415,11 @@ impl RunningBackend {
     }
 
     pub fn stop(mut self, manager: &Arc<Mutex<BackendManager>>) {
+        let generation = self.generation;
         let _ = terminate_backend_process(
             &mut self.child,
-            BACKEND_SHUTDOWN_TIMEOUT,
+            BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT,
+            Some(self.shutdown_ack.as_ref()),
             #[cfg(unix)]
             self.process_group_id,
         );
@@ -311,9 +434,31 @@ impl RunningBackend {
         }
 
         if let Ok(mut guard) = manager.lock() {
-            guard.mark_stopped();
+            guard.mark_stopped_for_generation(generation);
         }
     }
+}
+
+// Install `next` as the supervised backend, fully stopping any child it
+// displaces. `Child` has no kill-on-drop and `RunningBackend` has no `Drop`, so
+// silently overwriting a live entry would leak a running sidecar (and its bound
+// port). Swapping under a short lock and stopping the displaced child outside
+// the lock guarantees the previous process is always torn down.
+pub fn replace_running_backend(
+    slot: &Mutex<Option<RunningBackend>>,
+    manager: &Arc<Mutex<BackendManager>>,
+    next: RunningBackend,
+) -> Result<(), String> {
+    let displaced = {
+        let mut guard = slot
+            .lock()
+            .map_err(|_| "backend process lock poisoned".to_string())?;
+        guard.replace(next)
+    };
+    if let Some(displaced) = displaced {
+        displaced.stop(manager);
+    }
+    Ok(())
 }
 
 fn project_root_dir() -> PathBuf {
@@ -378,7 +523,12 @@ pub fn resolve_sidecar_path(
             candidates.push(exe_dir.join(&filename));
             candidates.push(exe_dir.join("binaries").join(&filename));
             candidates.push(exe_dir.join(sidecar_dir_name).join(&filename));
-            candidates.push(exe_dir.join("binaries").join(sidecar_dir_name).join(&filename));
+            candidates.push(
+                exe_dir
+                    .join("binaries")
+                    .join(sidecar_dir_name)
+                    .join(&filename),
+            );
             candidates.push(exe_dir.join(&filename).join(&filename));
             candidates.push(exe_dir.join("binaries").join(&filename).join(&filename));
             #[cfg(target_os = "macos")]
@@ -461,9 +611,12 @@ fn launch_backend(
     manager: Arc<Mutex<BackendManager>>,
     launch: ProcessLaunchConfig,
 ) -> Result<RunningBackend, String> {
-    if let Ok(mut guard) = manager.lock() {
-        guard.mark_starting();
-    }
+    let generation = {
+        let mut guard = manager
+            .lock()
+            .map_err(|_| "backend manager lock poisoned".to_string())?;
+        guard.mark_starting()
+    };
 
     let mut command = Command::new(&launch.program);
     command
@@ -482,6 +635,14 @@ fn launch_backend(
 
     #[cfg(unix)]
     command.process_group(0);
+
+    // Put the backend in its own process group so a graceful CTRL_BREAK can
+    // target it without signalling this process. 0x0200 = CREATE_NEW_PROCESS_GROUP.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0000_0200);
+    }
 
     let mut child = command.spawn().map_err(|error| {
         let message = format!("failed to launch desktop backend process: {error}");
@@ -519,14 +680,27 @@ fn launch_backend(
     let stdout_manager = Arc::clone(&manager);
     let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
     let stdout_stderr_lines = Arc::clone(&stderr_lines);
+    let shutdown_ack = Arc::new(AtomicBool::new(false));
+    let stdout_shutdown_ack = Arc::clone(&shutdown_ack);
     let stdout_thread = thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
             if let Ok(payload) = parse_ready_line(&line) {
                 if let Ok(mut guard) = stdout_manager.lock() {
-                    guard.mark_ready(payload);
+                    guard.mark_ready_for_generation(generation, payload);
                 }
+            } else if parse_shutdown_line(&line).is_ok() {
+                stdout_shutdown_ack.store(true, Ordering::SeqCst);
             }
+        }
+
+        // An acknowledged shutdown means the backend finished cleanup and
+        // exited on purpose; report it as stopped rather than failed.
+        if stdout_shutdown_ack.load(Ordering::SeqCst) {
+            if let Ok(mut guard) = stdout_manager.lock() {
+                guard.mark_stopped_for_generation(generation);
+            }
+            return;
         }
 
         if let Ok(mut guard) = stdout_manager.lock() {
@@ -545,10 +719,13 @@ fn launch_backend(
                             stderr.trim()
                         )
                     };
-                    guard.mark_failed(error);
+                    guard.mark_failed_for_generation(generation, error);
                 }
                 BackendLifecycle::Ready => {
-                    guard.mark_failed("desktop backend exited unexpectedly");
+                    guard.mark_failed_for_generation(
+                        generation,
+                        "desktop backend exited unexpectedly",
+                    );
                 }
                 BackendLifecycle::Stopped | BackendLifecycle::Failed => {}
             }
@@ -573,6 +750,8 @@ fn launch_backend(
         child,
         stdout_thread,
         stderr_thread,
+        shutdown_ack,
+        generation,
         #[cfg(unix)]
         process_group_id,
     })
@@ -616,6 +795,35 @@ pub fn parse_ready_line(line: &str) -> Result<BackendReadyPayload, String> {
     }
 
     Ok(payload)
+}
+
+pub fn parse_shutdown_line(line: &str) -> Result<BackendShutdownPayload, String> {
+    let payload = serde_json::from_str::<BackendShutdownPayload>(line.trim())
+        .map_err(|error| format!("invalid desktop shutdown payload: {error}"))?;
+
+    if payload.event != "shutdown" {
+        return Err(format!(
+            "unexpected desktop event '{}'; expected 'shutdown'",
+            payload.event
+        ));
+    }
+
+    Ok(payload)
+}
+
+#[cfg(test)]
+pub fn backend_shutdown_graceful_timeout() -> Duration {
+    BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT
+}
+
+#[cfg(test)]
+pub fn backend_shutdown_force_kill_max() -> Duration {
+    BACKEND_SHUTDOWN_FORCE_KILL_MAX
+}
+
+#[cfg(test)]
+pub fn backend_shutdown_ack_extension() -> Duration {
+    BACKEND_SHUTDOWN_ACK_EXTENSION
 }
 
 pub fn read_ready_payload_from_file(path: impl AsRef<Path>) -> Result<BackendReadyPayload, String> {

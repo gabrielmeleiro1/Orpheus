@@ -333,6 +333,10 @@ def _copy_ffmpeg_binaries(
         destination_name = f"{binary_name}.exe" if _is_windows_target(target_triple) else binary_name
         destination = bin_dir / destination_name
         shutil.copy2(source, destination)
+        # Tauri must mutate/sign bundled Mach-O resources during packaging.
+        destination.chmod(
+            destination.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
+        )
 
 
 def _macho_rpaths(binary_path: Path) -> list[str]:

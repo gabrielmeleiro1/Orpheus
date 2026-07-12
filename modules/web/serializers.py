@@ -33,11 +33,14 @@ def book_to_dict(book: dict) -> dict:
     return payload
 
 
-def job_status_value(job) -> str:
-    status = getattr(job, "status", None)
+def _status_value(status) -> str:
     if hasattr(status, "value"):
         return status.value
     return str(status) if status is not None else "unknown"
+
+
+def job_status_value(job) -> str:
+    return _status_value(getattr(job, "status", None))
 
 
 def job_payload(job) -> dict:
@@ -50,15 +53,10 @@ def job_payload(job) -> dict:
         status = getattr(job, "status", None)
         error = getattr(job, "error", None)
 
-    if hasattr(status, "value"):
-        status_value = status.value
-    else:
-        status_value = str(status) if status is not None else "unknown"
-
     return {
         "id": job_id,
         "book_id": book_id,
-        "status": status_value,
+        "status": _status_value(status),
         "error": error,
     }
 

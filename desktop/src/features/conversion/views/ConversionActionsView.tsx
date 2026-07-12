@@ -48,7 +48,14 @@ export function ConversionActionsView({
         </div>
       </div>
 
-      <button id="start-btn" className="btn btn-primary" type="button" disabled={!capabilities.canStartConversion} onClick={() => void actions.onStartConversion()}>
+      <button
+        id="start-btn"
+        className="btn btn-primary"
+        type="button"
+        hidden={!capabilities.showStartConversion}
+        disabled={!capabilities.canStartConversion}
+        onClick={() => void actions.onStartConversion()}
+      >
         {conversionActions.startLabel}
       </button>
 
