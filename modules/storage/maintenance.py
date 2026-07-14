@@ -67,9 +67,14 @@ def path_is_within_root(path: Path | str, root: Path | str) -> bool:
     return True
 
 
-def resolve_app_owned_sources_root(workspace_root: Path | str) -> Path:
-    """Return the app-owned durable sources directory for a workspace layout."""
+def resolve_app_owned_sources_root(
+    workspace_root: Path | str,
+    db_path: Path | str | None = None,
+) -> Path:
+    """Return the app-owned durable sources directory for the active database."""
     root = Path(workspace_root).expanduser().resolve()
+    if db_path is not None:
+        return (Path(db_path).expanduser().resolve().parent / "sources").resolve()
     for parent_name in APP_OWNED_DB_PARENT_NAMES:
         parent = root / parent_name
         if parent.is_dir():
@@ -370,7 +375,7 @@ def _move_referenced_upload_sources(
                 continue
             if not source_path.exists():
                 continue
-            if "web_uploads" not in source_path.parts:
+            if not path_is_within_root(source_path, Path(temp_root) / "web_uploads"):
                 continue
 
             destination = unique_destination_path(canonical_sources_dir / source_path.name)

@@ -1,12 +1,13 @@
-"""Lifecycle tests for temp web uploads: TTL sweep and durable-copy cleanup."""
+"""Lifecycle tests for temp web uploads and safe TTL cleanup."""
 
 from __future__ import annotations
 
 import os
 import time
 
-from modules.app.services.conversion_service import ConversionService
 from modules.app.services.library_service import LibraryService, WEB_UPLOAD_TTL_SECONDS
+from modules.storage.models import BookCreate, SourceType
+from modules.storage.sqlite_repo import SQLiteRepository
 
 
 def _library_service(tmp_path) -> LibraryService:
@@ -57,24 +58,34 @@ def test_sweep_leaves_fresh_upload_and_subdirectories(tmp_path) -> None:
     assert nested.exists()
 
 
+def test_sweep_preserves_expired_upload_referenced_by_library(tmp_path) -> None:
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    upload_root = temp_dir / "web_uploads"
+    upload_root.mkdir(parents=True)
+    source = upload_root / "queued.epub"
+    source.write_text("queued", encoding="utf-8")
+    expired_mtime = time.time() - WEB_UPLOAD_TTL_SECONDS - 60
+    os.utime(source, (expired_mtime, expired_mtime))
+
+    repository = SQLiteRepository(tmp_path / "data" / "app.db", output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        repository.create_book(
+            BookCreate(
+                title="Queued",
+                author="Author",
+                source_path=str(source),
+                source_type=SourceType.EPUB,
+                total_chapters=1,
+            )
+        )
+        service = LibraryService(repository, output_dir=output_dir, temp_dir=temp_dir)
+        assert service.sweep_stale_uploads() == 0
+        assert source.exists()
+    finally:
+        repository.close()
+
+
 def test_sweep_handles_missing_upload_root(tmp_path) -> None:
     service = _library_service(tmp_path)
     assert service.sweep_stale_uploads() == 0
-
-
-def test_delete_consumed_upload_only_removes_web_upload_paths(tmp_path) -> None:
-    upload_root = (tmp_path / "temp" / "web_uploads").resolve()
-    upload_root.mkdir(parents=True)
-
-    inside = upload_root / "book.epub"
-    inside.write_text("uploaded", encoding="utf-8")
-
-    outside = tmp_path / "user_docs" / "book.epub"
-    outside.parent.mkdir(parents=True)
-    outside.write_text("user owned", encoding="utf-8")
-
-    ConversionService._delete_consumed_upload(inside, upload_root)  # noqa: SLF001
-    ConversionService._delete_consumed_upload(outside, upload_root)  # noqa: SLF001
-
-    assert not inside.exists()
-    assert outside.exists()

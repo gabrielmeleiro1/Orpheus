@@ -936,8 +936,8 @@ def test_conversion_service_copies_temp_web_upload_before_worker_starts(tmp_path
     )
 
     assert started_with["source_path"] == durable_path
-    # The temp web upload is consumed (deleted) once copied into durable storage.
-    assert not source_path.exists()
+    # Keep the upload handle valid so a failed pipeline can be retried.
+    assert source_path.exists()
     assert durable_path.is_file()
 
 
@@ -1063,8 +1063,8 @@ def test_conversion_service_persists_durable_source_path_for_temp_web_upload(tmp
 
     assert job.status == _JobStatus.COMPLETED
     assert repo.created_book.source_path == str(durable_path)
-    # The temp web upload is consumed (deleted) once copied into durable storage.
-    assert not upload_source.exists()
+    # Keep the upload handle valid so a failed pipeline can be retried.
+    assert upload_source.exists()
     assert durable_path.is_file()
 
 
@@ -5184,6 +5184,17 @@ def test_conversion_service_begin_storage_cleanup_rejects_active_job(tmp_path):
 
     with pytest.raises(RuntimeError, match="queued or running"):
         service.begin_storage_cleanup()
+
+
+def test_conversion_service_book_cleanup_blocks_same_book_repair(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+    service.begin_book_cleanup(42)
+    try:
+        with pytest.raises(RuntimeError, match="Book cleanup"):
+            service.start_repair(42, runtime_options=_default_runtime_options())
+    finally:
+        service.end_book_cleanup(42)
+    assert 42 not in service._book_cleanup_ids  # noqa: SLF001
 
 
 def test_app_controller_cleanup_storage_guards_conversion_starts_during_prune(

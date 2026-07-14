@@ -249,6 +249,13 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     }
 
     const title = selectedBookDetail?.title || items.find((item) => item.id === selectedBookId)?.title || "selected book";
+    if (
+      typeof window !== "undefined" &&
+      typeof window.confirm === "function" &&
+      !window.confirm(`Delete ${title}? This removes its generated audio and cannot be undone.`)
+    ) {
+      return false;
+    }
     const deletedStatus = `deleted ${title}`;
     const previousItems = items;
     const previousSelectedBookId = selectedBookId;

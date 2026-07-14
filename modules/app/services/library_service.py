@@ -134,6 +134,9 @@ class LibraryService:
                     continue
                 if entry.stat().st_mtime >= cutoff:
                     continue
+                if self._is_source_referenced_by_books(entry):
+                    logger.debug("Preserving stale upload still referenced by a book: %s", entry)
+                    continue
                 entry.unlink(missing_ok=True)
                 removed += 1
             except OSError:
@@ -310,7 +313,10 @@ class LibraryService:
         )
 
     def _app_owned_sources_root(self) -> Path:
-        return resolve_app_owned_sources_root(self._workspace_root())
+        return resolve_app_owned_sources_root(
+            self._workspace_root(),
+            getattr(self._repository, "db_path", None),
+        )
 
     def _is_app_owned_durable_source_path(self, path: Path) -> bool:
         return is_app_owned_durable_source(path, self._app_owned_sources_root())
@@ -320,11 +326,11 @@ class LibraryService:
         # managed (deletable) source locations.
         return self._is_app_owned_durable_source_path(path) or self._is_managed_source_path(path)
 
-    def _is_source_referenced_by_other_books(
+    def _is_source_referenced_by_books(
         self,
         source_path: Path,
         *,
-        exclude_book_id: int,
+        exclude_book_id: int | None = None,
     ) -> bool:
         list_books = getattr(self._repository, "list_books", None)
         if list_books is None:
@@ -341,7 +347,7 @@ class LibraryService:
             if not books:
                 return False
             for book in books:
-                if book.id == exclude_book_id:
+                if exclude_book_id is not None and book.id == exclude_book_id:
                     continue
                 other_path = self._resolve_stored_path(getattr(book, "source_path", None))
                 if other_path is not None and other_path.resolve() == target:
@@ -349,6 +355,17 @@ class LibraryService:
             if len(books) < page_size:
                 return False
             offset += page_size
+
+    def _is_source_referenced_by_other_books(
+        self,
+        source_path: Path,
+        *,
+        exclude_book_id: int,
+    ) -> bool:
+        return self._is_source_referenced_by_books(
+            source_path,
+            exclude_book_id=exclude_book_id,
+        )
 
     def _should_delete_managed_source(self, source_path: Path, *, exclude_book_id: int) -> bool:
         if not self._is_managed_deletable_source_path(source_path):
@@ -472,17 +489,6 @@ class LibraryService:
                 "cleaning_trace.jsonl",
             ):
                 output_files.add(artifact_dir / f"{prefix}_{suffix}")
-
-        # Only guess a title-derived directory when no real output directory
-        # could be resolved from stored paths. Otherwise a book whose actual
-        # directory was de-duplicated (e.g. "Title (2)") would also delete a
-        # different book that owns the plain "Title" directory.
-        if not output_dirs:
-            safe_title = sanitize_book_title(getattr(book, "title", ""))
-            if safe_title:
-                fallback_dir = self._output_dir / safe_title
-                if self._is_within_output_root(fallback_dir) and not self._is_output_root(fallback_dir):
-                    output_dirs.add(fallback_dir)
 
         return output_dirs, output_files
 

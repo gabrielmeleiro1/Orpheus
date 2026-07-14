@@ -11,6 +11,7 @@ from modules.app.config import AppConfig
 from modules.app import controller as app_controller_module
 from modules.app.services.library_service import LibraryService
 from modules.storage.models import Book, Chapter, ConversionMode, PlaybackStatus, SourceType
+from modules.storage.sqlite_repo import SQLiteRepository
 
 
 class _RepositoryStub:
@@ -618,6 +619,48 @@ def test_library_service_delete_book_with_duplicate_title_preserves_sibling_outp
     assert sibling_dir.exists()
     assert (sibling_dir / "Shared Title.m4b").exists()
     assert (sibling_chapters / "01.mp3").exists()
+
+
+def test_library_service_delete_book_without_paths_does_not_guess_title_directory(tmp_path):
+    output_root = tmp_path / "output"
+    sibling_dir = output_root / "Shared Title"
+    sibling_dir.mkdir(parents=True)
+    sibling_audio = sibling_dir / "Shared Title.m4b"
+    sibling_audio.write_text("sibling audio", encoding="utf-8")
+
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=43,
+                title="Shared Title",
+                author="Tester",
+                source_path=str(tmp_path / "imports" / "shared.epub"),
+                source_type=SourceType.EPUB,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.MISSING,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=43,
+                    book_id=43,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path=None,
+                )
+            ],
+        )
+    )
+
+    service = LibraryService(repository, output_dir=output_root)
+
+    assert service.delete_book(43) is True
+    assert sibling_audio.exists()
 
 
 def test_library_service_delete_book_refuses_path_traversal_in_stored_paths(tmp_path):
@@ -1415,6 +1458,24 @@ def test_library_service_delete_book_removes_durable_app_owned_source(tmp_path):
     assert repository.deleted_ids == [8]
     assert not durable_source.exists()
     assert not book_dir.exists()
+
+
+def test_library_service_uses_active_state_database_for_durable_sources(tmp_path):
+    data_dir = tmp_path / "data"
+    state_dir = tmp_path / "state"
+    (data_dir / "sources").mkdir(parents=True)
+    state_sources = state_dir / "sources"
+    state_sources.mkdir(parents=True)
+
+    repository = SQLiteRepository(state_dir / "audiobooks.db")
+    service = LibraryService(
+        repository,
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        storage_root=tmp_path,
+    )
+
+    assert service._is_app_owned_durable_source_path(state_sources / "book.epub")  # noqa: SLF001
 
 
 def test_library_service_delete_book_preserves_shared_durable_source(tmp_path):

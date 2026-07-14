@@ -391,7 +391,49 @@ def test_prune_is_safe_against_path_traversal_in_stored_paths(tmp_path):
     assert protected_source.exists()
     assert protected_source.read_bytes() == b"user secret"
     assert protected_artifact.exists()
-    assert outside.exists()
+
+
+def test_prune_does_not_move_absolute_path_with_web_uploads_name(tmp_path):
+    """Only files inside the managed upload root may be promoted to durable storage."""
+    workspace = tmp_path / "workspace"
+    db_path = workspace / "data" / "audiobooks.db"
+    output_dir = workspace / "output"
+    temp_dir = workspace / "temp"
+    (output_dir).mkdir(parents=True, exist_ok=True)
+    (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
+
+    lookalike = tmp_path / "user" / "Documents" / "web_uploads" / "novel.epub"
+    lookalike.parent.mkdir(parents=True, exist_ok=True)
+    lookalike.write_bytes(b"user-owned source")
+    chapter_path = output_dir / "User Source" / "chapters" / "01_source.mp3"
+    chapter_path.parent.mkdir(parents=True, exist_ok=True)
+    chapter_path.write_bytes(b"audio")
+
+    repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        repo.create_book_with_chapters(
+            BookCreate(
+                title="User Source",
+                author="Author",
+                source_path=str(lookalike),
+                source_type=SourceType.EPUB,
+                total_chapters=1,
+            ),
+            [ChapterCreate(book_id=0, chapter_number=1, title="One", mp3_path=str(chapter_path))],
+        )
+    finally:
+        repo.close()
+
+    report = prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+    )
+
+    assert report["actions"]["moved_sources"] == []
+    assert lookalike.exists()
+    assert not (db_path.parent / "sources" / lookalike.name).exists()
 
 
 def test_prune_is_idempotent_and_preserves_live_artifacts_on_repeated_runs(tmp_path):

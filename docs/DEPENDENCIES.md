@@ -18,7 +18,8 @@ brew install python@3.12 node rust ffmpeg
 - Python 3.12 is recommended for the desktop sidecar build and is the version
   used by the packaged runtime dependencies.
 - Node.js is used by the React/Vite/Tauri frontend.
-- Rust is used by the Tauri shell and is resolved through `desktop/src-tauri/Cargo.lock`.
+- Rust 1.88 or newer is required by the Tauri shell; crate versions are resolved
+  through `desktop/src-tauri/Cargo.lock`.
 - `ffmpeg` and `ffprobe` are required for audio encoding and are copied into the
   packaged sidecar during release builds.
 

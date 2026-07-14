@@ -92,6 +92,7 @@ class ConversionService:
         self._job_lock = threading.Lock()
         self._job_sequence = count()
         self._storage_cleanup_active = False
+        self._book_cleanup_ids: set[int] = set()
         self._tts_session = TtsEngineSession()
 
     def _job_is_active_or_pending(self, job: Any) -> bool:
@@ -152,6 +153,25 @@ class ConversionService:
     def end_storage_cleanup(self) -> None:
         with self._job_lock:
             self._storage_cleanup_active = False
+
+    def begin_book_cleanup(self, book_id: int) -> None:
+        """Reserve a book for deletion while preventing a same-book job start."""
+        normalized_book_id = int(book_id)
+        with self._job_lock:
+            active_job = self._active_job
+            if (
+                active_job is not None
+                and getattr(active_job, "book_id", None) == normalized_book_id
+                and self._job_is_active_or_pending(active_job)
+            ):
+                raise RuntimeError(
+                    "Cannot delete a book while it is being converted or repaired"
+                )
+            self._book_cleanup_ids.add(normalized_book_id)
+
+    def end_book_cleanup(self, book_id: int) -> None:
+        with self._job_lock:
+            self._book_cleanup_ids.discard(int(book_id))
 
     def start_conversion(
         self,
@@ -224,7 +244,6 @@ class ConversionService:
                 except Exception:
                     self._cleanup_partial_durable_source(durable_path)
                     raise
-                self._delete_consumed_upload(source_path, upload_root)
                 return durable_path
             except FileExistsError:
                 durable_path = sources_dir / f"{source_path.stem}_{index}{source_path.suffix}"
@@ -232,24 +251,6 @@ class ConversionService:
             except Exception:
                 self._cleanup_partial_durable_source(durable_path)
                 raise
-
-    @staticmethod
-    def _delete_consumed_upload(source_path: Path, upload_root: Path) -> None:
-        """Delete a temp web-upload after it has been copied into durable storage.
-
-        Guards against removing user-owned paths: only files that resolve inside
-        the server-owned ``web_uploads`` root are eligible.
-        """
-        try:
-            source_path.resolve().relative_to(upload_root)
-        except ValueError:
-            return
-        try:
-            source_path.unlink(missing_ok=True)
-        except OSError:
-            logger.warning(
-                "Failed to remove consumed temp upload: %s", source_path, exc_info=True
-            )
 
     @staticmethod
     def _cleanup_partial_durable_source(path: Path) -> None:
@@ -286,6 +287,8 @@ class ConversionService:
         self._validate_requested_tts_runtime(runtime_options=resolved_options)
 
         with self._job_lock:
+            if int(book_id) in self._book_cleanup_ids:
+                raise RuntimeError("Book cleanup is in progress")
             self._ensure_job_slot_available_locked()
             job_id = f"repair_{book_id}_{time.time_ns()}_{next(self._job_sequence)}"
             job = self._job_cls(id=job_id, book_id=book_id, status=self._status.IDLE)

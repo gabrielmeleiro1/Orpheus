@@ -285,6 +285,15 @@ class AppController:
         return self._library_service.get_chapter_cleaning_preview(book_id, chapter_number)
 
     def delete_book(self, book_id: int) -> bool:
+        begin_cleanup = getattr(self._conversion_service, "begin_book_cleanup", None)
+        end_cleanup = getattr(self._conversion_service, "end_book_cleanup", None)
+        if callable(begin_cleanup) and callable(end_cleanup):
+            begin_cleanup(book_id)
+            try:
+                return self._library_service.delete_book(book_id)
+            finally:
+                end_cleanup(book_id)
+
         active_job = self._conversion_service.get_active_job()
         if (
             active_job is not None

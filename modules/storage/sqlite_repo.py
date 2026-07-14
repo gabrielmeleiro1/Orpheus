@@ -617,4 +617,3 @@ class SQLiteRepository(IBookRepository):
                 "SELECT * FROM chapters WHERE id = ?", (chapter_id,)
             ).fetchone()
             return self._row_to_chapter(row) if row else None
-
