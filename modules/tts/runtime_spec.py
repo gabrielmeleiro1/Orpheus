@@ -29,6 +29,8 @@ def canonical_provider(provider: str | None) -> str | None:
 KOKORO_MLX_DEFAULT_MODEL = "mlx-community/Kokoro-82M"
 KOKORO_PACKAGE_DEFAULT_MODEL = "hexgrad/Kokoro-82M"
 KOKORO_DEFAULT_MODEL = KOKORO_MLX_DEFAULT_MODEL
+CLEANER_MLX_DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
+CLEANER_CUDA_DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 # CUDA provider option names and coercion keys (single source of truth).
 CUDA_RUNTIME_OPTION_BOOL_KEYS = frozenset(

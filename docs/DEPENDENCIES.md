@@ -41,7 +41,7 @@ Contributor and packaging tools are listed in:
 requirements-dev.txt
 ```
 
-Install everything needed for development, tests, and desktop packaging:
+Install the shared application and contributor dependencies first:
 
 ```bash
 python3.12 -m venv venv
@@ -53,18 +53,50 @@ python -m pip install -r requirements-dev.txt
 `requirements-dev.txt` includes `requirements.txt`, so do not install both
 separately.
 
-### CUDA cleaner backend
+Local ML runtimes are opt-in profiles. Install exactly one when local synthesis
+or cleaning is needed:
 
-The ``cuda`` cleaner backend shares the committed PyTorch stack in
-``requirements.txt``:
+```bash
+# macOS 14+ on arm64 Apple Silicon; contains no PyTorch
+python -m pip install -r requirements/mlx.txt
+
+# Linux/Windows with a supported NVIDIA GPU and driver
+python -m pip install -r requirements/cuda.txt
+```
+
+The desktop sidecar builder follows the same boundary. It defaults to `mlx` for
+an `aarch64-apple-darwin` target and to `base` elsewhere. CUDA packaging must be
+requested explicitly:
+
+```bash
+python scripts/build_desktop_backend.py --runtime-profile cuda
+```
+
+### CUDA cleaner backend and accepted PyTorch risk
+
+The `cuda` profile is an explicit opt-in. It contains:
 
 - ``torch`` — CUDA runtime and model execution
 - ``transformers`` — Hugging Face model loading and generation
 - ``bitsandbytes`` — optional 4-bit / 8-bit quantization (``CleanerConfig.cuda_quantization``)
 
-These packages are installed with the normal development workflow above. A CUDA-capable
-NVIDIA driver and GPU are required at runtime; the desktop sidecar build on macOS
-does not bundle CUDA wheels.
+Operating-system compatibility only makes the CUDA option selectable. Actual
+readiness still requires a successful NVIDIA GPU and driver probe.
+
+As of 2026-07-14, `torch==2.10.0` is affected by PYSEC-2026-139 / CVE-2026-4538
+and CVE-2025-3000, and upstream publishes no fixed release. This risk is accepted
+only for the opt-in CUDA profile with these controls:
+
+- Load model artifacts only from the curated project allowlist or another source
+  the user fully trusts.
+- Never deserialize untrusted pickle files, checkpoints, or arbitrary local model
+  paths. Treat model files as executable input.
+- Keep PyTorch absent from the base and MLX profiles.
+- Run `pip-audit -r requirements/cuda.txt` at every release and upgrade as soon as
+  upstream provides a fixed compatible version. A newly available fix blocks the
+  release until the pin and clean-environment verification are updated.
+
+This is a scoped acceptance, not a claim that the advisories are fixed.
 
 ### Local model assets
 
@@ -80,12 +112,33 @@ python scripts/download_models.py
 
 By default this downloads `hexgrad/Kokoro-82M` into the normal Hugging Face
 cache with Hugging Face cache symlinks disabled, which avoids the common
-Windows non-admin symlink failure. To keep a copied model directory inside the
-workspace, use:
+Windows non-admin symlink failure.
+
+Choose one or more curated groups when configuring an optional local runtime:
+
+```bash
+# Apple Silicon
+python scripts/download_models.py --group tts-mlx --group cleaner-mlx
+
+# NVIDIA CUDA / package-backed CPU TTS
+python scripts/download_models.py --group tts-cpu-cuda --group cleaner-cuda
+```
+
+`--list-groups` prints the stable allowlist and its exact Hugging Face model
+IDs. Add `--json` for machine-readable setup output. Explicit `--model`
+arguments remain supported for advanced users and are deduplicated with group
+models in first-seen order. Model IDs are reported before any download begins;
+the helper never accepts or persists API keys or arbitrary download URLs.
+
+To keep a copied model directory inside the workspace, use:
 
 ```bash
 python scripts/download_models.py --local-dir .artifacts/models/kokoro
 ```
+
+When multiple models are selected with `--local-dir`, each snapshot is placed
+in its own deterministic, filesystem-safe subdirectory so model files cannot
+overwrite one another.
 
 Then point local runs at that model directory in `.env.local`:
 

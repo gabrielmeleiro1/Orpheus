@@ -1,0 +1,14 @@
+# Apple Silicon local runtime. Requires macOS on Apple Silicon.
+-r base.txt
+
+mlx==0.32.0; platform_system == "Darwin" and platform_machine == "arm64"
+mlx-lm==0.31.3; platform_system == "Darwin" and platform_machine == "arm64"
+mlx-audio==0.4.5; platform_system == "Darwin" and platform_machine == "arm64"
+transformers==5.12.1
+
+# Pin Kokoro phonemization without the misaki[en] extra, which pulls PyTorch.
+misaki==0.9.4
+espeakng-loader==0.2.4
+num2words==0.5.14
+phonemizer-fork==3.3.2
+language-tags==1.2.0

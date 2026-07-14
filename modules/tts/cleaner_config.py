@@ -6,20 +6,24 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
 from modules.tts.runtime_options import validate_device
+from modules.tts.runtime_spec import (
+    CLEANER_CUDA_DEFAULT_MODEL,
+    CLEANER_MLX_DEFAULT_MODEL,
+)
 
 # Curated MLX model options for text cleaning (backend="mlx").
 # The default remains first.
 CLEANER_MODEL_CHOICES = [
-    "mlx-community/Llama-3.2-3B-Instruct-4bit",
+    CLEANER_MLX_DEFAULT_MODEL,
     "mlx-community/Llama-3.2-1B-Instruct-4bit",
 ]
 # Curated Hugging Face model options for CUDA text cleaning (backend="cuda").
 CUDA_CLEANER_MODEL_CHOICES = [
-    "Qwen/Qwen2.5-1.5B-Instruct",
+    CLEANER_CUDA_DEFAULT_MODEL,
     "meta-llama/Llama-3.2-3B-Instruct",
     "meta-llama/Llama-3.2-1B-Instruct",
 ]
-DEFAULT_CUDA_MODEL = CUDA_CLEANER_MODEL_CHOICES[0]
+DEFAULT_CUDA_MODEL = CLEANER_CUDA_DEFAULT_MODEL
 CUDA_CLEANER_QUANTIZATIONS = ("4bit", "8bit", "fp16")
 
 DEFAULT_API_MODEL = "gpt-5-nano"
@@ -41,7 +45,7 @@ class CleanerConfig:
     ``cuda_device`` and ``cuda_quantization``.
     """
 
-    model_name: str = "mlx-community/Llama-3.2-3B-Instruct-4bit"
+    model_name: str = CLEANER_MLX_DEFAULT_MODEL
     max_tokens: int = 2048
     temperature: float = 0.1
     batch_size: int = 1
@@ -123,13 +127,13 @@ def resolve_cleaner_model_name(
     if requested_model:
         return requested_model
 
-    config_model = configured_model or CLEANER_MODEL_CHOICES[0]
+    config_model = configured_model or CLEANER_MLX_DEFAULT_MODEL
     if normalized_backend == "cuda" and not explicit_model:
         if config_model in CLEANER_MODEL_CHOICES:
             return DEFAULT_CUDA_MODEL
         return config_model
     if normalized_backend != "cuda" and config_model in CUDA_CLEANER_MODEL_CHOICES:
-        return CLEANER_MODEL_CHOICES[0]
+        return CLEANER_MLX_DEFAULT_MODEL
     return config_model
 
 

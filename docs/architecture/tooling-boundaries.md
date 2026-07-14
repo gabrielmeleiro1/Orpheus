@@ -94,8 +94,9 @@ JSON summary writers, env application (`_apply_cleaner_env`).
 
 - Output: `desktop/src-tauri/binaries/orpheus-desktop-backend` (+ platform triple artifacts)
 - Bundles FFmpeg via `resolve_ffmpeg_binary`
-- Hardcoded `REQUIRED_MODULES` list (torch, mlx, kokoro, etc.) — must stay aligned
-  with actual import graph or sidecar fails at runtime
+- Profile-aware `BASE_REQUIRED_MODULES`, `MLX_REQUIRED_MODULES`, and
+  `CUDA_REQUIRED_MODULES` lists must stay aligned with each profile's import graph
+  or its sidecar fails at runtime
 
 ### Git hooks
 
@@ -250,7 +251,7 @@ No shared path helper; benchmark artifacts must stay out of user library output
 
 | Location | Hardcoding |
 |----------|------------|
-| `build_desktop_backend.py` | `DARWIN_REQUIRED_MODULES`, `CUDA_REQUIRED_MODULES` |
+| `build_desktop_backend.py` | `BASE_REQUIRED_MODULES`, `MLX_REQUIRED_MODULES`, `CUDA_REQUIRED_MODULES` |
 | `pre-push` | Python 3.12 only; skips specific flaky tests by name |
 | `benchmark_nagel_pipeline.py` | Default voice, chunk sizes, parser dispatch table |
 | `download_models.py` | `KOKORO_PACKAGE_DEFAULT_MODEL` from `runtime_spec` (good — uses module constant) |

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { RuntimeSetupStatusResponse } from "../types/api";
 import { createApiClient } from "./client";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -169,6 +170,41 @@ describe("api client errors", () => {
 describe("api client request contracts", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("fetches the read-only setup status with desktop bearer auth", async () => {
+    const status: RuntimeSetupStatusResponse = {
+      schema_version: 1,
+      configured: false,
+      state: "error",
+      state_error: "unavailable",
+      selected_profile: null,
+      selected_model_groups: [],
+      packages: { ready: false, missing: [], incompatible: [] },
+      probe: { ready: false, checks: [] },
+      ready: false,
+      restart_required: false,
+      profiles: [],
+      risk: null,
+      backend: { instance_id: "1".repeat(32), status: "running" },
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(status));
+    const client = createApiClient({
+      baseUrl: "http://127.0.0.1:8765",
+      token: " desktop-token ",
+    });
+
+    await expect(client.getRuntimeSetupStatus({ timeoutMs: 1000 })).resolves.toEqual(status);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1:8765/api/setup/status",
+      expect.objectContaining({
+        headers: expect.any(Headers),
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    const headers = fetchMock.mock.calls[0][1]?.headers as Headers;
+    expect(headers.get("Authorization")).toBe("Bearer desktop-token");
   });
 
   it("sends favorite library filters when provided", async () => {

@@ -29,7 +29,7 @@ BUILD_ROOT = TAURI_DIR / "target" / "pyinstaller-sidecar"
 WORK_DIR = BUILD_ROOT / "work"
 DIST_DIR = BUILD_ROOT / "dist"
 
-COMMON_REQUIRED_MODULES = (
+BASE_REQUIRED_MODULES = (
     "fastapi",
     "uvicorn",
     "numpy",
@@ -39,32 +39,32 @@ COMMON_REQUIRED_MODULES = (
     "scipy",
     "spacy",
     "thinc",
-    "torch",
-    "transformers",
-    "kokoro",
-    "espeakng_loader",
 )
-DARWIN_REQUIRED_MODULES = (
+MLX_REQUIRED_MODULES = (
     "mlx",
     "mlx_lm",
     "mlx_audio",
+    "transformers",
+    "misaki",
+    "espeakng_loader",
+    "num2words",
+    "phonemizer",
+    "language_tags",
 )
-CUDA_REQUIRED_MODULES = ("bitsandbytes",)
-REQUIRED_MODULES = (*COMMON_REQUIRED_MODULES, *DARWIN_REQUIRED_MODULES, *CUDA_REQUIRED_MODULES)
-
+CUDA_REQUIRED_MODULES = (
+    "torch",
+    "transformers",
+    "kokoro",
+    "bitsandbytes",
+    "misaki",
+    "espeakng_loader",
+    "language_tags",
+)
 REQUIRED_BINARIES = ("ffmpeg", "ffprobe")
-COMMON_REQUIRED_PYINSTALLER_RESOURCES = (
+PHONEMIZER_REQUIRED_PYINSTALLER_RESOURCES = (
     Path("_internal") / "espeakng_loader" / "espeak-ng-data" / "phontab",
 )
-DARWIN_REQUIRED_PYINSTALLER_RESOURCES = (
-    Path("_internal") / "mlx" / "lib" / "mlx.metallib",
-)
-REQUIRED_SIDECAR_RESOURCES = (
-    *COMMON_REQUIRED_PYINSTALLER_RESOURCES,
-    *DARWIN_REQUIRED_PYINSTALLER_RESOURCES,
-    Path("bin") / "ffmpeg",
-    Path("bin") / "ffprobe",
-)
+DARWIN_REQUIRED_PYINSTALLER_RESOURCES = (Path("_internal") / "mlx" / "lib" / "mlx.metallib",)
 MLX_CORE_EXTENSION = Path("_internal") / "mlx" / "core.cpython-312-darwin.so"
 MLX_ROOT_DYLIB = Path("_internal") / "libmlx.dylib"
 MLX_NESTED_DYLIB = Path("_internal") / "mlx" / "lib" / "libmlx.dylib"
@@ -86,6 +86,15 @@ def _parse_args() -> argparse.Namespace:
         "--target-triple",
         default="",
         help="Explicit target triple (for example: aarch64-apple-darwin).",
+    )
+    parser.add_argument(
+        "--runtime-profile",
+        choices=("base", "mlx", "cuda"),
+        default=None,
+        help=(
+            "Runtime bundled into the sidecar. Defaults to mlx for Apple Silicon "
+            "targets and base elsewhere; CUDA is always explicit."
+        ),
     )
     parser.add_argument(
         "--python",
@@ -150,6 +159,11 @@ def _is_darwin_target(target_triple: str) -> bool:
     return "apple-darwin" in target_triple.lower()
 
 
+def _is_apple_silicon_target(target_triple: str) -> bool:
+    normalized = target_triple.lower()
+    return normalized.startswith("aarch64-") and "apple-darwin" in normalized
+
+
 def _target_os(target_triple: str) -> str:
     normalized = target_triple.lower()
     if "apple-darwin" in normalized:
@@ -181,18 +195,62 @@ def _validate_pyinstaller_target_matches_host(target_triple: str) -> None:
     )
 
 
-def required_modules(target_triple: str) -> tuple[str, ...]:
-    modules = list(COMMON_REQUIRED_MODULES)
-    if _is_darwin_target(target_triple):
-        modules.extend(DARWIN_REQUIRED_MODULES)
-    else:
+def _validate_runtime_profile_host(target_triple: str, runtime_profile: str) -> None:
+    """Reject a selected profile when the build host cannot support it."""
+    if runtime_profile != "mlx":
+        return
+    version = platform.mac_ver()[0]
+    try:
+        major_version = int(version.split(".", 1)[0])
+    except (AttributeError, ValueError):
+        major_version = 0
+    if major_version < 14:
+        raise RuntimeError(
+            "The MLX runtime profile requires macOS 14 or newer. "
+            f"Detected: {version or 'unknown'} (target {target_triple})."
+        )
+
+
+def default_runtime_profile(target_triple: str) -> str:
+    """Return the safe packaging default for a target."""
+    return "mlx" if _is_apple_silicon_target(target_triple) else "base"
+
+
+def _resolve_runtime_profile(target_triple: str, runtime_profile: str | None) -> str:
+    profile = (runtime_profile or default_runtime_profile(target_triple)).strip().lower()
+    if profile not in {"base", "mlx", "cuda"}:
+        raise RuntimeError(f"Unknown runtime profile: {runtime_profile!r}")
+    if profile == "mlx" and not _is_apple_silicon_target(target_triple):
+        raise RuntimeError("The MLX runtime profile requires an aarch64 Apple Darwin target.")
+    if profile == "cuda" and _target_os(target_triple) not in {"linux", "windows"}:
+        raise RuntimeError("The CUDA runtime profile requires a Linux or Windows target.")
+    return profile
+
+
+def required_modules(
+    target_triple: str,
+    *,
+    runtime_profile: str | None = None,
+) -> tuple[str, ...]:
+    profile = _resolve_runtime_profile(target_triple, runtime_profile)
+    modules = list(BASE_REQUIRED_MODULES)
+    if profile == "mlx":
+        modules.extend(MLX_REQUIRED_MODULES)
+    elif profile == "cuda":
         modules.extend(CUDA_REQUIRED_MODULES)
     return tuple(dict.fromkeys(modules))
 
 
-def required_sidecar_resources(target_triple: str) -> tuple[Path, ...]:
-    resources = list(COMMON_REQUIRED_PYINSTALLER_RESOURCES)
-    if _is_darwin_target(target_triple):
+def required_sidecar_resources(
+    target_triple: str,
+    *,
+    runtime_profile: str | None = None,
+) -> tuple[Path, ...]:
+    profile = _resolve_runtime_profile(target_triple, runtime_profile)
+    resources: list[Path] = []
+    if profile in {"mlx", "cuda"}:
+        resources.extend(PHONEMIZER_REQUIRED_PYINSTALLER_RESOURCES)
+    if profile == "mlx":
         resources.extend(DARWIN_REQUIRED_PYINSTALLER_RESOURCES)
     suffix = ".exe" if _is_windows_target(target_triple) else ""
     resources.extend(Path("bin") / f"{binary}{suffix}" for binary in REQUIRED_BINARIES)
@@ -215,9 +273,12 @@ def _validate_runtime_dependencies(
     python_executable: str,
     *,
     target_triple: str | None = None,
+    runtime_profile: str | None = None,
 ) -> dict[str, Path]:
     resolved_target = target_triple or _resolve_target_triple("")
     _validate_pyinstaller_target_matches_host(resolved_target)
+    resolved_profile = _resolve_runtime_profile(resolved_target, runtime_profile)
+    _validate_runtime_profile_host(resolved_target, resolved_profile)
     pyinstaller_check = subprocess.run(
         [python_executable, "-m", "PyInstaller", "--version"],
         capture_output=True,
@@ -235,7 +296,7 @@ def _validate_runtime_dependencies(
         )
 
     missing_modules: list[str] = []
-    for module in required_modules(resolved_target):
+    for module in required_modules(resolved_target, runtime_profile=resolved_profile):
         module_check = subprocess.run(
             [
                 python_executable,
@@ -270,7 +331,12 @@ def _validate_runtime_dependencies(
     return resolved_bins
 
 
-def _run_pyinstaller(python_executable: str, *, clean: bool) -> None:
+def _run_pyinstaller(
+    python_executable: str,
+    *,
+    clean: bool,
+    runtime_profile: str,
+) -> None:
     if not SPEC_FILE.is_file():
         raise RuntimeError(f"Missing PyInstaller spec file: {SPEC_FILE}")
 
@@ -294,18 +360,24 @@ def _run_pyinstaller(python_executable: str, *, clean: bool) -> None:
     ]
     if clean:
         command.insert(4, "--clean")
-    subprocess.run(command, cwd=PROJECT_ROOT, check=True)
+    env = os.environ.copy()
+    env["ORPHEUS_RUNTIME_PROFILE"] = runtime_profile
+    subprocess.run(command, cwd=PROJECT_ROOT, env=env, check=True)
 
 
 def _validate_sidecar_resources(
     sidecar_dir: Path,
     *,
     target_triple: str | None = None,
+    runtime_profile: str | None = None,
 ) -> None:
     resolved_target = target_triple or _resolve_target_triple("")
     missing = [
         resource
-        for resource in required_sidecar_resources(resolved_target)
+        for resource in required_sidecar_resources(
+            resolved_target,
+            runtime_profile=runtime_profile,
+        )
         if not (sidecar_dir / resource).is_file()
     ]
     if missing:
@@ -330,13 +402,13 @@ def _copy_ffmpeg_binaries(
         source = Path(ffmpeg_binaries[binary_name])
         if not source.is_file() or not os.access(source, os.X_OK):
             raise RuntimeError(f"Required runtime binary is not executable: {source}")
-        destination_name = f"{binary_name}.exe" if _is_windows_target(target_triple) else binary_name
+        destination_name = (
+            f"{binary_name}.exe" if _is_windows_target(target_triple) else binary_name
+        )
         destination = bin_dir / destination_name
         shutil.copy2(source, destination)
         # Tauri must mutate/sign bundled Mach-O resources during packaging.
-        destination.chmod(
-            destination.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
-        )
+        destination.chmod(destination.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
 
 def _macho_rpaths(binary_path: Path) -> list[str]:
@@ -412,8 +484,11 @@ def _copy_sidecar_for_tauri(
     target_triple: str,
     *,
     ffmpeg_binaries: Mapping[str, Path] | None = None,
+    runtime_profile: str | None = None,
 ) -> Path:
-    pyinstaller_binary_name = f"{SIDE_CAR_STEM}.exe" if _is_windows_target(target_triple) else SIDE_CAR_STEM
+    pyinstaller_binary_name = (
+        f"{SIDE_CAR_STEM}.exe" if _is_windows_target(target_triple) else SIDE_CAR_STEM
+    )
     built_sidecar_dir = DIST_DIR / SIDE_CAR_STEM
     built_binary = built_sidecar_dir / pyinstaller_binary_name
     if not built_binary.is_file():
@@ -446,9 +521,16 @@ def _copy_sidecar_for_tauri(
         resolved_ffmpeg_binaries,
         target_triple=target_triple,
     )
-    _normalize_mlx_dylib_layout(TAURI_SIDECAR_RESOURCE_DIR)
-    _expose_espeak_data_at_sidecar_root(TAURI_SIDECAR_RESOURCE_DIR)
-    _validate_sidecar_resources(TAURI_SIDECAR_RESOURCE_DIR, target_triple=target_triple)
+    resolved_profile = _resolve_runtime_profile(target_triple, runtime_profile)
+    if resolved_profile == "mlx":
+        _normalize_mlx_dylib_layout(TAURI_SIDECAR_RESOURCE_DIR)
+    if resolved_profile in {"mlx", "cuda"}:
+        _expose_espeak_data_at_sidecar_root(TAURI_SIDECAR_RESOURCE_DIR)
+    _validate_sidecar_resources(
+        TAURI_SIDECAR_RESOURCE_DIR,
+        target_triple=target_triple,
+        runtime_profile=resolved_profile,
+    )
     legacy_output_binary.unlink(missing_ok=True)
     for stale_binary in TAURI_BINARIES_DIR.glob(f"{SIDE_CAR_STEM}-*"):
         if stale_binary.is_file():
@@ -456,7 +538,9 @@ def _copy_sidecar_for_tauri(
 
     output_binary = TAURI_SIDECAR_RESOURCE_DIR / pyinstaller_binary_name
     if not _is_windows_target(target_triple):
-        output_binary.chmod(output_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        output_binary.chmod(
+            output_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        )
 
     return output_binary
 
@@ -464,14 +548,25 @@ def _copy_sidecar_for_tauri(
 def main() -> int:
     args = _parse_args()
     target_triple = _resolve_target_triple(args.target_triple)
-    ffmpeg_binaries = _validate_runtime_dependencies(args.python, target_triple=target_triple)
-    _run_pyinstaller(args.python, clean=not args.no_clean)
+    runtime_profile = _resolve_runtime_profile(target_triple, args.runtime_profile)
+    ffmpeg_binaries = _validate_runtime_dependencies(
+        args.python,
+        target_triple=target_triple,
+        runtime_profile=runtime_profile,
+    )
+    _run_pyinstaller(
+        args.python,
+        clean=not args.no_clean,
+        runtime_profile=runtime_profile,
+    )
     output_binary = _copy_sidecar_for_tauri(
         target_triple,
         ffmpeg_binaries=ffmpeg_binaries,
+        runtime_profile=runtime_profile,
     )
 
     print(f"Built desktop backend sidecar for target: {target_triple}")
+    print(f"Runtime profile: {runtime_profile}")
     print(f"Tauri sidecar resource: {output_binary.parent}")
     print(f"Tauri sidecar executable: {output_binary}")
     return 0

@@ -1,45 +1,9 @@
-# Orpheus - Runtime Dependencies
-# Python 3.12 is recommended for the packaged desktop sidecar.
+# Orpheus minimal runtime dependencies.
+#
+# This is intentionally the base profile only: it supports document conversion,
+# playback, and cloud cleaning without installing a local ML runtime. Choose one
+# optional local runtime explicitly:
+#   python -m pip install -r requirements/mlx.txt   # Apple Silicon
+#   python -m pip install -r requirements/cuda.txt  # NVIDIA CUDA
 
-# PDF/EPUB Parsing
-pymupdf4llm==0.0.10
-ebooklib==0.18
-beautifulsoup4==4.12.0
-lxml==6.1.0
-
-# Machine Learning
-mlx==0.30.6; platform_system == "Darwin" and platform_machine == "arm64"
-mlx-lm==0.24.1; platform_system == "Darwin" and platform_machine == "arm64"
-mlx-vlm==0.3.0; platform_system == "Darwin" and platform_machine == "arm64"
-mlx-audio==0.1.0; platform_system == "Darwin" and platform_machine == "arm64"
-gradio==6.16.0; platform_system == "Darwin" and platform_machine == "arm64"
-kokoro==0.9.4
-numpy==2.2.6
-scipy==1.17.1
-spacy==3.8.11
-thinc==8.3.10
-torch==2.10.0
-transformers==5.5.0
-huggingface-hub>=1.3.0,<2.0
-bitsandbytes==0.49.2
-accelerate==1.12.0
-misaki==0.9.4
-espeakng-loader==0.2.4
-language-tags==1.2.0
-https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
-
-# Audio Processing
-pydub==0.25.1
-soundfile==0.13.1
-
-# Utilities
-tqdm==4.67.3
-psutil==5.9.0
-
-# Desktop API
-fastapi==0.139.0
-uvicorn==0.34.0
-python-multipart==0.0.31
-
-# Async I/O
-aiohttp==3.14.1
+-r requirements/base.txt

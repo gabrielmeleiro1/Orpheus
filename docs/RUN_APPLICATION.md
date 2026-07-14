@@ -11,11 +11,36 @@ first.
 python3.12 -m venv venv
 source venv/bin/activate
 python -m pip install --upgrade pip
+python scripts/setup_runtime.py --profile base
 python -m pip install -r requirements-dev.txt
 ```
 
-Use `requirements.txt` instead when you only need runtime dependencies and do
-not plan to run tests, static analysis, or desktop sidecar packaging.
+The `base` profile supports document conversion, playback, and cloud cleaning,
+but does not install local TTS or local cleaning models. `requirements-dev.txt`
+adds contributor and PyInstaller tooling on top of those base dependencies.
+Use `requirements.txt` instead when you do not plan to run tests, static
+analysis, or desktop sidecar packaging.
+
+Select and install a local runtime before using local TTS/cleaning or building
+a sidecar that bundles it:
+
+```bash
+# macOS 14+ on arm64 Apple Silicon
+python scripts/setup_runtime.py --profile mlx \
+  --group tts-mlx --group cleaner-mlx
+
+# Linux/Windows with a supported NVIDIA GPU and driver
+python scripts/setup_runtime.py --profile cuda --accept-pytorch-risk \
+  --group tts-cpu-cuda --group cleaner-cuda
+```
+
+The CUDA profile is opt-in and is rejected without
+`--accept-pytorch-risk` because the pinned PyTorch version has unresolved
+upstream advisories. Load only trusted model artifacts. To install dependencies
+without downloading models, omit the `--group` arguments. The equivalent fixed
+manifests are `requirements/base.txt`, `requirements/mlx.txt`, and
+`requirements/cuda.txt`; prefer `setup_runtime.py` because it validates platform
+compatibility and records the selected profile.
 
 ## 2. Validate Python/Core
 
@@ -77,15 +102,23 @@ python -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0
 
 ### Build desktop sidecar for production packaging
 
-Build the backend sidecar into Tauri's bundled resource directory:
+Build the backend sidecar into Tauri's bundled resource directory using the
+profile already installed in the active environment:
 
 ```bash
-python scripts/build_desktop_backend.py
+# Base: no local ML runtime
+python scripts/build_desktop_backend.py --runtime-profile base
+
+# Apple Silicon local runtime
+python scripts/build_desktop_backend.py --runtime-profile mlx
+
+# NVIDIA runtime (after the acknowledged CUDA setup above)
+python scripts/build_desktop_backend.py --runtime-profile cuda
 ```
 
 This command:
-- validates required ML/audio runtime dependencies, PyInstaller, and system
-  binaries needed by the sidecar build
+- validates only the selected profile's runtime dependencies, plus PyInstaller
+  and system binaries needed by the sidecar build
 - builds `apps.launchers.desktop_backend` via `desktop/backend-sidecar.spec`
 - writes the PyInstaller onedir sidecar to:
   `desktop/src-tauri/binaries/orpheus-desktop-backend/`
@@ -151,7 +184,7 @@ cd src-tauri
 cargo test
 cargo check
 cd ../..
-python scripts/build_desktop_backend.py
+python scripts/build_desktop_backend.py --runtime-profile mlx
 cd desktop
 npm run desktop:build
 npm run desktop:install

@@ -84,8 +84,12 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
     ) == "dependency"
     if os.name != "nt":
         assert copied_executable.stat().st_mode & stat.S_IXUSR
-    assert (copied_executable.parent / "bin" / "ffmpeg").read_text(encoding="utf-8") == "ffmpeg source"
-    assert (copied_executable.parent / "bin" / "ffprobe").read_text(encoding="utf-8") == "ffprobe source"
+    assert (copied_executable.parent / "bin" / "ffmpeg").read_text(
+        encoding="utf-8"
+    ) == "ffmpeg source"
+    assert (copied_executable.parent / "bin" / "ffprobe").read_text(
+        encoding="utf-8"
+    ) == "ffprobe source"
     if os.name != "nt":
         assert (copied_executable.parent / "bin" / "ffmpeg").stat().st_mode & stat.S_IXUSR
         assert (copied_executable.parent / "bin" / "ffprobe").stat().st_mode & stat.S_IXUSR
@@ -154,9 +158,16 @@ def test_copy_sidecar_for_tauri_windows_does_not_require_mlx_resources(
         ffmpeg_binaries={"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
     )
 
-    assert copied_executable == binaries_dir / "orpheus-desktop-backend" / "orpheus-desktop-backend.exe"
-    assert (copied_executable.parent / "bin" / "ffmpeg.exe").read_text(encoding="utf-8") == "ffmpeg exe"
-    assert (copied_executable.parent / "bin" / "ffprobe.exe").read_text(encoding="utf-8") == "ffprobe exe"
+    assert (
+        copied_executable
+        == binaries_dir / "orpheus-desktop-backend" / "orpheus-desktop-backend.exe"
+    )
+    assert (copied_executable.parent / "bin" / "ffmpeg.exe").read_text(
+        encoding="utf-8"
+    ) == "ffmpeg exe"
+    assert (copied_executable.parent / "bin" / "ffprobe.exe").read_text(
+        encoding="utf-8"
+    ) == "ffprobe exe"
 
 
 def test_copy_sidecar_for_tauri_copies_resolved_ffmpeg_binaries_under_bin(
@@ -199,12 +210,7 @@ def test_copy_ffmpeg_binaries_adds_owner_write_when_source_is_readonly_executabl
 ) -> None:
     """Tauri resource processing needs owner-write on bundled Mach-O binaries."""
     readonly_mode = (
-        stat.S_IRUSR
-        | stat.S_IXUSR
-        | stat.S_IRGRP
-        | stat.S_IXGRP
-        | stat.S_IROTH
-        | stat.S_IXOTH
+        stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
     )  # 0o555
     ffmpeg_source = tmp_path / "source" / "ffmpeg"
     ffprobe_source = tmp_path / "source" / "ffprobe"
@@ -257,7 +263,6 @@ def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
     ffmpeg = _write_executable(tmp_path / "tools" / "ffmpeg")
     ffprobe = _write_executable(tmp_path / "tools" / "ffprobe")
 
-    monkeypatch.setattr(build_desktop_backend, "REQUIRED_MODULES", ())
     monkeypatch.setattr(
         build_desktop_backend.subprocess,
         "run",
@@ -285,7 +290,12 @@ def test_validate_runtime_dependencies_rejects_cross_os_target(monkeypatch) -> N
 
 
 def test_cuda_backend_build_prerequisites_include_bitsandbytes() -> None:
-    modules = set(build_desktop_backend.required_modules("x86_64-unknown-linux-gnu"))
+    modules = set(
+        build_desktop_backend.required_modules(
+            "x86_64-unknown-linux-gnu",
+            runtime_profile="cuda",
+        )
+    )
 
     assert "bitsandbytes" in modules
 
@@ -295,6 +305,55 @@ def test_backend_sidecar_spec_collects_bitsandbytes_for_cuda_packaging() -> None
 
     assert '_collect_submodules("bitsandbytes")' in spec_text
     assert '_collect_dynamic_libs("bitsandbytes")' in spec_text
+    assert 'runtime_profile == "cuda"' in spec_text
+
+
+def test_backend_sidecar_spec_collects_curated_mlx_phonemizers() -> None:
+    spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
+    mlx_branch = spec_text.split('if runtime_profile == "mlx":', 1)[1].split(
+        'elif runtime_profile == "cuda":',
+        1,
+    )[0]
+
+    assert 'MLX_PHONEMIZER_HIDDEN_IMPORTS = ("misaki.en", "misaki.espeak")' in spec_text
+    assert "hiddenimports += MLX_PHONEMIZER_HIDDEN_IMPORTS" in mlx_branch
+    assert 'collect_submodules("misaki")' not in mlx_branch
+
+
+@pytest.mark.parametrize("runtime_profile", ["base", "mlx"])
+def test_torch_stack_is_not_required_for_torch_free_profiles(runtime_profile: str) -> None:
+    target = "aarch64-apple-darwin" if runtime_profile == "mlx" else "x86_64-unknown-linux-gnu"
+    modules = set(build_desktop_backend.required_modules(target, runtime_profile=runtime_profile))
+
+    assert {"torch", "kokoro", "bitsandbytes"}.isdisjoint(modules)
+
+
+def test_runtime_profile_defaults_to_mlx_only_for_apple_silicon() -> None:
+    assert build_desktop_backend.default_runtime_profile("aarch64-apple-darwin") == "mlx"
+    assert build_desktop_backend.default_runtime_profile("x86_64-apple-darwin") == "base"
+    assert build_desktop_backend.default_runtime_profile("x86_64-unknown-linux-gnu") == "base"
+
+
+def test_mlx_profile_rejects_non_apple_silicon_target() -> None:
+    with pytest.raises(RuntimeError, match="MLX runtime profile"):
+        build_desktop_backend.required_modules(
+            "x86_64-apple-darwin",
+            runtime_profile="mlx",
+        )
+
+
+def test_mlx_build_rejects_macos_older_than_14(monkeypatch) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        build_desktop_backend.platform, "mac_ver", lambda: ("13.6.9", ("", "", ""), "")
+    )
+
+    with pytest.raises(RuntimeError, match="macOS 14"):
+        build_desktop_backend._validate_runtime_dependencies(  # noqa: SLF001
+            "python",
+            target_triple="aarch64-apple-darwin",
+            runtime_profile="mlx",
+        )
 
 
 def test_normalize_mlx_dylib_layout_removes_root_duplicate_and_retargets_core(
@@ -359,7 +418,10 @@ def test_expose_espeak_data_at_sidecar_root_links_files_and_copies_dirs(tmp_path
         assert phontab_link.is_file()
     else:
         assert phontab_link.is_symlink()
-        assert phontab_link.readlink() == Path("_internal") / "espeakng_loader" / "espeak-ng-data" / "phontab"
+        assert (
+            phontab_link.readlink()
+            == Path("_internal") / "espeakng_loader" / "espeak-ng-data" / "phontab"
+        )
     assert voices_dir.is_dir()
     assert not voices_dir.is_symlink()
     assert phontab_link.read_text(encoding="utf-8") == "phoneme table"
@@ -367,19 +429,42 @@ def test_expose_espeak_data_at_sidecar_root_links_files_and_copies_dirs(tmp_path
 
 
 def test_backend_build_prerequisites_include_mlx_runtime_imports() -> None:
-    assert "jinja2" not in build_desktop_backend.REQUIRED_MODULES
-    assert {"en_core_web_sm", "scipy", "spacy", "thinc", "torch", "transformers"}.issubset(
-        set(build_desktop_backend.required_modules("aarch64-apple-darwin")),
+    modules = set(
+        build_desktop_backend.required_modules(
+            "aarch64-apple-darwin",
+            runtime_profile="mlx",
+        )
     )
+
+    assert "jinja2" not in modules
+    assert {"en_core_web_sm", "scipy", "spacy", "thinc", "mlx", "mlx_audio"}.issubset(modules)
+    assert "torch" not in modules
 
 
 def test_windows_backend_build_prerequisites_use_kokoro_package_not_mlx() -> None:
-    modules = set(build_desktop_backend.required_modules("x86_64-pc-windows-msvc"))
+    modules = set(
+        build_desktop_backend.required_modules(
+            "x86_64-pc-windows-msvc",
+            runtime_profile="cuda",
+        )
+    )
 
     assert {"kokoro", "torch", "soundfile", "espeakng_loader"}.issubset(modules)
     assert "mlx" not in modules
     assert "mlx_lm" not in modules
     assert "mlx_audio" not in modules
+
+
+def test_build_help_exposes_explicit_runtime_profile_selector() -> None:
+    completed = subprocess.run(
+        [sys.executable, str(build_desktop_backend.__file__), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0
+    assert "--runtime-profile" in completed.stdout
 
 
 def test_build_script_help_runs_from_desktop_working_directory_without_pythonpath() -> None:

@@ -22,8 +22,8 @@ def mlx_lm_runtime_error_message(import_error: Optional[Exception]) -> str:
     return (
         "mlx-lm runtime unavailable. "
         f"Import error: {import_error}. "
-        "Install a compatible set, for example: "
-        "pip install 'mlx-audio==0.1.0' 'mlx-lm==0.24.1' 'mlx-vlm==0.3.0'."
+        "Install the supported MLX profile with: "
+        "python -m pip install -r requirements/mlx.txt."
     )
 
 

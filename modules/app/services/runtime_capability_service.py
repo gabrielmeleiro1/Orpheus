@@ -50,6 +50,16 @@ except Exception as exc:
     print(json.dumps({"available": False, "error": str(exc)}))
 """
 
+    _TTS_PACKAGE_PROBE = """
+import json
+try:
+    import torch  # noqa: F401
+    from kokoro import KModel, KPipeline  # noqa: F401
+    print(json.dumps({"available": True}))
+except Exception as exc:
+    print(json.dumps({"available": False, "error": str(exc)}))
+"""
+
     _CLEANER_CUDA_PROBE = """
 import json
 import os
@@ -342,6 +352,16 @@ except Exception as exc:
         return self._store_result(
             "tts",
             self._run_probe(self._TTS_PROBE, self._timeout_seconds),
+        )
+
+    def probe_package_tts_runtime(self) -> ProbeResult:
+        """Probe the PyTorch-backed Kokoro package runtime without loading a model."""
+        cached = self._cached_result("tts-package")
+        if cached is not None:
+            return cached
+        return self._store_result(
+            "tts-package",
+            self._run_probe(self._TTS_PACKAGE_PROBE, self._timeout_seconds),
         )
 
     def probe_cleaner_backend(self, backend: str) -> ProbeResult:

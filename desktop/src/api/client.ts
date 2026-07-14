@@ -28,6 +28,7 @@ import type {
   StartConversionRequest,
   StartConversionResponse,
   SystemCapabilitiesResponse,
+  RuntimeSetupStatusResponse,
   VoiceSuggestionResponse,
   VoiceOptionsResponse,
 } from "../types/api";
@@ -91,6 +92,7 @@ export interface ApiClient {
   fetchOpenAiModelIds(apiKey: string, options?: ApiRequestOptions): Promise<string[]>;
   getVoiceOptions(engine: string, options?: ApiRequestOptions): Promise<VoiceOptionsResponse>;
   getSystemCapabilities(options?: ApiRequestOptions): Promise<SystemCapabilitiesResponse>;
+  getRuntimeSetupStatus(options?: ApiRequestOptions): Promise<RuntimeSetupStatusResponse>;
   warmupParallelWorkers(payload: ParallelWarmupRequest, options?: ApiRequestOptions): Promise<ParallelWorkerRecommendation>;
   preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight>;
   uploadSourceFile(file: File, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
@@ -414,6 +416,10 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     return requestJson<SystemCapabilitiesResponse>("/api/system/capabilities", options);
   }
 
+  async function getRuntimeSetupStatus(options?: ApiRequestOptions): Promise<RuntimeSetupStatusResponse> {
+    return requestJson<RuntimeSetupStatusResponse>("/api/setup/status", options);
+  }
+
   async function warmupParallelWorkers(
     payload: ParallelWarmupRequest,
     options?: ApiRequestOptions,
@@ -690,6 +696,7 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     fetchOpenAiModelIds,
     getVoiceOptions,
     getSystemCapabilities,
+    getRuntimeSetupStatus,
     warmupParallelWorkers,
     preflightSource,
     uploadSourceFile,
