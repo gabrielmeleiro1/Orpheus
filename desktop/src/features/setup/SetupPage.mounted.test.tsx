@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -87,17 +87,54 @@ describe("mounted SetupPage", () => {
     root = createRoot(container);
   });
 
-  it("restarts through the bridge and reconnects without querying the stale API", async () => {
+  it("refreshes readiness from the reconnected backend and leaves setup after one restart", async () => {
     const restartStatus = { ...setupStatus, configured: true, state: "restart_required" as const, restart_required: true, selected_profile: "base" as const };
-    const runtimeBridge = bridge({ status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "complete", profile: "base", modelGroups: [], restartRequired: true, error: null })) });
+    const readyStatus = {
+      ...restartStatus,
+      state: "ready" as const,
+      ready: true,
+      restart_required: false,
+      packages: { ready: true, missing: [], incompatible: [] },
+      probe: { ready: true, checks: [] },
+      backend: { instance_id: "two", status: "running" },
+    };
+    const runtimeBridge = bridge();
+    const staleApi = { getRuntimeSetupStatus: vi.fn(async () => restartStatus) } as unknown as ApiClient;
+    const readyApi = { getRuntimeSetupStatus: vi.fn(async () => readyStatus) } as unknown as ApiClient;
+    const onReady = vi.fn();
     const reconnect = vi.fn();
-    const api = await renderPage(runtimeBridge, { initialStatus: restartStatus, onReconnectBackend: reconnect });
-    await act(async () => undefined);
-    vi.mocked(api.getRuntimeSetupStatus).mockClear();
-    await act(async () => findButton(container, "Restart Orpheus").click());
+
+    function Harness() {
+      const [api, setApi] = useState(staleApi);
+      return (
+        <SetupPage
+          apiClient={api}
+          initialStatus={restartStatus}
+          initialError={null}
+          onReady={onReady}
+          onContinueLibraryOnly={vi.fn()}
+          onReconnectBackend={() => {
+            reconnect();
+            setApi(readyApi);
+          }}
+          bridge={runtimeBridge}
+        />
+      );
+    }
+
+    await act(async () => root.render(<Harness />));
+    vi.mocked(staleApi.getRuntimeSetupStatus).mockClear();
+    await act(async () => {
+      const restart = findButton(container, "Restart Orpheus");
+      restart.click();
+      restart.click();
+    });
     expect(runtimeBridge.restart).toHaveBeenCalledOnce();
     expect(reconnect).toHaveBeenCalledOnce();
-    expect(api.getRuntimeSetupStatus).not.toHaveBeenCalled();
+    expect(staleApi.getRuntimeSetupStatus).not.toHaveBeenCalled();
+    expect(readyApi.getRuntimeSetupStatus).toHaveBeenCalledOnce();
+    expect(onReady).toHaveBeenCalledOnce();
+    expect(onReady).toHaveBeenCalledWith(readyStatus);
   });
 
   it("cancels an authoritative running setup", async () => {

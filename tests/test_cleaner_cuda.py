@@ -151,7 +151,9 @@ def test_load_cuda_model_maps_explicit_cuda_device_for_transformers(monkeypatch)
 
 
 def test_default_cuda_quantization_dependency_is_declared():
-    requirements = (Path(__file__).parent.parent / "requirements.txt").read_text(
+    requirements = (
+        Path(__file__).parent.parent / "requirements" / "cuda.txt"
+    ).read_text(
         encoding="utf-8",
     )
 

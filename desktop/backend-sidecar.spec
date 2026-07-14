@@ -63,7 +63,6 @@ runtime_profile = _runtime_profile()
 MLX_PHONEMIZER_HIDDEN_IMPORTS = ("misaki.en", "misaki.espeak")
 
 hiddenimports = [
-    "en_core_web_sm",
     "numpy._core._exceptions",
     "uvicorn.logging",
     "uvicorn.loops.auto",
@@ -74,17 +73,20 @@ hiddenimports = [
 hiddenimports += _collect_submodules("modules")
 
 if runtime_profile == "mlx":
+    hiddenimports += ["en_core_web_sm", "spacy", "thinc"]
     hiddenimports += ["mlx._reprlib_fix"]
     hiddenimports += MLX_PHONEMIZER_HIDDEN_IMPORTS
     hiddenimports += _collect_submodules("mlx_audio.tts.models.kokoro")
     hiddenimports += _collect_submodules("mlx_lm.models")
 elif runtime_profile == "cuda":
+    hiddenimports += ["en_core_web_sm", "spacy", "thinc"]
     hiddenimports += _collect_submodules("kokoro")
     hiddenimports += _collect_submodules("bitsandbytes")
 
-datas = _collect_data_files("en_core_web_sm") + _copy_metadata("en_core_web_sm")
+datas = []
 
 if runtime_profile in {"mlx", "cuda"}:
+    datas += _collect_data_files("en_core_web_sm") + _copy_metadata("en_core_web_sm")
     datas += _collect_data_files("misaki")
     datas += _collect_data_files("espeakng_loader")
     datas += _collect_data_files("language_tags")
@@ -104,7 +106,15 @@ profile_excludes = []
 if runtime_profile in {"base", "mlx"}:
     profile_excludes += ["torch", "torchaudio", "kokoro", "bitsandbytes"]
 if runtime_profile == "base":
-    profile_excludes += ["transformers", "mlx", "mlx_lm", "mlx_audio"]
+    profile_excludes += [
+        "transformers",
+        "mlx",
+        "mlx_lm",
+        "mlx_audio",
+        "spacy",
+        "thinc",
+        "en_core_web_sm",
+    ]
 
 a = Analysis(
     [str(entry_script)],

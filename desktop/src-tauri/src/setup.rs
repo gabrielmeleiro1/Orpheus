@@ -1,6 +1,8 @@
+use crate::paths::DesktopRuntimePaths;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -8,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{Emitter, State};
+use tauri::{Emitter, Manager, State};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
@@ -141,6 +143,7 @@ pub struct SetupLaunchConfig {
     pub script: PathBuf,
     pub args: Vec<String>,
     pub cwd: PathBuf,
+    pub env: BTreeMap<String, String>,
     // Kept explicit so the security property is visible and unit-testable.
     pub uses_shell: bool,
 }
@@ -583,6 +586,7 @@ fn build_setup_launch_config(
     request: SetupRequest,
     os: &str,
     arch: &str,
+    runtime_paths: &DesktopRuntimePaths,
 ) -> Result<SetupLaunchConfig, String> {
     if !valid_identifier(&request.profile)
         || !matches!(request.profile.as_str(), "base" | "mlx" | "cuda")
@@ -634,6 +638,7 @@ fn build_setup_launch_config(
         script,
         args,
         cwd: repo_root.to_path_buf(),
+        env: runtime_paths.as_env(),
         uses_shell: false,
     })
 }
@@ -646,7 +651,20 @@ pub(crate) fn build_setup_launch_config_for_platform(
     os: &str,
     arch: &str,
 ) -> Result<SetupLaunchConfig, String> {
-    build_setup_launch_config(repo_root, python_program, request, os, arch)
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/test-app-data");
+    build_setup_launch_config(repo_root, python_program, request, os, arch, &runtime_paths)
+}
+
+#[cfg(test)]
+pub(crate) fn build_setup_launch_config_for_platform_with_runtime_paths(
+    repo_root: &Path,
+    python_program: impl AsRef<Path>,
+    request: SetupRequest,
+    os: &str,
+    arch: &str,
+    runtime_paths: &DesktopRuntimePaths,
+) -> Result<SetupLaunchConfig, String> {
+    build_setup_launch_config(repo_root, python_program, request, os, arch, runtime_paths)
 }
 
 /// Resolve the setup interpreter from one fixed, user-created repository venv.
@@ -697,7 +715,10 @@ pub(crate) fn resolve_setup_python(repo_root: &Path) -> Result<PathBuf, String> 
     Ok(entry)
 }
 
-fn production_launch_config(request: SetupRequest) -> Result<SetupLaunchConfig, String> {
+fn production_launch_config(
+    request: SetupRequest,
+    runtime_paths: &DesktopRuntimePaths,
+) -> Result<SetupLaunchConfig, String> {
     let environment = current_runtime_setup_environment();
     if !environment.available {
         return Err(environment.reason);
@@ -711,6 +732,7 @@ fn production_launch_config(request: SetupRequest) -> Result<SetupLaunchConfig, 
         request,
         std::env::consts::OS,
         std::env::consts::ARCH,
+        runtime_paths,
     )?;
     if !launch.script.is_file() {
         return Err("the fixed runtime setup script is unavailable".to_string());
@@ -1379,10 +1401,10 @@ fn spawn_setup(
     #[cfg(test)] after_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<(), String> {
     let mut command = Command::new(&launch.program);
+    apply_setup_command_env(&mut command, &launch);
     command
         .args(&launch.args)
         .current_dir(&launch.cwd)
-        .env("ORPHEUS_TAURI_SETUP_SUPERVISED", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1551,6 +1573,37 @@ fn spawn_setup(
     Ok(())
 }
 
+fn apply_setup_command_env(command: &mut Command, launch: &SetupLaunchConfig) {
+    // Explicit command-level values take precedence over anything inherited by
+    // the desktop process. The frontend cannot supply either names or values.
+    for key in launch.env.keys() {
+        command.env_remove(key);
+    }
+    command.envs(&launch.env);
+    command.env("ORPHEUS_TAURI_SETUP_SUPERVISED", "1");
+}
+
+#[cfg(test)]
+pub(crate) fn setup_command_env_for_test(
+    launch: &SetupLaunchConfig,
+    inherited: &[(&str, &str)],
+) -> BTreeMap<String, String> {
+    let mut command = Command::new(&launch.program);
+    command.envs(inherited.iter().copied());
+    apply_setup_command_env(&mut command, launch);
+    command
+        .get_envs()
+        .filter_map(|(key, value)| {
+            value.map(|value| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
 fn start_supervised(
     state: SetupRunnerState,
     request: SetupRequest,
@@ -1663,7 +1716,12 @@ pub async fn start_runtime_setup(
     state: State<'_, SetupRunnerState>,
     request: SetupRequest,
 ) -> Result<SetupStatus, String> {
-    let launch = production_launch_config(request.clone())?;
+    let app_data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir(app_data_dir);
+    let launch = production_launch_config(request.clone(), &runtime_paths)?;
     start_supervised(
         state.inner().clone(),
         request,

@@ -1,4 +1,5 @@
 use crate::paths::DesktopRuntimePaths;
+use crate::setup::resolve_setup_python;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -470,6 +471,7 @@ pub(crate) fn project_root_dir() -> PathBuf {
         .unwrap_or(manifest_dir)
 }
 
+#[cfg(test)]
 fn python_program() -> String {
     std::env::var("AUDIOBOOK_DESKTOP_PYTHON")
         .ok()
@@ -574,9 +576,31 @@ pub fn resolve_sidecar_path(
     ))
 }
 
-pub fn build_dev_launch_config(runtime_paths: &DesktopRuntimePaths) -> ProcessLaunchConfig {
+pub fn build_dev_launch_config(
+    runtime_paths: &DesktopRuntimePaths,
+) -> Result<ProcessLaunchConfig, String> {
+    build_dev_launch_config_for_root(runtime_paths, &project_root_dir())
+}
+
+pub(crate) fn build_dev_launch_config_for_root(
+    runtime_paths: &DesktopRuntimePaths,
+    project_root: &Path,
+) -> Result<ProcessLaunchConfig, String> {
+    let python = resolve_setup_python(project_root)?;
+    Ok(build_dev_launch_config_with_python(
+        runtime_paths,
+        project_root,
+        &python,
+    ))
+}
+
+fn build_dev_launch_config_with_python(
+    runtime_paths: &DesktopRuntimePaths,
+    project_root: &Path,
+    python: &Path,
+) -> ProcessLaunchConfig {
     ProcessLaunchConfig {
-        program: python_program(),
+        program: python.to_string_lossy().into_owned(),
         args: vec![
             "-m".to_string(),
             "apps.launchers.desktop_backend".to_string(),
@@ -585,9 +609,18 @@ pub fn build_dev_launch_config(runtime_paths: &DesktopRuntimePaths) -> ProcessLa
             "--port".to_string(),
             "0".to_string(),
         ],
-        cwd: Some(project_root_dir()),
+        cwd: Some(project_root.to_path_buf()),
         env: runtime_paths.as_env().into_iter().collect(),
     }
+}
+
+#[cfg(test)]
+pub(crate) fn build_dev_launch_config_for_test(
+    runtime_paths: &DesktopRuntimePaths,
+    project_root: &Path,
+    python: &Path,
+) -> ProcessLaunchConfig {
+    build_dev_launch_config_with_python(runtime_paths, project_root, python)
 }
 
 pub fn build_sidecar_launch_config(
@@ -761,7 +794,7 @@ pub fn launch_dev_backend(
     manager: Arc<Mutex<BackendManager>>,
     runtime_paths: &DesktopRuntimePaths,
 ) -> Result<RunningBackend, String> {
-    let launch = build_dev_launch_config(runtime_paths);
+    let launch = build_dev_launch_config(runtime_paths)?;
     launch_backend(manager, launch)
 }
 

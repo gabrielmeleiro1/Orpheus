@@ -61,12 +61,27 @@ SMOKE_TEST_MODULES: list[tuple[str, str]] = [
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the test runner."""
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--contract",
         action="store_true",
         help="Run the authoritative pytest contract instead of the smoke suite.",
     )
-    return parser.parse_args(argv)
+    mode.add_argument(
+        "--verify-profile",
+        action="append",
+        choices=("base", "mlx", "cuda"),
+        help="Opt in to a clean install/audit gate for a runtime profile (repeatable).",
+    )
+    parser.add_argument(
+        "--allow-skipped-profiles",
+        action="store_true",
+        help="Allow requested profiles with unavailable hardware to be reported as skipped.",
+    )
+    args = parser.parse_args(argv)
+    if args.allow_skipped_profiles and not args.verify_profile:
+        parser.error("--allow-skipped-profiles requires --verify-profile")
+    return args
 
 
 def build_smoke_command(test_path: str, mode: str) -> list[str]:
@@ -86,6 +101,18 @@ def build_contract_command() -> list[str]:
         "-m",
         CORE_MARKER_EXPRESSION,
     ]
+
+
+def build_profile_verification_command(
+    profiles: list[str], *, allow_skipped: bool = False
+) -> list[str]:
+    """Build the isolated runtime-profile verification command."""
+    command = [sys.executable, str(REPO_ROOT / "scripts" / "verify_runtime_profiles.py")]
+    for profile in profiles:
+        command.extend(("--profile", profile))
+    if allow_skipped:
+        command.append("--allow-skipped")
+    return command
 
 
 def run_test(test_path: str, mode: str) -> tuple[bool, float]:
@@ -186,6 +213,14 @@ def run_contract_suite() -> int:
 def main(argv: list[str] | None = None) -> int:
     """Run either the smoke suite or the authoritative pytest contract."""
     args = parse_args(argv)
+
+    if args.verify_profile:
+        command = build_profile_verification_command(
+            args.verify_profile,
+            allow_skipped=args.allow_skipped_profiles,
+        )
+        print("\nRunning clean runtime profile verification...\n", flush=True)
+        return subprocess.run(command, cwd=REPO_ROOT).returncode
 
     if args.contract:
         exit_code = run_contract_suite()

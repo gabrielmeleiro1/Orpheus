@@ -1,7 +1,8 @@
 use super::{
-    backend_shutdown_force_kill_max, backend_shutdown_graceful_timeout, build_dev_launch_config,
-    parse_ready_line, parse_shutdown_line, read_ready_payload_from_file, resolve_sidecar_path,
-    sidecar_binary_stem, sidecar_source_filename, BackendLifecycle, BackendManager,
+    backend_shutdown_force_kill_max, backend_shutdown_graceful_timeout,
+    build_dev_launch_config_for_root, build_dev_launch_config_for_test, parse_ready_line,
+    parse_shutdown_line, read_ready_payload_from_file, resolve_sidecar_path, sidecar_binary_stem,
+    sidecar_source_filename, BackendLifecycle, BackendManager,
 };
 use crate::paths::DesktopRuntimePaths;
 use std::path::{Path, PathBuf};
@@ -173,7 +174,13 @@ fn ready_backend_shutdown_ack_before_eof_marks_stopped() {
 #[test]
 fn build_dev_launch_config_matches_desktop_runtime_contract() {
     let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/tmp/audiobook-app");
-    let config = build_dev_launch_config(&runtime_paths);
+    let repo = Path::new("/trusted/orpheus");
+    let python = repo.join(".venv").join(if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    });
+    let config = build_dev_launch_config_for_test(&runtime_paths, repo, &python);
 
     assert!(!config.program.trim().is_empty());
     assert_eq!(
@@ -187,12 +194,8 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
             "0",
         ]
     );
-    let cwd = config.cwd.expect("dev launcher should have repository cwd");
-    assert!(
-        cwd.join("apps").is_dir() && cwd.join("desktop").is_dir(),
-        "expected cwd to point at repository root, got {}",
-        cwd.display()
-    );
+    assert_eq!(config.program, python.to_string_lossy());
+    assert_eq!(config.cwd, Some(repo.to_path_buf()));
 
     let env = config
         .env
@@ -222,6 +225,58 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
         env.get("AUDIOBOOK_DESKTOP_READY_FILE").map(PathBuf::from),
         Some(PathBuf::from("/tmp/audiobook-app").join("backend-ready.json"))
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn dev_backend_ignores_path_and_python_override_for_fixed_checkout_venv() {
+    const CHILD_FLAG: &str = "ORPHEUS_BACKEND_RESOLVER_TEST_CHILD";
+    if std::env::var_os(CHILD_FLAG).is_some() {
+        use std::os::unix::fs::symlink;
+
+        let repo = unique_temp_path("backend-python-env-isolation");
+        std::fs::create_dir_all(repo.join(".venv/bin")).expect("venv bin");
+        symlink("/bin/sh", repo.join(".venv/bin/python")).expect("python symlink");
+        let runtime_paths = DesktopRuntimePaths::from_app_data_dir(repo.join("app-data"));
+        let launch = build_dev_launch_config_for_root(&runtime_paths, &repo)
+            .expect("fixed dev backend launch");
+        let canonical_repo = repo.canonicalize().expect("canonical repo");
+        assert_eq!(
+            launch.program,
+            canonical_repo.join(".venv/bin/python").to_string_lossy()
+        );
+        assert_ne!(launch.program, "/tmp/attacker-python");
+        assert_eq!(launch.cwd, Some(repo.clone()));
+        let _ = std::fs::remove_dir_all(repo);
+        return;
+    }
+
+    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
+        .args([
+            "--exact",
+            "backend::tests::dev_backend_ignores_path_and_python_override_for_fixed_checkout_venv",
+        ])
+        .env(CHILD_FLAG, "1")
+        .env("AUDIOBOOK_DESKTOP_PYTHON", "/tmp/attacker-python")
+        .env("PATH", "/tmp/attacker-bin")
+        .output()
+        .expect("isolated resolver test");
+    assert!(
+        output.status.success(),
+        "isolated resolver failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn dev_backend_missing_venv_reports_actionable_startup_error() {
+    let repo = unique_temp_path("backend-python-missing");
+    std::fs::create_dir_all(&repo).expect("repo");
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir(repo.join("app-data"));
+    let error = build_dev_launch_config_for_root(&runtime_paths, &repo)
+        .expect_err("missing fixed venv must fail");
+    assert!(error.contains("create the repository .venv"), "{error}");
+    let _ = std::fs::remove_dir_all(repo);
 }
 
 #[test]

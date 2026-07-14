@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "advisory_id": "PYSEC-2026-139",
+      "aliases": [
+        "CVE-2026-4538"
+      ],
+      "package": "torch",
+      "profile": "cuda",
+      "owner": "Orpheus maintainers",
+      "reason": "No fixed upstream PyTorch release exists; CUDA is explicit opt-in and accepts only trusted model artifacts.",
+      "created": "2026-07-14",
+      "expires": "2026-10-14"
+    },
+    {
+      "advisory_id": "CVE-2025-3000",
+      "aliases": [],
+      "package": "torch",
+      "profile": "cuda",
+      "owner": "Orpheus maintainers",
+      "reason": "No fixed upstream PyTorch release exists; CUDA is explicit opt-in and accepts only trusted model artifacts.",
+      "created": "2026-07-14",
+      "expires": "2026-10-14"
+    }
+  ]
+}

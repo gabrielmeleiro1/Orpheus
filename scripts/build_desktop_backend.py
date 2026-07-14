@@ -35,8 +35,10 @@ BASE_REQUIRED_MODULES = (
     "numpy",
     "soundfile",
     "pydub",
-    "en_core_web_sm",
     "scipy",
+)
+LOCAL_TTS_REQUIRED_MODULES = (
+    "en_core_web_sm",
     "spacy",
     "thinc",
 )
@@ -235,8 +237,10 @@ def required_modules(
     profile = _resolve_runtime_profile(target_triple, runtime_profile)
     modules = list(BASE_REQUIRED_MODULES)
     if profile == "mlx":
+        modules.extend(LOCAL_TTS_REQUIRED_MODULES)
         modules.extend(MLX_REQUIRED_MODULES)
     elif profile == "cuda":
+        modules.extend(LOCAL_TTS_REQUIRED_MODULES)
         modules.extend(CUDA_REQUIRED_MODULES)
     return tuple(dict.fromkeys(modules))
 

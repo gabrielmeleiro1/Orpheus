@@ -298,6 +298,25 @@ def test_cuda_backend_build_prerequisites_include_bitsandbytes() -> None:
     )
 
     assert "bitsandbytes" in modules
+    assert {"spacy", "thinc", "en_core_web_sm"}.issubset(modules)
+
+
+def test_base_backend_build_excludes_local_tts_spacy_stack() -> None:
+    modules = set(
+        build_desktop_backend.required_modules(
+            "x86_64-unknown-linux-gnu",
+            runtime_profile="base",
+        )
+    )
+    assert {"spacy", "thinc", "en_core_web_sm"}.isdisjoint(modules)
+
+    spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
+    base_branch = spec_text.split('if runtime_profile == "base":', 1)[1].split("\na = Analysis", 1)[
+        0
+    ]
+    assert '"spacy"' in base_branch
+    assert '"thinc"' in base_branch
+    assert '"en_core_web_sm"' in base_branch
 
 
 def test_backend_sidecar_spec_collects_bitsandbytes_for_cuda_packaging() -> None:

@@ -78,6 +78,18 @@ desktop build, packaged sidecar, release install, or optional property,
 benchmark, slow, and UI suites; use [docs/TESTING.md](docs/TESTING.md) for the
 desktop and release verification matrix.
 
+Release candidates also require isolated installs of every shipped runtime:
+
+```bash
+python run_tests.py --verify-profile base --verify-profile mlx
+```
+
+Run the CUDA equivalent on a Linux/Windows NVIDIA host. Requested but
+unavailable hardware profiles exit 2 as `skipped`, not passed. The CUDA audit
+can report only the narrowly documented, expiring PyTorch exceptions as
+`accepted_risk`; base and MLX require a clean audit. See
+[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md#clean-environment-release-gate).
+
 To produce and replace the installed macOS app:
 
 ```bash
@@ -95,6 +107,7 @@ npm run desktop:release
 | Build base sidecar | `python scripts/build_desktop_backend.py --runtime-profile base` | Bundles no local ML runtime. Use `mlx` or `cuda` only after installing that profile; required before `desktop:build` or `desktop:release`. |
 | Focused tests | `python -m pytest --no-cov <paths>` | Parser, cleaner, TTS, API, storage, and desktop matrices in [docs/TESTING.md](docs/TESTING.md#focused-checks). |
 | Python/core gate | `python run_tests.py --contract` | Default merge gate; excludes property, benchmark, slow, and UI suites. |
+| Clean profile gate | `python run_tests.py --verify-profile base --verify-profile mlx` | Fresh install, import, dependency, prohibited-package, and exact-environment audit checks. Run CUDA on NVIDIA hardware. |
 
 For packaging, install, and release verification, use [docs/RUN_APPLICATION.md](docs/RUN_APPLICATION.md).
 For where to change parsers, cleaners, TTS, the conversion form, API payloads, or storage schema,

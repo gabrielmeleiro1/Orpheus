@@ -48,6 +48,24 @@ def test_base_manifest_stays_free_of_local_ml_runtimes() -> None:
     assert "torch" not in contents
     assert "bitsandbytes" not in contents
     assert "mlx" not in contents
+    assert "spacy" not in contents
+    assert "thinc" not in contents
+    assert "en-core-web-sm" not in contents
+
+
+def test_local_profiles_pin_hashed_spacy_model_artifact() -> None:
+    expected = (
+        "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/"
+        "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+        "#sha256=1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85"
+    )
+    for profile in ("mlx", "cuda"):
+        contents = (runtime_profiles.PROJECT_ROOT / "requirements" / f"{profile}.txt").read_text(
+            encoding="utf-8"
+        )
+        assert "spacy==3.8.11" in contents
+        assert "thinc==8.3.10" in contents
+        assert expected in contents
 
 
 def test_mlx_manifest_has_torch_free_kokoro_phonemization_dependencies() -> None:

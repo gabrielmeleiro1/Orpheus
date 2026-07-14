@@ -117,7 +117,10 @@ export function SetupPage({
   const [busy, setBusy] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy diagnostics");
   const [environment, setEnvironment] = useState<RuntimeSetupEnvironment | null>(null);
+  const [awaitingReconnect, setAwaitingReconnect] = useState(false);
   const startLocked = useRef(false);
+  const restartLocked = useRef(false);
+  const preRestartClient = useRef<ApiClient | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const progressHeadingRef = useRef<HTMLParagraphElement>(null);
 
@@ -211,6 +214,23 @@ export function SetupPage({
     return () => window.clearInterval(timer);
   }, [busy, refreshRunner]);
 
+  useEffect(() => {
+    if (!awaitingReconnect || !apiClient || apiClient === preRestartClient.current) {
+      return undefined;
+    }
+    let active = true;
+    void refreshStatus().finally(() => {
+      if (!active) return;
+      preRestartClient.current = null;
+      restartLocked.current = false;
+      setAwaitingReconnect(false);
+      setBusy(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [apiClient, awaitingReconnect, refreshStatus]);
+
   const selectedProfile = status?.profiles.find((profile) => profile.id === selection.profile) ?? null;
   const choices = status ? profileChoices(status) : [];
   const mutationsAvailable = environment?.available === true;
@@ -265,16 +285,21 @@ export function SetupPage({
   };
 
   const restart = async () => {
-    if (busy || !mutationsAvailable) return;
+    if (busy || !mutationsAvailable || restartLocked.current) return;
+    restartLocked.current = true;
+    preRestartClient.current = apiClient;
+    setAwaitingReconnect(true);
     setBusy(true);
     setError(null);
     try {
       await restartAndReconnectSetup(bridge.restart, onReconnectBackend);
       setProgress((previous) => ({ ...previous, message: "Orpheus restarted. Checking the runtime…" }));
     } catch (reason: unknown) {
-      setError(safeError(reason, "Orpheus could not restart."));
-    } finally {
+      preRestartClient.current = null;
+      restartLocked.current = false;
+      setAwaitingReconnect(false);
       setBusy(false);
+      setError(safeError(reason, "Orpheus could not restart."));
     }
   };
 

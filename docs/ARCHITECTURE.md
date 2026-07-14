@@ -73,7 +73,9 @@ Desktop runtime modes:
     - `AUDIOBOOK_TEMP_DIR`
     - `AUDIOBOOK_DB_PATH`
     - `AUDIOBOOK_DESKTOP_READY_FILE`
-  - `AUDIOBOOK_DESKTOP_PYTHON` can override the Python executable.
+  - Source-checkout builds launch the backend and runtime setup from the same
+    fixed repository `.venv` interpreter; `PATH` and environment variables
+    cannot select a different Python executable.
   - `AUDIOBOOK_DESKTOP_USE_SIDECAR=1` forces the sidecar path in debug builds.
 - Production package: `cd desktop && npm run desktop:build`
   - Tauri launches bundled sidecar from `Contents/Resources/binaries/orpheus-desktop-backend/`

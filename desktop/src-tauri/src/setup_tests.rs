@@ -1,13 +1,16 @@
 #[cfg(windows)]
 use super::setup::windows_taskkill_path;
 use super::setup::{
-    build_setup_launch_config_for_platform, cancel_with_sink_for_test, read_progress_events,
-    resolve_setup_python, runtime_setup_environment_for_test, sanitize_progress_line,
-    start_supervised_for_test, start_supervised_with_hook_for_test, windows_setup_creation_flags,
-    EventSink, SetupLaunchConfig, SetupLifecycle, SetupProgressEvent, SetupRequest,
-    SetupRunnerState, WindowsLaunchPhase, SETUP_PROGRESS_EVENT,
+    build_setup_launch_config_for_platform,
+    build_setup_launch_config_for_platform_with_runtime_paths, cancel_with_sink_for_test,
+    read_progress_events, resolve_setup_python, runtime_setup_environment_for_test,
+    sanitize_progress_line, setup_command_env_for_test, start_supervised_for_test,
+    start_supervised_with_hook_for_test, windows_setup_creation_flags, EventSink,
+    SetupLaunchConfig, SetupLifecycle, SetupProgressEvent, SetupRequest, SetupRunnerState,
+    WindowsLaunchPhase, SETUP_PROGRESS_EVENT,
 };
 use super::{restart_after_setup_transaction, wait_for_backend_ready, BackendLifecycle};
+use crate::paths::DesktopRuntimePaths;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -50,12 +53,14 @@ fn windows_launch_protocol_requires_job_assignment_before_resume() {
 #[test]
 fn setup_launch_is_a_fixed_shell_free_command() {
     let repo = Path::new("/trusted/orpheus");
-    let launch = build_setup_launch_config_for_platform(
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/trusted/app-data");
+    let launch = build_setup_launch_config_for_platform_with_runtime_paths(
         repo,
         "/trusted/python",
         request("mlx", &["tts-mlx", "cleaner-mlx"], false),
         "macos",
         "aarch64",
+        &runtime_paths,
     )
     .expect("valid MLX setup");
 
@@ -76,6 +81,41 @@ fn setup_launch_is_a_fixed_shell_free_command() {
         ]
     );
     assert!(!launch.uses_shell);
+    assert_eq!(launch.env, runtime_paths.as_env());
+}
+
+#[test]
+fn setup_launch_overrides_inherited_desktop_paths_with_backend_contract() {
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/authoritative/app-data");
+    let launch = build_setup_launch_config_for_platform_with_runtime_paths(
+        Path::new("/trusted/orpheus"),
+        "/trusted/python",
+        request("base", &[], false),
+        "macos",
+        "aarch64",
+        &runtime_paths,
+    )
+    .expect("valid base setup");
+    let configured = setup_command_env_for_test(
+        &launch,
+        &[
+            ("AUDIOBOOK_DATA_DIR", "/untrusted/data"),
+            ("AUDIOBOOK_OUTPUT_DIR", "/untrusted/output"),
+            ("AUDIOBOOK_TEMP_DIR", "/untrusted/temp"),
+            ("AUDIOBOOK_DB_PATH", "/untrusted/database"),
+            ("AUDIOBOOK_DESKTOP_READY_FILE", "/untrusted/ready"),
+        ],
+    );
+
+    for (key, expected) in runtime_paths.as_env() {
+        assert_eq!(configured.get(&key), Some(&expected), "wrong {key}");
+    }
+    assert_eq!(
+        configured
+            .get("ORPHEUS_TAURI_SETUP_SUPERVISED")
+            .map(String::as_str),
+        Some("1")
+    );
 }
 
 #[test]
@@ -620,6 +660,7 @@ fn fixture_launch(program: &Path, args: &[String]) -> SetupLaunchConfig {
         script: program.to_path_buf(),
         args: args.to_vec(),
         cwd: std::env::temp_dir(),
+        env: Default::default(),
         uses_shell: false,
     }
 }

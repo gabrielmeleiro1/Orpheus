@@ -8,6 +8,7 @@ pytest==7.4.0
 pytest-cov==4.1.0
 pytest-asyncio==0.21.0
 hypothesis==6.92.0
+pip-audit==2.10.1
 
 # Formatting and static analysis
 black==23.12.0

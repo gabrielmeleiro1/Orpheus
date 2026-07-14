@@ -80,6 +80,15 @@ python -m pip install -r requirements/mlx.txt
 python -m pip install -r requirements/cuda.txt
 ```
 
+The base profile deliberately excludes spaCy, Thinc, and the English spaCy
+model because they are used only by local TTS. Both local profiles pin the
+official `en-core-web-sm==3.8.0` wheel by URL and SHA256. During release
+verification, that data artifact is not treated as a vulnerability exception:
+its installed version, source URL, archive hash declaration, and every hashed
+`RECORD` file are verified first. Only that exact verified artifact is removed
+from a temporary metadata-only audit view; all other installed distributions
+must remain covered by strict `pip-audit`.
+
 The desktop sidecar builder follows the same boundary. It defaults to `mlx` for
 an `aarch64-apple-darwin` target and to `base` elsewhere. CUDA packaging must be
 requested explicitly:
@@ -113,6 +122,47 @@ only for the opt-in CUDA profile with these controls:
   release until the pin and clean-environment verification are updated.
 
 This is a scoped acceptance, not a claim that the advisories are fixed.
+
+### Clean-environment release gate
+
+Before publishing a source or packaged release, verify each intended runtime in
+a brand-new virtual environment. The verifier installs only that profile's
+manifest, runs `pip check`, performs imports without downloading models, checks
+that prohibited cross-profile packages are absent, and audits the exact target
+environment with the host's pinned `pip-audit`:
+
+```bash
+# Primary Apple Silicon release matrix
+python run_tests.py --verify-profile base --verify-profile mlx
+
+# Run on a Linux/Windows NVIDIA release host
+python run_tests.py --verify-profile base --verify-profile cuda
+
+# Direct form with machine-readable output
+python scripts/verify_runtime_profiles.py \
+  --profile base --profile mlx --json
+```
+
+The verifier runs exactly the profiles requested; it does not add `base`
+implicitly. A release command must request both `base` and the platform profile
+that will ship. MLX requires arm64 macOS 14 or newer. CUDA requires Linux or
+Windows and a successful `nvidia-smi` GPU/driver preflight. A requested
+unavailable profile is reported as `skipped` and exits with status 2; it is
+never reported as passed. `--allow-skipped` (or
+`run_tests.py --allow-skipped-profiles`) changes that exit code to zero for
+cross-platform automation, while retaining the skipped result in the report.
+Failures exit 1.
+
+The base and MLX audits must report zero known vulnerabilities. CUDA's two
+unfixed PyTorch findings may produce `accepted_risk` only while their exact,
+time-bounded entries in `security/runtime-audit-exceptions.json` remain valid.
+Accepted risk can satisfy the gate but is deliberately never labeled passed.
+Expired, malformed, cross-profile, wrong-package, and newly discovered
+advisories fail the gate. No audit tooling is installed into the target
+environment, so the inventory remains the profile plus its pinned packaging
+tools. The audit runs in strict path mode; any dependency collection error or
+skipped/unaudited distribution fails the gate. Use `--work-dir PATH --keep-env`
+only for developer diagnosis; otherwise all clean environments are removed.
 
 ### Local model assets
 
