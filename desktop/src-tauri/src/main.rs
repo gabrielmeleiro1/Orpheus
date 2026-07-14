@@ -2,16 +2,23 @@
 
 mod backend;
 mod paths;
+mod setup;
+
+#[cfg(test)]
+mod setup_tests;
 
 use backend::{
-    launch_dev_backend, launch_sidecar_backend, read_ready_payload_from_file, replace_running_backend,
-    resolve_sidecar_path, BackendEndpoint, BackendManager, BackendStatus, RunningBackend,
+    launch_dev_backend, launch_sidecar_backend, read_ready_payload_from_file,
+    replace_running_backend, resolve_sidecar_path, BackendEndpoint, BackendLifecycle,
+    BackendManager, BackendStatus, RunningBackend,
 };
 use paths::DesktopRuntimePaths;
+use setup::SetupRunnerState;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{Manager, State};
 
 // A `Starting` backend that never emits a ready payload (wedged startup) is
@@ -277,6 +284,125 @@ async fn restart_backend(
     state.start_backend_inner(&app_handle)
 }
 
+fn restart_after_setup_transaction<Stop, Start>(
+    setup_state: &SetupRunnerState,
+    backend_lifecycle: BackendLifecycle,
+    stop_backend: Stop,
+    start_backend: Start,
+) -> Result<(), String>
+where
+    Stop: FnOnce() -> Result<(), String>,
+    Start: FnOnce() -> Result<(), String>,
+{
+    if backend_lifecycle != BackendLifecycle::Ready {
+        return Err("backend is not ready for the setup restart".to_string());
+    }
+
+    let authorization = setup_state.acquire_restart_authorization()?;
+    let result = stop_backend().and_then(|_| start_backend());
+    match result {
+        Ok(()) => setup_state.complete_restart_authorization(authorization),
+        Err(error) => {
+            setup_state.restore_restart_authorization(authorization)?;
+            Err(error)
+        }
+    }
+}
+
+fn wait_for_backend_ready<Refresh>(
+    timeout: Duration,
+    poll_interval: Duration,
+    mut refresh: Refresh,
+) -> Result<(), String>
+where
+    Refresh: FnMut() -> Result<BackendLifecycle, String>,
+{
+    let started = Instant::now();
+    loop {
+        match refresh()? {
+            BackendLifecycle::Ready => return Ok(()),
+            BackendLifecycle::Failed => {
+                return Err("the restarted backend failed during startup".to_string())
+            }
+            BackendLifecycle::Stopped => {
+                return Err("the restarted backend stopped during startup".to_string())
+            }
+            BackendLifecycle::Starting => {}
+        }
+        if started.elapsed() >= timeout {
+            return Err(format!(
+                "the restarted backend timed out after {} seconds",
+                timeout.as_secs()
+            ));
+        }
+        if !poll_interval.is_zero() {
+            thread::sleep(poll_interval);
+        }
+    }
+}
+
+#[tauri::command]
+async fn restart_backend_after_setup(
+    app_handle: tauri::AppHandle,
+    app_state: State<'_, AppState>,
+    setup_state: State<'_, SetupRunnerState>,
+) -> Result<(), String> {
+    let _restart = app_state
+        .restart_lock
+        .lock()
+        .map_err(|_| "backend restart lock poisoned".to_string())?;
+    if app_state.shutting_down.load(Ordering::SeqCst) {
+        return Err("desktop backend is shutting down".to_string());
+    }
+
+    app_state.refresh_backend_ready_from_file()?;
+    app_state.refresh_backend_process_exit()?;
+    app_state.refresh_backend_startup_deadline()?;
+    let lifecycle = app_state
+        .backend_manager
+        .lock()
+        .map_err(|_| "backend manager lock poisoned".to_string())?
+        .status()
+        .lifecycle;
+
+    restart_after_setup_transaction(
+        setup_state.inner(),
+        lifecycle,
+        || app_state.stop_backend_inner(),
+        || {
+            app_state
+                .start_backend_inner(&app_handle)
+                .inspect_err(|error| {
+                    if let Ok(mut manager) = app_state.backend_manager.lock() {
+                        manager.mark_failed(error.clone());
+                    }
+                })?;
+            let readiness = wait_for_backend_ready(
+                BACKEND_STARTUP_DEADLINE,
+                Duration::from_millis(100),
+                || {
+                    app_state.refresh_backend_ready_from_file()?;
+                    app_state.refresh_backend_process_exit()?;
+                    app_state.refresh_backend_startup_deadline()?;
+                    let manager = app_state
+                        .backend_manager
+                        .lock()
+                        .map_err(|_| "backend manager lock poisoned".to_string())?;
+                    Ok(manager.status().lifecycle)
+                },
+            );
+            if let Err(error) = readiness {
+                let _ = app_state.stop_backend_inner();
+                if let Ok(mut manager) = app_state.backend_manager.lock() {
+                    manager.mark_failed(error.clone());
+                }
+                return Err(error);
+            }
+            Ok(())
+        },
+    )
+}
+
 #[tauri::command]
 fn choose_source_files() -> Vec<String> {
     rfd::FileDialog::new()
@@ -305,6 +431,7 @@ fn open_app_data_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
 fn main() {
     let app = tauri::Builder::default()
         .manage(AppState::default())
+        .manage(SetupRunnerState::default())
         .setup(|app| {
             let state = app.state::<AppState>();
             if let Err(error) = state.start_backend(app.handle()) {
@@ -319,8 +446,13 @@ fn main() {
             backend_status,
             backend_endpoint,
             restart_backend,
+            restart_backend_after_setup,
             choose_source_files,
-            open_app_data_folder
+            open_app_data_folder,
+            setup::start_runtime_setup,
+            setup::runtime_setup_status,
+            setup::runtime_setup_environment,
+            setup::cancel_runtime_setup
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -331,6 +463,9 @@ fn main() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
             if let Some(state) = app_handle.try_state::<AppState>() {
+                state.shutdown();
+            }
+            if let Some(state) = app_handle.try_state::<SetupRunnerState>() {
                 state.shutdown();
             }
         }

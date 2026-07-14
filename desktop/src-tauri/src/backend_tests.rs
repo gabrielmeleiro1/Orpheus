@@ -802,7 +802,6 @@ while True:
     let _ = fs::remove_dir_all(&temp_root);
 }
 
-
 #[test]
 fn stale_process_generation_cannot_mutate_newer_lifecycle() {
     let mut manager = BackendManager::default();
@@ -836,10 +835,7 @@ fn stale_process_generation_cannot_mutate_newer_lifecycle() {
     .expect("expected valid ready payload");
     manager.mark_ready_for_generation(generation_two, payload.clone());
     assert_eq!(manager.status().lifecycle, BackendLifecycle::Ready);
-    assert_eq!(
-        manager.endpoint().expect("endpoint").token,
-        "token-2"
-    );
+    assert_eq!(manager.endpoint().expect("endpoint").token, "token-2");
 
     // A stale ready from the old generation must not overwrite the new endpoint.
     let stale_payload = parse_ready_line(

@@ -13,16 +13,20 @@ import { LogPanel } from "./features/logs/LogPanel";
 import { PlayerPanel } from "./features/player/PlayerPanel";
 import { useAudioPlayer } from "./features/player/useAudioPlayer";
 import { ProgressPanel } from "./features/progress/ProgressPanel";
+import { SetupPage } from "./features/setup/SetupPage";
+import { shouldShowRuntimeSetup } from "./features/setup/setupModel";
 import {
   DASHBOARD_TAB_CONFIGS,
   DashboardTabIcon,
   conversionPanelTabForDashboardTab,
 } from "./navigation/tabs";
 import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKeyboardNavigation";
-import type { DashboardTab } from "./types/api";
+import type { DashboardTab, RuntimeSetupStatusResponse } from "./types/api";
 import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
 
-function App() {
+type BackendClientState = ReturnType<typeof useBackendClient>;
+
+function DashboardApp({ backend }: { backend: BackendClientState }) {
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
   const {
     apiClient,
@@ -30,7 +34,7 @@ function App() {
     connectionState,
     health,
     statusMessage,
-  } = useBackendClient();
+  } = backend;
   const startCommandRef = useRef<(() => void) | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -293,6 +297,49 @@ function App() {
       </div>
     </main>
   );
+}
+
+function App() {
+  const backend = useBackendClient();
+  const [setupStatus, setSetupStatus] = useState<RuntimeSetupStatusResponse | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [libraryOnlyOverride, setLibraryOnlyOverride] = useState(false);
+
+  useEffect(() => {
+    if (!backend.apiClient || libraryOnlyOverride) {
+      return undefined;
+    }
+    let active = true;
+    setSetupError(null);
+    void backend.apiClient.getRuntimeSetupStatus({ timeoutMs: 8_000 }).then((status) => {
+      if (active) setSetupStatus(status);
+    }).catch((error: unknown) => {
+      if (!active) return;
+      const message = error instanceof Error && error.message.trim()
+        ? error.message.trim().slice(0, 512)
+        : "Runtime setup status is temporarily unavailable.";
+      setSetupStatus(null);
+      setSetupError(message);
+    });
+    return () => {
+      active = false;
+    };
+  }, [backend.apiClient, libraryOnlyOverride]);
+
+  if (shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride)) {
+    return (
+      <SetupPage
+        apiClient={backend.apiClient}
+        initialStatus={setupStatus}
+        initialError={setupError}
+        onReady={setSetupStatus}
+        onContinueLibraryOnly={() => setLibraryOnlyOverride(true)}
+        onReconnectBackend={backend.reconnectBackend}
+      />
+    );
+  }
+
+  return <DashboardApp backend={backend} />;
 }
 
 export default App;

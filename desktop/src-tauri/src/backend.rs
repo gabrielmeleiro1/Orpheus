@@ -461,7 +461,7 @@ pub fn replace_running_backend(
     Ok(())
 }
 
-fn project_root_dir() -> PathBuf {
+pub(crate) fn project_root_dir() -> PathBuf {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     manifest_dir
         .parent()

@@ -43,6 +43,7 @@ DEFAULT_LOCK_TIMEOUT_SECONDS = 2.0
 DEFAULT_PIP_TIMEOUT_SECONDS = 900.0
 DEFAULT_MODEL_TIMEOUT_SECONDS = 3600.0
 DIAGNOSTIC_MAX_CHARS = 2000
+TAURI_SUPERVISED_ENV = "ORPHEUS_TAURI_SETUP_SUPERVISED"
 PYTORCH_RISK_ID = "PYSEC-2026-139/CVE-2026-4538,CVE-2025-3000"
 PYTORCH_RISK_SUMMARY = (
     "PyTorch 2.10 has unresolved local deserialization and memory-corruption "
@@ -732,11 +733,7 @@ def _supervise_command(
     with tempfile.TemporaryDirectory(prefix="orpheus-setup-output-") as temp_dir:
         stdout_path = Path(temp_dir) / "stdout.log"
         stderr_path = Path(temp_dir) / "stderr.log"
-        popen_kwargs: dict[str, Any] = {}
-        if os.name == "posix":
-            popen_kwargs["start_new_session"] = True
-        elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+        popen_kwargs = _stage_process_group_kwargs()
         try:
             with stdout_path.open("wb") as stdout_handle, stderr_path.open("wb") as stderr_handle:
                 process = subprocess.Popen(
@@ -764,6 +761,20 @@ def _supervise_command(
             detail = _sanitize_diagnostic(_bounded_file_tail(stderr_path))
             suffix = f" Details: {detail}" if detail else ""
             raise SetupExecutionError(f"{stage} failed with exit code {return_code}.{suffix}")
+
+
+def _stage_process_group_kwargs(
+    *, environ: Mapping[str, str] | None = None
+) -> dict[str, Any]:
+    """Keep Tauri-launched stages in its OS-owned containment boundary."""
+    env = os.environ if environ is None else environ
+    if str(env.get(TAURI_SUPERVISED_ENV, "")).strip() == "1":
+        return {}
+    if os.name == "posix":
+        return {"start_new_session": True}
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {}
 
 
 def run_setup(

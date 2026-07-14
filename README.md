@@ -26,8 +26,8 @@ Orpheus is a local-first desktop app that converts PDF, EPUB, Markdown, and text
 ## Quick Start
 
 ```bash
-python3.12 -m venv venv
-source venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 python scripts/setup_runtime.py --profile base
 python -m pip install -r requirements-dev.txt
@@ -56,6 +56,14 @@ CUDA is opt-in because its pinned PyTorch release has unresolved upstream
 advisories; the setup command refuses CUDA unless `--accept-pytorch-risk` is
 provided. Use trusted model artifacts only. Run either command with `--dry-run`
 first to inspect its fixed install and download commands.
+
+The in-app downloader is intentionally available only while running a debug
+desktop build from this source checkout. It uses the checkout's fixed
+`.venv` interpreter and `scripts/setup_runtime.py`; browser sessions and
+packaged releases cannot run a dynamic installer. Release artifacts must be
+built with the intended `base`, `mlx`, or `cuda` profile already baked into
+their sidecar. A packaged base build remains fully usable for documents,
+library management, and playback.
 
 `requirements.txt` installs the base runtime. The profile manifests live under
 `requirements/`, and `requirements-dev.txt` adds test, lint, and desktop

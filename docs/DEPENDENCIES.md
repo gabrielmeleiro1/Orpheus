@@ -44,14 +44,30 @@ requirements-dev.txt
 Install the shared application and contributor dependencies first:
 
 ```bash
-python3.12 -m venv venv
-source venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-dev.txt
 ```
 
 `requirements-dev.txt` includes `requirements.txt`, so do not install both
 separately.
+
+### Source setup versus packaged profiles
+
+Dynamic profile installation from the desktop setup page is a development
+feature for a source checkout. The Tauri debug shell verifies the fixed
+`scripts/setup_runtime.py` file and the checkout-owned `.venv` before enabling
+install, cancel, or setup-restart actions. It never accepts an interpreter,
+script, model path, or shell command from the frontend.
+
+Packaged releases and browser sessions report dynamic setup as unavailable.
+Their sidecar must already contain the profile selected at build time with
+`scripts/build_desktop_backend.py --runtime-profile base|mlx|cuda`. A packaged
+`base` build still supports document ingestion, conversion workflows that do
+not require local models, library management, and playback. To change a
+packaged runtime profile, build a new artifact from a trusted source checkout;
+the packaged app does not reach back to a build-machine checkout path.
 
 Local ML runtimes are opt-in profiles. Install exactly one when local synthesis
 or cleaning is needed:
@@ -193,7 +209,7 @@ media, `desktop/node_modules`, `desktop/dist`, `desktop/src-tauri/target`, or
 Run the desktop app from source:
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 cd desktop
 npm ci
 npm run desktop:dev
@@ -202,7 +218,7 @@ npm run desktop:dev
 Build and install the macOS app:
 
 ```bash
-source venv/bin/activate
+source .venv/bin/activate
 cd desktop
 npm ci
 npm run desktop:release

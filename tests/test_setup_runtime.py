@@ -75,6 +75,26 @@ def test_build_plan_uses_fixed_argument_lists(monkeypatch: pytest.MonkeyPatch):
     )
 
 
+def test_tauri_supervised_stages_inherit_existing_process_containment():
+    import scripts.setup_runtime as setup_runtime
+
+    assert setup_runtime._stage_process_group_kwargs(
+        environ={setup_runtime.TAURI_SUPERVISED_ENV: "1"}
+    ) == {}
+
+
+def test_direct_cli_stages_keep_independent_process_tree_supervision():
+    import scripts.setup_runtime as setup_runtime
+
+    kwargs = setup_runtime._stage_process_group_kwargs(environ={})
+    if os.name == "posix":
+        assert kwargs == {"start_new_session": True}
+    elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        assert kwargs == {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    else:
+        assert kwargs == {}
+
+
 @pytest.mark.parametrize(
     ("profile_id", "groups"),
     [

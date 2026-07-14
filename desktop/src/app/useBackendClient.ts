@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import {
   createApiClient,
@@ -371,11 +371,21 @@ export function useBackendClient() {
     };
   }, [apiClient, backendBaseUrl]);
 
+  const reconnectBackend = useCallback(() => {
+    setApiClient(null);
+    setBackendBaseUrl("");
+    setHealth(null);
+    setConnectionState("checking");
+    setStatusMessage("reconnecting to restarted backend");
+    setBootstrapAttempt((attempt) => attempt + 1);
+  }, []);
+
   return {
     apiClient,
     backendBaseUrl,
     connectionState,
     health,
     statusMessage,
+    reconnectBackend,
   };
 }
