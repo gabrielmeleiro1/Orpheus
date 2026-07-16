@@ -30,6 +30,7 @@ const LIBRARY_MAX_PAGES = 50;
  */
 export interface LibraryRepository {
   listBooks(search: string, modeFilter: LibraryModeFilter, options?: ApiRequestOptions): Promise<LibraryListResponse>;
+  countBooks(options?: ApiRequestOptions): Promise<number>;
   getBook(bookId: number, options?: ApiRequestOptions): Promise<LibraryBookDetail>;
   updateBook(
     bookId: number,
@@ -50,20 +51,33 @@ export interface LibraryRepository {
 }
 
 export function createLibraryRepository(apiClient: ApiClient): LibraryRepository {
+  async function fetchAllBooks(
+    search: string,
+    modeFilter: LibraryModeFilter,
+    options?: ApiRequestOptions,
+  ): Promise<LibraryListResponse["items"]> {
+    const items: LibraryListResponse["items"] = [];
+    for (let page = 0; page < LIBRARY_MAX_PAGES; page += 1) {
+      const response = await apiClient.getLibrary(search || undefined, LIBRARY_PAGE_SIZE, {
+        conversionMode: modeFilter === "all" ? "" : modeFilter,
+        offset: page * LIBRARY_PAGE_SIZE,
+      }, options);
+      items.push(...response.items);
+      if (response.items.length < LIBRARY_PAGE_SIZE) {
+        break;
+      }
+    }
+    return items;
+  }
+
   return {
     async listBooks(search, modeFilter, options) {
-      const items: LibraryListResponse["items"] = [];
-      for (let page = 0; page < LIBRARY_MAX_PAGES; page += 1) {
-        const response = await apiClient.getLibrary(search || undefined, LIBRARY_PAGE_SIZE, {
-          conversionMode: modeFilter === "all" ? "" : modeFilter,
-          offset: page * LIBRARY_PAGE_SIZE,
-        }, options);
-        items.push(...response.items);
-        if (response.items.length < LIBRARY_PAGE_SIZE) {
-          break;
-        }
-      }
+      const items = await fetchAllBooks(search, modeFilter, options);
       return { items, count: items.length };
+    },
+    async countBooks(options) {
+      const response = await apiClient.getLibraryCount(options);
+      return Math.max(0, Number(response.count) || 0);
     },
     getBook(bookId, options) {
       return apiClient.getLibraryBook(bookId, options);

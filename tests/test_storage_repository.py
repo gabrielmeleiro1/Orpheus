@@ -31,6 +31,33 @@ from modules.storage.sqlite_repo import SQLiteRepository
 from modules.app.services.library_service import LibraryService
 
 
+def test_count_books_returns_unfiltered_total_after_create_and_delete(tmp_path):
+    repo = SQLiteRepository(tmp_path / "library.db")
+
+    assert repo.count_books() == 0
+
+    first = repo.create_book(
+        BookCreate(
+            title="First",
+            source_path="/tmp/first.epub",
+            source_type=SourceType.EPUB,
+            total_chapters=1,
+        )
+    )
+    repo.create_book(
+        BookCreate(
+            title="Second",
+            source_path="/tmp/second.epub",
+            source_type=SourceType.EPUB,
+            total_chapters=1,
+        )
+    )
+    assert repo.count_books() == 2
+
+    assert repo.delete_book(first.id) is True
+    assert repo.count_books() == 1
+
+
 def test_storage_repository() -> bool:
     """Run all repository storage tests."""
     test_dir = PROJECT_ROOT / "tests" / "data"

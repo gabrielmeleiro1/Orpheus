@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
 import {
   applyProgressEvent,
+  applyRunnerStatus,
   acquireSetupStart,
   canStartSetup,
   createSelection,
@@ -74,6 +75,33 @@ describe("runtime setup selection", () => {
 });
 
 describe("runtime setup gate and progress", () => {
+  it("hydrates progress immediately from an authoritative runner snapshot", () => {
+    const running = applyRunnerStatus(undefined, {
+      lifecycle: "running",
+      profile: "mlx",
+      modelGroups: ["tts-mlx"],
+      stage: "model_download",
+      message: "Downloading models",
+      percent: 42,
+      restartRequired: false,
+      error: null,
+    });
+    expect(running).toMatchObject({ lifecycle: "running", stage: "models", message: "Downloading models", percent: 42 });
+    expect(running.completedStages).toEqual(["packages"]);
+
+    const complete = applyRunnerStatus(running, {
+      lifecycle: "complete",
+      profile: "mlx",
+      modelGroups: ["tts-mlx"],
+      stage: "verify",
+      message: "Setup state saved.",
+      percent: 99,
+      restartRequired: true,
+      error: null,
+    });
+    expect(complete).toMatchObject({ lifecycle: "complete", percent: 100, restartRequired: true });
+  });
+
   it("gates incomplete local setup but permits ready base and explicit unavailable recovery", () => {
     expect(shouldShowRuntimeSetup(status(), false)).toBe(true);
     expect(shouldShowRuntimeSetup(status({ configured: true, state: "ready", ready: true, selected_profile: "base", packages: { ready: true, missing: [], incompatible: [] }, probe: { ready: true, checks: [] } }), false)).toBe(false);
@@ -82,11 +110,12 @@ describe("runtime setup gate and progress", () => {
 
   it("bounds progress, handles terminal states, and keeps safe diagnostics only", () => {
     const running = applyProgressEvent(undefined, { event: "stage_started", stage: "dependency_installation", message: "Installing packages", percent: 150 });
-    expect(running.percent).toBe(100);
+    expect(running.percent).toBe(99);
     expect(running.lifecycle).toBe("running");
     expect(running.stage).toBe("packages");
-    const complete = applyProgressEvent(running, { event: "complete", terminal: true, restart_required: true });
-    expect(complete).toMatchObject({ lifecycle: "complete", restartRequired: true });
+    const almostComplete = applyProgressEvent(undefined, { event: "stage_started", stage: "verify", percent: 90 });
+    const complete = applyProgressEvent(almostComplete, { event: "complete", terminal: true, restart_required: true });
+    expect(complete).toMatchObject({ lifecycle: "complete", restartRequired: true, percent: 100 });
     const failed = applyProgressEvent(running, { event: "error", terminal: true, message: "x".repeat(900) });
     expect(failed.lifecycle).toBe("failed");
     expect(failed.message.length).toBeLessThanOrEqual(512);
@@ -106,7 +135,7 @@ describe("runtime setup gate and progress", () => {
       percent: 90,
     });
     expect(verification).toMatchObject({ lifecycle: "running", stage: "verify", percent: 90 });
-    expect(verification.completedStages).toEqual([]);
+    expect(verification.completedStages).toEqual(["packages", "models"]);
 
     const complete = applyProgressEvent(verification, {
       event: "stage_complete",
@@ -114,7 +143,7 @@ describe("runtime setup gate and progress", () => {
       message: "Setup state saved.",
       percent: 100,
     });
-    expect(complete).toMatchObject({ lifecycle: "running", stage: "verify", percent: 100 });
-    expect(complete.completedStages).toEqual(["verify"]);
+    expect(complete).toMatchObject({ lifecycle: "running", stage: "verify", percent: 99 });
+    expect(complete.completedStages).toEqual(["packages", "models", "verify"]);
   });
 });

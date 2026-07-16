@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import { isTauriRuntime } from "../../platform/tauriRuntime";
-import type { SetupProgressEvent } from "./setupModel";
+import type { SetupProgressEvent, SetupRunnerStatusSnapshot } from "./setupModel";
 
 export interface RuntimeSetupEnvironment {
   available: boolean;
@@ -16,13 +16,7 @@ export interface RuntimeSetupRequest {
   acceptPytorchRisk: boolean;
 }
 
-export interface RuntimeSetupRunnerStatus {
-  lifecycle: "idle" | "running" | "cancelling" | "complete" | "failed" | "cancelled" | "timed_out";
-  profile: string | null;
-  modelGroups: string[];
-  restartRequired: boolean;
-  error: string | null;
-}
+export interface RuntimeSetupRunnerStatus extends SetupRunnerStatusSnapshot {}
 
 export async function startRuntimeSetup(request: RuntimeSetupRequest): Promise<RuntimeSetupRunnerStatus> {
   return invoke<RuntimeSetupRunnerStatus>("start_runtime_setup", { request });

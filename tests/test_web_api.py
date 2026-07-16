@@ -1037,6 +1037,11 @@ def test_web_api() -> bool:
     assert isinstance(payload["items"], list)
     print("✓ /api/library")
 
+    library_count = client.get("/api/library/count")
+    assert library_count.status_code == 200
+    assert library_count.json()["count"] == 0
+    print("✓ /api/library/count")
+
     models = client.get("/api/options/models")
     assert models.status_code == 200
     data = models.json()
@@ -1122,6 +1127,9 @@ def test_web_api() -> bool:
                     self.created_at = None
 
             return [_BookSummary()]
+
+        def get_library_count(self):
+            return 1
 
         def get_book(self, book_id):
             if book_id != 1:

@@ -232,6 +232,90 @@ fn setup_guard_rejects_concurrent_runs_and_clears_on_terminal_state() {
 }
 
 #[test]
+fn running_setup_status_retains_latest_sanitized_progress_snapshot() {
+    let state = SetupRunnerState::default();
+    let generation = state
+        .begin(request("mlx", &["tts-mlx"], false))
+        .expect("run");
+
+    assert!(state.record_progress(
+        generation,
+        SetupProgressEvent {
+            event: "stage_started".to_string(),
+            stage: Some("model_download".to_string()),
+            profile: None,
+            model_groups: Vec::new(),
+            message: Some("Downloading models".to_string()),
+            percent: Some(42.0),
+            terminal: None,
+            restart_required: None,
+        },
+    ));
+
+    let status = state.status();
+    assert_eq!(status.stage.as_deref(), Some("model_download"));
+    assert_eq!(status.message.as_deref(), Some("Downloading models"));
+    assert_eq!(status.percent, Some(42.0));
+    let serialized = serde_json::to_value(status).expect("status json");
+    assert_eq!(serialized["stage"], "model_download");
+    assert_eq!(serialized["message"], "Downloading models");
+    assert_eq!(serialized["percent"], 42.0);
+}
+
+#[test]
+fn new_setup_generation_clears_the_previous_progress_snapshot() {
+    let state = SetupRunnerState::default();
+    let first = state.begin(request("base", &[], false)).expect("first run");
+    state.record_progress(
+        first,
+        SetupProgressEvent {
+            event: "stage_started".to_string(),
+            stage: Some("verify".to_string()),
+            profile: None,
+            model_groups: Vec::new(),
+            message: Some("Verifying setup".to_string()),
+            percent: Some(90.0),
+            terminal: None,
+            restart_required: None,
+        },
+    );
+    state.finish_failure(first, SetupLifecycle::Failed, "failed");
+
+    let second = state
+        .begin(request("base", &[], false))
+        .expect("second run");
+    let status = state.status();
+    assert_ne!(first, second);
+    assert_eq!(status.stage, None);
+    assert_eq!(status.message, None);
+    assert_eq!(status.percent, None);
+}
+
+#[test]
+fn successful_setup_status_owns_terminal_percent_100() {
+    let state = SetupRunnerState::default();
+    let generation = state.begin(request("base", &[], false)).expect("run");
+    state.record_progress(
+        generation,
+        SetupProgressEvent {
+            event: "stage_started".to_string(),
+            stage: Some("verify".to_string()),
+            profile: None,
+            model_groups: Vec::new(),
+            message: Some("Verifying setup".to_string()),
+            percent: Some(99.0),
+            terminal: None,
+            restart_required: None,
+        },
+    );
+
+    assert!(state.finish_success(generation, true));
+    let status = state.status();
+    assert_eq!(status.lifecycle, SetupLifecycle::Complete);
+    assert_eq!(status.percent, Some(100.0));
+}
+
+#[test]
 fn restart_authorization_requires_successful_restart_required_setup() {
     let idle = SetupRunnerState::default();
     assert!(idle.acquire_restart_authorization().is_err());
@@ -799,6 +883,7 @@ fn successful_real_child_emits_exactly_one_authoritative_terminal_event() {
         .collect::<Vec<_>>();
     assert_eq!(terminal.len(), 1);
     assert_eq!(terminal[0].event, "complete");
+    assert_eq!(terminal[0].percent, Some(100.0));
     assert_eq!(terminal[0].restart_required, Some(true));
 }
 

@@ -248,7 +248,7 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
                 ("stage_started", "Dependency installation", 10),
                 ("stage_complete", "Dependency installation", 50),
                 ("stage_started", "Verification", 90),
-                ("stage_complete", "Verification", 100),
+                ("stage_complete", "Verification", 90),
             ],
         ),
         (
@@ -261,7 +261,7 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
                 ("stage_started", "Model download", 55),
                 ("stage_complete", "Model download", 80),
                 ("stage_started", "Verification", 90),
-                ("stage_complete", "Verification", 100),
+                ("stage_complete", "Verification", 90),
             ],
         ),
     ],

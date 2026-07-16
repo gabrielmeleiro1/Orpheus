@@ -84,6 +84,9 @@ class _FakeController:
             favorite=favorite,
         )
 
+    def get_library_count(self) -> int:
+        return 1
+
     def get_book(self, book_id: int):  # noqa: ANN201
         if book_id != 1:
             return None
@@ -171,11 +174,16 @@ def test_desktop_mode_library_requires_bearer_token(tmp_path: Path) -> None:
         missing = client.get("/api/library")
         query_only = client.get(f"/api/library?token={TOKEN}")
         authed = client.get("/api/library", headers={"Authorization": f"Bearer {TOKEN}"})
+        count_missing = client.get("/api/library/count")
+        count_authed = client.get("/api/library/count", headers={"Authorization": f"Bearer {TOKEN}"})
 
     assert missing.status_code == 401
     assert query_only.status_code == 401
     assert authed.status_code == 200
     assert authed.json()["count"] == 1
+    assert count_missing.status_code == 401
+    assert count_authed.status_code == 200
+    assert count_authed.json() == {"count": 1}
 
 
 def test_desktop_mode_library_forwards_offset_to_repository(tmp_path: Path) -> None:

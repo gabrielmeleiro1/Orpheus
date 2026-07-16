@@ -22,6 +22,7 @@ export interface UseLibraryResult {
   modeFilter: "all" | ConversionMode;
   setModeFilter: (value: "all" | ConversionMode) => void;
   items: LibraryBookSummary[];
+  indexedCount: number;
   selectedBookId: number | null;
   selectedBookIndex: number;
   selectedBookDetail: LibraryBookDetail | null;
@@ -72,6 +73,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     modeFilter: list.modeFilter,
     setModeFilter: list.setModeFilter,
     items: list.items,
+    indexedCount: list.indexedCount,
     selectedBookId: list.selectedBookId,
     selectedBookIndex: list.selectedBookIndex,
     selectedBookDetail: list.selectedBookDetail,

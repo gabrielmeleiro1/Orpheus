@@ -23,6 +23,7 @@ export interface UseLibraryListResult {
   modeFilter: LibraryModeFilter;
   setModeFilter: (value: LibraryModeFilter) => void;
   items: LibraryBookSummary[];
+  indexedCount: number;
   selectedBookId: number | null;
   selectedBookIndex: number;
   selectedBookDetail: LibraryBookDetail | null;
@@ -53,6 +54,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const [searchQuery, setSearchQuery] = useState("");
   const [modeFilter, setModeFilter] = useState<LibraryModeFilter>("all");
   const [items, setItems] = useState<LibraryBookSummary[]>([]);
+  const [indexedCount, setIndexedCount] = useState(0);
   const [selectedBookId, setSelectedBookId] = useState<number | null>(null);
   const [selectedBookIndex, setSelectedBookIndex] = useState(-1);
   const [selectedBookDetail, setSelectedBookDetail] = useState<LibraryBookDetail | null>(null);
@@ -64,10 +66,37 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
   const beginListRequest = useLatestRequest();
   const beginDetailRequest = useLatestRequest();
+  const beginMutationRequest = useLatestRequest();
   const listAbortRef = useRef<AbortController | null>(null);
   const detailAbortRef = useRef<AbortController | null>(null);
   const selectedBookIdRef = useRef<number | null>(null);
   const preservedStatusRef = useRef<string | null>(null);
+  const currentListContextRef = useRef<{ query: string; modeFilter: LibraryModeFilter }>({
+    query: "",
+    modeFilter: "all",
+  });
+  currentListContextRef.current = { query: searchQuery.trim(), modeFilter };
+
+  const resetLibraryState = useCallback(() => {
+    listAbortRef.current?.abort();
+    listAbortRef.current = null;
+    detailAbortRef.current?.abort();
+    detailAbortRef.current = null;
+    beginListRequest();
+    beginDetailRequest();
+    beginMutationRequest();
+    preservedStatusRef.current = null;
+    setItems([]);
+    setIndexedCount(0);
+    selectedBookIdRef.current = null;
+    setSelectedBookId(null);
+    setSelectedBookIndex(-1);
+    setSelectedBookDetail(null);
+    setLoadingList(false);
+    setLoadingDetail(false);
+    setErrorMessage("");
+    setStatusMessage(backendDisconnected ? "backend disconnected" : "waiting for backend");
+  }, [backendDisconnected, beginDetailRequest, beginListRequest, beginMutationRequest]);
 
   const loadBookDetail = useCallback(
     async (bookId: number, options: { silentStatus?: boolean } = {}): Promise<LibraryBookDetail | null> => {
@@ -113,20 +142,16 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   );
 
   const loadLibrary = useCallback(
-    async (query: string, options: { silentDetailStatus?: boolean } = {}): Promise<void> => {
-      if (!repository) {
-        setItems([]);
-        selectedBookIdRef.current = null;
-        setSelectedBookId(null);
-        setSelectedBookIndex(-1);
-        setSelectedBookDetail(null);
-        setLoadingList(false);
-        setLoadingDetail(false);
-        setErrorMessage("");
-        setStatusMessage(backendDisconnected ? "backend disconnected" : "waiting for backend");
+    async (
+      query: string,
+      options: { silentDetailStatus?: boolean; modeFilter?: LibraryModeFilter } = {},
+    ): Promise<void> => {
+      if (!repository || backendDisconnected) {
+        resetLibraryState();
         return;
       }
 
+      const requestModeFilter = options.modeFilter ?? modeFilter;
       const isCurrent = beginListRequest();
       listAbortRef.current?.abort();
       const controller = new AbortController();
@@ -135,19 +160,31 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       setErrorMessage("");
 
       try {
-        const response = await repository.listBooks(query, modeFilter, { signal: controller.signal });
+        const response = await repository.listBooks(query, requestModeFilter, { signal: controller.signal });
         if (!isCurrent()) {
           return;
         }
 
         const nextItems = Array.isArray(response.items) ? response.items : [];
+        const nextIndexedCount = query || requestModeFilter !== "all"
+          ? await repository.countBooks({ signal: controller.signal })
+          : response.count;
+        if (!isCurrent()) {
+          return;
+        }
+
         setItems(nextItems);
+        setIndexedCount(nextIndexedCount);
 
         if (nextItems.length === 0) {
+          detailAbortRef.current?.abort();
+          detailAbortRef.current = null;
+          beginDetailRequest();
           selectedBookIdRef.current = null;
           setSelectedBookId(null);
           setSelectedBookIndex(-1);
           setSelectedBookDetail(null);
+          setLoadingDetail(false);
           setStatusMessage("library empty");
           return;
         }
@@ -176,7 +213,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         }
       }
     },
-    [backendDisconnected, beginListRequest, loadBookDetail, modeFilter, repository],
+    [backendDisconnected, beginListRequest, loadBookDetail, modeFilter, repository, resetLibraryState],
   );
 
   const selectBook = useCallback(
@@ -257,10 +294,20 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       return false;
     }
     const deletedStatus = `deleted ${title}`;
+    const isCurrentMutation = beginMutationRequest();
+    const isCurrentList = beginListRequest();
+    listAbortRef.current?.abort();
+    listAbortRef.current = null;
+    detailAbortRef.current?.abort();
+    detailAbortRef.current = null;
+    beginDetailRequest();
+    setLoadingList(false);
+    setLoadingDetail(false);
     const previousItems = items;
     const previousSelectedBookId = selectedBookId;
     const previousSelectedBookIndex = selectedBookIndex;
     const previousSelectedBookDetail = selectedBookDetail;
+    const previousIndexedCount = indexedCount;
     const deleteIndex = items.findIndex((item) => item.id === selectedBookId);
     const optimisticItems = items.filter((item) => item.id !== selectedBookId);
     const nextIndex = optimisticItems.length > 0 ? Math.min(Math.max(deleteIndex, 0), optimisticItems.length - 1) : -1;
@@ -270,6 +317,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     preservedStatusRef.current = null;
     setStatusMessage(`deleting ${title}`);
     setItems(optimisticItems);
+    setIndexedCount(Math.max(0, indexedCount - 1));
     setSelectedBookIndex(nextIndex);
     selectedBookIdRef.current = nextBook?.id ?? null;
     setSelectedBookId(nextBook?.id ?? null);
@@ -277,14 +325,31 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
     try {
       await repository.deleteBook(selectedBookId);
+      if (!isCurrentMutation()) {
+        return true;
+      }
+
+      const currentListContext = currentListContextRef.current;
       preservedStatusRef.current = deletedStatus;
       setStatusMessage(deletedStatus);
-      await loadLibrary(searchQuery.trim(), { silentDetailStatus: true });
+      await loadLibrary(currentListContext.query, {
+        modeFilter: currentListContext.modeFilter,
+        silentDetailStatus: true,
+      });
+      if (!isCurrentMutation()) {
+        return true;
+      }
+
       setStatusMessage(deletedStatus);
       return true;
     } catch (error: unknown) {
+      if (!isCurrentMutation() || !isCurrentList()) {
+        return false;
+      }
+
       const message = error instanceof Error ? error.message : "failed to delete book";
       setItems(previousItems);
+      setIndexedCount(previousIndexedCount);
       setSelectedBookIndex(previousSelectedBookIndex);
       selectedBookIdRef.current = previousSelectedBookId;
       setSelectedBookId(previousSelectedBookId);
@@ -293,7 +358,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       setStatusMessage(message);
       return false;
     }
-  }, [items, loadLibrary, repository, searchQuery, selectedBookDetail, selectedBookId, selectedBookIndex]);
+  }, [beginDetailRequest, beginListRequest, beginMutationRequest, indexedCount, items, loadLibrary, modeFilter, repository, searchQuery, selectedBookDetail, selectedBookId, selectedBookIndex]);
 
   const updateSelectedBookMetadata = useCallback(
     async (payload: { title: string; author: string; tags: string }): Promise<void> => {
@@ -396,16 +461,8 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   }, []);
 
   useEffect(() => {
-    if (!repository) {
-      setItems([]);
-      selectedBookIdRef.current = null;
-      setSelectedBookId(null);
-      setSelectedBookIndex(-1);
-      setSelectedBookDetail(null);
-      setLoadingList(false);
-      setLoadingDetail(false);
-      setErrorMessage("");
-      setStatusMessage(backendDisconnected ? "backend disconnected" : "waiting for backend");
+    if (!repository || backendDisconnected) {
+      resetLibraryState();
       return;
     }
 
@@ -416,7 +473,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     return () => {
       window.clearTimeout(timer);
     };
-  }, [backendDisconnected, loadLibrary, repository, searchQuery]);
+  }, [backendDisconnected, loadLibrary, repository, resetLibraryState, searchQuery]);
 
   const summaryValues = useMemo(() => buildBookSummary(selectedBookDetail), [selectedBookDetail]);
   const selectedBookPlayable = Boolean(selectedBookDetail?.playback_url);
@@ -427,6 +484,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     modeFilter,
     setModeFilter,
     items,
+    indexedCount,
     selectedBookId,
     selectedBookIndex,
     selectedBookDetail,

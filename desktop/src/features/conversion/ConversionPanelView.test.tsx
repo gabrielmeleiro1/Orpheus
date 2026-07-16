@@ -171,6 +171,7 @@ describe("ConversionPanelView", () => {
       };
     };
     model.capabilities.canStartConversion = false;
+    model.capabilities.showStartConversion = false;
     model.conversionActions.blockingReason = "Cloud API requires an API key. Add it in Settings.";
     model.conversionActions.showSettingsShortcut = true;
 

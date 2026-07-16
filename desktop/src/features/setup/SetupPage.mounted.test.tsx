@@ -8,6 +8,7 @@ import type { ApiClient } from "../../api/client";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
 import { SetupPage, type SetupPageBridge } from "./SetupPage";
 import type { RuntimeSetupEnvironment, RuntimeSetupRunnerStatus } from "./setupBridge";
+import type { SetupProgressEvent } from "./setupModel";
 
 const setupStatus: RuntimeSetupStatusResponse = {
   schema_version: 1, configured: false, state: "unconfigured", state_error: null,
@@ -24,9 +25,9 @@ const setupStatus: RuntimeSetupStatusResponse = {
 function bridge(overrides: Partial<SetupPageBridge> = {}): SetupPageBridge {
   return {
     environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: true, mode: "source_checkout", reason: "" })),
-    start: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "running", profile: "base", modelGroups: [], restartRequired: false, error: null })),
-    status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "idle", profile: null, modelGroups: [], restartRequired: false, error: null })),
-    cancel: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "cancelled", profile: "base", modelGroups: [], restartRequired: false, error: "cancelled" })),
+    start: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "running", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })),
+    status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "idle", profile: null, modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })),
+    cancel: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "cancelled", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: "cancelled" })),
     restart: vi.fn(async () => undefined),
     listen: vi.fn(async () => vi.fn()),
     ...overrides,
@@ -80,11 +81,154 @@ describe("mounted SetupPage", () => {
     expect(start).toHaveBeenCalledTimes(1);
     expect(start).toHaveBeenCalledWith({ profile: "mlx", modelGroups: ["tts-mlx", "cleaner-mlx"], acceptPytorchRisk: false });
     expect(document.activeElement?.id).toBe("setup-progress-heading");
-    resolveStart({ lifecycle: "running", profile: "mlx", modelGroups: ["tts-mlx", "cleaner-mlx"], restartRequired: false, error: null });
+    resolveStart({ lifecycle: "running", profile: "mlx", modelGroups: ["tts-mlx", "cleaner-mlx"], stage: null, message: null, percent: null, restartRequired: false, error: null });
     await act(async () => undefined);
     await act(async () => root.unmount());
     expect(unlisten).toHaveBeenCalledOnce();
     root = createRoot(container);
+  });
+
+  it("keeps start disabled until the progress listener is registered", async () => {
+    let resolveListen!: (unlisten: () => void) => void;
+    const listen = vi.fn(() => new Promise<() => void>((resolve) => {
+      resolveListen = resolve;
+    }));
+    const start = vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({
+      lifecycle: "running",
+      profile: "base",
+      modelGroups: [],
+      stage: null,
+      message: null,
+      percent: null,
+      restartRequired: false,
+      error: null,
+    }));
+    const status = vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({
+      lifecycle: "idle",
+      profile: null,
+      modelGroups: [],
+      stage: null,
+      message: null,
+      percent: null,
+      restartRequired: false,
+      error: null,
+    }));
+    const runtimeBridge = bridge({ listen, start, status });
+    const onReady = vi.fn();
+
+    await renderPage(runtimeBridge, { onReady });
+
+    const install = findButton(container, "Use library-only mode");
+    expect(install.disabled).toBe(true);
+    expect(start).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveListen(vi.fn());
+      await Promise.resolve();
+    });
+
+    expect(install.disabled).toBe(false);
+    expect(status).toHaveBeenCalledOnce();
+    await act(async () => install.click());
+    expect(start).toHaveBeenCalledOnce();
+  });
+
+  it("keeps start disabled until runner reconciliation completes", async () => {
+    let resolveStatus!: (value: RuntimeSetupRunnerStatus) => void;
+    const status = vi.fn(() => new Promise<RuntimeSetupRunnerStatus>((resolve) => {
+      resolveStatus = resolve;
+    }));
+    const runtimeBridge = bridge({
+      listen: vi.fn(async () => vi.fn()),
+      status,
+    });
+
+    await renderPage(runtimeBridge);
+    const install = findButton(container, "Use library-only mode");
+    expect(install.disabled).toBe(true);
+
+    await act(async () => undefined);
+    expect(status).toHaveBeenCalledOnce();
+    expect(install.disabled).toBe(true);
+
+    await act(async () => {
+      resolveStatus({ lifecycle: "idle", profile: null, modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null });
+      await Promise.resolve();
+    });
+    expect(install.disabled).toBe(false);
+  });
+
+  it("shows retryable progress listener recovery after registration fails", async () => {
+    let attempts = 0;
+    const listen = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("event bridge unavailable");
+      return vi.fn();
+    });
+    const runtimeBridge = bridge({ listen });
+
+    await renderPage(runtimeBridge);
+    await act(async () => undefined);
+
+    expect(container.textContent).toContain("Progress connection unavailable");
+    const retry = findButton(container, "Retry progress connection");
+    expect(findButton(container, "Use library-only mode").disabled).toBe(true);
+
+    await act(async () => retry.click());
+    await act(async () => undefined);
+    expect(listen).toHaveBeenCalledTimes(2);
+    expect(findButton(container, "Use library-only mode").disabled).toBe(false);
+  });
+
+  it("registers before reconciling a running setup after remount", async () => {
+    const progressListeners: Array<(event: SetupProgressEvent) => void> = [];
+    let resolveRemountListen!: (unlisten: () => void) => void;
+    let registrationCount = 0;
+    const listen = vi.fn((onProgress: (event: SetupProgressEvent) => void) => {
+      progressListeners.push(onProgress);
+      registrationCount += 1;
+      if (registrationCount === 1) return Promise.resolve(vi.fn());
+      return new Promise<() => void>((resolve) => {
+        resolveRemountListen = resolve;
+      });
+    });
+    const status = vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({
+      lifecycle: "running",
+      profile: "mlx",
+      modelGroups: ["tts-mlx"],
+      stage: "verify",
+      message: "Verifying setup",
+      percent: 92,
+      restartRequired: false,
+      error: null,
+    }));
+    const runtimeBridge = bridge({ listen, status });
+    const onReady = vi.fn();
+
+    await renderPage(runtimeBridge, { onReady });
+    expect(status).toHaveBeenCalledOnce();
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderPage(runtimeBridge, { onReady });
+
+    expect(status).toHaveBeenCalledOnce();
+    await act(async () => {
+      resolveRemountListen(vi.fn());
+      await Promise.resolve();
+    });
+    expect(status).toHaveBeenCalledTimes(2);
+    expect(container.querySelector("progress")?.getAttribute("value")).toBe("92");
+    expect(container.textContent).toContain("Verifying setup");
+    expect(container.querySelectorAll(".setup-stage.is-complete")).toHaveLength(2);
+
+    await act(async () => {
+      progressListeners[1]({ event: "stage_started", stage: "verify", message: "Verifying setup", percent: 92 });
+    });
+    expect(container.querySelector("progress")?.getAttribute("value")).toBe("92");
+    expect(container.textContent).toContain("Verifying setup");
+    expect(container.querySelectorAll(".setup-stage.is-complete")).toHaveLength(2);
   });
 
   it("refreshes readiness from the reconnected backend and leaves setup after one restart", async () => {
@@ -138,7 +282,7 @@ describe("mounted SetupPage", () => {
   });
 
   it("cancels an authoritative running setup", async () => {
-    const runtimeBridge = bridge({ status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "running", profile: "base", modelGroups: [], restartRequired: false, error: null })) });
+    const runtimeBridge = bridge({ status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "running", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })) });
     await renderPage(runtimeBridge);
     await act(async () => findButton(container, "Cancel").click());
     expect(runtimeBridge.cancel).toHaveBeenCalledOnce();
@@ -160,6 +304,9 @@ describe("mounted SetupPage", () => {
         lifecycle: "complete",
         profile: "base",
         modelGroups: [],
+        stage: null,
+        message: null,
+        percent: null,
         restartRequired: false,
         error: null,
       })),
@@ -171,6 +318,7 @@ describe("mounted SetupPage", () => {
 
     expect(api.getRuntimeSetupStatus).toHaveBeenCalledOnce();
     expect(onReady).toHaveBeenCalledWith(readyStatus);
+    expect(container.querySelector("progress")?.getAttribute("value")).toBe("100");
   });
 
   it("focuses the setup heading when the page mounts", async () => {

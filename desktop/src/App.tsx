@@ -184,7 +184,7 @@ function DashboardApp({
         <header className="studio-status">
           <div>
             <h1>orpheus.local</h1>
-            <p>{`${runtimeIdentity} / ${library.items.length} books indexed`}</p>
+            <p>{`${runtimeIdentity} / ${library.indexedCount} books indexed`}</p>
           </div>
           <div className="studio-controls">
             {conversionJob.uiState === "running" ? (

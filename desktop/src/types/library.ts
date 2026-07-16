@@ -19,6 +19,10 @@ export interface LibraryListResponse {
   count: number;
 }
 
+export interface LibraryCountResponse {
+  count: number;
+}
+
 export interface LibraryChapterDetail {
   id: number;
   number: number;

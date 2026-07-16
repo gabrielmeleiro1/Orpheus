@@ -153,8 +153,8 @@ export function DashboardPanel({
             </div>
             <div className="panel-section v-panel status-card">
               <span className="status-label">Library</span>
-              <strong className="status-number">{library.items.length}</strong>
-              <span className="status-detail">{`${library.items.length === 1 ? "book" : "books"} indexed`}</span>
+              <strong className="status-number">{library.indexedCount}</strong>
+              <span className="status-detail">{`${library.indexedCount === 1 ? "book" : "books"} indexed`}</span>
             </div>
           </div>
         </div>

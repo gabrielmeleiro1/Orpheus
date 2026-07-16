@@ -11,6 +11,7 @@ import type {
   HealthResponse,
   LibraryBookDetail,
   LibraryBookUpdateRequest,
+  LibraryCountResponse,
   LibraryListResponse,
   MaintenanceBackupResponse,
   MaintenanceCleanupResponse,
@@ -112,6 +113,7 @@ export interface ApiClient {
     filters?: LibraryQueryOptions,
     options?: ApiRequestOptions,
   ): Promise<LibraryListResponse>;
+  getLibraryCount(options?: ApiRequestOptions): Promise<LibraryCountResponse>;
   getLibraryBook(bookId: number, options?: ApiRequestOptions): Promise<LibraryBookDetail>;
   getLibraryAudioUrl(bookId: number, options?: ApiRequestOptions): Promise<string>;
   createDesktopQueryToken(
@@ -558,6 +560,10 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     return requestJson<LibraryListResponse>(path, options);
   }
 
+  async function getLibraryCount(options?: ApiRequestOptions): Promise<LibraryCountResponse> {
+    return requestJson<LibraryCountResponse>("/api/library/count", options);
+  }
+
   async function getLibraryBook(
     bookId: number,
     options?: ApiRequestOptions,
@@ -707,6 +713,7 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     getActiveConversion,
     cancelConversion,
     getLibrary,
+    getLibraryCount,
     getLibraryBook,
     getLibraryAudioUrl,
     createDesktopQueryToken,

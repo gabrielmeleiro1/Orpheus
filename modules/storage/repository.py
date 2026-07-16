@@ -112,6 +112,11 @@ class IBookRepository(ABC):
             List of book summaries
         """
         pass
+
+    @abstractmethod
+    def count_books(self) -> int:
+        """Return the total number of indexed books without applying list filters."""
+        pass
     
     @abstractmethod
     def update_book(self, book_id: int, **updates) -> Optional[Book]:

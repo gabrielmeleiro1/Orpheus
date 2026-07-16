@@ -48,7 +48,7 @@ export function ConversionActionsView({
         </div>
       </div>
 
-      {capabilities.showStartConversion && conversionActions.blockingReason ? (
+      {conversionActions.blockingReason ? (
         <div id="conversion-blocking-reason" className="action-row">
           <span className="field-hint is-error" role="status" aria-live="polite">
             {conversionActions.blockingReason}

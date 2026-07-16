@@ -229,6 +229,19 @@ describe("api client request contracts", () => {
     );
   });
 
+  it("requests the lightweight indexed library count endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(jsonResponse({ count: 3 }));
+    const client = createApiClient({ baseUrl: "http://127.0.0.1" });
+    const controller = new AbortController();
+
+    await client.getLibraryCount({ signal: controller.signal });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "http://127.0.0.1/api/library/count",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("only sends the OpenAI API key when fetching model IDs", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")

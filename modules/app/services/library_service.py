@@ -534,6 +534,9 @@ class LibraryService:
             book.source_available = self._source_path_exists(book.source_path)
         return books
 
+    def get_library_count(self) -> int:
+        return self._repository.count_books()
+
     def get_book(self, book_id: int) -> Optional[dict]:
         detail = self._get_book_record(book_id)
         if detail is None:

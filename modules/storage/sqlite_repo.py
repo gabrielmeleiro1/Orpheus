@@ -406,6 +406,12 @@ class SQLiteRepository(IBookRepository):
                 for row in rows
             ]
 
+    def count_books(self) -> int:
+        """Return the total number of indexed books."""
+        with self._connection() as conn:
+            row = conn.execute("SELECT COUNT(*) AS book_count FROM books").fetchone()
+            return int(row["book_count"] or 0)
+
     def update_book(self, book_id: int, **updates) -> Optional[Book]:
         """Update book fields."""
         allowed_fields = {

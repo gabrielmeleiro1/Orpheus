@@ -235,6 +235,9 @@ class AppController:
             favorite=favorite,
         )
 
+    def get_library_count(self) -> int:
+        return self._library_service.get_library_count()
+
     def get_book(self, book_id: int) -> Optional[dict]:
         return self._library_service.get_book(book_id)
 

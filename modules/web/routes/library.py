@@ -73,6 +73,11 @@ def list_library(
     }
 
 
+@router.get("/api/library/count")
+def count_library_books(controller: ControllerDep) -> dict:
+    return {"count": controller.get_library_count()}
+
+
 @router.get("/api/library/{book_id}")
 def get_library_book(book_id: int, controller: ControllerDep) -> dict:
     book = controller.get_book(book_id)

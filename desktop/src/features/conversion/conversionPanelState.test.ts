@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveConversionBlocker } from "./useConversionPanelState";
+import { canRunConversionQueue, resolveConversionBlocker } from "./useConversionPanelState";
 
 describe("conversion blocker guidance", () => {
   it("explains a missing selected cleaner API key and offers Settings", () => {
@@ -37,5 +37,17 @@ describe("conversion blocker guidance", () => {
       blockingReason: "Select a source before starting conversion.",
       showSettingsShortcut: false,
     });
+  });
+
+  it("blocks a queued conversion when the shared blocker is active", () => {
+    expect(canRunConversionQueue({
+      apiClientAvailable: true,
+      queueRunning: false,
+      hasRunnableItems: true,
+      blocker: {
+        blockingReason: "Cloud API requires an API key. Add it in Settings.",
+        showSettingsShortcut: true,
+      },
+    })).toBe(false);
   });
 });

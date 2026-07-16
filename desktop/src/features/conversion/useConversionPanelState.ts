@@ -44,6 +44,18 @@ export interface ConversionBlocker {
   showSettingsShortcut: boolean;
 }
 
+export function canRunConversionQueue(input: {
+  apiClientAvailable: boolean;
+  queueRunning: boolean;
+  hasRunnableItems: boolean;
+  blocker: ConversionBlocker;
+}): boolean {
+  return input.apiClientAvailable
+    && !input.queueRunning
+    && input.hasRunnableItems
+    && input.blocker.blockingReason === null;
+}
+
 export function resolveConversionBlocker(input: ConversionBlockerInput): ConversionBlocker {
   if (!input.apiClientAvailable) {
     return { blockingReason: "Backend connection is unavailable.", showSettingsShortcut: false };
@@ -164,10 +176,12 @@ export function useConversionPanelState({
     queueRunner.queueRunning ||
     conversionJob.isStarting;
 
-  const canRunQueue =
-    !queueRunner.queueRunning &&
-    Boolean(apiClient) &&
-    queueController.queueItems.some((item) => item.status === "ready" || item.status === "warning");
+  const canRunQueue = canRunConversionQueue({
+    apiClientAvailable: Boolean(apiClient),
+    queueRunning: queueRunner.queueRunning,
+    hasRunnableItems: queueController.queueItems.some((item) => item.status === "ready" || item.status === "warning"),
+    blocker: conversionBlocker,
+  });
   const primaryAction = resolveConversionPrimaryAction({
     queueItemCount: queueController.queueItems.length,
     canStartConversion: !startDisabled,

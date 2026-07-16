@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => {
 
   return {
     apiClient,
+    libraryRefresh: vi.fn(async () => undefined),
+    conversionUiState: "idle" as "idle" | "completed",
     setupPageStatuses: [] as Array<RuntimeSetupStatusResponse | null>,
     backend: {
       apiClient,
@@ -35,7 +37,7 @@ vi.mock("./app/useGlobalShortcuts", () => ({
   useGlobalShortcuts: vi.fn(),
 }));
 vi.mock("./features/library/useLibrary", () => ({
-  useLibrary: () => ({ items: [{ id: "book-1" }], refreshLibrary: vi.fn(async () => undefined) }),
+  useLibrary: () => ({ items: [{ id: "book-1" }], indexedCount: 1, refreshLibrary: mocks.libraryRefresh }),
 }));
 vi.mock("./features/player/useAudioPlayer", () => ({
   useAudioPlayer: () => ({
@@ -64,7 +66,7 @@ vi.mock("./features/player/useAudioPlayer", () => ({
 }));
 vi.mock("./features/conversion/useConversionJob", () => ({
   useConversionJob: () => ({
-    uiState: "idle",
+    uiState: mocks.conversionUiState,
     activeJobId: null,
     activeJobStatus: "idle",
     isCancelling: false,
@@ -169,6 +171,8 @@ describe("App runtime setup recovery", () => {
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     mocks.apiClient.getRuntimeSetupStatus.mockResolvedValue(setupStatus);
+    mocks.libraryRefresh.mockClear();
+    mocks.conversionUiState = "idle";
     mocks.setupPageStatuses.length = 0;
     container = document.createElement("div");
     document.body.append(container);
@@ -263,6 +267,20 @@ describe("App runtime setup recovery", () => {
     await act(async () => findButton(container, "Back to dashboard").click());
 
     expect(container.querySelector('[data-testid="setup-page"]')).toBeNull();
+  });
+
+  it("refreshes the library when a conversion completes", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+
+    mocks.conversionUiState = "completed";
+    await act(async () => {
+      root.render(<App />);
+    });
+
+    expect(mocks.libraryRefresh).toHaveBeenCalledTimes(1);
   });
 
   it("moves focus to the Settings tab when a conversion shortcut opens Settings", async () => {

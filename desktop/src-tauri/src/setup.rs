@@ -117,12 +117,15 @@ impl Default for SetupLifecycle {
     }
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SetupStatus {
     pub lifecycle: SetupLifecycle,
     pub profile: Option<String>,
     pub model_groups: Vec<String>,
+    pub stage: Option<String>,
+    pub message: Option<String>,
+    pub percent: Option<f64>,
     pub restart_required: bool,
     pub error: Option<String>,
     #[serde(skip)]
@@ -175,7 +178,7 @@ impl SetupProgressEvent {
             profile: None,
             model_groups: Vec::new(),
             message,
-            percent: None,
+            percent: (event == "complete").then_some(100.0),
             terminal: Some(true),
             restart_required: Some(restart_required),
         }
@@ -377,6 +380,9 @@ impl SetupRunnerState {
             lifecycle: SetupLifecycle::Running,
             profile: Some(request.profile),
             model_groups: request.model_groups,
+            stage: None,
+            message: None,
+            percent: None,
             restart_required: false,
             error: None,
             generation,
@@ -457,6 +463,27 @@ impl SetupRunnerState {
         Ok(())
     }
 
+    pub(crate) fn record_progress(&self, generation: u64, event: SetupProgressEvent) -> bool {
+        let Ok(mut inner) = self.inner.lock() else {
+            return false;
+        };
+        if inner.status.generation != generation
+            || inner.status.lifecycle != SetupLifecycle::Running
+        {
+            return false;
+        }
+        if let Some(stage) = event.stage {
+            inner.status.stage = Some(stage);
+        }
+        if let Some(message) = event.message {
+            inner.status.message = Some(message);
+        }
+        if let Some(percent) = event.percent.filter(|value| value.is_finite()) {
+            inner.status.percent = Some(percent.clamp(0.0, 99.0));
+        }
+        true
+    }
+
     pub fn finish_success(&self, generation: u64, restart_required: bool) -> bool {
         self.transition_terminal(generation, SetupLifecycle::Complete, None, restart_required)
     }
@@ -502,6 +529,9 @@ impl SetupRunnerState {
         inner.status.lifecycle = lifecycle;
         inner.status.error = error;
         inner.status.restart_required = restart_required;
+        if lifecycle == SetupLifecycle::Complete {
+            inner.status.percent = Some(100.0);
+        }
         inner.active_process = None;
         inner.terminal_emitted = true;
         inner.restart_in_progress = false;
@@ -1085,11 +1115,9 @@ fn read_progress<R: Read + Send + 'static>(
     let (done_tx, done_rx) = mpsc::channel();
     let handle = thread::spawn(move || {
         read_progress_events(reader, |event| {
-            if !stopped.load(Ordering::Acquire) {
-                let status = state.status();
-                if status.generation == generation && status.lifecycle == SetupLifecycle::Running {
-                    gate.emit(event);
-                }
+            if !stopped.load(Ordering::Acquire) && state.record_progress(generation, event.clone())
+            {
+                gate.emit(event);
             }
         });
         let _ = done_tx.send(());

@@ -62,6 +62,22 @@ describe("libraryRepository listBooks pagination", () => {
     expect(response.items).toEqual(items);
     expect(response.count).toBe(2);
   });
+
+  it("counts the unfiltered collection independently of a filtered list", async () => {
+    const filteredItems = [makeBookSummary(1)];
+    const getLibrary = vi.fn().mockResolvedValue({ items: filteredItems, count: filteredItems.length });
+    const getLibraryCount = vi.fn().mockResolvedValue({ count: 2 });
+    const apiClient = { getLibrary, getLibraryCount } as unknown as ApiClient;
+
+    const repository = createLibraryRepository(apiClient);
+    const filteredResponse = await repository.listBooks("missing", "all");
+    const indexedCount = await repository.countBooks();
+
+    expect(filteredResponse.items).toEqual(filteredItems);
+    expect(indexedCount).toBe(2);
+    expect(getLibrary).toHaveBeenCalledTimes(1);
+    expect(getLibraryCount).toHaveBeenCalledWith(undefined);
+  });
 });
 
 describe("libraryRepository repair payloads", () => {

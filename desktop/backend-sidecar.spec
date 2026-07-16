@@ -88,8 +88,9 @@ datas = []
 if runtime_profile in {"mlx", "cuda"}:
     datas += _collect_data_files("en_core_web_sm") + _copy_metadata("en_core_web_sm")
     datas += _collect_data_files("misaki")
-    datas += _collect_data_files("espeakng_loader")
-    datas += _collect_data_files("language_tags")
+
+datas += _collect_data_files("espeakng_loader")
+datas += _collect_data_files("language_tags", includes=["data/json/*.json"])
 
 if runtime_profile == "mlx":
     datas += _collect_data_files("mlx", includes=["lib/*.metallib"])

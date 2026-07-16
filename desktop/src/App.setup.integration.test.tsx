@@ -43,7 +43,7 @@ vi.mock("./app/useGlobalShortcuts", () => ({
   useGlobalShortcuts: vi.fn(),
 }));
 vi.mock("./features/library/useLibrary", () => ({
-  useLibrary: () => ({ items: [], refreshLibrary: vi.fn(async () => undefined) }),
+  useLibrary: () => ({ items: [], indexedCount: 0, refreshLibrary: vi.fn(async () => undefined) }),
 }));
 vi.mock("./features/player/useAudioPlayer", () => ({
   useAudioPlayer: () => ({

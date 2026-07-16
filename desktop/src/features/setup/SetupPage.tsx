@@ -15,6 +15,7 @@ import {
 } from "./setupBridge";
 import {
   applyProgressEvent,
+  applyRunnerStatus,
   acquireSetupStart,
   canStartSetup,
   createSelection,
@@ -79,19 +80,6 @@ function safeError(error: unknown, fallback: string): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 512) || fallback;
 }
 
-function progressFromRunner(status: RuntimeSetupRunnerStatus, previous: SetupProgressState): SetupProgressState {
-  if (status.lifecycle === "running" || status.lifecycle === "cancelling") {
-    return { ...previous, lifecycle: "running", message: status.lifecycle === "cancelling" ? "Cancelling setup…" : previous.message };
-  }
-  if (status.lifecycle === "complete") {
-    return { ...previous, lifecycle: "complete", message: "Setup complete.", restartRequired: status.restartRequired };
-  }
-  if (["failed", "cancelled", "timed_out"].includes(status.lifecycle)) {
-    return { ...previous, lifecycle: "failed", message: safeError(status.error, status.lifecycle === "cancelled" ? "Setup cancelled." : "Setup failed.") };
-  }
-  return previous;
-}
-
 function StageState({ id, progress }: { id: string; progress: SetupProgressState }) {
   const complete = progress.completedStages.includes(id);
   const active = progress.lifecycle === "running" && progress.stage === id;
@@ -121,6 +109,11 @@ export function SetupPage({
   const [busy, setBusy] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy diagnostics");
   const [environment, setEnvironment] = useState<RuntimeSetupEnvironment | null>(null);
+  const [listenerReady, setListenerReady] = useState(false);
+  const [runnerReconciled, setRunnerReconciled] = useState(false);
+  const [listenerError, setListenerError] = useState<string | null>(null);
+  const [runnerError, setRunnerError] = useState<string | null>(null);
+  const [listenerAttempt, setListenerAttempt] = useState(0);
   const [awaitingReconnect, setAwaitingReconnect] = useState(false);
   const startLocked = useRef(false);
   const restartLocked = useRef(false);
@@ -151,7 +144,7 @@ export function SetupPage({
   const refreshRunner = useCallback(async () => {
     try {
       const runner = await bridge.status();
-      setProgress((previous) => progressFromRunner(runner, previous));
+      setProgress((previous) => applyRunnerStatus(previous, runner));
       const running = runner.lifecycle === "running" || runner.lifecycle === "cancelling";
       setBusy(running);
       startLocked.current = running;
@@ -163,6 +156,18 @@ export function SetupPage({
       return null;
     }
   }, [bridge, refreshStatus]);
+
+  const reconcileRunner = useCallback(async () => {
+    const runner = await refreshRunner();
+    if (runner) {
+      setRunnerReconciled(true);
+      setRunnerError(null);
+    } else {
+      setRunnerReconciled(false);
+      setRunnerError("Runner status is unavailable. Retry the progress connection.");
+    }
+    return runner;
+  }, [refreshRunner]);
 
   useEffect(() => {
     setStatus(initialStatus);
@@ -183,25 +188,44 @@ export function SetupPage({
   }, [bridge]);
 
   useEffect(() => {
-    if (!environment?.available) return undefined;
+    if (!environment?.available) {
+      setListenerReady(false);
+      setRunnerReconciled(false);
+      setListenerError(null);
+      setRunnerError(null);
+      return undefined;
+    }
     let mounted = true;
     let release: (() => void) | null = null;
+    setListenerReady(false);
+    setRunnerReconciled(false);
+    setListenerError(null);
+    setRunnerError(null);
     void bridge.listen((event) => {
       if (!mounted) return;
       setProgress((previous) => applyProgressEvent(previous, event));
       if (event.terminal) {
-        void refreshRunner();
+        void reconcileRunner();
       }
     }).then((unlisten) => {
-      if (mounted) release = unlisten;
-      else unlisten();
-    }).catch(() => undefined);
-    void refreshRunner();
+      if (!mounted) {
+        unlisten();
+        return;
+      }
+      release = unlisten;
+      setListenerReady(true);
+      void reconcileRunner();
+    }).catch((reason: unknown) => {
+      if (mounted) {
+        setListenerReady(false);
+        setListenerError(safeError(reason, "Progress connection unavailable. Retry the progress connection."));
+      }
+    });
     return () => {
       mounted = false;
       release?.();
     };
-  }, [bridge, environment?.available, refreshRunner]);
+  }, [bridge, environment?.available, listenerAttempt, reconcileRunner]);
 
   useEffect(() => {
     setupHeadingRef.current?.focus();
@@ -249,7 +273,7 @@ export function SetupPage({
   const selectedProfile = status?.profiles.find((profile) => profile.id === selection.profile) ?? null;
   const choices = status ? profileChoices(status) : [];
   const mutationsAvailable = environment?.available === true;
-  const readyToStart = Boolean(mutationsAvailable && status && canStartSetup(selection, status) && !busy && !startLocked.current);
+  const readyToStart = Boolean(listenerReady && runnerReconciled && mutationsAvailable && status && canStartSetup(selection, status) && !busy && !startLocked.current);
   const showRestart = status?.restart_required || progress.restartRequired;
   const apiUnavailable = !status || Boolean(error);
   const progressValue = progress.percent === null ? undefined : progress.percent;
@@ -273,7 +297,7 @@ export function SetupPage({
         modelGroups: [...selection.modelGroups],
         acceptPytorchRisk: selection.acceptPytorchRisk,
       });
-      setProgress((previous) => progressFromRunner(runner, previous));
+      setProgress((previous) => applyRunnerStatus(previous, runner));
       const running = runner.lifecycle === "running" || runner.lifecycle === "cancelling";
       setBusy(running);
       startLocked.current = running;
@@ -291,7 +315,7 @@ export function SetupPage({
     if (!busy || !mutationsAvailable) return;
     try {
       const runner = await cancelActiveSetup(bridge.cancel);
-      setProgress((previous) => progressFromRunner(runner, previous));
+      setProgress((previous) => applyRunnerStatus(previous, runner));
       setBusy(false);
       startLocked.current = false;
     } catch (reason: unknown) {
@@ -364,6 +388,20 @@ export function SetupPage({
               <div className="setup-recovery setup-environment" role="note">
                 <div><strong>Install from a source checkout</strong><p>{environment.reason}</p><p>For dynamic profiles, clone Orpheus, create its fixed <code>.venv</code>, then run <code>.venv/bin/python scripts/setup_runtime.py --profile base</code> (Windows: <code>.venv\Scripts\python.exe scripts\setup_runtime.py --profile base</code>). Packaged builds use the runtime profile included at build time.</p></div>
                 <button className="btn" type="button" onClick={onContinueLibraryOnly}>Continue in library-only mode</button>
+              </div>
+            ) : null}
+
+            {listenerError ? (
+              <div className="setup-recovery" role="alert">
+                <div><strong>Progress connection unavailable</strong><p>{listenerError}</p></div>
+                <div className="setup-actions"><button className="btn" type="button" onClick={() => { setListenerError(null); setListenerAttempt((attempt) => attempt + 1); }}>Retry progress connection</button><button className="btn" type="button" onClick={onContinueLibraryOnly}>Continue in library-only mode</button></div>
+              </div>
+            ) : null}
+
+            {runnerError && !listenerError ? (
+              <div className="setup-recovery" role="alert">
+                <div><strong>Runner status unavailable</strong><p>{runnerError}</p></div>
+                <button className="btn" type="button" onClick={() => { setRunnerError(null); void reconcileRunner(); }}>Retry runner status</button>
               </div>
             ) : null}
 

@@ -24,6 +24,17 @@ export interface SetupProgressEvent {
   restart_required?: boolean;
 }
 
+export interface SetupRunnerStatusSnapshot {
+  lifecycle: "idle" | "running" | "cancelling" | "complete" | "failed" | "cancelled" | "timed_out";
+  profile: string | null;
+  modelGroups: string[];
+  stage: string | null;
+  message: string | null;
+  percent: number | null;
+  restartRequired: boolean;
+  error: string | null;
+}
+
 export interface SetupProgressState {
   lifecycle: "idle" | "running" | "complete" | "failed";
   stage: string | null;
@@ -139,6 +150,19 @@ function normalizedStage(value: unknown): string | null {
   return safe;
 }
 
+const SETUP_STAGE_ORDER = ["packages", "models", "verify"] as const;
+
+function inferCompletedStages(completedStages: string[], currentStage: string | null): string[] {
+  const stageIndex = SETUP_STAGE_ORDER.indexOf(currentStage as typeof SETUP_STAGE_ORDER[number]);
+  if (stageIndex <= 0) return completedStages;
+
+  const next = [...completedStages];
+  for (const stage of SETUP_STAGE_ORDER.slice(0, stageIndex)) {
+    if (!next.includes(stage)) next.push(stage);
+  }
+  return next;
+}
+
 export function applyProgressEvent(
   previous: SetupProgressState | undefined,
   event: SetupProgressEvent,
@@ -152,10 +176,12 @@ export function applyProgressEvent(
     restartRequired: false,
   };
   const stage = normalizedStage(event.stage) ?? prior.stage;
-  let completedStages = event.event === "stage_complete" && stage && !prior.completedStages.includes(stage)
-    ? [...prior.completedStages, stage]
-    : prior.completedStages;
+  let completedStages = inferCompletedStages(prior.completedStages, stage);
+  if (event.event === "stage_complete" && stage && !completedStages.includes(stage)) {
+    completedStages = [...completedStages, stage];
+  }
   const terminal = Boolean(event.terminal);
+  const terminalSuccess = terminal && event.event === "complete";
   if (terminal && event.event === "complete") {
     completedStages = ["packages", "models", "verify"];
   }
@@ -163,12 +189,60 @@ export function applyProgressEvent(
     lifecycle: terminal ? (event.event === "complete" ? "complete" : "failed") : "running",
     stage,
     message: boundedMessage(event.message) || (terminal && event.event === "complete" ? "Setup complete." : prior.message),
-    percent: typeof event.percent === "number" && Number.isFinite(event.percent)
-      ? Math.max(0, Math.min(100, event.percent))
-      : prior.percent,
+    percent: terminalSuccess
+      ? 100
+      : typeof event.percent === "number" && Number.isFinite(event.percent)
+        ? Math.max(0, Math.min(99, event.percent))
+        : prior.percent,
     completedStages,
     restartRequired: Boolean(event.restart_required) || prior.restartRequired,
   };
+}
+
+export function applyRunnerStatus(
+  previous: SetupProgressState | undefined,
+  status: SetupRunnerStatusSnapshot,
+): SetupProgressState {
+  const snapshot: SetupProgressEvent = {
+    event: "status",
+    stage: status.stage ?? undefined,
+    message: status.message ?? undefined,
+    percent: status.percent ?? undefined,
+    restart_required: status.restartRequired,
+  };
+  const prior = previous ?? {
+    lifecycle: "idle" as const,
+    stage: null,
+    message: "Ready to configure Orpheus.",
+    percent: null,
+    completedStages: [],
+    restartRequired: false,
+  };
+
+  if (status.lifecycle === "running" || status.lifecycle === "cancelling") {
+    const next = applyProgressEvent(prior, snapshot);
+    return status.lifecycle === "cancelling"
+      ? { ...next, message: "Cancelling setup…" }
+      : next;
+  }
+  if (status.lifecycle === "complete") {
+    return applyProgressEvent(prior, {
+      ...snapshot,
+      event: "complete",
+      terminal: true,
+      percent: 100,
+      message: status.message ?? "Setup complete.",
+    });
+  }
+  if (["failed", "cancelled", "timed_out"].includes(status.lifecycle)) {
+    return applyProgressEvent(prior, {
+      ...snapshot,
+      event: "error",
+      terminal: true,
+      message: status.error ?? status.message ?? (status.lifecycle === "cancelled" ? "Setup cancelled." : "Setup failed."),
+    });
+  }
+  return prior;
 }
 
 export function diagnosticsSnapshot(
