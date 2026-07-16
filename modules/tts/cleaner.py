@@ -144,10 +144,6 @@ class TextCleaner:
         """
         return await self._backend_strategy.clean_batch_with_trace_async(self, texts)
 
-    def clean_chunks(self, texts: list[str]) -> list[str]:
-        """Clean multiple chunks with local gating while preserving input order."""
-        return [trace.cleaned_text for trace in self.clean_chunks_with_trace(texts)]
-
     def clean_chunks_with_trace(self, texts: list[str]) -> list[_CleanTrace]:
         """Synchronous batch-clean interface for local and fallback paths."""
         indexed = list(enumerate(texts))

@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import platform
+import shutil
+from typing import Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -133,3 +135,30 @@ def get_runtime_profile(profile_id: str) -> RuntimeProfile:
         if profile.id == normalized_id:
             return profile
     raise ValueError(f"Unknown runtime profile: {profile_id!r}")
+
+
+def recommended_profile_id(
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+    os_version: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> str:
+    """Recommend a runtime profile from the host platform alone.
+
+    This is a pure hardware/OS hint independent of any install state:
+    ``mlx`` on compatible Apple Silicon, ``cuda`` on Linux/Windows when an
+    NVIDIA GPU is plausibly present (``nvidia-smi`` on PATH), otherwise
+    ``base``. It never spawns a subprocess; ``nvidia-smi`` is only located,
+    never executed.
+    """
+    mlx = get_runtime_profile("mlx")
+    if mlx.is_compatible(system=system, machine=machine, os_version=os_version):
+        return "mlx"
+    cuda = get_runtime_profile("cuda")
+    if (
+        cuda.is_compatible(system=system, machine=machine, os_version=os_version)
+        and which("nvidia-smi") is not None
+    ):
+        return "cuda"
+    return "base"

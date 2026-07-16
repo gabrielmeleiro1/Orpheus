@@ -341,8 +341,14 @@ def write_setup_state(
     accepted_risks: Iterable[str],
     installation_id: str | None = None,
     backend_instance_id: str | None = None,
+    restart_required: bool = True,
 ) -> dict[str, Any]:
-    """Atomically write the deliberately small, non-secret setup state."""
+    """Atomically write the deliberately small, non-secret setup state.
+
+    Installer callers keep ``restart_required=True`` (the backend must reload
+    to pick up freshly installed packages). The adopt flow passes ``False``
+    because the already-running backend has the runtime loaded already.
+    """
     profile = get_runtime_profile(profile_id)
     groups = _validated_model_groups(profile, model_groups)
     risks = tuple(accepted_risks)
@@ -362,7 +368,7 @@ def write_setup_state(
         "installed_without_backend_instance": backend_instance_id is None,
         "model_groups": list(groups),
         "profile": profile.id,
-        "restart_required": True,
+        "restart_required": bool(restart_required),
         "schema_version": STATE_SCHEMA_VERSION,
     }
     try:

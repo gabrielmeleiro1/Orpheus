@@ -67,8 +67,14 @@ def _number_to_words(value: int) -> str:
         base = f"{_ONES[hundreds]} hundred"
         return base if remainder == 0 else f"{base} {_number_to_words(remainder)}"
     if 1000 <= value <= 2099:
+        if value % 1000 == 0:
+            return f"{_ONES[value // 1000]} thousand"
         first = value // 100
         last = value % 100
+        if last == 0:
+            return f"{_number_to_words(first)} hundred"
+        if last < 10:
+            return f"{_number_to_words(first)} oh {_ONES[last]}"
         return f"{_number_to_words(first)} {_number_to_words(last)}"
     return str(value)
 
@@ -88,6 +94,10 @@ def normalize_for_speech(text: str, config: SpeechNormalizationConfig | None = N
     def replace_time(match: re.Match[str]) -> str:
         hour = int(match.group(1))
         minute = int(match.group(2))
+        if minute == 0:
+            return f"{_number_to_words(hour)} o'clock"
+        if minute < 10:
+            return f"{_number_to_words(hour)} oh {_number_to_words(minute)}"
         return f"{_number_to_words(hour)} {_number_to_words(minute)}"
 
     spoken = _TIME_RE.sub(replace_time, spoken)

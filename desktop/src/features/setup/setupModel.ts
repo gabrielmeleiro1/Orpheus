@@ -71,7 +71,11 @@ export function profileChoices(status: RuntimeSetupStatusResponse): SetupProfile
 }
 
 export function createSelection(status: RuntimeSetupStatusResponse): SetupSelection {
+  const recommended = status.selected_profile == null && status.recommended_profile
+    ? status.profiles.find((profile) => profile.id === status.recommended_profile && profile.compatible)
+    : undefined;
   const selected = status.profiles.find((profile) => profile.id === status.selected_profile && profile.compatible)
+    ?? recommended
     ?? status.profiles.find((profile) => profile.id === "base" && profile.compatible)
     ?? status.profiles.find((profile) => profile.compatible)
     ?? status.profiles[0];

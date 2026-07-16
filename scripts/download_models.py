@@ -538,7 +538,7 @@ def download_model_snapshot(
     cache_dir: Path | None = None,
     local_dir: Path | None = None,
 ) -> Path:
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
+    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:

@@ -17,7 +17,8 @@ brew install python@3.12 node rust ffmpeg
   ``cuda`` cleaner backend and does not require Apple Silicon.
 - Python 3.12 is recommended for the desktop sidecar build and is the version
   used by the packaged runtime dependencies.
-- Node.js is used by the React/Vite/Tauri frontend.
+- Node.js 20 or newer is required by the React/Vite/Tauri frontend
+  (`desktop/package.json` pins `engines.node >=20`).
 - Rust 1.88 or newer is required by the Tauri shell; crate versions are resolved
   through `desktop/src-tauri/Cargo.lock`.
 - `ffmpeg` and `ffprobe` are required for audio encoding and are copied into the
@@ -177,8 +178,8 @@ python scripts/download_models.py
 ```
 
 By default this downloads `hexgrad/Kokoro-82M` into the normal Hugging Face
-cache with Hugging Face cache symlinks disabled, which avoids the common
-Windows non-admin symlink failure.
+cache. On Windows without symlink privileges, `huggingface_hub` automatically
+falls back to copying files, so non-admin downloads still work.
 
 Choose one or more curated groups when configuring an optional local runtime:
 

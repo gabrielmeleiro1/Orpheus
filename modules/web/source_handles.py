@@ -13,11 +13,6 @@ def upload_root(temp_dir: Path) -> Path:
     return temp_dir / UPLOAD_ROOT_NAME
 
 
-def create_source_handle(stored_name: str) -> str:
-    """Build the opaque handle exposed to API clients."""
-    return f"{UPLOAD_HANDLE_PREFIX}{stored_name}"
-
-
 def resolve_source_reference(source_ref: str, temp_dir: Path) -> Path:
     """Resolve either a raw path or an opaque upload handle to a local path."""
     raw_ref = str(source_ref or "").strip()

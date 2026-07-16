@@ -74,7 +74,7 @@ ESPEAK_DATA_DIR = Path("_internal") / "espeakng_loader" / "espeak-ng-data"
 
 
 def _default_python_executable() -> str:
-    repo_python = PROJECT_ROOT / "venv" / "bin" / "python"
+    repo_python = PROJECT_ROOT / ".venv" / "bin" / "python"
     if repo_python.is_file():
         return str(repo_python)
     return sys.executable

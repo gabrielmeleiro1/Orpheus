@@ -193,6 +193,8 @@ def test_setup_status_recovers_from_incomplete_or_corrupt_state(monkeypatch) -> 
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["recommended_profile"] in {"base", "mlx", "cuda"}
+    assert payload["installed_runtime"] is None
     assert payload | {"profiles": []} == {
         "schema_version": 1,
         "configured": False,
@@ -204,6 +206,8 @@ def test_setup_status_recovers_from_incomplete_or_corrupt_state(monkeypatch) -> 
         "probe": {"ready": False, "checks": []},
         "ready": False,
         "restart_required": False,
+        "recommended_profile": payload["recommended_profile"],
+        "installed_runtime": None,
         "profiles": [],
         "risk": None,
         "backend": {

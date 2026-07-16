@@ -3,19 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Any, Optional
 
 from .models import ChapterResult
-
-
-class ArtifactPolicy(Enum):
-    """Artifact contract checked at pipeline packaging boundaries."""
-
-    PACKAGING_INPUTS = "packaging_inputs"
-    CHAPTER_MP3_ARTIFACTS = "chapter_mp3_artifacts"
-    CHAPTER_ERRORS_ONLY = "chapter_errors_only"
 
 
 @dataclass(frozen=True)

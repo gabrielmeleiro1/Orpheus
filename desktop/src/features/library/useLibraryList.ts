@@ -341,11 +341,16 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       }
 
       setStatusMessage(deletedStatus);
+      // Exactly one preserved status ("deleted X") survives the delete's own
+      // silent reload; release it here so the next search-triggered detail load
+      // resumes the normal "selected: X" status flow instead of staying stuck.
+      preservedStatusRef.current = null;
       return true;
     } catch (error: unknown) {
       if (!isCurrentMutation() || !isCurrentList()) {
         return false;
       }
+      preservedStatusRef.current = null;
 
       const message = error instanceof Error ? error.message : "failed to delete book";
       setItems(previousItems);
@@ -358,7 +363,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       setStatusMessage(message);
       return false;
     }
-  }, [beginDetailRequest, beginListRequest, beginMutationRequest, indexedCount, items, loadLibrary, modeFilter, repository, searchQuery, selectedBookDetail, selectedBookId, selectedBookIndex]);
+  }, [beginDetailRequest, beginListRequest, beginMutationRequest, indexedCount, items, loadLibrary, repository, selectedBookDetail, selectedBookId, selectedBookIndex]);
 
   const updateSelectedBookMetadata = useCallback(
     async (payload: { title: string; author: string; tags: string }): Promise<void> => {

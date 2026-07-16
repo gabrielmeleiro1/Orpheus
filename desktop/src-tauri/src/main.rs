@@ -309,6 +309,31 @@ where
     }
 }
 
+// Run the stop+start swap under `restart_lock`, then release the lock before
+// waiting for the restarted backend to report ready. Holding the lock across the
+// (up to `BACKEND_STARTUP_DEADLINE`) readiness wait would make app-exit shutdown
+// and any concurrent restart block on the lock for the full deadline when a
+// post-setup restart wedges. The swapped-in child is already installed in the
+// process slot and orphan-guarded, so shutdown/restart can observe and stop it
+// while the readiness wait runs unlocked.
+fn restart_after_setup_with_readiness<Swap, Wait>(
+    restart_lock: &Mutex<()>,
+    swap: Swap,
+    wait: Wait,
+) -> Result<(), String>
+where
+    Swap: FnOnce() -> Result<(), String>,
+    Wait: FnOnce() -> Result<(), String>,
+{
+    {
+        let _restart = restart_lock
+            .lock()
+            .map_err(|_| "backend restart lock poisoned".to_string())?;
+        swap()?;
+    }
+    wait()
+}
+
 fn wait_for_backend_ready<Refresh>(
     timeout: Duration,
     poll_interval: Duration,
@@ -347,36 +372,45 @@ async fn restart_backend_after_setup(
     app_state: State<'_, AppState>,
     setup_state: State<'_, SetupRunnerState>,
 ) -> Result<(), String> {
-    let _restart = app_state
-        .restart_lock
-        .lock()
-        .map_err(|_| "backend restart lock poisoned".to_string())?;
-    if app_state.shutting_down.load(Ordering::SeqCst) {
-        return Err("desktop backend is shutting down".to_string());
-    }
-
-    app_state.refresh_backend_ready_from_file()?;
-    app_state.refresh_backend_process_exit()?;
-    app_state.refresh_backend_startup_deadline()?;
-    let lifecycle = app_state
-        .backend_manager
-        .lock()
-        .map_err(|_| "backend manager lock poisoned".to_string())?
-        .status()
-        .lifecycle;
-
-    restart_after_setup_transaction(
-        setup_state.inner(),
-        lifecycle,
-        || app_state.stop_backend_inner(),
+    restart_after_setup_with_readiness(
+        &app_state.restart_lock,
+        // The stop+start swap runs under `restart_lock`, mirroring the ordinary
+        // `restart_backend`. Its transactional authorization semantics are
+        // preserved; only the readiness wait moves outside the lock.
         || {
-            app_state
-                .start_backend_inner(&app_handle)
-                .inspect_err(|error| {
-                    if let Ok(mut manager) = app_state.backend_manager.lock() {
-                        manager.mark_failed(error.clone());
-                    }
-                })?;
+            if app_state.shutting_down.load(Ordering::SeqCst) {
+                return Err("desktop backend is shutting down".to_string());
+            }
+
+            app_state.refresh_backend_ready_from_file()?;
+            app_state.refresh_backend_process_exit()?;
+            app_state.refresh_backend_startup_deadline()?;
+            let lifecycle = app_state
+                .backend_manager
+                .lock()
+                .map_err(|_| "backend manager lock poisoned".to_string())?
+                .status()
+                .lifecycle;
+
+            restart_after_setup_transaction(
+                setup_state.inner(),
+                lifecycle,
+                || app_state.stop_backend_inner(),
+                || {
+                    app_state
+                        .start_backend_inner(&app_handle)
+                        .inspect_err(|error| {
+                            if let Ok(mut manager) = app_state.backend_manager.lock() {
+                                manager.mark_failed(error.clone());
+                            }
+                        })
+                },
+            )
+        },
+        // Readiness wait runs without `restart_lock`, so app-exit shutdown (which
+        // grabs the lock, then stops the orphan-guarded child) can interrupt a
+        // wedged startup instead of blocking on the lock for the full deadline.
+        || {
             let readiness = wait_for_backend_ready(
                 BACKEND_STARTUP_DEADLINE,
                 Duration::from_millis(100),
@@ -392,9 +426,15 @@ async fn restart_backend_after_setup(
                 },
             );
             if let Err(error) = readiness {
-                let _ = app_state.stop_backend_inner();
-                if let Ok(mut manager) = app_state.backend_manager.lock() {
-                    manager.mark_failed(error.clone());
+                // Re-take `restart_lock` for the cleanup stop (its contract), and
+                // defer to a shutdown already in progress rather than racing it.
+                if let Ok(_restart) = app_state.restart_lock.lock() {
+                    if !app_state.shutting_down.load(Ordering::SeqCst) {
+                        let _ = app_state.stop_backend_inner();
+                        if let Ok(mut manager) = app_state.backend_manager.lock() {
+                            manager.mark_failed(error.clone());
+                        }
+                    }
                 }
                 return Err(error);
             }

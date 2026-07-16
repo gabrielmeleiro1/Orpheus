@@ -324,7 +324,6 @@ function App() {
   const onSetupReady = useCallback((status: RuntimeSetupStatusResponse) => {
     setSetupStatus(status);
     if (!forceOpenRuntimeSetup) {
-      setForceOpenRuntimeSetup(false);
       setLibraryOnlyOverride(false);
     }
   }, [forceOpenRuntimeSetup]);

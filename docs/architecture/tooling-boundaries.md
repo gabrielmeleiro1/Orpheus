@@ -8,7 +8,7 @@ Inventory for Workstream 1 of `docs/CODEBASE_CLEANUP_PLAN.md`. Covers
 
 ```
                     ┌─────────────────────┐
-                    │  orpheus/bench.py   │  ← canonical CLI facade (Workstream 8 target)
+                    │   orpheus/bench/    │  ← canonical CLI facade
                     └──────────┬──────────┘
                                │ imports run_benchmark from
                     ┌──────────▼──────────┐
@@ -123,8 +123,7 @@ Requires Python 3.12, `ffmpeg` on PATH.
 |------|-------|
 | `benchmark_nagel_pipeline.py` size (~1500+ lines) | Split: CLI / metrics schema / runner |
 | Duplicate parser imports vs `pipeline.stages.ingestion` | Two places to update for new formats |
-| `_apply_cleaner_env` duplicated in `tools/feedback_loop_runner.py` and `benchmarks/kokoro_single_book/` | Env var names can drift |
-| `performance_regression_report.py` vs `bench` compare command (planned) | Overlapping purpose |
+| `performance_regression_report.py` vs `orpheus bench compare` | Overlapping purpose |
 
 ---
 
@@ -229,7 +228,7 @@ serialized config — three configuration paths.
 
 | Tool | Default output root |
 |------|---------------------|
-| `orpheus/bench.py` | `.artifacts/benchmarks` |
+| `orpheus/bench/` | `.artifacts/benchmarks` |
 | `benchmark_nagel_pipeline.py` | per-run dirs under user-specified `--output` |
 | `feedback_loop_runner.py` | chapter artifacts under book workspace (pipeline-owned) |
 
@@ -264,7 +263,7 @@ No shared path helper; benchmark artifacts must stay out of user library output
 |---------|---------------------------|--------------------------|
 | Pipeline benchmark execution | importable module extracted from nagel script | `scripts/benchmark_nagel_pipeline.py` |
 | CLI discovery | `python -m orpheus bench` | — |
-| Compare/report | `orpheus bench compare` (planned) | `scripts/performance_regression_report.py` |
+| Compare/report | `orpheus bench compare` / `orpheus bench report` | `scripts/performance_regression_report.py` |
 | Desktop sidecar build | `scripts/build_desktop_backend.py` | — |
 | Pre-push validation | `scripts/hooks/pre-push` | — |
 | Chapter feedback loop | `tools/feedback_loop_runner.py` until folded into bench preset | — |

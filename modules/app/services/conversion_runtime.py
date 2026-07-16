@@ -141,21 +141,6 @@ class RuntimeOptionsResolver:
         )
         return spec
 
-    def resolve_tts_runtime_options(
-        self,
-        *,
-        runtime_options: Optional[ConversionRuntimeOptions] = None,
-        tts_engine: Optional[str] = None,
-        tts_quantization: Optional[str] = None,
-        tts_options: Optional[dict[str, Any]] = None,
-    ) -> tuple[str, str]:
-        spec = self.resolve_tts_runtime_spec(
-            runtime_options=runtime_options,
-            tts_engine=tts_engine,
-            tts_quantization=tts_quantization,
-            tts_options=tts_options,
-        )
-        return spec.engine, spec.quantization
 
     def normalize(
         self,

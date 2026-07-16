@@ -128,6 +128,50 @@ def test_unknown_profile_is_rejected() -> None:
         runtime_profiles.get_runtime_profile("anything-goes")
 
 
+def test_recommended_profile_prefers_mlx_on_apple_silicon() -> None:
+    assert (
+        runtime_profiles.recommended_profile_id(
+            system="Darwin",
+            machine="arm64",
+            os_version="14.0",
+            which=lambda _: None,
+        )
+        == "mlx"
+    )
+
+
+def test_recommended_profile_is_cuda_only_when_nvidia_smi_is_present() -> None:
+    recommended = runtime_profiles.recommended_profile_id(
+        system="Linux",
+        machine="x86_64",
+        os_version="",
+        which=lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None,
+    )
+    assert recommended == "cuda"
+
+
+def test_recommended_profile_falls_back_to_base_without_gpu_or_apple_silicon() -> None:
+    # Linux without a locatable nvidia-smi, and an Intel Mac, both fall back.
+    assert (
+        runtime_profiles.recommended_profile_id(
+            system="Linux",
+            machine="x86_64",
+            os_version="",
+            which=lambda _: None,
+        )
+        == "base"
+    )
+    assert (
+        runtime_profiles.recommended_profile_id(
+            system="Darwin",
+            machine="x86_64",
+            os_version="14.0",
+            which=lambda name: "/usr/bin/nvidia-smi",
+        )
+        == "base"
+    )
+
+
 @pytest.mark.parametrize(
     "message",
     [

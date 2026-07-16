@@ -342,21 +342,3 @@ class TTSEngineFactory:
         raise RuntimeError("No TTS engines registered")
 
 
-def create_tts_engine(
-    engine_type: Optional[str] = None,
-    **config_kwargs,
-) -> TTSStrategy:
-    """
-    Convenience function to create a TTS engine.
-
-    Args:
-        engine_type: Engine type (defaults to the factory default)
-        **config_kwargs: Configuration parameters
-
-    Returns:
-        TTSStrategy instance
-    """
-    if engine_type is None:
-        engine_type = TTSEngineFactory.get_default_engine()
-
-    return TTSEngineFactory.create(engine_type, **config_kwargs)

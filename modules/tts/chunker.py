@@ -338,19 +338,3 @@ class TextChunker:
             yield chunk
 
 
-def chunk_text(
-    text: str,
-    max_tokens: int = 700
-) -> list[str]:
-    """
-    Convenience function to chunk text.
-
-    Args:
-        text: Input text
-        max_tokens: Maximum tokens per chunk
-
-    Returns:
-        List of text chunks
-    """
-    chunker = TextChunker(ChunkConfig(max_tokens=max_tokens))
-    return chunker.chunk(text)

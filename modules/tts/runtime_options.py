@@ -121,14 +121,6 @@ def validate_quantization(
     )
 
 
-def validate_quantization_for_provider(
-    provider: str | None,
-    quantization: str | None,
-) -> None:
-    """Backward-compatible provider-only quantization validation."""
-    validate_quantization(provider, quantization)
-
-
 def validate_device(provider: str | None, device: str | None) -> None:
     """Validate provider/device shape without probing hardware."""
     normalized_provider = canonical_provider(provider)

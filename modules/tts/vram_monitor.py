@@ -168,16 +168,8 @@ class VRAMSnapshot:
     cache_bytes: int
     
     @property
-    def active_mb(self) -> float:
-        return self.active_bytes / (1024 * 1024)
-    
-    @property
     def peak_mb(self) -> float:
         return self.peak_bytes / (1024 * 1024)
-    
-    @property
-    def cache_mb(self) -> float:
-        return self.cache_bytes / (1024 * 1024)
 
 
 @dataclass

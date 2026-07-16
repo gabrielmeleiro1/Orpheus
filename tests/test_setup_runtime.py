@@ -954,3 +954,32 @@ def test_state_path_uses_desktop_data_parent(monkeypatch: pytest.MonkeyPatch, tm
 
     monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
     assert setup_runtime.default_state_path() == tmp_path / "runtime-setup.json"
+
+
+def test_write_setup_state_defaults_to_restart_required(tmp_path: Path):
+    import scripts.setup_runtime as setup_runtime
+
+    state_path = tmp_path / "runtime-setup.json"
+    payload = setup_runtime.write_setup_state(
+        state_path,
+        profile_id="base",
+        model_groups=(),
+        accepted_risks=(),
+    )
+    assert payload["restart_required"] is True
+    assert setup_runtime.read_setup_state(state_path)["restart_required"] is True
+
+
+def test_write_setup_state_can_persist_without_restart_for_adopt(tmp_path: Path):
+    import scripts.setup_runtime as setup_runtime
+
+    state_path = tmp_path / "runtime-setup.json"
+    payload = setup_runtime.write_setup_state(
+        state_path,
+        profile_id="base",
+        model_groups=(),
+        accepted_risks=(),
+        restart_required=False,
+    )
+    assert payload["restart_required"] is False
+    assert setup_runtime.read_setup_state(state_path)["restart_required"] is False

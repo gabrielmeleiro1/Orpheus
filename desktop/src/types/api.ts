@@ -35,6 +35,29 @@ export interface RuntimeSetupPackageIssue {
   installed: string | null;
 }
 
+export interface RuntimeSetupInstalledRuntimeGroup {
+  id: string;
+  ready: boolean;
+}
+
+export interface RuntimeSetupInstalledRuntime {
+  profile: "mlx" | "cuda";
+  ready: boolean;
+  model_groups: RuntimeSetupInstalledRuntimeGroup[];
+}
+
+export interface RuntimeSetupAdoptRequest {
+  profile: RuntimeSetupProfile["id"];
+  model_groups: string[];
+  accept_pytorch_risk: boolean;
+}
+
+export interface RuntimeSetupRuntimeDeleteResponse {
+  deleted_model_groups: string[];
+  freed_bytes: number;
+  state_deleted: boolean;
+}
+
 export interface RuntimeSetupStatusResponse {
   schema_version: 1;
   configured: boolean;
@@ -42,6 +65,8 @@ export interface RuntimeSetupStatusResponse {
   state_error: "invalid" | "unavailable" | null;
   selected_profile: RuntimeSetupProfile["id"] | null;
   selected_model_groups: RuntimeSetupModelGroupStatus[];
+  recommended_profile?: RuntimeSetupProfile["id"];
+  installed_runtime?: RuntimeSetupInstalledRuntime | null;
   packages: {
     ready: boolean;
     missing: RuntimeSetupPackageIssue[];

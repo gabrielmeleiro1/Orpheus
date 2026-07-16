@@ -255,6 +255,45 @@ describe("useLibrary indexed total", () => {
     expect(getLibraryProbe().indexedCount).toBe(0);
   });
 
+  it("resumes the selected status after searching once a delete completes", async () => {
+    const book2 = { ...book, id: 2, title: "Second book" };
+    const detail2 = { ...detail, id: 2, title: "Second book" };
+    const getLibrary = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [book, book2], count: 2 })
+      .mockResolvedValueOnce({ items: [book2], count: 1 })
+      .mockResolvedValueOnce({ items: [book2], count: 1 });
+    const getLibraryCount = vi.fn(async () => ({ count: 1 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => (bookId === 2 ? detail2 : detail));
+    const deleteBook = vi.fn(async () => ({ book_id: book.id, deleted: true }));
+    const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
+    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(getLibraryProbe().statusMessage).toBe("selected: Indexed book");
+
+    await act(async () => {
+      await getLibraryProbe().deleteSelectedBook();
+    });
+    expect(getLibraryProbe().statusMessage).toBe("deleted Indexed book");
+
+    // Searching after the delete must resume the normal selected-status flow
+    // instead of staying pinned to the preserved "deleted" message.
+    await act(async () => {
+      getLibraryProbe().setSearchQuery("Second");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(getLibraryProbe().statusMessage).toBe("selected: Second book");
+  });
+
   it("aborts and fences an in-flight detail request when its book is deleted", async () => {
     const detailRequest = deferred<LibraryBookDetail>();
     const refreshRequest = deferred<{ items: LibraryBookSummary[]; count: number }>();

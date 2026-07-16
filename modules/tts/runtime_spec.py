@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import platform
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Mapping
 
 
 def _normalize_text(value: object) -> str | None:
@@ -101,22 +101,6 @@ class TTSRuntimeSpec:
         validate_quantization(spec.provider, spec.quantization)
         return spec
 
-    @classmethod
-    def from_options(
-        cls,
-        config: Any,
-        runtime_options: Any,
-    ) -> "TTSRuntimeSpec":
-        from modules.tts.runtime_options import TTSRuntimeOptions
-
-        engine = getattr(runtime_options, "tts_engine", None) or getattr(
-            config,
-            "tts_engine",
-            "kokoro",
-        )
-        typed_options = TTSRuntimeOptions.from_runtime_options(runtime_options, config)
-        return typed_options.to_runtime_spec(str(engine), config)
-
     @staticmethod
     def mlx_supported_on_current_platform() -> bool:
         return (
@@ -186,15 +170,6 @@ class TTSRuntimeSpec:
                 value,
             )
         return coerced
-
-    @classmethod
-    def coerce_legacy_runtime_options_from_tuples(
-        cls,
-        options: tuple[tuple[str, str], ...],
-    ) -> tuple[tuple[str, object], ...]:
-        return cls.canonicalize_runtime_options(
-            cls.coerce_legacy_runtime_options(dict(options))
-        )
 
     @staticmethod
     def _stable_option_value(value: object) -> str:

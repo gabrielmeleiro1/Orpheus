@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { cancelActiveSetup, restartAndReconnectSetup } from "./setupLifecycle";
+import { restartAndReconnectSetup } from "./setupLifecycle";
 
 describe("setup lifecycle actions", () => {
   it("restarts, refetches authoritative readiness, and lets the gate continue", async () => {
@@ -19,11 +19,5 @@ describe("setup lifecycle actions", () => {
     await expect(restartAndReconnectSetup(restart, reconnect)).rejects.toThrow("restart failed");
     expect(reconnect).not.toHaveBeenCalled();
     await expect(restartAndReconnectSetup(restart, reconnect)).resolves.toBeUndefined();
-  });
-
-  it("routes cancellation through the registered safe command", async () => {
-    const cancel = vi.fn(async () => ({ lifecycle: "cancelled" }));
-    await expect(cancelActiveSetup(cancel)).resolves.toEqual({ lifecycle: "cancelled" });
-    expect(cancel).toHaveBeenCalledOnce();
   });
 });

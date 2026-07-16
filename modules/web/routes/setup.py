@@ -11,17 +11,22 @@ import time
 from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from huggingface_hub import scan_cache_dir
 from huggingface_hub.errors import CacheNotFound
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
+from pydantic import BaseModel, ConfigDict, Field
 
-from modules.runtime_profiles import get_runtime_profile, runtime_profiles
+from modules.runtime_profiles import (
+    get_runtime_profile,
+    recommended_profile_id,
+    runtime_profiles,
+)
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
 from scripts import setup_runtime
-from scripts.download_models import ModelReceiptVerifier, resolve_model_groups
+from scripts.download_models import MODEL_GROUPS, ModelReceiptVerifier, resolve_model_groups
 
 
 router = APIRouter()
@@ -53,6 +58,11 @@ class RuntimeSetupStatusCache:
         self._key: tuple[Any, ...] | None = None
         self._expires_at = 0.0
         self._response: dict[str, Any] | None = None
+
+    @property
+    def probe_service(self) -> RuntimeCapabilityService:
+        """Expose the single-flight probe service for adopt re-validation."""
+        return self._probe_service
 
     def get(
         self,
@@ -302,7 +312,65 @@ def _profile_payload(profile_id: str, *, accepted_profile: str | None) -> dict[s
     }
 
 
-def _empty_status(*, request: Request, state_error: str | None) -> dict[str, Any]:
+def _profile_tts_groups(profile_id: str) -> tuple[str, ...]:
+    """Return the TTS model groups declared by a profile."""
+    profile = get_runtime_profile(profile_id)
+    return tuple(group for group in profile.model_groups if group.startswith("tts"))
+
+
+def _detect_installed_runtime(
+    probe_service: RuntimeCapabilityService,
+    receipt_verifier: ModelReceiptVerifier,
+) -> dict[str, Any] | None:
+    """Detect a baked/packaged operational runtime when no state file exists.
+
+    Runs the cheap installed-packages check first and only probes the real
+    capability path when packages are ready. Returns ``None`` on any probe
+    error rather than guessing readiness.
+    """
+    for profile in runtime_profiles():
+        if profile.id == "base" or not profile.is_compatible():
+            continue
+        packages = _check_selected_profile_packages(profile.id)
+        if not packages["ready"]:
+            continue
+        try:
+            probe = setup_runtime._probe_profile(profile.model_groups, probe_service)
+        except Exception:
+            return None
+        readiness_by_group = {
+            str(check.get("id")): bool(check.get("available"))
+            for check in probe.get("checks", [])
+            if isinstance(check, Mapping)
+        }
+        asset_status = _check_model_group_assets(
+            profile.model_groups,
+            receipt_verifier=receipt_verifier,
+        )
+        model_groups = [
+            {
+                "id": group_id,
+                "ready": bool(asset_status.get(group_id, {}).get("ready"))
+                and readiness_by_group.get(group_id, False),
+            }
+            for group_id in profile.model_groups
+        ]
+        tts_groups = _profile_tts_groups(profile.id)
+        ready = bool(tts_groups) and all(
+            readiness_by_group.get(group_id, False)
+            and bool(asset_status.get(group_id, {}).get("ready"))
+            for group_id in tts_groups
+        )
+        return {"profile": profile.id, "ready": ready, "model_groups": model_groups}
+    return None
+
+
+def _empty_status(
+    *,
+    request: Request,
+    state_error: str | None,
+    installed_runtime: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "configured": False,
@@ -314,6 +382,8 @@ def _empty_status(*, request: Request, state_error: str | None) -> dict[str, Any
         "probe": {"ready": False, "checks": []},
         "ready": False,
         "restart_required": False,
+        "recommended_profile": recommended_profile_id(),
+        "installed_runtime": installed_runtime,
         "profiles": [
             _profile_payload(profile.id, accepted_profile=None)
             for profile in runtime_profiles()
@@ -339,7 +409,16 @@ def _build_uncached_setup_status_response(
 
     if not bool(status.get("configured")):
         error = "invalid" if status.get("state_error") else None
-        return _empty_status(request=request, state_error=error)
+        installed_runtime = (
+            _detect_installed_runtime(probe_service, receipt_verifier)
+            if error is None
+            else None
+        )
+        return _empty_status(
+            request=request,
+            state_error=error,
+            installed_runtime=installed_runtime,
+        )
 
     selected_profile = str(status.get("profile") or "")
     try:
@@ -418,6 +497,8 @@ def _build_uncached_setup_status_response(
         "probe": {"ready": probe_ready, "checks": probe_checks},
         "ready": ready,
         "restart_required": restart_required,
+        "recommended_profile": recommended_profile_id(),
+        "installed_runtime": None,
         "profiles": [
             _profile_payload(item.id, accepted_profile=selected_profile)
             for item in runtime_profiles()
@@ -430,11 +511,16 @@ def _build_uncached_setup_status_response(
     }
 
 
-def build_setup_status_response(request: Request) -> dict[str, Any]:
+def _get_status_cache(request: Request) -> RuntimeSetupStatusCache:
     cache = getattr(request.app.state, "runtime_setup_status_cache", None)
     if not isinstance(cache, RuntimeSetupStatusCache):
         cache = RuntimeSetupStatusCache()
         request.app.state.runtime_setup_status_cache = cache
+    return cache
+
+
+def build_setup_status_response(request: Request) -> dict[str, Any]:
+    cache = _get_status_cache(request)
     key = _setup_state_fingerprint()
     return cache.get(
         key,
@@ -449,3 +535,182 @@ def build_setup_status_response(request: Request) -> dict[str, Any]:
 @router.get("/api/setup/status")
 def get_setup_status(request: Request) -> dict[str, Any]:
     return build_setup_status_response(request)
+
+
+class AdoptRuntimeRequest(BaseModel):
+    """Adopt an already-operational runtime (or library-only) without installing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str
+    model_groups: list[str] = Field(default_factory=list)
+    accept_pytorch_risk: bool = False
+
+
+def _adopt_backend_instance_id(request: Request) -> str | None:
+    """Record the running backend's identity, mirroring the installer flow."""
+    instance_id = str(getattr(request.app.state, "backend_instance_id", ""))
+    return instance_id if re.fullmatch(r"[0-9a-f]{32}", instance_id) else None
+
+
+@router.post("/api/setup/adopt")
+def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str, Any]:
+    """Persist a chosen runtime after server-side re-validation, no installer run."""
+    cache = _get_status_cache(request)
+    try:
+        profile = setup_runtime._validated_profile(payload.profile)
+        groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
+    except setup_runtime.SetupValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_request", "message": str(exc)},
+        ) from exc
+
+    if profile.id == "cuda" and not payload.accept_pytorch_risk:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "pytorch_risk_required",
+                "message": "CUDA adoption requires PyTorch risk acknowledgement.",
+                "risk": {
+                    "id": setup_runtime.PYTORCH_RISK_ID,
+                    "summary": setup_runtime.PYTORCH_RISK_SUMMARY,
+                },
+            },
+        )
+
+    if profile.id != "base":
+        packages = _check_selected_profile_packages(profile.id)
+        if not packages["ready"]:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "packages_not_ready", "packages": packages},
+            )
+        try:
+            probe = setup_runtime._probe_profile(groups, cache.probe_service)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "probe_unavailable"},
+            ) from exc
+        if not probe.get("available"):
+            probe_checks = [
+                {
+                    "id": str(check.get("id")),
+                    "ready": bool(check.get("available")),
+                }
+                for check in probe.get("checks", [])
+                if isinstance(check, Mapping)
+            ]
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "probe_failed", "probe": {"checks": probe_checks}},
+            )
+        asset_status = _check_model_group_assets(
+            groups,
+            receipt_verifier=cache.receipt_verifier,
+        )
+        missing_assets = [
+            {"id": group_id, "reason": asset_status[group_id]["reason"]}
+            for group_id in groups
+            if not asset_status[group_id]["ready"]
+        ]
+        if missing_assets:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "assets_missing", "model_groups": missing_assets},
+            )
+
+    accepted_risks = (
+        (setup_runtime.PYTORCH_RISK_ID,) if profile.id == "cuda" else ()
+    )
+    state_path = setup_runtime.default_state_path()
+    try:
+        with setup_runtime.SetupLock(state_path):
+            setup_runtime.write_setup_state(
+                state_path,
+                profile_id=profile.id,
+                model_groups=groups,
+                accepted_risks=accepted_risks,
+                backend_instance_id=_adopt_backend_instance_id(request),
+                restart_required=False,
+            )
+    except setup_runtime.SetupExecutionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "setup_in_progress", "message": str(exc)},
+        ) from exc
+    except setup_runtime.SetupValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_request", "message": str(exc)},
+        ) from exc
+
+    cache.invalidate()
+    return build_setup_status_response(request)
+
+
+def _managed_model_repo_ids() -> dict[str, str]:
+    """Map each managed HF repo id to the model group that owns it."""
+    owners: dict[str, str] = {}
+    for group_id in MODEL_GROUPS:
+        for model_id in resolve_model_groups((group_id,)):
+            owners.setdefault(str(model_id), group_id)
+    return owners
+
+
+def _delete_runtime_models(
+    *,
+    cache_scanner: Callable[[], Any] = scan_cache_dir,
+) -> tuple[list[str], int]:
+    """Delete only HF cache repos owned by our model groups; leave others intact."""
+    try:
+        cache = cache_scanner()
+    except CacheNotFound:
+        return [], 0
+    except Exception:
+        return [], 0
+    owners = _managed_model_repo_ids()
+    revisions: list[str] = []
+    deleted_groups: set[str] = set()
+    for repo in getattr(cache, "repos", ()):
+        if getattr(repo, "repo_type", "model") != "model":
+            continue
+        group_id = owners.get(str(getattr(repo, "repo_id", "")))
+        if group_id is None:
+            continue
+        for revision in getattr(repo, "revisions", ()):
+            commit_hash = getattr(revision, "commit_hash", None)
+            if isinstance(commit_hash, str) and commit_hash:
+                revisions.append(commit_hash)
+                deleted_groups.add(group_id)
+    if not revisions:
+        return [], 0
+    strategy = cache.delete_revisions(*revisions)
+    freed = int(getattr(strategy, "expected_freed_size", 0) or 0)
+    strategy.execute()
+    ordered = [group_id for group_id in MODEL_GROUPS if group_id in deleted_groups]
+    return ordered, freed
+
+
+@router.delete("/api/setup/runtime")
+def delete_setup_runtime(request: Request) -> dict[str, Any]:
+    """Uninstall local runtime data: managed model assets and the setup state."""
+    cache = _get_status_cache(request)
+    state_path = setup_runtime.default_state_path()
+    try:
+        with setup_runtime.SetupLock(state_path):
+            deleted_groups, freed_bytes = _delete_runtime_models()
+            state_deleted = state_path.exists()
+            state_path.unlink(missing_ok=True)
+    except setup_runtime.SetupExecutionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "setup_in_progress", "message": str(exc)},
+        ) from exc
+    cache.invalidate()
+    return {
+        "deleted_model_groups": deleted_groups,
+        "freed_bytes": freed_bytes,
+        "state_deleted": state_deleted,
+    }

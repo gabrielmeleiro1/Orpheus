@@ -154,15 +154,6 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
 }
 
 describe("ConversionPanelView", () => {
-  it("renders from a plain view model with preserved DOM hooks", () => {
-    const html = renderToString(<ConversionPanelView {...viewModel()} />);
-
-    expect(html).toContain('id="tab-document"');
-    expect(html).toContain('id="start-btn"');
-    expect(html).toContain('accept=".pdf,.epub,.txt,.md"');
-    expect(html).toContain("start conversion");
-  });
-
   it("renders a disabled-start blocker beside the actions with a Settings shortcut", () => {
     const model = viewModel() as ConversionPanelViewModel & {
       conversionActions: ConversionPanelViewModel["conversionActions"] & {

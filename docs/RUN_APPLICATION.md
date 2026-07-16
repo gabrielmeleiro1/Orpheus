@@ -8,8 +8,8 @@ Install the system prerequisites listed in [DEPENDENCIES.md](DEPENDENCIES.md)
 first.
 
 ```bash
-python3.12 -m venv venv
-source venv/bin/activate
+python3.12 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 python scripts/setup_runtime.py --profile base
 python -m pip install -r requirements-dev.txt

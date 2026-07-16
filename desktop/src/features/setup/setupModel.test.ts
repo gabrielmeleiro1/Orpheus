@@ -65,6 +65,20 @@ describe("runtime setup selection", () => {
     expect(canStartSetup({ ...cuda, acceptPytorchRisk: true }, cudaStatus)).toBe(true);
   });
 
+  it("preselects the recommended profile only when no profile was persisted", () => {
+    const recommended = status({ recommended_profile: "mlx" });
+    expect(createSelection(recommended).profile).toBe("mlx");
+    expect(createSelection(recommended).modelGroups).toEqual(["tts-mlx"]);
+  });
+
+  it("ignores an incompatible recommended profile and keeps the base fallback", () => {
+    expect(createSelection(status({ recommended_profile: "cuda" })).profile).toBe("base");
+  });
+
+  it("lets an explicit persisted profile win over the recommendation", () => {
+    expect(createSelection(status({ selected_profile: "base", recommended_profile: "mlx" })).profile).toBe("base");
+  });
+
   it("prevents duplicate starts until the running operation releases its lock", () => {
     const lock = { current: false };
     expect(acquireSetupStart(lock)).toBe(true);

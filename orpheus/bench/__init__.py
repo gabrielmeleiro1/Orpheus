@@ -12,7 +12,7 @@ from orpheus.bench.cli import (
     main,
     run_benchmark,
 )
-from orpheus.bench.metrics import skipped_sections_from_document, skipped_sections_from_metrics
+from orpheus.bench.metrics import skipped_sections_from_metrics
 from orpheus.bench.policy import (
     POLICY_FIXTURES_DIR,
     load_policy_manifest,
@@ -53,7 +53,6 @@ __all__ = [
     "get_preset",
     "main",
     "run_benchmark",
-    "skipped_sections_from_document",
     "skipped_sections_from_metrics",
     "write_report_outputs",
 ]

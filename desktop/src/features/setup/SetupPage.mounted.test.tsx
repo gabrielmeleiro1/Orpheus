@@ -288,6 +288,46 @@ describe("mounted SetupPage", () => {
     expect(runtimeBridge.cancel).toHaveBeenCalledOnce();
   });
 
+  it("stays busy while an async cancel is still in flight", async () => {
+    const runtimeBridge = bridge({
+      status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "running", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })),
+      cancel: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "cancelling", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })),
+    });
+    await renderPage(runtimeBridge);
+    await act(async () => findButton(container, "Cancel").click());
+    expect(runtimeBridge.cancel).toHaveBeenCalledOnce();
+    // A "cancelling" runner is still running: the Cancel affordance must remain
+    // and the install/library primary action must stay disabled.
+    expect(findButton(container, "Cancel")).toBeTruthy();
+    expect(findButton(container, "Use library-only mode").disabled).toBe(true);
+  });
+
+  it("does not let the busy poll interrupt an in-flight restart", async () => {
+    vi.useFakeTimers();
+    try {
+      const restartStatus = { ...setupStatus, configured: true, state: "restart_required" as const, restart_required: true, selected_profile: "base" as const };
+      const runtimeBridge = bridge({
+        // A finished install leaves the runner terminal ("complete"); the 1s poll
+        // must not observe this mid-restart and flip the UI out of the busy state.
+        status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "complete", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })),
+      });
+      const api = { getRuntimeSetupStatus: vi.fn(async () => restartStatus) } as unknown as ApiClient;
+      await renderPage(runtimeBridge, { apiClient: api, initialStatus: restartStatus });
+      await act(async () => undefined);
+
+      await act(async () => { findButton(container, "Restart Orpheus").click(); });
+      // Reconnect never completes (apiClient unchanged), so the restart stays in
+      // flight. Advancing several 1s poll intervals must keep the busy/restart UI.
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+
+      expect(container.textContent).not.toContain("Setup status unavailable");
+      expect(findButton(container, "Cancel")).toBeTruthy();
+      expect(findButton(container, "Restart Orpheus").disabled).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("refreshes setup status and reports ready when the runner is complete", async () => {
     const readyStatus = {
       ...setupStatus,
@@ -350,5 +390,125 @@ describe("mounted SetupPage", () => {
     expect(container.textContent).toContain("Setup status endpoint unavailable.");
     await act(async () => findButton(container, "Continue in library-only mode").click());
     expect(continueLibrary).toHaveBeenCalledOnce();
+  });
+
+  it("adopts an installed-ready runtime and reports the fresh status", async () => {
+    const installedStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      recommended_profile: "mlx",
+      installed_runtime: { profile: "mlx", ready: true, model_groups: [{ id: "tts-mlx", ready: true }, { id: "cleaner-mlx", ready: false }] },
+    };
+    const readyStatus = { ...installedStatus, configured: true, state: "ready" as const, ready: true, installed_runtime: null };
+    const adopt = vi.fn(async () => readyStatus);
+    const onReady = vi.fn();
+    const api = { getRuntimeSetupStatus: vi.fn(async () => installedStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    await renderPage(bridge(), { apiClient: api, initialStatus: installedStatus, onReady });
+
+    expect(container.textContent).toContain("Installed MLX runtime ready");
+    const cta = findButton(container, "Continue with installed runtime");
+    expect(cta.disabled).toBe(false);
+    await act(async () => cta.click());
+    expect(adopt).toHaveBeenCalledWith(
+      { profile: "mlx", model_groups: ["tts-mlx"], accept_pytorch_risk: false },
+      { timeoutMs: 15_000 },
+    );
+    expect(onReady).toHaveBeenCalledWith(readyStatus);
+  });
+
+  it("surfaces an adopt failure without reporting ready", async () => {
+    const installedStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      installed_runtime: { profile: "mlx", ready: true, model_groups: [{ id: "tts-mlx", ready: true }] },
+    };
+    const adopt = vi.fn(async () => { throw new Error("API request failed (409): CUDA capability probe failed"); });
+    const onReady = vi.fn();
+    const api = { getRuntimeSetupStatus: vi.fn(async () => installedStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    await renderPage(bridge(), { apiClient: api, initialStatus: installedStatus, onReady });
+
+    await act(async () => findButton(container, "Continue with installed runtime").click());
+    expect(adopt).toHaveBeenCalledOnce();
+    expect(onReady).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("CUDA capability probe failed");
+  });
+
+  it("requires the risk acknowledgement before adopting an installed CUDA runtime", async () => {
+    const cudaInstalled: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      recommended_profile: "cuda",
+      profiles: setupStatus.profiles.map((profile) => profile.id === "cuda"
+        ? { ...profile, compatible: true, reason: null, model_groups: ["tts-cpu-cuda"], risk: { id: "pytorch", summary: "Use trusted models only.", accepted: false } }
+        : profile),
+      installed_runtime: { profile: "cuda", ready: true, model_groups: [{ id: "tts-cpu-cuda", ready: true }] },
+    };
+    const readyStatus = { ...cudaInstalled, configured: true, state: "ready" as const, ready: true, installed_runtime: null };
+    const adopt = vi.fn(async () => readyStatus);
+    const api = { getRuntimeSetupStatus: vi.fn(async () => cudaInstalled), adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    await renderPage(bridge(), { apiClient: api, initialStatus: cudaInstalled });
+
+    expect(findButton(container, "Continue with installed runtime").disabled).toBe(true);
+    const risk = container.querySelector<HTMLInputElement>('.setup-risk input[type="checkbox"]')!;
+    await act(async () => risk.click());
+    expect(findButton(container, "Continue with installed runtime").disabled).toBe(false);
+    await act(async () => findButton(container, "Continue with installed runtime").click());
+    expect(adopt).toHaveBeenCalledWith(
+      { profile: "cuda", model_groups: ["tts-cpu-cuda"], accept_pytorch_risk: true },
+      { timeoutMs: 15_000 },
+    );
+  });
+
+  it("persists library-only choice via adopt when runtime mutations are unavailable", async () => {
+    const readyBase = { ...setupStatus, configured: true, state: "ready" as const, ready: true, selected_profile: "base" as const };
+    const adopt = vi.fn(async () => readyBase);
+    const onReady = vi.fn();
+    const continueLibrary = vi.fn();
+    const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Baked runtime." })) });
+    await renderPage(runtimeBridge, { apiClient: api, onContinueLibraryOnly: continueLibrary, onReady });
+
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+    expect(adopt).toHaveBeenCalledWith(
+      { profile: "base", model_groups: [], accept_pytorch_risk: false },
+      { timeoutMs: 15_000 },
+    );
+    expect(onReady).toHaveBeenCalledWith(readyBase);
+    expect(continueLibrary).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the in-memory library-only override when adopt rejects", async () => {
+    const adopt = vi.fn(async () => { throw new Error("network down"); });
+    const continueLibrary = vi.fn();
+    const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Baked runtime." })) });
+    await renderPage(runtimeBridge, { apiClient: api, onContinueLibraryOnly: continueLibrary });
+
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+    expect(adopt).toHaveBeenCalledOnce();
+    expect(continueLibrary).toHaveBeenCalledOnce();
+  });
+
+  it("arms then confirms deletion of local runtime data and reports freed space", async () => {
+    const del = vi.fn(async () => ({ deleted_model_groups: ["tts-mlx"], freed_bytes: 734003200, state_deleted: true }));
+    const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus), deleteRuntimeSetupData: del } as unknown as ApiClient;
+    await renderPage(bridge(), { apiClient: api, settingsEntry: true });
+
+    await act(async () => findButton(container, "Delete local runtime data").click());
+    expect(del).not.toHaveBeenCalled();
+    expect(findButton(container, "Confirm delete")).toBeTruthy();
+    await act(async () => findButton(container, "Confirm delete").click());
+    expect(del).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain("Freed 700 MB.");
+  });
+
+  it("hides the delete affordance outside Settings and during an install", async () => {
+    const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus), deleteRuntimeSetupData: vi.fn() } as unknown as ApiClient;
+    await renderPage(bridge(), { apiClient: api });
+    expect(container.textContent).not.toContain("Delete local runtime data");
+
+    const runningBridge = bridge({ status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "running", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })) });
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderPage(runningBridge, { apiClient: api, settingsEntry: true });
+    await act(async () => undefined);
+    expect(container.textContent).not.toContain("Delete local runtime data");
   });
 });

@@ -97,6 +97,17 @@ cd desktop
 npm run desktop:release
 ```
 
+`desktop:release` bundles the default runtime profile for the host (`mlx` on
+Apple Silicon), so install that profile first — the build aborts if its
+packages are missing. To package a `base`-only app instead:
+
+```bash
+python scripts/build_desktop_backend.py --runtime-profile base
+cd desktop
+npm run desktop:build
+npm run desktop:install
+```
+
 ## Common Tasks
 
 | Task | Command | Notes |

@@ -14,10 +14,6 @@ import numpy as np
 from modules.async_bridge import run_coroutine_sync as _run_coroutine_sync
 
 from .models import ChapterResult, PipelineStage
-from .result_validation import (
-    summarize_incomplete_chapters,
-    validate_chapter_result_structure,
-)
 from .runtime import PipelineRuntime
 from .stage_metrics import timed_stage
 
@@ -84,13 +80,6 @@ class ChapterProcessor:
         from .retry import should_retry_sequential_from_parallel_errors
 
         return should_retry_sequential_from_parallel_errors(results)
-
-    @staticmethod
-    def _is_infrastructure_runtime_error(error: str) -> bool:
-        """Return True when an error indicates process/thread runtime infrastructure issues."""
-        from .retry import is_infrastructure_runtime_error
-
-        return is_infrastructure_runtime_error(error)
 
     def clean_chunk_safely(
         self,
@@ -213,25 +202,6 @@ class ChapterProcessor:
         """Run coroutine from sync pipeline code, even when a loop already exists."""
         return _run_coroutine_sync(coro)
 
-    @staticmethod
-    def _summarize_incomplete_chapters(
-        chapter_results: list[ChapterResult],
-    ) -> list[str]:
-        """Return human-readable notes for chapters that failed or lack MP3 output."""
-        return summarize_incomplete_chapters(chapter_results)
-
-    @staticmethod
-    def _validate_chapter_result_structure(
-        expected_chapters: list[Any],
-        chapter_results: list[ChapterResult],
-    ) -> tuple[list[ChapterResult], list[str]]:
-        """
-        Ensure dispatched results represent exactly the ingested chapter set.
-
-        Results may arrive out of order from parallel workers; when the chapter
-        numbers and titles match, return them in document order for packaging.
-        """
-        return validate_chapter_result_structure(expected_chapters, chapter_results)
 
     @staticmethod
     def maybe_capture_cleaner_stats(cleaner: Any) -> Optional[dict[str, int]]:

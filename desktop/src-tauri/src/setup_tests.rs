@@ -9,7 +9,10 @@ use super::setup::{
     SetupLaunchConfig, SetupLifecycle, SetupProgressEvent, SetupRequest, SetupRunnerState,
     WindowsLaunchPhase, SETUP_PROGRESS_EVENT,
 };
-use super::{restart_after_setup_transaction, wait_for_backend_ready, BackendLifecycle};
+use super::{
+    restart_after_setup_transaction, restart_after_setup_with_readiness, wait_for_backend_ready,
+    BackendLifecycle,
+};
 use crate::paths::DesktopRuntimePaths;
 use std::fs;
 use std::io::Cursor;
@@ -485,6 +488,48 @@ fn backend_restart_readiness_timeout_is_bounded() {
         Ok(BackendLifecycle::Starting)
     });
     assert!(result.expect_err("must time out").contains("timed out"));
+}
+
+#[test]
+fn setup_restart_releases_lock_before_readiness_wait() {
+    // Regression: the post-setup restart must not hold `restart_lock` across the
+    // readiness wait, or app-exit shutdown (which blocks on the lock) would hang
+    // for the full startup deadline when a restarted backend wedges.
+    let restart_lock = Mutex::new(());
+    let swap_ran = Arc::new(Mutex::new(false));
+    let lock_free_during_wait = Arc::new(Mutex::new(false));
+
+    let result = restart_after_setup_with_readiness(
+        &restart_lock,
+        {
+            let swap_ran = Arc::clone(&swap_ran);
+            let restart_lock = &restart_lock;
+            move || {
+                // The swap runs under the lock, so it must not be re-acquirable here.
+                assert!(restart_lock.try_lock().is_err(), "swap must hold the lock");
+                *swap_ran.lock().expect("swap flag") = true;
+                Ok(())
+            }
+        },
+        {
+            let lock_free_during_wait = Arc::clone(&lock_free_during_wait);
+            let restart_lock = &restart_lock;
+            move || {
+                // The lock must be released before the readiness wait so a
+                // concurrent shutdown/restart can acquire it.
+                *lock_free_during_wait.lock().expect("wait flag") =
+                    restart_lock.try_lock().is_ok();
+                Ok(())
+            }
+        },
+    );
+
+    assert!(result.is_ok());
+    assert!(*swap_ran.lock().expect("swap flag"), "swap must run");
+    assert!(
+        *lock_free_during_wait.lock().expect("wait flag"),
+        "restart lock must be free during the readiness wait"
+    );
 }
 
 #[test]

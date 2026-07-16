@@ -652,8 +652,3 @@ class TTSEngine:
 
 # Available voices for Kokoro-82M
 KOKORO_VOICES = kokoro_voice_lookup()
-
-
-def list_voices() -> dict[str, str]:
-    """List all available voices with descriptions."""
-    return KOKORO_VOICES.copy()

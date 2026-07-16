@@ -1775,5 +1775,12 @@ pub async fn cancel_runtime_setup(
     app_handle: tauri::AppHandle,
     state: State<'_, SetupRunnerState>,
 ) -> Result<SetupStatus, String> {
-    cancel_with_sink(state.inner(), app_event_sink(app_handle))
+    // `cancel_with_sink` calls `terminate_process`, which blocks for up to a few
+    // seconds (SIGTERM grace + `ps`/`pgrep` subprocess spawns). Run it on the
+    // blocking pool so it never stalls the async runtime worker.
+    let state = state.inner().clone();
+    let sink = app_event_sink(app_handle);
+    tauri::async_runtime::spawn_blocking(move || cancel_with_sink(&state, sink))
+        .await
+        .map_err(|error| format!("runtime setup cancellation task failed: {error}"))?
 }

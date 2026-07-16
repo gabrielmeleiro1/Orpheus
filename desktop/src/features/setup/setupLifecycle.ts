@@ -5,7 +5,3 @@ export async function restartAndReconnectSetup(
   await restart();
   reconnect();
 }
-
-export async function cancelActiveSetup<T>(cancel: () => Promise<T>): Promise<T> {
-  return cancel();
-}

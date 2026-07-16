@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import sys
 import time
@@ -26,20 +25,10 @@ from modules.contracts.source_extensions import FEEDBACK_LOOP_SOURCE_SUFFIXES  #
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig  # noqa: E402
 from modules.tts import cleaner_config  # noqa: E402
 from modules.tts.cleaner_backends import available_cleaner_backends  # noqa: E402
+from scripts.benchmark_nagel_pipeline import _apply_cleaner_env  # noqa: E402
 
 
 SUPPORTED_SOURCE_SUFFIXES = FEEDBACK_LOOP_SOURCE_SUFFIXES
-
-
-def _apply_cleaner_env(
-    *,
-    cleaner_backend: str,
-    cleaner_cuda_device: str,
-    cleaner_cuda_quantization: str,
-) -> None:
-    os.environ["CLEANER_BACKEND"] = cleaner_backend
-    os.environ["CLEANER_CUDA_DEVICE"] = cleaner_cuda_device
-    os.environ["CLEANER_CUDA_QUANTIZATION"] = cleaner_cuda_quantization
 
 
 @dataclass

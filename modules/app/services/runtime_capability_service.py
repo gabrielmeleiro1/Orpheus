@@ -194,17 +194,6 @@ except Exception as exc:
             )
         return availability
 
-    def get_cached_cleaner_backend_results(self) -> dict[str, ProbeResult]:
-        """Return cached local cleaner probe payloads without running probes."""
-        results: dict[str, ProbeResult] = {}
-        for backend_name in available_cleaner_backends():
-            if not is_local_cleaner_backend(backend_name):
-                continue
-            cached = self._read_cached_cleaner_backend_result(backend_name)
-            if cached is not None:
-                results[backend_name] = cached
-        return results
-
     def _probe_payload(self, result: ProbeResult | None) -> dict[str, Any]:
         if result is None:
             return {

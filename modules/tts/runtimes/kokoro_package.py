@@ -248,7 +248,6 @@ class PackageKokoroRuntime:
     ) -> Iterator[SynthesisResult]:
         total = len(items)
         for offset, item in enumerate(items, start=1):
-            started_at = time.perf_counter()
             try:
                 audio = self.synthesize(
                     item.text,
@@ -259,7 +258,7 @@ class PackageKokoroRuntime:
                 yield SynthesisResult(
                     audio=audio,
                     index=item.index,
-                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                    duration_ms=int(len(audio) / self.sample_rate * 1000),
                     audio_path=item.output_path,
                 )
             except Exception as exc:
@@ -267,7 +266,7 @@ class PackageKokoroRuntime:
                     audio=None,
                     index=item.index,
                     error=str(exc),
-                    duration_ms=int((time.perf_counter() - started_at) * 1000),
+                    duration_ms=0,
                     audio_path=item.output_path,
                 )
             if progress_callback is not None:

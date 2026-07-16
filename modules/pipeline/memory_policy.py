@@ -68,9 +68,6 @@ class SafeMemoryPolicy:
             return
         self._record_worker_observation(snapshot, source="warmup")
 
-    def record_worker_peak(self, snapshot: Optional[MemorySnapshot] = None) -> None:
-        self._record_worker_observation(snapshot, source="worker_peak")
-
     def record_memory_error(self) -> None:
         self._force_sequential = True
         self.safe_mode_reason = "memory pressure error"

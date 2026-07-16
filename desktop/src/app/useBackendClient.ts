@@ -33,9 +33,9 @@ function messageFromUnknown(error: unknown, fallback: string): string {
 // backend surfaces only as repeated health-poll failures. We wait for a few
 // consecutive failures before declaring an error to avoid flapping on a single
 // blip, and recover automatically once a poll succeeds again. The Tauri path
-// reuses the same threshold: a hung-but-alive backend keeps lifecycle "ready"
-// while every health probe fails, and only an "error" connection state lets
-// the recovery effect restart it.
+// reuses the same threshold, but the recovery effect only restarts a backend
+// whose lifecycle reports "failed" or "stopped"; a hung-but-alive backend
+// keeps lifecycle "ready" and is re-bootstrapped, never force-restarted.
 const BROWSER_HEALTH_FAILURE_THRESHOLD = 3;
 
 // Bound each health probe so a hung backend surfaces as a failed poll instead

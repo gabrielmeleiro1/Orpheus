@@ -16,11 +16,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     # Legacy
     "TTSEngine": ("modules.tts.engine", "TTSEngine"),
     "TTSConfig": ("modules.tts.engine", "TTSConfig"),
-    "list_voices": ("modules.tts.engine", "list_voices"),
     "KOKORO_VOICES": ("modules.tts.engine", "KOKORO_VOICES"),
     "TextChunker": ("modules.tts.chunker", "TextChunker"),
     "ChunkConfig": ("modules.tts.chunker", "ChunkConfig"),
-    "chunk_text": ("modules.tts.chunker", "chunk_text"),
     "VRAMManager": ("modules.tts.memory", "VRAMManager"),
     "TextCleaner": ("modules.tts.cleaner", "TextCleaner"),
     "CleanerConfig": ("modules.tts.cleaner_config", "CleanerConfig"),
@@ -32,7 +30,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "KokoroTTSStrategy": ("modules.tts.strategies", "KokoroTTSStrategy"),
     "KokoroConfig": ("modules.tts.strategies", "KokoroConfig"),
     "TTSEngineFactory": ("modules.tts.factory", "TTSEngineFactory"),
-    "create_tts_engine": ("modules.tts.factory", "create_tts_engine"),
 }
 
 __all__ = list(_EXPORTS)
