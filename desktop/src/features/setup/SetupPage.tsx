@@ -53,6 +53,8 @@ interface SetupPageProps {
   initialError: string | null;
   onReady: (status: RuntimeSetupStatusResponse) => void;
   onContinueLibraryOnly: () => void;
+  settingsEntry?: boolean;
+  onExitSettings?: () => void;
   onReconnectBackend: () => void;
   bridge?: SetupPageBridge;
 }
@@ -107,6 +109,8 @@ export function SetupPage({
   initialError,
   onReady,
   onContinueLibraryOnly,
+  settingsEntry = false,
+  onExitSettings,
   onReconnectBackend,
   bridge = defaultBridge,
 }: SetupPageProps) {
@@ -122,6 +126,7 @@ export function SetupPage({
   const restartLocked = useRef(false);
   const preRestartClient = useRef<ApiClient | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const setupHeadingRef = useRef<HTMLHeadingElement>(null);
   const progressHeadingRef = useRef<HTMLParagraphElement>(null);
 
   const refreshStatus = useCallback(async () => {
@@ -199,6 +204,10 @@ export function SetupPage({
   }, [bridge, environment?.available, refreshRunner]);
 
   useEffect(() => {
+    setupHeadingRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
     if (error) errorRef.current?.focus();
   }, [error]);
 
@@ -207,6 +216,12 @@ export function SetupPage({
       progressHeadingRef.current?.focus();
     }
   }, [busy, progress.lifecycle]);
+
+  useEffect(() => {
+    if (settingsEntry) {
+      setupHeadingRef.current?.focus();
+    }
+  }, [progress.lifecycle, settingsEntry, status]);
 
   useEffect(() => {
     if (!busy) return undefined;
@@ -334,7 +349,7 @@ export function SetupPage({
           <section className="setup-panel" aria-labelledby="setup-heading">
             <div className="panel-header"><span>configuration</span><span className="panel-header-meta">step 1 of 1</span></div>
             <div className="setup-intro">
-              <div><p className="setup-eyebrow">WELCOME TO ORPHEUS</p><h2 id="setup-heading">Choose your runtime</h2><p>Document conversion and playback work without local AI. Add a compatible runtime for private, on-device speech and text cleaning.</p></div>
+              <div><p className="setup-eyebrow">WELCOME TO ORPHEUS</p><h2 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>Choose your runtime</h2><p>Document conversion and playback work without local AI. Add a compatible runtime for private, on-device speech and text cleaning.</p></div>
               <span className="setup-private-chip">downloads from trusted model repositories</span>
             </div>
 
@@ -409,6 +424,7 @@ export function SetupPage({
             {error && status ? <p className="setup-error" role="alert" ref={errorRef} tabIndex={-1}>{error}</p> : null}
 
             <footer className="setup-footer">
+              {settingsEntry && onExitSettings ? <button id="setup-back-btn" className="btn btn-compact" type="button" onClick={onExitSettings}>Back to dashboard</button> : null}
               <button className="btn btn-compact" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button>
               <div className="setup-actions">
                 {busy ? <button className="btn" type="button" disabled={!mutationsAvailable} onClick={() => void cancel()}>Cancel</button> : null}

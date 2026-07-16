@@ -102,11 +102,15 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       healthStatus: "status=ok",
       jobStatus: "no active conversion",
       detailStatus: "idle",
+      blockingReason: null,
+      showSettingsShortcut: false,
       startLabel: "start conversion",
       cancelLabel: "cancel",
       isStarting: false,
     },
     actions: {
+      onOpenSettings: noop,
+      onOpenRuntimeSetup: noop,
       setSourcePath: noop,
       setTitleOverride: noop,
       setAuthorOverride: noop,
@@ -157,5 +161,40 @@ describe("ConversionPanelView", () => {
     expect(html).toContain('id="start-btn"');
     expect(html).toContain('accept=".pdf,.epub,.txt,.md"');
     expect(html).toContain("start conversion");
+  });
+
+  it("renders a disabled-start blocker beside the actions with a Settings shortcut", () => {
+    const model = viewModel() as ConversionPanelViewModel & {
+      conversionActions: ConversionPanelViewModel["conversionActions"] & {
+        blockingReason: string;
+        showSettingsShortcut: boolean;
+      };
+    };
+    model.capabilities.canStartConversion = false;
+    model.conversionActions.blockingReason = "Cloud API requires an API key. Add it in Settings.";
+    model.conversionActions.showSettingsShortcut = true;
+
+    const html = renderToString(<ConversionPanelView {...model} />);
+
+    expect(html).toContain('id="conversion-blocking-reason"');
+    expect(html).toContain("Cloud API requires an API key. Add it in Settings.");
+    expect(html).toContain("open Settings");
+  });
+
+  it("keeps Runtime setup available from the existing Settings panel", () => {
+    const html = renderToString(
+      <ConversionPanelView
+        {...viewModel({
+          shell: {
+            activeTab: "config",
+            hidden: false,
+            isDocumentMode: false,
+          },
+        })}
+      />,
+    );
+
+    expect(html).toContain('id="runtime-setup-btn"');
+    expect(html).toContain("Runtime setup");
   });
 });

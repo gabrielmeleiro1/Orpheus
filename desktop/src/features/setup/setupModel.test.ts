@@ -92,4 +92,29 @@ describe("runtime setup gate and progress", () => {
     expect(failed.message.length).toBeLessThanOrEqual(512);
     expect(JSON.parse(diagnosticsSnapshot(status(), failed))).not.toHaveProperty("profiles");
   });
+
+  it("activates and completes the verification stage from the runtime stage label", () => {
+    const running = applyProgressEvent(undefined, {
+      event: "stage_started",
+      stage: "Dependency installation",
+      percent: 50,
+    });
+    const verification = applyProgressEvent(running, {
+      event: "stage_started",
+      stage: "Verification",
+      message: "Verifying setup",
+      percent: 90,
+    });
+    expect(verification).toMatchObject({ lifecycle: "running", stage: "verify", percent: 90 });
+    expect(verification.completedStages).toEqual([]);
+
+    const complete = applyProgressEvent(verification, {
+      event: "stage_complete",
+      stage: "Verification",
+      message: "Setup state saved.",
+      percent: 100,
+    });
+    expect(complete).toMatchObject({ lifecycle: "running", stage: "verify", percent: 100 });
+    expect(complete.completedStages).toEqual(["verify"]);
+  });
 });

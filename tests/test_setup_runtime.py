@@ -237,6 +237,67 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
     assert list(state_path.parent.glob("*.tmp")) == []
 
 
+@pytest.mark.parametrize(
+    ("profile_id", "model_groups", "expected_progress"),
+    [
+        (
+            "base",
+            (),
+            [
+                ("plan", None, 5),
+                ("stage_started", "Dependency installation", 10),
+                ("stage_complete", "Dependency installation", 50),
+                ("stage_started", "Verification", 90),
+                ("stage_complete", "Verification", 100),
+            ],
+        ),
+        (
+            "mlx",
+            ("tts-mlx",),
+            [
+                ("plan", None, 5),
+                ("stage_started", "Dependency installation", 10),
+                ("stage_complete", "Dependency installation", 50),
+                ("stage_started", "Model download", 55),
+                ("stage_complete", "Model download", 80),
+                ("stage_started", "Verification", 90),
+                ("stage_complete", "Verification", 100),
+            ],
+        ),
+    ],
+)
+def test_setup_progress_uses_monotonic_milestones_for_base_and_model_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    profile_id: str,
+    model_groups: tuple[str, ...],
+    expected_progress: list[tuple[str, str | None, int]],
+):
+    import scripts.setup_runtime as setup_runtime
+
+    _compatible(monkeypatch, profile_id)
+    events: list[dict[str, object]] = []
+
+    def runner(command, **kwargs):
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    setup_runtime.run_setup(
+        profile_id=profile_id,
+        model_groups=model_groups,
+        state_path=tmp_path / f"{profile_id}.json",
+        command_runner=runner,
+        emit=events.append,
+    )
+
+    assert [
+        (event["event"], event.get("stage"), event.get("percent"))
+        for event in events
+    ] == expected_progress
+    percents = [event["percent"] for event in events]
+    assert all(isinstance(percent, int) and 0 <= percent <= 100 for percent in percents)
+    assert percents == sorted(percents)
+
+
 def test_failed_install_does_not_replace_existing_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -883,6 +944,7 @@ def test_progress_json_dry_run_emits_plan_and_success_events(
 
     events = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert [event["event"] for event in events] == ["plan", "complete"]
+    assert [event["percent"] for event in events] == [5, 100]
     assert events[-1]["terminal"] is True
     assert exit_code == 0
 

@@ -48,6 +48,24 @@ export function ConversionActionsView({
         </div>
       </div>
 
+      {capabilities.showStartConversion && conversionActions.blockingReason ? (
+        <div id="conversion-blocking-reason" className="action-row">
+          <span className="field-hint is-error" role="status" aria-live="polite">
+            {conversionActions.blockingReason}
+          </span>
+          {conversionActions.showSettingsShortcut ? (
+            <button
+              id="open-settings-btn"
+              className="btn btn-compact"
+              type="button"
+              onClick={actions.onOpenSettings}
+            >
+              open Settings
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
       <button
         id="start-btn"
         className="btn btn-primary"

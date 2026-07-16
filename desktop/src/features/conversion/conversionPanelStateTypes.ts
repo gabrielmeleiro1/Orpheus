@@ -25,6 +25,8 @@ export interface UseConversionPanelStateArgs {
   health: HealthResponse | null;
   statusMessage: string;
   conversionJob: ConversionJobController;
+  onOpenSettings: () => void;
+  onOpenRuntimeSetup: () => void;
   startCommandRef?: MutableRefObject<(() => void) | null>;
 }
 
@@ -146,6 +148,8 @@ export interface ConversionActionsViewModel {
   healthStatus: string;
   jobStatus: string;
   detailStatus: string;
+  blockingReason: string | null;
+  showSettingsShortcut: boolean;
   startLabel: string;
   cancelLabel: string;
   isStarting: boolean;
@@ -158,6 +162,8 @@ export interface ConversionPanelShellState {
 }
 
 export interface ConversionPanelActions {
+  onOpenSettings: () => void;
+  onOpenRuntimeSetup: () => void;
   setSourcePath: Dispatch<SetStateAction<string>>;
   setTitleOverride: Dispatch<SetStateAction<string>>;
   setAuthorOverride: Dispatch<SetStateAction<string>>;

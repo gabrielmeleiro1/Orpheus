@@ -44,6 +44,14 @@ DEFAULT_PIP_TIMEOUT_SECONDS = 900.0
 DEFAULT_MODEL_TIMEOUT_SECONDS = 3600.0
 DIAGNOSTIC_MAX_CHARS = 2000
 TAURI_SUPERVISED_ENV = "ORPHEUS_TAURI_SETUP_SUPERVISED"
+SETUP_PLAN_PERCENT = 5
+SETUP_DEPENDENCY_START_PERCENT = 10
+SETUP_DEPENDENCY_COMPLETE_PERCENT = 50
+SETUP_MODEL_START_PERCENT = 55
+SETUP_MODEL_COMPLETE_PERCENT = 80
+SETUP_STATE_START_PERCENT = 90
+SETUP_STATE_COMPLETE_PERCENT = 100
+SETUP_COMPLETE_PERCENT = 100
 PYTORCH_RISK_ID = "PYSEC-2026-139/CVE-2026-4538,CVE-2025-3000"
 PYTORCH_RISK_SUMMARY = (
     "PyTorch 2.10 has unresolved local deserialization and memory-corruption "
@@ -630,13 +638,22 @@ def _run_fixed_command(
     machine_output: bool,
     emit: EventEmitter,
     timeout_seconds: float,
+    start_percent: int,
+    complete_percent: int,
 ) -> None:
-    emit({"event": "stage_started", "stage": stage, "command": list(command)})
+    emit(
+        {
+            "event": "stage_started",
+            "stage": stage,
+            "command": list(command),
+            "percent": start_percent,
+        }
+    )
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise SetupValidationError(f"{stage} timeout must be a finite positive number.")
     if command_runner is None:
         _supervise_command(command, stage=stage, timeout_seconds=timeout_seconds)
-        emit({"event": "stage_complete", "stage": stage})
+        emit({"event": "stage_complete", "stage": stage, "percent": complete_percent})
         return
     try:
         result = command_runner(
@@ -655,7 +672,7 @@ def _run_fixed_command(
         detail = _sanitize_diagnostic(result.stderr or "")
         suffix = f" Details: {detail}" if detail else ""
         raise SetupExecutionError(f"{stage} failed with exit code {result.returncode}.{suffix}")
-    emit({"event": "stage_complete", "stage": stage})
+    emit({"event": "stage_complete", "stage": stage, "percent": complete_percent})
 
 
 def _sanitize_diagnostic(value: str, *, max_chars: int = DIAGNOSTIC_MAX_CHARS) -> str:
@@ -810,7 +827,7 @@ def run_setup(
         ),
     }
     event_emitter = emit or (lambda event: None)
-    event_emitter({"event": "plan", **result})
+    event_emitter({"event": "plan", "percent": SETUP_PLAN_PERCENT, **result})
     if dry_run:
         return result
 
@@ -824,6 +841,8 @@ def run_setup(
             machine_output=machine_output,
             emit=event_emitter,
             timeout_seconds=pip_timeout_seconds,
+            start_percent=SETUP_DEPENDENCY_START_PERCENT,
+            complete_percent=SETUP_DEPENDENCY_COMPLETE_PERCENT,
         )
         if plan.model_command is not None:
             _run_fixed_command(
@@ -833,13 +852,31 @@ def run_setup(
                 machine_output=machine_output,
                 emit=event_emitter,
                 timeout_seconds=model_timeout_seconds,
+                start_percent=SETUP_MODEL_START_PERCENT,
+                complete_percent=SETUP_MODEL_COMPLETE_PERCENT,
             )
+        event_emitter(
+            {
+                "event": "stage_started",
+                "stage": "Verification",
+                "message": "Verifying setup and saving state.",
+                "percent": SETUP_STATE_START_PERCENT,
+            }
+        )
         write_setup_state(
             setup_state_path,
             profile_id=plan.profile.id,
             model_groups=plan.model_groups,
             accepted_risks=plan.accepted_risks,
             backend_instance_id=backend_instance_id,
+        )
+        event_emitter(
+            {
+                "event": "stage_complete",
+                "stage": "Verification",
+                "message": "Setup state saved.",
+                "percent": SETUP_STATE_COMPLETE_PERCENT,
+            }
         )
     return result
 
@@ -946,6 +983,7 @@ def main(argv: list[str] | None = None) -> int:
                 "event": "complete",
                 "profile": result["profile"],
                 "restart_required": result["restart_required"],
+                "percent": SETUP_COMPLETE_PERCENT,
                 "terminal": True,
             }
         )

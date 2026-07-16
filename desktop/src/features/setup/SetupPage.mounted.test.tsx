@@ -56,7 +56,7 @@ describe("mounted SetupPage", () => {
   });
 
   async function renderPage(runtimeBridge: SetupPageBridge, props: Partial<Parameters<typeof SetupPage>[0]> = {}) {
-    const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus) } as unknown as ApiClient;
+    const api = props.apiClient ?? { getRuntimeSetupStatus: vi.fn(async () => setupStatus) } as unknown as ApiClient;
     await act(async () => {
       root.render(<SetupPage apiClient={api} initialStatus={setupStatus} initialError={null} onReady={vi.fn()} onContinueLibraryOnly={vi.fn()} onReconnectBackend={vi.fn()} bridge={runtimeBridge} {...props} />);
     });
@@ -142,6 +142,40 @@ describe("mounted SetupPage", () => {
     await renderPage(runtimeBridge);
     await act(async () => findButton(container, "Cancel").click());
     expect(runtimeBridge.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("refreshes setup status and reports ready when the runner is complete", async () => {
+    const readyStatus = {
+      ...setupStatus,
+      configured: true,
+      state: "ready" as const,
+      ready: true,
+      restart_required: false,
+      selected_profile: "base" as const,
+      packages: { ready: true, missing: [], incompatible: [] },
+      probe: { ready: true, checks: [] },
+    };
+    const runtimeBridge = bridge({
+      status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({
+        lifecycle: "complete",
+        profile: "base",
+        modelGroups: [],
+        restartRequired: false,
+        error: null,
+      })),
+    });
+    const onReady = vi.fn();
+    const api = { getRuntimeSetupStatus: vi.fn(async () => readyStatus) } as unknown as ApiClient;
+    await renderPage(runtimeBridge, { apiClient: api, onReady });
+    await act(async () => undefined);
+
+    expect(api.getRuntimeSetupStatus).toHaveBeenCalledOnce();
+    expect(onReady).toHaveBeenCalledWith(readyStatus);
+  });
+
+  it("focuses the setup heading when the page mounts", async () => {
+    await renderPage(bridge());
+    expect(document.activeElement?.id).toBe("setup-heading");
   });
 
   it("never registers Tauri mutations when unavailable and keeps library-only recovery", async () => {

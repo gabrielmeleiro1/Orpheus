@@ -135,7 +135,7 @@ function normalizedStage(value: unknown): string | null {
   const normalized = safe.toLowerCase();
   if (normalized === "dependency installation" || normalized === "dependency_installation") return "packages";
   if (normalized === "model download" || normalized === "model_download") return "models";
-  if (normalized.includes("verify") || normalized.includes("validation")) return "verify";
+  if (normalized.includes("verify") || normalized.includes("verification") || normalized.includes("validation")) return "verify";
   return safe;
 }
 

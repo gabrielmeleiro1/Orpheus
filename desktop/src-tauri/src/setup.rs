@@ -810,6 +810,7 @@ fn sanitize_stage(value: &str) -> Option<String> {
             Some("dependency_installation".to_string())
         }
         "Model download" | "model_download" => Some("model_download".to_string()),
+        "Verification" | "verification" => Some("verify".to_string()),
         _ => None,
     }
 }

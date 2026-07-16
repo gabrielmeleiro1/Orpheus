@@ -22,6 +22,14 @@ export function CleanerOptionsView({
     <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" hidden={hidden}>
       <div className="panel-header">
         <span>configuration</span>
+        <button
+          id="runtime-setup-btn"
+          className="btn btn-compact"
+          type="button"
+          onClick={actions.onOpenRuntimeSetup}
+        >
+          Runtime setup
+        </button>
       </div>
 
       <p className="field-hint config-runtime-copy">

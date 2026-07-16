@@ -44,5 +44,22 @@ describe("SetupPage", () => {
     expect(html).toContain("Kokoro TTS · MLX");
     expect(html).toContain("Linux or Windows only.");
     expect(html).toContain("Estimates");
+    expect(html).not.toContain("Back to dashboard");
+  });
+
+  it("renders a Settings-entry exit action only when provided", () => {
+    const props = {
+      apiClient: { getRuntimeSetupStatus: vi.fn() } as unknown as ApiClient,
+      initialStatus: status,
+      initialError: null,
+      onReady: vi.fn(),
+      onContinueLibraryOnly: vi.fn(),
+      onReconnectBackend: vi.fn(),
+      onExitSettings: vi.fn(),
+      settingsEntry: true,
+    } as Parameters<typeof SetupPage>[0];
+    const html = renderToString(<SetupPage {...props} />);
+
+    expect(html).toContain("Back to dashboard");
   });
 });

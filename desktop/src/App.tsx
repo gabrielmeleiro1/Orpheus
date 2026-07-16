@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
@@ -26,7 +26,13 @@ import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
 
 type BackendClientState = ReturnType<typeof useBackendClient>;
 
-function DashboardApp({ backend }: { backend: BackendClientState }) {
+function DashboardApp({
+  backend,
+  onOpenRuntimeSetup,
+}: {
+  backend: BackendClientState;
+  onOpenRuntimeSetup: () => void;
+}) {
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
   const {
     apiClient,
@@ -89,6 +95,13 @@ function DashboardApp({ backend }: { backend: BackendClientState }) {
     }
     setActiveTab(next.id);
     tabRefs.current[index]?.focus();
+  };
+
+  const selectTab = (tab: DashboardTab) => {
+    const index = DASHBOARD_TAB_CONFIGS.findIndex((candidate) => candidate.id === tab);
+    if (index >= 0) {
+      selectTabAtIndex(index);
+    }
   };
 
   const onTabListKeyDown = (event: KeyboardEvent<HTMLElement>) => {
@@ -215,6 +228,8 @@ function DashboardApp({ backend }: { backend: BackendClientState }) {
             health={health}
             statusMessage={statusMessage}
             conversionJob={conversionJob}
+            onOpenSettings={() => selectTab("settings")}
+            onOpenRuntimeSetup={onOpenRuntimeSetup}
             startCommandRef={startCommandRef}
           />
 
@@ -304,9 +319,34 @@ function App() {
   const [setupStatus, setSetupStatus] = useState<RuntimeSetupStatusResponse | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [libraryOnlyOverride, setLibraryOnlyOverride] = useState(false);
+  const [forceOpenRuntimeSetup, setForceOpenRuntimeSetup] = useState(false);
+
+  const onSetupReady = useCallback((status: RuntimeSetupStatusResponse) => {
+    setSetupStatus(status);
+    if (!forceOpenRuntimeSetup) {
+      setForceOpenRuntimeSetup(false);
+      setLibraryOnlyOverride(false);
+    }
+  }, [forceOpenRuntimeSetup]);
+
+  const onContinueLibraryOnly = useCallback(() => {
+    setForceOpenRuntimeSetup(false);
+    setLibraryOnlyOverride(true);
+  }, []);
+
+  const onExitSettingsSetup = useCallback(() => {
+    setForceOpenRuntimeSetup(false);
+    setLibraryOnlyOverride(shouldShowRuntimeSetup(setupStatus, false));
+  }, [setupStatus]);
+
+  const onOpenRuntimeSetup = useCallback(() => {
+    setSetupError(null);
+    setSetupStatus(null);
+    setForceOpenRuntimeSetup(true);
+  }, []);
 
   useEffect(() => {
-    if (!backend.apiClient || libraryOnlyOverride) {
+    if (!backend.apiClient || (libraryOnlyOverride && !forceOpenRuntimeSetup)) {
       return undefined;
     }
     let active = true;
@@ -324,22 +364,29 @@ function App() {
     return () => {
       active = false;
     };
-  }, [backend.apiClient, libraryOnlyOverride]);
+  }, [backend.apiClient, forceOpenRuntimeSetup, libraryOnlyOverride]);
 
-  if (shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride)) {
+  if (forceOpenRuntimeSetup || shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride)) {
     return (
       <SetupPage
         apiClient={backend.apiClient}
         initialStatus={setupStatus}
         initialError={setupError}
-        onReady={setSetupStatus}
-        onContinueLibraryOnly={() => setLibraryOnlyOverride(true)}
+        onReady={onSetupReady}
+        onContinueLibraryOnly={onContinueLibraryOnly}
+        settingsEntry={forceOpenRuntimeSetup}
+        onExitSettings={forceOpenRuntimeSetup ? onExitSettingsSetup : undefined}
         onReconnectBackend={backend.reconnectBackend}
       />
     );
   }
 
-  return <DashboardApp backend={backend} />;
+  return (
+    <DashboardApp
+      backend={backend}
+      onOpenRuntimeSetup={onOpenRuntimeSetup}
+    />
+  );
 }
 
 export default App;

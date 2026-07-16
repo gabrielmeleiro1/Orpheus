@@ -26,6 +26,53 @@ export type {
 
 const BROWSER_SOURCE_ACCEPT = ".pdf,.epub,.txt,.md";
 
+export interface ConversionBlockerInput {
+  apiClientAvailable: boolean;
+  sourcePath: string;
+  selectedEngine: string;
+  selectedVoice: string;
+  cleanerRuntimeError: boolean;
+  cleanerRequiresApiKey: boolean;
+  cleanerApiKey: string;
+  cleanerDisplayName: string;
+  cleanerModelOptionsCount: number;
+  cleanerModel: string;
+}
+
+export interface ConversionBlocker {
+  blockingReason: string | null;
+  showSettingsShortcut: boolean;
+}
+
+export function resolveConversionBlocker(input: ConversionBlockerInput): ConversionBlocker {
+  if (!input.apiClientAvailable) {
+    return { blockingReason: "Backend connection is unavailable.", showSettingsShortcut: false };
+  }
+  if (!input.sourcePath.trim()) {
+    return { blockingReason: "Select a source before starting conversion.", showSettingsShortcut: false };
+  }
+  if (!input.selectedEngine) {
+    return { blockingReason: "Select a TTS engine before starting conversion.", showSettingsShortcut: false };
+  }
+  if (!input.selectedVoice) {
+    return { blockingReason: "Select a voice before starting conversion.", showSettingsShortcut: false };
+  }
+  if (input.cleanerRuntimeError) {
+    return { blockingReason: "The selected cleaner runtime is unavailable.", showSettingsShortcut: false };
+  }
+  if (input.cleanerRequiresApiKey && !input.cleanerApiKey.trim()) {
+    const cleanerName = input.cleanerDisplayName.trim() || "The selected cleaner";
+    return {
+      blockingReason: cleanerName + " requires an API key. Add it in Settings.",
+      showSettingsShortcut: true,
+    };
+  }
+  if (input.cleanerModelOptionsCount > 0 && !input.cleanerModel) {
+    return { blockingReason: "Select a cleaner model before starting conversion.", showSettingsShortcut: false };
+  }
+  return { blockingReason: null, showSettingsShortcut: false };
+}
+
 function preflightMeta(preflight: NonNullable<ConversionQueueItem["preflight"]>): string {
   const count = Number(preflight.chapter_count || 0);
   const chapterText = count === 1 ? "1 chapter" : `${count} chapters`;
@@ -44,6 +91,8 @@ export function useConversionPanelState({
   health,
   statusMessage,
   conversionJob,
+  onOpenSettings,
+  onOpenRuntimeSetup,
   startCommandRef,
 }: UseConversionPanelStateArgs): ConversionPanelViewModel {
   const isDocumentMode = activeTab === "document";
@@ -97,16 +146,23 @@ export function useConversionPanelState({
 
   const requiresCleanerApiKey = optionState.selectedCleanerBackend?.requires_api_key ?? false;
 
+  const conversionBlocker = resolveConversionBlocker({
+    apiClientAvailable: Boolean(apiClient),
+    sourcePath: queueController.sourcePath,
+    selectedEngine: optionState.selectedEngine,
+    selectedVoice: optionState.selectedVoice,
+    cleanerRuntimeError: optionState.cleanerRuntimeError,
+    cleanerRequiresApiKey: requiresCleanerApiKey,
+    cleanerApiKey: optionState.cleanerApiKey,
+    cleanerDisplayName: optionState.selectedCleanerBackend?.display_name ?? "",
+    cleanerModelOptionsCount: optionState.cleanerModelOptions.length,
+    cleanerModel: optionState.cleanerModel,
+  });
+
   const startDisabled =
-    !apiClient ||
+    conversionBlocker.blockingReason !== null ||
     queueRunner.queueRunning ||
-    conversionJob.isStarting ||
-    !queueController.sourcePath.trim() ||
-    !optionState.selectedEngine ||
-    !optionState.selectedVoice ||
-    optionState.cleanerRuntimeError ||
-    (requiresCleanerApiKey && !optionState.cleanerApiKey.trim()) ||
-    (optionState.cleanerModelOptions.length > 0 && !optionState.cleanerModel);
+    conversionJob.isStarting;
 
   const canRunQueue =
     !queueRunner.queueRunning &&
@@ -287,6 +343,8 @@ export function useConversionPanelState({
         ? `${conversionJob.activeJobStatus} (${conversionJob.activeJobId})`
         : "no active conversion",
       detailStatus: conversionJob.statusText || statusMessage,
+      blockingReason: conversionBlocker.blockingReason,
+      showSettingsShortcut: conversionBlocker.showSettingsShortcut,
       startLabel: conversionJob.isStarting
         ? "starting..."
         : primaryAction.primary === "run_queue"
@@ -296,6 +354,8 @@ export function useConversionPanelState({
       isStarting: conversionJob.isStarting,
     },
     actions: {
+      onOpenSettings,
+      onOpenRuntimeSetup,
       setSourcePath: queueController.setSourcePath,
       setTitleOverride: queueController.setTitleOverride as Dispatch<SetStateAction<string>>,
       setAuthorOverride: queueController.setAuthorOverride as Dispatch<SetStateAction<string>>,

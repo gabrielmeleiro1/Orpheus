@@ -422,6 +422,17 @@ fn progress_payload_is_allowlisted_bounded_and_redacted() {
 }
 
 #[test]
+fn verification_stage_is_allowlisted_and_normalized() {
+    let line = r#"{"event":"stage_started","stage":"Verification","message":"Verifying setup","percent":90}"#;
+    let event = sanitize_progress_line(line).expect("valid event");
+    let value = serde_json::to_value(event).expect("serializable event");
+
+    assert_eq!(value["event"], "stage_started");
+    assert_eq!(value["stage"], "verify");
+    assert_eq!(value["percent"].as_f64(), Some(90.0));
+}
+
+#[test]
 fn malformed_output_becomes_a_safe_bounded_diagnostic() {
     let source = format!(
         "bad output token=supersecret /Users/alice/private {}",
