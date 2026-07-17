@@ -9,6 +9,8 @@ from pathlib import Path
 from .models import Chapter, Document
 from .text_encoding import read_source_text
 
+from modules.errors import CorruptedFileError
+
 
 class TextParser:
     """Parse `.txt` files into one synthetic section."""
@@ -24,6 +26,11 @@ class TextParser:
         raw_text = self._read_text()
         title = self.file_path.stem
         content = raw_text.strip()
+        if not content:
+            raise CorruptedFileError(
+                message="Text file contains no readable text",
+                file_path=self.file_path,
+            )
         return Document(
             title=title,
             author=None,

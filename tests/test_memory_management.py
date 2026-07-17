@@ -193,17 +193,6 @@ class TestIdleTimeoutManager:
         manager.record_activity()
         assert manager.get_idle_time() < 0.1
     
-    def test_model_registration(self):
-        """Test model registration and unregistration."""
-        manager = IdleTimeoutManager()
-        
-        def mock_unload():
-            pass
-        
-        manager.register_model("test_model", mock_unload)
-        manager.unregister_model("test_model")
-        # Should not raise
-    
     def test_idle_timeout_check_logic(self):
         """Test idle timeout check logic directly."""
         config = IdleTimeoutConfig(
@@ -275,13 +264,6 @@ class TestAdaptiveMemoryManager:
         
         manager.stop()
         assert manager.vram_monitor._monitoring is False
-    
-    def test_activity_recording(self):
-        """Test activity recording."""
-        manager = AdaptiveMemoryManager(total_vram_gb=16.0)
-        
-        manager.record_activity()
-        # Should not raise
     
     def test_batch_size_access(self):
         """Test batch size access methods."""

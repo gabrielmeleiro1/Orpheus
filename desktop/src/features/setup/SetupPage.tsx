@@ -416,8 +416,12 @@ export function SetupPage({
           { timeoutMs: 15_000 },
         );
         setStatus(next);
-        onReady(next);
-        return;
+        if (next.ready && next.state === "ready" && !next.restart_required) {
+          onReady(next);
+          return;
+        }
+        // Adopt persisted the choice but this environment still is not
+        // operational; fall through to the session override below.
       } catch {
         // Fall back to the in-memory override so the user is never trapped.
       }

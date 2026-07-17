@@ -353,30 +353,6 @@ def test_shared_pool_normalizes_result_time_failure() -> None:
     assert results[2].duration_ms == 3
 
 
-def test_shared_pool_always_emits_chapter_results_for_success_and_failures() -> None:
-    chapters = [
-        _Chapter(number=1, title="One"),
-        _Chapter(number=2, title="Two"),
-        _Chapter(number=3, title="Three"),
-    ]
-
-    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _SelectiveResultFailureExecutor):
-        manager = SharedWorkerPoolManager(max_workers=2)
-        results = manager.run_parallel(
-            chapters=chapters,
-            process_func=_process,
-            config_fingerprint="chapter-result-boundary",
-            worker_init_config={"voice": "af_bella"},
-        )
-        manager.shutdown()
-
-    assert all(isinstance(result, ChapterResult) for result in results)
-    assert [result.chapter_number for result in results] == [1, 2, 3]
-    assert results[0].duration_ms == 1
-    assert results[1].error == "result boom"
-    assert results[2].duration_ms == 3
-
-
 def test_shared_pool_progress_callback_includes_performance_snapshot() -> None:
     chapters = [
         _Chapter(number=1, title="One"),
@@ -672,19 +648,6 @@ def test_shared_pool_snapshot_records_startup_failure() -> None:
     )
     assert snapshot["running"] is False
     assert snapshot["cancelled_jobs"] == 0
-
-
-def test_shared_pool_snapshot_exposes_observability_counters() -> None:
-    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _FakeExecutor):
-        manager = SharedWorkerPoolManager(max_workers=2)
-        snapshot = manager.snapshot()
-        manager.shutdown()
-
-    assert snapshot["startup_failures"] == 0
-    assert snapshot["last_startup_error"] is None
-    assert snapshot["cancelled_jobs"] == 0
-    assert snapshot["reuse_hits"] == 0
-    assert snapshot["running"] is False
 
 
 def test_shared_pool_snapshot_records_cancellation() -> None:

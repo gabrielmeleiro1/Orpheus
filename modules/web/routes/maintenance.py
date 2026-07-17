@@ -21,7 +21,10 @@ def get_maintenance_diagnostics(controller: ControllerDep) -> dict:
 
 @router.post("/api/maintenance/backup")
 def post_maintenance_backup(controller: ControllerDep) -> dict:
-    backup_path = call_with_http_errors(controller.backup_database)
+    # runtime_status=409: an active conversion makes the backup guard raise a
+    # RuntimeError, which should surface as a conflict, not a 500 (matches the
+    # cleanup endpoint).
+    backup_path = call_with_http_errors(controller.backup_database, runtime_status=409)
     return {"backup_path": str(backup_path)}
 
 

@@ -8,7 +8,7 @@ Tests error handling and robustness of PDF and EPUB parsers.
 import pytest
 import tempfile
 from pathlib import Path
-from hypothesis import given, strategies as st, settings, assume
+from hypothesis import given, strategies as st, settings
 from hypothesis.strategies import composite
 
 from modules.ingestion.pdf_parser import PDFParser
@@ -220,66 +220,6 @@ class TestEPUBParserRobustness:
                 EPUBParser(temp_path)
         finally:
             temp_path.unlink(missing_ok=True)
-
-
-class TestParserEdgeCases:
-    """Edge case tests for both parsers."""
-    
-    @pytest.mark.property
-    @given(size=st.integers(min_value=0, max_value=999_999))
-    @settings(max_examples=50, deadline=5000)
-    def test_handles_various_file_sizes(self, size):
-        """
-        Parser initialization should handle various file sizes gracefully.
-        
-        Note: Very large files won't be created, just checking the size handling logic.
-        """
-        # Create file with random content of specified size
-        content = bytes([i % 256 for i in range(size)])
-        
-        for suffix, ParserClass in [(".pdf", PDFParser), (".epub", EPUBParser)]:
-            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-                f.write(content)
-                temp_path = Path(f.name)
-            
-            try:
-                # Should either succeed or raise expected error
-                try:
-                    ParserClass(temp_path)
-                except (ValueError, FileNotFoundError, Exception):
-                    pass  # Expected for malformed content
-            finally:
-                temp_path.unlink(missing_ok=True)
-    
-    @pytest.mark.property
-    @given(filename=st.text(alphabet=st.characters(whitelist_categories=('L', 'N', 'P', 'Z')), min_size=1, max_size=50))
-    @settings(max_examples=50, deadline=3000)
-    def test_handles_special_characters_in_filenames(self, filename):
-        """
-        Parsers should handle special characters in filenames correctly.
-        
-        Only test valid filename characters that won't break the filesystem.
-        """
-        # Filter to valid filename characters (letters, numbers, punctuation, spaces)
-        invalid_chars = '<>:"/\\|?*\x00-\x1f'
-        filename = ''.join(c for c in filename if c not in invalid_chars and ord(c) < 0x1000).strip()
-        assume(len(filename) > 0 and not filename.startswith('.'))
-        
-        for suffix, ParserClass, header in [
-            (".pdf", PDFParser, PDF_HEADER),
-            (".epub", EPUBParser, ZIP_HEADER)
-        ]:
-            temp_path = Path(tempfile.gettempdir()) / f"{filename}{suffix}"
-            
-            try:
-                temp_path.write_bytes(header + b"garbage")
-                
-                try:
-                    ParserClass(temp_path)
-                except (ValueError, FileNotFoundError, Exception):
-                    pass  # Expected - file is malformed
-            finally:
-                temp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

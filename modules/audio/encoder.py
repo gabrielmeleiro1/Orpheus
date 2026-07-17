@@ -63,16 +63,34 @@ class AudioEncoder:
         Returns:
             Path to generated MP3 file
         """
+        return self._wav_to_encoded(
+            input_path,
+            output_path,
+            bitrate=bitrate,
+            audio_filter=audio_filter,
+            codec="libmp3lame",
+            failure_message="FFmpeg encoding failed",
+        )
+
+    def _wav_to_encoded(
+        self,
+        input_path: Path | str,
+        output_path: Path | str,
+        *,
+        bitrate: Optional[str],
+        audio_filter: Optional[str],
+        codec: str,
+        failure_message: str,
+    ) -> Path:
         input_path = Path(input_path)
         output_path = Path(output_path)
         bitrate = bitrate or self.bitrate
-        
+
         if not input_path.exists():
             raise FileNotFoundError(f"Input file not found: {input_path}")
-        
-        # Ensure output directory exists
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         with atomic_output_path(output_path) as temp_output_path:
             cmd = [
                 self.ffmpeg_path,
@@ -82,15 +100,15 @@ class AudioEncoder:
             if audio_filter:
                 cmd.extend(["-af", audio_filter])
             cmd.extend([
-                "-c:a", "libmp3lame",
+                "-c:a", codec,
                 "-b:a", bitrate,
                 "-ar", str(self.sample_rate),
                 "-ac", "1",  # Mono
                 str(temp_output_path),
             ])
 
-            run_ffmpeg_command(cmd, failure_message="FFmpeg encoding failed")
-        
+            run_ffmpeg_command(cmd, failure_message=failure_message)
+
         return output_path
 
     def array_to_mp3(
@@ -109,6 +127,25 @@ class AudioEncoder:
             sample_rate: Input sample rate override
             bitrate: MP3 bitrate override
         """
+        return self._array_to_encoded(
+            audio,
+            output_path,
+            sample_rate=sample_rate,
+            bitrate=bitrate,
+            codec="libmp3lame",
+            failure_message="FFmpeg encoding from array failed",
+        )
+
+    def _array_to_encoded(
+        self,
+        audio: np.ndarray,
+        output_path: Path | str,
+        *,
+        sample_rate: Optional[int],
+        bitrate: Optional[str],
+        codec: str,
+        failure_message: str,
+    ) -> Path:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -127,7 +164,7 @@ class AudioEncoder:
                 "-ar", str(in_sample_rate),
                 "-ac", "1",
                 "-i", "pipe:0",
-                "-c:a", "libmp3lame",
+                "-c:a", codec,
                 "-b:a", bitrate,
                 "-ar", str(self.sample_rate),
                 "-ac", "1",
@@ -161,13 +198,27 @@ class AudioEncoder:
                         with contextlib.suppress(Exception):
                             process.stdin.close()
 
+                stderr_chunks: list[bytes] = []
+
+                def read_stderr() -> None:
+                    if process.stderr is None:
+                        return
+                    with contextlib.suppress(Exception):
+                        stderr_chunks.append(process.stderr.read())
+
                 writer = threading.Thread(target=write_pcm, daemon=True)
+                # Drain stderr on its own thread. ffmpeg can emit more than the
+                # ~64KB stderr pipe buffer holds; reading it only after wait()
+                # lets a chatty ffmpeg block on a full pipe and deadlocks the
+                # encode until the timeout.
+                reader = threading.Thread(target=read_stderr, daemon=True)
                 writer.start()
+                reader.start()
                 writer.join(timeout=timeout)
                 if writer.is_alive():
                     kill_ffmpeg_process(process)
                     raise RuntimeError(
-                        f"FFmpeg encoding from array failed: timed out after {timeout:g}s"
+                        f"{failure_message}: timed out after {timeout:g}s"
                     )
 
                 # A failed stdin write is usually a symptom (ffmpeg died from a
@@ -176,10 +227,13 @@ class AudioEncoder:
                 remaining_timeout = max(0.001, deadline - time.monotonic())
                 return_code = wait_for_ffmpeg_process(
                     process,
-                    failure_message="FFmpeg encoding from array failed",
+                    failure_message=failure_message,
                     timeout_seconds=remaining_timeout,
                 )
-                stderr_bytes = process.stderr.read() if process.stderr is not None else b""
+                # The process has exited, so stderr is at EOF and the reader
+                # finishes promptly; bound the join defensively regardless.
+                reader.join(timeout=remaining_timeout)
+                stderr_bytes = b"".join(stderr_chunks)
             except Exception:
                 if process.poll() is None:
                     kill_ffmpeg_process(process)
@@ -187,7 +241,7 @@ class AudioEncoder:
 
             if return_code != 0:
                 stderr = stderr_bytes.decode("utf-8", errors="replace")
-                error = RuntimeError(f"FFmpeg encoding from array failed: {stderr}")
+                error = RuntimeError(f"{failure_message}: {stderr}")
                 if write_error:
                     raise error from write_error[0]
                 raise error
@@ -203,38 +257,14 @@ class AudioEncoder:
         audio_filter: Optional[str] = None,
     ) -> Path:
         """Convert WAV file to AAC/M4A."""
-        input_path = Path(input_path)
-        output_path = Path(output_path)
-        bitrate = bitrate or self.bitrate
-
-        if not input_path.exists():
-            raise FileNotFoundError(f"Input file not found: {input_path}")
-
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with atomic_output_path(output_path) as temp_output_path:
-            cmd = [
-                self.ffmpeg_path,
-                "-y",
-                "-i",
-                str(input_path),
-            ]
-            if audio_filter:
-                cmd.extend(["-af", audio_filter])
-            cmd.extend([
-                "-c:a",
-                "aac",
-                "-b:a",
-                bitrate,
-                "-ar",
-                str(self.sample_rate),
-                "-ac",
-                "1",
-                str(temp_output_path),
-            ])
-            run_ffmpeg_command(cmd, failure_message="FFmpeg AAC encoding failed")
-
-        return output_path
+        return self._wav_to_encoded(
+            input_path,
+            output_path,
+            bitrate=bitrate,
+            audio_filter=audio_filter,
+            codec="aac",
+            failure_message="FFmpeg AAC encoding failed",
+        )
 
     def array_to_aac(
         self,
@@ -244,98 +274,14 @@ class AudioEncoder:
         bitrate: Optional[str] = None,
     ) -> Path:
         """Convert in-memory mono float audio directly to AAC/M4A via ffmpeg stdin."""
-        output_path = Path(output_path)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        in_sample_rate = int(sample_rate or self.sample_rate)
-        bitrate = bitrate or self.bitrate
-        pcm = np.asarray(audio, dtype=np.float32).reshape(-1)
-
-        with atomic_output_path(output_path) as temp_output_path:
-            cmd = [
-                self.ffmpeg_path,
-                "-y",
-                "-v",
-                "error",
-                "-f",
-                "s16le",
-                "-ar",
-                str(in_sample_rate),
-                "-ac",
-                "1",
-                "-i",
-                "pipe:0",
-                "-c:a",
-                "aac",
-                "-b:a",
-                bitrate,
-                "-ar",
-                str(self.sample_rate),
-                "-ac",
-                "1",
-                str(temp_output_path),
-            ]
-
-            process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
-            try:
-                if process.stdin is None:
-                    raise RuntimeError("FFmpeg stdin pipe is unavailable")
-                timeout = ffmpeg_timeout_seconds()
-                deadline = time.monotonic() + timeout
-                write_error: list[BaseException] = []
-
-                def write_pcm() -> None:
-                    try:
-                        for start in range(0, len(pcm), 65_536):
-                            chunk = pcm[start : start + 65_536]
-                            pcm16 = (
-                                np.clip(chunk, -1.0, 1.0) * 32767.0
-                            ).astype(np.int16, copy=False)
-                            process.stdin.write(pcm16.tobytes())
-                    except BaseException as exc:
-                        write_error.append(exc)
-                    finally:
-                        with contextlib.suppress(Exception):
-                            process.stdin.close()
-
-                writer = threading.Thread(target=write_pcm, daemon=True)
-                writer.start()
-                writer.join(timeout=timeout)
-                if writer.is_alive():
-                    kill_ffmpeg_process(process)
-                    raise RuntimeError(
-                        f"FFmpeg AAC encoding from array failed: timed out after {timeout:g}s"
-                    )
-
-                # A failed stdin write is usually a symptom (ffmpeg died from a
-                # real error such as a full disk). Wait for the process and read
-                # stderr first so the root cause is reported, not "broken pipe".
-                remaining_timeout = max(0.001, deadline - time.monotonic())
-                return_code = wait_for_ffmpeg_process(
-                    process,
-                    failure_message="FFmpeg AAC encoding from array failed",
-                    timeout_seconds=remaining_timeout,
-                )
-                stderr_bytes = process.stderr.read() if process.stderr is not None else b""
-            except Exception:
-                if process.poll() is None:
-                    kill_ffmpeg_process(process)
-                raise
-
-            if return_code != 0:
-                stderr = stderr_bytes.decode("utf-8", errors="replace")
-                error = RuntimeError(f"FFmpeg AAC encoding from array failed: {stderr}")
-                if write_error:
-                    raise error from write_error[0]
-                raise error
-            if write_error:
-                raise write_error[0]
-        return output_path
+        return self._array_to_encoded(
+            audio,
+            output_path,
+            sample_rate=sample_rate,
+            bitrate=bitrate,
+            codec="aac",
+            failure_message="FFmpeg AAC encoding from array failed",
+        )
     
     def get_duration(self, file_path: Path | str) -> float:
         """

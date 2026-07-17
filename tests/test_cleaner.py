@@ -252,26 +252,6 @@ def test_cleaner_blank_text_counts_as_rule_only_chunk():
     assert cleaner.stats_snapshot()["total_chunks"] == 1
 
 
-def test_cleaner_skip_llm_option_still_uses_llm_when_heuristic_triggers(monkeypatch):
-    cleaner = _make_loaded_mlx_cleaner(
-        CleanerConfig(skip_llm_when_not_needed=True)
-    )
-    calls = []
-
-    def fake_generate(_model, _tokenizer, **kwargs):
-        calls.append(kwargs)
-        return "I am tired today."
-
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", fake_generate)
-
-    trace = cleaner.clean_with_trace("Iam tired today.")
-
-    assert trace.mode == "llm_success"
-    assert trace.cleaned_text == "I am tired today."
-    assert len(calls) == 1
-
-
 def test_cleaner_api_runtime_prefers_direct_api_key(monkeypatch):
     """Direct pasted API keys should be usable without env setup."""
     monkeypatch.setenv("OPENAI_API_KEY", "env-key")

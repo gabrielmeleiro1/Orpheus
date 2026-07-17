@@ -14,6 +14,7 @@ import json
 import logging
 import subprocess
 import tempfile
+import threading
 
 from .ffmpeg import (
     atomic_output_path,
@@ -128,6 +129,8 @@ class M4BPackager:
         Returns:
             Path to generated M4B file
         """
+        if not mp3_files:
+            raise ValueError("mp3_files must not be empty")
         if len(mp3_files) != len(chapter_names):
             raise ValueError("mp3_files and chapter_names must have same length")
         if chapter_durations_ms is not None and len(chapter_durations_ms) != len(mp3_files):
@@ -358,16 +361,25 @@ class M4BPackager:
                     return None
                 segment_packet_counts.append(int(count_lines[0]))
 
-            boundary_indices: set[int] = set()
+            # One boundary packet index per chapter, in chapter order. A chapter
+            # with zero audio packets shares its successor's boundary index, so a
+            # set would dedup it away: the returned starts list would then be
+            # shorter than chapter_names, zip() would truncate the TOC, every
+            # chapter after the empty one would get a wrong start, and the final
+            # chapter would vanish from M4B navigation. Keep a per-chapter list so
+            # each chapter retains its own start (an empty chapter is a valid
+            # zero-span marker at its successor's offset).
+            per_chapter_boundaries: list[int] = []
             boundary_index = 0
             for count in segment_packet_counts:
-                boundary_indices.add(boundary_index)
+                per_chapter_boundaries.append(boundary_index)
                 boundary_index += count
 
+            unique_boundaries = set(per_chapter_boundaries)
             boundary_pts, packet_count = self._probe_concat_packet_starts(
-                ffprobe, concat_path, boundary_indices
+                ffprobe, concat_path, unique_boundaries
             )
-            if packet_count == 0 or len(boundary_pts) != len(boundary_indices):
+            if packet_count == 0 or len(boundary_pts) != len(unique_boundaries):
                 return None
 
             duration_result = run_ffmpeg_command(
@@ -382,7 +394,8 @@ class M4BPackager:
             total_ms = int(round(float(duration_result.stdout.strip()) * 1000))
 
             starts_ms = [
-                int(round(boundary_pts[index] * 1000)) for index in sorted(boundary_pts)
+                int(round(boundary_pts[index] * 1000))
+                for index in per_chapter_boundaries
             ]
             return starts_ms, total_ms
         except (
@@ -426,29 +439,54 @@ class M4BPackager:
             errors="replace",
         )
         boundary_pts: dict[int, float] = {}
-        packet_index = 0
-        try:
-            if process.stdout is None:  # pragma: no cover - defensive guard
-                raise RuntimeError("FFprobe stdout pipe is unavailable")
-            for line in process.stdout:
-                value = line.strip().rstrip(",")
-                if not value or value == "N/A":
-                    continue
-                if packet_index in boundary_indices:
-                    boundary_pts[packet_index] = float(value)
-                packet_index += 1
-        except Exception:
+        read_state = {"packet_index": 0}
+        read_error: list[BaseException] = []
+
+        def consume_stdout() -> None:
+            packet_index = 0
+            try:
+                if process.stdout is None:  # pragma: no cover - defensive guard
+                    raise RuntimeError("FFprobe stdout pipe is unavailable")
+                for line in process.stdout:
+                    value = line.strip().rstrip(",")
+                    if not value or value == "N/A":
+                        continue
+                    if packet_index in boundary_indices:
+                        boundary_pts[packet_index] = float(value)
+                    packet_index += 1
+            except BaseException as exc:  # surfaced on the caller thread below
+                read_error.append(exc)
+            finally:
+                read_state["packet_index"] = packet_index
+
+        # Bound the streaming read like every other subprocess call in this
+        # module: a stalled ffprobe would otherwise block `for line in stdout`
+        # forever. Drain on a background thread and enforce the module timeout,
+        # killing the process (which closes stdout and unwinds the reader) if it
+        # exceeds the deadline.
+        timeout = ffmpeg_timeout_seconds()
+        reader = threading.Thread(target=consume_stdout, daemon=True)
+        reader.start()
+        reader.join(timeout=timeout)
+        if reader.is_alive():
+            kill_ffmpeg_process(process)
+            reader.join(timeout=timeout)
+            raise RuntimeError(
+                f"FFprobe failed: timed out after {timeout:g}s "
+                "while probing concat packet timestamps"
+            )
+        if read_error:
             if process.poll() is None:
                 kill_ffmpeg_process(process)
-            raise
+            raise read_error[0]
         return_code = wait_for_ffmpeg_process(
             process,
             failure_message="FFprobe failed",
-            timeout_seconds=ffmpeg_timeout_seconds(),
+            timeout_seconds=timeout,
         )
         if return_code != 0:
             raise RuntimeError("FFprobe failed while probing concat packet timestamps")
-        return boundary_pts, packet_index
+        return boundary_pts, read_state["packet_index"]
 
     def _write_ffmetadata(
         self,

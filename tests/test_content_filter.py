@@ -311,3 +311,85 @@ def test_keeps_intentional_hyphenated_compounds_in_prose():
     )
     classification = classify_chapter_content("Chapter 8", content)
     assert classification.should_skip is False
+
+
+def test_keeps_long_midbook_nonfiction_chapter_about_publishing():
+    # A substantive chapter that merely discusses publishing mentions many
+    # bibliographic terms (publisher, ISBN, permissions) but is real narrative
+    # prose and must not be deleted just because it crosses the term threshold.
+    paragraph = (
+        "The modern publisher occupies a peculiar position in the literary economy. "
+        "When an author signs a contract, the publisher acquires certain rights and, "
+        "in exchange, assumes responsibility for copyright registration, the assignment "
+        "of an ISBN, and the negotiation of permissions for any quoted material. Every "
+        "reprint requires that these permissions be cleared again, and the publisher's "
+        "legal department tracks each grant so that no part of the finished book "
+        "infringes another author's work. This chapter follows one editor through a "
+        "single acquisition to show how the sausage of publishing is actually made. "
+    )
+    content = (paragraph * 12).strip()
+    assert len(content.split()) > 450
+
+    classification = classify_chapter_content("The Business of Publishing", content)
+
+    assert classification.should_skip is False
+    assert classification.reason is None
+
+
+def test_keeps_short_real_copyright_page_as_skip():
+    content = (
+        "Copyright © 2021 by Harbor House Press.\n"
+        "All rights reserved. No part of this publication may be reproduced or "
+        "transmitted in any form without written permission.\n"
+        "ISBN 978-0-00-000000-0\n"
+        "Published by Harbor House Press, New York.\n"
+        "First edition."
+    )
+    assert len(content.split()) < 400
+
+    classification = classify_chapter_content("Copyright", content)
+
+    assert classification.should_skip is True
+    assert classification.reason == "copyright"
+
+
+def test_low_prose_density_rule_can_be_disabled_via_flag():
+    content = "\n".join(
+        ["1", "2", "3", "Figures", "Table 1", "12", "19", "A", "B", "C", "24", "31"]
+    )
+
+    assert classify_chapter_content("Tables", content).reason == "low_prose_density"
+    assert (
+        classify_chapter_content(
+            "Tables", content, enable_low_prose_density=False
+        ).should_skip
+        is False
+    )
+
+
+def test_filter_respects_disabled_low_prose_density_flag():
+    verse = Chapter(
+        number=1,
+        title="Poem",
+        content="\n".join(
+            [
+                "pale moon rising",
+                "cold river flows",
+                "the wind is low",
+                "night falls deep",
+                "stars are bright",
+                "silent are hills",
+                "soft rain falls",
+                "grey clouds go",
+                "birds fly home",
+                "day fades slow",
+            ]
+        ),
+    )
+
+    dropped, _ = filter_audiobook_chapters([verse])
+    assert dropped == []
+
+    kept, skipped = filter_audiobook_chapters([verse], enable_low_prose_density=False)
+    assert [chapter.title for chapter in kept] == ["Poem"]
+    assert skipped == []

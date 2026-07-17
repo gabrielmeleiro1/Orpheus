@@ -310,22 +310,6 @@ class TestTextCleanerCaching:
         # Clear and verify
         _clear_cleaner_cache()
         assert _get_cached_cleaner(model_name) is None
-    
-    def test_cache_size_limited(self):
-        """
-        Cache should only hold one model at a time.
-        """
-        _clear_cleaner_cache()
-        
-        # Add first model
-        _set_cached_cleaner("model1", MagicMock(), MagicMock())
-        assert _get_cached_cleaner("model1") is not None
-        
-        # Add second model - should replace first
-        _set_cached_cleaner("model2", MagicMock(), MagicMock())
-        assert _get_cached_cleaner("model2") is not None
-        # Cache size is limited to 1, so first model might be gone
-        # (depending on implementation)
 
 
 if __name__ == "__main__":

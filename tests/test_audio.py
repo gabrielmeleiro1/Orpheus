@@ -8,7 +8,7 @@ import json
 import shutil
 import time
 import wave
-from unittest.mock import MagicMock, patch, mock_open
+from unittest.mock import MagicMock, patch
 from pathlib import Path
 
 import modules.audio as audio_module
@@ -210,12 +210,6 @@ class TestFFmpegBinaryDiscovery:
 
 
 class TestAudioEncoder:
-    @patch("shutil.which")
-    def test_ffmpeg_check(self, mock_which):
-        mock_which.return_value = "/usr/bin/ffmpeg"
-        encoder = AudioEncoder()
-        assert encoder.sample_rate == 24000
-
     @patch("subprocess.Popen")
     @patch("shutil.which")
     @pytest.mark.skipif(sys.platform != "darwin", reason="Homebrew fallback is macOS-specific")
@@ -385,6 +379,61 @@ class TestAudioEncoder:
                 np.zeros(400_000, dtype=np.float32),
                 tmp_path / "out.m4a",
             )
+
+    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
+    def test_array_to_mp3_does_not_deadlock_on_chatty_stderr(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        # DEFECT 6: an ffmpeg that writes more stderr than the ~64KB pipe buffer
+        # blocks on the full pipe. Reading stderr only after wait() deadlocks the
+        # encode until the timeout. Draining stderr concurrently must let it
+        # finish and preserve the full stderr in the error path.
+        fake_ffmpeg = _write_executable(
+            tmp_path / "bin" / "ffmpeg",
+            "#!/bin/sh\n"
+            "yes 'ffmpeg noise 0123456789012345678901234567890123456789012345'"
+            " | head -n 3000 >&2\n"
+            "exit 5\n",
+        )
+        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
+
+        encoder = AudioEncoder()
+
+        # A short timeout: the buggy (deadlocking) code raises "timed out"
+        # instead of surfacing the stderr, so the match below fails on it.
+        with patch("modules.audio.encoder.ffmpeg_timeout_seconds", return_value=5.0):
+            with pytest.raises(RuntimeError, match="ffmpeg noise"):
+                encoder.array_to_mp3(
+                    np.zeros(4_000, dtype=np.float32),
+                    tmp_path / "out.mp3",
+                )
+
+    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
+    def test_array_to_aac_does_not_deadlock_on_chatty_stderr(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        # DEFECT 6: same concurrent-stderr-drain requirement for the AAC path.
+        fake_ffmpeg = _write_executable(
+            tmp_path / "bin" / "ffmpeg",
+            "#!/bin/sh\n"
+            "yes 'ffmpeg noise 0123456789012345678901234567890123456789012345'"
+            " | head -n 3000 >&2\n"
+            "exit 5\n",
+        )
+        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
+
+        encoder = AudioEncoder()
+
+        with patch("modules.audio.encoder.ffmpeg_timeout_seconds", return_value=5.0):
+            with pytest.raises(RuntimeError, match="ffmpeg noise"):
+                encoder.array_to_aac(
+                    np.zeros(4_000, dtype=np.float32),
+                    tmp_path / "out.m4a",
+                )
 
     @patch("subprocess.run")
     @patch("shutil.which")
@@ -655,26 +704,6 @@ class TestM4BPackager:
         assert marker.start_seconds == 0.0
         assert marker.end_seconds == 10.0
         
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_create_m4b(self, mock_which, mock_run, tmp_path):
-        mock_which.return_value = "/usr/bin/ffmpeg"
-        mock_run.side_effect = _successful_ffmpeg_run
-
-        packager = M4BPackager()
-        metadata = AudiobookMetadata(title="Test", author="Author")
-
-        # Mocking file operations
-        with patch("builtins.open", mock_open()), \
-             patch("pathlib.Path.mkdir"), \
-             patch("pathlib.Path.exists", return_value=True), \
-             patch.object(packager, '_generate_chapter_markers', return_value=[]), \
-             patch.object(packager, '_write_ffmetadata'):
-
-             packager.create_m4b(["ch1.mp3"], ["Chapter 1"], metadata, tmp_path / "out.m4b")
-
-        assert mock_run.call_count == 1
-
     @patch("subprocess.run")
     @patch("shutil.which")
     def test_create_m4b_without_cover_uses_single_pass_metadata_mux(self, mock_which, mock_run, tmp_path):
@@ -1064,6 +1093,159 @@ class TestM4BPackager:
             )
 
         assert [(m.title, m.start_ms, m.end_ms) for m in markers] == [("One", 0, 900)]
+
+    @patch("shutil.which")
+    def test_probe_stream_copy_offsets_preserves_zero_packet_chapter_boundary(
+        self,
+        mock_which,
+        tmp_path,
+    ):
+        # DEFECT 4: a chapter with 0 audio packets shares its successor's boundary
+        # packet index. Deduping boundaries into a set drops one entry, so the
+        # returned starts list is shorter than the chapter list and the later
+        # zip() truncates the TOC (wrong starts after the empty chapter, last
+        # chapter lost). Every chapter must keep its own start offset.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        packager = M4BPackager()
+
+        packet_counts = iter(["2\n", "0\n", "3\n"])
+
+        def fake_run_ffmpeg_command(cmd, **_kwargs):  # noqa: ANN001, ANN202
+            if "-count_packets" in cmd:
+                return MagicMock(returncode=0, stdout=next(packet_counts), stderr="")
+            return MagicMock(returncode=0, stdout="0.160000\n", stderr="")
+
+        class _FakeProcess:
+            def __init__(self) -> None:
+                self.stdout = iter(
+                    [
+                        "0.000000\n",
+                        "0.032000\n",
+                        "0.064000\n",
+                        "0.096000\n",
+                        "0.128000\n",
+                    ]
+                )
+                self.stderr = None
+
+            def wait(self, timeout=None):  # noqa: ANN001, ANN201
+                return 0
+
+            def poll(self):  # noqa: ANN201
+                return 0
+
+            def kill(self) -> None:
+                return None
+
+        with patch(
+            "modules.audio.packager.run_ffmpeg_command",
+            side_effect=fake_run_ffmpeg_command,
+        ), patch(
+            "modules.audio.packager.subprocess.Popen",
+            side_effect=lambda *_a, **_k: _FakeProcess(),
+        ):
+            offsets = packager._probe_stream_copy_offsets_ms(
+                tmp_path / "concat.m4a",
+                [tmp_path / "a.m4a", tmp_path / "b.m4a", tmp_path / "c.m4a"],
+            )
+
+        # Three chapters -> three starts. The empty middle chapter shares the
+        # third chapter's start (it occupies zero time at that offset).
+        assert offsets == ([0, 64, 64], 160)
+
+    @patch("shutil.which")
+    def test_stream_copy_markers_keep_empty_middle_chapter_aligned(
+        self,
+        mock_which,
+        tmp_path,
+    ):
+        # DEFECT 4 end-to-end: with a zero-length chapter between two real ones,
+        # all chapters survive with correct starts and the empty one is a
+        # zero-span marker, not a dropped/misaligned entry.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        packager = M4BPackager()
+
+        with patch.object(
+            packager,
+            "_probe_stream_copy_offsets_ms",
+            return_value=([0, 64, 64], 160),
+        ):
+            markers = packager._stream_copy_chapter_markers(
+                tmp_path / "concat.m4a",
+                [tmp_path / "a.m4a", tmp_path / "b.m4a", tmp_path / "c.m4a"],
+                ["One", "Two", "Three"],
+            )
+
+        assert [(m.title, m.start_ms, m.end_ms) for m in markers] == [
+            ("One", 0, 64),
+            ("Two", 64, 64),
+            ("Three", 64, 160),
+        ]
+
+    @patch("shutil.which")
+    def test_probe_concat_packet_starts_times_out_on_stalled_ffprobe(
+        self,
+        mock_which,
+        tmp_path,
+    ):
+        # DEFECT 7: a stalled ffprobe whose stdout never ends must not hang the
+        # packet-timestamp probe forever; it is killed at the module timeout.
+        mock_which.side_effect = lambda name: f"/usr/bin/{name}"
+        packager = M4BPackager()
+
+        class _NeverEndingStdout:
+            def __init__(self) -> None:
+                self.stop = False
+
+            def __iter__(self):  # noqa: ANN204
+                return self
+
+            def __next__(self):  # noqa: ANN204
+                if self.stop:
+                    raise StopIteration
+                time.sleep(0.01)
+                return "1.000000\n"
+
+        class _StalledProcess:
+            def __init__(self) -> None:
+                self.stdout = _NeverEndingStdout()
+                self.killed = False
+
+            def poll(self):  # noqa: ANN201
+                return None
+
+            def kill(self) -> None:
+                self.killed = True
+                self.stdout.stop = True
+
+            def wait(self, timeout=None):  # noqa: ANN001, ANN201
+                return -9
+
+        proc = _StalledProcess()
+
+        with patch(
+            "modules.audio.packager.subprocess.Popen", return_value=proc
+        ), patch(
+            "modules.audio.packager.ffmpeg_timeout_seconds", return_value=0.1
+        ):
+            with pytest.raises(RuntimeError, match="timed out"):
+                packager._probe_concat_packet_starts(
+                    "/usr/bin/ffprobe", tmp_path / "concat.m4a", {0}
+                )
+
+        assert proc.killed
+
+    def test_create_m4b_rejects_empty_input(self, tmp_path):
+        # DEFECT 14: empty input must fail with a clear precondition error rather
+        # than an opaque ffmpeg concat error.
+        packager = M4BPackager()
+        with pytest.raises(ValueError, match="must not be empty"):
+            packager.create_m4b(
+                [],
+                [],
+                AudiobookMetadata(title="Empty", author="Author"),
+                tmp_path / "out.m4b",
+            )
 
     @patch("shutil.which")
     def test_generate_chapter_markers_degrades_when_duration_probe_fails(

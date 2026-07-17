@@ -22,7 +22,6 @@ from modules.app.services import (
     RuntimeCapabilityService,
     VoiceService,
 )
-from modules.app.services.conversion_result_adapter import pipeline_to_controller_result
 from modules.pipeline.orchestrator import ConversionPipeline
 from modules.pipeline.pool_manager import SharedWorkerPoolManager
 from modules.pipeline.worker_recommendation import (
@@ -327,7 +326,16 @@ class AppController:
         }
 
     def backup_database(self) -> Path:
-        return backup_database_file(self.config.db_path)
+        # A backup opens its own SQLite connections outside the repository lock,
+        # so an unguarded backup taken during an active chapter/book commit
+        # races on the write lock. Reuse the storage-cleanup guard (as
+        # cleanup_storage does) so a queued/running conversion yields a clear
+        # error instead of a 'database is locked' race.
+        self._conversion_service.begin_storage_cleanup()
+        try:
+            return backup_database_file(self.config.db_path)
+        finally:
+            self._conversion_service.end_storage_cleanup()
 
     def cleanup_storage(self, *, confirm: str) -> dict:
         if str(confirm).strip().lower() != "cleanup":
@@ -417,10 +425,6 @@ class AppController:
 
     def _create_pipeline_callbacks(self, callbacks: Optional[ConversionCallbacks]):
         return self._conversion_service._create_pipeline_callbacks(callbacks)  # noqa: SLF001
-
-    @staticmethod
-    def _to_controller_result(pipeline_result) -> ConversionResult:
-        return pipeline_to_controller_result(pipeline_result)
 
     def _persist_conversion_library_records(
         self,

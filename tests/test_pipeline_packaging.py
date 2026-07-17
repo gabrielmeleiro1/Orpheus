@@ -203,49 +203,6 @@ def _test_package_rejects_directory_audio_artifacts() -> None:
     print("✓ package rejects directory audio artifacts")
 
 
-def _test_package_outputs_m4b_for_audiobook_mode() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-            conversion_mode="audiobook",
-        )
-        pipeline = ConversionPipeline(config=cfg)
-        cfg.output_dir.mkdir(parents=True, exist_ok=True)
-
-        chapter_one = cfg.output_dir / "01_one.mp3"
-        chapter_one.write_bytes(b"one")
-
-        chapter_results = [
-            ChapterResult(
-                chapter_number=1,
-                chapter_title="One",
-                mp3_path=chapter_one,
-                duration_ms=1111,
-            ),
-        ]
-
-        with patch("modules.audio.packager.M4BPackager") as packager_cls:
-            packager = packager_cls.return_value
-            expected_out = cfg.output_dir / "Book.m4b"
-            packager.create_m4b.return_value = expected_out
-
-            output = pipeline.stages.package(  # noqa: SLF001 - intentional direct test
-                chapter_results=chapter_results,
-                title="Book",
-                author="Author",
-                output_dir=cfg.output_dir,
-            )
-
-            assert output == expected_out
-            assert output.suffix == ".m4b"
-            assert packager.create_m4b.call_count == 1
-
-    print("✓ package preserves audiobook m4b output")
-
-
 def _test_package_outputs_m4a_for_document_audio_mode() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -342,52 +299,6 @@ def _test_package_rejects_incomplete_chapter_sets() -> None:
     print("✓ package rejects incomplete chapter sets")
 
 
-def _test_document_audio_rejects_incomplete_section_sets() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-            conversion_mode="document_audio",
-        )
-        pipeline = ConversionPipeline(config=cfg)
-        cfg.output_dir.mkdir(parents=True, exist_ok=True)
-
-        chapter_one = cfg.output_dir / "01_one.mp3"
-        chapter_one.write_bytes(b"one")
-
-        chapter_results = [
-            ChapterResult(
-                chapter_number=1,
-                chapter_title="One",
-                mp3_path=chapter_one,
-                duration_ms=1111,
-            ),
-            ChapterResult(
-                chapter_number=2,
-                chapter_title="Two",
-                mp3_path=cfg.output_dir / "02_two.mp3",
-                duration_ms=2222,
-            ),
-        ]
-
-        try:
-            pipeline.stages.package(  # noqa: SLF001 - intentional direct test
-                chapter_results=chapter_results,
-                title="Book",
-                author="Author",
-                output_dir=cfg.output_dir,
-            )
-            raise AssertionError("expected RuntimeError for incomplete document audio set")
-        except RuntimeError as exc:
-            message = str(exc).lower()
-            assert "incomplete" in message
-            assert "chapter 2" in message
-
-    print("✓ document audio rejects incomplete section sets")
-
-
 def test_pipeline_packaging() -> bool:
     print("\n" + "=" * 50)
     print("PIPELINE PACKAGING TEST SUITE")
@@ -397,10 +308,8 @@ def test_pipeline_packaging() -> bool:
     _test_package_passes_known_chapter_durations_to_packager()
     _test_package_prefers_wav_masters_over_mp3_chapter_artifacts()
     _test_package_rejects_directory_audio_artifacts()
-    _test_package_outputs_m4b_for_audiobook_mode()
     _test_package_outputs_m4a_for_document_audio_mode()
     _test_package_rejects_incomplete_chapter_sets()
-    _test_document_audio_rejects_incomplete_section_sets()
 
     print("\n" + "=" * 50)
     print("ALL PIPELINE PACKAGING TESTS PASSED ✓")

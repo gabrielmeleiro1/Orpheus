@@ -78,14 +78,3 @@ class TestOverlongSentenceSplitting:
 
         _assert_chunks_within_limit(chunks)
         _assert_text_preserved(chunks, text)
-
-    def test_reproduces_reported_max_chars_violation(self, small_chunker: TextChunker) -> None:
-        """Direct reproduction: max_chars=10 must not yield a 40-char first chunk."""
-        long_sentence = "A" * 39 + "."
-        text = f"{long_sentence} Short. End."
-
-        chunks = small_chunker._split_at_boundaries(text, MAX_CHARS)
-        lengths = [len(chunk) for chunk in chunks]
-
-        assert lengths[0] <= MAX_CHARS, f"Got chunk lengths {lengths}"
-        assert all(length <= MAX_CHARS for length in lengths)

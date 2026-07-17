@@ -10,6 +10,8 @@ import re
 from .models import Chapter, Document
 from .text_encoding import read_source_text
 
+from modules.errors import CorruptedFileError
+
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
@@ -27,10 +29,18 @@ class MarkdownParser:
         raw_text = read_source_text(self.file_path)
         sections = self._split_sections(raw_text)
         title = sections[0].title if sections else self.file_path.stem
+        chapters = sections or [
+            Chapter(number=1, title=self.file_path.stem, content=raw_text.strip())
+        ]
+        if not any(chapter.content.strip() for chapter in chapters):
+            raise CorruptedFileError(
+                message="Markdown file contains no readable text",
+                file_path=self.file_path,
+            )
         return Document(
             title=title,
             author=None,
-            chapters=sections or [Chapter(number=1, title=self.file_path.stem, content=raw_text.strip())],
+            chapters=chapters,
             raw_markdown=raw_text,
         )
 

@@ -8,6 +8,16 @@ import sqlite3
 
 LATEST_SCHEMA_VERSION = 7
 
+# Wait this long for a competing writer's lock before surfacing
+# 'database is locked'. Maintenance opens its own connections outside the
+# repository lock, so without a busy_timeout a backup taken during an active
+# conversion commit fails immediately.
+BUSY_TIMEOUT_MS = 5000
+
+
+class FutureSchemaError(RuntimeError):
+    """Raised when the on-disk schema is newer than this build understands."""
+
 
 def configure_connection(conn: sqlite3.Connection) -> None:
     """
@@ -16,6 +26,7 @@ def configure_connection(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
     conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
 
 
 def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
@@ -338,6 +349,16 @@ def run_migrations(conn: sqlite3.Connection) -> int:
     configure_connection(conn)
     _ensure_migrations_table(conn)
     version = _current_version(conn)
+
+    # A database written by a newer build passes every ``version < N`` gate
+    # untouched, leaving the app operating on a schema it does not understand.
+    # Refuse to open it with a clear message instead of silently proceeding.
+    if version > LATEST_SCHEMA_VERSION:
+        raise FutureSchemaError(
+            "This library database was created by a newer version of Orpheus "
+            f"(schema version {version}); this build supports up to schema "
+            f"version {LATEST_SCHEMA_VERSION}. Please update Orpheus to open it."
+        )
 
     # Legacy database without migration metadata.
     if version == 0 and (_table_exists(conn, "books") or _table_exists(conn, "chapters")):

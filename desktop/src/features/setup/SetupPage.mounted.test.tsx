@@ -379,6 +379,26 @@ describe("mounted SetupPage", () => {
     expect(continueLibrary).toHaveBeenCalledOnce();
   });
 
+  it("falls back to the session override when adopt succeeds but the runtime stays unavailable", async () => {
+    const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "browser", reason: "Desktop source checkout required." })) });
+    const unavailableStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      configured: true,
+      state: "unavailable",
+      selected_profile: "base",
+      packages: { ready: false, missing: [], incompatible: [{ name: "fastapi", expected: "==0.139.0", installed: "0.129.0" }] },
+    };
+    const adopt = vi.fn(async () => unavailableStatus);
+    const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    const onReady = vi.fn();
+    const continueLibrary = vi.fn();
+    await renderPage(runtimeBridge, { apiClient: api, onReady, onContinueLibraryOnly: continueLibrary });
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+    expect(adopt).toHaveBeenCalledOnce();
+    expect(onReady).not.toHaveBeenCalled();
+    expect(continueLibrary).toHaveBeenCalledOnce();
+  });
+
   it("does not trap users when the setup status API is inaccessible", async () => {
     const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
     const continueLibrary = vi.fn();

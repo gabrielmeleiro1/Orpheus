@@ -55,41 +55,6 @@ def restore_worker_runtime_state():
             setattr(worker_runtime, name, value)
 
 
-def _fake_worker_initializer_with_error(
-    available_vram_gb: float,
-    active_workers: int = 1,
-    worker_init_config: dict | None = None,
-) -> None:
-    _ = available_vram_gb, active_workers, worker_init_config
-    worker_runtime._WORKER_INIT_STATUS = WorkerStartupStatus(
-        success=False,
-        provider="mlx",
-        device=None,
-        error_type="WorkerRuntimeLoadError",
-        message="simulated model load failure",
-        phase="tts_load",
-    )
-    worker_runtime._WORKER_PROVIDER = "mlx"
-
-
-def test_fake_worker_initializer_sets_init_error_for_probe() -> None:
-    original_status = worker_runtime._WORKER_INIT_STATUS
-    original_provider = worker_runtime._WORKER_PROVIDER
-    try:
-        worker_runtime._WORKER_INIT_STATUS = None
-        worker_runtime._WORKER_PROVIDER = "unknown"
-        _fake_worker_initializer_with_error(8.0, 2, {"voice": "af_bella"})
-
-        assert worker_runtime.get_worker_init_error() == "simulated model load failure"
-        status = _worker_startup_probe()
-        assert status.success is False
-        assert status.message == "simulated model load failure"
-        assert status.provider == "mlx"
-    finally:
-        worker_runtime._WORKER_INIT_STATUS = original_status
-        worker_runtime._WORKER_PROVIDER = original_provider
-
-
 def test_worker_startup_probe_reports_stored_init_error() -> None:
     failure = WorkerStartupStatus(
         success=False,

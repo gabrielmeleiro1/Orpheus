@@ -1,0 +1,1798 @@
+{
+  "metric_version": 1,
+  "total": {
+    "files": 434,
+    "lines": 122387,
+    "branches": 9436
+  },
+  "buckets": {
+    "(root)": {
+      "files": 2,
+      "lines": 333,
+      "branches": 20
+    },
+    "apps": {
+      "files": 3,
+      "lines": 305,
+      "branches": 47
+    },
+    "benchmarks": {
+      "files": 3,
+      "lines": 318,
+      "branches": 41
+    },
+    "desktop/src": {
+      "files": 125,
+      "lines": 19640,
+      "branches": 1843
+    },
+    "desktop/src-tauri": {
+      "files": 7,
+      "lines": 5541,
+      "branches": 388
+    },
+    "modules": {
+      "files": 144,
+      "lines": 34872,
+      "branches": 4071
+    },
+    "orpheus": {
+      "files": 9,
+      "lines": 1082,
+      "branches": 204
+    },
+    "scripts": {
+      "files": 12,
+      "lines": 8506,
+      "branches": 1395
+    },
+    "tests": {
+      "files": 116,
+      "lines": 49047,
+      "branches": 1153
+    },
+    "tools": {
+      "files": 13,
+      "lines": 2743,
+      "branches": 274
+    }
+  },
+  "files": {
+    "apps/__init__.py": {
+      "branches": 0,
+      "lines": 1
+    },
+    "apps/launchers/__init__.py": {
+      "branches": 0,
+      "lines": 3
+    },
+    "apps/launchers/desktop_backend.py": {
+      "branches": 47,
+      "lines": 301
+    },
+    "benchmarks/__init__.py": {
+      "branches": 0,
+      "lines": 1
+    },
+    "benchmarks/kokoro_single_book/__init__.py": {
+      "branches": 0,
+      "lines": 1
+    },
+    "benchmarks/kokoro_single_book/run_kokoro_single_book.py": {
+      "branches": 41,
+      "lines": 316
+    },
+    "desktop/src-tauri/build.rs": {
+      "branches": 0,
+      "lines": 3
+    },
+    "desktop/src-tauri/src/backend.rs": {
+      "branches": 72,
+      "lines": 882
+    },
+    "desktop/src-tauri/src/backend_tests.rs": {
+      "branches": 27,
+      "lines": 1080
+    },
+    "desktop/src-tauri/src/main.rs": {
+      "branches": 41,
+      "lines": 513
+    },
+    "desktop/src-tauri/src/paths.rs": {
+      "branches": 0,
+      "lines": 112
+    },
+    "desktop/src-tauri/src/setup.rs": {
+      "branches": 211,
+      "lines": 1786
+    },
+    "desktop/src-tauri/src/setup_tests.rs": {
+      "branches": 37,
+      "lines": 1165
+    },
+    "desktop/src/App.mounted.test.tsx": {
+      "branches": 6,
+      "lines": 296
+    },
+    "desktop/src/App.setup.integration.test.tsx": {
+      "branches": 2,
+      "lines": 193
+    },
+    "desktop/src/App.test.ts": {
+      "branches": 0,
+      "lines": 125
+    },
+    "desktop/src/App.tsx": {
+      "branches": 26,
+      "lines": 391
+    },
+    "desktop/src/api/client.test.ts": {
+      "branches": 0,
+      "lines": 291
+    },
+    "desktop/src/api/client.ts": {
+      "branches": 71,
+      "lines": 762
+    },
+    "desktop/src/app/runtimeIdentity.test.ts": {
+      "branches": 4,
+      "lines": 176
+    },
+    "desktop/src/app/runtimeIdentity.ts": {
+      "branches": 13,
+      "lines": 51
+    },
+    "desktop/src/app/uiWorkflowJourney.test.ts": {
+      "branches": 0,
+      "lines": 186
+    },
+    "desktop/src/app/useBackendClient.mounted.test.tsx": {
+      "branches": 0,
+      "lines": 61
+    },
+    "desktop/src/app/useBackendClient.ts": {
+      "branches": 51,
+      "lines": 391
+    },
+    "desktop/src/app/useGlobalShortcuts.ts": {
+      "branches": 18,
+      "lines": 61
+    },
+    "desktop/src/app/usePrimaryRuntime.ts": {
+      "branches": 5,
+      "lines": 72
+    },
+    "desktop/src/features/conversion/ConversionPanel.tsx": {
+      "branches": 0,
+      "lines": 11
+    },
+    "desktop/src/features/conversion/ConversionPanelView.test.tsx": {
+      "branches": 0,
+      "lines": 192
+    },
+    "desktop/src/features/conversion/ConversionPanelView.tsx": {
+      "branches": 5,
+      "lines": 67
+    },
+    "desktop/src/features/conversion/TermSelect.tsx": {
+      "branches": 11,
+      "lines": 89
+    },
+    "desktop/src/features/conversion/cleanerBackendHelpers.test.ts": {
+      "branches": 0,
+      "lines": 281
+    },
+    "desktop/src/features/conversion/cleanerBackendHelpers.ts": {
+      "branches": 54,
+      "lines": 264
+    },
+    "desktop/src/features/conversion/conversionOptionsShared.ts": {
+      "branches": 30,
+      "lines": 121
+    },
+    "desktop/src/features/conversion/conversionPanelHelpers.test.ts": {
+      "branches": 2,
+      "lines": 75
+    },
+    "desktop/src/features/conversion/conversionPanelHelpers.ts": {
+      "branches": 14,
+      "lines": 60
+    },
+    "desktop/src/features/conversion/conversionPanelModel.test.ts": {
+      "branches": 0,
+      "lines": 72
+    },
+    "desktop/src/features/conversion/conversionPanelModel.ts": {
+      "branches": 6,
+      "lines": 41
+    },
+    "desktop/src/features/conversion/conversionPanelState.test.ts": {
+      "branches": 0,
+      "lines": 53
+    },
+    "desktop/src/features/conversion/conversionPanelStateTypes.ts": {
+      "branches": 0,
+      "lines": 215
+    },
+    "desktop/src/features/conversion/conversionPrimaryAction.test.ts": {
+      "branches": 0,
+      "lines": 57
+    },
+    "desktop/src/features/conversion/conversionPrimaryAction.ts": {
+      "branches": 1,
+      "lines": 30
+    },
+    "desktop/src/features/conversion/conversionQueueReducer.test.ts": {
+      "branches": 0,
+      "lines": 161
+    },
+    "desktop/src/features/conversion/conversionQueueReducer.ts": {
+      "branches": 79,
+      "lines": 323
+    },
+    "desktop/src/features/conversion/preflightService.ts": {
+      "branches": 2,
+      "lines": 14
+    },
+    "desktop/src/features/conversion/scrollConversionReviewAnchor.test.ts": {
+      "branches": 0,
+      "lines": 55
+    },
+    "desktop/src/features/conversion/scrollConversionReviewAnchor.ts": {
+      "branches": 9,
+      "lines": 47
+    },
+    "desktop/src/features/conversion/useCleanerOptions.ts": {
+      "branches": 43,
+      "lines": 356
+    },
+    "desktop/src/features/conversion/useComboboxState.test.ts": {
+      "branches": 0,
+      "lines": 52
+    },
+    "desktop/src/features/conversion/useComboboxState.ts": {
+      "branches": 30,
+      "lines": 162
+    },
+    "desktop/src/features/conversion/useConversionJob.ts": {
+      "branches": 13,
+      "lines": 109
+    },
+    "desktop/src/features/conversion/useConversionOptions.ts": {
+      "branches": 11,
+      "lines": 192
+    },
+    "desktop/src/features/conversion/useConversionPanelState.ts": {
+      "branches": 69,
+      "lines": 418
+    },
+    "desktop/src/features/conversion/useConversionPreview.ts": {
+      "branches": 28,
+      "lines": 191
+    },
+    "desktop/src/features/conversion/useConversionQueueController.ts": {
+      "branches": 15,
+      "lines": 249
+    },
+    "desktop/src/features/conversion/useConversionQueueRunner.test.tsx": {
+      "branches": 0,
+      "lines": 212
+    },
+    "desktop/src/features/conversion/useConversionQueueRunner.ts": {
+      "branches": 26,
+      "lines": 206
+    },
+    "desktop/src/features/conversion/useConversionSourceQueue.ts": {
+      "branches": 36,
+      "lines": 315
+    },
+    "desktop/src/features/conversion/useConversionSubmitPayload.test.ts": {
+      "branches": 0,
+      "lines": 164
+    },
+    "desktop/src/features/conversion/useConversionSubmitPayload.ts": {
+      "branches": 7,
+      "lines": 76
+    },
+    "desktop/src/features/conversion/useLatestRequest.ts": {
+      "branches": 2,
+      "lines": 25
+    },
+    "desktop/src/features/conversion/useParallelWorkers.ts": {
+      "branches": 34,
+      "lines": 240
+    },
+    "desktop/src/features/conversion/useTtsOptions.ts": {
+      "branches": 47,
+      "lines": 339
+    },
+    "desktop/src/features/conversion/views/AdvancedOptionsView.tsx": {
+      "branches": 5,
+      "lines": 115
+    },
+    "desktop/src/features/conversion/views/CleanerOptionsView.tsx": {
+      "branches": 5,
+      "lines": 163
+    },
+    "desktop/src/features/conversion/views/ConversionActionsView.tsx": {
+      "branches": 2,
+      "lines": 102
+    },
+    "desktop/src/features/conversion/views/SourceQueueView.tsx": {
+      "branches": 18,
+      "lines": 274
+    },
+    "desktop/src/features/conversion/views/TtsOptionsView.tsx": {
+      "branches": 3,
+      "lines": 101
+    },
+    "desktop/src/features/dashboard/AudioWaveformCanvas.tsx": {
+      "branches": 39,
+      "lines": 291
+    },
+    "desktop/src/features/dashboard/DashboardPanel.test.tsx": {
+      "branches": 0,
+      "lines": 65
+    },
+    "desktop/src/features/dashboard/DashboardPanel.tsx": {
+      "branches": 39,
+      "lines": 310
+    },
+    "desktop/src/features/dashboard/LiveClock.tsx": {
+      "branches": 0,
+      "lines": 25
+    },
+    "desktop/src/features/dashboard/dashboardHelpers.ts": {
+      "branches": 10,
+      "lines": 55
+    },
+    "desktop/src/features/events/eventLogModel.ts": {
+      "branches": 5,
+      "lines": 51
+    },
+    "desktop/src/features/events/eventPayloadNormalizer.ts": {
+      "branches": 26,
+      "lines": 124
+    },
+    "desktop/src/features/events/eventStreamModel.test.ts": {
+      "branches": 0,
+      "lines": 401
+    },
+    "desktop/src/features/events/eventStreamModel.ts": {
+      "branches": 0,
+      "lines": 12
+    },
+    "desktop/src/features/events/eventStreamReducer.ts": {
+      "branches": 77,
+      "lines": 408
+    },
+    "desktop/src/features/events/performanceSnapshotModel.ts": {
+      "branches": 12,
+      "lines": 66
+    },
+    "desktop/src/features/events/progressStageModel.ts": {
+      "branches": 27,
+      "lines": 175
+    },
+    "desktop/src/features/events/terminalStateWaiterModel.test.ts": {
+      "branches": 0,
+      "lines": 123
+    },
+    "desktop/src/features/events/terminalStateWaiterModel.ts": {
+      "branches": 7,
+      "lines": 96
+    },
+    "desktop/src/features/events/transportBackoff.test.ts": {
+      "branches": 0,
+      "lines": 40
+    },
+    "desktop/src/features/events/transportBackoff.ts": {
+      "branches": 1,
+      "lines": 52
+    },
+    "desktop/src/features/events/useEventStream.ts": {
+      "branches": 23,
+      "lines": 288
+    },
+    "desktop/src/features/events/useEventStreamTransport.ts": {
+      "branches": 22,
+      "lines": 166
+    },
+    "desktop/src/features/events/useTerminalStateWaiters.ts": {
+      "branches": 18,
+      "lines": 171
+    },
+    "desktop/src/features/library/LibraryPanel.tsx": {
+      "branches": 31,
+      "lines": 353
+    },
+    "desktop/src/features/library/libraryDisplayModel.test.ts": {
+      "branches": 0,
+      "lines": 85
+    },
+    "desktop/src/features/library/libraryDisplayModel.ts": {
+      "branches": 14,
+      "lines": 45
+    },
+    "desktop/src/features/library/libraryRepository.test.ts": {
+      "branches": 0,
+      "lines": 101
+    },
+    "desktop/src/features/library/libraryRepository.ts": {
+      "branches": 5,
+      "lines": 112
+    },
+    "desktop/src/features/library/useLibrary.test.tsx": {
+      "branches": 10,
+      "lines": 651
+    },
+    "desktop/src/features/library/useLibrary.ts": {
+      "branches": 0,
+      "lines": 107
+    },
+    "desktop/src/features/library/useLibraryList.ts": {
+      "branches": 82,
+      "lines": 521
+    },
+    "desktop/src/features/library/useLibraryMaintenance.ts": {
+      "branches": 26,
+      "lines": 152
+    },
+    "desktop/src/features/library/useLibraryPanelState.ts": {
+      "branches": 3,
+      "lines": 67
+    },
+    "desktop/src/features/logs/LogPanel.tsx": {
+      "branches": 11,
+      "lines": 115
+    },
+    "desktop/src/features/logs/logPresentation.test.ts": {
+      "branches": 0,
+      "lines": 36
+    },
+    "desktop/src/features/logs/logPresentation.ts": {
+      "branches": 19,
+      "lines": 60
+    },
+    "desktop/src/features/player/PlayerPanel.tsx": {
+      "branches": 16,
+      "lines": 224
+    },
+    "desktop/src/features/player/chapterPlaybackLabel.test.ts": {
+      "branches": 0,
+      "lines": 139
+    },
+    "desktop/src/features/player/chapterPlaybackLabel.ts": {
+      "branches": 2,
+      "lines": 9
+    },
+    "desktop/src/features/player/chapterPositionModel.test.ts": {
+      "branches": 0,
+      "lines": 54
+    },
+    "desktop/src/features/player/chapterPositionModel.ts": {
+      "branches": 9,
+      "lines": 39
+    },
+    "desktop/src/features/player/playbackPersistence.ts": {
+      "branches": 32,
+      "lines": 215
+    },
+    "desktop/src/features/player/playerDurationModel.ts": {
+      "branches": 14,
+      "lines": 71
+    },
+    "desktop/src/features/player/useAudioAnalyser.ts": {
+      "branches": 19,
+      "lines": 169
+    },
+    "desktop/src/features/player/useAudioElementBindings.ts": {
+      "branches": 13,
+      "lines": 178
+    },
+    "desktop/src/features/player/useAudioPlayer.test.tsx": {
+      "branches": 0,
+      "lines": 119
+    },
+    "desktop/src/features/player/useAudioPlayer.ts": {
+      "branches": 76,
+      "lines": 476
+    },
+    "desktop/src/features/progress/ProgressPanel.tsx": {
+      "branches": 39,
+      "lines": 236
+    },
+    "desktop/src/features/progress/progressTerminalPresentation.test.ts": {
+      "branches": 2,
+      "lines": 143
+    },
+    "desktop/src/features/progress/progressTerminalPresentation.ts": {
+      "branches": 48,
+      "lines": 164
+    },
+    "desktop/src/features/setup/SetupPage.mounted.test.tsx": {
+      "branches": 5,
+      "lines": 534
+    },
+    "desktop/src/features/setup/SetupPage.tsx": {
+      "branches": 148,
+      "lines": 613
+    },
+    "desktop/src/features/setup/setupBridge.test.ts": {
+      "branches": 0,
+      "lines": 60
+    },
+    "desktop/src/features/setup/setupBridge.ts": {
+      "branches": 1,
+      "lines": 52
+    },
+    "desktop/src/features/setup/setupLifecycle.test.ts": {
+      "branches": 0,
+      "lines": 23
+    },
+    "desktop/src/features/setup/setupLifecycle.ts": {
+      "branches": 0,
+      "lines": 7
+    },
+    "desktop/src/features/setup/setupModel.test.ts": {
+      "branches": 1,
+      "lines": 163
+    },
+    "desktop/src/features/setup/setupModel.ts": {
+      "branches": 75,
+      "lines": 266
+    },
+    "desktop/src/format/time.test.ts": {
+      "branches": 0,
+      "lines": 74
+    },
+    "desktop/src/format/time.ts": {
+      "branches": 7,
+      "lines": 38
+    },
+    "desktop/src/main.tsx": {
+      "branches": 0,
+      "lines": 13
+    },
+    "desktop/src/navigation/tabKeyboardNavigation.test.ts": {
+      "branches": 0,
+      "lines": 31
+    },
+    "desktop/src/navigation/tabKeyboardNavigation.ts": {
+      "branches": 6,
+      "lines": 27
+    },
+    "desktop/src/navigation/tabs.tsx": {
+      "branches": 8,
+      "lines": 73
+    },
+    "desktop/src/platform/tauriRuntime.ts": {
+      "branches": 0,
+      "lines": 5
+    },
+    "desktop/src/types/api.ts": {
+      "branches": 0,
+      "lines": 87
+    },
+    "desktop/src/types/backend.ts": {
+      "branches": 0,
+      "lines": 46
+    },
+    "desktop/src/types/conversion.ts": {
+      "branches": 0,
+      "lines": 287
+    },
+    "desktop/src/types/events.ts": {
+      "branches": 0,
+      "lines": 73
+    },
+    "desktop/src/types/library.ts": {
+      "branches": 0,
+      "lines": 115
+    },
+    "desktop/src/ui/ascii/BrailleSpinner.tsx": {
+      "branches": 5,
+      "lines": 35
+    },
+    "desktop/src/ui/ascii/GlyphActivity.tsx": {
+      "branches": 6,
+      "lines": 61
+    },
+    "desktop/src/ui/ascii/GlyphProgress.tsx": {
+      "branches": 1,
+      "lines": 22
+    },
+    "desktop/src/ui/ascii/usePrefersReducedMotion.ts": {
+      "branches": 0,
+      "lines": 18
+    },
+    "desktop/vite.config.ts": {
+      "branches": 0,
+      "lines": 12
+    },
+    "modules/__init__.py": {
+      "branches": 0,
+      "lines": 6
+    },
+    "modules/app/__init__.py": {
+      "branches": 1,
+      "lines": 38
+    },
+    "modules/app/config.py": {
+      "branches": 56,
+      "lines": 319
+    },
+    "modules/app/controller.py": {
+      "branches": 29,
+      "lines": 723
+    },
+    "modules/app/events.py": {
+      "branches": 29,
+      "lines": 243
+    },
+    "modules/app/services/__init__.py": {
+      "branches": 1,
+      "lines": 31
+    },
+    "modules/app/services/conversion_commands.py": {
+      "branches": 15,
+      "lines": 248
+    },
+    "modules/app/services/conversion_paths.py": {
+      "branches": 12,
+      "lines": 80
+    },
+    "modules/app/services/conversion_result_adapter.py": {
+      "branches": 7,
+      "lines": 59
+    },
+    "modules/app/services/conversion_runtime.py": {
+      "branches": 31,
+      "lines": 343
+    },
+    "modules/app/services/conversion_service.py": {
+      "branches": 114,
+      "lines": 858
+    },
+    "modules/app/services/library_service.py": {
+      "branches": 139,
+      "lines": 781
+    },
+    "modules/app/services/progress_math.py": {
+      "branches": 21,
+      "lines": 148
+    },
+    "modules/app/services/repair_runtime.py": {
+      "branches": 32,
+      "lines": 264
+    },
+    "modules/app/services/runtime_capability_service.py": {
+      "branches": 46,
+      "lines": 416
+    },
+    "modules/app/services/tts_session.py": {
+      "branches": 26,
+      "lines": 138
+    },
+    "modules/app/services/voice_service.py": {
+      "branches": 36,
+      "lines": 321
+    },
+    "modules/app/voice_recommender.py": {
+      "branches": 52,
+      "lines": 386
+    },
+    "modules/async_bridge.py": {
+      "branches": 13,
+      "lines": 101
+    },
+    "modules/audio/__init__.py": {
+      "branches": 1,
+      "lines": 37
+    },
+    "modules/audio/document_packager.py": {
+      "branches": 7,
+      "lines": 85
+    },
+    "modules/audio/encoder.py": {
+      "branches": 16,
+      "lines": 316
+    },
+    "modules/audio/ffmpeg.py": {
+      "branches": 26,
+      "lines": 205
+    },
+    "modules/audio/packager.py": {
+      "branches": 49,
+      "lines": 560
+    },
+    "modules/contracts/__init__.py": {
+      "branches": 0,
+      "lines": 37
+    },
+    "modules/contracts/conversion_runtime.py": {
+      "branches": 19,
+      "lines": 142
+    },
+    "modules/contracts/conversion_runtime_options.py": {
+      "branches": 6,
+      "lines": 106
+    },
+    "modules/contracts/limits.py": {
+      "branches": 0,
+      "lines": 12
+    },
+    "modules/contracts/source_extensions.py": {
+      "branches": 2,
+      "lines": 21
+    },
+    "modules/contracts/upload_errors.py": {
+      "branches": 0,
+      "lines": 5
+    },
+    "modules/errors.py": {
+      "branches": 25,
+      "lines": 404
+    },
+    "modules/ingestion/__init__.py": {
+      "branches": 6,
+      "lines": 30
+    },
+    "modules/ingestion/content_filter.py": {
+      "branches": 60,
+      "lines": 237
+    },
+    "modules/ingestion/epub_parser.py": {
+      "branches": 26,
+      "lines": 243
+    },
+    "modules/ingestion/epub_sections.py": {
+      "branches": 189,
+      "lines": 808
+    },
+    "modules/ingestion/extraction_artifact_signals.py": {
+      "branches": 10,
+      "lines": 169
+    },
+    "modules/ingestion/markdown_parser.py": {
+      "branches": 13,
+      "lines": 79
+    },
+    "modules/ingestion/models.py": {
+      "branches": 0,
+      "lines": 26
+    },
+    "modules/ingestion/pdf_artifact_normalizer.py": {
+      "branches": 109,
+      "lines": 635
+    },
+    "modules/ingestion/pdf_parser.py": {
+      "branches": 92,
+      "lines": 529
+    },
+    "modules/ingestion/pdf_preflight.py": {
+      "branches": 36,
+      "lines": 269
+    },
+    "modules/ingestion/preflight.py": {
+      "branches": 40,
+      "lines": 188
+    },
+    "modules/ingestion/text_encoding.py": {
+      "branches": 16,
+      "lines": 74
+    },
+    "modules/ingestion/text_parser.py": {
+      "branches": 3,
+      "lines": 42
+    },
+    "modules/openai_compat.py": {
+      "branches": 27,
+      "lines": 170
+    },
+    "modules/pipeline/__init__.py": {
+      "branches": 2,
+      "lines": 59
+    },
+    "modules/pipeline/book_workspace.py": {
+      "branches": 11,
+      "lines": 89
+    },
+    "modules/pipeline/chapter_dispatch.py": {
+      "branches": 55,
+      "lines": 310
+    },
+    "modules/pipeline/chapter_processor.py": {
+      "branches": 53,
+      "lines": 771
+    },
+    "modules/pipeline/chapter_runners.py": {
+      "branches": 74,
+      "lines": 710
+    },
+    "modules/pipeline/cleaner_memory.py": {
+      "branches": 2,
+      "lines": 30
+    },
+    "modules/pipeline/conversion_lifecycle.py": {
+      "branches": 2,
+      "lines": 48
+    },
+    "modules/pipeline/memory_policy.py": {
+      "branches": 42,
+      "lines": 278
+    },
+    "modules/pipeline/model_lifecycle.py": {
+      "branches": 33,
+      "lines": 238
+    },
+    "modules/pipeline/model_session.py": {
+      "branches": 8,
+      "lines": 95
+    },
+    "modules/pipeline/models.py": {
+      "branches": 46,
+      "lines": 338
+    },
+    "modules/pipeline/orchestrator.py": {
+      "branches": 53,
+      "lines": 623
+    },
+    "modules/pipeline/parallel.py": {
+      "branches": 25,
+      "lines": 289
+    },
+    "modules/pipeline/pipeline_stages.py": {
+      "branches": 0,
+      "lines": 132
+    },
+    "modules/pipeline/pool_manager.py": {
+      "branches": 95,
+      "lines": 691
+    },
+    "modules/pipeline/progress.py": {
+      "branches": 14,
+      "lines": 115
+    },
+    "modules/pipeline/repair.py": {
+      "branches": 61,
+      "lines": 427
+    },
+    "modules/pipeline/result_validation.py": {
+      "branches": 92,
+      "lines": 392
+    },
+    "modules/pipeline/retry.py": {
+      "branches": 29,
+      "lines": 203
+    },
+    "modules/pipeline/runtime.py": {
+      "branches": 44,
+      "lines": 405
+    },
+    "modules/pipeline/stage_metrics.py": {
+      "branches": 4,
+      "lines": 73
+    },
+    "modules/pipeline/stages/__init__.py": {
+      "branches": 0,
+      "lines": 17
+    },
+    "modules/pipeline/stages/cleaning.py": {
+      "branches": 43,
+      "lines": 539
+    },
+    "modules/pipeline/stages/encoding.py": {
+      "branches": 42,
+      "lines": 332
+    },
+    "modules/pipeline/stages/ingestion.py": {
+      "branches": 22,
+      "lines": 137
+    },
+    "modules/pipeline/stages/overlap_synthesis.py": {
+      "branches": 25,
+      "lines": 383
+    },
+    "modules/pipeline/stages/packaging.py": {
+      "branches": 20,
+      "lines": 153
+    },
+    "modules/pipeline/stages/synthesis.py": {
+      "branches": 87,
+      "lines": 822
+    },
+    "modules/pipeline/worker_config.py": {
+      "branches": 8,
+      "lines": 242
+    },
+    "modules/pipeline/worker_errors.py": {
+      "branches": 31,
+      "lines": 300
+    },
+    "modules/pipeline/worker_recommendation.py": {
+      "branches": 16,
+      "lines": 153
+    },
+    "modules/pipeline/worker_runtime.py": {
+      "branches": 21,
+      "lines": 253
+    },
+    "modules/runtime_profiles.py": {
+      "branches": 24,
+      "lines": 164
+    },
+    "modules/storage/__init__.py": {
+      "branches": 0,
+      "lines": 50
+    },
+    "modules/storage/maintenance.py": {
+      "branches": 132,
+      "lines": 807
+    },
+    "modules/storage/migrations.py": {
+      "branches": 39,
+      "lines": 440
+    },
+    "modules/storage/models.py": {
+      "branches": 0,
+      "lines": 129
+    },
+    "modules/storage/repository.py": {
+      "branches": 0,
+      "lines": 236
+    },
+    "modules/storage/sqlite_repo.py": {
+      "branches": 57,
+      "lines": 625
+    },
+    "modules/text/__init__.py": {
+      "branches": 0,
+      "lines": 2
+    },
+    "modules/text/document_normalizer.py": {
+      "branches": 112,
+      "lines": 520
+    },
+    "modules/tts/__init__.py": {
+      "branches": 1,
+      "lines": 44
+    },
+    "modules/tts/api_rate_limit.py": {
+      "branches": 11,
+      "lines": 116
+    },
+    "modules/tts/artifact_scorer.py": {
+      "branches": 11,
+      "lines": 103
+    },
+    "modules/tts/chunker.py": {
+      "branches": 49,
+      "lines": 340
+    },
+    "modules/tts/cleaner.py": {
+      "branches": 24,
+      "lines": 437
+    },
+    "modules/tts/cleaner_api.py": {
+      "branches": 68,
+      "lines": 518
+    },
+    "modules/tts/cleaner_backends/__init__.py": {
+      "branches": 0,
+      "lines": 19
+    },
+    "modules/tts/cleaner_backends/base.py": {
+      "branches": 0,
+      "lines": 42
+    },
+    "modules/tts/cleaner_backends/metadata.py": {
+      "branches": 3,
+      "lines": 31
+    },
+    "modules/tts/cleaner_backends/registry.py": {
+      "branches": 9,
+      "lines": 88
+    },
+    "modules/tts/cleaner_config.py": {
+      "branches": 11,
+      "lines": 235
+    },
+    "modules/tts/cleaner_cuda.py": {
+      "branches": 36,
+      "lines": 289
+    },
+    "modules/tts/cleaner_errors.py": {
+      "branches": 2,
+      "lines": 25
+    },
+    "modules/tts/cleaner_mlx.py": {
+      "branches": 15,
+      "lines": 162
+    },
+    "modules/tts/cleaner_rules.py": {
+      "branches": 103,
+      "lines": 445
+    },
+    "modules/tts/cleaner_trace.py": {
+      "branches": 17,
+      "lines": 320
+    },
+    "modules/tts/cleaner_transport.py": {
+      "branches": 0,
+      "lines": 56
+    },
+    "modules/tts/device_memory.py": {
+      "branches": 81,
+      "lines": 551
+    },
+    "modules/tts/engine.py": {
+      "branches": 48,
+      "lines": 654
+    },
+    "modules/tts/engine_config.py": {
+      "branches": 0,
+      "lines": 22
+    },
+    "modules/tts/engine_output.py": {
+      "branches": 40,
+      "lines": 315
+    },
+    "modules/tts/engine_runtime.py": {
+      "branches": 21,
+      "lines": 145
+    },
+    "modules/tts/factory.py": {
+      "branches": 34,
+      "lines": 344
+    },
+    "modules/tts/memory.py": {
+      "branches": 11,
+      "lines": 139
+    },
+    "modules/tts/mlx_compat.py": {
+      "branches": 45,
+      "lines": 341
+    },
+    "modules/tts/model_cache.py": {
+      "branches": 5,
+      "lines": 49
+    },
+    "modules/tts/quantization.py": {
+      "branches": 2,
+      "lines": 21
+    },
+    "modules/tts/runtime_options.py": {
+      "branches": 80,
+      "lines": 493
+    },
+    "modules/tts/runtime_spec.py": {
+      "branches": 54,
+      "lines": 333
+    },
+    "modules/tts/runtimes/__init__.py": {
+      "branches": 0,
+      "lines": 33
+    },
+    "modules/tts/runtimes/errors.py": {
+      "branches": 0,
+      "lines": 15
+    },
+    "modules/tts/runtimes/kokoro_base.py": {
+      "branches": 8,
+      "lines": 151
+    },
+    "modules/tts/runtimes/kokoro_mlx.py": {
+      "branches": 2,
+      "lines": 127
+    },
+    "modules/tts/runtimes/kokoro_package.py": {
+      "branches": 34,
+      "lines": 286
+    },
+    "modules/tts/speech_normalizer.py": {
+      "branches": 14,
+      "lines": 109
+    },
+    "modules/tts/strategies/__init__.py": {
+      "branches": 1,
+      "lines": 49
+    },
+    "modules/tts/strategies/base.py": {
+      "branches": 15,
+      "lines": 426
+    },
+    "modules/tts/strategies/kokoro.py": {
+      "branches": 25,
+      "lines": 351
+    },
+    "modules/tts/voices.py": {
+      "branches": 8,
+      "lines": 174
+    },
+    "modules/tts/vram_monitor.py": {
+      "branches": 86,
+      "lines": 850
+    },
+    "modules/web/__init__.py": {
+      "branches": 0,
+      "lines": 5
+    },
+    "modules/web/deps.py": {
+      "branches": 5,
+      "lines": 56
+    },
+    "modules/web/desktop_auth.py": {
+      "branches": 30,
+      "lines": 204
+    },
+    "modules/web/events.py": {
+      "branches": 18,
+      "lines": 162
+    },
+    "modules/web/routes/__init__.py": {
+      "branches": 0,
+      "lines": 15
+    },
+    "modules/web/routes/conversions.py": {
+      "branches": 6,
+      "lines": 135
+    },
+    "modules/web/routes/events.py": {
+      "branches": 0,
+      "lines": 25
+    },
+    "modules/web/routes/health.py": {
+      "branches": 0,
+      "lines": 12
+    },
+    "modules/web/routes/library.py": {
+      "branches": 12,
+      "lines": 180
+    },
+    "modules/web/routes/maintenance.py": {
+      "branches": 0,
+      "lines": 36
+    },
+    "modules/web/routes/options.py": {
+      "branches": 1,
+      "lines": 79
+    },
+    "modules/web/routes/setup.py": {
+      "branches": 125,
+      "lines": 716
+    },
+    "modules/web/routes/sources.py": {
+      "branches": 0,
+      "lines": 28
+    },
+    "modules/web/routes/uploads.py": {
+      "branches": 13,
+      "lines": 85
+    },
+    "modules/web/routes/voices.py": {
+      "branches": 2,
+      "lines": 74
+    },
+    "modules/web/serializers.py": {
+      "branches": 6,
+      "lines": 68
+    },
+    "modules/web/server.py": {
+      "branches": 10,
+      "lines": 156
+    },
+    "modules/web/source_handles.py": {
+      "branches": 7,
+      "lines": 36
+    },
+    "orpheus/__init__.py": {
+      "branches": 0,
+      "lines": 2
+    },
+    "orpheus/__main__.py": {
+      "branches": 4,
+      "lines": 16
+    },
+    "orpheus/bench/__init__.py": {
+      "branches": 0,
+      "lines": 58
+    },
+    "orpheus/bench/cli.py": {
+      "branches": 40,
+      "lines": 392
+    },
+    "orpheus/bench/metrics.py": {
+      "branches": 3,
+      "lines": 13
+    },
+    "orpheus/bench/policy.py": {
+      "branches": 41,
+      "lines": 110
+    },
+    "orpheus/bench/presets.py": {
+      "branches": 2,
+      "lines": 45
+    },
+    "orpheus/bench/report.py": {
+      "branches": 114,
+      "lines": 441
+    },
+    "orpheus/bench/validity.py": {
+      "branches": 0,
+      "lines": 5
+    },
+    "run_tests.py": {
+      "branches": 20,
+      "lines": 242
+    },
+    "scripts/benchmark_nagel_pipeline.py": {
+      "branches": 184,
+      "lines": 1762
+    },
+    "scripts/benchmark_nagel_repeated.py": {
+      "branches": 88,
+      "lines": 405
+    },
+    "scripts/build_desktop_backend.py": {
+      "branches": 97,
+      "lines": 580
+    },
+    "scripts/desktop_runtime_smoke.py": {
+      "branches": 181,
+      "lines": 1368
+    },
+    "scripts/download_models.py": {
+      "branches": 122,
+      "lines": 710
+    },
+    "scripts/download_stress_corpus.py": {
+      "branches": 13,
+      "lines": 80
+    },
+    "scripts/install_desktop_app.py": {
+      "branches": 7,
+      "lines": 93
+    },
+    "scripts/performance_regression_report.py": {
+      "branches": 2,
+      "lines": 21
+    },
+    "scripts/run_optimization_corpus.py": {
+      "branches": 86,
+      "lines": 499
+    },
+    "scripts/setup_runtime.py": {
+      "branches": 173,
+      "lines": 1027
+    },
+    "scripts/stress_corpus.py": {
+      "branches": 153,
+      "lines": 586
+    },
+    "scripts/verify_runtime_profiles.py": {
+      "branches": 289,
+      "lines": 1375
+    },
+    "tests/__init__.py": {
+      "branches": 0,
+      "lines": 0
+    },
+    "tests/conftest.py": {
+      "branches": 8,
+      "lines": 63
+    },
+    "tests/fixtures/__init__.py": {
+      "branches": 0,
+      "lines": 0
+    },
+    "tests/fixtures/cleaner_cuda_helpers.py": {
+      "branches": 3,
+      "lines": 77
+    },
+    "tests/fixtures/fake_cleaner_backend.py": {
+      "branches": 5,
+      "lines": 90
+    },
+    "tests/test_aac_packaging.py": {
+      "branches": 12,
+      "lines": 592
+    },
+    "tests/test_artifact_scorer.py": {
+      "branches": 0,
+      "lines": 25
+    },
+    "tests/test_audio.py": {
+      "branches": 42,
+      "lines": 1476
+    },
+    "tests/test_benchmark_fidelity.py": {
+      "branches": 2,
+      "lines": 357
+    },
+    "tests/test_book_workspace.py": {
+      "branches": 2,
+      "lines": 67
+    },
+    "tests/test_branch_complexity.py": {
+      "branches": 0,
+      "lines": 144
+    },
+    "tests/test_cleaner.py": {
+      "branches": 25,
+      "lines": 909
+    },
+    "tests/test_cleaner_api_global_limiter.py": {
+      "branches": 12,
+      "lines": 157
+    },
+    "tests/test_cleaner_api_trace_multichapter.py": {
+      "branches": 15,
+      "lines": 662
+    },
+    "tests/test_cleaner_api_trace_multichapter_real.py": {
+      "branches": 4,
+      "lines": 88
+    },
+    "tests/test_cleaner_backend_metadata.py": {
+      "branches": 1,
+      "lines": 46
+    },
+    "tests/test_cleaner_backend_registry.py": {
+      "branches": 2,
+      "lines": 146
+    },
+    "tests/test_cleaner_cli_choices.py": {
+      "branches": 2,
+      "lines": 81
+    },
+    "tests/test_cleaner_cuda.py": {
+      "branches": 5,
+      "lines": 372
+    },
+    "tests/test_cleaner_cuda_lifecycle.py": {
+      "branches": 0,
+      "lines": 180
+    },
+    "tests/test_cleaner_golden_set.py": {
+      "branches": 6,
+      "lines": 108
+    },
+    "tests/test_cleaner_hallucination_guard.py": {
+      "branches": 3,
+      "lines": 142
+    },
+    "tests/test_cleaner_heuristic.py": {
+      "branches": 1,
+      "lines": 126
+    },
+    "tests/test_cleaner_latency.py": {
+      "branches": 12,
+      "lines": 193
+    },
+    "tests/test_cleaner_memory_estimation.py": {
+      "branches": 2,
+      "lines": 51
+    },
+    "tests/test_cleaner_pipeline_dispatch.py": {
+      "branches": 1,
+      "lines": 236
+    },
+    "tests/test_cleaner_runtime_probes.py": {
+      "branches": 10,
+      "lines": 254
+    },
+    "tests/test_cleaner_text_preservation.py": {
+      "branches": 3,
+      "lines": 546
+    },
+    "tests/test_combined_device_memory_policy.py": {
+      "branches": 1,
+      "lines": 268
+    },
+    "tests/test_content_filter.py": {
+      "branches": 4,
+      "lines": 395
+    },
+    "tests/test_conversion_job_thread_safety.py": {
+      "branches": 12,
+      "lines": 104
+    },
+    "tests/test_conversion_progress_math.py": {
+      "branches": 0,
+      "lines": 87
+    },
+    "tests/test_conversion_runtime_options_contract.py": {
+      "branches": 1,
+      "lines": 67
+    },
+    "tests/test_conversion_service.py": {
+      "branches": 83,
+      "lines": 5326
+    },
+    "tests/test_desktop_backend_launcher.py": {
+      "branches": 18,
+      "lines": 523
+    },
+    "tests/test_desktop_install.py": {
+      "branches": 1,
+      "lines": 52
+    },
+    "tests/test_desktop_runtime_contract.py": {
+      "branches": 12,
+      "lines": 275
+    },
+    "tests/test_desktop_runtime_smoke.py": {
+      "branches": 37,
+      "lines": 936
+    },
+    "tests/test_desktop_sidecar_build.py": {
+      "branches": 8,
+      "lines": 514
+    },
+    "tests/test_device_memory_policy.py": {
+      "branches": 0,
+      "lines": 258
+    },
+    "tests/test_document_normalizer.py": {
+      "branches": 18,
+      "lines": 352
+    },
+    "tests/test_download_models.py": {
+      "branches": 7,
+      "lines": 733
+    },
+    "tests/test_encoding_stage.py": {
+      "branches": 0,
+      "lines": 162
+    },
+    "tests/test_epub_parser.py": {
+      "branches": 34,
+      "lines": 935
+    },
+    "tests/test_events.py": {
+      "branches": 2,
+      "lines": 129
+    },
+    "tests/test_extraction_artifact_signals.py": {
+      "branches": 12,
+      "lines": 166
+    },
+    "tests/test_feedback_loop_runner.py": {
+      "branches": 7,
+      "lines": 101
+    },
+    "tests/test_file_parsing_hypothesis.py": {
+      "branches": 5,
+      "lines": 226
+    },
+    "tests/test_ingestion.py": {
+      "branches": 2,
+      "lines": 685
+    },
+    "tests/test_kokoro_runtime_boundary.py": {
+      "branches": 7,
+      "lines": 552
+    },
+    "tests/test_kokoro_single_book_benchmark.py": {
+      "branches": 8,
+      "lines": 133
+    },
+    "tests/test_library_service.py": {
+      "branches": 22,
+      "lines": 1910
+    },
+    "tests/test_local_cleaner_batch.py": {
+      "branches": 3,
+      "lines": 39
+    },
+    "tests/test_markdown_parser.py": {
+      "branches": 3,
+      "lines": 66
+    },
+    "tests/test_memory_management.py": {
+      "branches": 3,
+      "lines": 302
+    },
+    "tests/test_nagel_benchmark.py": {
+      "branches": 43,
+      "lines": 1848
+    },
+    "tests/test_nagel_repeated_benchmark.py": {
+      "branches": 6,
+      "lines": 464
+    },
+    "tests/test_orpheus_bench_cli.py": {
+      "branches": 19,
+      "lines": 515
+    },
+    "tests/test_parallel_fallback.py": {
+      "branches": 44,
+      "lines": 1463
+    },
+    "tests/test_parallel_pipeline.py": {
+      "branches": 26,
+      "lines": 2320
+    },
+    "tests/test_pdf_artifact_normalizer.py": {
+      "branches": 4,
+      "lines": 119
+    },
+    "tests/test_pdf_cleaner_review_regressions.py": {
+      "branches": 0,
+      "lines": 106
+    },
+    "tests/test_pdf_parser.py": {
+      "branches": 19,
+      "lines": 295
+    },
+    "tests/test_perf_smoke.py": {
+      "branches": 0,
+      "lines": 51
+    },
+    "tests/test_performance_benchmark.py": {
+      "branches": 19,
+      "lines": 330
+    },
+    "tests/test_performance_regression_report.py": {
+      "branches": 8,
+      "lines": 151
+    },
+    "tests/test_pipeline.py": {
+      "branches": 30,
+      "lines": 1959
+    },
+    "tests/test_pipeline_packaging.py": {
+      "branches": 5,
+      "lines": 322
+    },
+    "tests/test_policy_bench.py": {
+      "branches": 0,
+      "lines": 37
+    },
+    "tests/test_pool_manager.py": {
+      "branches": 25,
+      "lines": 722
+    },
+    "tests/test_pre_push_hook.py": {
+      "branches": 4,
+      "lines": 57
+    },
+    "tests/test_quantization.py": {
+      "branches": 0,
+      "lines": 33
+    },
+    "tests/test_repair.py": {
+      "branches": 12,
+      "lines": 397
+    },
+    "tests/test_repair_runtime.py": {
+      "branches": 0,
+      "lines": 279
+    },
+    "tests/test_result_validation.py": {
+      "branches": 1,
+      "lines": 106
+    },
+    "tests/test_run_tests.py": {
+      "branches": 0,
+      "lines": 128
+    },
+    "tests/test_runtime_profiles.py": {
+      "branches": 11,
+      "lines": 184
+    },
+    "tests/test_runtime_recovery.py": {
+      "branches": 6,
+      "lines": 256
+    },
+    "tests/test_setup_onboarding.py": {
+      "branches": 7,
+      "lines": 658
+    },
+    "tests/test_setup_route.py": {
+      "branches": 14,
+      "lines": 753
+    },
+    "tests/test_setup_runtime.py": {
+      "branches": 23,
+      "lines": 985
+    },
+    "tests/test_source_extensions_contract.py": {
+      "branches": 1,
+      "lines": 28
+    },
+    "tests/test_source_preflight.py": {
+      "branches": 9,
+      "lines": 200
+    },
+    "tests/test_speech_normalizer.py": {
+      "branches": 0,
+      "lines": 20
+    },
+    "tests/test_stage_refactor_contracts.py": {
+      "branches": 2,
+      "lines": 188
+    },
+    "tests/test_storage_maintenance.py": {
+      "branches": 16,
+      "lines": 1252
+    },
+    "tests/test_storage_migrations.py": {
+      "branches": 16,
+      "lines": 538
+    },
+    "tests/test_storage_repository.py": {
+      "branches": 37,
+      "lines": 768
+    },
+    "tests/test_stress_corpus.py": {
+      "branches": 9,
+      "lines": 259
+    },
+    "tests/test_text_cleaner_hypothesis.py": {
+      "branches": 6,
+      "lines": 316
+    },
+    "tests/test_text_parser.py": {
+      "branches": 1,
+      "lines": 50
+    },
+    "tests/test_tts.py": {
+      "branches": 3,
+      "lines": 227
+    },
+    "tests/test_tts_chunker_boundaries.py": {
+      "branches": 1,
+      "lines": 80
+    },
+    "tests/test_tts_chunker_hypothesis.py": {
+      "branches": 17,
+      "lines": 275
+    },
+    "tests/test_tts_engine_modularization.py": {
+      "branches": 30,
+      "lines": 875
+    },
+    "tests/test_tts_engine_session.py": {
+      "branches": 0,
+      "lines": 88
+    },
+    "tests/test_tts_factory_contract.py": {
+      "branches": 5,
+      "lines": 197
+    },
+    "tests/test_tts_perf_optimizations.py": {
+      "branches": 3,
+      "lines": 325
+    },
+    "tests/test_tts_resilience.py": {
+      "branches": 3,
+      "lines": 136
+    },
+    "tests/test_tts_runtime_lock.py": {
+      "branches": 2,
+      "lines": 96
+    },
+    "tests/test_tts_runtime_options.py": {
+      "branches": 0,
+      "lines": 382
+    },
+    "tests/test_tts_runtime_spec.py": {
+      "branches": 2,
+      "lines": 433
+    },
+    "tests/test_upload_lifecycle.py": {
+      "branches": 0,
+      "lines": 91
+    },
+    "tests/test_verify_runtime_profiles.py": {
+      "branches": 43,
+      "lines": 893
+    },
+    "tests/test_voice_recommender.py": {
+      "branches": 5,
+      "lines": 312
+    },
+    "tests/test_voice_service_thread_safety.py": {
+      "branches": 19,
+      "lines": 641
+    },
+    "tests/test_wave1_perf_baseline.py": {
+      "branches": 12,
+      "lines": 403
+    },
+    "tests/test_web_api.py": {
+      "branches": 36,
+      "lines": 1550
+    },
+    "tests/test_web_desktop_auth.py": {
+      "branches": 11,
+      "lines": 439
+    },
+    "tests/test_web_event_shutdown.py": {
+      "branches": 3,
+      "lines": 81
+    },
+    "tests/test_web_events.py": {
+      "branches": 6,
+      "lines": 132
+    },
+    "tests/test_web_import_boundaries.py": {
+      "branches": 12,
+      "lines": 42
+    },
+    "tests/test_web_route_contract.py": {
+      "branches": 5,
+      "lines": 60
+    },
+    "tests/test_web_upload_limits.py": {
+      "branches": 0,
+      "lines": 145
+    },
+    "tests/test_worker_lifecycle.py": {
+      "branches": 4,
+      "lines": 264
+    },
+    "tests/worker_pool_test_helpers.py": {
+      "branches": 20,
+      "lines": 239
+    },
+    "tools/benchmark_parallel_workers.py": {
+      "branches": 9,
+      "lines": 182
+    },
+    "tools/branch_complexity.py": {
+      "branches": 58,
+      "lines": 335
+    },
+    "tools/branch_complexity_ts.mjs": {
+      "branches": 6,
+      "lines": 76
+    },
+    "tools/feedback_loop_runner.py": {
+      "branches": 50,
+      "lines": 451
+    },
+    "tools/frontend_stress/lib/backendProcess.mjs": {
+      "branches": 12,
+      "lines": 134
+    },
+    "tools/frontend_stress/lib/chromiumResolver.mjs": {
+      "branches": 7,
+      "lines": 39
+    },
+    "tools/frontend_stress/lib/cleanupRegistry.mjs": {
+      "branches": 3,
+      "lines": 74
+    },
+    "tools/frontend_stress/lib/frontendProcess.mjs": {
+      "branches": 10,
+      "lines": 89
+    },
+    "tools/frontend_stress/lib/termSelect.mjs": {
+      "branches": 3,
+      "lines": 55
+    },
+    "tools/frontend_stress/lib/util.mjs": {
+      "branches": 8,
+      "lines": 54
+    },
+    "tools/frontend_stress/lib/viteServerChild.mjs": {
+      "branches": 0,
+      "lines": 58
+    },
+    "tools/frontend_stress/run.mjs": {
+      "branches": 43,
+      "lines": 338
+    },
+    "tools/frontend_stress/scenarios.mjs": {
+      "branches": 65,
+      "lines": 858
+    },
+    "vulture_whitelist.py": {
+      "branches": 0,
+      "lines": 91
+    }
+  }
+}

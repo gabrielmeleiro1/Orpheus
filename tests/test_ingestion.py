@@ -51,11 +51,6 @@ class TestPDFParser:
             
             yield mock_open
 
-    def test_init(self, sample_pdf):
-        with patch("modules.ingestion.pdf_parser.validate_pdf", return_value=True):
-            parser = PDFParser(sample_pdf)
-        assert parser.file_path == sample_pdf
-    
     def test_file_not_found(self):
         with pytest.raises(FileNotFoundError):
             PDFParser("nonexistent.pdf")
@@ -624,7 +619,10 @@ def test_ingest_source_passes_pipeline_pdf_extraction_backend(tmp_path):
         log_verbose=lambda *_args, **_kwargs: None,
         notify_progress=lambda *_args, **_kwargs: None,
     )
-    document = SimpleNamespace(chapters=[], title="Book")
+    document = SimpleNamespace(
+        chapters=[SimpleNamespace(title="Book", content="Readable body text.")],
+        title="Book",
+    )
 
     with patch("modules.ingestion.pdf_parser.PDFParser") as mock_parser:
         mock_parser.return_value.parse.return_value = document
@@ -632,3 +630,56 @@ def test_ingest_source_passes_pipeline_pdf_extraction_backend(tmp_path):
         assert ingest_source(pipeline, source_path) is document
 
     mock_parser.assert_called_once_with(source_path, extraction_backend="fitz")
+
+
+def test_ingest_source_raises_when_document_has_no_readable_content(tmp_path):
+    from modules.errors import CorruptedFileError
+
+    source_path = tmp_path / "empty.txt"
+    source_path.write_text("placeholder", encoding="utf-8")
+    pipeline = SimpleNamespace(
+        config=SimpleNamespace(source_type=None, pre_chunk_document_cleanup=False),
+        log_verbose=lambda *_args, **_kwargs: None,
+        notify_progress=lambda *_args, **_kwargs: None,
+    )
+    # Parser returns only whitespace-content chapters: this must surface as a
+    # clear, user-facing error instead of an opaque downstream packaging crash.
+    document = SimpleNamespace(
+        chapters=[SimpleNamespace(title="x", content="   \n\t ")],
+        title="Empty",
+    )
+
+    with patch("modules.ingestion.text_parser.TextParser") as mock_parser:
+        mock_parser.return_value.parse.return_value = document
+
+        with pytest.raises(CorruptedFileError):
+            ingest_source(pipeline, source_path)
+
+
+def test_pdf_parser_raises_when_all_chapters_are_whitespace(sample_pdf):
+    from modules.errors import CorruptedFileError
+
+    with patch("modules.ingestion.pdf_parser.validate_pdf", return_value=True):
+        parser = PDFParser(sample_pdf, extraction_backend="fitz")
+
+    text_layer = SimpleNamespace(
+        requires_ocr=False, confidence=0.99, sampled_pages=2, text_chars=0
+    )
+    mock_doc = MagicMock()
+    mock_doc.__len__.return_value = 2
+    mock_doc.metadata = {"title": "Blank", "author": ""}
+    mock_doc.get_toc.return_value = []
+
+    with patch.object(
+        PDFParser, "_extract_pages", return_value=[{"text": "   "}, {"text": "\n \n"}]
+    ), patch(
+        "modules.ingestion.pdf_parser.analyze_extracted_pdf_text_layer",
+        return_value=text_layer,
+    ), patch(
+        "modules.ingestion.pdf_parser.normalize_pdf_artifacts",
+        side_effect=lambda pages, *args, **kwargs: pages,
+    ), patch("fitz.open") as mock_open:
+        mock_open.return_value.__enter__.return_value = mock_doc
+
+        with pytest.raises(CorruptedFileError):
+            parser.parse()

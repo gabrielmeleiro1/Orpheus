@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from modules.errors import CorruptedFileError
 from modules.ingestion.models import Chapter as IngestionChapter
 from modules.ingestion.models import Document as IngestionDocument
 from modules.ingestion.text_parser import TextParser
@@ -37,3 +40,11 @@ def test_text_parser_decodes_utf16_sources_without_nul_artifacts(tmp_path):
     assert "\x00" not in document.raw_markdown
     assert document.chapters[0].content.startswith("Too much sanity")
     assert "Second paragraph" in document.chapters[0].content
+
+
+def test_text_parser_raises_on_whitespace_only_source(tmp_path):
+    source_path = tmp_path / "blank.txt"
+    source_path.write_text("   \n\n  \t\n", encoding="utf-8")
+
+    with pytest.raises(CorruptedFileError):
+        TextParser(source_path).parse()

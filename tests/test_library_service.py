@@ -71,16 +71,6 @@ def test_library_service_get_book_uses_combined_repository_detail_call():
     assert payload["chapters"][0]["number"] == 1
 
 
-def test_library_service_get_library_count_delegates_to_repository():
-    class _CountRepositoryStub:
-        def count_books(self) -> int:
-            return 7
-
-    service = LibraryService(_CountRepositoryStub())
-
-    assert service.get_library_count() == 7
-
-
 def test_library_service_updates_book_organization_metadata(tmp_path):
     class _UpdateRepositoryStub(_RepositoryStub):
         def __init__(self) -> None:

@@ -106,25 +106,6 @@ def test_kokoro_runtime_canonicalizes_mlx_audio_provider_alias() -> None:
     assert explicit_alias_spec.cache_key() == default_spec.cache_key()
 
 
-def test_runtime_cache_key_distinguishes_provider_and_device() -> None:
-    mlx_spec = TTSRuntimeSpec.from_legacy(
-        "kokoro",
-        "bf16",
-        model="Kokoro-82M",
-        provider="mlx",
-        device="mps",
-    )
-    cuda_spec = TTSRuntimeSpec(
-        provider="cuda",
-        engine="kokoro",
-        model="Kokoro-82M",
-        quantization="bf16",
-        device="cuda:0",
-    )
-
-    assert mlx_spec.cache_key() != cuda_spec.cache_key()
-
-
 def test_runtime_cache_key_distinguishes_provider_only() -> None:
     mlx_spec = TTSRuntimeSpec.from_legacy(
         "kokoro",

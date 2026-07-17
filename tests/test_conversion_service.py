@@ -2677,6 +2677,61 @@ def test_app_controller_cleanup_storage_rejects_active_conversion(tmp_path):
         controller.cleanup_storage(confirm="cleanup")
 
 
+def test_app_controller_backup_database_rejects_active_conversion(tmp_path):
+    """A backup opens its own SQLite connections outside the repository lock, so
+    it must be guarded against an active conversion like cleanup is (defect 8)."""
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    controller = AppController(config=config, repository=_RepositoryStub())
+
+    def _begin_storage_cleanup():
+        raise RuntimeError("Cannot clean up storage while a conversion is queued or running")
+
+    ended = {"count": 0}
+
+    def _end_storage_cleanup():
+        ended["count"] += 1
+
+    controller._conversion_service = SimpleNamespace(  # noqa: SLF001 - injected app service
+        begin_storage_cleanup=_begin_storage_cleanup,
+        end_storage_cleanup=_end_storage_cleanup,
+    )
+
+    with pytest.raises(RuntimeError, match="conversion is queued or running"):
+        controller.backup_database()
+
+
+def test_app_controller_backup_database_runs_and_releases_guard_when_idle(tmp_path):
+    """When no conversion is active the backup proceeds and the guard is
+    released via the storage-cleanup lifecycle (begin then end)."""
+    config = AppConfig(
+        data_dir=tmp_path / "data",
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        db_path=tmp_path / "data" / "app.db",
+    )
+    # A real on-disk database must exist for the backup to copy.
+    from modules.storage.sqlite_repo import SQLiteRepository
+
+    SQLiteRepository(config.db_path).close()
+    controller = AppController(config=config, repository=_RepositoryStub())
+
+    calls: list[str] = []
+    controller._conversion_service = SimpleNamespace(  # noqa: SLF001 - injected app service
+        begin_storage_cleanup=lambda: calls.append("begin"),
+        end_storage_cleanup=lambda: calls.append("end"),
+    )
+
+    backup_path = controller.backup_database()
+
+    assert Path(backup_path).exists()
+    assert calls == ["begin", "end"]
+
+
 def test_conversion_service_has_active_job_reflects_job_state(tmp_path):
     service = _make_service(tmp_path, _PipelineStub)
     assert service.has_active_job() is False

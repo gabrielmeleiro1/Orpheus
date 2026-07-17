@@ -1,7 +1,34 @@
+import logging
 import re
 
 from modules.ingestion.models import Chapter, Document
 from modules.text.document_normalizer import normalize_extracted_document
+
+
+_VERSE_LINES = [
+    "pale moon rising",
+    "cold river flows",
+    "the wind is low",
+    "night falls deep",
+    "stars are bright",
+    "silent are hills",
+    "soft rain falls",
+    "grey clouds go",
+    "birds fly home",
+    "day fades slow",
+]
+
+
+def _verse_chapter(number: int, title: str) -> Chapter:
+    return Chapter(number=number, title=title, content="\n".join(_VERSE_LINES))
+
+
+_SHORT_COPYRIGHT = (
+    "Copyright © 2021 by Harbor House Press.\n"
+    "All rights reserved. No part of this publication may be reproduced.\n"
+    "ISBN 978-0-00-000000-0\n"
+    "Published by Harbor House Press, New York."
+)
 
 
 def test_pdf_document_normalizer_repairs_headers_page_numbers_hyphenation_and_reflow():
@@ -283,3 +310,43 @@ def test_pdf_normalizer_still_strips_digit_and_lowercase_roman_page_numbers():
     assert "More chapter body follows along." in content
     assert "12" not in content
     assert not re.search(r"(?<![A-Za-z])iv(?![A-Za-z])", content)
+
+
+def test_normalizer_keeps_document_when_filtering_would_remove_all_chapters(caplog):
+    # Verse chapter (low_prose_density) + a short copyright page. Neither is
+    # verse-heavy enough to disable the low-prose rule, so both would be
+    # filtered out -- but a filter that deletes the whole book is always wrong.
+    document = Document(
+        title="Everything Filtered",
+        chapters=[
+            _verse_chapter(1, "A Poem"),
+            Chapter(number=2, title="Copyright", content=_SHORT_COPYRIGHT),
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING):
+        normalized = normalize_extracted_document(document, source_type="txt")
+
+    assert [chapter.title for chapter in normalized.chapters] == ["A Poem", "Copyright"]
+    assert normalized.skipped_non_prose_sections == []
+    assert any("unfiltered" in record.getMessage() for record in caplog.records)
+
+
+def test_normalizer_disables_low_prose_rule_for_verse_heavy_books():
+    document = Document(
+        title="Collected Poems",
+        chapters=[
+            _verse_chapter(1, "Dawn"),
+            _verse_chapter(2, "Dusk"),
+            Chapter(
+                number=3,
+                title="Preface",
+                content="This is an ordinary prose preface with real sentences. " * 20,
+            ),
+        ],
+    )
+
+    normalized = normalize_extracted_document(document, source_type="txt")
+
+    assert [chapter.title for chapter in normalized.chapters] == ["Dawn", "Dusk", "Preface"]
+    assert normalized.skipped_non_prose_sections == []

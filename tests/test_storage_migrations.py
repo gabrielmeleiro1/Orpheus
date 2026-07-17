@@ -476,3 +476,63 @@ def test_legacy_rebuild_of_modern_db_preserves_tags_favorite_and_runtime_options
         conn.close()
 
     assert row == ("fiction,long", 1, '{"voice": "af_bella"}')
+
+
+def test_future_schema_version_is_rejected_with_clear_error(tmp_path):
+    """A DB whose recorded schema version exceeds the latest known migration
+    must be refused with a clear message rather than silently operating on an
+    unknown schema (defect 12)."""
+    import pytest
+
+    db_path = tmp_path / "future.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        migrations.run_migrations(conn)
+        future_version = migrations.LATEST_SCHEMA_VERSION + 1
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)", (future_version,)
+        )
+        conn.commit()
+
+        with pytest.raises(migrations.FutureSchemaError, match="newer version of Orpheus"):
+            migrations.run_migrations(conn)
+    finally:
+        conn.close()
+
+
+def test_future_schema_version_surfaces_on_repository_open(tmp_path):
+    """The future-schema guard surfaces as a repository open error, not a crash
+    deep inside a migration."""
+    import pytest
+
+    db_path = tmp_path / "future.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        migrations.run_migrations(conn)
+        conn.execute(
+            "INSERT INTO schema_migrations(version) VALUES (?)",
+            (migrations.LATEST_SCHEMA_VERSION + 3,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    with pytest.raises(migrations.FutureSchemaError):
+        SQLiteRepository(db_path)
+
+
+def test_configure_connection_sets_busy_timeout():
+    """A busy_timeout of 0 makes a competing writer trip an immediate
+    'database is locked'; configure_connection must set a non-zero timeout
+    deterministically regardless of how the connection was opened (defect 8)."""
+    # Open with timeout=0 to defeat Python's default 5s busy_timeout, proving
+    # configure_connection sets the value itself rather than relying on defaults.
+    conn = sqlite3.connect(":memory:", timeout=0)
+    try:
+        assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 0
+        migrations.configure_connection(conn)
+        timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    finally:
+        conn.close()
+    assert timeout_ms == migrations.BUSY_TIMEOUT_MS
+    assert timeout_ms > 0

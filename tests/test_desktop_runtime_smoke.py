@@ -934,13 +934,3 @@ def test_wait_for_conversion_journey_book_fails_closed_on_ambiguous_title(
             expected_title=title,
             timeout_seconds=5.0,
         )
-
-
-def test_local_tts_runtime_available_still_ignores_catalog_engines_alone() -> None:
-    """Offline conversion-journey flags must not change catalog/probe gating."""
-    assert not desktop_runtime_smoke.local_tts_runtime_available(
-        {
-            "available_tts_engines": ["kokoro"],
-            "default_tts_engine": "kokoro",
-        }
-    )

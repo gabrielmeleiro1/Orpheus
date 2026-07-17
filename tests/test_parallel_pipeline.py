@@ -893,11 +893,6 @@ class TestPipelineIntegration:
 
         assert kokoro._shared_pool_fingerprint() != alternate._shared_pool_fingerprint()
 
-    def test_async_chapter_processing(self):
-        """Test async chapter processing coordination - simplified."""
-        # Skip this test as it requires complex mocking with parallel execution
-        pytest.skip("Complex async test - tested via integration tests")
-
     def test_sequential_pipelining_overlaps_encode_with_next_prepare(self, tmp_path):
         """Sequential mode should overlap encode(N) with prepare(N+1) when pipelining is on."""
         config = PipelineConfig(

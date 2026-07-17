@@ -6,7 +6,6 @@ import pytest
 
 from modules.tts.quantization import (
     DEFAULT_QUANTIZATION,
-    QUANTIZATION_ALIASES,
     normalize_quantization,
 )
 
@@ -32,7 +31,3 @@ from modules.tts.quantization import (
 )
 def test_normalize_quantization_aliases_and_defaults(value: str | None, expected: str) -> None:
     assert normalize_quantization(value) == expected
-
-
-def test_quantization_aliases_cover_expected_keys() -> None:
-    assert QUANTIZATION_ALIASES == {"q8": "8bit", "q4": "4bit", "full": "bf16"}

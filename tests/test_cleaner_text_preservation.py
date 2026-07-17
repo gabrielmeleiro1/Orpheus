@@ -452,18 +452,6 @@ class TestRealChapterTextArtifacts:
         assert "DEAR MARKETS" in result
         assert "fascinated by you" in result
 
-    def test_removes_orphaned_hash_f(self):
-        """The '# F' from PDF extraction — rule-based only removes start-of-line
-        headers, so mid-line '# F' won't be caught.  This test documents that
-        the LLM is needed for mid-line artifact removal."""
-        cleaner = _make_rule_only_cleaner()
-        result = cleaner._rule_based_clean(self.CHAPTER_TEXT_WITH_ARTIFACTS)
-        # '**F**' bold markers should be removed at least
-        assert "**" not in result
-        # The underlying issue (orphaned 'F' with '#') is an LLM task;
-        # rule-based cleaning removes the header marker only at line start.
-        # Here we just verify no crash and bold is removed.
-
     def test_preserves_years_as_numbers(self):
         """Years like 1973, 1987 should remain as digits (rule-based doesn't touch them)."""
         text = (

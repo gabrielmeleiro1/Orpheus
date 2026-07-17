@@ -230,10 +230,18 @@ class PDFParser:
             
             valid_chapters.append(chapter)
         
+        # Guard against a document that parsed to no readable narrative content
+        # (0-byte/whitespace-only source), mirroring the EPUB empty-output guard.
+        if not any(chapter.content.strip() for chapter in valid_chapters):
+            raise CorruptedFileError(
+                message="PDF contains no readable text",
+                file_path=self.file_path,
+            )
+
         # Renumber chapters after filtering
         for i, chapter in enumerate(valid_chapters):
             chapter.number = i + 1
-        
+
         return Document(
             title=title,
             author=author if author else None,

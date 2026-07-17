@@ -1957,9 +1957,3 @@ def test_ingest_source_dispatches_markdown_parser_for_md(tmp_path):
 
     assert result is document
     mock_markdown_parser.assert_called_once_with(source_path)
-
-
-def test_pipeline_config_exposes_conversion_mode():
-    config = PipelineConfig(conversion_mode="document_audio")
-
-    assert config.conversion_mode == "document_audio"

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from modules.errors import CorruptedFileError
 from modules.ingestion.models import Document
 
 
@@ -78,6 +79,17 @@ def ingest_source(runtime: Any, source_path: Path):
             f"{raw_chapters} -> {normalized_chapters} chapters, "
             f"{raw_chars} -> {normalized_chars} chars",
             "info",
+        )
+
+    readable_chapters = [
+        chapter
+        for chapter in document.chapters
+        if str(getattr(chapter, "content", "") or "").strip()
+    ]
+    if not readable_chapters:
+        raise CorruptedFileError(
+            message="Document contains no readable narrative content",
+            file_path=source_path,
         )
 
     num_chapters = len(document.chapters)

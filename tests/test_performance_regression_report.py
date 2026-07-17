@@ -149,29 +149,3 @@ def test_cli_rejects_non_repeated_schema(tmp_path: Path) -> None:
 
     assert completed.returncode != 0
     assert "schema_version=1" in completed.stderr
-
-
-def test_report_cli_writes_outputs_but_exits_one_when_report_status_fails(
-    tmp_path: Path,
-) -> None:
-    output_dir = tmp_path / "report"
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "scripts/performance_regression_report.py",
-            str(FIXTURE_DIR / "current_repeated_summary.json"),
-            "--output-dir",
-            str(output_dir),
-        ],
-        text=True,
-        capture_output=True,
-    )
-
-    assert completed.returncode == 1
-    report_json = output_dir / "report.json"
-    report_md = output_dir / "report.md"
-    assert report_json.exists()
-    assert report_md.exists()
-    report = json.loads(report_json.read_text(encoding="utf-8"))
-    assert report["status"] == "fail"

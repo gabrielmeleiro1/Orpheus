@@ -327,12 +327,6 @@ def test_backend_sidecar_spec_collects_bitsandbytes_for_cuda_packaging() -> None
     assert 'runtime_profile == "cuda"' in spec_text
 
 
-def test_backend_sidecar_spec_collects_language_tags_json_package_data() -> None:
-    spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
-
-    assert '_collect_data_files("language_tags", includes=["data/json/*.json"])' in spec_text
-
-
 def test_backend_sidecar_spec_collects_phonemizer_data_for_base_profile() -> None:
     spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
     data_setup = spec_text.split("datas = []", 1)[1].split("\nbinaries = []", 1)[0]

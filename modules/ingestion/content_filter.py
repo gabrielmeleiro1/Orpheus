@@ -81,9 +81,18 @@ _COPYRIGHT_TERMS = (
 _WORD_RE = re.compile(r"[A-Za-z]{2,}")
 _ALPHA_RE = re.compile(r"[A-Za-z]")
 _NUMBER_ONLY_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdm]{1,10}|[A-Z])\s*$", re.IGNORECASE)
+# Real copyright / imprint pages are front matter of a few hundred words. A
+# longer chapter that merely discusses publishing (publishers, ISBNs,
+# permissions) is narrative prose and must never be deleted on term hits alone.
+_MAX_COPYRIGHT_WORDS = 450
 
 
-def classify_chapter_content(title: str, content: str) -> ContentClassification:
+def classify_chapter_content(
+    title: str,
+    content: str,
+    *,
+    enable_low_prose_density: bool = True,
+) -> ContentClassification:
     title_text = title or ""
     lines = _content_lines(content)
 
@@ -97,20 +106,35 @@ def classify_chapter_content(title: str, content: str) -> ContentClassification:
         return ContentClassification(True, "index", 0.95)
     if _is_references(title_text, lines):
         return ContentClassification(True, "references", 0.92)
-    if _is_low_prose_density(lines):
+    if enable_low_prose_density and _is_low_prose_density(lines):
         return ContentClassification(True, "low_prose_density", 0.88)
 
     return ContentClassification(False, None, 0.2)
 
 
-def filter_audiobook_chapters(chapters: list[Any]) -> tuple[list[Any], list[SkippedSection]]:
+def is_verse_like(content: str) -> bool:
+    """True when a chapter has the short-line shape of verse/poetry.
+
+    Exposed so document-level callers can detect verse-heavy books (poetry
+    collections) and disable the low-prose-density rule for them.
+    """
+    return _is_low_prose_density(_content_lines(content))
+
+
+def filter_audiobook_chapters(
+    chapters: list[Any],
+    *,
+    enable_low_prose_density: bool = True,
+) -> tuple[list[Any], list[SkippedSection]]:
     retained: list[Any] = []
     skipped: list[SkippedSection] = []
 
     for chapter in chapters:
         title = str(getattr(chapter, "title", "") or "")
         content = str(getattr(chapter, "content", "") or "")
-        classification = classify_chapter_content(title, content)
+        classification = classify_chapter_content(
+            title, content, enable_low_prose_density=enable_low_prose_density
+        )
 
         if classification.should_skip:
             skipped.append(
@@ -183,6 +207,11 @@ def _is_map_list(title: str, lines: list[str]) -> bool:
 
 
 def _is_copyright(title: str, content: str) -> bool:
+    # Length gate first: a chapter longer than a real copyright page is prose
+    # about publishing, not a copyright page, no matter how many bibliographic
+    # terms it mentions.
+    if len(content.split()) > _MAX_COPYRIGHT_WORDS:
+        return False
     normalized = f"{title}\n{content}".lower()
     hits = sum(1 for term in _COPYRIGHT_TERMS if term in normalized)
     return bool(_COPYRIGHT_TITLE_RE.search(title) and hits >= 2) or hits >= 4

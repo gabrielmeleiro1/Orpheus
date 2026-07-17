@@ -13,7 +13,21 @@ import time
 from typing import Any, Optional
 
 from modules.pipeline.book_workspace import sanitize_book_title
+from modules.storage.migrations import BUSY_TIMEOUT_MS
 from modules.storage.models import PlaybackStatus
+
+
+def _connect(db_path: Path | str) -> sqlite3.Connection:
+    """Open a maintenance-owned SQLite connection.
+
+    Maintenance bypasses the repository's shared connection/lock, so it must
+    set its own ``busy_timeout``; otherwise a maintenance read/backup taken
+    while a conversion holds the write lock fails immediately with
+    'database is locked'.
+    """
+    conn = sqlite3.connect(db_path)
+    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+    return conn
 
 # Output sub-directories owned by the maintenance tooling itself (e.g. prune
 # report JSON). These must never be treated as orphan/stale artifacts, otherwise
@@ -122,8 +136,8 @@ def backup_database(
     target_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     target = unique_destination_path(target_dir / f"{source.stem}_{stamp}{source.suffix}")
-    source_conn = sqlite3.connect(source)
-    target_conn = sqlite3.connect(target)
+    source_conn = _connect(source)
+    target_conn = _connect(target)
     try:
         source_conn.backup(target_conn)
     finally:
@@ -166,6 +180,53 @@ def _delete_file_and_verify(path: Path) -> None:
         raise OSError(f"Failed to delete file: {path}")
 
 
+def _delete_symlink_and_verify(path: Path) -> None:
+    """Remove a symlink itself, never following it to its (possibly external)
+    target. ``Path.unlink`` deletes the link entry, so a symlink that an audit
+    classified as an orphan is cleaned up without touching whatever it points
+    at outside the managed roots."""
+    path.unlink()
+    if path.is_symlink() or path.exists():
+        raise OSError(f"Failed to delete symlink: {path}")
+
+
+def _is_within_root_no_follow(path: Path, root: Path) -> bool:
+    """Lexical containment check that never dereferences symlinks.
+
+    Both operands originate from the managed roots (audit lists only direct
+    children of the resolved roots), so a plain ``relative_to`` is a sufficient
+    guard against deleting anything outside the managed storage without
+    resolving — resolving would follow a symlinked entry to its real target."""
+    try:
+        Path(path).expanduser().relative_to(Path(root).expanduser())
+    except ValueError:
+        return False
+    return True
+
+
+def _delete_orphan_entry(path: Path, root: Path, *, expect_dir: bool) -> bool:
+    """Delete an orphan artifact under ``root`` safely; return whether removed.
+
+    A symlink is unlinked (the link only, never its target). A real entry is
+    verified to live under ``root`` without dereferencing before removal, so a
+    symlinked or traversing path can never redirect deletion outside managed
+    storage.
+    """
+    if path.is_symlink():
+        _delete_symlink_and_verify(path)
+        return True
+    if not _is_within_root_no_follow(path, root):
+        return False
+    if expect_dir:
+        if path.exists() and path.is_dir():
+            _delete_directory_and_verify(path)
+            return True
+    elif path.exists() and path.is_file():
+        _delete_file_and_verify(path)
+        return True
+    return False
+
+
 def audit_storage_state(
     db_path: Path | str,
     output_dir: Path | str = "output",
@@ -189,7 +250,7 @@ def audit_storage_state(
     assert temp_root is not None
     durable_sources_root = canonical_sources_dir(db_file).resolve()
 
-    conn = sqlite3.connect(db_file)
+    conn = _connect(db_file)
     conn.row_factory = sqlite3.Row
     try:
         row_counts = {
@@ -284,11 +345,16 @@ def audit_storage_state(
             if is_app_owned_durable_source(source_path, durable_sources_root):
                 durable_source_refs.add(source_path.resolve())
 
+        # Classify by each entry's own (non-dereferenced) path. A symlink is
+        # reported by its link path — never resolved to its target — so the
+        # delete phase unlinks the link instead of rmtree-ing whatever it
+        # points at outside the managed roots.
         actual_output_dirs = (
             {
-                str(p.resolve())
+                str(p)
                 for p in output_root.iterdir()
-                if p.is_dir() and p.name not in RESERVED_OUTPUT_DIR_NAMES
+                if (p.is_symlink() or p.is_dir())
+                and p.name not in RESERVED_OUTPUT_DIR_NAMES
             }
             if output_root.exists()
             else set()
@@ -300,7 +366,7 @@ def audit_storage_state(
 
         temp_upload_dir = temp_root / "web_uploads"
         actual_temp_uploads = (
-            {p.resolve() for p in temp_upload_dir.iterdir() if p.is_file()}
+            {p for p in temp_upload_dir.iterdir() if p.is_symlink() or p.is_file()}
             if temp_upload_dir.exists()
             else set()
         )
@@ -309,7 +375,7 @@ def audit_storage_state(
         )
 
         actual_durable_sources = (
-            {p.resolve() for p in durable_sources_root.iterdir() if p.is_file()}
+            {p for p in durable_sources_root.iterdir() if p.is_symlink() or p.is_file()}
             if durable_sources_root.exists()
             else set()
         )
@@ -318,16 +384,20 @@ def audit_storage_state(
         )
 
         stale_temp_stage_dirs = _recency_filter(
-            (path.resolve() for path in temp_root.glob("ch_*") if path.is_dir()),
+            (
+                path
+                for path in temp_root.glob("ch_*")
+                if path.is_symlink() or path.is_dir()
+            ),
             recency_cutoff,
         )
 
         delete_staging_root = temp_root / "delete_staging"
         orphan_delete_staging_dirs = _recency_filter(
             (
-                path.resolve()
+                path
                 for path in delete_staging_root.iterdir()
-                if path.is_dir()
+                if path.is_symlink() or path.is_dir()
             ),
             recency_cutoff,
         ) if delete_staging_root.exists() else []
@@ -358,7 +428,7 @@ def _move_referenced_upload_sources(
     canonical_sources_dir: Path,
 ) -> list[dict[str, Any]]:
     moved_sources: list[dict[str, Any]] = []
-    conn = sqlite3.connect(db_file)
+    conn = _connect(db_file)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -573,7 +643,7 @@ def prune_stale_records_and_files(
         "reconciled_playback": [],
     }
 
-    conn = sqlite3.connect(db_file)
+    conn = _connect(db_file)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
@@ -684,32 +754,28 @@ def prune_stale_records_and_files(
     )
     for raw in audit_mid["orphan_output_dirs"]:
         path = Path(raw)
-        if path.exists() and path.is_dir():
-            _delete_directory_and_verify(path)
+        if _delete_orphan_entry(path, output_root, expect_dir=True):
             actions["deleted_output_dirs"].append(str(path))
 
+    temp_upload_dir = temp_root / "web_uploads"
     for raw in audit_mid["stale_temp_uploads"]:
         path = Path(raw)
-        if path.exists() and path.is_file():
-            _delete_file_and_verify(path)
+        if _delete_orphan_entry(path, temp_upload_dir, expect_dir=False):
             actions["deleted_temp_uploads"].append(str(path))
 
     for raw in audit_mid["stale_temp_stage_dirs"]:
         path = Path(raw)
-        if path.exists() and path.is_dir():
-            _delete_directory_and_verify(path)
+        if _delete_orphan_entry(path, temp_root, expect_dir=True):
             actions["deleted_temp_stage_dirs"].append(str(path))
 
     for raw in audit_mid["orphan_durable_sources"]:
         path = Path(raw)
-        if path.exists() and path.is_file():
-            _delete_file_and_verify(path)
+        if _delete_orphan_entry(path, sources_dir, expect_dir=False):
             actions["deleted_durable_sources"].append(str(path))
 
     for raw in audit_mid.get("orphan_delete_staging_dirs", []):
         path = Path(raw)
-        if path.exists() and path.is_dir():
-            _delete_directory_and_verify(path)
+        if _delete_orphan_entry(path, temp_root / "delete_staging", expect_dir=True):
             actions["deleted_delete_staging_dirs"].append(str(path))
 
     delete_staging_root = temp_root / "delete_staging"

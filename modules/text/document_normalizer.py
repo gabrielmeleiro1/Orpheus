@@ -14,6 +14,7 @@ from modules.ingestion.content_filter import (
     SkippedSection,
     classify_chapter_content,
     filter_audiobook_chapters,
+    is_verse_like,
     serialize_skipped_section,
 )
 
@@ -377,17 +378,94 @@ def normalize_extracted_document(
 
     source_type = source_type.lower().lstrip(".")
     chapters = list(document.chapters)
-    repeated_headers = _detect_repeated_headers(chapters) if source_type == "pdf" else set()
-    skipped_sections: list[SkippedSection] = []
-
-    normalized_chapters: list[Chapter] = []
     for chapter in chapters:
         if not is_dataclass(chapter):
             return document
+
+    repeated_headers = _detect_repeated_headers(chapters) if source_type == "pdf" else set()
+
+    # A verse-heavy book (poetry collection) is a legitimate audiobook. The
+    # low-prose-density rule would strip its poems one by one, so disable that
+    # single rule when more than half of the readable chapters look like verse.
+    enable_low_prose_density = not (
+        skip_non_prose_sections and _is_verse_heavy(chapters)
+    )
+
+    normalized_chapters, skipped_sections = _normalize_chapters(
+        chapters,
+        source_type=source_type,
+        apply_non_prose_filter=skip_non_prose_sections,
+        apply_epub_non_narrative=True,
+        enable_low_prose_density=enable_low_prose_density,
+        repeated_headers=repeated_headers,
+        max_chapter_words=max_chapter_words,
+    )
+
+    # A non-prose filter that deletes the entire book is always wrong for an
+    # audiobook app. If filtering would remove every chapter of a multi-chapter
+    # book while the source had readable content, keep the document unfiltered
+    # and warn instead. A single standalone back-matter section (an index or
+    # copyright page on its own) is still allowed to filter down to nothing.
+    had_readable_content = any(str(chapter.content).strip() for chapter in chapters)
+    if (
+        skip_non_prose_sections
+        and had_readable_content
+        and len(chapters) > 1
+        and not normalized_chapters
+    ):
+        LOGGER.warning(
+            "Non-prose filtering would remove all %d chapters of %r; "
+            "keeping the document unfiltered.",
+            len(chapters),
+            getattr(document, "title", ""),
+        )
+        normalized_chapters, skipped_sections = _normalize_chapters(
+            chapters,
+            source_type=source_type,
+            apply_non_prose_filter=False,
+            apply_epub_non_narrative=False,
+            enable_low_prose_density=True,
+            repeated_headers=repeated_headers,
+            max_chapter_words=max_chapter_words,
+        )
+
+    return replace(
+        document,
+        chapters=normalized_chapters,
+        skipped_non_prose_sections=[
+            serialize_skipped_section(section) for section in skipped_sections
+        ],
+    )
+
+
+def _is_verse_heavy(chapters: list[Chapter]) -> bool:
+    """True when more than half of the readable chapters look like verse."""
+    readable = [chapter for chapter in chapters if str(chapter.content).strip()]
+    if len(readable) < 2:
+        return False
+    verse = sum(1 for chapter in readable if is_verse_like(str(chapter.content)))
+    return verse * 2 > len(readable)
+
+
+def _normalize_chapters(
+    chapters: list[Chapter],
+    *,
+    source_type: str,
+    apply_non_prose_filter: bool,
+    apply_epub_non_narrative: bool,
+    enable_low_prose_density: bool,
+    repeated_headers: set[str],
+    max_chapter_words: int,
+) -> tuple[list[Chapter], list[SkippedSection]]:
+    skipped_sections: list[SkippedSection] = []
+    normalized_chapters: list[Chapter] = []
+    for chapter in chapters:
         title = str(chapter.title).strip()
         content = str(chapter.content)
-        if skip_non_prose_sections:
-            classification = classify_chapter_content(title, content)
+        if apply_non_prose_filter:
+            classification = classify_chapter_content(
+                title, content, enable_low_prose_density=enable_low_prose_density
+            )
             if classification.should_skip:
                 skipped_sections.append(
                     SkippedSection(
@@ -399,7 +477,11 @@ def normalize_extracted_document(
                     )
                 )
                 continue
-        if source_type == "epub" and _is_epub_non_narrative_chapter(title, content):
+        if (
+            apply_epub_non_narrative
+            and source_type == "epub"
+            and _is_epub_non_narrative_chapter(title, content)
+        ):
             skipped_sections.append(
                 SkippedSection(
                     original_number=chapter.number,
@@ -428,15 +510,11 @@ def normalize_extracted_document(
             )
 
     renumbered_chapters = _renumber(normalized_chapters)
-    if skip_non_prose_sections:
-        retained_chapters, filtered_skipped = filter_audiobook_chapters(renumbered_chapters)
+    if apply_non_prose_filter:
+        retained_chapters, filtered_skipped = filter_audiobook_chapters(
+            renumbered_chapters, enable_low_prose_density=enable_low_prose_density
+        )
         skipped_sections.extend(filtered_skipped)
         renumbered_chapters = retained_chapters
 
-    return replace(
-        document,
-        chapters=renumbered_chapters,
-        skipped_non_prose_sections=[
-            serialize_skipped_section(section) for section in skipped_sections
-        ],
-    )
+    return renumbered_chapters, skipped_sections

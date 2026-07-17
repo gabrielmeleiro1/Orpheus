@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import pytest
+
+from modules.errors import CorruptedFileError
 from modules.ingestion.models import Chapter as IngestionChapter
 from modules.ingestion.models import Document as IngestionDocument
 from modules.ingestion.markdown_parser import MarkdownParser
@@ -53,3 +56,11 @@ def test_markdown_parser_decodes_utf16_sources_and_splits_headings(tmp_path):
     assert document.title == "Guide"
     assert [chapter.title for chapter in document.chapters] == ["Guide", "Usage"]
     assert "Overview text." in document.chapters[0].content
+
+
+def test_markdown_parser_raises_on_whitespace_only_source(tmp_path):
+    source_path = tmp_path / "blank.md"
+    source_path.write_text("   \n\n \t\n", encoding="utf-8")
+
+    with pytest.raises(CorruptedFileError):
+        MarkdownParser(source_path).parse()

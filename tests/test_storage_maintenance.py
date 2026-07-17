@@ -1137,3 +1137,116 @@ def test_prune_retains_upload_source_file_until_source_move_commits(tmp_path, mo
     finally:
         conn.close()
     assert Path(stored) == moved[0]
+
+
+def _seed_playable_book(db_path: Path, output_dir: Path) -> None:
+    """Create a fully-playable book so prune has no reason to touch its dir."""
+    keep_dir = output_dir / "Keep Book"
+    keep_dir.mkdir(parents=True, exist_ok=True)
+    packaged = keep_dir / "book.m4b"
+    packaged.write_bytes(b"audio")
+    repo = SQLiteRepository(db_path, output_dir=output_dir)
+    try:
+        repo.create_book_with_chapters(
+            BookCreate(
+                title="Keep Book",
+                author="Author",
+                source_path=str(packaged),
+                source_type=SourceType.EPUB,
+                total_chapters=1,
+                playback_path=str(packaged),
+                playback_status=PlaybackStatus.PACKAGED,
+            ),
+            [ChapterCreate(book_id=0, chapter_number=1, title="One", mp3_path=str(packaged))],
+        )
+    finally:
+        repo.close()
+
+
+def test_prune_deletes_orphan_symlink_without_following_to_external_target(tmp_path):
+    """A symlink under output/ pointing outside the managed roots must be
+    unlinked as an orphan without deleting whatever it targets (data-loss)."""
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_playable_book(db_path, output_dir)
+
+    outside = root / "outside_documents"
+    outside.mkdir(parents=True, exist_ok=True)
+    sentinel = outside / "irreplaceable.txt"
+    sentinel.write_text("user data outside the workspace", encoding="utf-8")
+
+    orphan_link = output_dir / "Malicious Link"
+    orphan_link.symlink_to(outside, target_is_directory=True)
+
+    report = prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+        grace_seconds=0,
+    )
+
+    # The real external directory and its sentinel survive untouched.
+    assert outside.exists()
+    assert sentinel.exists()
+    assert sentinel.read_text(encoding="utf-8") == "user data outside the workspace"
+    # The symlink itself is gone.
+    assert not orphan_link.is_symlink()
+    assert not orphan_link.exists()
+    assert str(orphan_link) in report["actions"]["deleted_output_dirs"]
+
+
+def test_prune_deletes_orphan_symlink_file_under_durable_sources(tmp_path):
+    """A symlink file under the durable sources root is unlinked without
+    following it to an external file target."""
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _seed_playable_book(db_path, output_dir)
+
+    sources_dir = maintenance_module.canonical_sources_dir(db_path)
+    sources_dir.mkdir(parents=True, exist_ok=True)
+
+    outside = root / "outside_documents"
+    outside.mkdir(parents=True, exist_ok=True)
+    target = outside / "precious.epub"
+    target.write_bytes(b"%EPUB precious user file")
+
+    orphan_link = sources_dir / "orphan_link.epub"
+    orphan_link.symlink_to(target)
+
+    prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+        grace_seconds=0,
+    )
+
+    assert target.exists()
+    assert target.read_bytes() == b"%EPUB precious user file"
+    assert not orphan_link.is_symlink()
+    assert not orphan_link.exists()
+
+
+def test_maintenance_connections_set_busy_timeout(tmp_path):
+    """Maintenance owns SQLite connections outside the repository lock, so they
+    must carry a non-zero busy_timeout (defect 8)."""
+    db_path = tmp_path / "data" / "audiobooks.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    SQLiteRepository(db_path).close()
+
+    conn = maintenance_module._connect(db_path)
+    try:
+        timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    finally:
+        conn.close()
+    assert timeout_ms == maintenance_module.BUSY_TIMEOUT_MS
+    assert timeout_ms > 0

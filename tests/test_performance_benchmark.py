@@ -160,23 +160,6 @@ class TestTTSPerformance:
         # Performance should be reasonable even with overhead
         assert result.chars_per_second > 10, "Performance too slow for short text"
     
-    def test_tts_medium_text_performance(self, sample_texts, mock_tts_engine):
-        """
-        Benchmark TTS with medium text (~800 chars).
-        """
-        result = self.benchmark_tts_speed(
-            sample_texts["medium"],
-            mock_tts_engine,
-            iterations=3
-        )
-        
-        print(f"\nMedium text benchmark: {result.chars_per_second:.2f} chars/sec")
-        print(f"  Total chars: {result.total_chars}")
-        print(f"  Elapsed: {result.elapsed_seconds:.3f}s")
-        
-        # Should be faster per char than short text (amortized overhead)
-        assert result.chars_per_second > 50, "Performance too slow for medium text"
-    
     def test_tts_long_text_performance(self, sample_texts, mock_tts_engine):
         """
         Benchmark TTS with long text (~5000 chars).
@@ -262,22 +245,6 @@ class TestTTSPerformance:
         
         # Chunking should be very fast
         assert chars_per_sec > 10000, "Chunker performance too slow"
-    
-    def test_parallel_vs_sequential_benchmark(self, sample_texts, mock_tts_engine):
-        """
-        Benchmark to ensure parallel processing provides speedup.
-        
-        This checks that the overhead of parallelization is worth it.
-        """
-        # Sequential benchmark
-        text = sample_texts["medium"]
-        sequential_result = self.benchmark_tts_speed(text, mock_tts_engine, iterations=3)
-        
-        # Note: In a real test, we'd run parallel here too
-        # For now, just verify sequential works as expected
-        
-        print(f"\nSequential processing: {sequential_result.chars_per_second:.2f} chars/sec")
-        assert sequential_result.chars_per_second > 0
 
 
 @pytest.mark.integration
