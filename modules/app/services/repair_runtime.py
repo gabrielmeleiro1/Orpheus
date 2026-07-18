@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import re
 from typing import Any, Iterable
 
 from modules.app.config import AppConfig
@@ -34,6 +35,40 @@ PERSISTED_REPAIR_RUNTIME_FIELDS: frozenset[str] = frozenset(
 # them explicitly (e.g. re-entering a cloud cleaner API key).
 EXPLICIT_ONLY_REPAIR_RUNTIME_FIELDS: frozenset[str] = frozenset({"cleaner_api_key"})
 
+_PERSISTED_CREDENTIAL_KEY_SUFFIXES: tuple[str, ...] = (
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "authorization",
+)
+
+
+def _is_persisted_credential_key(key: object) -> bool:
+    """Return whether a mapping key names a credential-like value."""
+    normalized = re.sub(r"(?<!^)(?=[A-Z])", "_", str(key)).casefold()
+    segments = tuple(part for part in re.split(r"[_-]+", normalized) if part)
+    compact = normalized.replace("_", "").replace("-", "")
+    return any(
+        compact == suffix or compact.endswith(suffix) or suffix in segments
+        for suffix in _PERSISTED_CREDENTIAL_KEY_SUFFIXES
+    )
+
+
+def _strip_persisted_credentials(value: Any) -> Any:
+    """Deep-copy JSON-like runtime options while dropping credential keys."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_persisted_credentials(item)
+            for key, item in value.items()
+            if not _is_persisted_credential_key(key)
+        }
+    if isinstance(value, list):
+        return [_strip_persisted_credentials(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_strip_persisted_credentials(item) for item in value)
+    return value
+
 
 class RepairRuntimeUnavailableError(ValueError):
     """Raised when repair cannot infer narration settings safely."""
@@ -44,7 +79,7 @@ def serialize_persisted_runtime_options(
 ) -> dict[str, Any]:
     """Return narration settings safe to store on a book record."""
     payload = {
-        field: getattr(runtime_options, field)
+        field: _strip_persisted_credentials(getattr(runtime_options, field))
         for field in PERSISTED_REPAIR_RUNTIME_FIELDS
     }
     return {key: value for key, value in payload.items() if value is not None}

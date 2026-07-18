@@ -60,6 +60,34 @@ def test_serialize_persisted_runtime_options_omits_parallel_and_api_key_fields()
     assert "max_parallel_chapters" not in payload
 
 
+def test_serialize_persisted_runtime_options_strips_nested_credentials() -> None:
+    payload = serialize_persisted_runtime_options(
+        ConversionRuntimeOptions(
+            voice="af_bella",
+            tts_options={
+                "quantization": "bf16",
+                "provider_options": {
+                    "device_id": 0,
+                    "api_key": "sk-secret",
+                    "nested": {
+                        "token": "secret-token",
+                        "dtype": "fp16",
+                    },
+                },
+                "authorization": "Bearer secret",
+            },
+        )
+    )
+
+    assert payload["tts_options"] == {
+        "quantization": "bf16",
+        "provider_options": {
+            "device_id": 0,
+            "nested": {"dtype": "fp16"},
+        },
+    }
+
+
 def test_apply_repair_worker_defaults_uses_safe_auto_planning() -> None:
     resolved = apply_repair_worker_defaults(
         ConversionRuntimeOptions(
