@@ -57,8 +57,8 @@ def test_ci_validates_sources_without_producing_releases() -> None:
         "python -m ruff check .",
         "npm run typecheck",
         "npm test -- --run",
-        "cargo test",
-        "cargo check",
+        "cargo test --locked -- --test-threads=1",
+        "cargo check --locked",
     )
     for entry in required_entries:
         assert entry in contents
