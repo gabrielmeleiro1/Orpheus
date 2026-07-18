@@ -197,6 +197,11 @@ describe("packaged backend install flow", () => {
     expect(state.completedStages).toEqual(["packages"]);
     expect(state.message).toBe("Downloading Qwen Cleaner (2 of 2)…");
 
+    const stopping = modelDownloadProgressEvent({ ...running, lifecycle: "stopping" });
+    expect(stopping.message).toContain("Cancellation requested");
+    const cancelled = modelDownloadProgressEvent({ ...running, lifecycle: "cancelled" });
+    expect(cancelled.message).toBe("Model download cancelled.");
+
     const complete = applyProgressEvent(state, modelDownloadProgressEvent({
       ...running,
       completed_models: 2,

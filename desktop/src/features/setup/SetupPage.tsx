@@ -309,7 +309,7 @@ export function SetupPage({
     }
     let active = true;
     void apiClient.getRuntimeModelDownloadStatus({ timeoutMs: 8_000 }).then((snapshot) => {
-      if (!active || snapshot.lifecycle !== "running") return;
+      if (!active || !["running", "stopping"].includes(snapshot.lifecycle)) return;
       lastAttempt.current = "backend";
       startLocked.current = true;
       setBusy(true);
@@ -353,6 +353,11 @@ export function SetupPage({
       setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
       if (snapshot.lifecycle === "complete") {
         setDownloadPhase("adopting");
+      } else if (snapshot.lifecycle === "cancelled") {
+        setDownloadPhase("idle");
+        startLocked.current = false;
+        setBusy(false);
+        setProgress({ ...EMPTY_PROGRESS, message: "Model download cancelled." });
       } else if (snapshot.lifecycle === "failed" || snapshot.lifecycle === "idle") {
         const message = snapshot.lifecycle === "failed"
           ? snapshot.error ?? "Model download failed."
@@ -580,7 +585,23 @@ export function SetupPage({
   };
 
   const cancel = async () => {
-    if (!busy || !mutationsAvailable) return;
+    if (!busy) return;
+    if (packagedMode && downloadPhase === "downloading" && apiClient) {
+      try {
+        const snapshot = await apiClient.cancelRuntimeModelDownload({ timeoutMs: 8_000 });
+        setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
+        if (snapshot.lifecycle === "cancelled") {
+          setDownloadPhase("idle");
+          startLocked.current = false;
+          setBusy(false);
+          setProgress({ ...EMPTY_PROGRESS, message: "Model download cancelled." });
+        }
+      } catch (reason: unknown) {
+        setError(safeError(reason, "Model download could not be cancelled."));
+      }
+      return;
+    }
+    if (!mutationsAvailable) return;
     try {
       const runner = await bridge.cancel();
       setProgress((previous) => applyRunnerStatus(previous, runner));
@@ -895,7 +916,7 @@ export function SetupPage({
               <button className="btn btn-compact setup-tertiary" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button>
             </div>
             <div className="setup-actions">
-              {busy && mutationsAvailable ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
+              {busy && (mutationsAvailable || (packagedMode && downloadPhase === "downloading")) ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
               {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
               {showRestart ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || !mutationsAvailable} onClick={() => void restart()}>Restart Orpheus</button> : installedReady ? <button className="btn btn-primary setup-primary" type="button" disabled={adoptDisabled} onClick={() => void adoptInstalled()}>Continue</button> : packagedMode && selection.profile === "base" ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || adopting} onClick={() => void continueLibraryOnly()}>Use library only</button> : packagedMode && backendInstallProfile !== null && selection.profile === backendInstallProfile ? <button className="btn btn-primary setup-primary" type="button" disabled={!backendReadyToStart} onClick={() => void installFromBackend()}>Install</button> : <button className="btn btn-primary setup-primary" type="button" disabled={!readyToStart} onClick={() => void start()}>{selection.profile === "base" ? "Use library only" : "Install"}</button>}
             </div>

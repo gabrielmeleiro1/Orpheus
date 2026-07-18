@@ -108,6 +108,7 @@ export interface ApiClient {
     request: RuntimeModelDownloadRequest,
     options?: ApiRequestOptions,
   ): Promise<RuntimeModelDownloadStatus>;
+  cancelRuntimeModelDownload(options?: ApiRequestOptions): Promise<RuntimeModelDownloadStatus>;
   warmupParallelWorkers(payload: ParallelWarmupRequest, options?: ApiRequestOptions): Promise<ParallelWorkerRecommendation>;
   preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight>;
   uploadSourceFile(file: File, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
@@ -464,6 +465,15 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     });
   }
 
+  async function cancelRuntimeModelDownload(
+    options?: ApiRequestOptions,
+  ): Promise<RuntimeModelDownloadStatus> {
+    return requestJson<RuntimeModelDownloadStatus>("/api/setup/models/download/cancel", {
+      method: "POST",
+      ...options,
+    });
+  }
+
   async function deleteRuntimeSetupData(
     options?: ApiRequestOptions,
   ): Promise<RuntimeSetupRuntimeDeleteResponse> {
@@ -758,6 +768,7 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     deleteRuntimeSetupData,
     getRuntimeModelDownloadStatus,
     startRuntimeModelDownload,
+    cancelRuntimeModelDownload,
     warmupParallelWorkers,
     preflightSource,
     uploadSourceFile,

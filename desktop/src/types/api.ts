@@ -50,7 +50,7 @@ export interface RuntimeSetupInstalledRuntime {
 }
 
 export interface RuntimeModelDownloadStatus {
-  lifecycle: "idle" | "running" | "complete" | "failed";
+  lifecycle: "idle" | "running" | "stopping" | "cancelled" | "complete" | "failed";
   profile: string | null;
   model_groups: string[];
   total_models: number;

@@ -182,6 +182,20 @@ export function backendInstallProfileId(
 export function modelDownloadProgressEvent(
   status: RuntimeModelDownloadStatus,
 ): SetupProgressEvent {
+  if (status.lifecycle === "stopping") {
+    return {
+      event: "status",
+      stage: "models",
+      message: "Cancellation requested; waiting for the current download to stop…",
+    };
+  }
+  if (status.lifecycle === "cancelled") {
+    return {
+      event: "status",
+      stage: "models",
+      message: "Model download cancelled.",
+    };
+  }
   if (status.lifecycle === "failed") {
     return {
       event: "error",

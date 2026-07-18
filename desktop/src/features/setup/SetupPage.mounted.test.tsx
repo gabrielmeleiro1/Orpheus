@@ -574,6 +574,32 @@ describe("mounted SetupPage", () => {
     expect(onReady).toHaveBeenCalledWith(readyStatus);
   });
 
+  it("offers cancellation while packaged model downloads are running", async () => {
+    const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
+    const bakedStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      recommended_profile: "mlx",
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+    };
+    const runningSnapshot = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
+    const cancelDownload = vi.fn(async () => ({ ...runningSnapshot, lifecycle: "stopping" as const }));
+    const api = {
+      getRuntimeSetupStatus: vi.fn(async () => bakedStatus),
+      getRuntimeModelDownloadStatus: vi.fn(async () => runningSnapshot),
+      startRuntimeModelDownload: vi.fn(async () => runningSnapshot),
+      cancelRuntimeModelDownload: cancelDownload,
+      adoptRuntimeSetup: vi.fn(),
+    } as unknown as ApiClient;
+    await renderPage(packagedBridge, { apiClient: api, initialStatus: bakedStatus });
+
+    await act(async () => findButton(container, "Install").click());
+    const cancelButton = findButton(container, "Cancel");
+    await act(async () => cancelButton.click());
+
+    expect(cancelDownload).toHaveBeenCalledWith({ timeoutMs: 8_000 });
+    expect(container.textContent).toContain("Cancellation requested");
+  });
+
   it("re-runs the failed backend download when Retry is clicked", async () => {
     const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
     const bakedStatus: RuntimeSetupStatusResponse = {
