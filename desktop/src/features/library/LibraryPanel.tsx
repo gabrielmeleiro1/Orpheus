@@ -176,7 +176,7 @@ export function LibraryPanel({
 
           <div className="panel-section book-detail-section library-detail-form">
             <div className="form-row">
-              <span className="form-row-label">Title</span>
+              <label className="form-row-label" htmlFor="book-title-edit">Title</label>
               <div className="form-row-field">
                 <input
                   id="book-title-edit"
@@ -189,7 +189,7 @@ export function LibraryPanel({
               </div>
             </div>
             <div className="form-row">
-              <span className="form-row-label">Author</span>
+              <label className="form-row-label" htmlFor="book-author-edit">Author</label>
               <div className="form-row-field">
                 <input
                   id="book-author-edit"
@@ -202,7 +202,7 @@ export function LibraryPanel({
               </div>
             </div>
             <div className="form-row">
-              <span className="form-row-label">Tags</span>
+              <label className="form-row-label" htmlFor="book-tags-edit">Tags</label>
               <div className="form-row-field">
                 <input
                   id="book-tags-edit"
