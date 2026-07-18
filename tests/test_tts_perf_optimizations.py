@@ -172,7 +172,7 @@ def test_package_runtime_compile_failure_restores_eager_decoder(
     monkeypatch.setitem(
         sys.modules,
         "torch",
-        SimpleNamespace(compile=lambda module, dynamic: object()),
+        SimpleNamespace(compile=lambda _module, _dynamic: object()),
     )
     monkeypatch.setenv(TORCH_COMPILE_ENV, "1")
 

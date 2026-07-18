@@ -82,6 +82,7 @@ __getattr__
 pytestmark
 EPUB_MIMETYPE
 abbreviation_text
+registry_snapshot
 TestTextChunkerStatefulTests
 _.created_chapters
 _.shutdown_called

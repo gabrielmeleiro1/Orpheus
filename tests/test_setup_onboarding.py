@@ -66,7 +66,9 @@ def test_status_reports_recommended_profile(monkeypatch: pytest.MonkeyPatch) -> 
         },
     )
     # Absent state → detection runs; keep it cheap and null.
-    monkeypatch.setattr(setup_route, "_detect_installed_runtime", lambda *a, **k: None)
+    monkeypatch.setattr(
+        setup_route, "_detect_installed_runtime", lambda *_args, **_kwargs: None
+    )
 
     with _client() as client:
         payload = client.get("/api/setup/status").json()
