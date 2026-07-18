@@ -35,6 +35,8 @@ interface UseAudioElementBindingsArgs {
   setTotalSec: Dispatch<SetStateAction<number>>;
   setVolume: Dispatch<SetStateAction<number>>;
   setPlayerTitle: Dispatch<SetStateAction<string>>;
+  onPlaybackError: () => void;
+  onPlaybackHealthy: () => void;
 }
 
 /**
@@ -58,6 +60,8 @@ export function useAudioElementBindings({
   setTotalSec,
   setVolume,
   setPlayerTitle,
+  onPlaybackError,
+  onPlaybackHealthy,
 }: UseAudioElementBindingsArgs): AudioElementProps {
   const lastPlaybackUiUpdateMsRef = useRef(0);
   const lastPlaybackUiSecondRef = useRef(-1);
@@ -78,6 +82,7 @@ export function useAudioElementBindings({
       if (!audio) {
         return;
       }
+      onPlaybackHealthy();
 
       const nextElapsedSec = Math.floor(audio.currentTime || 0);
       const nowMs = window.performance.now();
@@ -157,6 +162,7 @@ export function useAudioElementBindings({
       },
       onError: () => {
         setPlayerTitle("playback failed");
+        onPlaybackError();
       },
     };
   }, [
@@ -166,6 +172,8 @@ export function useAudioElementBindings({
     library,
     loadedBookId,
     markPlaybackSaved,
+    onPlaybackError,
+    onPlaybackHealthy,
     persistLoadedBookPlaybackPosition,
     playRelative,
     setElapsedSec,

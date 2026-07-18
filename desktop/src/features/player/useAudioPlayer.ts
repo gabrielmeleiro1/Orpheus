@@ -32,6 +32,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   // Monotonic load id + latest-selection mirror guard loadBookAudio against
   // rapid next/previous: an older in-flight load must never set src/state late.
   const loadSequenceRef = useRef(0);
+  const playbackRecoveryBookIdRef = useRef<number | null>(null);
   const selectedBookIdLatestRef = useRef<number | null>(library.selectedBookId);
   selectedBookIdLatestRef.current = library.selectedBookId;
 
@@ -140,7 +141,12 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   );
 
   const loadBookAudio = useCallback(
-    async (bookId: number | null, detail: LibraryBookDetail | null, autoPlay: boolean): Promise<void> => {
+    async (
+      bookId: number | null,
+      detail: LibraryBookDetail | null,
+      autoPlay: boolean,
+      forceReload = false,
+    ): Promise<void> => {
       if (!apiClient || !bookId || !detail?.playback_url) {
         return;
       }
@@ -154,7 +160,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       const isStale = () =>
         loadSequenceRef.current !== requestId || selectedBookIdLatestRef.current !== bookId;
 
-      if (loadedBookId !== bookId || !audio.src) {
+      if (forceReload || loadedBookId !== bookId || !audio.src) {
         setPendingResume(bookId, Number(detail.playback_position_sec || 0));
 
         // All callers invoke playback actions fire-and-forget (`void ...`), so
@@ -395,6 +401,27 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     void persistLoadedBookPlaybackPosition({ force: true, silent: true });
   }, [library.selectedBookId, persistLoadedBookPlaybackPosition]);
 
+  const handlePlaybackError = useCallback(() => {
+    const bookId = library.selectedBookId;
+    const detail = library.selectedBookDetail;
+    const audio = audioRef.current;
+    if (!bookId || !detail?.playback_url || !audio) {
+      return;
+    }
+    if (playbackRecoveryBookIdRef.current === bookId) {
+      return;
+    }
+
+    playbackRecoveryBookIdRef.current = bookId;
+    setPendingResume(bookId, Number(audio.currentTime || detail.playback_position_sec || 0));
+    setPlayerTitle("Reconnecting playback…");
+    void loadBookAudio(bookId, detail, isPlaying, true);
+  }, [isPlaying, library.selectedBookDetail, library.selectedBookId, loadBookAudio, setPendingResume]);
+
+  const markPlaybackHealthy = useCallback(() => {
+    playbackRecoveryBookIdRef.current = null;
+  }, []);
+
   useEffect(() => {
     const previousBookId = previousSelectedBookIdRef.current;
     const selectedBookId = library.selectedBookId;
@@ -444,6 +471,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     setTotalSec,
     setVolume,
     setPlayerTitle,
+    onPlaybackError: handlePlaybackError,
+    onPlaybackHealthy: markPlaybackHealthy,
   });
 
   return {

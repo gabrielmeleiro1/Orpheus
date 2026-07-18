@@ -46,6 +46,7 @@ function createFakeAudio(): HTMLAudioElement {
     ended: false,
     currentTime: 0,
     duration: Number.NaN,
+    readyState: 1,
     volume: 1,
     muted: false,
     crossOrigin: null,
@@ -115,5 +116,22 @@ describe("useAudioPlayer audio load failures", () => {
         mp3_path: null,
       }),
     ).resolves.toBeUndefined();
+  });
+
+  it("mints a fresh audio URL after an expired media request fails", async () => {
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn(async () => "http://127.0.0.1:43123/api/library/7/audio?token=fresh"),
+    } as unknown as ApiClient;
+    const detail = createBookDetail();
+    const player = renderPlayer({ apiClient, library: createLibraryMock(detail) });
+    const audio = createFakeAudio();
+    audio.currentTime = 123;
+    player.current!.audioRef.current = audio;
+
+    player.current!.audioProps.onError();
+    await vi.waitFor(() => expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledWith(detail.id));
+
+    expect(audio.src).toContain("token=fresh");
+    expect(audio.currentTime).toBe(123);
   });
 });
