@@ -55,8 +55,12 @@ Coverage output is generated under `.artifacts/coverage/` so contract runs do
 not leave `htmlcov/`, `coverage.xml`, or `.coverage` at the repository root.
 
 This is not a full desktop, sidecar, release, property, benchmark, slow, or UI
-verification pass. This checkout does not contain `.github` workflows, so do not
-treat the command as evidence that CI is configured or green.
+verification pass. The `Source validation` GitHub Actions workflow runs this
+gate plus Ruff, frontend type/tests, and Rust test/check on macOS and Windows.
+It validates source checkouts only: it does not package or sign applications,
+build installers, publish releases, or upload binaries. A local contract pass
+does not mean the remote GitHub Actions jobs are green; check the commit's CI
+status after pushing.
 
 ## Local Smoke Suite
 
