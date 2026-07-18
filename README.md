@@ -25,6 +25,10 @@ Orpheus is a local-first desktop app that converts PDF, EPUB, Markdown, and text
 
 ## Quick Start
 
+The commands below are for macOS. Windows contributors should use the
+[PowerShell source setup](docs/DEPENDENCIES.md#windows), including the Tauri
+C++ and WebView2 prerequisites.
+
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate

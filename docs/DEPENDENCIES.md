@@ -5,6 +5,8 @@ dependency manifests. Prefer the manifests below over ad hoc package installs.
 
 ## System Prerequisites
 
+### macOS
+
 Install these once on a macOS development machine:
 
 ```bash
@@ -27,6 +29,28 @@ brew install python@3.12 node rust ffmpeg
 If Homebrew is not used, install equivalent versions through your preferred
 package manager and ensure `python3`, `node`, `npm`, `cargo`, `ffmpeg`, and
 `ffprobe` are on `PATH`.
+
+### Windows
+
+Use 64-bit Windows 10 or newer and PowerShell. Install Git, Python 3.12,
+Node.js 20 or newer, Rust 1.88 or newer through `rustup`, and FFmpeg. Tauri
+development also requires [Microsoft C++ Build
+Tools](https://v2.tauri.app/start/prerequisites/#microsoft-c-build-tools) with
+the **Desktop development with C++** workload and Microsoft Edge WebView2
+(already present on current Windows 10 and 11 installations).
+
+The command-line prerequisites can be installed from PowerShell with `winget`:
+
+```powershell
+winget install --exact --id Git.Git
+winget install --exact --id Python.Python.3.12
+winget install --exact --id OpenJS.NodeJS.LTS
+winget install --exact --id Rustlang.Rustup
+winget install --exact --id Gyan.FFmpeg
+```
+
+Open a new PowerShell session after installation, then confirm `git`, `py`,
+`node`, `npm`, `rustc`, `cargo`, `ffmpeg`, and `ffprobe` are on `PATH`.
 
 ## Python
 
@@ -53,6 +77,30 @@ python -m pip install -r requirements-dev.txt
 
 `requirements-dev.txt` includes `requirements.txt`, so do not install both
 separately.
+
+On Windows, clone the repository and run the equivalent source setup in
+PowerShell:
+
+```powershell
+git clone https://github.com/gabrielmeleiro1/Orpheus.git
+Set-Location Orpheus
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python scripts/setup_runtime.py --profile base --dry-run
+python scripts/setup_runtime.py --profile base
+python -m pip install -r requirements-dev.txt
+python run_tests.py --contract
+Set-Location desktop
+npm ci
+npm run desktop:dev
+```
+
+The dry run shows the fixed base-profile operations before anything is
+installed. Local model weights are optional and are not downloaded by this
+base setup. On a supported NVIDIA machine, return to the repository root and
+run the documented `cuda` profile command only when local TTS or cleaning is
+needed.
 
 ### Source setup versus packaged profiles
 

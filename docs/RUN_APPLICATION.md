@@ -7,6 +7,11 @@ Architecture reference: `docs/ARCHITECTURE.md`
 Install the system prerequisites listed in [DEPENDENCIES.md](DEPENDENCIES.md)
 first.
 
+Use the platform-specific source setup in
+[DEPENDENCIES.md](DEPENDENCIES.md#system-prerequisites): macOS commands use a
+POSIX shell, while Windows commands use PowerShell and
+`.\.venv\Scripts\Activate.ps1`.
+
 ```bash
 python3.12 -m venv .venv
 source .venv/bin/activate
