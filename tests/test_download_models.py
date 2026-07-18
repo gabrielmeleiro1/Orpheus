@@ -18,7 +18,7 @@ from modules.runtime_profiles import runtime_profiles
 from modules.tts.runtime_spec import (
     CLEANER_CUDA_DEFAULT_MODEL,
     CLEANER_MLX_DEFAULT_MODEL,
-    KOKORO_MLX_DEFAULT_MODEL,
+    KOKORO_MLX_DEFAULT_MODEL_REPO,
     KOKORO_PACKAGE_DEFAULT_MODEL,
 )
 from scripts import download_models
@@ -38,8 +38,12 @@ def test_dry_run_prints_default_model_without_downloading(capsys: pytest.Capture
 
 def test_named_groups_resolve_to_curated_runtime_models() -> None:
     assert download_models.resolve_model_groups(["tts-mlx"]) == (
-        KOKORO_MLX_DEFAULT_MODEL,
+        KOKORO_MLX_DEFAULT_MODEL_REPO,
     )
+    # The bare base name is not a Hub repo; the engine loads the bf16 variant
+    # by default and downloads must match it (regression for a 401/404 on
+    # every tts-mlx install).
+    assert KOKORO_MLX_DEFAULT_MODEL_REPO == "mlx-community/Kokoro-82M-bf16"
     assert download_models.resolve_model_groups(["tts-cpu-cuda"]) == (
         KOKORO_PACKAGE_DEFAULT_MODEL,
     )
@@ -55,7 +59,7 @@ def test_named_groups_resolve_to_curated_runtime_models() -> None:
 
 def test_named_groups_deduplicate_models_and_reject_unknown_groups() -> None:
     assert download_models.resolve_model_groups(["tts-mlx", "tts-mlx"]) == (
-        KOKORO_MLX_DEFAULT_MODEL,
+        KOKORO_MLX_DEFAULT_MODEL_REPO,
     )
 
     with pytest.raises(ValueError, match="Unknown model group"):
@@ -71,7 +75,7 @@ def test_group_dry_run_reports_exact_resolved_models(capsys: pytest.CaptureFixtu
     assert output == {
         "dry_run": True,
         "event": "plan",
-        "models": [KOKORO_MLX_DEFAULT_MODEL],
+        "models": [KOKORO_MLX_DEFAULT_MODEL_REPO],
     }
 
 
@@ -85,7 +89,7 @@ def test_groups_and_explicit_models_deduplicate_in_stable_order(
             "--group",
             "cleaner-mlx",
             "--model",
-            KOKORO_MLX_DEFAULT_MODEL,
+            KOKORO_MLX_DEFAULT_MODEL_REPO,
             "--model",
             "owner/custom-model",
             "--dry-run",
@@ -96,7 +100,7 @@ def test_groups_and_explicit_models_deduplicate_in_stable_order(
 
     assert exit_code == 0
     assert output["models"] == [
-        KOKORO_MLX_DEFAULT_MODEL,
+        KOKORO_MLX_DEFAULT_MODEL_REPO,
         "mlx-community/Llama-3.2-3B-Instruct-4bit",
         "owner/custom-model",
     ]
@@ -182,11 +186,11 @@ def test_json_reports_plan_before_downloading(
     assert json.loads(output_before_download[0]) == {
         "dry_run": False,
         "event": "plan",
-        "models": [KOKORO_MLX_DEFAULT_MODEL],
+        "models": [KOKORO_MLX_DEFAULT_MODEL_REPO],
     }
     assert json.loads(remaining_output) == {
         "event": "downloaded",
-        "model": KOKORO_MLX_DEFAULT_MODEL,
+        "model": KOKORO_MLX_DEFAULT_MODEL_REPO,
         "path": str(tmp_path / "snapshot"),
     }
 

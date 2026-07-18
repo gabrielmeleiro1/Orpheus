@@ -123,9 +123,10 @@ def test_installed_runtime_detected_ready_for_baked_mlx(
     assert payload["installed_runtime"] == {
         "profile": "mlx",
         "ready": True,
+        "runtime_available": True,
         "model_groups": [
-            {"id": "tts-mlx", "ready": True},
-            {"id": "cleaner-mlx", "ready": True},
+            {"id": "tts-mlx", "runtime_ready": True, "assets_ready": True, "ready": True},
+            {"id": "cleaner-mlx", "runtime_ready": True, "assets_ready": True, "ready": True},
         ],
     }
 
@@ -185,6 +186,40 @@ def test_installed_runtime_absent_when_packages_not_ready(
     assert payload["installed_runtime"] is None
 
 
+def test_setup_status_survives_missing_requirements_manifests(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: a packaged sidecar built without the requirements manifests
+    turned every /api/setup/status call into a FileNotFoundError 500."""
+    import dataclasses
+
+    from modules.web.routes import setup as setup_route
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    relocated = {
+        profile.id: dataclasses.replace(
+            profile, requirements_file=tmp_path / "absent" / f"{profile.id}.txt"
+        )
+        for profile in setup_route.runtime_profiles()
+    }
+    monkeypatch.setattr(
+        setup_route, "runtime_profiles", lambda: tuple(relocated.values())
+    )
+    monkeypatch.setattr(setup_route, "get_runtime_profile", lambda pid: relocated[pid])
+
+    def _must_not_probe(groups, service):
+        raise AssertionError("probe must not run when manifests are unreadable")
+
+    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _must_not_probe)
+
+    with _client() as client:
+        response = client.get("/api/setup/status")
+
+    assert response.status_code == 200
+    assert response.json()["installed_runtime"] is None
+
+
 def test_installed_runtime_null_on_probe_error(monkeypatch: pytest.MonkeyPatch) -> None:
     from modules.web.routes import setup as setup_route
 
@@ -207,32 +242,56 @@ def test_installed_runtime_null_on_probe_error(monkeypatch: pytest.MonkeyPatch) 
     assert payload["installed_runtime"] is None
 
 
-def test_installed_runtime_null_when_state_configured(
+def _configured_status(profile: str, model_groups: list[str]):
+    def _get_setup_status(**kwargs):
+        del kwargs
+        return {
+            "configured": True,
+            "profile": profile,
+            "model_groups": model_groups,
+            "ready": True,
+            "restart_required": False,
+            "probe": {
+                "available": True,
+                "checks": [
+                    {"id": group_id, "available": True, "error": None}
+                    for group_id in model_groups
+                ],
+            },
+            "state_error": None,
+        }
+
+    return _get_setup_status
+
+
+def test_installed_runtime_null_when_local_profile_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from modules.web.routes import setup as setup_route
 
+    _all_profiles_compatible(monkeypatch)
     monkeypatch.setattr(
         setup_route.setup_runtime,
         "get_setup_status",
-        lambda **kwargs: {
-            "configured": True,
-            "profile": "base",
-            "model_groups": [],
-            "ready": True,
-            "restart_required": False,
-            "probe": {"available": True, "checks": []},
-            "state_error": None,
-        },
+        _configured_status("mlx", ["tts-mlx"]),
     )
     monkeypatch.setattr(
         setup_route,
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
+    monkeypatch.setattr(
+        setup_route,
+        "_check_model_group_assets",
+        lambda group_ids, **kwargs: {
+            group_id: {"ready": True, "reason": None} for group_id in group_ids
+        },
+    )
 
     def _detector_must_not_run(*args, **kwargs):
-        raise AssertionError("installed_runtime detection must not run when configured")
+        raise AssertionError(
+            "installed_runtime detection must not run for a configured local profile"
+        )
 
     monkeypatch.setattr(setup_route, "_detect_installed_runtime", _detector_must_not_run)
 
@@ -242,6 +301,90 @@ def test_installed_runtime_null_when_state_configured(
     assert payload["configured"] is True
     assert payload["installed_runtime"] is None
     assert payload["recommended_profile"] in {"base", "mlx", "cuda"}
+
+
+def test_installed_runtime_detected_for_configured_library_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Library-only users keep seeing the baked runtime so they can upgrade."""
+    from modules.web.routes import setup as setup_route
+
+    monkeypatch.setattr(
+        setup_route.setup_runtime,
+        "get_setup_status",
+        _configured_status("base", []),
+    )
+    monkeypatch.setattr(
+        setup_route,
+        "_check_selected_profile_packages",
+        lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
+    )
+    detected = {
+        "profile": "mlx",
+        "ready": False,
+        "runtime_available": True,
+        "model_groups": [
+            {"id": "tts-mlx", "runtime_ready": True, "assets_ready": False, "ready": False},
+        ],
+    }
+    monkeypatch.setattr(
+        setup_route, "_detect_installed_runtime", lambda *args, **kwargs: detected
+    )
+
+    with _client() as client:
+        payload = client.get("/api/setup/status").json()
+
+    assert payload["configured"] is True
+    assert payload["installed_runtime"] == detected
+
+
+def test_installed_runtime_splits_runtime_and_asset_readiness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A baked runtime with missing models must advertise runtime_available."""
+    from modules.web.routes import setup as setup_route
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr(
+        setup_route,
+        "_check_selected_profile_packages",
+        lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
+    )
+    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+    monkeypatch.setattr(
+        setup_route,
+        "_check_model_group_assets",
+        lambda group_ids, **kwargs: {
+            group_id: {"ready": False, "reason": "missing"} for group_id in group_ids
+        },
+    )
+
+    with _client() as client:
+        payload = client.get("/api/setup/status").json()
+
+    assert payload["installed_runtime"] == {
+        "profile": "mlx",
+        "ready": False,
+        "runtime_available": True,
+        "model_groups": [
+            {"id": "tts-mlx", "runtime_ready": True, "assets_ready": False, "ready": False},
+            {"id": "cleaner-mlx", "runtime_ready": True, "assets_ready": False, "ready": False},
+        ],
+    }
+
+
+def test_frozen_bundle_reports_manifest_packages_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Frozen bundles carry build-env metadata; the probe is the real gate."""
+    from modules.web.routes import setup as setup_route
+
+    monkeypatch.setattr(setup_route.sys, "frozen", True, raising=False)
+
+    status = setup_route._check_selected_profile_packages("mlx")
+
+    assert status == {"ready": True, "missing": [], "incompatible": []}
 
 
 # --------------------------------------------------------------------------- #
@@ -653,6 +796,245 @@ def test_delete_runtime_endpoint_conflicts_when_setup_in_progress(
 
     with _client() as client:
         response = client.request("DELETE", "/api/setup/runtime")
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "setup_in_progress"
+
+
+# --------------------------------------------------------------------------- #
+# Backend model downloads (packaged builds)                                    #
+# --------------------------------------------------------------------------- #
+
+
+def _wait_for_terminal(service, timeout_seconds: float = 5.0) -> dict:
+    import time
+
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        snapshot = service.status()
+        if snapshot["lifecycle"] in {"complete", "failed"}:
+            return snapshot
+        time.sleep(0.01)
+    raise AssertionError(f"download never finished: {service.status()}")
+
+
+class _RecordingLock:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def __enter__(self):
+        self._events.append("lock")
+        return self
+
+    def __exit__(self, *args):
+        self._events.append("unlock")
+        return False
+
+
+def test_model_download_service_downloads_groups_in_order_under_lock() -> None:
+    from modules.app.services.model_download_service import ModelDownloadService
+
+    events: list[str] = []
+    downloaded: list[str] = []
+    catalog = {"tts-mlx": ("kokoro-mlx",), "cleaner-mlx": ("qwen-a", "qwen-b")}
+    service = ModelDownloadService(
+        downloader=lambda model_id: downloaded.append(model_id),
+        group_resolver=lambda groups: catalog[next(iter(groups))],
+        lock_factory=lambda: _RecordingLock(events),
+        on_terminal=lambda: events.append("terminal"),
+    )
+
+    snapshot = service.start(profile_id="mlx", model_groups=["tts-mlx", "cleaner-mlx"])
+
+    # The worker may already have finished for an instant downloader; the
+    # start snapshot only guarantees the run was accepted and sized.
+    assert snapshot["lifecycle"] in {"running", "complete"}
+    assert snapshot["total_models"] == 3
+    final = _wait_for_terminal(service)
+    assert final["lifecycle"] == "complete"
+    assert final["completed_models"] == 3
+    assert final["error"] is None
+    assert downloaded == ["kokoro-mlx", "qwen-a", "qwen-b"]
+    assert events == ["lock", "unlock", "terminal"]
+
+
+def test_model_download_service_rejects_concurrent_starts() -> None:
+    import threading
+
+    from modules.app.services.model_download_service import (
+        ModelDownloadBusyError,
+        ModelDownloadService,
+    )
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def _blocking_download(model_id: str) -> None:
+        del model_id
+        started.set()
+        assert release.wait(timeout=5.0)
+
+    service = ModelDownloadService(
+        downloader=_blocking_download,
+        group_resolver=lambda groups: ("model",),
+        lock_factory=lambda: _RecordingLock([]),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+    assert started.wait(timeout=5.0)
+    with pytest.raises(ModelDownloadBusyError):
+        service.start(profile_id="mlx", model_groups=["tts-mlx"])
+    release.set()
+    assert _wait_for_terminal(service)["lifecycle"] == "complete"
+
+
+def test_model_download_service_reports_sanitized_failure_and_releases_lock() -> None:
+    from modules.app.services.model_download_service import ModelDownloadService
+
+    events: list[str] = []
+
+    def _broken_download(model_id: str) -> None:
+        raise RuntimeError("boom\x00" + "x" * 500)
+
+    service = ModelDownloadService(
+        downloader=_broken_download,
+        group_resolver=lambda groups: ("model",),
+        lock_factory=lambda: _RecordingLock(events),
+        on_terminal=lambda: events.append("terminal"),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+
+    final = _wait_for_terminal(service)
+    assert final["lifecycle"] == "failed"
+    assert final["error"].startswith("boom")
+    assert "\x00" not in final["error"]
+    assert len(final["error"]) <= 200
+    assert events == ["lock", "unlock", "terminal"]
+    # A failed run must not leave the service stuck busy.
+    retry = service.start(profile_id="mlx", model_groups=["tts-mlx"])
+    assert retry["lifecycle"] in {"running", "failed"}
+    _wait_for_terminal(service)
+
+
+def test_model_download_service_surfaces_setup_lock_contention() -> None:
+    from scripts.setup_runtime import SetupExecutionError
+
+    from modules.app.services.model_download_service import ModelDownloadService
+
+    class _HeldLock:
+        def __enter__(self):
+            raise SetupExecutionError("Another runtime setup operation is already running.")
+
+        def __exit__(self, *args):
+            return False
+
+    service = ModelDownloadService(
+        downloader=lambda model_id: None,
+        group_resolver=lambda groups: ("model",),
+        lock_factory=_HeldLock,
+    )
+    with pytest.raises(SetupExecutionError):
+        service.start(profile_id="mlx", model_groups=["tts-mlx"])
+    assert service.status()["lifecycle"] == "idle"
+
+
+def test_model_download_endpoints_validate_start_and_report_conflicts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from modules.web.routes import setup as setup_route
+    from modules.app.services.model_download_service import ModelDownloadBusyError
+
+    _all_profiles_compatible(monkeypatch)
+
+    class _FakeService:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.calls: list[tuple[str, list[str]]] = []
+            self.busy = False
+
+        def status(self):
+            return {
+                "lifecycle": "idle",
+                "profile": None,
+                "model_groups": [],
+                "total_models": 0,
+                "completed_models": 0,
+                "current_model_group": None,
+                "error": None,
+            }
+
+        def start(self, *, profile_id, model_groups):
+            if self.busy:
+                raise ModelDownloadBusyError("busy")
+            self.calls.append((profile_id, list(model_groups)))
+            return dict(self.status(), lifecycle="running", profile=profile_id)
+
+    monkeypatch.setattr(setup_route, "ModelDownloadService", _FakeService)
+
+    with _client() as client:
+        idle = client.get("/api/setup/models/download")
+        assert idle.status_code == 200
+        assert idle.json()["lifecycle"] == "idle"
+
+        unknown_group = client.post(
+            "/api/setup/models/download",
+            json={"profile": "mlx", "model_groups": ["not-a-group"]},
+        )
+        assert unknown_group.status_code == 422
+
+        empty = client.post(
+            "/api/setup/models/download",
+            json={"profile": "mlx", "model_groups": []},
+        )
+        assert empty.status_code == 422
+
+        extra_field = client.post(
+            "/api/setup/models/download",
+            json={"profile": "mlx", "model_groups": ["tts-mlx"], "path": "/x"},
+        )
+        assert extra_field.status_code == 422
+
+        started = client.post(
+            "/api/setup/models/download",
+            json={"profile": "mlx", "model_groups": ["tts-mlx"]},
+        )
+        assert started.status_code == 200
+        assert started.json()["lifecycle"] == "running"
+
+        service = client.app.state.model_download_service
+        assert service.calls == [("mlx", ["tts-mlx"])]
+
+        service.busy = True
+        busy = client.post(
+            "/api/setup/models/download",
+            json={"profile": "mlx", "model_groups": ["tts-mlx"]},
+        )
+        assert busy.status_code == 409
+        assert busy.json()["detail"]["error"] == "download_in_progress"
+
+
+def test_model_download_start_conflicts_when_setup_lock_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from modules.web.routes import setup as setup_route
+
+    _all_profiles_compatible(monkeypatch)
+
+    class _LockedService:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def start(self, **kwargs):
+            raise setup_route.setup_runtime.SetupExecutionError(
+                "Another runtime setup operation is already running."
+            )
+
+    monkeypatch.setattr(setup_route, "ModelDownloadService", _LockedService)
+
+    with _client() as client:
+        response = client.post(
+            "/api/setup/models/download",
+            json={"profile": "mlx", "model_groups": ["tts-mlx"]},
+        )
 
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "setup_in_progress"

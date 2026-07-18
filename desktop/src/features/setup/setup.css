@@ -33,7 +33,8 @@
   border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* Tooltips overhang section edges; clipping them made hovers useless. */
+  overflow: visible;
 }
 
 .setup-intro {
@@ -95,8 +96,7 @@
   display: grid;
   gap: 10px;
   grid-template-columns: 16px minmax(0, 1fr);
-  min-height: 132px;
-  padding: 15px;
+  padding: 13px 15px;
   transition: background 120ms ease, border-color 120ms ease;
 }
 
@@ -226,21 +226,138 @@
   text-align: right;
 }
 
-.setup-estimate em {
+.setup-model-name {
+  align-items: center;
+  display: inline-flex;
+  gap: 7px;
+}
+
+.setup-plan {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin: 22px 32px 0;
+  padding: 15px 17px;
+}
+
+.setup-plan-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.setup-plan-title {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.setup-plan-title strong {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.setup-plan-detail {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.setup-customize-toggle {
   color: var(--text-tertiary);
-  display: block;
-  font-family: var(--font-body);
+  flex: none;
+}
+
+.setup-customize-toggle:hover {
+  color: var(--text-secondary);
+}
+
+.setup-tip {
+  display: inline-flex;
+  outline: none;
+  position: relative;
+  vertical-align: middle;
+}
+
+.setup-tip-icon {
+  align-items: center;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  color: var(--text-tertiary);
+  cursor: help;
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 9px;
   font-style: normal;
-  letter-spacing: 0.04em;
-  margin-bottom: 2px;
+  height: 14px;
+  justify-content: center;
+  line-height: 1;
+  width: 14px;
 }
 
-.setup-estimate-note {
-  margin-top: 8px;
+.setup-tip:hover .setup-tip-icon,
+.setup-tip:focus-visible .setup-tip-icon {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
-.setup-estimate-note strong {
-  color: var(--text-tertiary);
+.setup-tip-bubble {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+  color: var(--text-secondary);
+  display: none;
+  font-size: 11px;
+  font-weight: 400;
+  left: 50%;
+  line-height: 1.5;
+  padding: 10px 12px;
+  position: absolute;
+  text-align: left;
+  top: calc(100% + 8px);
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 300px;
+  z-index: 30;
+}
+
+.setup-tip:hover .setup-tip-bubble,
+.setup-tip:focus-visible .setup-tip-bubble {
+  display: block;
+}
+
+.setup-tip-bubble code {
+  color: var(--accent);
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.setup-tip-models {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.setup-tip-models li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.setup-tip-models strong {
+  color: var(--text);
+  font-size: 11px;
   font-weight: 600;
 }
 
@@ -296,25 +413,20 @@
 }
 
 .setup-installed {
+  align-items: center;
   background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
   border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
   border-radius: var(--radius);
+  display: flex;
+  gap: 9px;
   margin: 18px 32px 0;
   padding: 14px 16px;
 }
 
 .setup-installed > strong {
   color: var(--accent);
-  display: block;
   font-size: 12px;
   font-weight: 600;
-}
-
-.setup-installed p {
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.5;
-  margin-top: 5px;
 }
 
 .setup-danger {
@@ -365,13 +477,6 @@
 .setup-danger-note {
   color: var(--text-tertiary);
   font-size: 11px;
-}
-
-.setup-privacy {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  line-height: 1.55;
-  margin: 22px 32px 0;
 }
 
 .setup-progress {
@@ -499,10 +604,15 @@
   .setup-risk,
   .setup-recovery,
   .setup-installed,
-  .setup-privacy,
+  .setup-plan,
   .setup-error {
     margin-left: 20px;
     margin-right: 20px;
+  }
+
+  .setup-plan {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .setup-progress,

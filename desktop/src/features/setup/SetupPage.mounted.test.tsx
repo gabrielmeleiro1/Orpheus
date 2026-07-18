@@ -71,17 +71,18 @@ describe("mounted SetupPage", () => {
     const runtimeBridge = bridge({ start, listen: vi.fn(async () => unlisten) });
     await renderPage(runtimeBridge);
 
+    await act(async () => findButton(container, "Customize").click());
     const mlx = container.querySelector<HTMLInputElement>('input[type="radio"][value="mlx"]')!;
     await act(async () => mlx.click());
     const cleaner = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
       .find((input) => input.parentElement?.textContent?.includes("Qwen Cleaner"))!;
     await act(async () => cleaner.click());
-    const install = findButton(container, "Install selected runtime");
+    const install = findButton(container, "Install");
     await act(async () => { install.click(); install.click(); });
     expect(start).toHaveBeenCalledTimes(1);
-    expect(start).toHaveBeenCalledWith({ profile: "mlx", modelGroups: ["tts-mlx", "cleaner-mlx"], acceptPytorchRisk: false });
+    expect(start).toHaveBeenCalledWith({ profile: "mlx", modelGroups: ["tts-mlx"], acceptPytorchRisk: false });
     expect(document.activeElement?.id).toBe("setup-progress-heading");
-    resolveStart({ lifecycle: "running", profile: "mlx", modelGroups: ["tts-mlx", "cleaner-mlx"], stage: null, message: null, percent: null, restartRequired: false, error: null });
+    resolveStart({ lifecycle: "running", profile: "mlx", modelGroups: ["tts-mlx"], stage: null, message: null, percent: null, restartRequired: false, error: null });
     await act(async () => undefined);
     await act(async () => root.unmount());
     expect(unlisten).toHaveBeenCalledOnce();
@@ -118,7 +119,7 @@ describe("mounted SetupPage", () => {
 
     await renderPage(runtimeBridge, { onReady });
 
-    const install = findButton(container, "Use library-only mode");
+    const install = findButton(container, "Use library only");
     expect(install.disabled).toBe(true);
     expect(start).not.toHaveBeenCalled();
     expect(status).not.toHaveBeenCalled();
@@ -145,7 +146,7 @@ describe("mounted SetupPage", () => {
     });
 
     await renderPage(runtimeBridge);
-    const install = findButton(container, "Use library-only mode");
+    const install = findButton(container, "Use library only");
     expect(install.disabled).toBe(true);
 
     await act(async () => undefined);
@@ -173,12 +174,12 @@ describe("mounted SetupPage", () => {
 
     expect(container.textContent).toContain("Progress connection unavailable");
     const retry = findButton(container, "Retry progress connection");
-    expect(findButton(container, "Use library-only mode").disabled).toBe(true);
+    expect(findButton(container, "Use library only").disabled).toBe(true);
 
     await act(async () => retry.click());
     await act(async () => undefined);
     expect(listen).toHaveBeenCalledTimes(2);
-    expect(findButton(container, "Use library-only mode").disabled).toBe(false);
+    expect(findButton(container, "Use library only").disabled).toBe(false);
   });
 
   it("registers before reconciling a running setup after remount", async () => {
@@ -299,7 +300,7 @@ describe("mounted SetupPage", () => {
     // A "cancelling" runner is still running: the Cancel affordance must remain
     // and the install/library primary action must stay disabled.
     expect(findButton(container, "Cancel")).toBeTruthy();
-    expect(findButton(container, "Use library-only mode").disabled).toBe(true);
+    expect(findButton(container, "Use library only").disabled).toBe(true);
   });
 
   it("does not let the busy poll interrupt an in-flight restart", async () => {
@@ -374,8 +375,11 @@ describe("mounted SetupPage", () => {
     expect(container.textContent).toContain(".venv/bin/python scripts/setup_runtime.py --profile base");
     expect(runtimeBridge.listen).not.toHaveBeenCalled();
     expect(runtimeBridge.status).not.toHaveBeenCalled();
-    expect(findButton(container, "Use library-only mode").disabled).toBe(true);
-    await act(async () => findButton(container, "Continue in library-only mode").click());
+    // The primary action must stay usable without the Tauri installer: it
+    // resolves to the library-only fallback instead of a dead button.
+    const libraryOnly = findButton(container, "Use library only");
+    expect(libraryOnly.disabled).toBe(false);
+    await act(async () => libraryOnly.click());
     expect(continueLibrary).toHaveBeenCalledOnce();
   });
 
@@ -393,7 +397,7 @@ describe("mounted SetupPage", () => {
     const onReady = vi.fn();
     const continueLibrary = vi.fn();
     await renderPage(runtimeBridge, { apiClient: api, onReady, onContinueLibraryOnly: continueLibrary });
-    await act(async () => findButton(container, "Continue in library-only mode").click());
+    await act(async () => findButton(container, "Use library only").click());
     expect(adopt).toHaveBeenCalledOnce();
     expect(onReady).not.toHaveBeenCalled();
     expect(continueLibrary).toHaveBeenCalledOnce();
@@ -408,7 +412,7 @@ describe("mounted SetupPage", () => {
       onContinueLibraryOnly: continueLibrary,
     });
     expect(container.textContent).toContain("Setup status endpoint unavailable.");
-    await act(async () => findButton(container, "Continue in library-only mode").click());
+    await act(async () => findButton(container, "Use library only").click());
     expect(continueLibrary).toHaveBeenCalledOnce();
   });
 
@@ -416,7 +420,7 @@ describe("mounted SetupPage", () => {
     const installedStatus: RuntimeSetupStatusResponse = {
       ...setupStatus,
       recommended_profile: "mlx",
-      installed_runtime: { profile: "mlx", ready: true, model_groups: [{ id: "tts-mlx", ready: true }, { id: "cleaner-mlx", ready: false }] },
+      installed_runtime: { profile: "mlx", ready: true, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: true, ready: true }, { id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
     };
     const readyStatus = { ...installedStatus, configured: true, state: "ready" as const, ready: true, installed_runtime: null };
     const adopt = vi.fn(async () => readyStatus);
@@ -425,7 +429,7 @@ describe("mounted SetupPage", () => {
     await renderPage(bridge(), { apiClient: api, initialStatus: installedStatus, onReady });
 
     expect(container.textContent).toContain("Installed MLX runtime ready");
-    const cta = findButton(container, "Continue with installed runtime");
+    const cta = findButton(container, "Continue");
     expect(cta.disabled).toBe(false);
     await act(async () => cta.click());
     expect(adopt).toHaveBeenCalledWith(
@@ -438,14 +442,14 @@ describe("mounted SetupPage", () => {
   it("surfaces an adopt failure without reporting ready", async () => {
     const installedStatus: RuntimeSetupStatusResponse = {
       ...setupStatus,
-      installed_runtime: { profile: "mlx", ready: true, model_groups: [{ id: "tts-mlx", ready: true }] },
+      installed_runtime: { profile: "mlx", ready: true, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: true, ready: true }] },
     };
     const adopt = vi.fn(async () => { throw new Error("API request failed (409): CUDA capability probe failed"); });
     const onReady = vi.fn();
     const api = { getRuntimeSetupStatus: vi.fn(async () => installedStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
     await renderPage(bridge(), { apiClient: api, initialStatus: installedStatus, onReady });
 
-    await act(async () => findButton(container, "Continue with installed runtime").click());
+    await act(async () => findButton(container, "Continue").click());
     expect(adopt).toHaveBeenCalledOnce();
     expect(onReady).not.toHaveBeenCalled();
     expect(container.textContent).toContain("CUDA capability probe failed");
@@ -458,18 +462,18 @@ describe("mounted SetupPage", () => {
       profiles: setupStatus.profiles.map((profile) => profile.id === "cuda"
         ? { ...profile, compatible: true, reason: null, model_groups: ["tts-cpu-cuda"], risk: { id: "pytorch", summary: "Use trusted models only.", accepted: false } }
         : profile),
-      installed_runtime: { profile: "cuda", ready: true, model_groups: [{ id: "tts-cpu-cuda", ready: true }] },
+      installed_runtime: { profile: "cuda", ready: true, runtime_available: true, model_groups: [{ id: "tts-cpu-cuda", runtime_ready: true, assets_ready: true, ready: true }] },
     };
     const readyStatus = { ...cudaInstalled, configured: true, state: "ready" as const, ready: true, installed_runtime: null };
     const adopt = vi.fn(async () => readyStatus);
     const api = { getRuntimeSetupStatus: vi.fn(async () => cudaInstalled), adoptRuntimeSetup: adopt } as unknown as ApiClient;
     await renderPage(bridge(), { apiClient: api, initialStatus: cudaInstalled });
 
-    expect(findButton(container, "Continue with installed runtime").disabled).toBe(true);
+    expect(findButton(container, "Continue").disabled).toBe(true);
     const risk = container.querySelector<HTMLInputElement>('.setup-risk input[type="checkbox"]')!;
     await act(async () => risk.click());
-    expect(findButton(container, "Continue with installed runtime").disabled).toBe(false);
-    await act(async () => findButton(container, "Continue with installed runtime").click());
+    expect(findButton(container, "Continue").disabled).toBe(false);
+    await act(async () => findButton(container, "Continue").click());
     expect(adopt).toHaveBeenCalledWith(
       { profile: "cuda", model_groups: ["tts-cpu-cuda"], accept_pytorch_risk: true },
       { timeoutMs: 15_000 },
@@ -485,7 +489,7 @@ describe("mounted SetupPage", () => {
     const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Baked runtime." })) });
     await renderPage(runtimeBridge, { apiClient: api, onContinueLibraryOnly: continueLibrary, onReady });
 
-    await act(async () => findButton(container, "Continue in library-only mode").click());
+    await act(async () => findButton(container, "Use library only").click());
     expect(adopt).toHaveBeenCalledWith(
       { profile: "base", model_groups: [], accept_pytorch_risk: false },
       { timeoutMs: 15_000 },
@@ -501,7 +505,7 @@ describe("mounted SetupPage", () => {
     const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Baked runtime." })) });
     await renderPage(runtimeBridge, { apiClient: api, onContinueLibraryOnly: continueLibrary });
 
-    await act(async () => findButton(container, "Continue in library-only mode").click());
+    await act(async () => findButton(container, "Use library only").click());
     expect(adopt).toHaveBeenCalledOnce();
     expect(continueLibrary).toHaveBeenCalledOnce();
   });
@@ -530,5 +534,68 @@ describe("mounted SetupPage", () => {
     await renderPage(runningBridge, { apiClient: api, settingsEntry: true });
     await act(async () => undefined);
     expect(container.textContent).not.toContain("Delete local runtime data");
+  });
+
+  it("downloads models via the backend and adopts the baked runtime in packaged mode", async () => {
+    const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
+    const bakedStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      recommended_profile: "mlx",
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+    };
+    const readyStatus = { ...bakedStatus, configured: true, state: "ready" as const, ready: true, installed_runtime: null };
+    const downloadSnapshot = { lifecycle: "complete" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 1, current_model_group: null, error: null };
+    const start = vi.fn(async () => ({ ...downloadSnapshot, lifecycle: "running" as const, completed_models: 0, current_model_group: "tts-mlx" }));
+    const adopt = vi.fn(async () => readyStatus);
+    const onReady = vi.fn();
+    const api = {
+      getRuntimeSetupStatus: vi.fn(async () => bakedStatus),
+      getRuntimeModelDownloadStatus: vi.fn(async () => downloadSnapshot),
+      startRuntimeModelDownload: start,
+      adoptRuntimeSetup: adopt,
+    } as unknown as ApiClient;
+    await renderPage(packagedBridge, { apiClient: api, initialStatus: bakedStatus, onReady });
+
+    expect(container.textContent).not.toContain("Install from a source checkout");
+    const install = findButton(container, "Install");
+    expect(install.disabled).toBe(false);
+    await act(async () => { install.click(); install.click(); });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(start).toHaveBeenCalledWith(
+      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"] },
+      { timeoutMs: 15_000 },
+    );
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(adopt).toHaveBeenCalledWith(
+      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], accept_pytorch_risk: false },
+      { timeoutMs: 30_000 },
+    );
+    expect(onReady).toHaveBeenCalledWith(readyStatus);
+  });
+
+  it("surfaces a failed backend download and re-enables the install action", async () => {
+    const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
+    const bakedStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      recommended_profile: "mlx",
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+    };
+    const failedSnapshot = { lifecycle: "failed" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: null, error: "disk full" };
+    const adopt = vi.fn();
+    const api = {
+      getRuntimeSetupStatus: vi.fn(async () => bakedStatus),
+      getRuntimeModelDownloadStatus: vi.fn(async () => failedSnapshot),
+      startRuntimeModelDownload: vi.fn(async () => ({ ...failedSnapshot, lifecycle: "running" as const })),
+      adoptRuntimeSetup: adopt,
+    } as unknown as ApiClient;
+    await renderPage(packagedBridge, { apiClient: api, initialStatus: bakedStatus });
+
+    await act(async () => findButton(container, "Install").click());
+    await act(async () => undefined);
+    await act(async () => undefined);
+    expect(container.textContent).toContain("disk full");
+    expect(adopt).not.toHaveBeenCalled();
+    expect(findButton(container, "Install").disabled).toBe(false);
   });
 });

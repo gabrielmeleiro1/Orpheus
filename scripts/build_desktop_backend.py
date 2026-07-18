@@ -67,6 +67,9 @@ PHONEMIZER_REQUIRED_PYINSTALLER_RESOURCES = (
     Path("_internal") / "espeakng_loader" / "espeak-ng-data" / "phontab",
 )
 DARWIN_REQUIRED_PYINSTALLER_RESOURCES = (Path("_internal") / "mlx" / "lib" / "mlx.metallib",)
+REQUIREMENTS_MANIFEST_PYINSTALLER_RESOURCES = tuple(
+    Path("_internal") / "requirements" / f"{name}.txt" for name in ("base", "mlx", "cuda")
+)
 MLX_CORE_EXTENSION = Path("_internal") / "mlx" / "core.cpython-312-darwin.so"
 MLX_ROOT_DYLIB = Path("_internal") / "libmlx.dylib"
 MLX_NESTED_DYLIB = Path("_internal") / "mlx" / "lib" / "libmlx.dylib"
@@ -252,6 +255,7 @@ def required_sidecar_resources(
 ) -> tuple[Path, ...]:
     profile = _resolve_runtime_profile(target_triple, runtime_profile)
     resources: list[Path] = []
+    resources.extend(REQUIREMENTS_MANIFEST_PYINSTALLER_RESOURCES)
     if profile in {"mlx", "cuda"}:
         resources.extend(PHONEMIZER_REQUIRED_PYINSTALLER_RESOURCES)
     if profile == "mlx":

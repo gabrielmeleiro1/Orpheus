@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
 
-import type { RuntimeSetupStatusResponse } from "../../types/api";
+import type { RuntimeModelDownloadStatus, RuntimeSetupStatusResponse } from "../../types/api";
 import {
   applyProgressEvent,
   applyRunnerStatus,
   acquireSetupStart,
+  backendInstallProfileId,
   canStartSetup,
   createSelection,
   diagnosticsSnapshot,
+  modelDownloadProgressEvent,
   profileChoices,
   selectProfile,
   shouldShowRuntimeSetup,
@@ -46,12 +48,12 @@ describe("runtime setup selection", () => {
     ]);
   });
 
-  it("defaults local TTS independently and clears groups when profiles change", () => {
+  it("defaults all local capabilities and clears groups when profiles change", () => {
     const initial = createSelection(status());
     const mlx = selectProfile(initial, "mlx", status());
-    expect(mlx.modelGroups).toEqual(["tts-mlx"]);
-    expect(toggleModelGroup(mlx, "cleaner-mlx", status()).modelGroups).toEqual(["tts-mlx", "cleaner-mlx"]);
-    expect(selectProfile(toggleModelGroup(mlx, "cleaner-mlx", status()), "base", status()).modelGroups).toEqual([]);
+    expect(mlx.modelGroups).toEqual(["tts-mlx", "cleaner-mlx"]);
+    expect(toggleModelGroup(mlx, "cleaner-mlx", status()).modelGroups).toEqual(["tts-mlx"]);
+    expect(selectProfile(mlx, "base", status()).modelGroups).toEqual([]);
     expect(selectProfile(mlx, "cuda", status())).toEqual(mlx);
   });
 
@@ -68,7 +70,7 @@ describe("runtime setup selection", () => {
   it("preselects the recommended profile only when no profile was persisted", () => {
     const recommended = status({ recommended_profile: "mlx" });
     expect(createSelection(recommended).profile).toBe("mlx");
-    expect(createSelection(recommended).modelGroups).toEqual(["tts-mlx"]);
+    expect(createSelection(recommended).modelGroups).toEqual(["tts-mlx", "cleaner-mlx"]);
   });
 
   it("ignores an incompatible recommended profile and keeps the base fallback", () => {
@@ -159,5 +161,56 @@ describe("runtime setup gate and progress", () => {
     });
     expect(complete).toMatchObject({ lifecycle: "running", stage: "verify", percent: 99 });
     expect(complete.completedStages).toEqual(["packages", "models", "verify"]);
+  });
+});
+
+describe("packaged backend install flow", () => {
+  const bakedRuntime = {
+    profile: "mlx" as const,
+    ready: false,
+    runtime_available: true,
+    model_groups: [
+      { id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false },
+    ],
+  };
+
+  it("offers the backend install only when the installer is unavailable and assets are missing", () => {
+    expect(backendInstallProfileId(false, bakedRuntime)).toBe("mlx");
+    expect(backendInstallProfileId(true, bakedRuntime)).toBeNull();
+    expect(backendInstallProfileId(false, null)).toBeNull();
+    expect(backendInstallProfileId(false, { ...bakedRuntime, runtime_available: false })).toBeNull();
+    expect(backendInstallProfileId(false, { ...bakedRuntime, ready: true })).toBeNull();
+  });
+
+  it("maps download snapshots onto the staged progress model", () => {
+    const running: RuntimeModelDownloadStatus = {
+      lifecycle: "running",
+      profile: "mlx",
+      model_groups: ["tts-mlx", "cleaner-mlx"],
+      total_models: 2,
+      completed_models: 1,
+      current_model_group: "cleaner-mlx",
+      error: null,
+    };
+    const state = applyProgressEvent(undefined, modelDownloadProgressEvent(running));
+    expect(state).toMatchObject({ lifecycle: "running", stage: "models", percent: 50 });
+    expect(state.completedStages).toEqual(["packages"]);
+    expect(state.message).toBe("Downloading Qwen Cleaner (2 of 2)…");
+
+    const complete = applyProgressEvent(state, modelDownloadProgressEvent({
+      ...running,
+      completed_models: 2,
+      current_model_group: null,
+      lifecycle: "complete",
+    }));
+    expect(complete.completedStages).toContain("models");
+    expect(complete.lifecycle).toBe("running");
+
+    const failed = applyProgressEvent(state, modelDownloadProgressEvent({
+      ...running,
+      lifecycle: "failed",
+      error: "disk full",
+    }));
+    expect(failed).toMatchObject({ lifecycle: "failed", message: "disk full" });
   });
 });

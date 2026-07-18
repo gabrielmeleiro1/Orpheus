@@ -24,6 +24,13 @@ def _write_executable(path: Path, content: str = "executable") -> Path:
     return path
 
 
+def _write_requirements_manifests(onedir: Path) -> None:
+    manifest_dir = onedir / "_internal" / "requirements"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("base", "mlx", "cuda"):
+        (manifest_dir / f"{name}.txt").write_text("packaging\n", encoding="utf-8")
+
+
 def _write_required_pyinstaller_resources(onedir: Path) -> None:
     internal_dir = onedir / "_internal"
     (internal_dir / "mlx" / "lib").mkdir(parents=True)
@@ -33,6 +40,7 @@ def _write_required_pyinstaller_resources(onedir: Path) -> None:
         "phoneme table",
         encoding="utf-8",
     )
+    _write_requirements_manifests(onedir)
 
 
 def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary(
@@ -60,6 +68,7 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
         "phoneme table",
         encoding="utf-8",
     )
+    _write_requirements_manifests(onedir)
     binaries_dir.mkdir(parents=True)
     legacy_external_bin.write_text("old onefile binary", encoding="utf-8")
     other_legacy_external_bin.write_text("old x86 onefile binary", encoding="utf-8")
@@ -144,6 +153,7 @@ def test_copy_sidecar_for_tauri_windows_does_not_require_mlx_resources(
         "phoneme table",
         encoding="utf-8",
     )
+    _write_requirements_manifests(onedir)
 
     monkeypatch.setattr(build_desktop_backend, "DIST_DIR", dist_dir)
     monkeypatch.setattr(build_desktop_backend, "TAURI_BINARIES_DIR", binaries_dir)

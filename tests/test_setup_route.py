@@ -288,6 +288,25 @@ def test_package_readiness_checks_recursive_base_and_missing_dependency(tmp_path
     }
 
 
+def test_package_readiness_degrades_when_manifest_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Packaged sidecars without bundled manifests must report not-ready, not raise."""
+    from modules.web.routes import setup as setup_route
+
+    monkeypatch.setattr(
+        setup_route,
+        "get_runtime_profile",
+        lambda profile_id: SimpleNamespace(
+            requirements_file=tmp_path / "absent" / f"{profile_id}.txt"
+        ),
+    )
+
+    status = setup_route._check_selected_profile_packages("mlx")
+
+    assert status == {"ready": False, "missing": [], "incompatible": []}
+
+
 def test_package_readiness_reports_wrong_pinned_version(tmp_path: Path) -> None:
     from modules.web.routes import setup as setup_route
 

@@ -29,6 +29,8 @@ import type {
   StartConversionRequest,
   StartConversionResponse,
   SystemCapabilitiesResponse,
+  RuntimeModelDownloadRequest,
+  RuntimeModelDownloadStatus,
   RuntimeSetupAdoptRequest,
   RuntimeSetupRuntimeDeleteResponse,
   RuntimeSetupStatusResponse,
@@ -101,6 +103,11 @@ export interface ApiClient {
     options?: ApiRequestOptions,
   ): Promise<RuntimeSetupStatusResponse>;
   deleteRuntimeSetupData(options?: ApiRequestOptions): Promise<RuntimeSetupRuntimeDeleteResponse>;
+  getRuntimeModelDownloadStatus(options?: ApiRequestOptions): Promise<RuntimeModelDownloadStatus>;
+  startRuntimeModelDownload(
+    request: RuntimeModelDownloadRequest,
+    options?: ApiRequestOptions,
+  ): Promise<RuntimeModelDownloadStatus>;
   warmupParallelWorkers(payload: ParallelWarmupRequest, options?: ApiRequestOptions): Promise<ParallelWorkerRecommendation>;
   preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight>;
   uploadSourceFile(file: File, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
@@ -440,6 +447,23 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     });
   }
 
+  async function getRuntimeModelDownloadStatus(
+    options?: ApiRequestOptions,
+  ): Promise<RuntimeModelDownloadStatus> {
+    return requestJson<RuntimeModelDownloadStatus>("/api/setup/models/download", options);
+  }
+
+  async function startRuntimeModelDownload(
+    request: RuntimeModelDownloadRequest,
+    options?: ApiRequestOptions,
+  ): Promise<RuntimeModelDownloadStatus> {
+    return requestJson<RuntimeModelDownloadStatus>("/api/setup/models/download", {
+      method: "POST",
+      body: JSON.stringify(request),
+      ...options,
+    });
+  }
+
   async function deleteRuntimeSetupData(
     options?: ApiRequestOptions,
   ): Promise<RuntimeSetupRuntimeDeleteResponse> {
@@ -732,6 +756,8 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     getRuntimeSetupStatus,
     adoptRuntimeSetup,
     deleteRuntimeSetupData,
+    getRuntimeModelDownloadStatus,
+    startRuntimeModelDownload,
     warmupParallelWorkers,
     preflightSource,
     uploadSourceFile,

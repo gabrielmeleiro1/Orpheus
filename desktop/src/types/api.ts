@@ -37,13 +37,31 @@ export interface RuntimeSetupPackageIssue {
 
 export interface RuntimeSetupInstalledRuntimeGroup {
   id: string;
+  runtime_ready: boolean;
+  assets_ready: boolean;
   ready: boolean;
 }
 
 export interface RuntimeSetupInstalledRuntime {
   profile: "mlx" | "cuda";
   ready: boolean;
+  runtime_available: boolean;
   model_groups: RuntimeSetupInstalledRuntimeGroup[];
+}
+
+export interface RuntimeModelDownloadStatus {
+  lifecycle: "idle" | "running" | "complete" | "failed";
+  profile: string | null;
+  model_groups: string[];
+  total_models: number;
+  completed_models: number;
+  current_model_group: string | null;
+  error: string | null;
+}
+
+export interface RuntimeModelDownloadRequest {
+  profile: RuntimeSetupProfile["id"];
+  model_groups: string[];
 }
 
 export interface RuntimeSetupAdoptRequest {

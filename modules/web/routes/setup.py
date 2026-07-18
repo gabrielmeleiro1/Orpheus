@@ -6,6 +6,7 @@ import copy
 from importlib import metadata
 from pathlib import Path
 import re
+import sys
 import threading
 import time
 from typing import Any, Callable, Mapping
@@ -23,6 +24,10 @@ from modules.runtime_profiles import (
     get_runtime_profile,
     recommended_profile_id,
     runtime_profiles,
+)
+from modules.app.services.model_download_service import (
+    ModelDownloadBusyError,
+    ModelDownloadService,
 )
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
 from scripts import setup_runtime
@@ -222,7 +227,18 @@ def _check_selected_profile_packages(profile_id: str | None) -> dict[str, Any]:
     if not profile_id:
         return {"ready": False, "missing": [], "incompatible": []}
     profile = get_runtime_profile(profile_id)
-    return _check_manifest_packages(profile.requirements_file)
+    if getattr(sys, "frozen", False):
+        # Frozen bundles are immutable and validated at build time, and their
+        # importlib metadata reflects the build environment rather than the
+        # manifests; the runtime probe is the meaningful readiness gate there.
+        return {"ready": True, "missing": [], "incompatible": []}
+    try:
+        return _check_manifest_packages(profile.requirements_file)
+    except (OSError, ValueError):
+        # A missing or unreadable manifest (e.g. a packaged build shipped
+        # without the requirements files) must degrade to not-ready instead of
+        # turning every /api/setup/status call into a 500.
+        return {"ready": False, "missing": [], "incompatible": []}
 
 
 def _repo_has_complete_revision(
@@ -350,18 +366,30 @@ def _detect_installed_runtime(
         model_groups = [
             {
                 "id": group_id,
+                "runtime_ready": readiness_by_group.get(group_id, False),
+                "assets_ready": bool(asset_status.get(group_id, {}).get("ready")),
                 "ready": bool(asset_status.get(group_id, {}).get("ready"))
                 and readiness_by_group.get(group_id, False),
             }
             for group_id in profile.model_groups
         ]
         tts_groups = _profile_tts_groups(profile.id)
-        ready = bool(tts_groups) and all(
-            readiness_by_group.get(group_id, False)
-            and bool(asset_status.get(group_id, {}).get("ready"))
+        # The runtime can be present (baked into a packaged build) while its
+        # model assets are not downloaded yet; the frontend offers an in-app
+        # download only in that split state.
+        runtime_available = bool(tts_groups) and all(
+            readiness_by_group.get(group_id, False) for group_id in tts_groups
+        )
+        ready = runtime_available and all(
+            bool(asset_status.get(group_id, {}).get("ready"))
             for group_id in tts_groups
         )
-        return {"profile": profile.id, "ready": ready, "model_groups": model_groups}
+        return {
+            "profile": profile.id,
+            "ready": ready,
+            "runtime_available": runtime_available,
+            "model_groups": model_groups,
+        }
     return None
 
 
@@ -498,7 +526,13 @@ def _build_uncached_setup_status_response(
         "ready": ready,
         "restart_required": restart_required,
         "recommended_profile": recommended_profile_id(),
-        "installed_runtime": None,
+        # Library-only users can still upgrade to a baked local runtime, so
+        # detection keeps running for them; a configured local profile wins.
+        "installed_runtime": (
+            _detect_installed_runtime(probe_service, receipt_verifier)
+            if selected_profile == "base"
+            else None
+        ),
         "profiles": [
             _profile_payload(item.id, accepted_profile=selected_profile)
             for item in runtime_profiles()
@@ -648,6 +682,68 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
 
     cache.invalidate()
     return build_setup_status_response(request)
+
+
+class ModelDownloadRequest(BaseModel):
+    """Download the model assets for an already-operational (baked) runtime."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    profile: str
+    model_groups: list[str]
+
+
+def _get_download_service(request: Request) -> ModelDownloadService:
+    service = getattr(request.app.state, "model_download_service", None)
+    if not isinstance(service, ModelDownloadService):
+        cache = _get_status_cache(request)
+        service = ModelDownloadService(on_terminal=cache.invalidate)
+        request.app.state.model_download_service = service
+    return service
+
+
+@router.get("/api/setup/models/download")
+def get_model_download_status(request: Request) -> dict[str, Any]:
+    return _get_download_service(request).status()
+
+
+@router.post("/api/setup/models/download")
+def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict[str, Any]:
+    """Start a background model download for packaged builds (no installer).
+
+    Only fetches files; adopting the runtime afterwards still runs the full
+    probe/asset/risk validation in ``POST /api/setup/adopt``.
+    """
+    try:
+        profile = setup_runtime._validated_profile(payload.profile)
+        groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
+    except setup_runtime.SetupValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": "invalid_request", "message": str(exc)},
+        ) from exc
+    if not groups:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_request",
+                "message": "At least one model group is required.",
+            },
+        )
+
+    service = _get_download_service(request)
+    try:
+        return service.start(profile_id=profile.id, model_groups=groups)
+    except ModelDownloadBusyError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "download_in_progress"},
+        ) from exc
+    except setup_runtime.SetupExecutionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "setup_in_progress", "message": str(exc)},
+        ) from exc
 
 
 def _managed_model_repo_ids() -> dict[str, str]:

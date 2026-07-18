@@ -27,6 +27,10 @@ def canonical_provider(provider: str | None) -> str | None:
 
 
 KOKORO_MLX_DEFAULT_MODEL = "mlx-community/Kokoro-82M"
+# The MLX engine appends the quantization suffix to the base name at load time
+# (engine_runtime.get_model_path); the suffixless base is NOT a real Hub repo.
+# Downloads and cache checks must target the concrete default-variant repo.
+KOKORO_MLX_DEFAULT_MODEL_REPO = f"{KOKORO_MLX_DEFAULT_MODEL}-bf16"
 KOKORO_PACKAGE_DEFAULT_MODEL = "hexgrad/Kokoro-82M"
 KOKORO_DEFAULT_MODEL = KOKORO_MLX_DEFAULT_MODEL
 CLEANER_MLX_DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"

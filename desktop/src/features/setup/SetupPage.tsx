@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
@@ -17,11 +17,15 @@ import {
   applyProgressEvent,
   applyRunnerStatus,
   acquireSetupStart,
+  backendInstallProfileId,
   canStartSetup,
   createSelection,
   diagnosticsSnapshot,
+  groupEstimate,
   MODEL_GROUP_DETAILS,
+  modelDownloadProgressEvent,
   profileChoices,
+  selectionEstimate,
   selectProfile,
   toggleModelGroup,
   type SetupProgressEvent,
@@ -95,6 +99,36 @@ function formatFreedBytes(bytes: number): string {
   return `${rounded} ${units[unit]}`;
 }
 
+function InfoTip({ children, label }: { children: ReactNode; label: string }) {
+  return (
+    <span className="setup-tip" tabIndex={0} aria-label={label}>
+      <span className="setup-tip-icon" aria-hidden="true">i</span>
+      <span className="setup-tip-bubble" role="tooltip">{children}</span>
+    </span>
+  );
+}
+
+function ModelListTip({ modelGroups, label }: { modelGroups: string[]; label: string }) {
+  const rows = modelGroups
+    .map((groupId) => ({ groupId, details: MODEL_GROUP_DETAILS[groupId] }))
+    .filter((row) => Boolean(row.details));
+  if (rows.length === 0) return null;
+  return (
+    <InfoTip label={label}>
+      <ul className="setup-tip-models">
+        {rows.map(({ groupId, details }) => (
+          <li key={groupId}>
+            <strong>{details!.label}</strong>
+            <span>{details!.description}</span>
+            <code>{details!.model}</code>
+            <span>{groupEstimate(groupId)}</span>
+          </li>
+        ))}
+      </ul>
+    </InfoTip>
+  );
+}
+
 function StageState({ id, progress }: { id: string; progress: SetupProgressState }) {
   const complete = progress.completedStages.includes(id);
   const active = progress.lifecycle === "running" && progress.stage === id;
@@ -131,16 +165,19 @@ export function SetupPage({
   const [listenerAttempt, setListenerAttempt] = useState(0);
   const [awaitingReconnect, setAwaitingReconnect] = useState(false);
   const [adopting, setAdopting] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [downloadPhase, setDownloadPhase] = useState<"idle" | "downloading" | "adopting">("idle");
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const startLocked = useRef(false);
   const restartLocked = useRef(false);
+  const statusRef = useRef(status);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preRestartClient = useRef<ApiClient | null>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
   const setupHeadingRef = useRef<HTMLHeadingElement>(null);
-  const progressHeadingRef = useRef<HTMLParagraphElement>(null);
+  const progressHeadingRef = useRef<HTMLDivElement>(null);
 
   const refreshStatus = useCallback(async () => {
     if (!apiClient) {
@@ -148,7 +185,14 @@ export function SetupPage({
       return null;
     }
     try {
-      const next = await apiClient.getRuntimeSetupStatus({ timeoutMs: 8_000 });
+      // Matches the app-level fetch: cold probe + first asset hashing can
+      // exceed 8s, and a Retry that times out again traps the user.
+      const next = await apiClient.getRuntimeSetupStatus({ timeoutMs: 30_000 });
+      // Recovering from a failed initial load must also derive the selection,
+      // or the recommended profile stays stuck on the base fallback.
+      if (!statusRef.current) {
+        setSelection(createSelection(next));
+      }
       setStatus(next);
       setError(null);
       if (next.ready && next.state === "ready" && !next.restart_required) {
@@ -196,6 +240,10 @@ export function SetupPage({
       setSelection(createSelection(initialStatus));
     }
   }, [initialError, initialStatus]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
 
   useEffect(() => {
     let mounted = true;
@@ -246,6 +294,112 @@ export function SetupPage({
       release?.();
     };
   }, [bridge, environment?.available, listenerAttempt, reconcileRunner]);
+
+  // A download that survived a page remount (Settings re-entry, reload) must
+  // resume driving the progress UI instead of allowing a second start.
+  useEffect(() => {
+    if (environment === null || environment.available || !apiClient) {
+      return undefined;
+    }
+    if (typeof apiClient.getRuntimeModelDownloadStatus !== "function") {
+      return undefined;
+    }
+    let active = true;
+    void apiClient.getRuntimeModelDownloadStatus({ timeoutMs: 8_000 }).then((snapshot) => {
+      if (!active || snapshot.lifecycle !== "running") return;
+      startLocked.current = true;
+      setBusy(true);
+      setDownloadPhase("downloading");
+      setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
+    }).catch(() => {
+      // Backends without the download endpoint (or transient failures) just
+      // leave the flow idle; starting a download will surface a real error.
+    });
+    return () => {
+      active = false;
+    };
+  }, [apiClient, environment]);
+
+  useEffect(() => {
+    if (downloadPhase !== "downloading" || !apiClient) {
+      return undefined;
+    }
+    let active = true;
+    const tick = async () => {
+      let snapshot;
+      try {
+        snapshot = await apiClient.getRuntimeModelDownloadStatus({ timeoutMs: 8_000 });
+      } catch {
+        // Transient poll failure; the next tick retries.
+        return;
+      }
+      if (!active) return;
+      setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
+      if (snapshot.lifecycle === "complete") {
+        setDownloadPhase("adopting");
+      } else if (snapshot.lifecycle === "failed" || snapshot.lifecycle === "idle") {
+        setDownloadPhase("idle");
+        startLocked.current = false;
+        setBusy(false);
+        setError(
+          snapshot.lifecycle === "failed"
+            ? snapshot.error ?? "Model download failed."
+            : "Model download state was lost. Try again.",
+        );
+      }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(), 1_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [apiClient, downloadPhase]);
+
+  useEffect(() => {
+    if (downloadPhase !== "adopting" || !apiClient) {
+      return undefined;
+    }
+    let active = true;
+    setProgress((previous) => applyProgressEvent(previous, {
+      event: "status",
+      stage: "verify",
+      message: "Verifying and adopting the runtime…",
+    }));
+    void apiClient.adoptRuntimeSetup(
+      {
+        profile: selection.profile,
+        model_groups: [...selection.modelGroups],
+        accept_pytorch_risk: selection.acceptPytorchRisk,
+      },
+      { timeoutMs: 30_000 },
+    ).then((next) => {
+      if (!active) return;
+      setDownloadPhase("idle");
+      startLocked.current = false;
+      setBusy(false);
+      setStatus(next);
+      if (next.ready && next.state === "ready" && !next.restart_required) {
+        setProgress((previous) => applyProgressEvent(previous, {
+          event: "complete",
+          terminal: true,
+          message: "Local runtime ready.",
+        }));
+        onReady(next);
+      } else {
+        setError("The runtime did not become ready after download. Retry, or continue in library-only mode.");
+      }
+    }).catch((reason: unknown) => {
+      if (!active) return;
+      setDownloadPhase("idle");
+      startLocked.current = false;
+      setBusy(false);
+      setError(safeError(reason, "The runtime could not be adopted after download."));
+    });
+    return () => {
+      active = false;
+    };
+  }, [apiClient, downloadPhase, onReady, selection]);
 
   useEffect(() => {
     setupHeadingRef.current?.focus();
@@ -308,14 +462,21 @@ export function SetupPage({
     : selection.profile === "cuda" && Boolean(selectedProfile?.risk);
   const adoptDisabled = adopting || (installedIsCuda && !selection.acceptPytorchRisk);
   const readyToStart = Boolean(listenerReady && runnerReconciled && mutationsAvailable && status && canStartSetup(selection, status) && !busy && !startLocked.current);
+  const packagedMode = environment !== null && !mutationsAvailable;
+  const backendInstallProfile = backendInstallProfileId(mutationsAvailable, installedRuntime);
+  const backendReadyToStart = Boolean(
+    apiClient
+    && status
+    && canStartSetup(selection, status)
+    && downloadPhase === "idle"
+    && !busy
+    && !adopting
+    && !startLocked.current,
+  );
   const showRestart = status?.restart_required || progress.restartRequired;
-  const apiUnavailable = !status || Boolean(error);
   const progressValue = progress.percent === null ? undefined : progress.percent;
 
-  const selectedEstimate = useMemo(() => selection.modelGroups
-    .map((group) => MODEL_GROUP_DETAILS[group]?.estimate)
-    .filter(Boolean)
-    .join(" + "), [selection.modelGroups]);
+  const selectedEstimate = selectionEstimate(selection.modelGroups);
   const progressMessage = showRestart && progress.lifecycle === "idle"
     ? "Installation complete. Restart Orpheus to load the selected runtime."
     : progress.message;
@@ -340,6 +501,26 @@ export function SetupPage({
       startLocked.current = false;
       setBusy(false);
       const message = safeError(reason, "Runtime setup could not start.");
+      setError(message);
+      setProgress((previous) => ({ ...previous, lifecycle: "failed", message }));
+    }
+  };
+
+  const installFromBackend = async () => {
+    if (!apiClient || !status || selection.profile !== backendInstallProfile || !canStartSetup(selection, status) || !acquireSetupStart(startLocked)) return;
+    setBusy(true);
+    setError(null);
+    setProgress({ ...EMPTY_PROGRESS, lifecycle: "running", message: "Starting model downloads…" });
+    try {
+      await apiClient.startRuntimeModelDownload(
+        { profile: selection.profile, model_groups: [...selection.modelGroups] },
+        { timeoutMs: 15_000 },
+      );
+      setDownloadPhase("downloading");
+    } catch (reason: unknown) {
+      startLocked.current = false;
+      setBusy(false);
+      const message = safeError(reason, "Model downloads could not start.");
       setError(message);
       setProgress((previous) => ({ ...previous, lifecycle: "failed", message }));
     }
@@ -479,27 +660,30 @@ export function SetupPage({
         <section className="setup-panel" aria-labelledby="setup-heading">
           <div className="setup-intro">
             <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>Welcome to Orpheus</h1>
-            <p className="setup-lede">Add a private, on-device runtime for speech and text cleaning — or start with the library only. You can change this later in Settings.</p>
+            <p className="setup-lede">Private, on-device audiobooks. You can change everything later in Settings.</p>
           </div>
 
           {installedReady && installedRuntime ? (
             <div className="setup-installed" role="note">
               <strong>Installed {INSTALLED_PROFILE_LABEL[installedRuntime.profile]} runtime ready</strong>
-              <p>This build includes a working local runtime — no download needed.</p>
+              <ModelListTip modelGroups={installedReadyGroups} label="Installed runtime details" />
             </div>
           ) : null}
 
-          {apiUnavailable ? (
+          {!status ? (
             <div className="setup-recovery" role="alert">
               <div><strong>Setup status unavailable</strong><p>{error ?? "The backend has not returned setup details yet."}</p></div>
-              <div className="setup-actions"><button className="btn" type="button" onClick={() => void refreshStatus()}>Retry</button><button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Continue in library-only mode</button></div>
+              <div className="setup-actions"><button className="btn" type="button" onClick={() => void refreshStatus()}>Retry</button><button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button></div>
             </div>
           ) : null}
 
-          {environment && !environment.available && !installedReady ? (
+          {environment && !environment.available && !installedReady && !backendInstallProfile ? (
             <div className="setup-recovery setup-environment" role="note">
-              <div><strong>Install from a source checkout</strong><p>{environment.reason}</p><p>Clone Orpheus, create its <code>.venv</code>, then run <code>.venv/bin/python scripts/setup_runtime.py --profile base</code> (Windows: <code>.venv\Scripts\python.exe scripts\setup_runtime.py --profile base</code>).</p></div>
-              <button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Continue in library-only mode</button>
+              <div>
+                <strong>Local runtime needs a source checkout <InfoTip label="Why installation is unavailable"><span>{environment.reason}</span></InfoTip></strong>
+                <p><code>.venv/bin/python scripts/setup_runtime.py --profile base</code> (Windows: <code>.venv\Scripts\python.exe</code>)</p>
+              </div>
+              <button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button>
             </div>
           ) : null}
 
@@ -517,40 +701,75 @@ export function SetupPage({
             </div>
           ) : null}
 
-          {status ? (
+          {status && !installedReady ? (
             <>
-              <fieldset className="setup-section" disabled={busy}>
-                <legend>Runtime profile</legend>
-                <div className="setup-profile-grid">
-                  {choices.map((profile) => (
-                    <label key={profile.id} className={`setup-profile-card${selection.profile === profile.id ? " is-selected" : ""}${profile.disabled ? " is-disabled" : ""}`}>
-                      <input type="radio" name="runtime-profile" value={profile.id} checked={selection.profile === profile.id} disabled={profile.disabled} onChange={() => setSelection((current) => selectProfile(current, profile.id, status))} />
-                      <span className="setup-card-radio" aria-hidden="true" />
-                      <span className="setup-card-copy"><span className="setup-card-head"><strong>{profile.label}</strong>{status.recommended_profile === profile.id && profile.compatible ? <span className="setup-chip">Recommended</span> : null}</span><span>{profile.description}</span>{profile.reason ? <small>{profile.reason}</small> : null}</span>
-                    </label>
-                  ))}
+              <div className="setup-plan">
+                <div className="setup-plan-summary">
+                  <span className="setup-plan-title">
+                    <strong>{selection.profile === "base" ? "Library only" : selectedProfile?.label ?? selection.profile}</strong>
+                    {status.recommended_profile === selection.profile ? <span className="setup-chip">Recommended</span> : null}
+                    {selection.profile === "base"
+                      ? <InfoTip label="Library-only details"><span>Document conversion, playback, and cloud cleaning. No local models are installed — add them later in Settings.</span></InfoTip>
+                      : <ModelListTip modelGroups={selection.modelGroups} label="What will be installed" />}
+                  </span>
+                  <span className="setup-plan-detail">
+                    {selection.profile === "base"
+                      ? "No downloads"
+                      : `${selection.modelGroups.map((group) => MODEL_GROUP_DETAILS[group]?.label).filter(Boolean).join(" + ")} · ${selectedEstimate}`}
+                  </span>
                 </div>
-              </fieldset>
+                <button className="btn btn-compact setup-customize-toggle" type="button" aria-expanded={showAdvanced} onClick={() => setShowAdvanced((open) => !open)}>
+                  {showAdvanced ? "Hide options" : "Customize"}
+                </button>
+              </div>
 
-              <fieldset className="setup-section setup-model-section" disabled={busy || !selectedProfile || selectedProfile.model_groups.length === 0}>
-                <legend>Local capabilities</legend>
-                {selectedProfile?.model_groups.length ? (
-                  <div className="setup-model-list">
-                    {selectedProfile.model_groups.map((groupId) => {
-                      const details = MODEL_GROUP_DETAILS[groupId];
-                      if (!details) return null;
-                      return (
-                        <label className="setup-model-row" key={groupId}>
-                          <input type="checkbox" checked={selection.modelGroups.includes(groupId)} onChange={() => setSelection((current) => toggleModelGroup(current, groupId, status))} />
-                          <span><strong>{details.label}</strong><small>{details.description}</small></span>
-                          <span className="setup-estimate"><em>Estimate</em>{details.estimate}</span>
+              {showAdvanced ? (
+                <>
+                  <fieldset className="setup-section" disabled={busy}>
+                    <legend>Runtime</legend>
+                    <div className="setup-profile-grid">
+                      {choices.map((profile) => (
+                        <label key={profile.id} className={`setup-profile-card${selection.profile === profile.id ? " is-selected" : ""}${profile.disabled ? " is-disabled" : ""}`}>
+                          <input type="radio" name="runtime-profile" value={profile.id} checked={selection.profile === profile.id} disabled={profile.disabled} onChange={() => setSelection((current) => selectProfile(current, profile.id, status))} />
+                          <span className="setup-card-radio" aria-hidden="true" />
+                          <span className="setup-card-copy">
+                            <span className="setup-card-head">
+                              <strong>{profile.label}</strong>
+                              {status.recommended_profile === profile.id && profile.compatible ? <span className="setup-chip">Recommended</span> : null}
+                              <InfoTip label={`${profile.label} details`}><span>{profile.description}{profile.reason ? ` ${profile.reason}` : ""}</span></InfoTip>
+                            </span>
+                          </span>
                         </label>
-                      );
-                    })}
-                  </div>
-                ) : <p className="setup-empty-models">Library-only mode installs no local models — add a runtime later in Settings.</p>}
-                {selectedEstimate ? <p className="setup-estimate-note"><strong>Estimates:</strong> {selectedEstimate}. Actual size varies by model revision.</p> : null}
-              </fieldset>
+                      ))}
+                    </div>
+                  </fieldset>
+
+                  <fieldset className="setup-section setup-model-section" disabled={busy || !selectedProfile || selectedProfile.model_groups.length === 0}>
+                    <legend>Models</legend>
+                    {selectedProfile?.model_groups.length ? (
+                      <div className="setup-model-list">
+                        {selectedProfile.model_groups.map((groupId) => {
+                          const details = MODEL_GROUP_DETAILS[groupId];
+                          if (!details) return null;
+                          return (
+                            <label className="setup-model-row" key={groupId}>
+                              <input type="checkbox" checked={selection.modelGroups.includes(groupId)} onChange={() => setSelection((current) => toggleModelGroup(current, groupId, status))} />
+                              <span className="setup-model-name">
+                                <strong>{details.label}</strong>
+                                <InfoTip label={`${details.label} details`}>
+                                  <span>{details.description}</span>
+                                  <code>{details.model}</code>
+                                </InfoTip>
+                              </span>
+                              <span className="setup-estimate">{groupEstimate(groupId)}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ) : <p className="setup-empty-models">No local models in library-only mode.</p>}
+                  </fieldset>
+                </>
+              ) : null}
 
               {showRiskBlock && riskProfile?.risk ? (
                 <div className="setup-risk" role="note">
@@ -561,11 +780,21 @@ export function SetupPage({
             </>
           ) : null}
 
-          <p className="setup-privacy">Private by default — models run on this device; the network is used only for downloads.</p>
+          {status && installedReady && showRiskBlock && riskProfile?.risk ? (
+            <div className="setup-risk" role="note">
+              <strong>PyTorch security notice</strong><p>{riskProfile.risk.summary}</p>
+              <label><input type="checkbox" checked={selection.acceptPytorchRisk} disabled={busy || adopting} onChange={(event) => setSelection((current) => ({ ...current, acceptPytorchRisk: event.target.checked }))} /> I understand and will use only trusted model files.</label>
+            </div>
+          ) : null}
 
           {(busy || progress.lifecycle !== "idle" || showRestart) ? (
             <section className="setup-progress" aria-labelledby="setup-progress-heading">
-              <div><p className="setup-section-label" id="setup-progress-heading" ref={progressHeadingRef} tabIndex={-1}>Installation</p><p className="setup-progress-message" aria-live="polite">{progressMessage}</p></div>
+              <div>
+                <div className="setup-section-label" id="setup-progress-heading" ref={progressHeadingRef} tabIndex={-1}>
+                  Installation <ModelListTip modelGroups={selection.modelGroups} label="Models being installed" />
+                </div>
+                <p className="setup-progress-message" aria-live="polite">{progressMessage}</p>
+              </div>
               <progress value={progressValue} max={100} aria-label={progressValue === undefined ? "Setup in progress" : `Setup ${Math.round(progressValue)} percent complete`} />
               <ol>{STAGES.map(({ id }) => <StageState key={id} id={id} progress={progress} />)}</ol>
             </section>
@@ -601,9 +830,9 @@ export function SetupPage({
               <button className="btn btn-compact setup-tertiary" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button>
             </div>
             <div className="setup-actions">
-              {busy ? <button className="btn" type="button" disabled={!mutationsAvailable} onClick={() => void cancel()}>Cancel</button> : null}
+              {busy && mutationsAvailable ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
               {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => { setError(null); setProgress(EMPTY_PROGRESS); }}>Retry</button> : null}
-              {showRestart ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || !mutationsAvailable} onClick={() => void restart()}>Restart Orpheus</button> : installedReady ? <button className="btn btn-primary setup-primary" type="button" disabled={adoptDisabled} onClick={() => void adoptInstalled()}>Continue with installed runtime</button> : <button className="btn btn-primary setup-primary" type="button" disabled={!readyToStart} onClick={() => void start()}>{selection.profile === "base" ? "Use library-only mode" : "Install selected runtime"}</button>}
+              {showRestart ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || !mutationsAvailable} onClick={() => void restart()}>Restart Orpheus</button> : installedReady ? <button className="btn btn-primary setup-primary" type="button" disabled={adoptDisabled} onClick={() => void adoptInstalled()}>Continue</button> : packagedMode && selection.profile === "base" ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || adopting} onClick={() => void continueLibraryOnly()}>Use library only</button> : packagedMode && backendInstallProfile !== null && selection.profile === backendInstallProfile ? <button className="btn btn-primary setup-primary" type="button" disabled={!backendReadyToStart} onClick={() => void installFromBackend()}>Install</button> : <button className="btn btn-primary setup-primary" type="button" disabled={!readyToStart} onClick={() => void start()}>{selection.profile === "base" ? "Use library only" : "Install"}</button>}
             </div>
           </footer>
         </section>

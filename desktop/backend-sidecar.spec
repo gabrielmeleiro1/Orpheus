@@ -85,6 +85,13 @@ elif runtime_profile == "cuda":
 
 datas = []
 
+# The setup status endpoint validates installed packages against these fixed
+# manifests at runtime; without them every capability probe fails.
+datas += [
+    (str(project_root / "requirements" / f"{name}.txt"), "requirements")
+    for name in ("base", "mlx", "cuda")
+]
+
 if runtime_profile in {"mlx", "cuda"}:
     datas += _collect_data_files("en_core_web_sm") + _copy_metadata("en_core_web_sm")
     datas += _collect_data_files("misaki")

@@ -23,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 from modules.tts.runtime_spec import (  # noqa: E402
     CLEANER_CUDA_DEFAULT_MODEL,
     CLEANER_MLX_DEFAULT_MODEL,
-    KOKORO_MLX_DEFAULT_MODEL,
+    KOKORO_MLX_DEFAULT_MODEL_REPO,
     KOKORO_PACKAGE_DEFAULT_MODEL,
 )
 
@@ -36,7 +36,7 @@ _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _MAX_RECEIPT_BYTES = 1024 * 1024
 _HASH_CHUNK_BYTES = 1024 * 1024
 MODEL_GROUPS: Mapping[str, tuple[str, ...]] = {
-    "tts-mlx": (KOKORO_MLX_DEFAULT_MODEL,),
+    "tts-mlx": (KOKORO_MLX_DEFAULT_MODEL_REPO,),
     "tts-cpu-cuda": (KOKORO_PACKAGE_DEFAULT_MODEL,),
     "cleaner-mlx": (CLEANER_MLX_DEFAULT_MODEL,),
     "cleaner-cuda": (CLEANER_CUDA_DEFAULT_MODEL,),

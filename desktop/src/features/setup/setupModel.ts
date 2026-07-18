@@ -1,4 +1,6 @@
 import type {
+  RuntimeModelDownloadStatus,
+  RuntimeSetupInstalledRuntime,
   RuntimeSetupProfile,
   RuntimeSetupStatusResponse,
 } from "../../types/api";
@@ -54,16 +56,48 @@ export function acquireSetupStart(lock: SetupStartLock): boolean {
   return true;
 }
 
-export const MODEL_GROUP_DETAILS: Record<string, { label: string; description: string; estimate: string; kind: "tts" | "cleaner" }> = {
-  "tts-mlx": { label: "Kokoro TTS · MLX", description: "Natural speech generated locally on Apple Silicon.", estimate: "~450 MB download · ~700 MB disk", kind: "tts" },
-  "cleaner-mlx": { label: "Qwen Cleaner · MLX", description: "Optional local text cleanup before synthesis.", estimate: "~1.8 GB download · ~2.3 GB disk", kind: "cleaner" },
-  "tts-cpu-cuda": { label: "Kokoro TTS · PyTorch", description: "Natural speech generated with the CUDA runtime.", estimate: "~500 MB download · ~900 MB disk", kind: "tts" },
-  "cleaner-cuda": { label: "Qwen Cleaner · CUDA", description: "Optional GPU-accelerated local text cleanup.", estimate: "~2.2 GB download · ~3.0 GB disk", kind: "cleaner" },
+export interface ModelGroupDetail {
+  label: string;
+  description: string;
+  /** HF repo actually fetched — mirrors MODEL_GROUPS in scripts/download_models.py. */
+  model: string;
+  downloadMB: number;
+  diskMB: number;
+  kind: "tts" | "cleaner";
+}
+
+export const MODEL_GROUP_DETAILS: Record<string, ModelGroupDetail> = {
+  "tts-mlx": { label: "Kokoro TTS", description: "Natural speech generated locally on Apple Silicon.", model: "mlx-community/Kokoro-82M-bf16", downloadMB: 450, diskMB: 700, kind: "tts" },
+  "cleaner-mlx": { label: "Qwen Cleaner", description: "Optional local text cleanup before synthesis.", model: "mlx-community/Llama-3.2-3B-Instruct-4bit", downloadMB: 1800, diskMB: 2300, kind: "cleaner" },
+  "tts-cpu-cuda": { label: "Kokoro TTS", description: "Natural speech generated with the CUDA runtime.", model: "hexgrad/Kokoro-82M", downloadMB: 500, diskMB: 900, kind: "tts" },
+  "cleaner-cuda": { label: "Qwen Cleaner", description: "Optional GPU-accelerated local text cleanup.", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 2200, diskMB: 3000, kind: "cleaner" },
 };
 
-function defaultTtsGroup(profile: RuntimeSetupProfile): string[] {
-  const tts = profile.model_groups.find((group) => MODEL_GROUP_DETAILS[group]?.kind === "tts");
-  return tts ? [tts] : [];
+export function formatMB(mb: number): string {
+  if (!Number.isFinite(mb) || mb <= 0) return "0 MB";
+  return mb >= 1000 ? `${(mb / 1000).toFixed(1).replace(/\.0$/, "")} GB` : `${Math.round(mb)} MB`;
+}
+
+export function groupEstimate(groupId: string): string {
+  const details = MODEL_GROUP_DETAILS[groupId];
+  if (!details) return "";
+  return `~${formatMB(details.downloadMB)} download · ~${formatMB(details.diskMB)} disk`;
+}
+
+export function selectionEstimate(modelGroups: string[]): string {
+  const details = modelGroups
+    .map((group) => MODEL_GROUP_DETAILS[group])
+    .filter((entry): entry is ModelGroupDetail => Boolean(entry));
+  if (details.length === 0) return "";
+  const download = details.reduce((sum, entry) => sum + entry.downloadMB, 0);
+  const disk = details.reduce((sum, entry) => sum + entry.diskMB, 0);
+  return `~${formatMB(download)} download · ~${formatMB(disk)} on disk`;
+}
+
+// One-button setup installs everything the profile offers; users trim the
+// list in the Customize disclosure instead of opting in piece by piece.
+function defaultModelGroups(profile: RuntimeSetupProfile): string[] {
+  return profile.model_groups.filter((group) => MODEL_GROUP_DETAILS[group]);
 }
 
 export function profileChoices(status: RuntimeSetupStatusResponse): SetupProfileChoice[] {
@@ -83,7 +117,7 @@ export function createSelection(status: RuntimeSetupStatusResponse): SetupSelect
   const persisted = status.selected_model_groups.map(({ id }) => id).filter((id) => allowed.has(id));
   return {
     profile: selected?.id ?? "base",
-    modelGroups: persisted.length > 0 ? persisted : selected ? defaultTtsGroup(selected) : [],
+    modelGroups: persisted.length > 0 ? persisted : selected ? defaultModelGroups(selected) : [],
     acceptPytorchRisk: Boolean(selected?.risk?.accepted),
   };
 }
@@ -99,7 +133,7 @@ export function selectProfile(
   }
   return {
     profile: profile.id,
-    modelGroups: defaultTtsGroup(profile),
+    modelGroups: defaultModelGroups(profile),
     acceptPytorchRisk: Boolean(profile.risk?.accepted),
   };
 }
@@ -127,6 +161,55 @@ export function canStartSetup(selection: SetupSelection, status: RuntimeSetupSta
     return false;
   }
   return profile.id !== "cuda" || selection.acceptPytorchRisk;
+}
+
+export function backendInstallProfileId(
+  environmentAvailable: boolean,
+  installedRuntime: RuntimeSetupInstalledRuntime | null | undefined,
+): string | null {
+  // The desktop installer owns provisioning when it is available; the
+  // backend-download path exists only for packaged builds whose baked runtime
+  // works but whose model assets are not downloaded yet.
+  if (environmentAvailable) {
+    return null;
+  }
+  if (!installedRuntime?.runtime_available || installedRuntime.ready) {
+    return null;
+  }
+  return installedRuntime.profile;
+}
+
+export function modelDownloadProgressEvent(
+  status: RuntimeModelDownloadStatus,
+): SetupProgressEvent {
+  if (status.lifecycle === "failed") {
+    return {
+      event: "error",
+      terminal: true,
+      message: status.error ?? "Model download failed.",
+    };
+  }
+  if (status.lifecycle === "complete") {
+    return {
+      event: "stage_complete",
+      stage: "models",
+      message: "Model downloads complete. Verifying the runtime…",
+      percent: 99,
+    };
+  }
+  const totalModels = Math.max(status.total_models, 1);
+  const position = Math.min(status.completed_models + 1, totalModels);
+  const label = MODEL_GROUP_DETAILS[status.current_model_group ?? ""]?.label
+    ?? status.current_model_group
+    ?? "models";
+  return {
+    event: "status",
+    stage: "models",
+    message: `Downloading ${label} (${position} of ${totalModels})…`,
+    percent: status.total_models > 0
+      ? Math.round((status.completed_models / status.total_models) * 100)
+      : undefined,
+  };
 }
 
 export function shouldShowRuntimeSetup(
