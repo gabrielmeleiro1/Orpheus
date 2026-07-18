@@ -1,7 +1,7 @@
 import type { ConversionMode, SourcePreflight } from "../../types/api";
 import { splitPath } from "./conversionPanelHelpers";
 
-export type QueueItemStatus = "ready" | "preflighting" | "warning" | "converting" | "done" | "failed";
+type QueueItemStatus = "ready" | "preflighting" | "warning" | "converting" | "done" | "failed";
 
 export interface ConversionQueueItem {
   id: string;

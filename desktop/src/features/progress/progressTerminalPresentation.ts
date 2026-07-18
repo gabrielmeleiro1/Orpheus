@@ -1,6 +1,6 @@
 import type { ConversionJobStatus, PerformanceSnapshot, ProgressStageView } from "../../types/api";
 
-export type ProgressSnapshotKind = "live" | "final" | "neutral";
+type ProgressSnapshotKind = "live" | "final" | "neutral";
 
 export interface ProgressTerminalPresentation {
   operationTitle: string;

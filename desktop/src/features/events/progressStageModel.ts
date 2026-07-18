@@ -5,7 +5,7 @@ import type {
   ProgressStageView,
 } from "../../types/api";
 
-export const PROGRESS_STAGE_NAMES: ProgressStageName[] = [
+const PROGRESS_STAGE_NAMES: ProgressStageName[] = [
   "ingestion",
   "chunking",
   "cleaning",
@@ -89,7 +89,7 @@ export function formatEtaLabel(value: unknown): string {
   return `ETA ~${parts.join(" ")}`;
 }
 
-export function normalizeStageName(stage: string): ProgressStageName | "" {
+function normalizeStageName(stage: string): ProgressStageName | "" {
   const stageValue = stage.toLowerCase();
   if (stageValue in BACKEND_STAGE_NAME_MAP) {
     return BACKEND_STAGE_NAME_MAP[stageValue];

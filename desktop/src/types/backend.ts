@@ -2,7 +2,7 @@ export type DashboardTab = "dashboard" | "convert" | "document" | "progress" | "
 
 export type BackendConnectionState = "checking" | "connected" | "error";
 
-export type DesktopBackendLifecycle = "stopped" | "starting" | "ready" | "failed";
+type DesktopBackendLifecycle = "stopped" | "starting" | "ready" | "failed";
 
 export interface DesktopBackendEndpoint {
   host: string;
@@ -27,7 +27,7 @@ export interface HealthResponse {
   status: string;
 }
 
-export type DesktopQueryTokenScope = "events" | "audio";
+type DesktopQueryTokenScope = "events" | "audio";
 
 export interface DesktopQueryTokenRequest {
   scope: DesktopQueryTokenScope;

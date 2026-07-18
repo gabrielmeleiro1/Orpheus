@@ -11,7 +11,7 @@ export const TERMINAL_MISSING_POLL_THRESHOLD = 3;
 // client, so consecutive failures must terminate the wait instead of riding
 // the 30-minute timeout. Slightly higher than the missing threshold so a
 // transient network blip does not resolve a healthy wait early.
-export const TERMINAL_ERROR_POLL_THRESHOLD = 5;
+const TERMINAL_ERROR_POLL_THRESHOLD = 5;
 
 interface PollTerminalStateArgs {
   apiClient: ApiClient;

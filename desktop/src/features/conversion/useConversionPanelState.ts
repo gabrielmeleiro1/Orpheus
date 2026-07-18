@@ -18,9 +18,7 @@ import type {
 import type { ConversionQueueItem } from "./conversionPanelModel";
 
 export type {
-  ConversionPanelActions,
   ConversionPanelViewModel,
-  QueueEditPatch,
   UseConversionPanelStateArgs,
 } from "./conversionPanelStateTypes";
 

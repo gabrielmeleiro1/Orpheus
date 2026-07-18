@@ -155,7 +155,7 @@ export interface ParallelWarmupRequest {
   max_parallel_chapters: number;
 }
 
-export interface TtsRuntimeOptions {
+interface TtsRuntimeOptions {
   model_name?: string | null;
   tts_model_name?: string | null;
   quantization?: string | null;

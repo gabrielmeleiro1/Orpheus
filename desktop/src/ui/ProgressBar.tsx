@@ -1,6 +1,6 @@
 import "./progress-bar.css";
 
-export type ProgressBarTone = "neutral" | "active" | "done" | "danger";
+type ProgressBarTone = "neutral" | "active" | "done" | "danger";
 
 interface ProgressBarProps {
   pct: number;

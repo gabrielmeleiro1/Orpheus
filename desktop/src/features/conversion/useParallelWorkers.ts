@@ -15,7 +15,7 @@ import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
 const DEFAULT_PARALLEL_WORKER_MODE = "manual";
 const DEFAULT_PARALLEL_WORKER_LIMIT = 4;
 
-export interface ParallelWarmupContext {
+interface ParallelWarmupContext {
   selectedVoice: string;
   speed: number;
   selectedEngine: string;

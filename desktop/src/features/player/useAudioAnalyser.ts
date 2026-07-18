@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MutableRefObject, type RefObject } from "react";
 
-export type AudioAnalyserStatus = "idle" | "ready" | "blocked" | "unsupported";
+type AudioAnalyserStatus = "idle" | "ready" | "blocked" | "unsupported";
 
 export interface AudioAnalyserHandle {
   analyserRef: MutableRefObject<AnalyserNode | null>;

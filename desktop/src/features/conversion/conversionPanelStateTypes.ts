@@ -99,7 +99,7 @@ export interface AdvancedOptionsViewModel {
   parallelWorkerStatus: string;
 }
 
-export interface PreflightCardViewModel {
+interface PreflightCardViewModel {
   title: string;
   meta: string;
   author: string;
@@ -108,7 +108,7 @@ export interface PreflightCardViewModel {
   sample: string;
 }
 
-export interface QueueItemViewModel {
+interface QueueItemViewModel {
   id: string;
   title: string;
   statusText: string;
@@ -155,7 +155,7 @@ export interface ConversionActionsViewModel {
   isStarting: boolean;
 }
 
-export interface ConversionPanelShellState {
+interface ConversionPanelShellState {
   activeTab: DashboardTab | "config";
   hidden: boolean;
   isDocumentMode: boolean;

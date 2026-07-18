@@ -3,9 +3,9 @@ export * from "./conversion";
 export * from "./events";
 export * from "./library";
 
-export type RuntimeSetupState = "unconfigured" | "error" | "restart_required" | "ready" | "unavailable";
+type RuntimeSetupState = "unconfigured" | "error" | "restart_required" | "ready" | "unavailable";
 
-export interface RuntimeSetupRisk {
+interface RuntimeSetupRisk {
   id: string;
   summary: string;
   accepted: boolean;
@@ -21,7 +21,7 @@ export interface RuntimeSetupProfile {
   risk: RuntimeSetupRisk | null;
 }
 
-export interface RuntimeSetupModelGroupStatus {
+interface RuntimeSetupModelGroupStatus {
   id: string;
   assets_ready: boolean;
   assets_reason: "missing" | "incomplete" | "corrupt" | "unavailable" | null;
@@ -29,13 +29,13 @@ export interface RuntimeSetupModelGroupStatus {
   ready: boolean;
 }
 
-export interface RuntimeSetupPackageIssue {
+interface RuntimeSetupPackageIssue {
   name: string;
   expected: string;
   installed: string | null;
 }
 
-export interface RuntimeSetupInstalledRuntimeGroup {
+interface RuntimeSetupInstalledRuntimeGroup {
   id: string;
   runtime_ready: boolean;
   assets_ready: boolean;

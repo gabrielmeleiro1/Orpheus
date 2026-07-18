@@ -1,4 +1,4 @@
-export type ConversionPrimaryActionKind = "start_conversion" | "run_queue" | null;
+type ConversionPrimaryActionKind = "start_conversion" | "run_queue" | null;
 
 export interface ConversionPrimaryActionPlan {
   primary: ConversionPrimaryActionKind;

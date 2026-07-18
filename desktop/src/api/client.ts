@@ -157,7 +157,7 @@ export interface ApiClient {
   cleanupStorage(options?: ApiRequestOptions): Promise<MaintenanceCleanupResponse>;
 }
 
-export interface LibraryQueryOptions {
+interface LibraryQueryOptions {
   conversionMode?: ConversionMode | "";
   favorite?: boolean;
   offset?: number;

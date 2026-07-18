@@ -73,7 +73,7 @@ export const MODEL_GROUP_DETAILS: Record<string, ModelGroupDetail> = {
   "cleaner-cuda": { label: "Qwen Cleaner", description: "Optional GPU-accelerated local text cleanup.", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 2200, diskMB: 3000, kind: "cleaner" },
 };
 
-export function formatMB(mb: number): string {
+function formatMB(mb: number): string {
   if (!Number.isFinite(mb) || mb <= 0) return "0 MB";
   return mb >= 1000 ? `${(mb / 1000).toFixed(1).replace(/\.0$/, "")} GB` : `${Math.round(mb)} MB`;
 }
