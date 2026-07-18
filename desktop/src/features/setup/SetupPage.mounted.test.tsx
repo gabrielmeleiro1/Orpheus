@@ -574,6 +574,102 @@ describe("mounted SetupPage", () => {
     expect(onReady).toHaveBeenCalledWith(readyStatus);
   });
 
+  it("re-runs the failed backend download when Retry is clicked", async () => {
+    const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
+    const bakedStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus,
+      recommended_profile: "mlx",
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+    };
+    const runningSnapshot = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
+    const idleSnapshot = { ...runningSnapshot, lifecycle: "idle" as const, current_model_group: null };
+    const start = vi.fn()
+      .mockRejectedValueOnce(new Error("network unreachable"))
+      .mockResolvedValue(runningSnapshot);
+    const api = {
+      getRuntimeSetupStatus: vi.fn(async () => bakedStatus),
+      getRuntimeModelDownloadStatus: vi.fn()
+        .mockResolvedValueOnce(idleSnapshot)
+        .mockResolvedValue(runningSnapshot),
+      startRuntimeModelDownload: start,
+      adoptRuntimeSetup: vi.fn(),
+    } as unknown as ApiClient;
+    await renderPage(packagedBridge, { apiClient: api, initialStatus: bakedStatus });
+
+    await act(async () => findButton(container, "Install").click());
+    expect(container.textContent).toContain("network unreachable");
+
+    const retry = findButton(container, "Retry");
+    await act(async () => retry.click());
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenLastCalledWith(
+      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"] },
+      { timeoutMs: 15_000 },
+    );
+    expect(container.textContent).not.toContain("network unreachable");
+    // The retry keeps the progress surface mounted instead of collapsing back
+    // to the plan view, so a second click cannot land on a shifted button.
+    expect(container.textContent).toContain("Installation");
+  });
+
+  it("re-runs a failed installer start when Retry is clicked in source-checkout mode", async () => {
+    const start = vi.fn()
+      .mockRejectedValueOnce(new Error("installer crashed"))
+      .mockResolvedValue({ lifecycle: "running", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null } satisfies RuntimeSetupRunnerStatus);
+    const runtimeBridge = bridge({ start });
+    await renderPage(runtimeBridge);
+
+    await act(async () => findButton(container, "Use library only").click());
+    expect(container.textContent).toContain("installer crashed");
+
+    await act(async () => findButton(container, "Retry").click());
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(start).toHaveBeenLastCalledWith({ profile: "base", modelGroups: [], acceptPytorchRisk: false });
+    expect(container.textContent).not.toContain("installer crashed");
+  });
+
+  it("guards the status Retry against duplicate clicks while a refresh is in flight", async () => {
+    let resolveStatus!: (value: RuntimeSetupStatusResponse) => void;
+    const getStatus = vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveStatus = resolve; }));
+    const api = { getRuntimeSetupStatus: getStatus } as unknown as ApiClient;
+    await renderPage(bridge(), { apiClient: api, initialStatus: null, initialError: "backend still starting" });
+
+    const retry = findButton(container, "Retry");
+    await act(async () => { retry.click(); retry.click(); });
+    expect(getStatus).toHaveBeenCalledTimes(1);
+    expect(retry.disabled).toBe(true);
+
+    await act(async () => { resolveStatus(setupStatus); });
+    expect(container.textContent).toContain("Library only");
+  });
+
+  it("marks progress failed when the download poll loses the backend", async () => {
+    vi.useFakeTimers();
+    try {
+      const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
+      const bakedStatus: RuntimeSetupStatusResponse = {
+        ...setupStatus,
+        recommended_profile: "mlx",
+        installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+      };
+      const runningSnapshot = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
+      const api = {
+        getRuntimeSetupStatus: vi.fn(async () => bakedStatus),
+        getRuntimeModelDownloadStatus: vi.fn().mockRejectedValue(new Error("connection refused")),
+        startRuntimeModelDownload: vi.fn(async () => runningSnapshot),
+        adoptRuntimeSetup: vi.fn(),
+      } as unknown as ApiClient;
+      await renderPage(packagedBridge, { apiClient: api, initialStatus: bakedStatus });
+
+      await act(async () => findButton(container, "Install").click());
+      await act(async () => { await vi.advanceTimersByTimeAsync(9_000); });
+      expect(container.textContent).toContain("Lost connection to the installer");
+      expect(() => findButton(container, "Retry")).not.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("surfaces a failed backend download and re-enables the install action", async () => {
     const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
     const bakedStatus: RuntimeSetupStatusResponse = {

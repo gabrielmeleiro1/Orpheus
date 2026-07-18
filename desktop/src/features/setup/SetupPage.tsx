@@ -170,8 +170,11 @@ export function SetupPage({
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
+  const [statusRefreshing, setStatusRefreshing] = useState(false);
   const startLocked = useRef(false);
   const restartLocked = useRef(false);
+  const lastAttempt = useRef<"backend" | "bridge" | null>(null);
+  const statusRefreshLock = useRef(false);
   const statusRef = useRef(status);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preRestartClient = useRef<ApiClient | null>(null);
@@ -307,6 +310,7 @@ export function SetupPage({
     let active = true;
     void apiClient.getRuntimeModelDownloadStatus({ timeoutMs: 8_000 }).then((snapshot) => {
       if (!active || snapshot.lifecycle !== "running") return;
+      lastAttempt.current = "backend";
       startLocked.current = true;
       setBusy(true);
       setDownloadPhase("downloading");
@@ -335,10 +339,12 @@ export function SetupPage({
         // unreachable must surface instead of spinning forever.
         pollFailures += 1;
         if (active && pollFailures >= 8) {
+          const message = "Lost connection to the installer. The download may still finish in the background — retry to check.";
           setDownloadPhase("idle");
           startLocked.current = false;
           setBusy(false);
-          setError("Lost connection to the installer. The download may still finish in the background — retry to check.");
+          setError(message);
+          setProgress((previous) => ({ ...previous, lifecycle: "failed", message }));
         }
         return;
       }
@@ -348,14 +354,16 @@ export function SetupPage({
       if (snapshot.lifecycle === "complete") {
         setDownloadPhase("adopting");
       } else if (snapshot.lifecycle === "failed" || snapshot.lifecycle === "idle") {
+        const message = snapshot.lifecycle === "failed"
+          ? snapshot.error ?? "Model download failed."
+          : "Model download state was lost. Try again.";
         setDownloadPhase("idle");
         startLocked.current = false;
         setBusy(false);
-        setError(
-          snapshot.lifecycle === "failed"
-            ? snapshot.error ?? "Model download failed."
-            : "Model download state was lost. Try again.",
-        );
+        setError(message);
+        if (snapshot.lifecycle === "idle") {
+          setProgress((previous) => ({ ...previous, lifecycle: "failed", message }));
+        }
       }
     };
     void tick();
@@ -491,8 +499,9 @@ export function SetupPage({
     ? "Installation complete. Restart Orpheus to load the selected runtime."
     : progress.message;
 
-  const start = async () => {
-    if (!mutationsAvailable || !status || !canStartSetup(selection, status) || !acquireSetupStart(startLocked)) return;
+  const start = async (): Promise<boolean> => {
+    if (!mutationsAvailable || !status || !canStartSetup(selection, status) || !acquireSetupStart(startLocked)) return false;
+    lastAttempt.current = "bridge";
     setBusy(true);
     setError(null);
     setProgress({ ...EMPTY_PROGRESS, lifecycle: "running", message: "Preparing the selected runtime…" });
@@ -514,10 +523,12 @@ export function SetupPage({
       setError(message);
       setProgress((previous) => ({ ...previous, lifecycle: "failed", message }));
     }
+    return true;
   };
 
-  const installFromBackend = async () => {
-    if (!apiClient || !status || selection.profile !== backendInstallProfile || !canStartSetup(selection, status) || !acquireSetupStart(startLocked)) return;
+  const installFromBackend = async (): Promise<boolean> => {
+    if (!apiClient || !status || selection.profile !== backendInstallProfile || !canStartSetup(selection, status) || !acquireSetupStart(startLocked)) return false;
+    lastAttempt.current = "backend";
     setBusy(true);
     setError(null);
     setProgress({ ...EMPTY_PROGRESS, lifecycle: "running", message: "Starting model downloads…" });
@@ -533,6 +544,38 @@ export function SetupPage({
       const message = safeError(reason, "Model downloads could not start.");
       setError(message);
       setProgress((previous) => ({ ...previous, lifecycle: "failed", message }));
+    }
+    return true;
+  };
+
+  // A failed attempt must actually re-run on Retry. Resetting to the plan view
+  // both skips the retry and collapses the layout mid-click, letting a second
+  // click land on whichever button shifts under the cursor.
+  const retryFailedAttempt = async () => {
+    // A second click while the first retry is in flight must not clobber the
+    // freshly-started progress state.
+    if (startLocked.current) return;
+    setError(null);
+    const retried = lastAttempt.current === "backend"
+      ? await installFromBackend()
+      : lastAttempt.current === "bridge"
+        ? await start()
+        : false;
+    if (!retried) {
+      setProgress(EMPTY_PROGRESS);
+    }
+  };
+
+  const retryStatus = async () => {
+    // Ref guard: two clicks in the same tick both see the stale state value.
+    if (statusRefreshLock.current) return;
+    statusRefreshLock.current = true;
+    setStatusRefreshing(true);
+    try {
+      await refreshStatus();
+    } finally {
+      statusRefreshLock.current = false;
+      setStatusRefreshing(false);
     }
   };
 
@@ -690,7 +733,7 @@ export function SetupPage({
           {!status && error ? (
             <div className="setup-recovery" role="alert">
               <div><strong>Setup status unavailable</strong><p>{error}</p></div>
-              <div className="setup-actions"><button className="btn" type="button" onClick={() => void refreshStatus()}>Retry</button><button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button></div>
+              <div className="setup-actions"><button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>{statusRefreshing ? "Checking…" : "Retry"}</button><button className="btn" type="button" disabled={statusRefreshing} onClick={() => void continueLibraryOnly()}>Use library only</button></div>
             </div>
           ) : null}
 
@@ -853,7 +896,7 @@ export function SetupPage({
             </div>
             <div className="setup-actions">
               {busy && mutationsAvailable ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
-              {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => { setError(null); setProgress(EMPTY_PROGRESS); }}>Retry</button> : null}
+              {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
               {showRestart ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || !mutationsAvailable} onClick={() => void restart()}>Restart Orpheus</button> : installedReady ? <button className="btn btn-primary setup-primary" type="button" disabled={adoptDisabled} onClick={() => void adoptInstalled()}>Continue</button> : packagedMode && selection.profile === "base" ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || adopting} onClick={() => void continueLibraryOnly()}>Use library only</button> : packagedMode && backendInstallProfile !== null && selection.profile === backendInstallProfile ? <button className="btn btn-primary setup-primary" type="button" disabled={!backendReadyToStart} onClick={() => void installFromBackend()}>Install</button> : <button className="btn btn-primary setup-primary" type="button" disabled={!readyToStart} onClick={() => void start()}>{selection.profile === "base" ? "Use library only" : "Install"}</button>}
             </div>
           </footer>
