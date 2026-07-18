@@ -429,6 +429,7 @@ class ChapterProcessor:
             set_stage=self.runtime.set_stage,
             notify_progress=self.runtime.notify_progress,
             log_verbose=self.runtime.log_verbose,
+            cancel_requested=self.runtime.check_cancelled,
         )
 
         return encode_chapter_audio(
@@ -502,6 +503,7 @@ class ChapterProcessor:
                 set_stage=self.runtime.set_stage,
                 notify_progress=self.runtime.notify_progress,
                 log_verbose=self.runtime.log_verbose,
+                cancel_requested=self.runtime.check_cancelled,
             )
             return encode_chapter_aac(
                 context=context,

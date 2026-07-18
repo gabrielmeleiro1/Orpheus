@@ -7,9 +7,11 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
-from typing import Iterator, Sequence
+from typing import Callable, Iterator, Sequence
 
 from ..errors import FFmpegNotFoundError
 
@@ -136,9 +138,48 @@ def run_ffmpeg_command(
     *,
     failure_message: str,
     timeout_seconds: float | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an FFmpeg-family command with bounded execution and stderr handling."""
     timeout = ffmpeg_timeout_seconds(timeout_seconds)
+    if cancel_requested is not None:
+        process = subprocess.Popen(
+            list(cmd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding="utf-8",
+            errors="replace",
+            text=True,
+        )
+        deadline = time.monotonic() + timeout
+        if cancel_requested():
+            kill_ffmpeg_process(process)
+            raise RuntimeError(f"{failure_message}: cancelled")
+        communicate_result: list[tuple[str | None, str | None]] = []
+
+        def collect_output() -> None:
+            communicate_result.append(process.communicate())
+
+        collector = threading.Thread(target=collect_output, daemon=True)
+        collector.start()
+        try:
+            while collector.is_alive():
+                if cancel_requested():
+                    kill_ffmpeg_process(process)
+                    raise RuntimeError(f"{failure_message}: cancelled")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    kill_ffmpeg_process(process)
+                    raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s")
+                collector.join(timeout=min(0.1, remaining))
+            stdout, stderr = communicate_result[0]
+            return_code = int(process.returncode or 0)
+        except subprocess.TimeoutExpired as exc:
+            kill_ffmpeg_process(process)
+            raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s") from exc
+        if return_code != 0:
+            raise RuntimeError(f"{failure_message}: {stderr or ''}")
+        return subprocess.CompletedProcess(list(cmd), return_code, stdout, stderr)
     try:
         result = subprocess.run(
             list(cmd),
@@ -162,14 +203,30 @@ def wait_for_ffmpeg_process(
     *,
     failure_message: str,
     timeout_seconds: float | None = None,
+    cancel_requested: Callable[[], bool] | None = None,
 ) -> int:
     """Wait for a streaming FFmpeg process and kill it if it exceeds the timeout."""
     timeout = ffmpeg_timeout_seconds(timeout_seconds)
-    try:
-        return process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        kill_ffmpeg_process(process)
-        raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s") from exc
+    if cancel_requested is None:
+        try:
+            return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired as exc:
+            kill_ffmpeg_process(process)
+            raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s") from exc
+
+    deadline = time.monotonic() + timeout
+    while True:
+        if cancel_requested():
+            kill_ffmpeg_process(process)
+            raise RuntimeError(f"{failure_message}: cancelled")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            kill_ffmpeg_process(process)
+            raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s")
+        try:
+            return process.wait(timeout=min(0.1, remaining))
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def kill_ffmpeg_process(process: subprocess.Popen) -> None:

@@ -87,6 +87,12 @@ class PipelineRuntimeProtocol(Protocol):
 
     def memory_policy_reason(self) -> str | None: ...
 
+    def register_background_worker(self, worker: threading.Thread) -> None: ...
+
+    def unregister_background_worker(self, worker: threading.Thread) -> None: ...
+
+    def wait_for_background_workers(self, timeout: float) -> bool: ...
+
 
 @dataclass(slots=True)
 class PipelineRunState:
@@ -114,12 +120,16 @@ class PipelineRunState:
     temp_cleanup_paths: set[Path] = field(default_factory=set)
     chapter_aac_executor: ThreadPoolExecutor | None = None
     chapter_aac_pending_future: Any | None = None
+    background_workers: set[threading.Thread] = field(default_factory=set)
 
     def reset_for_conversion(self, *, selected_parallel_chapters: int) -> None:
         if self.chapter_aac_executor is not None:
             self.chapter_aac_executor.shutdown(wait=True)
             self.chapter_aac_executor = None
         self.chapter_aac_pending_future = None
+        self.background_workers = {
+            worker for worker in self.background_workers if worker.is_alive()
+        }
         self.start_time = time.time()
         self.chars_processed = 0
         self.total_chars = 0
@@ -228,6 +238,22 @@ class PipelineRuntime:
         ):
             resolved = resolved.parent
         self.state.temp_cleanup_paths.add(resolved)
+
+    def register_background_worker(self, worker: threading.Thread) -> None:
+        self.state.background_workers.add(worker)
+
+    def unregister_background_worker(self, worker: threading.Thread) -> None:
+        self.state.background_workers.discard(worker)
+
+    def wait_for_background_workers(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        for worker in tuple(self.state.background_workers):
+            remaining = max(0.0, deadline - time.monotonic())
+            worker.join(timeout=remaining)
+        self.state.background_workers = {
+            worker for worker in self.state.background_workers if worker.is_alive()
+        }
+        return not self.state.background_workers
 
     def tts_sample_rate(self, default: int = 24000) -> int:
         return int(getattr(self.tts_engine, "sample_rate", default) or default)

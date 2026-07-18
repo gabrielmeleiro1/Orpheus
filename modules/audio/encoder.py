@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 import json
 import numpy as np
 
@@ -50,6 +50,7 @@ class AudioEncoder:
         output_path: Path | str,
         bitrate: Optional[str] = None,
         audio_filter: Optional[str] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         """
         Convert WAV file to MP3.
@@ -68,6 +69,7 @@ class AudioEncoder:
             output_path,
             bitrate=bitrate,
             audio_filter=audio_filter,
+            cancel_requested=cancel_requested,
             codec="libmp3lame",
             failure_message="FFmpeg encoding failed",
         )
@@ -81,6 +83,7 @@ class AudioEncoder:
         audio_filter: Optional[str],
         codec: str,
         failure_message: str,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         input_path = Path(input_path)
         output_path = Path(output_path)
@@ -107,7 +110,11 @@ class AudioEncoder:
                 str(temp_output_path),
             ])
 
-            run_ffmpeg_command(cmd, failure_message=failure_message)
+            run_ffmpeg_command(
+                cmd,
+                failure_message=failure_message,
+                cancel_requested=cancel_requested,
+            )
 
         return output_path
 
@@ -117,6 +124,7 @@ class AudioEncoder:
         output_path: Path | str,
         sample_rate: Optional[int] = None,
         bitrate: Optional[str] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         """
         Convert in-memory mono float audio directly to MP3 via ffmpeg stdin.
@@ -132,6 +140,7 @@ class AudioEncoder:
             output_path,
             sample_rate=sample_rate,
             bitrate=bitrate,
+            cancel_requested=cancel_requested,
             codec="libmp3lame",
             failure_message="FFmpeg encoding from array failed",
         )
@@ -145,6 +154,7 @@ class AudioEncoder:
         bitrate: Optional[str],
         codec: str,
         failure_message: str,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -214,7 +224,11 @@ class AudioEncoder:
                 reader = threading.Thread(target=read_stderr, daemon=True)
                 writer.start()
                 reader.start()
-                writer.join(timeout=timeout)
+                while writer.is_alive() and time.monotonic() < deadline:
+                    if cancel_requested is not None and cancel_requested():
+                        kill_ffmpeg_process(process)
+                        raise RuntimeError(f"{failure_message}: cancelled")
+                    writer.join(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
                 if writer.is_alive():
                     kill_ffmpeg_process(process)
                     raise RuntimeError(
@@ -229,6 +243,7 @@ class AudioEncoder:
                     process,
                     failure_message=failure_message,
                     timeout_seconds=remaining_timeout,
+                    cancel_requested=cancel_requested,
                 )
                 # The process has exited, so stderr is at EOF and the reader
                 # finishes promptly; bound the join defensively regardless.
@@ -255,6 +270,7 @@ class AudioEncoder:
         output_path: Path | str,
         bitrate: Optional[str] = None,
         audio_filter: Optional[str] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         """Convert WAV file to AAC/M4A."""
         return self._wav_to_encoded(
@@ -262,6 +278,7 @@ class AudioEncoder:
             output_path,
             bitrate=bitrate,
             audio_filter=audio_filter,
+            cancel_requested=cancel_requested,
             codec="aac",
             failure_message="FFmpeg AAC encoding failed",
         )
@@ -272,6 +289,7 @@ class AudioEncoder:
         output_path: Path | str,
         sample_rate: Optional[int] = None,
         bitrate: Optional[str] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         """Convert in-memory mono float audio directly to AAC/M4A via ffmpeg stdin."""
         return self._array_to_encoded(
@@ -279,6 +297,7 @@ class AudioEncoder:
             output_path,
             sample_rate=sample_rate,
             bitrate=bitrate,
+            cancel_requested=cancel_requested,
             codec="aac",
             failure_message="FFmpeg AAC encoding from array failed",
         )

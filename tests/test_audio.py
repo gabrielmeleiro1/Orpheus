@@ -31,6 +31,40 @@ from modules.audio.packager import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_run_ffmpeg_command_cancellation_kills_child_and_raises(monkeypatch):
+    class BlockingProcess:
+        def __init__(self, *_args, **_kwargs):
+            self.returncode = None
+            self.killed = False
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired("ffmpeg", timeout)
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+        def communicate(self):
+            return "", ""
+
+    process = BlockingProcess()
+    monkeypatch.setattr("modules.audio.ffmpeg.subprocess.Popen", lambda *_args, **_kwargs: process)
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        run_ffmpeg_command(
+            ["ffmpeg", "-i", "in.wav", "out.mp3"],
+            failure_message="FFmpeg encoding failed",
+            cancel_requested=lambda: True,
+        )
+
+    assert process.killed is True
+
+
 def _successful_ffmpeg_run(cmd, **_kwargs):  # noqa: ANN001, ANN202
     output_path = Path(cmd[-1])
     output_path.parent.mkdir(parents=True, exist_ok=True)

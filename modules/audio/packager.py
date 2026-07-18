@@ -8,13 +8,14 @@ Optimized for Apple Books and other audiobook players.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from dataclasses import dataclass
 import json
 import logging
 import subprocess
 import tempfile
 import threading
+import time
 
 from .ffmpeg import (
     atomic_output_path,
@@ -114,6 +115,7 @@ class M4BPackager:
         metadata: AudiobookMetadata,
         output_path: Path | str,
         chapter_durations_ms: Optional[list[int]] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Path:
         """
         Create M4B audiobook from chapter audio files.
@@ -172,13 +174,18 @@ class M4BPackager:
                     "-c:a", "copy",
                     str(stream_copy_audio),
                 ]
-                run_ffmpeg_command(concat_cmd, failure_message="M4B stream-copy concat failed")
+                run_ffmpeg_command(
+                    concat_cmd,
+                    failure_message="M4B stream-copy concat failed",
+                    cancel_requested=cancel_requested,
+                )
 
                 chapters = self._stream_copy_chapter_markers(
                     stream_copy_audio,
                     audio_files,
                     chapter_names,
                     fallback_durations_ms=chapter_durations_ms,
+                    cancel_requested=cancel_requested,
                 )
                 chapter_file = temp_path / "chapters.txt"
                 self._write_ffmetadata(chapter_file, chapters, metadata)
@@ -234,7 +241,11 @@ class M4BPackager:
 
             with atomic_output_path(output_path) as temp_output_path:
                 final_cmd.append(str(temp_output_path))
-                run_ffmpeg_command(final_cmd, failure_message="M4B creation failed")
+                run_ffmpeg_command(
+                    final_cmd,
+                    failure_message="M4B creation failed",
+                    cancel_requested=cancel_requested,
+                )
 
         return output_path
 
@@ -292,6 +303,7 @@ class M4BPackager:
         audio_files: list[Path],
         chapter_names: list[str],
         fallback_durations_ms: Optional[list[int]] = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> list[ChapterMarker]:
         """Derive chapter markers from a stream-copied AAC concat's real timeline.
 
@@ -301,7 +313,9 @@ class M4BPackager:
         encoded concat instead. Falls back to source-derived markers if the
         timeline cannot be probed, so packaging never fails on probe issues.
         """
-        offsets = self._probe_stream_copy_offsets_ms(concat_path, audio_files)
+        offsets = self._probe_stream_copy_offsets_ms(
+            concat_path, audio_files, cancel_requested=cancel_requested
+        )
         if offsets is None:
             logger.warning(
                 "Could not probe stream-copied chapter timeline for %s; "
@@ -329,6 +343,7 @@ class M4BPackager:
         self,
         concat_path: Path,
         audio_files: list[Path],
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Optional[tuple[list[int], int]]:
         """Return (per-chapter start ms, total ms) for a stream-copied concat.
 
@@ -353,6 +368,7 @@ class M4BPackager:
                         str(audio_file),
                     ],
                     failure_message="FFprobe failed",
+                    cancel_requested=cancel_requested,
                 )
                 count_lines = [
                     line.strip() for line in count_result.stdout.splitlines() if line.strip()
@@ -377,7 +393,7 @@ class M4BPackager:
 
             unique_boundaries = set(per_chapter_boundaries)
             boundary_pts, packet_count = self._probe_concat_packet_starts(
-                ffprobe, concat_path, unique_boundaries
+                ffprobe, concat_path, unique_boundaries, cancel_requested=cancel_requested
             )
             if packet_count == 0 or len(boundary_pts) != len(unique_boundaries):
                 return None
@@ -390,6 +406,7 @@ class M4BPackager:
                     str(concat_path),
                 ],
                 failure_message="FFprobe failed",
+                cancel_requested=cancel_requested,
             )
             total_ms = int(round(float(duration_result.stdout.strip()) * 1000))
 
@@ -417,6 +434,7 @@ class M4BPackager:
         ffprobe_path: str,
         concat_path: Path,
         boundary_indices: set[int],
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[dict[int, float], int]:
         """Stream packet pts_time values, keeping only chapter-boundary timestamps.
 
@@ -467,7 +485,12 @@ class M4BPackager:
         timeout = ffmpeg_timeout_seconds()
         reader = threading.Thread(target=consume_stdout, daemon=True)
         reader.start()
-        reader.join(timeout=timeout)
+        deadline = time.monotonic() + timeout
+        while reader.is_alive() and time.monotonic() < deadline:
+            if cancel_requested is not None and cancel_requested():
+                kill_ffmpeg_process(process)
+                raise RuntimeError("FFprobe failed: cancelled")
+            reader.join(timeout=0.1)
         if reader.is_alive():
             kill_ffmpeg_process(process)
             reader.join(timeout=timeout)
@@ -483,6 +506,7 @@ class M4BPackager:
             process,
             failure_message="FFprobe failed",
             timeout_seconds=timeout,
+            cancel_requested=cancel_requested,
         )
         if return_code != 0:
             raise RuntimeError("FFprobe failed while probing concat packet timestamps")

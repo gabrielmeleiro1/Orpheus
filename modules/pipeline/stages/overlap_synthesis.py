@@ -345,6 +345,9 @@ class OverlapSynthesisRunner:
             args=(cleaner,),
             daemon=True,
         )
+        register = getattr(self.runtime, "register_background_worker", None)
+        if callable(register):
+            register(producer_thread)
         producer_thread.start()
         return producer_thread
 
@@ -381,3 +384,6 @@ class OverlapSynthesisRunner:
             self._put_queue_item(OverlapProducerError(exc))
         finally:
             self._put_queue_item(self.sentinel)
+            unregister = getattr(self.runtime, "unregister_background_worker", None)
+            if callable(unregister):
+                unregister(threading.current_thread())

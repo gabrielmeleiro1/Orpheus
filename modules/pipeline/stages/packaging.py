@@ -122,6 +122,7 @@ def package_chapters(
     if not safe_title:
         safe_title = "audiobook"
     conversion_mode = getattr(runtime.config, "conversion_mode", "audiobook")
+    cancel_requested = getattr(runtime, "check_cancelled", None)
 
     if conversion_mode == "document_audio":
         m4a_path = output_dir / f"{safe_title}.m4a"
@@ -130,6 +131,7 @@ def package_chapters(
             mp3_files=audio_files,
             metadata=metadata,
             output_path=m4a_path,
+            cancel_requested=cancel_requested,
         )
         return m4a_path
 
@@ -142,6 +144,7 @@ def package_chapters(
             metadata=metadata,
             output_path=m4b_path,
             chapter_durations_ms=chapter_durations_ms,
+            cancel_requested=cancel_requested,
         )
     finally:
         executor = getattr(getattr(runtime, "state", None), "chapter_aac_executor", None)

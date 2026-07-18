@@ -18,6 +18,33 @@ from modules.pipeline.orchestrator import (
 )
 
 
+def test_conversion_cleanup_defers_model_unload_for_stuck_background_cleaner():
+    from modules.pipeline.conversion_lifecycle import finish_conversion_run
+
+    cleanup_models = MagicMock()
+    cleanup_temp = MagicMock()
+    runtime = SimpleNamespace(
+        state=SimpleNamespace(
+            chapter_aac_executor=None,
+            chapter_aac_pending_future=None,
+            cancelled=True,
+        ),
+        set_parallel_execution_active=MagicMock(),
+        wait_for_background_workers=MagicMock(return_value=False),
+        log_verbose=MagicMock(),
+    )
+
+    finish_conversion_run(
+        runtime,
+        cleanup_models=cleanup_models,
+        cleanup_temp=cleanup_temp,
+    )
+
+    cleanup_models.assert_not_called()
+    cleanup_temp.assert_called_once()
+    assert runtime.state.cancelled is False
+
+
 def test_benchmark_backed_kokoro_defaults():
     from modules.app.config import AppConfig
     from modules.tts.chunker import ChunkConfig
