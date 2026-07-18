@@ -133,6 +133,11 @@ cd desktop
 npm run desktop:build
 ```
 
+`desktop:build` validates that the required sidecar executable and common
+runtime resources already exist before invoking Tauri. It does not rebuild or
+change the selected runtime profile; run `build_desktop_backend.py` first as
+shown above.
+
 During `desktop:build`, Tauri embeds the `binaries/` resource declared in `tauri.conf.json`.
 The production app launches the executable inside that bundled onedir resource instead of
 the repo-local Python interpreter.

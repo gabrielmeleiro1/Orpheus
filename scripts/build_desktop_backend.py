@@ -111,6 +111,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not remove previous pyinstaller work/dist directories before building.",
     )
+    parser.add_argument(
+        "--validate-existing",
+        action="store_true",
+        help="Validate the existing Tauri sidecar resource without rebuilding it.",
+    )
     return parser.parse_args()
 
 
@@ -397,6 +402,35 @@ def _validate_sidecar_resources(
         )
 
 
+def validate_existing_sidecar(
+    *,
+    target_triple: str | None = None,
+    runtime_profile: str | None = None,
+) -> Path:
+    """Validate the sidecar required by ``tauri build`` and return its executable."""
+    resolved_target = target_triple or _resolve_target_triple("")
+    executable_name = f"{SIDE_CAR_STEM}.exe" if _is_windows_target(resolved_target) else SIDE_CAR_STEM
+    executable = TAURI_SIDECAR_RESOURCE_DIR / executable_name
+    if not executable.is_file() or (
+        not _is_windows_target(resolved_target) and not os.access(executable, os.X_OK)
+    ):
+        raise RuntimeError(
+            "The packaged desktop backend sidecar is missing or not executable. "
+            "Build it before running desktop:build:\n"
+            "  python scripts/build_desktop_backend.py --runtime-profile base|mlx|cuda"
+        )
+
+    # Without an explicit profile, validate the resources common to every
+    # package. This keeps an intentionally built base sidecar valid on an MLX
+    # host while still preventing an empty/broken Tauri bundle.
+    _validate_sidecar_resources(
+        TAURI_SIDECAR_RESOURCE_DIR,
+        target_triple=resolved_target,
+        runtime_profile=runtime_profile or "base",
+    )
+    return executable
+
+
 def _copy_ffmpeg_binaries(
     sidecar_dir: Path,
     ffmpeg_binaries: Mapping[str, Path],
@@ -556,6 +590,15 @@ def _copy_sidecar_for_tauri(
 def main() -> int:
     args = _parse_args()
     target_triple = _resolve_target_triple(args.target_triple)
+    if args.validate_existing:
+        output_binary = validate_existing_sidecar(
+            target_triple=target_triple,
+            runtime_profile=args.runtime_profile,
+        )
+        print(f"Validated Tauri sidecar resource: {output_binary.parent}")
+        print(f"Tauri sidecar executable: {output_binary}")
+        return 0
+
     runtime_profile = _resolve_runtime_profile(target_triple, args.runtime_profile)
     ffmpeg_binaries = _validate_runtime_dependencies(
         args.python,

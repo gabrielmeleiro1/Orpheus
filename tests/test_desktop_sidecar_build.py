@@ -266,6 +266,39 @@ def test_validate_sidecar_resources_requires_packaged_ffmpeg_and_ffprobe(tmp_pat
     assert "bin/ffprobe" in message
 
 
+def test_validate_existing_sidecar_requires_executable_and_runtime_resources(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sidecar_dir = tmp_path / "binaries" / "orpheus-desktop-backend"
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", sidecar_dir)
+
+    with pytest.raises(RuntimeError, match="Build it before running desktop:build"):
+        build_desktop_backend.validate_existing_sidecar(
+            target_triple="aarch64-apple-darwin",
+            runtime_profile="mlx",
+        )
+
+    _write_executable(sidecar_dir / "orpheus-desktop-backend")
+    _write_required_pyinstaller_resources(sidecar_dir)
+    _write_executable(sidecar_dir / "bin" / "ffmpeg")
+    _write_executable(sidecar_dir / "bin" / "ffprobe")
+
+    assert (
+        build_desktop_backend.validate_existing_sidecar(
+            target_triple="aarch64-apple-darwin",
+            runtime_profile="mlx",
+        )
+        == sidecar_dir / "orpheus-desktop-backend"
+    )
+
+
+def test_desktop_build_script_validates_existing_sidecar_before_tauri() -> None:
+    package_json = (PROJECT_ROOT / "desktop" / "package.json").read_text(encoding="utf-8")
+
+    assert '"desktop:build": "python ../scripts/build_desktop_backend.py --validate-existing && tauri build"' in package_json
+
+
 def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
     tmp_path: Path,
     monkeypatch,
@@ -505,6 +538,7 @@ def test_build_help_exposes_explicit_runtime_profile_selector() -> None:
 
     assert completed.returncode == 0
     assert "--runtime-profile" in completed.stdout
+    assert "--validate-existing" in completed.stdout
 
 
 def test_build_script_help_runs_from_desktop_working_directory_without_pythonpath() -> None:
