@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from fastapi.routing import APIRoute
-
 from modules.web.server import create_app
 
 
@@ -20,6 +18,11 @@ FRONTEND_ROUTE_CONTRACT = {
     "/api/options/openai/models": {"POST"},
     "/api/options/parallel/warmup": {"POST"},
     "/api/options/voices": {"GET"},
+    "/api/setup/status": {"GET"},
+    "/api/setup/adopt": {"POST"},
+    "/api/setup/models/download": {"GET", "POST"},
+    "/api/setup/models/download/cancel": {"POST"},
+    "/api/setup/runtime": {"DELETE"},
     "/api/system/capabilities": {"GET"},
     "/api/sources/preflight": {"POST"},
     "/api/uploads/text": {"POST"},
@@ -40,11 +43,10 @@ FRONTEND_ROUTE_CONTRACT = {
 
 def test_frontend_api_client_routes_exist_with_expected_methods() -> None:
     app = create_app(controller=object())
-    route_methods: dict[str, set[str]] = {}
-    for route in app.routes:
-        if not isinstance(route, APIRoute):
-            continue
-        route_methods.setdefault(route.path, set()).update(route.methods or set())
+    route_methods = {
+        path: {method.upper() for method in operations}
+        for path, operations in app.openapi()["paths"].items()
+    }
 
     missing_routes = sorted(set(FRONTEND_ROUTE_CONTRACT) - set(route_methods))
     assert missing_routes == []

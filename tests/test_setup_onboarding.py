@@ -927,6 +927,28 @@ def test_model_download_service_reports_sanitized_failure_and_releases_lock() ->
     _wait_for_terminal(service)
 
 
+def test_model_download_service_releases_lock_when_worker_exits_abruptly() -> None:
+    from modules.app.services.model_download_service import ModelDownloadService
+
+    events: list[str] = []
+
+    def _exit_download(model_id: str) -> None:
+        del model_id
+        raise SystemExit("worker exited")
+
+    service = ModelDownloadService(
+        downloader=_exit_download,
+        group_resolver=lambda groups: ("model",),
+        lock_factory=lambda: _RecordingLock(events),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+
+    final = _wait_for_terminal(service)
+    assert final["lifecycle"] == "failed"
+    assert "worker exited" in final["error"]
+    assert events == ["lock", "unlock"]
+
+
 @pytest.mark.parametrize(
     ("raiser", "expected_fragment"),
     [
@@ -1008,6 +1030,34 @@ def test_model_download_service_surfaces_setup_lock_contention() -> None:
     assert service.status()["lifecycle"] == "idle"
 
 
+def test_model_download_service_releases_lock_when_worker_cannot_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from modules.app.services import model_download_service as service_module
+
+    events: list[str] = []
+
+    class _BrokenThread:
+        def __init__(self, **kwargs):
+            del kwargs
+
+        def start(self):
+            raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(service_module.threading, "Thread", _BrokenThread)
+    service = service_module.ModelDownloadService(
+        downloader=lambda model_id: None,
+        group_resolver=lambda groups: ("model",),
+        lock_factory=lambda: _RecordingLock(events),
+    )
+
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        service.start(profile_id="mlx", model_groups=["tts-mlx"])
+
+    assert service.status()["lifecycle"] == "idle"
+    assert events == ["lock", "unlock"]
+
+
 def test_model_download_endpoints_validate_start_and_report_conflicts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1038,6 +1088,9 @@ def test_model_download_endpoints_validate_start_and_report_conflicts(
                 raise ModelDownloadBusyError("busy")
             self.calls.append((profile_id, list(model_groups)))
             return dict(self.status(), lifecycle="running", profile=profile_id)
+
+        def request_cancel(self):
+            return dict(self.status(), lifecycle="stopping")
 
     monkeypatch.setattr(setup_route, "ModelDownloadService", _FakeService)
 
@@ -1070,6 +1123,10 @@ def test_model_download_endpoints_validate_start_and_report_conflicts(
         )
         assert started.status_code == 200
         assert started.json()["lifecycle"] == "running"
+
+        cancelled = client.post("/api/setup/models/download/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["lifecycle"] == "stopping"
 
         service = client.app.state.model_download_service
         assert service.calls == [("mlx", ["tts-mlx"])]
@@ -1109,3 +1166,88 @@ def test_model_download_start_conflicts_when_setup_lock_is_held(
 
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "setup_in_progress"
+
+
+def test_model_download_service_shutdown_cancels_and_joins_worker() -> None:
+    import threading
+
+    from modules.app.services.model_download_service import ModelDownloadService
+
+    release = threading.Event()
+    started = threading.Event()
+    events: list[str] = []
+
+    def _cooperative_download(model_id: str) -> None:
+        del model_id
+        started.set()
+        while not release.is_set():
+            if service.cancel_requested:
+                return
+            release.wait(0.01)
+
+    service = ModelDownloadService(
+        downloader=_cooperative_download,
+        group_resolver=lambda groups: ("model",),
+        lock_factory=lambda: _RecordingLock(events),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+    assert started.wait(timeout=2)
+    assert service.shutdown(timeout_seconds=1.0) is True
+    assert service.status()["lifecycle"] == "cancelled"
+    assert events == ["lock", "unlock"]
+
+
+def test_model_download_service_rejects_restart_while_old_worker_is_stopping() -> None:
+    import threading
+
+    from modules.app.services.model_download_service import (
+        ModelDownloadBusyError,
+        ModelDownloadService,
+    )
+
+    release = threading.Event()
+    started = threading.Event()
+
+    def _blocking_download(model_id: str) -> None:
+        del model_id
+        started.set()
+        assert release.wait(timeout=5.0)
+
+    service = ModelDownloadService(
+        downloader=_blocking_download,
+        group_resolver=lambda groups: ("model",),
+        lock_factory=lambda: _RecordingLock([]),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+    assert started.wait(timeout=2.0)
+    assert service.shutdown(timeout_seconds=0.0) is False
+    assert service.status()["lifecycle"] == "stopping"
+
+    with pytest.raises(ModelDownloadBusyError):
+        service.start(profile_id="mlx", model_groups=["tts-mlx"])
+
+    release.set()
+    deadline = __import__("time").monotonic() + 2.0
+    while service.status()["lifecycle"] == "stopping":
+        assert __import__("time").monotonic() < deadline
+        __import__("time").sleep(0.01)
+    assert service.status()["lifecycle"] == "cancelled"
+
+
+def test_delete_runtime_rejects_active_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
+    from types import SimpleNamespace
+
+    from modules.web.routes import setup as setup_route
+
+    class _Controller:
+        _conversion_service = SimpleNamespace(
+            begin_storage_cleanup=lambda: (_ for _ in ()).throw(
+                RuntimeError("Cannot clean up storage while a conversion is queued or running")
+            )
+        )
+
+    monkeypatch.setattr(setup_route, "_delete_runtime_models", lambda: ([], 0))
+    client = TestClient(create_app(controller=_Controller()))
+    response = client.request("DELETE", "/api/setup/runtime")
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "conversion_in_progress"

@@ -720,6 +720,12 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
         ) from exc
 
 
+@router.post("/api/setup/models/download/cancel")
+def post_model_download_cancel(request: Request) -> dict[str, Any]:
+    """Cooperatively cancel a packaged-runtime model download."""
+    return _get_download_service(request).request_cancel()
+
+
 def _managed_model_repo_ids() -> dict[str, str]:
     """Map each managed HF repo id to the model group that owns it."""
     owners: dict[str, str] = {}

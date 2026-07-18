@@ -30,17 +30,19 @@ python scripts/setup_runtime.py --profile mlx \
   --group tts-mlx --group cleaner-mlx
 
 # Linux/Windows with a supported NVIDIA GPU and driver
-python scripts/setup_runtime.py --profile cuda --accept-pytorch-risk \
+python scripts/setup_runtime.py --profile cuda \
   --group tts-cpu-cuda --group cleaner-cuda
 ```
 
-The CUDA profile is opt-in and is rejected without
-`--accept-pytorch-risk` because the pinned PyTorch version has unresolved
-upstream advisories. Load only trusted model artifacts. To install dependencies
-without downloading models, omit the `--group` arguments. The equivalent fixed
+The CUDA profile is opt-in. Load only trusted model artifacts. To install
+dependencies without downloading models, omit the `--group` arguments. The equivalent fixed
 manifests are `requirements/base.txt`, `requirements/mlx.txt`, and
 `requirements/cuda.txt`; prefer `setup_runtime.py` because it validates platform
 compatibility and records the selected profile.
+
+Packaged builds download any missing managed models from the Setup screen. The
+download can be cancelled there; cancellation is cooperative and may wait for
+the current Hugging Face transfer call to return.
 
 ## 2. Validate Python/Core
 
@@ -112,7 +114,7 @@ python scripts/build_desktop_backend.py --runtime-profile base
 # Apple Silicon local runtime
 python scripts/build_desktop_backend.py --runtime-profile mlx
 
-# NVIDIA runtime (after the acknowledged CUDA setup above)
+# NVIDIA runtime (after the CUDA setup above)
 python scripts/build_desktop_backend.py --runtime-profile cuda
 ```
 

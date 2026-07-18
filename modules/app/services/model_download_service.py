@@ -102,6 +102,13 @@ class ModelDownloadService:
         self._on_terminal = on_terminal
         self._mutex = threading.Lock()
         self._state = _idle_state()
+        self._cancel_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def cancel_requested(self) -> bool:
+        """Allow cooperative download adapters to stop promptly."""
+        return self._cancel_event.is_set()
 
     def status(self) -> dict[str, Any]:
         with self._mutex:
@@ -120,10 +127,11 @@ class ModelDownloadService:
         groups = [group_id for group_id, _ in plan]
 
         with self._mutex:
-            if self._state["lifecycle"] == "running":
+            if self._state["lifecycle"] in {"running", "stopping"}:
                 raise ModelDownloadBusyError("A model download is already running.")
             lock = self._lock_factory()
             lock.__enter__()
+            self._cancel_event.clear()
             try:
                 thread = threading.Thread(
                     target=self._run,
@@ -144,8 +152,46 @@ class ModelDownloadService:
                 "current_model": None,
                 "error": None,
             }
-        thread.start()
+            self._thread = thread
+            try:
+                thread.start()
+            except Exception:
+                self._thread = None
+                self._state = _idle_state()
+                lock.__exit__(None, None, None)
+                raise
         return self.status()
+
+    def shutdown(self, *, timeout_seconds: float = 2.0) -> bool:
+        """Request cooperative cancellation and boundedly join the worker.
+
+        Downloader calls cannot be force-killed safely. When a noninterruptible
+        call exceeds the deadline, the service remains ``stopping`` and keeps
+        the setup lock until that call returns; this limitation is surfaced in
+        status rather than pretending the lock was released.
+        """
+        self.request_cancel()
+        with self._mutex:
+            thread = self._thread
+            running = self._state["lifecycle"] in {"running", "stopping"}
+            if thread is None or not running:
+                return True
+
+        thread.join(timeout=max(0.0, float(timeout_seconds)))
+        if thread.is_alive():
+            return False
+        return True
+
+    def request_cancel(self) -> dict[str, Any]:
+        """Request cancellation without blocking an API response on downloads."""
+        with self._mutex:
+            if self._state["lifecycle"] == "running":
+                self._cancel_event.set()
+                self._state.update(
+                    lifecycle="stopping",
+                    error="Cancellation requested; waiting for the downloader to stop.",
+                )
+            return dict(self._state, model_groups=list(self._state["model_groups"]))
 
     def _run(
         self,
@@ -153,35 +199,54 @@ class ModelDownloadService:
         lock: Any,
     ) -> None:
         current_model: str | None = None
+        failure: BaseException | None = None
         try:
-            try:
-                for group_id, models in plan:
+            for group_id, models in plan:
+                if self.cancel_requested:
+                    break
+                with self._mutex:
+                    self._state["current_model_group"] = group_id
+                for model_id in models:
+                    if self.cancel_requested:
+                        break
+                    current_model = model_id
                     with self._mutex:
-                        self._state["current_model_group"] = group_id
-                    for model_id in models:
-                        current_model = model_id
-                        with self._mutex:
-                            self._state["current_model"] = model_id
-                        self._downloader(model_id)
-                        with self._mutex:
-                            self._state["completed_models"] += 1
-            finally:
-                lock.__exit__(None, None, None)
-            with self._mutex:
-                self._state.update(
-                    lifecycle="complete",
-                    current_model_group=None,
-                    current_model=None,
-                )
+                        self._state["current_model"] = model_id
+                    self._downloader(model_id)
+                    with self._mutex:
+                        self._state["completed_models"] += 1
+        except BaseException as exc:
+            failure = exc
+        try:
+            lock.__exit__(None, None, None)
         except Exception as exc:
-            with self._mutex:
+            failure = failure or exc
+
+        current_thread = threading.current_thread()
+        owns_terminal_state = False
+        with self._mutex:
+            if self._thread is current_thread:
+                cancelled = self._cancel_event.is_set()
                 self._state.update(
-                    lifecycle="failed",
-                    error=_user_facing_error(exc, current_model),
+                    lifecycle=(
+                        "cancelled"
+                        if cancelled
+                        else "failed"
+                        if failure is not None
+                        else "complete"
+                    ),
+                    error=(
+                        None
+                        if cancelled or failure is None
+                        else _user_facing_error(failure, current_model)
+                    ),
                     current_model_group=None,
                     current_model=None,
                 )
-        finally:
+                self._thread = None
+                owns_terminal_state = True
+
+        if owns_terminal_state:
             callback = self._on_terminal
             if callback is not None:
                 try:

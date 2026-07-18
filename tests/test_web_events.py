@@ -61,7 +61,7 @@ def test_web_events() -> bool:
     print("✓ subscriber cleanup on stream close")
 
     app = create_app()
-    route_paths = {route.path for route in app.routes}
+    route_paths = set(app.openapi()["paths"])
     assert "/api/events/stream" in route_paths
     print("✓ sse route registered")
 

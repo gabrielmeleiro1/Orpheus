@@ -63,6 +63,16 @@ def _shutdown_event_broker(app: FastAPI) -> None:
         shutdown()
 
 
+def _shutdown_model_download_service(app: FastAPI) -> None:
+    service = getattr(app.state, "model_download_service", None)
+    shutdown = getattr(service, "shutdown", None)
+    if callable(shutdown):
+        try:
+            shutdown(timeout_seconds=2.0)
+        except Exception:
+            logger.warning("Model download service shutdown failed", exc_info=True)
+
+
 def _cleanup_owned_controller(app: FastAPI) -> None:
     if not getattr(app.state, "owns_controller", False):
         return
@@ -136,6 +146,7 @@ def create_app(
         try:
             yield
         finally:
+            _shutdown_model_download_service(app)
             _shutdown_event_broker(app)
             _cleanup_owned_controller(app)
 
