@@ -134,8 +134,14 @@ export function useLibraryMaintenance({
   }, [beginMaintenanceRequest, onAfterCleanup, repository, runDiagnostics]);
 
   const openAppDataFolder = useCallback(async (): Promise<void> => {
-    if (isTauriRuntime()) {
+    if (!isTauriRuntime()) {
+      return;
+    }
+    try {
       await invoke("open_app_data_folder");
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error || "unknown error");
+      setMaintenanceMessage(`Could not open app data folder: ${detail}`);
     }
   }, []);
 
