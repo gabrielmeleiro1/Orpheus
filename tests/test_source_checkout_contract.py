@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 
@@ -58,3 +59,21 @@ def test_ci_validates_sources_without_producing_releases() -> None:
     )
     for entry in prohibited_entries:
         assert entry not in contents
+
+
+def test_common_local_build_outputs_are_ignored() -> None:
+    generated_paths = (
+        ".tox/py312/marker",
+        ".nox/tests/marker",
+        ".eggs/cache/marker",
+        "orpheus.egg-info/PKG-INFO",
+        "build/local-output",
+        "dist/local-output",
+    )
+    for path in generated_paths:
+        result = subprocess.run(
+            ["git", "check-ignore", "--no-index", "--quiet", path],
+            cwd=ROOT,
+            check=False,
+        )
+        assert result.returncode == 0, f"expected generated path to be ignored: {path}"
