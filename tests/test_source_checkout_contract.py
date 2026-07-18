@@ -29,6 +29,22 @@ def test_windows_source_setup_is_documented() -> None:
     assert "model weights are optional" in dependencies.lower()
 
 
+def test_windows_cuda_setup_uses_powershell_safe_syntax() -> None:
+    dependencies = (ROOT / "docs" / "DEPENDENCIES.md").read_text(encoding="utf-8")
+    run_guide = (ROOT / "docs" / "RUN_APPLICATION.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    powershell_command = (
+        "python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda "
+        "--group cleaner-cuda"
+    )
+    assert powershell_command in dependencies
+    assert "# Linux/Windows" not in readme
+    assert "# Linux/Windows" not in run_guide
+    assert "# Linux/Windows" not in dependencies
+    assert "accepted_risk" not in readme
+
+
 def test_ci_validates_sources_without_producing_releases() -> None:
     workflow = ROOT / ".github" / "workflows" / "source-validation.yml"
     assert workflow.is_file()

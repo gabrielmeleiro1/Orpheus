@@ -34,7 +34,7 @@ a sidecar that bundles it:
 python scripts/setup_runtime.py --profile mlx \
   --group tts-mlx --group cleaner-mlx
 
-# Linux/Windows with a supported NVIDIA GPU and driver
+# Linux with a supported NVIDIA GPU and driver; Windows uses the PowerShell dependency guide
 python scripts/setup_runtime.py --profile cuda \
   --group tts-cpu-cuda --group cleaner-cuda
 ```

@@ -99,8 +99,11 @@ npm run desktop:dev
 The dry run shows the fixed base-profile operations before anything is
 installed. Local model weights are optional and are not downloaded by this
 base setup. On a supported NVIDIA machine, return to the repository root and
-run the documented `cuda` profile command only when local TTS or cleaning is
-needed.
+run the optional CUDA profile only when local TTS or cleaning is needed:
+
+```powershell
+python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda --group cleaner-cuda
+```
 
 ### Source setup versus packaged profiles
 
@@ -125,7 +128,7 @@ or cleaning is needed:
 # macOS 14+ on arm64 Apple Silicon; contains no PyTorch
 python -m pip install -r requirements/mlx.txt
 
-# Linux/Windows with a supported NVIDIA GPU and driver
+# Linux with a supported NVIDIA GPU and driver; Windows uses the PowerShell command above
 python -m pip install -r requirements/cuda.txt
 ```
 

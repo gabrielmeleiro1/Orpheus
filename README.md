@@ -51,7 +51,7 @@ sidecar:
 python scripts/setup_runtime.py --profile mlx \
   --group tts-mlx --group cleaner-mlx
 
-# Linux/Windows with a supported NVIDIA GPU and driver
+# Linux with a supported NVIDIA GPU and driver; see the Windows PowerShell setup above
 python scripts/setup_runtime.py --profile cuda \
   --group tts-cpu-cuda --group cleaner-cuda
 ```
@@ -88,9 +88,9 @@ python run_tests.py --verify-profile base --verify-profile mlx
 ```
 
 Run the CUDA equivalent on a Linux/Windows NVIDIA host. Requested but
-unavailable hardware profiles exit 2 as `skipped`, not passed. The CUDA audit
-can report only the narrowly documented, expiring PyTorch exceptions as
-`accepted_risk`; base and MLX require a clean audit. See
+unavailable hardware profiles exit 2 as `skipped`, not passed. Every profile
+requires a clean audit unless a finding has an exact, time-bounded reviewed
+exception; accepted risk is never labeled passed. See
 [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md#clean-environment-release-gate).
 
 To produce and replace the installed macOS app:
