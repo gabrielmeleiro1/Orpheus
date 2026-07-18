@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, FastAPI, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from starlette.responses import JSONResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from modules.contracts.limits import MAX_UPLOAD_BYTES
+from modules.contracts.limits import MAX_BOOK_TITLE_LENGTH, MAX_UPLOAD_BYTES
 from modules.contracts.upload_errors import UploadTooLargeError
 from modules.web.deps import ControllerDep
 
@@ -16,39 +17,82 @@ router = APIRouter()
 # file bytes in Content-Length; allow modest overhead before rejecting.
 CONTENT_LENGTH_SLACK_BYTES = 64 * 1024
 
-_UPLOAD_BODY_PATHS = frozenset({"/api/uploads/source"})
+_UPLOAD_BODY_PATHS = frozenset({"/api/uploads/source", "/api/uploads/text"})
+
+# Bound JSON parsing independently from the authoritative UTF-8 byte check in
+# LibraryService. The character bound intentionally matches the byte limit so
+# ASCII text retains the exact historical limit; multibyte text remains gated
+# by the authoritative encoded-byte check in the service.
+MAX_TEXT_CHARS = MAX_UPLOAD_BYTES
+
+
+class _UploadBodySizeLimitMiddleware:
+    """Bound declared and chunked upload bodies before framework parsing."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] != "http"
+            or scope.get("method", "").upper() != "POST"
+            or scope.get("path") not in _UPLOAD_BODY_PATHS
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        limit = MAX_UPLOAD_BYTES + CONTENT_LENGTH_SLACK_BYTES
+        headers = dict(scope.get("headers", []))
+        declared = headers.get(b"content-length")
+        if declared is not None:
+            try:
+                if int(declared) > limit:
+                    await self._reject(scope, receive, send)
+                    return
+            except ValueError:
+                pass
+
+        received = 0
+        too_large = False
+
+        async def limited_receive() -> Message:
+            nonlocal received, too_large
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > limit:
+                    too_large = True
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message: Message) -> None:
+            if not too_large:
+                await send(message)
+
+        try:
+            await self.app(scope, limited_receive, guarded_send)
+        except Exception:
+            if not too_large:
+                raise
+        if too_large:
+            await self._reject(scope, receive, send)
+
+    @staticmethod
+    async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
+        response = JSONResponse(
+            status_code=413,
+            content={"detail": f"Upload body exceeds {MAX_UPLOAD_BYTES} bytes"},
+        )
+        await response(scope, receive, send)
 
 
 def add_upload_size_limit_middleware(app: FastAPI) -> None:
-    """Reject clearly oversized uploads from the Content-Length header before
-    the request body is spooled to disk. The streamed per-chunk limit in the
-    handler remains the authoritative backstop."""
-
-    @app.middleware("http")
-    async def reject_oversized_upload_bodies(request: Request, call_next):  # type: ignore[no-untyped-def]
-        if request.method.upper() == "POST" and request.url.path in _UPLOAD_BODY_PATHS:
-            declared = request.headers.get("content-length")
-            if declared is not None:
-                try:
-                    declared_bytes = int(declared)
-                except ValueError:
-                    declared_bytes = None
-                if (
-                    declared_bytes is not None
-                    and declared_bytes > MAX_UPLOAD_BYTES + CONTENT_LENGTH_SLACK_BYTES
-                ):
-                    return JSONResponse(
-                        status_code=413,
-                        content={
-                            "detail": f"Upload body exceeds {MAX_UPLOAD_BYTES} bytes"
-                        },
-                    )
-        return await call_next(request)
+    app.add_middleware(_UploadBodySizeLimitMiddleware)
 
 
 class TextUploadRequest(BaseModel):
-    text: str = Field(..., min_length=1)
-    title: str | None = None
+    text: str = Field(..., min_length=1, max_length=MAX_TEXT_CHARS)
+    title: str | None = Field(default=None, max_length=MAX_BOOK_TITLE_LENGTH)
 
 
 @router.post("/api/uploads/source")

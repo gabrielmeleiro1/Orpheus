@@ -123,6 +123,64 @@ def test_text_upload_stores_pasted_content_as_markdown(tmp_path):
     assert stored_path.read_text(encoding="utf-8").startswith("# Web Notes\n\nOpening paragraph.")
 
 
+def test_text_upload_rejects_oversized_content_length_before_body(tmp_path, monkeypatch):
+    monkeypatch.setattr(uploads, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(uploads, "CONTENT_LENGTH_SLACK_BYTES", 0)
+    client, controller = _make_upload_client(tmp_path)
+    calls = []
+    monkeypatch.setattr(controller, "upload_text_source", lambda **kwargs: calls.append(kwargs))
+
+    response = client.post("/api/uploads/text", json={"text": "0" * 64, "title": "Notes"})
+
+    assert response.status_code == 413
+    assert calls == []
+
+
+def test_text_upload_rejects_oversized_chunked_body(tmp_path, monkeypatch):
+    monkeypatch.setattr(uploads, "MAX_UPLOAD_BYTES", 10)
+    monkeypatch.setattr(uploads, "CONTENT_LENGTH_SLACK_BYTES", 0)
+    client, controller = _make_upload_client(tmp_path)
+    calls = []
+    monkeypatch.setattr(controller, "upload_text_source", lambda **kwargs: calls.append(kwargs))
+
+    def body_chunks():
+        yield b'{"text":"'
+        yield b"0" * 64
+        yield b'"}'
+
+    response = client.post(
+        "/api/uploads/text",
+        content=body_chunks(),
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert calls == []
+
+
+def test_text_upload_bounds_title_and_text_fields(tmp_path):
+    from modules.web.routes.uploads import MAX_TEXT_CHARS, TextUploadRequest
+
+    client, controller = _make_upload_client(tmp_path)
+    del controller
+    title_response = client.post("/api/uploads/text", json={"text": "ok", "title": "x" * 201})
+    assert title_response.status_code == 422
+    assert MAX_TEXT_CHARS == uploads.MAX_UPLOAD_BYTES
+    assert TextUploadRequest.model_fields["text"].metadata[1].max_length == MAX_TEXT_CHARS
+
+
+def test_managed_upload_directory_and_file_are_owner_only(tmp_path):
+    import stat
+
+    client, controller = _make_upload_client(tmp_path)
+    response = client.post("/api/uploads/text", json={"text": "private"})
+    assert response.status_code == 200
+    root = upload_root(controller.config.temp_dir)
+    stored = root / response.json()["source_handle"].removeprefix("upload:")
+    assert stat.S_IMODE(root.stat().st_mode) == 0o700
+    assert stat.S_IMODE(stored.stat().st_mode) == 0o600
+
+
 def test_source_upload_rejects_oversized_content_length_before_reading_body(tmp_path, monkeypatch):
     monkeypatch.setattr(uploads, "MAX_UPLOAD_BYTES", 10)
     monkeypatch.setattr(uploads, "CONTENT_LENGTH_SLACK_BYTES", 0)
