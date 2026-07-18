@@ -50,6 +50,13 @@
   display: none;
 }
 
+.library-empty {
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+  padding: 8px 2px;
+}
+
 .book-row {
   align-items: center;
   background: var(--bg-elevated);

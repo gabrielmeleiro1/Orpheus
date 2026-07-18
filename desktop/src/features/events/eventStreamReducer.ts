@@ -77,7 +77,7 @@ export interface EventStreamReduceResult {
 export function createInitialEventStreamState(): EventStreamModelState {
   return {
     uiState: "idle",
-    statusText: "Waiting for run...",
+    statusText: "Waiting for a conversion…",
     progressPct: 0,
     etaText: "",
     stages: createProgressStages(),
@@ -130,7 +130,7 @@ function reduceProgressEvent(
     uiState: "running",
     progressPct: overallPct,
     etaText: formatEtaLabel(payload.eta),
-    statusText: message || (stage ? `stage: ${stage}` : "conversion running"),
+    statusText: message || (stage ? `Stage: ${stage}` : "Conversion running"),
     performanceSnapshot: payload.performance ?? null,
     currentStage: stage || state.currentStage,
     currentMessage: message || state.currentMessage,
@@ -168,9 +168,9 @@ function markJobCanceled(state: EventStreamModelState, jobId?: string): EventStr
     cancellingJobId: null,
     runningJobId: null,
     uiState: "cancelled",
-    statusText: "job canceled",
+    statusText: "Job cancelled",
     etaText: "",
-    currentMessage: "job canceled",
+    currentMessage: "Job cancelled",
     performanceSnapshot: null,
     activeJobId: null,
     isCancelling: false,
@@ -233,7 +233,7 @@ function reduceStateEvent(
       next = resetProgressForRun(next);
       next = { ...next, runningJobId: runningJobKey };
     }
-    next = { ...next, statusText: message || "conversion running" };
+    next = { ...next, statusText: message || "Conversion running" };
   } else if (normalizedState === "completed") {
     next = {
       ...next,
@@ -345,8 +345,8 @@ export function eventStreamReducer(
           performanceSnapshot: null,
           uiState: state.uiState === "running" || state.uiState === "unknown" ? "idle" : state.uiState,
           statusText:
-            state.statusText === "conversion running" ||
-            state.statusText === "cancellation requested; waiting for backend to stop"
+            state.statusText === "Conversion running" ||
+            state.statusText === "Cancellation requested — waiting for the backend to stop"
               ? "ready"
               : state.statusText,
         },
@@ -392,8 +392,8 @@ export function eventStreamReducer(
             cancellingJobId: action.jobId,
             uiState: "running",
             etaText: "",
-            currentMessage: "cancellation requested",
-            statusText: "cancellation requested; waiting for backend to stop",
+            currentMessage: "Cancellation requested",
+            statusText: "Cancellation requested — waiting for the backend to stop",
           },
           "info",
           `job ${action.jobId} cancellation requested`,

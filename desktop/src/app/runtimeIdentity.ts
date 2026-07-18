@@ -7,16 +7,20 @@ export interface RuntimeIdentity {
   cleanerLabel: string;
 }
 
+// The backend reports runtime ids in lowercase ("mlx"); the header shows them
+// as proper names.
+const RUNTIME_ID_LABELS: Record<string, string> = { mlx: "MLX", cuda: "CUDA", cpu: "CPU" };
+
 export function resolveRuntimeIdentity(input: {
   primaryRuntime: string | null;
   cleanerBackendId: string;
   cleanerBackendLabel: string | null;
   ttsEngineLabel: string | null;
 }): RuntimeIdentity {
-  const ttsLabel =
+  const rawTts =
     String(input.primaryRuntime ?? "").trim() ||
-    String(input.ttsEngineLabel ?? "").trim() ||
-    "—";
+    String(input.ttsEngineLabel ?? "").trim();
+  const ttsLabel = rawTts ? RUNTIME_ID_LABELS[rawTts.toLowerCase()] ?? rawTts : "—";
   const cleanerLabel =
     String(input.cleanerBackendLabel ?? "").trim() ||
     String(input.cleanerBackendId ?? "").trim() ||

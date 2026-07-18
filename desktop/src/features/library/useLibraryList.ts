@@ -62,7 +62,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const [loadingList, setLoadingList] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [statusMessage, setStatusMessage] = useState("library idle");
+  const [statusMessage, setStatusMessage] = useState("Library idle");
 
   const beginListRequest = useLatestRequest();
   const beginDetailRequest = useLatestRequest();
@@ -95,7 +95,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     setLoadingList(false);
     setLoadingDetail(false);
     setErrorMessage("");
-    setStatusMessage(backendDisconnected ? "backend disconnected" : "waiting for backend");
+    setStatusMessage(backendDisconnected ? "Backend disconnected" : "Waiting for backend");
   }, [backendDisconnected, beginDetailRequest, beginListRequest, beginMutationRequest]);
 
   const loadBookDetail = useCallback(
@@ -119,7 +119,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
         setSelectedBookDetail(detail);
         if (!options.silentStatus && preservedStatusRef.current === null) {
-          setStatusMessage(`selected: ${detail.title || "untitled"}`);
+          setStatusMessage(`Selected: ${detail.title || "Untitled"}`);
         }
         return detail;
       } catch (error: unknown) {
@@ -185,7 +185,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
           setSelectedBookIndex(-1);
           setSelectedBookDetail(null);
           setLoadingDetail(false);
-          setStatusMessage("library empty");
+          setStatusMessage("Library empty");
           return;
         }
 
@@ -262,7 +262,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
   const openSelectedBookFolder = useCallback(async (): Promise<void> => {
     if (!repository || !selectedBookId) {
-      setStatusMessage("no selected book");
+      setStatusMessage("No book selected");
       return;
     }
 
@@ -281,7 +281,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
   const deleteSelectedBook = useCallback(async (): Promise<boolean> => {
     if (!repository || !selectedBookId) {
-      setStatusMessage("no selected book");
+      setStatusMessage("No book selected");
       return false;
     }
 
@@ -293,7 +293,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     ) {
       return false;
     }
-    const deletedStatus = `deleted ${title}`;
+    const deletedStatus = `Deleted ${title}`;
     const isCurrentMutation = beginMutationRequest();
     const isCurrentList = beginListRequest();
     listAbortRef.current?.abort();
@@ -315,7 +315,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
     setErrorMessage("");
     preservedStatusRef.current = null;
-    setStatusMessage(`deleting ${title}`);
+    setStatusMessage(`Deleting ${title}…`);
     setItems(optimisticItems);
     setIndexedCount(Math.max(0, indexedCount - 1));
     setSelectedBookIndex(nextIndex);
@@ -368,7 +368,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const updateSelectedBookMetadata = useCallback(
     async (payload: { title: string; author: string; tags: string }): Promise<void> => {
       if (!repository || !selectedBookId) {
-        setStatusMessage("no selected book");
+        setStatusMessage("No book selected");
         return;
       }
 
@@ -399,7 +399,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
               : item,
           ),
         );
-        setStatusMessage("metadata saved");
+        setStatusMessage("Metadata saved");
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "failed to update book";
         setErrorMessage(message);
@@ -412,14 +412,14 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const loadCleaningPreview = useCallback(
     async (chapterNumber: number): Promise<CleaningPreviewResponse | null> => {
       if (!repository || !selectedBookId) {
-        setStatusMessage("no selected book");
+        setStatusMessage("No book selected");
         return null;
       }
 
       setErrorMessage("");
       try {
         const preview = await repository.getCleaningPreview(selectedBookId, chapterNumber);
-        setStatusMessage(preview.available ? `loaded cleaning preview for chapter ${chapterNumber}` : "cleaning preview unavailable");
+        setStatusMessage(preview.available ? `Loaded cleaning preview for chapter ${chapterNumber}` : "Cleaning preview unavailable");
         return preview;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "failed to load cleaning preview";
@@ -433,14 +433,14 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
   const repairSelectedBook = useCallback(async (): Promise<void> => {
     if (!repository || !selectedBookId) {
-      setStatusMessage("no selected book");
+      setStatusMessage("No book selected");
       return;
     }
 
     setErrorMessage("");
     try {
       const response = await repository.repairBook(selectedBookId);
-      setStatusMessage(`repair started: ${response.job_id}`);
+      setStatusMessage(`Repair started: ${response.job_id}`);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "failed to start repair";
       setErrorMessage(message);

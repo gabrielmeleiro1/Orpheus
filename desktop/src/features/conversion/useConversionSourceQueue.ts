@@ -35,7 +35,7 @@ export function useConversionSourceQueue({
   const [pasteTitle, setPasteTitle] = useState("");
   const [pastedText, setPastedText] = useState("");
   const [pasteBusy, setPasteBusy] = useState(false);
-  const [pasteStatus, setPasteStatus] = useState("paste idle");
+  const [pasteStatus, setPasteStatus] = useState("Idle");
   const [dragging, setDragging] = useState(false);
 
   const applySourcePathsRef = useRef<(paths: string[]) => void>(() => {});
@@ -184,7 +184,7 @@ export function useConversionSourceQueue({
     }
 
     setPasteBusy(true);
-    setPasteStatus("Creating markdown source...");
+    setPasteStatus("Creating markdown source…");
     try {
       const response = await apiClient.uploadSourceText({
         text,
@@ -204,7 +204,7 @@ export function useConversionSourceQueue({
       setPasteStatus("Pasted markdown source added.");
       conversionJob.clearFormError();
     } catch (error: unknown) {
-      setPasteStatus(error instanceof Error ? error.message : "paste upload failed");
+      setPasteStatus(error instanceof Error ? error.message : "Paste upload failed");
     } finally {
       setPasteBusy(false);
     }

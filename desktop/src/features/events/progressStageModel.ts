@@ -86,7 +86,7 @@ export function formatEtaLabel(value: unknown): string {
     parts.push(`${seconds}s`);
   }
 
-  return `eta ~${parts.join(" ")}`;
+  return `ETA ~${parts.join(" ")}`;
 }
 
 export function normalizeStageName(stage: string): ProgressStageName | "" {

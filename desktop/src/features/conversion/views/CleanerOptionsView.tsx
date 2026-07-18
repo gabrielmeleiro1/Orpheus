@@ -21,7 +21,7 @@ export function CleanerOptionsView({
   return (
     <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" hidden={hidden}>
       <div className="panel-header">
-        <span>configuration</span>
+        <span>Settings</span>
         <button
           id="runtime-setup-btn"
           className="btn btn-compact"
@@ -32,32 +32,32 @@ export function CleanerOptionsView({
         </button>
       </div>
 
-      <p className="field-hint config-runtime-copy">
-        TTS runtime synthesizes speech (shown in the header as TTS). Cleaner runtime prepares text before
-        synthesis and is chosen independently — selecting Cloud API here does not change the TTS engine.
-      </p>
-
       <div className="config-grid">
         <div className="panel-section config-panel-section">
           <div className="section-title">
-            <span>cleaner runtime</span>
+            <span
+              data-tip="The cleaner prepares text before narration. It is independent of the TTS engine — choosing Cloud API here does not change the voice."
+              data-tip-pos="bottom"
+            >
+              Cleaner runtime
+            </span>
           </div>
           <div className="form-row">
-            <span className="form-row-label">backend</span>
+            <span className="form-row-label">Backend</span>
             <div className="form-row-field">
               <TermSelect
                 id="cleaner-backend-select"
-                label="cleaner backend"
+                label="Cleaner backend"
                 value={cleanerOptions.cleanerBackend}
                 options={cleanerOptions.cleanerBackendOptions}
-                placeholder="select backend"
+                placeholder="Select backend"
                 onChange={actions.setCleanerBackend}
               />
             </div>
           </div>
 
           <div className="form-row">
-            <span className="form-row-label">status</span>
+            <span className="form-row-label">Status</span>
             <div className="form-row-field">
               <span id="cleaner-runtime-status" className={cleanerOptions.runtimeStatusClass}>
                 {cleanerOptions.cleanerRuntimeStatus}
@@ -66,11 +66,11 @@ export function CleanerOptionsView({
           </div>
 
           <div className="form-row">
-            <span className="form-row-label">model</span>
+            <span className="form-row-label">Model</span>
             <div className="form-row-field">
               <TermSelect
                 id="cleaner-model-select"
-                label="cleaner model"
+                label="Cleaner model"
                 value={cleanerOptions.cleanerModel}
                 options={cleanerOptions.cleanerModelOptions}
                 placeholder="-"
@@ -83,7 +83,7 @@ export function CleanerOptionsView({
           {cleanerOptions.showCleanerCudaControls ? (
             <>
               <div className="form-row">
-                <span className="form-row-label">device</span>
+                <span className="form-row-label" data-tip="CUDA device the cleaner model runs on, e.g. cuda:0" data-tip-pos="right">Device</span>
                 <div className="form-row-field">
                   <input
                     id="cleaner-cuda-device-input"
@@ -99,11 +99,17 @@ export function CleanerOptionsView({
 
               {cleanerOptions.cleanerCudaQuantizationOptions.length > 0 ? (
                 <div className="form-row">
-                  <span className="form-row-label">quantization</span>
+                  <span
+                    className="form-row-label"
+                    data-tip="Model precision. Lower bits run faster with a slight quality trade-off."
+                    data-tip-pos="right"
+                  >
+                    Quantization
+                  </span>
                   <div className="form-row-field">
                     <TermSelect
                       id="cleaner-cuda-quantization-select"
-                      label="cleaner cuda quantization"
+                      label="Cleaner CUDA quantization"
                       value={cleanerOptions.cleanerCudaQuantization}
                       options={cleanerOptions.cleanerCudaQuantizationOptions}
                       placeholder="default"
@@ -122,7 +128,13 @@ export function CleanerOptionsView({
               <span>{cleanerOptions.selectedBackendDisplayName} cleaner</span>
             </div>
             <div className="form-row">
-              <span className="form-row-label">api key</span>
+              <span
+                className="form-row-label"
+                data-tip="Stored locally and only sent to this provider"
+                data-tip-pos="right"
+              >
+                API key
+              </span>
               <div className="form-row-field">
                 <input
                   id="cleaner-api-key-input"
@@ -143,9 +155,10 @@ export function CleanerOptionsView({
                 className="btn btn-compact"
                 type="button"
                 disabled={!capabilities.canFetchCleanerModels}
+                data-tip="List the models available to this API key"
                 onClick={() => void actions.onFetchCleanerModels()}
               >
-                {cleanerOptions.openAiModelFetchLoading ? "fetching..." : "fetch models"}
+                {cleanerOptions.openAiModelFetchLoading ? "Fetching…" : "Fetch models"}
               </button>
             </div>
 

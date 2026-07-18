@@ -1,35 +1,192 @@
+.log-toolbar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.log-toolbar .term-select {
+  width: 150px;
+}
+
+.log-level-control .segment-btn {
+  align-items: center;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.log-level-count {
+  background: var(--surface-active);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  min-width: 16px;
+  padding: 3px 5px;
+  text-align: center;
+}
+
+.segment-btn.is-active .log-level-count {
+  color: var(--text);
+}
+
+.log-search {
+  max-width: 200px;
+  min-height: 28px;
+  padding-bottom: 4px;
+  padding-top: 4px;
+  width: 200px;
+}
+
+.log-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.log-copy-status {
+  white-space: nowrap;
+}
+
+.log-shell {
+  position: relative;
+}
+
 .log-box {
   background: var(--bg-elevated);
   border-radius: var(--radius-sm);
   max-height: 500px;
   min-height: 280px;
   overflow-y: auto;
-  padding: var(--density-panel-pad);
-}
-
-.log-toolbar {
-  align-items: center;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  margin-bottom: 10px;
-}
-
-.log-filter {
-  max-width: 140px;
+  padding: 6px var(--density-panel-pad);
 }
 
 .log-line {
   color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: 11px;
-  line-height: 1.5;
-  padding: 1px 0;
+  line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* Structured rows only inside the log viewer; elsewhere .log-line is a plain status line. */
+.log-box .log-line {
+  align-items: baseline;
+  border-radius: 4px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 3px 64px minmax(0, 1fr);
+  padding: 1px 6px;
+}
+
+.log-box .log-line:hover {
+  background: var(--surface-hover);
+}
+
+.log-marker {
+  align-self: stretch;
+  background: transparent;
+  border-radius: 2px;
+  display: block;
+  width: 3px;
+}
+
+.log-warn .log-marker {
+  background: var(--warning);
+}
+
+.log-error .log-marker {
+  background: var(--negative);
 }
 
 .log-ts {
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
+}
+
+.log-msg {
+  min-width: 0;
+}
+
+.log-warn {
+  color: var(--warning);
+}
+
+.log-error {
+  color: var(--negative);
+}
+
+.log-empty {
+  align-items: center;
+  color: var(--text-tertiary);
+  display: grid;
+  gap: 6px;
+  justify-items: center;
+  padding: 72px 16px;
+  text-align: center;
+}
+
+.log-empty-icon svg {
+  fill: none;
+  height: 26px;
+  opacity: 0.55;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.6;
+  width: 26px;
+}
+
+.log-empty-title {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.log-empty-hint {
+  font-size: 11px;
+}
+
+.log-jump-latest {
+  align-items: center;
+  background: color-mix(in srgb, var(--bg) 88%, black);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  bottom: 14px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 500;
+  gap: 6px;
+  left: 50%;
+  padding: 5px 12px;
+  position: absolute;
+  transform: translateX(-50%);
+  transition: color 120ms ease, border-color 120ms ease;
+}
+
+.log-jump-latest:hover {
+  border-color: var(--accent-muted);
+  color: var(--text);
+}
+
+.log-jump-latest svg {
+  fill: none;
+  height: 12px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  width: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .log-jump-latest {
+    transition: none;
+  }
 }

@@ -4,12 +4,12 @@ export const VOICE_PREVIEW_DEFAULT_TEXT = "The quick brown fox jumps over the la
 
 export function nowStatus(connectionState: BackendConnectionState): string {
   if (connectionState === "checking") {
-    return "checking";
+    return "Checking…";
   }
   if (connectionState === "connected") {
-    return "connected";
+    return "Connected";
   }
-  return "error";
+  return "Error";
 }
 
 export function splitPath(path: string): string {

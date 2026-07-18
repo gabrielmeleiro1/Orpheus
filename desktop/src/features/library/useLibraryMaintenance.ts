@@ -32,7 +32,7 @@ export function useLibraryMaintenance({
 
   const [maintenanceReport, setMaintenanceReport] = useState<MaintenanceDiagnosticsResponse | null>(null);
   const [maintenanceLoading, setMaintenanceLoading] = useState(false);
-  const [maintenanceMessage, setMaintenanceMessage] = useState("maintenance idle");
+  const [maintenanceMessage, setMaintenanceMessage] = useState("Maintenance idle");
 
   const beginMaintenanceRequest = useLatestRequest();
 

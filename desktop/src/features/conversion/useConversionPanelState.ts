@@ -352,19 +352,19 @@ export function useConversionPanelState({
     },
     conversionActions: {
       backendStatus: nowStatus(connectionState),
-      healthStatus: health ? `status=${health.status}` : "unavailable",
+      healthStatus: health ? (health.status === "ok" ? "Healthy" : health.status) : "Unavailable",
       jobStatus: conversionJob.activeJobId
         ? `${conversionJob.activeJobStatus} (${conversionJob.activeJobId})`
-        : "no active conversion",
+        : "No active conversion",
       detailStatus: conversionJob.statusText || statusMessage,
       blockingReason: conversionBlocker.blockingReason,
       showSettingsShortcut: conversionBlocker.showSettingsShortcut,
       startLabel: conversionJob.isStarting
-        ? "starting..."
+        ? "Starting…"
         : primaryAction.primary === "run_queue"
-          ? "run queue"
-          : "start conversion",
-      cancelLabel: conversionJob.isCancelling ? "cancelling..." : "cancel",
+          ? "Run queue"
+          : "Start conversion",
+      cancelLabel: conversionJob.isCancelling ? "Cancelling…" : "Cancel",
       isStarting: conversionJob.isStarting,
     },
     actions: {

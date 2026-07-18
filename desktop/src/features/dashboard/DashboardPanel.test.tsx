@@ -8,7 +8,8 @@ import type { UseLibraryResult } from "../library/useLibrary";
 import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
 import { DashboardPanel } from "./DashboardPanel";
 
-vi.mock("./AudioWaveformCanvas", () => ({ AudioWaveformCanvas: () => null }));
+vi.mock("./NowPlayingCanvas", () => ({ NowPlayingCanvas: () => null }));
+vi.mock("./ConversionFlowCanvas", () => ({ ConversionFlowCanvas: () => null }));
 
 describe("DashboardPanel library count", () => {
   let root: Root;
@@ -60,6 +61,6 @@ describe("DashboardPanel library count", () => {
       (card) => card.querySelector(".status-label")?.textContent === "Library",
     );
     expect(libraryCard?.querySelector(".status-number")?.textContent).toBe("4");
-    expect(libraryCard?.querySelector(".status-detail")?.textContent).toBe("books indexed");
+    expect(libraryCard?.querySelector(".status-detail")?.textContent).toBe("Books indexed");
   });
 });

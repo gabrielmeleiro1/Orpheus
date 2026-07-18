@@ -53,7 +53,7 @@ export function createConversionQueueInitialState(): ConversionQueueState {
     authorOverride: "",
     queueItems: [],
     selectedQueueId: null,
-    queueStatus: "queue idle",
+    queueStatus: "Queue idle",
     preflightStatus: "",
     previewText: null,
     itemRevisions: {},

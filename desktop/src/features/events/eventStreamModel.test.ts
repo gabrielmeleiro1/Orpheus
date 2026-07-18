@@ -132,7 +132,7 @@ describe("event stream reducer progress stages", () => {
     });
 
     expect(result.state.progressPct).toBe(33);
-    expect(result.state.etaText).toBe("eta ~1m 5s");
+    expect(result.state.etaText).toBe("ETA ~1m 5s");
     expect(result.state.stages[1]).toMatchObject({
       name: "chunking",
       state: "active",
@@ -214,7 +214,7 @@ describe("event stream reducer actions", () => {
       uiState: "running" as const,
       activeJobId: "job-1",
       runningJobId: "job-1",
-      statusText: "conversion running",
+      statusText: "Conversion running",
       isCancelling: true,
     };
 
@@ -247,8 +247,8 @@ describe("event stream reducer actions", () => {
     });
     expect(accepted.state).toMatchObject({
       cancellingJobId: "job-1",
-      statusText: "cancellation requested; waiting for backend to stop",
-      currentMessage: "cancellation requested",
+      statusText: "Cancellation requested — waiting for the backend to stop",
+      currentMessage: "Cancellation requested",
     });
     expect(accepted.state.logs[0].msg).toBe("job job-1 cancellation requested");
     expect(eventStreamReducer(running, { type: "setActiveJobId", jobId: "job-3" }).state.activeJobId).toBe(
@@ -271,7 +271,7 @@ describe("event stream reducer actions", () => {
     expect(cancelling).toMatchObject({
       isCancelling: true,
       cancellingJobId: "job-1",
-      statusText: "cancellation requested; waiting for backend to stop",
+      statusText: "Cancellation requested — waiting for the backend to stop",
     });
 
     // The fallback reconcile poll fires while the backend is still winding the
@@ -285,7 +285,7 @@ describe("event stream reducer actions", () => {
       uiState: "running",
       isCancelling: true,
       cancellingJobId: "job-1",
-      statusText: "cancellation requested; waiting for backend to stop",
+      statusText: "Cancellation requested — waiting for the backend to stop",
     });
 
     // Once the backend actually stops the job, the terminal reconcile flips the
@@ -296,7 +296,7 @@ describe("event stream reducer actions", () => {
     }).state;
     expect(stopped).toMatchObject({
       uiState: "cancelled",
-      statusText: "job canceled",
+      statusText: "Job cancelled",
       isCancelling: false,
     });
   });

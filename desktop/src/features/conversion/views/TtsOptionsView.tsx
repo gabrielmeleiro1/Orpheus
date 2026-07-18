@@ -19,11 +19,11 @@ export function TtsOptionsView({
   return (
     <div className="panel-section form-section">
       <div className="form-row">
-        <span className="form-row-label">engine</span>
+        <span className="form-row-label" data-tip="Speech engine used to narrate the book" data-tip-pos="right">Engine</span>
         <div className="form-row-field">
           <TermSelect
             id="tts-engine-select"
-            label="tts engine"
+            label="TTS engine"
             value={ttsOptions.selectedEngine}
             options={ttsOptions.engineOptions}
             placeholder="-"
@@ -34,19 +34,19 @@ export function TtsOptionsView({
       </div>
 
       <div className="form-row">
-        <span className="form-row-label">voice</span>
+        <span className="form-row-label">Voice</span>
         <div className="form-row-stack">
           <input
             id="voice-search"
             className="field-input"
             type="text"
-            placeholder="search voices..."
+            placeholder="Search voices…"
             value={ttsOptions.voiceFilter}
             onChange={(event) => actions.setVoiceFilter(event.target.value)}
           />
           <TermSelect
             id="voice-select"
-            label="voice"
+            label="Voice"
             value={ttsOptions.selectedVoice}
             options={ttsOptions.filteredVoiceOptions}
             placeholder="-"
@@ -59,9 +59,10 @@ export function TtsOptionsView({
               className="btn btn-compact"
               type="button"
               disabled={!capabilities.canRecommendVoice}
+              data-tip="Suggest a voice suited to this book from a text sample"
               onClick={() => void actions.onRecommendVoice()}
             >
-              {ttsOptions.voiceSuggestBusy ? "analyzing..." : "recommend voice"}
+              {ttsOptions.voiceSuggestBusy ? "Analyzing…" : "Recommend"}
             </button>
             <span className="voice-suggest-status">{ttsOptions.voiceSuggestStatus}</span>
           </div>
@@ -69,14 +70,14 @@ export function TtsOptionsView({
       </div>
 
       <div className="form-row">
-        <span className="form-row-label">preview</span>
+        <span className="form-row-label">Preview</span>
         <div className="form-row-stack">
           <div className="form-row-field compact-row">
             <input
               id="voice-preview-text"
               className="field-input"
               type="text"
-              placeholder="type preview text..."
+              placeholder="Text to speak…"
               value={ttsOptions.previewText}
               onChange={(event) => actions.setPreviewText(event.target.value)}
             />
@@ -85,9 +86,10 @@ export function TtsOptionsView({
               className="btn btn-compact"
               type="button"
               disabled={!capabilities.canPreviewVoice}
+              data-tip="Speak the sample with the selected voice"
               onClick={() => void actions.onPreviewVoice()}
             >
-              {ttsOptions.previewBusy ? "..." : "preview"}
+              {ttsOptions.previewBusy ? "…" : "Listen"}
             </button>
           </div>
           <span id="voice-preview-status" className={`field-hint${ttsOptions.previewError ? " is-error" : ""}`}>

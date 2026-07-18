@@ -1,5 +1,6 @@
 :root {
   --font-body: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
+  --font-display: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
   --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --radius-sm: 5px;

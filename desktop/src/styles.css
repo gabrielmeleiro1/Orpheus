@@ -1,4 +1,5 @@
 @import "./styles/base.css";
 @import "./styles/shell.css";
 @import "./styles/controls.css";
+@import "./styles/tooltip.css";
 @import "./features/setup/setup.css";

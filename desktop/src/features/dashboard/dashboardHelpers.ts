@@ -25,15 +25,15 @@ export async function restartDesktopBackend(): Promise<void> {
 export function describeDesktopBackendStatus(status: DesktopBackendStatus): string {
   const error = status.error?.trim();
   if (status.lifecycle === "failed") {
-    return error || "desktop backend failed";
+    return error || "Desktop backend failed";
   }
   if (status.lifecycle === "stopped") {
-    return error || "desktop backend stopped";
+    return error || "Desktop backend stopped";
   }
   if (status.lifecycle === "starting") {
-    return "desktop backend starting";
+    return "Desktop backend starting";
   }
-  return status.endpoint?.base_url ? `backend ready at ${status.endpoint.base_url}` : "desktop backend ready";
+  return status.endpoint?.base_url ? `Backend ready at ${status.endpoint.base_url}` : "Desktop backend ready";
 }
 
 export async function waitForDesktopEndpoint(): Promise<DesktopBackendEndpoint | null> {

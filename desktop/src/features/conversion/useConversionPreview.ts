@@ -28,7 +28,7 @@ export function useConversionPreview({
   sampleText,
 }: UseConversionPreviewArgs) {
   const [voiceSuggestBusy, setVoiceSuggestBusy] = useState(false);
-  const [voiceSuggestStatus, setVoiceSuggestStatus] = useState("recommendation idle");
+  const [voiceSuggestStatus, setVoiceSuggestStatus] = useState("No recommendation yet");
   const [previewText, setPreviewText] = useState(VOICE_PREVIEW_DEFAULT_TEXT);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewStatus, setPreviewStatus] = useState("Select a voice and click preview.");

@@ -18,11 +18,11 @@ export function AdvancedOptionsView({
 }: AdvancedOptionsViewProps) {
   return (
     <details id="advanced-audio-settings" className="advanced-settings">
-      <summary>advanced settings</summary>
+      <summary>Advanced</summary>
       <div className="advanced-settings-body">
         <div className="panel-section form-section">
           <div className="form-row">
-            <span className="form-row-label">speed</span>
+            <span className="form-row-label" data-tip="Narration speed baked into the audio. 1.0 is natural pace." data-tip-pos="right">Speed</span>
             <div className="form-row-field">
               <input
                 id="speed-input"
@@ -38,11 +38,17 @@ export function AdvancedOptionsView({
           </div>
 
           <div className="form-row">
-            <span className="form-row-label">quantization</span>
+            <span
+              className="form-row-label"
+              data-tip="Model precision. Lower bits run faster with a slight quality trade-off."
+              data-tip-pos="right"
+            >
+              Quantization
+            </span>
             <div className="form-row-field">
               <TermSelect
                 id="tts-quantization-select"
-                label="tts quantization"
+                label="TTS quantization"
                 value={advancedOptions.selectedQuantization}
                 options={advancedOptions.quantizationOptions}
                 placeholder="default"
@@ -52,24 +58,32 @@ export function AdvancedOptionsView({
           </div>
 
           <div className="form-row">
-            <span className="form-row-label">workers</span>
+            <span
+              className="form-row-label"
+              data-tip="How many chapters synthesize at once. Auto sizes the pool from a warm-up benchmark."
+              data-tip-pos="right"
+            >
+              Workers
+            </span>
             <div className="form-row-stack">
-              <div className="segmented-control" aria-label="parallel worker mode">
+              <div className="segmented-control" aria-label="Parallel worker mode">
                 <button
                   id="parallel-worker-mode-auto"
                   className={`segment-btn${advancedOptions.parallelWorkerMode === "auto" ? " is-active" : ""}`}
                   type="button"
+                  data-tip="Size the worker pool automatically"
                   onClick={() => actions.setParallelWorkerMode("auto")}
                 >
-                  auto
+                  Auto
                 </button>
                 <button
                   id="parallel-worker-mode-manual"
                   className={`segment-btn${advancedOptions.parallelWorkerMode === "manual" ? " is-active" : ""}`}
                   type="button"
+                  data-tip="Set the worker count yourself"
                   onClick={() => actions.setParallelWorkerMode("manual")}
                 >
-                  manual
+                  Manual
                 </button>
               </div>
               <div className="form-row-field compact-row">
@@ -93,9 +107,10 @@ export function AdvancedOptionsView({
                   className="btn btn-compact"
                   type="button"
                   disabled={!capabilities.canRunParallelWarmup}
+                  data-tip="Benchmark how many parallel workers this machine sustains"
                   onClick={() => void actions.onRunParallelWarmup()}
                 >
-                  {advancedOptions.parallelWarmupLoading ? "warming..." : "run warm-up"}
+                  {advancedOptions.parallelWarmupLoading ? "Warming…" : "Warm-up"}
                 </button>
               </div>
               <span
@@ -107,7 +122,7 @@ export function AdvancedOptionsView({
             </div>
           </div>
 
-          <span className="field-hint">Cleaner backend and model are configured in the configuration tab.</span>
+          <span className="field-hint">Text cleaning is configured in Settings.</span>
         </div>
       </div>
     </details>

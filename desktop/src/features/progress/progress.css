@@ -1,101 +1,153 @@
-.progress-focus,
-.performance-section {
+.progress-hero {
+  align-items: center;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   margin-bottom: 12px;
-  padding: var(--density-panel-pad);
+  padding: 16px;
 }
 
-.progress-strip {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  display: block;
-  height: 9px;
-  min-width: 0;
-  overflow: hidden;
+/* Ring */
+
+.progress-ring {
+  display: grid;
+  height: 76px;
+  place-items: center;
+  position: relative;
+  width: 76px;
+}
+
+.progress-ring svg {
+  height: 100%;
+  position: absolute;
+  transform: rotate(-90deg);
   width: 100%;
 }
 
-.progress-strip-fill {
-  background: var(--accent-muted);
-  border-radius: 4px;
-  display: block;
-  height: 100%;
-  transition: width 450ms ease;
+.progress-ring circle {
+  fill: none;
+  stroke-width: 5;
 }
 
-.progress-strip.is-active .progress-strip-fill {
-  background: var(--accent);
+.progress-ring-track {
+  stroke: var(--surface-active);
 }
 
-.progress-focus.is-canceled {
-  border-color: var(--negative);
+.progress-ring-fill {
+  stroke: var(--accent);
+  stroke-linecap: round;
+  transition: stroke-dashoffset 500ms cubic-bezier(0.25, 1, 0.35, 1);
 }
 
-.progress-focus.is-canceled .progress-percent,
-.progress-focus.is-canceled .progress-title,
-.progress-focus.is-canceled #status-text {
-  color: var(--negative);
+.progress-ring.is-running .progress-ring-fill {
+  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 55%, transparent));
 }
 
-.progress-focus-header {
-  align-items: flex-start;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  margin-bottom: 14px;
+.progress-ring.is-cancelled .progress-ring-fill,
+.progress-ring.is-failed .progress-ring-fill {
+  filter: none;
+  stroke: var(--negative);
+}
+
+.progress-ring-value {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  position: relative;
+}
+
+/* Hero main column */
+
+.progress-hero-main {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .progress-title {
   color: var(--text);
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 600;
   letter-spacing: -0.02em;
-  line-height: 1.25;
+  line-height: 1.2;
   overflow-wrap: anywhere;
+  text-transform: capitalize;
 }
 
-.progress-percent {
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 24px;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  line-height: 1;
+.progress-hero.is-cancelled .progress-title,
+.progress-hero.is-failed .progress-title {
+  color: var(--negative);
 }
 
 .progress-overall {
-  margin-bottom: 14px;
+  max-width: 560px;
 }
 
-.progress-focus-meta {
+.progress-hero-meta {
   align-items: center;
-  color: var(--text-secondary);
   display: flex;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  gap: 14px;
+  flex-wrap: wrap;
+  gap: 10px;
   justify-content: space-between;
-  margin-bottom: 14px;
+  max-width: 560px;
 }
 
-.progress-glyphs {
+.progress-status-text {
+  color: var(--text-secondary);
   font-size: 12px;
-  letter-spacing: 1px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.subtask-list {
-  display: flex;
-  flex-direction: column;
+/* Backend-authored status lines arrive lowercase ("conversion completed"). */
+.progress-status-text::first-letter {
+  text-transform: uppercase;
+}
+
+.progress-chip {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.03em;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.progress-cancel {
+  align-self: start;
+}
+
+.progress-cancel:not(:disabled) {
+  border-color: color-mix(in srgb, var(--negative) 40%, transparent);
+  color: var(--negative);
+}
+
+.progress-cancel:not(:disabled):hover {
+  background: var(--negative-soft);
+}
+
+/* Active stage subtasks */
+
+.subtask-section {
+  display: grid;
   gap: 8px;
+  margin-bottom: 12px;
+  padding: var(--density-panel-pad);
 }
 
 .subtask-row {
   align-items: center;
   display: grid;
   gap: var(--density-panel-gap);
-  grid-template-columns: 88px minmax(140px, 1fr) minmax(0, 150px);
-  min-height: 28px;
+  grid-template-columns: 110px minmax(140px, 1fr) minmax(0, 170px);
+  min-height: 24px;
 }
 
 .subtask-label,
@@ -108,10 +160,125 @@
 .subtask-value {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  text-align: right;
   overflow: hidden;
+  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Stage timeline */
+
+.stage-flow {
+  margin-bottom: 12px;
+  padding: 6px var(--density-panel-pad);
+}
+
+.stage-row {
+  align-items: center;
+  color: var(--text-tertiary);
+  display: grid;
+  font-size: 12px;
+  gap: var(--density-panel-gap);
+  grid-template-columns: 26px 132px minmax(120px, 1fr) 56px;
+  min-height: 38px;
+  position: relative;
+  transition: color 120ms ease;
+}
+
+/* Connector line between nodes */
+.stage-row::before {
+  background: var(--border);
+  content: "";
+  height: calc(100% - 26px);
+  left: 12px;
+  position: absolute;
+  top: calc(50% + 13px);
+  width: 1px;
+}
+
+.stage-row:last-child::before {
+  display: none;
+}
+
+.stage-node {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: grid;
+  height: 26px;
+  justify-items: center;
+  position: relative;
+  width: 26px;
+  z-index: 1;
+}
+
+.stage-node-index {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
+.stage-node svg {
+  fill: none;
+  height: 12px;
+  stroke: var(--accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.4;
+  width: 12px;
+}
+
+.stage-active {
+  color: var(--text);
+}
+
+.stage-active .stage-node {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.stage-active .stage-node-index {
+  color: var(--accent);
+}
+
+.stage-done .stage-node {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.stage-done::before {
+  background: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.stage-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-transform: capitalize;
+}
+
+.stage-done .stage-name {
+  color: var(--text-secondary);
+}
+
+.stage-status {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.stage-done .stage-status {
+  color: var(--accent);
+}
+
+/* Performance snapshot */
+
+.performance-section {
+  margin-bottom: 12px;
+  padding: var(--density-panel-pad);
 }
 
 .performance-grid {
@@ -121,7 +288,11 @@
 }
 
 .performance-item {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   min-width: 0;
+  padding: 10px 12px;
 }
 
 .performance-item strong {
@@ -135,68 +306,35 @@
   overflow-wrap: anywhere;
 }
 
-.performance-item span:last-child {
+/* Backend-reported values arrive lowercase ("parallel"). */
+.performance-item strong::first-letter {
+  text-transform: uppercase;
+}
+
+.performance-item > span:last-child {
   color: var(--text-tertiary);
   display: block;
   font-size: 11px;
   overflow-wrap: anywhere;
 }
 
-#stage-list {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-bottom: 14px;
-  padding: var(--density-panel-pad);
-}
-
-.stage-row {
-  align-items: center;
-  color: var(--text-tertiary);
-  display: grid;
-  font-size: 11px;
-  gap: var(--density-panel-gap);
-  grid-template-columns: 96px 130px minmax(120px, 1fr) 48px;
-  min-height: 30px;
-  padding: 4px 0;
-  transition: color 120ms ease;
-}
-
-.stage-active {
-  color: var(--text);
-}
-
-.stage-done .stage-status,
-.stage-active .stage-badge {
-  color: var(--accent);
-}
-
-.stage-name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.stage-status {
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-}
-
 @media (max-width: 800px) {
+  .progress-hero {
+    grid-template-columns: 1fr;
+    justify-items: start;
+  }
+
   .stage-row,
   .subtask-row {
-    grid-template-columns: 1fr;
+    grid-template-columns: 26px 1fr;
+  }
+
+  .stage-row::before {
+    display: none;
   }
 
   .performance-grid {
     grid-template-columns: 1fr;
-  }
-
-  .progress-focus-header,
-  .progress-focus-meta {
-    flex-direction: column;
   }
 
   .subtask-value,
@@ -206,8 +344,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .progress-strip-fill {
-    animation: none;
+  .progress-ring-fill {
+    transition: none;
+  }
+
+  .stage-row {
     transition: none;
   }
 }

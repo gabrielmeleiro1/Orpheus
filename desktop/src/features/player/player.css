@@ -110,11 +110,18 @@
 
 .player-volume-label {
   color: var(--text-tertiary);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
+  display: block;
+  line-height: 0;
+}
+
+.player-volume-label svg {
+  fill: none;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+  width: 15px;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -11,9 +11,9 @@ import { isTauriRuntime } from "../../platform/tauriRuntime";
 
 describe("conversion panel helpers", () => {
   it("maps backend connection state to status text", () => {
-    expect(nowStatus("checking")).toBe("checking");
-    expect(nowStatus("connected")).toBe("connected");
-    expect(nowStatus("error")).toBe("error");
+    expect(nowStatus("checking")).toBe("Checking…");
+    expect(nowStatus("connected")).toBe("Connected");
+    expect(nowStatus("error")).toBe("Error");
   });
 
   it("detects Tauri runtime from window internals", () => {

@@ -88,6 +88,27 @@
   padding: 3px 8px;
 }
 
+.btn-danger:not(:disabled) {
+  border-color: color-mix(in srgb, var(--negative) 35%, transparent);
+  color: var(--negative);
+}
+
+.btn-danger:not(:disabled):hover {
+  background: var(--negative-soft);
+  border-color: color-mix(in srgb, var(--negative) 55%, transparent);
+}
+
+.btn-icon svg {
+  display: block;
+  fill: none;
+  height: 15px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  width: 15px;
+}
+
 .drop-zone-hint,
 .field-hint,
 .book-summary-value,
@@ -97,6 +118,11 @@
   color: var(--text-tertiary);
   font-size: 11px;
   overflow-wrap: anywhere;
+}
+
+/* Status lines that echo backend-authored messages arrive lowercase. */
+.status-sentence::first-letter {
+  text-transform: uppercase;
 }
 
 .field-hint.is-error,

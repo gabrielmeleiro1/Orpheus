@@ -63,8 +63,10 @@ describe("buildProgressTerminalPresentation", () => {
     expect(presentation.showLiveActiveTask).toBe(false);
     expect(presentation.showLiveWorkers).toBe(false);
     expect(presentation.workerSummary).not.toMatch(/0\/4/);
+    expect(presentation.workerSummary).toBe("4 workers");
     expect(presentation.modeSummary.toLowerCase()).not.toContain("waiting");
-    expect(presentation.activeTaskSummary).toMatch(/complete|finished|done/i);
+    expect(presentation.modeSummary).toBe("parallel");
+    expect(presentation.activeTaskSummary).toBe("Conversion complete");
   });
 
   it("preserves last meaningful throughput and elapsed when available on completed", () => {
@@ -95,9 +97,38 @@ describe("buildProgressTerminalPresentation", () => {
     expect(presentation.operationTitle).toBe("complete");
     expect(presentation.showLiveWorkers).toBe(false);
     expect(presentation.showLiveActiveTask).toBe(false);
-    expect(presentation.workerSummary).toMatch(/unavailable|not available|--/i);
-    expect(presentation.throughputSummary).toMatch(/unavailable|not available|--/i);
+    expect(presentation.workerSummary).toBe("Not available");
+    expect(presentation.throughputSummary).toBe("Not available");
+    expect(presentation.modeSummary).toBe("Not recorded");
+    expect(presentation.queueSummary).toBe("Queue idle");
+    expect(presentation.activeTaskSummary).toBe("Conversion complete");
     expect(presentation.snapshotKind).toBe("neutral");
+  });
+
+  it("avoids terminal-style placeholders while running before performance data arrives", () => {
+    const stages = createProgressStages().map((item, index) =>
+      index === 0 ? stage("ingestion", "active", 5) : item,
+    );
+    const presentation = buildProgressTerminalPresentation({
+      uiState: "running",
+      stages,
+      currentStage: "ingestion",
+      currentMessage: "",
+      performance: null,
+      progressPct: 2,
+    });
+
+    expect(presentation.workerSummary).toBe("—");
+    expect(presentation.modeSummary).toBe("Not reported yet");
+    expect(presentation.throughputSummary).toBe("Measuring…");
+    expect(presentation.elapsedSummary).toBe("Elapsed —");
+    expect(presentation.activeTaskSummary).toBe("Waiting for updates");
+    for (const value of Object.values(presentation)) {
+      if (typeof value === "string") {
+        expect(value).not.toContain("--");
+        expect(value.toLowerCase()).not.toContain("waiting / waiting");
+      }
+    }
   });
 
   it("keeps live metrics while running", () => {
@@ -122,6 +153,10 @@ describe("buildProgressTerminalPresentation", () => {
     expect(presentation.showLiveWorkers).toBe(true);
     expect(presentation.showLiveActiveTask).toBe(true);
     expect(presentation.workerSummary).toContain("0/4");
+    expect(presentation.modeSummary).toBe("manual / parallel");
+    expect(presentation.queueSummary).toBe("0 running · 0 queued");
+    expect(presentation.chaptersSummary).toBe("3 done · 0 failed");
+    expect(presentation.activeTaskSummary).toBe("cleaning chapter 2");
     expect(presentation.snapshotKind).toBe("live");
   });
 

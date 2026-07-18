@@ -191,9 +191,10 @@
 }
 
 .studio-status h1 {
-  font-size: 17px;
+  font-family: var(--font-display);
+  font-size: 19px;
   font-weight: 600;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.005em;
   line-height: 1;
   margin-bottom: 6px;
 }

@@ -19,7 +19,7 @@ const EMPTY_SUMMARY: BookSummaryView = {
 export function formatSummaryMeta(item: LibraryBookSummary): string {
   const mode = item.conversion_mode === "document_audio" ? "document" : "audiobook";
   const source = item.source_available ? "" : " · source missing";
-  return `${item.author || "unknown author"} · ${mode} · ${item.completed_chapters || 0}/${item.total_chapters || 0}${source}`;
+  return `${item.author || "Unknown author"} · ${mode} · ${item.completed_chapters || 0}/${item.total_chapters || 0}${source}`;
 }
 
 // Preformatted display strings for the selected-book detail header.
@@ -32,8 +32,8 @@ export function buildBookSummary(detail: LibraryBookDetail | null): BookSummaryV
   const resumeTime = formatClock(detail.playback_position_sec || 0);
 
   return {
-    title: detail.title || "unknown",
-    meta: `${detail.author || "unknown"} · ${chapterCount} ${chapterCount === 1 ? "chapter" : "chapters"}`,
+    title: detail.title || "Unknown",
+    meta: `${detail.author || "Unknown"} · ${chapterCount} ${chapterCount === 1 ? "chapter" : "chapters"}`,
     extra:
       detail.playback_path && detail.playback_url
         ? detail.playback_position_sec > 0

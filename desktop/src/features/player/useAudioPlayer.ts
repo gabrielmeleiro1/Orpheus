@@ -25,7 +25,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [totalSec, setTotalSec] = useState(0);
   const [volume, setVolume] = useState(80);
-  const [playerTitle, setPlayerTitle] = useState("player: unavailable");
+  const [playerTitle, setPlayerTitle] = useState("No audio loaded");
   const audioVisualizer = useAudioAnalyser(audioRef, isPlaying);
 
   const previousSelectedBookIdRef = useRef<number | null>(null);
@@ -46,8 +46,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     [elapsedSec, library.selectedBookDetail?.chapters],
   );
   const currentChapterLabel = currentChapter
-    ? `chapter ${currentChapter.number}: ${currentChapter.title || "untitled"}`
-    : "chapter unknown";
+    ? `Chapter ${currentChapter.number}: ${currentChapter.title || "Untitled"}`
+    : "Chapter unknown";
   const bookDurationMs = useMemo(() => {
     const chapters = library.selectedBookDetail?.chapters ?? [];
     if (chapters.length === 0) {
@@ -70,25 +70,25 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     const audio = audioRef.current;
 
     if (!playerEligible) {
-      setPlayerTitle("player: unavailable");
+      setPlayerTitle("No audio loaded");
       return;
     }
 
     if (!audio || !audio.src || !library.selectedBookId || loadedBookId !== library.selectedBookId) {
-      setPlayerTitle("player: ready");
+      setPlayerTitle("Ready to play");
       return;
     }
 
     if (audio.ended) {
-      setPlayerTitle("player: ended");
+      setPlayerTitle("Finished");
       return;
     }
 
-    setPlayerTitle(`player: ${audio.paused ? "paused" : "playing"} @ ${formatClock(audio.currentTime || 0)}`);
+    setPlayerTitle(`${audio.paused ? "Paused" : "Playing"} · ${formatClock(audio.currentTime || 0)}`);
   }, [library.selectedBookId, loadedBookId, playerEligible]);
 
   const onSaveFailed = useCallback(() => {
-    setPlayerTitle("playback save failed");
+    setPlayerTitle("Could not save playback position");
   }, []);
 
   const {
@@ -165,7 +165,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
           audioUrl = await apiClient.getLibraryAudioUrl(bookId);
         } catch {
           if (!isStale()) {
-            setPlayerTitle("playback failed");
+            setPlayerTitle("Playback failed");
           }
           return;
         }
@@ -198,7 +198,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
         try {
           await audio.play();
         } catch {
-          setPlayerTitle("playback failed");
+          setPlayerTitle("Playback failed");
         }
       }
     },
@@ -269,7 +269,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       try {
         await audio.play();
       } catch {
-        setPlayerTitle("playback failed");
+        setPlayerTitle("Playback failed");
       }
       return;
     }

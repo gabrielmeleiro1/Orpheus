@@ -126,7 +126,7 @@ vi.mock("./features/conversion/ConversionPanel", () => ({
     onOpenSettings?: () => void;
   }) => (
     <>
-      <button type="button" onClick={onOpenSettings}>open Settings</button>
+      <button type="button" onClick={onOpenSettings}>Open Settings</button>
       {activeTab === "config" ? (
         <button type="button" onClick={onOpenRuntimeSetup}>Runtime setup</button>
       ) : null}
@@ -289,7 +289,7 @@ describe("App runtime setup recovery", () => {
     });
     await act(async () => findButton(container, "Continue in library-only mode").click());
 
-    await act(async () => findButton(container, "open Settings").click());
+    await act(async () => findButton(container, "Open Settings").click());
 
     expect(document.activeElement?.id).toBe("tab-btn-settings");
   });

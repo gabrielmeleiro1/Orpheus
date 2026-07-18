@@ -276,12 +276,12 @@ describe("useLibrary indexed total", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(220);
     });
-    expect(getLibraryProbe().statusMessage).toBe("selected: Indexed book");
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Indexed book");
 
     await act(async () => {
       await getLibraryProbe().deleteSelectedBook();
     });
-    expect(getLibraryProbe().statusMessage).toBe("deleted Indexed book");
+    expect(getLibraryProbe().statusMessage).toBe("Deleted Indexed book");
 
     // Searching after the delete must resume the normal selected-status flow
     // instead of staying pinned to the preserved "deleted" message.
@@ -291,7 +291,7 @@ describe("useLibrary indexed total", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(220);
     });
-    expect(getLibraryProbe().statusMessage).toBe("selected: Second book");
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
   });
 
   it("aborts and fences an in-flight detail request when its book is deleted", async () => {

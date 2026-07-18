@@ -126,7 +126,7 @@ export function resolveBackendMonitorFailure(
       clearClient: true,
       connectionState: "error",
       health: null,
-      statusMessage: messageFromUnknown(error, "backend health check failed"),
+      statusMessage: messageFromUnknown(error, "Backend health check failed"),
     };
   }
 
@@ -134,7 +134,7 @@ export function resolveBackendMonitorFailure(
     clearClient: false,
     connectionState: "checking",
     health: null,
-    statusMessage: messageFromUnknown(error, "backend health check failed"),
+    statusMessage: messageFromUnknown(error, "Backend health check failed"),
   };
 }
 
@@ -160,7 +160,7 @@ function readDevBackendOverride(): { baseUrl: string; token: string } | null {
 export function useBackendClient() {
   const [connectionState, setConnectionState] = useState<BackendConnectionState>("checking");
   const [health, setHealth] = useState<HealthResponse | null>(null);
-  const [statusMessage, setStatusMessage] = useState<string>("resolving backend endpoint");
+  const [statusMessage, setStatusMessage] = useState<string>("Resolving backend endpoint");
   const [backendBaseUrl, setBackendBaseUrl] = useState<string>("");
   const [apiClient, setApiClient] = useState<ApiClient | null>(null);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
@@ -172,7 +172,7 @@ export function useBackendClient() {
     const bootstrap = async () => {
       setConnectionState("checking");
       setHealth(null);
-      setStatusMessage("resolving backend endpoint");
+      setStatusMessage("Resolving backend endpoint");
 
       if (!isTauriRuntime()) {
         const override = readDevBackendOverride();
@@ -185,7 +185,7 @@ export function useBackendClient() {
         setApiClient(null);
         setBackendBaseUrl("");
         setConnectionState("error");
-        setStatusMessage("desktop runtime unavailable; launch the Tauri app");
+        setStatusMessage("Desktop runtime unavailable — launch the desktop app");
         return;
       }
 
@@ -198,7 +198,7 @@ export function useBackendClient() {
           setApiClient(null);
           setBackendBaseUrl("");
           setConnectionState("error");
-          setStatusMessage("desktop backend startup timed out after 60s");
+          setStatusMessage("Desktop backend startup timed out after 60s");
           return;
         }
 
@@ -211,7 +211,7 @@ export function useBackendClient() {
         setApiClient(null);
         setBackendBaseUrl("");
         setConnectionState("error");
-        setStatusMessage(messageFromUnknown(error, "failed to request desktop backend endpoint"));
+        setStatusMessage(messageFromUnknown(error, "Failed to request the desktop backend endpoint"));
       }
     };
 
@@ -324,7 +324,7 @@ export function useBackendClient() {
         setRecoveryAttempts(0);
         setHealth(response);
         setConnectionState("connected");
-        setStatusMessage("backend connected");
+        setStatusMessage("Backend connected");
       } catch (error: unknown) {
         if (cancelled) {
           return;
@@ -336,8 +336,8 @@ export function useBackendClient() {
           setConnectionState(outcome.connectionState);
           setStatusMessage(
             outcome.connectionState === "error"
-              ? messageFromUnknown(error, "backend health check failed")
-              : `checking ${backendBaseUrl}/health`,
+              ? messageFromUnknown(error, "Backend health check failed")
+              : `Checking ${backendBaseUrl}/health`,
           );
           return;
         }
@@ -356,7 +356,7 @@ export function useBackendClient() {
     };
 
     setConnectionState("checking");
-    setStatusMessage(`checking ${backendBaseUrl}/health`);
+    setStatusMessage(`Checking ${backendBaseUrl}/health`);
 
     void checkBackend();
     intervalId = window.setInterval(() => {
@@ -376,7 +376,7 @@ export function useBackendClient() {
     setBackendBaseUrl("");
     setHealth(null);
     setConnectionState("checking");
-    setStatusMessage("reconnecting to restarted backend");
+    setStatusMessage("Reconnecting to the restarted backend");
     setBootstrapAttempt((attempt) => attempt + 1);
   }, []);
 

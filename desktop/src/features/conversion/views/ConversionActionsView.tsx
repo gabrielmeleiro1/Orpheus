@@ -19,31 +19,31 @@ export function ConversionActionsView({
     <>
       <div className="panel-section form-section">
         <div className="form-row">
-          <span className="form-row-label">backend</span>
+          <span className="form-row-label" data-tip="Local conversion service state" data-tip-pos="right">Backend</span>
           <div className="form-row-field">
-            <span id="desktop-backend-state" className="field-hint">
+            <span id="desktop-backend-state" className="field-hint status-sentence">
               {conversionActions.backendStatus}
             </span>
           </div>
         </div>
         <div className="form-row">
-          <span className="form-row-label">health</span>
+          <span className="form-row-label">Health</span>
           <div className="form-row-field">
-            <span id="desktop-health-result" className="field-hint">
+            <span id="desktop-health-result" className="field-hint status-sentence">
               {conversionActions.healthStatus}
             </span>
           </div>
         </div>
         <div className="form-row">
-          <span className="form-row-label">job</span>
+          <span className="form-row-label">Job</span>
           <div className="form-row-field">
-            <span className="field-hint">{conversionActions.jobStatus}</span>
+            <span className="field-hint status-sentence">{conversionActions.jobStatus}</span>
           </div>
         </div>
         <div className="form-row">
-          <span className="form-row-label">detail</span>
+          <span className="form-row-label">Detail</span>
           <div className="form-row-field">
-            <span className="field-hint">{conversionActions.detailStatus}</span>
+            <span className="field-hint status-sentence">{conversionActions.detailStatus}</span>
           </div>
         </div>
       </div>
@@ -60,7 +60,7 @@ export function ConversionActionsView({
               type="button"
               onClick={actions.onOpenSettings}
             >
-              open Settings
+              Open Settings
             </button>
           ) : null}
         </div>
@@ -83,9 +83,10 @@ export function ConversionActionsView({
           className="btn btn-compact"
           type="button"
           disabled={!capabilities.canRefreshJob}
+          data-tip="Re-query the job status"
           onClick={() => void actions.onRefreshJob()}
         >
-          refresh
+          Refresh
         </button>
         <button
           id="cancel-btn"

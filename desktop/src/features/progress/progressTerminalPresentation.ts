@@ -24,22 +24,59 @@ function isTerminal(uiState: ConversionJobStatus): boolean {
   return uiState === "completed" || uiState === "failed" || uiState === "cancelled";
 }
 
-function formatMetric(value: number | undefined, suffix = ""): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "--";
-  }
-  const formatted = value >= 100 ? Math.round(value).toString() : value.toFixed(value >= 10 ? 1 : 2);
-  return suffix ? `${formatted} ${suffix}` : formatted;
+function isFiniteNumber(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
-function formatSeconds(value: number | undefined): string {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "--";
-  }
+function formatMetric(value: number): string {
+  return value >= 100 ? Math.round(value).toString() : value.toFixed(value >= 10 ? 1 : 2);
+}
+
+function formatSeconds(value: number): string {
   const total = Math.max(0, Math.round(value));
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+}
+
+function throughputSummary(performance: PerformanceSnapshot | null, fallback: string): string {
+  const cleaner = performance?.cleaner_chunks_per_second;
+  const tts = performance?.tts_chars_per_second;
+  const encoder = performance?.encoder_chapters_per_second;
+  const parts: string[] = [];
+  if (isFiniteNumber(cleaner)) {
+    parts.push(`${formatMetric(cleaner)} chunk/s clean`);
+  }
+  if (isFiniteNumber(tts)) {
+    parts.push(`${formatMetric(tts)} char/s tts`);
+  }
+  if (isFiniteNumber(encoder)) {
+    parts.push(`${formatMetric(encoder)} chapter/s encode`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : fallback;
+}
+
+function elapsedSummary(performance: PerformanceSnapshot | null, fallback: string): string {
+  const elapsed = performance?.elapsed_seconds;
+  return isFiniteNumber(elapsed) ? `Elapsed ${formatSeconds(elapsed)}` : fallback;
+}
+
+function workerPoolSummary(performance: PerformanceSnapshot | null): string | null {
+  const maxWorkers = performance?.max_workers;
+  if (!isFiniteNumber(maxWorkers)) {
+    return null;
+  }
+  return `${performance?.active_workers ?? 0}/${maxWorkers}`;
+}
+
+function terminalTaskSummary(uiState: ConversionJobStatus, currentMessage: string): string {
+  if (uiState === "completed") {
+    return "Conversion complete";
+  }
+  if (currentMessage) {
+    return currentMessage;
+  }
+  return uiState === "cancelled" ? "Conversion cancelled" : "Conversion failed";
 }
 
 function hasMeaningfulSnapshot(performance: PerformanceSnapshot | null): boolean {
@@ -90,26 +127,20 @@ export function buildProgressTerminalPresentation(input: {
   const meaningful = hasMeaningfulSnapshot(performance);
 
   if (!terminal) {
-    const workerText =
-      typeof performance?.max_workers === "number"
-        ? `${performance.active_workers ?? 0}/${performance.max_workers}`
-        : "--";
-    const selectedWorkerMode = performance?.parallel_worker_mode || "waiting";
+    const workerMode = performance?.parallel_worker_mode;
+    const pipelineMode = performance?.pipeline_mode;
     return {
       operationTitle: stageLabel(activeStage?.name || currentStage || "waiting"),
       showLiveWorkers: true,
       showLiveActiveTask: true,
-      workerSummary: workerText,
-      modeSummary: `${selectedWorkerMode} / ${performance?.pipeline_mode || "waiting"}`,
-      throughputSummary: [
-        `${formatMetric(performance?.cleaner_chunks_per_second, "chunk/s")} clean`,
-        `${formatMetric(performance?.tts_chars_per_second, "char/s")} tts`,
-        `${formatMetric(performance?.encoder_chapters_per_second, "chapter/s")} encode`,
-      ].join(" · "),
-      elapsedSummary: `elapsed ${formatSeconds(performance?.elapsed_seconds)}`,
-      activeTaskSummary: currentMessage || "waiting for updates",
-      queueSummary: `${performance?.running_chapters ?? 0} running / ${performance?.queued_chapters ?? 0} queued`,
-      chaptersSummary: `${performance?.completed_chapters ?? 0} done / ${performance?.failed_chapters ?? 0} failed`,
+      workerSummary: workerPoolSummary(performance) ?? "—",
+      modeSummary:
+        workerMode || pipelineMode ? `${workerMode || "—"} / ${pipelineMode || "—"}` : "Not reported yet",
+      throughputSummary: throughputSummary(performance, "Measuring…"),
+      elapsedSummary: elapsedSummary(performance, "Elapsed —"),
+      activeTaskSummary: currentMessage || "Waiting for updates",
+      queueSummary: `${performance?.running_chapters ?? 0} running · ${performance?.queued_chapters ?? 0} queued`,
+      chaptersSummary: `${performance?.completed_chapters ?? 0} done · ${performance?.failed_chapters ?? 0} failed`,
       snapshotKind: "live",
     };
   }
@@ -128,37 +159,30 @@ export function buildProgressTerminalPresentation(input: {
       operationTitle,
       showLiveWorkers: false,
       showLiveActiveTask: false,
-      workerSummary: "unavailable",
-      modeSummary: `${uiState} · final`,
-      throughputSummary: "unavailable",
-      elapsedSummary: "elapsed unavailable",
-      activeTaskSummary: uiState === "completed" ? "conversion complete" : currentMessage || uiState,
-      queueSummary: "queue idle",
+      workerSummary: "Not available",
+      modeSummary: "Not recorded",
+      throughputSummary: "Not available",
+      elapsedSummary: "Elapsed not recorded",
+      activeTaskSummary: terminalTaskSummary(uiState, currentMessage),
+      queueSummary: "Queue idle",
       chaptersSummary: "—",
       snapshotKind: "neutral",
     };
   }
 
-  const finalWorkers =
-    typeof performance?.max_workers === "number"
-      ? `final ${performance.max_workers} workers`
-      : "final workers unavailable";
-
   return {
     operationTitle,
     showLiveWorkers: false,
     showLiveActiveTask: false,
-    workerSummary: finalWorkers,
-    modeSummary: `final · ${performance?.pipeline_mode || uiState}`,
-    throughputSummary: [
-      `${formatMetric(performance?.cleaner_chunks_per_second, "chunk/s")} clean`,
-      `${formatMetric(performance?.tts_chars_per_second, "char/s")} tts`,
-      `${formatMetric(performance?.encoder_chapters_per_second, "chapter/s")} encode`,
-    ].join(" · "),
-    elapsedSummary: `elapsed ${formatSeconds(performance?.elapsed_seconds)}`,
-    activeTaskSummary: uiState === "completed" ? "conversion complete" : currentMessage || uiState,
-    queueSummary: "queue idle",
-    chaptersSummary: `${performance?.completed_chapters ?? 0} done / ${performance?.failed_chapters ?? 0} failed`,
+    workerSummary: isFiniteNumber(performance?.max_workers)
+      ? `${performance?.max_workers} workers`
+      : "Not available",
+    modeSummary: performance?.pipeline_mode || "Not recorded",
+    throughputSummary: throughputSummary(performance, "Not available"),
+    elapsedSummary: elapsedSummary(performance, "Elapsed not recorded"),
+    activeTaskSummary: terminalTaskSummary(uiState, currentMessage),
+    queueSummary: "Queue idle",
+    chaptersSummary: `${performance?.completed_chapters ?? 0} done · ${performance?.failed_chapters ?? 0} failed`,
     snapshotKind: "final",
   };
 }

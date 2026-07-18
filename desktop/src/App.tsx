@@ -161,12 +161,20 @@ function DashboardApp({
             className="rail-action stop"
             type="button"
             disabled={!conversionJob.activeJobId || conversionJob.isCancelling}
+            data-tip="Stop the running conversion. Finished chapters are kept."
+            data-tip-pos="right"
             onClick={() => void conversionJob.cancelActiveConversion()}
           >
             <span className="rail-dot" aria-hidden="true" />
             <span>{conversionJob.isCancelling ? "Stopping" : "Stop job"}</span>
           </button>
-          <button className="rail-action" type="button" onClick={() => void refreshLibrary()}>
+          <button
+            className="rail-action"
+            type="button"
+            data-tip="Reload the library index"
+            data-tip-pos="right"
+            onClick={() => void refreshLibrary()}
+          >
             <span className="rail-action-icon" aria-hidden="true">
               <svg viewBox="0 0 24 24" focusable="false">
                 <path d="M20 6v5h-5" />
@@ -183,18 +191,18 @@ function DashboardApp({
       <div className="workspace-shell">
         <header className="studio-status">
           <div>
-            <h1>orpheus.local</h1>
-            <p>{`${runtimeIdentity} / ${library.indexedCount} books indexed`}</p>
+            <h1>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
+            <p>{`${runtimeIdentity} · ${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`}</p>
           </div>
           <div className="studio-controls">
             {conversionJob.uiState === "running" ? (
               <span className="control converting-control">
                 <BrailleSpinner active />
-                <span>converting</span>
+                <span>Converting</span>
               </span>
             ) : null}
             <span className={`status-dot${connectionState === "connected" ? " is-connected" : ""}`} title={connectionState} aria-hidden="true" />
-            <span className="sr-only" role="status">{`backend ${connectionState}`}</span>
+            <span className="sr-only" role="status">{`Backend ${connectionState}`}</span>
             <span className="control clock-control"><LiveClock /></span>
           </div>
         </header>

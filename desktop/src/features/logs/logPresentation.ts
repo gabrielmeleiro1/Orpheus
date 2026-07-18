@@ -29,7 +29,7 @@ export function inferLogCategory(entry: EventStreamLogEntry): Exclude<LogCategor
   return "other";
 }
 
-function normalizeLevel(level: string): string {
+export function normalizeLogLevel(level: string): string {
   const normalized = String(level || "").toLowerCase();
   if (normalized === "warning") {
     return "warn";
@@ -39,22 +39,48 @@ function normalizeLevel(level: string): string {
 
 export function filterVisibleLogs(
   logs: EventStreamLogEntry[],
-  filters: { level: LogLevelFilter; category: LogCategoryFilter },
+  filters: { level: LogLevelFilter; category: LogCategoryFilter; query?: string },
 ): EventStreamLogEntry[] {
+  const query = (filters.query ?? "").trim().toLowerCase();
   return logs.filter((entry) => {
-    const level = normalizeLevel(entry.level);
+    const level = normalizeLogLevel(entry.level);
     if (filters.level !== "all" && level !== filters.level) {
       return false;
     }
     if (filters.category !== "all" && inferLogCategory(entry) !== filters.category) {
       return false;
     }
+    if (query && !String(entry.msg || "").toLowerCase().includes(query)) {
+      return false;
+    }
     return true;
   });
 }
 
+export interface LogLevelCounts {
+  all: number;
+  info: number;
+  warn: number;
+  error: number;
+}
+
+export function countLogLevels(logs: EventStreamLogEntry[]): LogLevelCounts {
+  const counts: LogLevelCounts = { all: logs.length, info: 0, warn: 0, error: 0 };
+  for (const entry of logs) {
+    const level = normalizeLogLevel(entry.level);
+    if (level === "warn") {
+      counts.warn += 1;
+    } else if (level === "error") {
+      counts.error += 1;
+    } else {
+      counts.info += 1;
+    }
+  }
+  return counts;
+}
+
 export function formatLogsForClipboard(logs: EventStreamLogEntry[]): string {
   return logs
-    .map((entry) => `[${entry.ts}] ${normalizeLevel(entry.level)} ${entry.msg}`)
+    .map((entry) => `[${entry.ts}] ${normalizeLogLevel(entry.level)} ${entry.msg}`)
     .join("\n");
 }

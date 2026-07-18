@@ -1,4 +1,3 @@
-import type { CSSProperties } from "react";
 import type {
   BackendConnectionState,
   ConversionJobStatus,
@@ -8,8 +7,9 @@ import type {
 } from "../../types/api";
 import type { UseLibraryResult } from "../library/useLibrary";
 import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
-import { AudioWaveformCanvas } from "./AudioWaveformCanvas";
-import { GlyphActivity } from "../../ui/ascii/GlyphActivity";
+import { ConversionFlowCanvas } from "./ConversionFlowCanvas";
+import { NowPlayingCanvas } from "./NowPlayingCanvas";
+import { ProgressBar } from "../../ui/ProgressBar";
 import { formatClockWithHours, formatDurationClockWithHours } from "../../format/time";
 import { dashboardNowStageLabel } from "../progress/progressTerminalPresentation";
 import "./dashboard.css";
@@ -52,11 +52,6 @@ function stageName(stage: ProgressStageView | undefined): string {
   return String(stage?.name || "waiting").replace(/_/g, " ");
 }
 
-function progressWidth(value: number): { width: string } {
-  return { width: `${clampPercent(value)}%` };
-}
-
-
 export function DashboardPanel({
   hidden,
   library,
@@ -86,25 +81,22 @@ export function DashboardPanel({
   const playbackPercent = durationSec > 0 ? clampPercent((elapsedSec / durationSec) * 100) : 0;
   const conversionPercent = clampPercent(progressPct);
   const conversionIsActive = uiState === "running";
-  const conversionActivityStyle = {
-    "--conversion-activity-progress": `${conversionPercent}%`,
-  } as CSSProperties;
   const queueText =
     uiState === "running" && typeof performance?.max_workers === "number"
       ? `${performance.active_workers ?? 0}/${performance.max_workers} workers`
       : uiState === "running"
         ? `${performance?.queued_chapters ?? 0} queued`
-        : "idle";
+        : "No conversion running";
   const chapterText =
     selectedChapterCount > 0
       ? `${selectedChapterCount} ${selectedChapterCount === 1 ? "chapter" : "chapters"}`
-      : "no chapters selected";
+      : "No chapters";
   const showEmptyLibraryAction = recentBooks.length === 0 && Boolean(onStartConvert);
   return (
     <section id="tab-dashboard" className="dashboard-panel" role="tabpanel" aria-label="Dashboard" hidden={hidden}>
       <section className="panel-section v-section dashboard-hero" aria-label="Audiobook overview">
         <div className="section-title">
-          <span>ORPHEUS</span>
+          <span>Overview</span>
         </div>
         <div className="primary-grid">
           <div className="panel-section v-panel now-playing-panel">
@@ -112,29 +104,29 @@ export function DashboardPanel({
               <div>
                 <h2 className="panel-title">Now Playing</h2>
                 <p className="panel-subtitle">
-                  {selected?.title ? `${selected.title} / ${currentChapterLabel}` : playerTitle}
+                  {selected?.title ? `${selected.title} — ${currentChapterLabel}` : playerTitle}
                 </p>
               </div>
-              <span className="tiny-badge">{`${playbackPercent}%`}</span>
+              <span className="tiny-badge" data-tip="Position in the current chapter" data-tip-pos="left">
+                {`${playbackPercent}%`}
+              </span>
             </div>
 
             <div className="wave-card" aria-hidden="true">
-              <div className="wave-grid">
-                <AudioWaveformCanvas visualizer={audioVisualizer} playing={playing} active={!hidden} />
-              </div>
+              <NowPlayingCanvas visualizer={audioVisualizer} playing={playing} active={!hidden} />
             </div>
 
             <div className="metric-row">
               <div className="metric">
-                <span className="metric-label">elapsed</span>
+                <span className="metric-label">Elapsed</span>
                 <strong>{formatClockWithHours(elapsedSec)}</strong>
               </div>
               <div className="metric">
-                <span className="metric-label">duration</span>
+                <span className="metric-label">Duration</span>
                 <strong>{durationSec > 0 ? formatClockWithHours(durationSec) : formatClockWithHours(selectedDurationSec)}</strong>
               </div>
               <div className="metric">
-                <span className="metric-label">chapters</span>
+                <span className="metric-label">Chapters</span>
                 <strong>{chapterText}</strong>
               </div>
             </div>
@@ -144,17 +136,17 @@ export function DashboardPanel({
             <div className="panel-section v-panel status-card">
               <span className="status-label">Playback</span>
               <strong className="status-number">{`${playbackPercent}%`}</strong>
-              <span className="status-detail">{selected?.title || "select a playable book"}</span>
+              <span className="status-detail">{selected?.title || "Nothing selected"}</span>
             </div>
             <div className="panel-section v-panel status-card">
               <span className="status-label">Queue</span>
-              <strong className="status-number">{uiState === "running" ? "1 job" : "idle"}</strong>
+              <strong className="status-number">{uiState === "running" ? "1 job" : "Idle"}</strong>
               <span className="status-detail">{queueText}</span>
             </div>
             <div className="panel-section v-panel status-card">
               <span className="status-label">Library</span>
               <strong className="status-number">{library.indexedCount}</strong>
-              <span className="status-detail">{`${library.indexedCount === 1 ? "book" : "books"} indexed`}</span>
+              <span className="status-detail">{library.indexedCount === 1 ? "Book indexed" : "Books indexed"}</span>
             </div>
           </div>
         </div>
@@ -162,24 +154,24 @@ export function DashboardPanel({
 
       <section className="panel-section v-section">
         <div className="section-title">
-          <span>CONVERSION</span>
+          <span>Conversion</span>
           <span>{`${uiState} · ${conversionPercent}%`}</span>
         </div>
         <div className="library-strip">
           <div className="panel-section v-panel book-panel">
             <div
               className={`conversion-activity${conversionIsActive ? " is-running" : " is-idle"}`}
-              style={conversionActivityStyle}
               aria-hidden="true"
             >
-              <div className="conversion-activity-glyphs">
-                <GlyphActivity active={conversionIsActive} />
-              </div>
-              <div className="conversion-activity-progress">
-                <span className="conversion-activity-progress-fill" />
-              </div>
+              <ConversionFlowCanvas active={conversionIsActive} className="conversion-activity-canvas" />
+              <ProgressBar
+                pct={conversionPercent}
+                tone={conversionIsActive ? "active" : "neutral"}
+                size="hairline"
+                label="Conversion progress"
+              />
               <div className="conversion-activity-readout">
-                <span>{conversionIsActive ? "run" : "idle"}</span>
+                <span>{conversionIsActive ? "Run" : "Idle"}</span>
                 <span>{nowLabel}</span>
               </div>
             </div>
@@ -187,9 +179,13 @@ export function DashboardPanel({
               <div className="book-heading">
                 <div>
                   <h2 className="book-title">{selected?.title || "No book selected"}</h2>
-                  <p className="book-subtitle">{selected ? `${selected.author || "unknown author"} / ${chapterText}` : "library idle"}</p>
+                  <p className="book-subtitle">
+                    {selected ? `${selected.author || "Unknown author"} — ${chapterText}` : "Select or convert a source"}
+                  </p>
                 </div>
-                <span className="tiny-badge">{`${conversionPercent}%`}</span>
+                <span className="tiny-badge" data-tip="Overall progress of the running conversion" data-tip-pos="left">
+                  {`${conversionPercent}%`}
+                </span>
               </div>
               <div className="chapter-lines" aria-hidden="true">
                 <span />
@@ -199,16 +195,16 @@ export function DashboardPanel({
               </div>
               <div className="metric-row">
                 <div className="metric">
-                  <span className="metric-label">now</span>
-                  <strong>{nowLabel}</strong>
+                  <span className="metric-label">Now</span>
+                  <strong className="metric-capitalize">{nowLabel}</strong>
                 </div>
                 <div className="metric">
-                  <span className="metric-label">eta</span>
-                  <strong>{etaText || "--"}</strong>
+                  <span className="metric-label">ETA</span>
+                  <strong>{etaText ? etaText.replace(/^eta\s*/i, "") : "—"}</strong>
                 </div>
                 <div className="metric">
-                  <span className="metric-label">state</span>
-                  <strong>{uiState}</strong>
+                  <span className="metric-label">State</span>
+                  <strong className="metric-capitalize">{uiState}</strong>
                 </div>
               </div>
             </div>
@@ -222,9 +218,12 @@ export function DashboardPanel({
                   <span className="pipeline-name">{stageName(stage)}</span>
                   <span className="pipeline-meta">{stage.state}</span>
                 </div>
-                <div className="dashboard-bar">
-                  <span style={progressWidth(stage.pct)} />
-                </div>
+                <ProgressBar
+                  pct={stage.pct}
+                  tone={conversionIsActive && stage.state === "active" ? "active" : stage.state === "done" ? "done" : "neutral"}
+                  size="hairline"
+                  label={`${stageName(stage)} progress`}
+                />
                 <span className="percent">{`${clampPercent(stage.pct)}%`}</span>
               </div>
             ))}
@@ -235,7 +234,7 @@ export function DashboardPanel({
       <div className="lower-grid">
         <section className="panel-section v-section recent-section">
           <div className="section-title">
-            <span>RECENT LIBRARY</span>
+            <span>Recent</span>
           </div>
           <div className="recent-list">
             {recentBooks.length === 0 ? (
@@ -243,9 +242,7 @@ export function DashboardPanel({
                 <span className="square" />
                 <div>
                   <span className="recent-title">No converted books yet</span>
-                  <span className="recent-meta">
-                    {showEmptyLibraryAction ? "convert a source to populate the library" : "drop a source in Convert to begin"}
-                  </span>
+                  <span className="recent-meta">Convert a source to get started</span>
                   {showEmptyLibraryAction ? (
                     <button className="btn btn-compact" type="button" onClick={onStartConvert}>
                       Convert a source
@@ -253,23 +250,29 @@ export function DashboardPanel({
                   ) : null}
                 </div>
                 <span className="recent-state">--:--</span>
-                <span className="recent-state">empty</span>
-                <div className="dashboard-bar"><span style={progressWidth(0)} /></div>
+                <span className="recent-state">Empty</span>
+                <ProgressBar pct={0} tone="neutral" size="hairline" label="No progress" />
               </div>
             ) : (
               recentBooks.map((book) => {
                 const pct =
                   book.total_chapters > 0 ? clampPercent((book.completed_chapters / book.total_chapters) * 100) : 0;
+                const ready = book.completed_chapters >= book.total_chapters;
                 return (
                   <div className="recent-row" key={book.id}>
                     <span className="square" />
                     <div>
-                      <span className="recent-title">{book.title || "untitled"}</span>
-                      <span className="recent-meta">{`${book.author || "unknown"} / ${book.total_chapters || 0} chapters`}</span>
+                      <span className="recent-title">{book.title || "Untitled"}</span>
+                      <span className="recent-meta">{`${book.author || "Unknown"} — ${book.total_chapters || 0} chapters`}</span>
                     </div>
                     <span className="recent-state">{formatDurationClockWithHours(selected?.id === book.id ? selectedDurationSec * 1000 : null)}</span>
-                    <span className="recent-state">{book.completed_chapters >= book.total_chapters ? "ready" : "partial"}</span>
-                    <div className="dashboard-bar"><span style={progressWidth(pct)} /></div>
+                    <span
+                      className="recent-state"
+                      data-tip={ready ? undefined : "Some chapters are missing audio. Open Library to repair."}
+                    >
+                      {ready ? "Ready" : "Partial"}
+                    </span>
+                    <ProgressBar pct={pct} tone={ready ? "done" : "neutral"} size="hairline" label={`${book.title || "Book"} completion`} />
                   </div>
                 );
               })
@@ -279,9 +282,8 @@ export function DashboardPanel({
 
         <section className="panel-section v-section services-section">
           <div className="section-title">
-            <span>SERVICES</span>
+            <span>Services</span>
           </div>
-          <div className="service-group">Backends</div>
           <div className="service-row">
             <div>
               <span className="service-name">Desktop API</span>
@@ -292,7 +294,7 @@ export function DashboardPanel({
           <div className="service-row">
             <div>
               <span className="service-name">Library</span>
-              <span className="service-meta">{library.statusMessage || "library idle"}</span>
+              <span className="service-meta">{library.statusMessage || "Ready"}</span>
             </div>
             <span className="service-status">{library.loadingList || library.loadingDetail ? "loading" : "ready"}</span>
           </div>

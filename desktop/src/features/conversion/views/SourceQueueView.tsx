@@ -55,7 +55,7 @@ export function SourceQueueView({
         className={`drop-zone${sourceQueue.dragging ? " drag-over" : ""}`}
         role="button"
         tabIndex={0}
-        aria-label="drop file here"
+        aria-label="Drop file here"
         onClick={() => void actions.onBrowse()}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
@@ -94,19 +94,20 @@ export function SourceQueueView({
       {sourceQueue.isDocumentMode ? (
         <div className="panel-section paste-panel" aria-label="Paste markdown source">
           <div className="paste-header">
-            <span>paste .md</span>
+            <span>Paste text</span>
             <button
               id="add-pasted-text-btn"
               className="btn btn-compact"
               type="button"
               disabled={!capabilities.canAddPastedText}
+              data-tip="Queue the pasted text as a document source"
               onClick={() => void actions.onAddPastedText()}
             >
-              {sourceQueue.pasteBusy ? "adding..." : "add pasted text"}
+              {sourceQueue.pasteBusy ? "Adding…" : "Add to queue"}
             </button>
           </div>
           <div className="paste-grid">
-            <span className="form-row-label">title</span>
+            <span className="form-row-label">Title</span>
             <input
               id="paste-title-input"
               className="field-input"
@@ -115,11 +116,11 @@ export function SourceQueueView({
               value={sourceQueue.pasteTitle}
               onChange={(event) => actions.setPasteTitle(event.target.value)}
             />
-            <span className="form-row-label">text</span>
+            <span className="form-row-label">Text</span>
             <textarea
               id="paste-text-input"
               className="field-input paste-textarea"
-              placeholder="paste text..."
+              placeholder="Paste Markdown or plain text…"
               value={sourceQueue.pastedText}
               onChange={(event) => actions.setPastedText(event.target.value)}
             />
@@ -131,7 +132,7 @@ export function SourceQueueView({
       {sourceQueue.queueItems.length > 0 ? (
         <div className="panel-section queue-panel" aria-label="Conversion queue">
           <div className="queue-header">
-            <span>queue: {sourceQueue.queueCount}</span>
+            <span>{`Queue · ${sourceQueue.queueCount}`}</span>
             {capabilities.showRunQueue ? (
               <button
                 id="run-queue-btn"
@@ -140,7 +141,7 @@ export function SourceQueueView({
                 disabled={!capabilities.canRunQueue}
                 onClick={() => void actions.onRunQueue()}
               >
-                {sourceQueue.queueRunning ? "running..." : "run queue"}
+                {sourceQueue.queueRunning ? "Running…" : "Run queue"}
               </button>
             ) : null}
           </div>
@@ -156,13 +157,13 @@ export function SourceQueueView({
                 </button>
                 <div className="queue-item-actions">
                   <button className="btn btn-compact" type="button" disabled={!item.canMoveUp} onClick={() => actions.moveQueueItem(item.id, -1)}>
-                    up
+                    Up
                   </button>
                   <button className="btn btn-compact" type="button" disabled={!item.canMoveDown} onClick={() => actions.moveQueueItem(item.id, 1)}>
-                    down
+                    Down
                   </button>
                   <button className="btn btn-compact" type="button" disabled={!item.canRemove} onClick={() => actions.removeQueueItem(item.id)}>
-                    remove
+                    Remove
                   </button>
                 </div>
               </div>
@@ -178,7 +179,7 @@ export function SourceQueueView({
 
       <div ref={reviewAnchorRef} id="conversion-review-anchor" className="panel-section form-section">
         <div className="form-row">
-          <span className="form-row-label">source</span>
+          <span className="form-row-label">Source</span>
           <div className="form-row-field">
             <input
               id="source-path"
@@ -198,12 +199,13 @@ export function SourceQueueView({
               className="btn btn-compact"
               type="button"
               disabled={!capabilities.canInspectSource}
+              data-tip="Analyze the source — chapters, length, warnings — without converting"
               onClick={() => actions.onInspectCurrentSource()}
             >
-              inspect
+              Inspect
             </button>
             <button id="browse-source-btn" className="btn btn-compact" type="button" onClick={() => void actions.onBrowse()}>
-              browse
+              Browse
             </button>
           </div>
         </div>
@@ -215,12 +217,12 @@ export function SourceQueueView({
               <span>{sourceQueue.preflightCard.meta}</span>
             </div>
             <div className="preflight-meta">
-              author: {sourceQueue.preflightCard.author} / source: {sourceQueue.preflightCard.sourceType}
+              {sourceQueue.preflightCard.author} · {sourceQueue.preflightCard.sourceType}
             </div>
             {sourceQueue.preflightCard.warnings.length > 0 ? (
               <div className="preflight-warnings">
                 {sourceQueue.preflightCard.warnings.map((warning) => (
-                  <div key={warning}>warning: {warning}</div>
+                  <div key={warning}>Warning: {warning}</div>
                 ))}
               </div>
             ) : null}
@@ -236,13 +238,13 @@ export function SourceQueueView({
         ) : null}
 
         <div className="form-row">
-          <span className="form-row-label">title</span>
+          <span className="form-row-label" data-tip="Overrides the title detected from the source" data-tip-pos="right">Title</span>
           <div className="form-row-field">
             <input
               id="title-input"
               className="field-input"
               type="text"
-              placeholder="optional"
+              placeholder="Optional"
               value={sourceQueue.titleOverride}
               onChange={(event) => {
                 actions.setTitleOverride(event.target.value);
@@ -253,13 +255,13 @@ export function SourceQueueView({
         </div>
 
         <div className="form-row">
-          <span className="form-row-label">author</span>
+          <span className="form-row-label" data-tip="Overrides the author detected from the source" data-tip-pos="right">Author</span>
           <div className="form-row-field">
             <input
               id="author-input"
               className="field-input"
               type="text"
-              placeholder="optional"
+              placeholder="Optional"
               value={sourceQueue.authorOverride}
               onChange={(event) => {
                 actions.setAuthorOverride(event.target.value);

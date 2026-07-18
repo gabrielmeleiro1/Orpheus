@@ -35,7 +35,7 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       pasteTitle: "",
       pastedText: "",
       pasteBusy: false,
-      pasteStatus: "paste idle",
+      pasteStatus: "Idle",
       queueItems: [],
       queueCount: 0,
       queueRunning: false,
@@ -98,14 +98,14 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       parallelWorkerStatus: "",
     },
     conversionActions: {
-      backendStatus: "ready",
-      healthStatus: "status=ok",
-      jobStatus: "no active conversion",
+      backendStatus: "Connected",
+      healthStatus: "Healthy",
+      jobStatus: "No active conversion",
       detailStatus: "idle",
       blockingReason: null,
       showSettingsShortcut: false,
-      startLabel: "start conversion",
-      cancelLabel: "cancel",
+      startLabel: "Start conversion",
+      cancelLabel: "Cancel",
       isStarting: false,
     },
     actions: {
@@ -170,7 +170,7 @@ describe("ConversionPanelView", () => {
 
     expect(html).toContain('id="conversion-blocking-reason"');
     expect(html).toContain("Cloud API requires an API key. Add it in Settings.");
-    expect(html).toContain("open Settings");
+    expect(html).toContain("Open Settings");
   });
 
   it("keeps Runtime setup available from the existing Settings panel", () => {

@@ -197,16 +197,18 @@ export function modelDownloadProgressEvent(
       percent: 99,
     };
   }
-  const totalModels = Math.max(status.total_models, 1);
-  const position = Math.min(status.completed_models + 1, totalModels);
+  // A malformed snapshot without counts must not surface "(NaN of NaN)".
+  const hasCounts = Number.isFinite(status.total_models) && Number.isFinite(status.completed_models);
+  const totalModels = hasCounts ? Math.max(status.total_models, 1) : 1;
+  const position = hasCounts ? Math.min(status.completed_models + 1, totalModels) : 1;
   const label = MODEL_GROUP_DETAILS[status.current_model_group ?? ""]?.label
     ?? status.current_model_group
     ?? "models";
   return {
     event: "status",
     stage: "models",
-    message: `Downloading ${label} (${position} of ${totalModels})…`,
-    percent: status.total_models > 0
+    message: hasCounts ? `Downloading ${label} (${position} of ${totalModels})…` : `Downloading ${label}…`,
+    percent: hasCounts && status.total_models > 0
       ? Math.round((status.completed_models / status.total_models) * 100)
       : undefined,
   };

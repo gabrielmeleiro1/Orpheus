@@ -49,7 +49,7 @@ describe("formatSummaryMeta", () => {
       formatSummaryMeta(
         summary({ author: null, conversion_mode: "document_audio", source_available: false }),
       ),
-    ).toBe("unknown author · document · 4/10 · source missing");
+    ).toBe("Unknown author · document · 4/10 · source missing");
   });
 });
 
