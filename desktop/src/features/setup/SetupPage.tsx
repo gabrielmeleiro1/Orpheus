@@ -175,7 +175,7 @@ export function SetupPage({
   const statusRef = useRef(status);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preRestartClient = useRef<ApiClient | null>(null);
-  const errorRef = useRef<HTMLParagraphElement>(null);
+  const errorRef = useRef<HTMLDivElement>(null);
   const setupHeadingRef = useRef<HTMLHeadingElement>(null);
   const progressHeadingRef = useRef<HTMLDivElement>(null);
 
@@ -325,15 +325,25 @@ export function SetupPage({
       return undefined;
     }
     let active = true;
+    let pollFailures = 0;
     const tick = async () => {
       let snapshot;
       try {
         snapshot = await apiClient.getRuntimeModelDownloadStatus({ timeoutMs: 8_000 });
       } catch {
-        // Transient poll failure; the next tick retries.
+        // Tolerate transient poll failures, but a backend that stays
+        // unreachable must surface instead of spinning forever.
+        pollFailures += 1;
+        if (active && pollFailures >= 8) {
+          setDownloadPhase("idle");
+          startLocked.current = false;
+          setBusy(false);
+          setError("Lost connection to the installer. The download may still finish in the background — retry to check.");
+        }
         return;
       }
       if (!active) return;
+      pollFailures = 0;
       setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
       if (snapshot.lifecycle === "complete") {
         setDownloadPhase("adopting");
@@ -670,14 +680,21 @@ export function SetupPage({
             </div>
           ) : null}
 
-          {!status ? (
+          {!status && !error ? (
+            <div className="setup-loading" role="status">
+              <span className="setup-loading-spinner" aria-hidden="true" />
+              <span>Checking this device…</span>
+            </div>
+          ) : null}
+
+          {!status && error ? (
             <div className="setup-recovery" role="alert">
-              <div><strong>Setup status unavailable</strong><p>{error ?? "The backend has not returned setup details yet."}</p></div>
+              <div><strong>Setup status unavailable</strong><p>{error}</p></div>
               <div className="setup-actions"><button className="btn" type="button" onClick={() => void refreshStatus()}>Retry</button><button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button></div>
             </div>
           ) : null}
 
-          {environment && !environment.available && !installedReady && !backendInstallProfile ? (
+          {status && environment && !environment.available && !installedReady && !backendInstallProfile ? (
             <div className="setup-recovery setup-environment" role="note">
               <div>
                 <strong>Local runtime needs a source checkout <InfoTip label="Why installation is unavailable"><span>{environment.reason}</span></InfoTip></strong>
@@ -800,7 +817,12 @@ export function SetupPage({
             </section>
           ) : null}
 
-          {error && status ? <p className="setup-error" role="alert" ref={errorRef} tabIndex={-1}>{error}</p> : null}
+          {error && status ? (
+            <div className="setup-error" role="alert" ref={errorRef} tabIndex={-1}>
+              <strong>Something went wrong</strong>
+              <p>{error}</p>
+            </div>
+          ) : null}
 
           {settingsEntry && !busy ? (
             <section className="setup-danger" aria-labelledby="setup-danger-heading">

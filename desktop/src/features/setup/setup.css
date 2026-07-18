@@ -214,9 +214,11 @@
   width: 14px;
 }
 
-.setup-model-row > span:not(.setup-estimate) {
+.setup-model-name {
+  align-items: center;
   display: flex;
-  flex-direction: column;
+  gap: 7px;
+  justify-content: flex-start;
 }
 
 .setup-estimate {
@@ -224,12 +226,6 @@
   font-family: var(--font-mono);
   font-size: 10px;
   text-align: right;
-}
-
-.setup-model-name {
-  align-items: center;
-  display: inline-flex;
-  gap: 7px;
 }
 
 .setup-plan {
@@ -366,6 +362,40 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px;
+}
+
+.setup-loading {
+  align-items: center;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-secondary);
+  display: flex;
+  font-size: 12px;
+  gap: 10px;
+  margin: 22px 32px 0;
+  padding: 15px 17px;
+}
+
+.setup-loading-spinner {
+  animation: setup-spin 900ms linear infinite;
+  border: 2px solid var(--border-strong);
+  border-radius: 50%;
+  border-top-color: var(--accent);
+  height: 14px;
+  width: 14px;
+}
+
+@keyframes setup-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .setup-loading-spinner {
+    animation: none;
+  }
 }
 
 .setup-risk,
@@ -525,10 +555,27 @@
 }
 
 .setup-error {
-  color: var(--negative);
-  font-size: 11px;
+  background: color-mix(in srgb, var(--negative) 7%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--negative) 32%, var(--border));
+  border-radius: var(--radius);
   margin: 16px 32px 0;
+  outline: none;
   overflow-wrap: anywhere;
+  padding: 12px 15px;
+}
+
+.setup-error strong {
+  color: var(--negative);
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.setup-error p {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  margin-top: 4px;
 }
 
 .setup-footer {

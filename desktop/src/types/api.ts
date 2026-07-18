@@ -56,6 +56,7 @@ export interface RuntimeModelDownloadStatus {
   total_models: number;
   completed_models: number;
   current_model_group: string | null;
+  current_model?: string | null;
   error: string | null;
 }
 

@@ -8,9 +8,18 @@ download receipts) are missing.
 
 from __future__ import annotations
 
+import errno
 import re
 import threading
 from typing import Any, Callable, Iterable
+
+import requests
+from huggingface_hub.errors import (
+    GatedRepoError,
+    HfHubHTTPError,
+    LocalEntryNotFoundError,
+    RepositoryNotFoundError,
+)
 
 from scripts import setup_runtime
 from scripts.download_models import download_model_snapshot, resolve_model_groups
@@ -29,6 +38,29 @@ def _sanitized_error(exc: BaseException) -> str:
     return message[:200] or exc.__class__.__name__
 
 
+def _user_facing_error(exc: BaseException, model_id: str | None) -> str:
+    """Map raw download failures onto messages a user can act on."""
+    subject = model_id or "a required model"
+    if isinstance(exc, (GatedRepoError, RepositoryNotFoundError)):
+        return (
+            f"The model {subject} is not available on Hugging Face. "
+            "Update Orpheus or try again later."
+        )
+    if isinstance(
+        exc,
+        (requests.ConnectionError, requests.Timeout, LocalEntryNotFoundError),
+    ):
+        return (
+            "Could not reach huggingface.co. "
+            "Check your internet connection and try again."
+        )
+    if isinstance(exc, OSError) and exc.errno == errno.ENOSPC:
+        return f"Not enough disk space to download {subject}."
+    if isinstance(exc, HfHubHTTPError):
+        return f"Hugging Face rejected the download of {subject}: {_sanitized_error(exc)}"
+    return f"Downloading {subject} failed: {_sanitized_error(exc)}"
+
+
 def _idle_state() -> dict[str, Any]:
     return {
         "lifecycle": "idle",
@@ -37,6 +69,7 @@ def _idle_state() -> dict[str, Any]:
         "total_models": 0,
         "completed_models": 0,
         "current_model_group": None,
+        "current_model": None,
         "error": None,
     }
 
@@ -108,6 +141,7 @@ class ModelDownloadService:
                 "total_models": sum(len(models) for _, models in plan),
                 "completed_models": 0,
                 "current_model_group": groups[0] if groups else None,
+                "current_model": None,
                 "error": None,
             }
         thread.start()
@@ -118,25 +152,34 @@ class ModelDownloadService:
         plan: list[tuple[str, tuple[str, ...]]],
         lock: Any,
     ) -> None:
+        current_model: str | None = None
         try:
             try:
                 for group_id, models in plan:
                     with self._mutex:
                         self._state["current_model_group"] = group_id
                     for model_id in models:
+                        current_model = model_id
+                        with self._mutex:
+                            self._state["current_model"] = model_id
                         self._downloader(model_id)
                         with self._mutex:
                             self._state["completed_models"] += 1
             finally:
                 lock.__exit__(None, None, None)
             with self._mutex:
-                self._state.update(lifecycle="complete", current_model_group=None)
+                self._state.update(
+                    lifecycle="complete",
+                    current_model_group=None,
+                    current_model=None,
+                )
         except Exception as exc:
             with self._mutex:
                 self._state.update(
                     lifecycle="failed",
-                    error=_sanitized_error(exc),
+                    error=_user_facing_error(exc, current_model),
                     current_model_group=None,
+                    current_model=None,
                 )
         finally:
             callback = self._on_terminal

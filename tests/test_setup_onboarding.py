@@ -905,14 +905,73 @@ def test_model_download_service_reports_sanitized_failure_and_releases_lock() ->
 
     final = _wait_for_terminal(service)
     assert final["lifecycle"] == "failed"
-    assert final["error"].startswith("boom")
+    assert final["error"].startswith("Downloading model failed: boom")
     assert "\x00" not in final["error"]
-    assert len(final["error"]) <= 200
+    assert len(final["error"]) <= 260
     assert events == ["lock", "unlock", "terminal"]
     # A failed run must not leave the service stuck busy.
     retry = service.start(profile_id="mlx", model_groups=["tts-mlx"])
     assert retry["lifecycle"] in {"running", "failed"}
     _wait_for_terminal(service)
+
+
+@pytest.mark.parametrize(
+    ("raiser", "expected_fragment"),
+    [
+        (
+            lambda: (_ for _ in ()).throw(__import__("requests").ConnectionError("dns")),
+            "Check your internet connection",
+        ),
+        (
+            lambda: (_ for _ in ()).throw(
+                OSError(__import__("errno").ENOSPC, "No space left on device")
+            ),
+            "Not enough disk space",
+        ),
+    ],
+)
+def test_model_download_service_maps_common_failures_to_actionable_errors(
+    raiser, expected_fragment
+) -> None:
+    from modules.app.services.model_download_service import ModelDownloadService
+
+    def _broken_download(model_id: str) -> None:
+        next(raiser())
+
+    service = ModelDownloadService(
+        downloader=_broken_download,
+        group_resolver=lambda groups: ("mlx-community/Kokoro-82M-bf16",),
+        lock_factory=lambda: _RecordingLock([]),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+
+    final = _wait_for_terminal(service)
+    assert final["lifecycle"] == "failed"
+    assert expected_fragment in final["error"]
+
+
+def test_model_download_service_names_missing_repositories() -> None:
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    from modules.app.services.model_download_service import ModelDownloadService
+
+    def _broken_download(model_id: str) -> None:
+        import requests
+
+        response = requests.Response()
+        response.status_code = 401
+        raise RepositoryNotFoundError("401 Client Error", response=response)
+
+    service = ModelDownloadService(
+        downloader=_broken_download,
+        group_resolver=lambda groups: ("mlx-community/Kokoro-82M-bf16",),
+        lock_factory=lambda: _RecordingLock([]),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+
+    final = _wait_for_terminal(service)
+    assert final["lifecycle"] == "failed"
+    assert "mlx-community/Kokoro-82M-bf16 is not available" in final["error"]
 
 
 def test_model_download_service_surfaces_setup_lock_contention() -> None:
