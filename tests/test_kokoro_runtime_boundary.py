@@ -442,6 +442,43 @@ def test_runtime_config_inherits_options_from_runtime_spec_when_strategy_options
     assert runtime_config.runtime_options == {"dtype": "fp16"}
 
 
+@pytest.mark.parametrize("provider", ["cpu", "cuda"])
+def test_kokoro_default_config_resolves_package_model_for_package_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+) -> None:
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "default_provider",
+        classmethod(lambda cls, engine: provider),
+    )
+
+    runtime_config = KokoroRuntimeConfig.from_strategy_config(KokoroConfig())
+
+    assert runtime_config.runtime_spec.provider == provider
+    assert runtime_config.runtime_spec.model is None
+    assert runtime_config.runtime_spec.resolved_model() == "hexgrad/Kokoro-82M"
+    assert runtime_config.model_name == "hexgrad/Kokoro-82M"
+
+
+def test_kokoro_explicit_model_override_is_preserved_for_cpu_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        TTSRuntimeSpec,
+        "default_provider",
+        classmethod(lambda cls, engine: "cpu"),
+    )
+
+    runtime_config = KokoroRuntimeConfig.from_strategy_config(
+        KokoroConfig(model_name="custom/kokoro")
+    )
+
+    assert runtime_config.runtime_spec.provider == "cpu"
+    assert runtime_config.runtime_spec.model == "custom/kokoro"
+    assert runtime_config.runtime_spec.resolved_model() == "custom/kokoro"
+
+
 def test_mlx_runtime_engine_config_identity_prefers_runtime_spec() -> None:
     runtime_spec = TTSRuntimeSpec.from_legacy(
         "kokoro",

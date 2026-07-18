@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Protocol
 
-from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.runtime_spec import KOKORO_MLX_DEFAULT_MODEL, TTSRuntimeSpec
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 from modules.tts.strategies.base import (
     SynthesisItem,
@@ -37,25 +37,36 @@ class KokoroRuntimeConfig:
     @classmethod
     def from_strategy_config(cls, config: Any) -> "KokoroRuntimeConfig":
         """Build a runtime config from a Kokoro strategy config object."""
-        runtime_spec = config.runtime_spec or TTSRuntimeSpec.from_legacy(
-            "kokoro",
-            config.quantization,
-            model=config.model_name,
-            options=(
-                config.runtime_options
-                if isinstance(config.runtime_options, dict)
-                else None
-            ),
-        )
+        if config.runtime_spec is not None:
+            runtime_spec = config.runtime_spec
+        else:
+            # KokoroConfig retains the historical MLX model name for display
+            # and factory compatibility, but that value is only a default.
+            # Let TTSRuntimeSpec select the provider-aware model on hosts that
+            # resolve to CPU/CUDA; custom model names remain explicit.
+            model_name = config.model_name
+            if model_name == KOKORO_MLX_DEFAULT_MODEL:
+                model_name = None
+            runtime_spec = TTSRuntimeSpec.from_legacy(
+                "kokoro",
+                config.quantization,
+                model=model_name,
+                options=(
+                    config.runtime_options
+                    if isinstance(config.runtime_options, dict)
+                    else None
+                ),
+            )
         if isinstance(config.runtime_options, dict) and config.runtime_options:
             runtime_options = dict(config.runtime_options)
         elif runtime_spec.runtime_options:
             runtime_options = dict(runtime_spec.runtime_options)
         else:
             runtime_options = None
+        resolved_model = runtime_spec.resolved_model()
         return cls(
             runtime_spec=runtime_spec,
-            model_name=config.model_name,
+            model_name=resolved_model or config.model_name,
             quantization=config.quantization,
             sample_rate=config.sample_rate,
             default_voice=getattr(config, "default_voice", None) or "am_adam",
