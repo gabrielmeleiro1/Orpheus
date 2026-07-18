@@ -38,6 +38,7 @@ export function TtsOptionsView({
         <div className="form-row-stack">
           <input
             id="voice-search"
+            aria-label="Search voices"
             className="field-input"
             type="text"
             placeholder="Search voices…"
@@ -75,6 +76,7 @@ export function TtsOptionsView({
           <div className="form-row-field compact-row">
             <input
               id="voice-preview-text"
+              aria-label="Voice preview text"
               className="field-input"
               type="text"
               placeholder="Text to speak…"

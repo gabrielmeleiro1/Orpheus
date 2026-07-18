@@ -189,4 +189,29 @@ describe("ConversionPanelView", () => {
     expect(html).toContain('id="runtime-setup-btn"');
     expect(html).toContain("Runtime setup");
   });
+
+  it("gives every editable conversion control a programmatic label", () => {
+    const html = renderToString(<ConversionPanelView {...viewModel()} />);
+
+    const labelsById = {
+      "paste-title-input": "Pasted document title",
+      "paste-text-input": "Pasted document text",
+      "source-path": "Source path",
+      "title-input": "Title override",
+      "author-input": "Author override",
+      "voice-search": "Search voices",
+      "voice-preview-text": "Voice preview text",
+      "speed-input": "Narration speed",
+      "parallel-worker-max-input": "Maximum parallel workers",
+    };
+    for (const [id, label] of Object.entries(labelsById)) {
+      expect(html).toMatch(new RegExp(`id="${id}"[^>]*aria-label="${label}"`));
+    }
+  });
+
+  it("advertises every source type accepted by the audiobook picker", () => {
+    const html = renderToString(<ConversionPanelView {...viewModel()} />);
+
+    expect(html).toContain(".pdf, .epub, .txt, or .md");
+  });
 });

@@ -82,7 +82,7 @@ export function SourceQueueView({
         </span>
         <span className="drop-zone-copy">
           <strong>{sourceQueue.isDocumentMode ? "Drop document here" : "Drop source here"}</strong>
-          <span>{sourceQueue.isDocumentMode ? ".pdf, .epub, .txt, or .md" : ".pdf or .epub"}</span>
+          <span>.pdf, .epub, .txt, or .md</span>
         </span>
         <span className="drop-zone-hint">Click to browse or drag and drop</span>
       </div>
@@ -110,6 +110,7 @@ export function SourceQueueView({
             <span className="form-row-label">Title</span>
             <input
               id="paste-title-input"
+              aria-label="Pasted document title"
               className="field-input"
               type="text"
               placeholder="Pasted Document"
@@ -119,6 +120,7 @@ export function SourceQueueView({
             <span className="form-row-label">Text</span>
             <textarea
               id="paste-text-input"
+              aria-label="Pasted document text"
               className="field-input paste-textarea"
               placeholder="Paste Markdown or plain text…"
               value={sourceQueue.pastedText}
@@ -183,6 +185,7 @@ export function SourceQueueView({
           <div className="form-row-field">
             <input
               id="source-path"
+              aria-label="Source path"
               className="field-input"
               type="text"
               placeholder={sourceQueue.sourcePathPlaceholder}
@@ -242,6 +245,7 @@ export function SourceQueueView({
           <div className="form-row-field">
             <input
               id="title-input"
+              aria-label="Title override"
               className="field-input"
               type="text"
               placeholder="Optional"
@@ -259,6 +263,7 @@ export function SourceQueueView({
           <div className="form-row-field">
             <input
               id="author-input"
+              aria-label="Author override"
               className="field-input"
               type="text"
               placeholder="Optional"

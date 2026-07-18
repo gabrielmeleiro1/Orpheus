@@ -26,6 +26,7 @@ export function AdvancedOptionsView({
             <div className="form-row-field">
               <input
                 id="speed-input"
+                aria-label="Narration speed"
                 className="field-input short-input"
                 type="number"
                 min={0.5}
@@ -89,6 +90,7 @@ export function AdvancedOptionsView({
               <div className="form-row-field compact-row">
                 <input
                   id="parallel-worker-max-input"
+                  aria-label="Maximum parallel workers"
                   className="field-input short-input"
                   type="number"
                   min={1}

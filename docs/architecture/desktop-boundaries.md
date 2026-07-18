@@ -184,7 +184,7 @@ These constants or shapes exist in more than one layer without a single source o
 | `src-tauri/main.rs` `choose_source_files` | `pdf`, `epub`, `txt`, `md`, `markdown` |
 | `modules/app/services/library_service.py` | `.pdf`, `.epub`, `.txt`, `.md` |
 | `modules/ingestion/preflight.py` | `.pdf`, `.epub`, `.txt`, `.md` |
-| `ConversionPanelView.tsx` UI copy | document mode: all four; audiobook mode: `.pdf` or `.epub` only |
+| `ConversionPanelView.tsx` UI copy | `.pdf`, `.epub`, `.txt`, `.md` |
 | `tools/feedback_loop_runner.py` | `.pdf`, `.epub` only |
 
 **Risk:** Tauri allows `markdown` extension alias; backend normalizes to `.md`.

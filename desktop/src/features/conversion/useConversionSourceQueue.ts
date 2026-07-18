@@ -11,7 +11,7 @@ import {
 
 import type { ApiClient } from "../../api/client";
 import type { ConversionMode } from "../../types/api";
-import { extractDroppedPaths } from "./conversionPanelHelpers";
+import { extractDroppedPaths, pathsFromUriList } from "./conversionPanelHelpers";
 import { isTauriRuntime } from "../../platform/tauriRuntime";
 import { createQueueItem } from "./conversionPanelModel";
 import type { ConversionJobController } from "./useConversionJob";
@@ -124,15 +124,20 @@ export function useConversionSourceQueue({
 
   const onBrowse = useCallback(async () => {
     if (isTauriRuntime()) {
-      const selectedPaths = await invoke<string[]>("choose_source_files");
-      if (Array.isArray(selectedPaths) && selectedPaths.length > 0) {
-        applySourcePaths(selectedPaths);
+      try {
+        const selectedPaths = await invoke<string[]>("choose_source_files");
+        if (Array.isArray(selectedPaths) && selectedPaths.length > 0) {
+          applySourcePaths(selectedPaths);
+        }
+      } catch (error: unknown) {
+        const detail = error instanceof Error ? error.message : String(error || "unknown error");
+        queueController.setPreflightStatus(`Could not open file picker: ${detail}`);
       }
       return;
     }
 
     browserFileInputRef.current?.click();
-  }, [applySourcePaths]);
+  }, [applySourcePaths, queueController]);
 
   const onBrowserFilesSelected = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -224,25 +229,7 @@ export function useConversionSourceQueue({
 
       const maybePathList = event.dataTransfer.getData("text/uri-list");
       if (maybePathList) {
-        const paths = maybePathList
-          .split("\n")
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .map((line) => {
-            if (!line.startsWith("file://")) {
-              return line;
-            }
-            // file:// URIs percent-encode spaces etc., and Windows drive paths
-            // arrive as file:///C:/... -> /C:/... with a spurious leading slash.
-            const stripped = line.replace(/^file:\/\//, "");
-            let decoded = stripped;
-            try {
-              decoded = decodeURIComponent(stripped);
-            } catch {
-              // Keep the raw path when the URI contains malformed escapes.
-            }
-            return /^\/[A-Za-z]:[\\/]/.test(decoded) ? decoded.slice(1) : decoded;
-          });
+        const paths = pathsFromUriList(maybePathList);
         if (paths.length > 0) {
           applySourcePaths(paths);
           return;

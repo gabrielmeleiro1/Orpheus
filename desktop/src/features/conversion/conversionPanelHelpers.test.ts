@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   compactSample,
   extractDroppedPaths,
+  pathsFromUriList,
   normalizeQuantizationValue,
   nowStatus,
   splitPath,
@@ -67,6 +68,18 @@ describe("conversion panel helpers", () => {
     expect(extractDroppedPaths({ paths: [" /tmp/a.epub ", "", null] })).toEqual([" /tmp/a.epub "]);
     expect(extractDroppedPaths(" /tmp/a.epub ")).toEqual(["/tmp/a.epub"]);
     expect(extractDroppedPaths({ paths: "nope" })).toEqual([]);
+  });
+
+  it("parses RFC URI lists without losing Windows UNC paths", () => {
+    expect(
+      pathsFromUriList([
+        "# Finder metadata",
+        "file:///Users/me/My%20Book.epub",
+        "file://server/share/Book.epub",
+        "https://example.com/not-a-file.epub",
+        "",
+      ].join("\r\n")),
+    ).toEqual(["/Users/me/My Book.epub", "//server/share/Book.epub"]);
   });
 
   it("does not depend on timers", () => {

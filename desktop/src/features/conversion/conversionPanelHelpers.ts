@@ -58,3 +58,35 @@ export function extractDroppedPaths(payload: unknown): string[] {
 
   return [];
 }
+
+export function pathsFromUriList(uriList: string): string[] {
+  const paths: string[] = [];
+  for (const rawLine of uriList.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    let url: URL;
+    try {
+      url = new URL(line);
+    } catch {
+      continue;
+    }
+    if (url.protocol !== "file:") {
+      continue;
+    }
+
+    let pathname = url.pathname;
+    try {
+      pathname = decodeURIComponent(pathname);
+    } catch {
+      // Keep the encoded path when malformed escapes prevent decoding.
+    }
+    if (/^\/[A-Za-z]:[\\/]/.test(pathname)) {
+      pathname = pathname.slice(1);
+    }
+    paths.push(url.host ? `//${url.host}${pathname}` : pathname);
+  }
+  return paths;
+}
