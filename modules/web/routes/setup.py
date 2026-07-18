@@ -30,6 +30,7 @@ from modules.app.services.model_download_service import (
     ModelDownloadService,
 )
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
+from modules.web.deps import get_controller_from_app
 from scripts import setup_runtime
 from scripts.download_models import MODEL_GROUPS, ModelReceiptVerifier, resolve_model_groups
 
@@ -794,6 +795,20 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
     """Uninstall local runtime data: managed model assets and the setup state."""
     cache = _get_status_cache(request)
     state_path = setup_runtime.default_state_path()
+    controller = get_controller_from_app(request.app)
+    conversion_service = getattr(controller, "_conversion_service", None)
+    begin_cleanup = getattr(conversion_service, "begin_storage_cleanup", None)
+    end_cleanup = getattr(conversion_service, "end_storage_cleanup", None)
+    guard_acquired = False
+    if callable(begin_cleanup):
+        try:
+            begin_cleanup()
+            guard_acquired = True
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "conversion_in_progress", "message": str(exc)},
+            ) from exc
     try:
         with setup_runtime.SetupLock(state_path):
             deleted_groups, freed_bytes = _delete_runtime_models()
@@ -804,6 +819,9 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
             status_code=409,
             detail={"error": "setup_in_progress", "message": str(exc)},
         ) from exc
+    finally:
+        if guard_acquired and callable(end_cleanup):
+            end_cleanup()
     cache.invalidate()
     return {
         "deleted_model_groups": deleted_groups,

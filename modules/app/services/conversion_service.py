@@ -141,6 +141,17 @@ class ConversionService:
         if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
             raise RuntimeError("A conversion is already in progress")
 
+    def _preflight_job_slot_available(self, *, book_id: int | None = None) -> None:
+        """Fail fast before potentially expensive runtime validation.
+
+        The caller must still reserve the slot under ``_job_lock`` after
+        validation because another request can start in between.
+        """
+        with self._job_lock:
+            if book_id is not None and int(book_id) in self._book_cleanup_ids:
+                raise RuntimeError("Book cleanup is in progress")
+            self._ensure_job_slot_available_locked()
+
     def begin_storage_cleanup(self) -> None:
         """Atomically verify no job is active and block new starts until
         :meth:`end_storage_cleanup` — closes the check-then-prune race."""
@@ -186,6 +197,7 @@ class ConversionService:
         if not source_path.exists():
             raise ValueError(f"Source file not found: {source_path}")
 
+        self._preflight_job_slot_available()
         runtime_options = runtime_options or ConversionRuntimeOptions()
         self._validate_requested_tts_runtime(runtime_options=runtime_options)
 
@@ -275,6 +287,8 @@ class ConversionService:
         runtime_fields_set: Optional[set[str] | frozenset[str]] = None,
     ) -> Any:
         request_options = runtime_options or ConversionRuntimeOptions()
+
+        self._preflight_job_slot_available(book_id=book_id)
 
         # None means "no explicit overrides" (controller/direct callers), same as
         # an empty HTTP payload's fields_set — reuse persisted v7 / app defaults.
