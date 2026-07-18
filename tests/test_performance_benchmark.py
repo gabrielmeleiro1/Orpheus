@@ -24,6 +24,7 @@ from modules.tts.chunker import TextChunker
 # Path to store baseline performance data
 BASELINE_PATH = Path(__file__).parent / ".benchmark_baseline.json"
 PERFORMANCE_THRESHOLD = 0.10  # 10% regression threshold
+UPDATE_BASELINE = os.getenv("AUDIOBOOK_UPDATE_BENCHMARK_BASELINE") == "1"
 
 
 @dataclass
@@ -181,7 +182,7 @@ class TestTTSPerformance:
         """
         Test that performance hasn't regressed >10% from baseline.
         
-        If no baseline exists, creates one.
+        Baseline updates are opt-in so a normal test run never dirties the repository.
         """
         # Run benchmark
         result = self.benchmark_tts_speed(
@@ -196,10 +197,13 @@ class TestTTSPerformance:
         baseline_key = "tts_baseline_medium"
         
         if baseline_key not in baseline:
-            # No baseline yet - create one
-            print(f"\nCreating baseline: {result.chars_per_second:.2f} chars/sec")
-            PerformanceBaseline.update(result)
-            pytest.skip("Baseline created, run again to compare")
+            if UPDATE_BASELINE:
+                PerformanceBaseline.update(result)
+                pytest.skip("Baseline created; run again to compare")
+            pytest.fail(
+                "Missing tracked performance baseline. Set "
+                "AUDIOBOOK_UPDATE_BENCHMARK_BASELINE=1 to record it explicitly."
+            )
         
         baseline_result = baseline[baseline_key]
         baseline_cps = baseline_result["chars_per_second"]
@@ -214,7 +218,7 @@ class TestTTSPerformance:
         print(f"  Regression: {regression:.2%}")
         
         # Update baseline if performance improved
-        if current_cps > baseline_cps:
+        if current_cps > baseline_cps and UPDATE_BASELINE:
             print("  Performance improved - updating baseline")
             PerformanceBaseline.update(result)
         
@@ -286,8 +290,13 @@ class TestRealTTSPerformance:
         baseline = PerformanceBaseline.load()
         
         if "tts_real_baseline" not in baseline:
-            PerformanceBaseline.update(result)
-            print("Baseline created for real TTS")
+            if UPDATE_BASELINE:
+                PerformanceBaseline.update(result)
+                pytest.skip("Real TTS baseline created; run again to compare")
+            pytest.fail(
+                "Missing tracked real-TTS baseline. Set "
+                "AUDIOBOOK_UPDATE_BENCHMARK_BASELINE=1 to record it explicitly."
+            )
         else:
             baseline_cps = baseline["tts_real_baseline"]["chars_per_second"]
             regression = (baseline_cps - result.chars_per_second) / baseline_cps
@@ -295,7 +304,7 @@ class TestRealTTSPerformance:
             print(f"Baseline: {baseline_cps:.2f}, Current: {result.chars_per_second:.2f}")
             print(f"Regression: {regression:.2%}")
             
-            if result.chars_per_second > baseline_cps:
+            if result.chars_per_second > baseline_cps and UPDATE_BASELINE:
                 PerformanceBaseline.update(result)
             
             assert regression < PERFORMANCE_THRESHOLD
