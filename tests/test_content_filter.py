@@ -353,6 +353,19 @@ def test_keeps_short_real_copyright_page_as_skip():
     assert classification.reason == "copyright"
 
 
+def test_keeps_short_narrative_that_mentions_publishing_terms():
+    content = (
+        "The publisher's office kept a copy of the contract beside the manuscript. "
+        "She checked the ISBN, reviewed permissions, and discussed copyright with the editor, "
+        "then returned to the story of how the first edition reached the harbor town."
+    )
+
+    classification = classify_chapter_content("The Editor", content)
+
+    assert classification.should_skip is False
+    assert classification.reason is None
+
+
 def test_low_prose_density_rule_can_be_disabled_via_flag():
     content = "\n".join(
         ["1", "2", "3", "Figures", "Table 1", "12", "19", "A", "B", "C", "24", "31"]

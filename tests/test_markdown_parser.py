@@ -64,3 +64,17 @@ def test_markdown_parser_raises_on_whitespace_only_source(tmp_path):
 
     with pytest.raises(CorruptedFileError):
         MarkdownParser(source_path).parse()
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_markdown_parser_ignores_headings_inside_fenced_code(tmp_path, fence):
+    source_path = tmp_path / "fenced.md"
+    source_path.write_text(
+        f"# Guide\n\nIntro text.\n\n{fence}python\n## Not a chapter\n{fence}\n\n## Real chapter\nBody text.\n",
+        encoding="utf-8",
+    )
+
+    document = MarkdownParser(source_path).parse()
+
+    assert [chapter.title for chapter in document.chapters] == ["Guide", "Real chapter"]
+    assert "## Not a chapter" in document.chapters[0].content

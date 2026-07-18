@@ -8,6 +8,7 @@ import zipfile
 from typing import Any, Optional
 
 from .text_encoding import read_source_text
+from .markdown_parser import markdown_headings
 from .pdf_preflight import analyze_pdf_text_layer
 
 from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
@@ -15,9 +16,6 @@ from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
 SUPPORTED_PREFLIGHT_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
 DEFAULT_SAMPLE_CHARS = 900
 TINY_SOURCE_BYTES = 64
-
-_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
-
 
 def _collapse_sample(text: str, max_chars: int) -> str:
     collapsed = re.sub(r"\s+", " ", text).strip()
@@ -68,8 +66,14 @@ def _preflight_markdown(source_path: Path, max_sample_chars: int) -> dict[str, A
     warnings: list[str] = []
     payload = _base_payload(source_path, "md", warnings)
     text = read_source_text(source_path)
-    headings = [match.group(2).strip() for match in _MARKDOWN_HEADING_RE.finditer(text)]
-    sample = _collapse_sample(_MARKDOWN_HEADING_RE.sub("", text), max_sample_chars)
+    heading_matches = markdown_headings(text)
+    headings = [title for _, title in heading_matches]
+    heading_lines = {line_number for line_number, _ in heading_matches}
+    body = "\n".join(
+        line for line_number, line in enumerate(text.splitlines())
+        if line_number not in heading_lines
+    )
+    sample = _collapse_sample(body, max_sample_chars)
     if not sample:
         warnings.append("No readable text was found in this source.")
 

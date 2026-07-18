@@ -34,6 +34,24 @@ def _create_image_only_pdf(output_path: Path, *, pages: int = 2) -> None:
     doc.close()
 
 
+def _create_mixed_text_image_pdf(output_path: Path) -> None:
+    import fitz
+
+    doc = fitz.open()
+    pixmap = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 20, 20), False)
+    pixmap.clear_with(180)
+    page = doc.new_page()
+    page.insert_image(fitz.Rect(250, 100, 550, 500), pixmap=pixmap)
+    for line_number in range(3):
+        page.insert_text(
+            (72, 72 + (line_number * 18)),
+            "Native prose remains extractable even when a page contains a large illustration.",
+            fontsize=10,
+        )
+    doc.save(output_path)
+    doc.close()
+
+
 def _create_preflight_story_collection_epub(output_path: Path) -> None:
     from ebooklib import epub
 
@@ -108,6 +126,21 @@ def test_preflight_markdown_uses_first_heading_and_counts_sections(tmp_path: Pat
     assert payload["warnings"] == []
 
 
+def test_preflight_markdown_ignores_headings_inside_fenced_code(tmp_path: Path) -> None:
+    for fence in ("```", "~~~"):
+        source = tmp_path / f"fenced-{len(fence)}.md"
+        source.write_text(
+            f"# Guide\n\nIntro text.\n\n{fence}\n## Not a chapter\n{fence}\n\n## Real chapter\nBody text.",
+            encoding="utf-8",
+        )
+
+        payload = preflight_source(source)
+
+        assert payload["title"] == "Guide"
+        assert payload["chapter_count"] == 2
+        assert "## Not a chapter" in payload["sample"]
+
+
 def test_preflight_text_decodes_utf16_sample_without_nul_artifacts(tmp_path: Path) -> None:
     source = tmp_path / "utf16_notes.txt"
     source.write_bytes("Too much sanity may be madness.\n\nSecond paragraph.".encode("utf-16"))
@@ -158,6 +191,18 @@ def test_pdf_preflight_warns_when_pdf_requires_ocr(tmp_path: Path) -> None:
     assert payload["pdf_text_layer"]["confidence"] >= 0.9
     assert any("OCR required" in warning for warning in payload["warnings"])
     assert any("not text-extractable" in warning for warning in payload["warnings"])
+
+
+def test_pdf_preflight_does_not_require_ocr_for_mixed_native_text_and_image(tmp_path: Path) -> None:
+    source = tmp_path / "mixed.pdf"
+    _create_mixed_text_image_pdf(source)
+
+    analysis = analyze_pdf_text_layer(source)
+
+    assert analysis.requires_ocr is False
+    assert analysis.text_chars > 100
+    assert analysis.word_count > 20
+    assert analysis.image_pages == 1
 
 
 def test_preflight_markdown_decodes_utf16_headings_without_nul_artifacts(tmp_path: Path) -> None:

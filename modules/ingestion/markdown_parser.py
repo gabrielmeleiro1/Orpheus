@@ -14,6 +14,45 @@ from modules.errors import CorruptedFileError
 
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+
+def markdown_headings(raw_text: str) -> list[tuple[int, str]]:
+    """Return heading lines outside fenced code blocks.
+
+    Both backtick and tilde fences are recognized. A closing fence must use
+    the same marker character and be at least as long as its opener.
+    """
+    headings: list[tuple[int, str]] = []
+    fence_char: str | None = None
+    fence_length = 0
+
+    for line_number, line in enumerate(raw_text.splitlines()):
+        fence_match = _FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(1)
+            marker_char = marker[0]
+            marker_length = len(marker)
+            suffix = fence_match.group(2)
+            if fence_char is None:
+                fence_char = marker_char
+                fence_length = marker_length
+            elif (
+                marker_char == fence_char
+                and marker_length >= fence_length
+                and not suffix.strip()
+            ):
+                fence_char = None
+                fence_length = 0
+            continue
+
+        if fence_char is None:
+            match = HEADING_RE.match(line)
+            if match:
+                headings.append((line_number, match.group(2).strip()))
+
+    return headings
+
 
 class MarkdownParser:
     """Parse `.md` files into heading-based sections when available."""
@@ -51,14 +90,15 @@ class MarkdownParser:
         current_title: str | None = None
         current_lines: list[str] = []
 
-        for line in lines:
-            match = HEADING_RE.match(line)
-            if match:
+        heading_lines = dict(markdown_headings(raw_text))
+        for line_number, line in enumerate(lines):
+            title = heading_lines.get(line_number)
+            if title is not None:
                 if current_title is not None:
                     sections.append((current_title, current_lines))
                 else:
                     preamble = current_lines
-                current_title = match.group(2).strip()
+                current_title = title
                 current_lines = []
                 continue
             current_lines.append(line)

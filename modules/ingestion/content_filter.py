@@ -214,7 +214,30 @@ def _is_copyright(title: str, content: str) -> bool:
         return False
     normalized = f"{title}\n{content}".lower()
     hits = sum(1 for term in _COPYRIGHT_TERMS if term in normalized)
-    return bool(_COPYRIGHT_TITLE_RE.search(title) and hits >= 2) or hits >= 4
+    if _COPYRIGHT_TITLE_RE.search(title) and hits >= 2:
+        return True
+    return hits >= 4 and _looks_like_copyright_page(content)
+
+
+def _looks_like_copyright_page(content: str) -> bool:
+    """Require page-like structure before term-only copyright filtering."""
+    lines = _content_lines(content)
+    if len(lines) < 3:
+        return False
+
+    term_lines = sum(
+        1 for line in lines if any(term in line.lower() for term in _COPYRIGHT_TERMS)
+    )
+    sentence_like = sum(
+        1
+        for line in lines
+        if len(_WORD_RE.findall(line)) >= 8 and re.search(r"[.!?]$", line)
+    )
+    return (
+        term_lines >= 3
+        and term_lines / len(lines) >= 0.5
+        and sentence_like / len(lines) <= 0.4
+    )
 
 
 def _is_low_prose_density(lines: list[str]) -> bool:

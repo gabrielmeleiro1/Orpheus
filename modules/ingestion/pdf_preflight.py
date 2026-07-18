@@ -17,8 +17,11 @@ DEFAULT_MAX_SAMPLE_PAGES = 10
 NATIVE_TEXT_MIN_CHARS = 1000
 NATIVE_TEXT_MIN_WORDS = 120
 NATIVE_TEXT_MIN_NON_EMPTY_RATIO = 0.5
-LOW_TEXT_MAX_CHARS = 250
-LOW_TEXT_MAX_WORDS = 50
+# A page with a real prose fragment should not be treated as an image-only
+# scan merely because it also contains a raster illustration. Keep the OCR
+# gate for genuinely scant text (roughly a label, caption, or a few residues).
+LOW_TEXT_MAX_CHARS = 120
+LOW_TEXT_MAX_WORDS = 20
 
 _WORD_RE = re.compile(r"\b\w+\b")
 _MARKDOWN_RULE_RE = re.compile(r"(?:[-*_]\s*){3,}")
