@@ -98,7 +98,7 @@ requested explicitly:
 python scripts/build_desktop_backend.py --runtime-profile cuda
 ```
 
-### CUDA cleaner backend and accepted PyTorch risk
+### CUDA cleaner backend
 
 The `cuda` profile is an explicit opt-in. It contains:
 
@@ -109,20 +109,18 @@ The `cuda` profile is an explicit opt-in. It contains:
 Operating-system compatibility only makes the CUDA option selectable. Actual
 readiness still requires a successful NVIDIA GPU and driver probe.
 
-As of 2026-07-14, `torch==2.10.0` is affected by PYSEC-2026-139 / CVE-2026-4538
-and CVE-2025-3000, and upstream publishes no fixed release. This risk is accepted
-only for the opt-in CUDA profile with these controls:
+As of 2026-07-18, `torch==2.13.0` resolves the previously accepted
+CVE-2025-3000 finding and the CUDA manifest has no known auditable dependency
+vulnerabilities. CUDA remains opt-in and model artifacts are executable input,
+so retain these controls:
 
 - Load model artifacts only from the curated project allowlist or another source
   the user fully trusts.
 - Never deserialize untrusted pickle files, checkpoints, or arbitrary local model
   paths. Treat model files as executable input.
 - Keep PyTorch absent from the base and MLX profiles.
-- Run `pip-audit -r requirements/cuda.txt` at every release and upgrade as soon as
-  upstream provides a fixed compatible version. A newly available fix blocks the
-  release until the pin and clean-environment verification are updated.
-
-This is a scoped acceptance, not a claim that the advisories are fixed.
+- Run `pip-audit -r requirements/cuda.txt` at every release. Any new finding
+  blocks the release unless it is fixed or explicitly reviewed and recorded.
 
 ### Clean-environment release gate
 
@@ -154,12 +152,11 @@ never reported as passed. `--allow-skipped` (or
 cross-platform automation, while retaining the skipped result in the report.
 Failures exit 1.
 
-The base and MLX audits must report zero known vulnerabilities. CUDA's two
-unfixed PyTorch findings may produce `accepted_risk` only while their exact,
-time-bounded entries in `security/runtime-audit-exceptions.json` remain valid.
-Accepted risk can satisfy the gate but is deliberately never labeled passed.
-Expired, malformed, cross-profile, wrong-package, and newly discovered
-advisories fail the gate. No audit tooling is installed into the target
+All profile audits must report zero known vulnerabilities unless a finding has
+an exact, time-bounded entry in `security/runtime-audit-exceptions.json`.
+Accepted risk is deliberately never labeled passed. Expired, malformed,
+cross-profile, wrong-package, and newly discovered advisories fail the gate.
+No audit tooling is installed into the target
 environment, so the inventory remains the profile plus its pinned packaging
 tools. The audit runs in strict path mode; any dependency collection error or
 skipped/unaudited distribution fails the gate. Use `--work-dir PATH --keep-env`

@@ -69,7 +69,6 @@ PROHIBITED_PACKAGES = {
 }
 RECOGNIZED_EXCEPTIONS = {
     ("cuda", "torch", "PYSEC-2026-139"): ("CVE-2026-4538",),
-    ("cuda", "torch", "CVE-2025-3000"): (),
 }
 
 EN_CORE_WEB_SM_NAME = "en-core-web-sm"

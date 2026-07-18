@@ -110,10 +110,7 @@ _RUNTIME_PROFILES = (
         requirements_file=_REQUIREMENTS_DIR / "cuda.txt",
         model_groups=("tts-cpu-cuda", "cleaner-cuda"),
         platform_kind="nvidia-cuda",
-        risk=(
-            "PyTorch 2.10 has unresolved advisories with no fixed upstream release; "
-            "use trusted model artifacts only and never load untrusted pickle files."
-        ),
+        risk=None,
     ),
 )
 

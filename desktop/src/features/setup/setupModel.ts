@@ -160,7 +160,7 @@ export function canStartSetup(selection: SetupSelection, status: RuntimeSetupSta
   if (!profile?.compatible || selection.modelGroups.some((group) => !profile.model_groups.includes(group))) {
     return false;
   }
-  return profile.id !== "cuda" || selection.acceptPytorchRisk;
+  return !profile.risk || selection.acceptPytorchRisk;
 }
 
 export function backendInstallProfileId(

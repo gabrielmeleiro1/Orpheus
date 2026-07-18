@@ -161,11 +161,7 @@ def test_setup_status_returns_allowlisted_readiness_contract(
     cuda = next(profile for profile in payload["profiles"] if profile["id"] == "cuda")
     assert cuda["compatible"] is False
     assert isinstance(cuda["reason"], str) and cuda["reason"]
-    assert cuda["risk"] == {
-        "id": setup_route.setup_runtime.PYTORCH_RISK_ID,
-        "summary": setup_route.setup_runtime.PYTORCH_RISK_SUMMARY,
-        "accepted": False,
-    }
+    assert cuda["risk"] is None
     assert _contains_forbidden_key(payload) is False
 
 

@@ -641,13 +641,6 @@ fn build_setup_launch_config(
             groups.push(group);
         }
     }
-    if request.profile == "cuda" && !request.accept_pytorch_risk {
-        return Err("CUDA setup requires explicit PyTorch risk acknowledgement".to_string());
-    }
-    if request.profile != "cuda" && request.accept_pytorch_risk {
-        return Err("PyTorch risk acknowledgement is only valid for CUDA setup".to_string());
-    }
-
     let script = repo_root.join("scripts").join("setup_runtime.py");
     let mut args = vec![
         script.to_string_lossy().into_owned(),
@@ -659,10 +652,6 @@ fn build_setup_launch_config(
         args.push(group);
     }
     args.push("--progress-json".to_string());
-    if request.accept_pytorch_risk {
-        args.push("--accept-pytorch-risk".to_string());
-    }
-
     Ok(SetupLaunchConfig {
         program: python_program.as_ref().to_path_buf(),
         script,

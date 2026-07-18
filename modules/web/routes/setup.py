@@ -311,13 +311,7 @@ def _check_model_group_assets(
 
 def _profile_payload(profile_id: str, *, accepted_profile: str | None) -> dict[str, Any]:
     profile = get_runtime_profile(profile_id)
-    risk = None
-    if profile.id == "cuda":
-        risk = {
-            "id": setup_runtime.PYTORCH_RISK_ID,
-            "summary": setup_runtime.PYTORCH_RISK_SUMMARY,
-            "accepted": accepted_profile == "cuda",
-        }
+    del accepted_profile
     return {
         "id": profile.id,
         "label": profile.label,
@@ -325,7 +319,7 @@ def _profile_payload(profile_id: str, *, accepted_profile: str | None) -> dict[s
         "compatible": profile.is_compatible(),
         "reason": profile.incompatibility_reason(),
         "model_groups": list(profile.model_groups),
-        "risk": risk,
+        "risk": None,
     }
 
 
@@ -508,12 +502,6 @@ def _build_uncached_setup_status_response(
         state = "unavailable"
 
     risk = None
-    if selected_profile == "cuda":
-        risk = {
-            "id": setup_runtime.PYTORCH_RISK_ID,
-            "summary": setup_runtime.PYTORCH_RISK_SUMMARY,
-            "accepted": True,
-        }
 
     return {
         "schema_version": 1,
@@ -601,19 +589,6 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
             detail={"error": "invalid_request", "message": str(exc)},
         ) from exc
 
-    if profile.id == "cuda" and not payload.accept_pytorch_risk:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "pytorch_risk_required",
-                "message": "CUDA adoption requires PyTorch risk acknowledgement.",
-                "risk": {
-                    "id": setup_runtime.PYTORCH_RISK_ID,
-                    "summary": setup_runtime.PYTORCH_RISK_SUMMARY,
-                },
-            },
-        )
-
     if profile.id != "base":
         packages = _check_selected_profile_packages(profile.id)
         if not packages["ready"]:
@@ -656,9 +631,7 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
                 detail={"error": "assets_missing", "model_groups": missing_assets},
             )
 
-    accepted_risks = (
-        (setup_runtime.PYTORCH_RISK_ID,) if profile.id == "cuda" else ()
-    )
+    accepted_risks: tuple[str, ...] = ()
     state_path = setup_runtime.default_state_path()
     try:
         with setup_runtime.SetupLock(state_path):

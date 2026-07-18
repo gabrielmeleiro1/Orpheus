@@ -506,7 +506,7 @@ def test_adopt_rejects_unknown_fields(
     assert response.status_code == 422
 
 
-def test_adopt_cuda_requires_pytorch_risk_ack(
+def test_adopt_cuda_no_longer_requires_resolved_pytorch_risk_ack(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -519,6 +519,18 @@ def test_adopt_cuda_requires_pytorch_risk_ack(
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
+    monkeypatch.setattr(
+        setup_route,
+        "_check_model_group_assets",
+        lambda groups, **kwargs: {
+            group: {"ready": True, "reason": None} for group in groups
+        },
+    )
+    monkeypatch.setattr(
+        setup_route.setup_runtime,
+        "_probe_profile",
+        lambda groups, service: {"available": True, "checks": []},
+    )
 
     with _client() as client:
         response = client.post(
@@ -530,9 +542,9 @@ def test_adopt_cuda_requires_pytorch_risk_ack(
             },
         )
 
-    assert response.status_code == 422
-    assert response.json()["detail"]["error"] == "pytorch_risk_required"
-    assert not _state_path(tmp_path).exists()
+    assert response.status_code == 200
+    assert response.json()["risk"] is None
+    assert _state_path(tmp_path).exists()
 
 
 def test_adopt_conflicts_when_packages_missing(

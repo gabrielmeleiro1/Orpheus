@@ -150,7 +150,7 @@ def test_unavailable_profile_is_skipped_and_causes_exit_two(monkeypatch, tmp_pat
     assert report.exit_code(allow_skipped=True) == 0
 
 
-def test_exact_cuda_risk_is_accepted_but_not_passed(tmp_path) -> None:
+def test_cuda_has_no_default_audit_exception_after_pytorch_upgrade(tmp_path) -> None:
     audit = [
         {
             "name": "torch",
@@ -163,8 +163,8 @@ def test_exact_cuda_risk_is_accepted_but_not_passed(tmp_path) -> None:
     )
     result = verifier.evaluate_audit("cuda", audit, exceptions)
 
-    assert result.status == "accepted_risk"
-    assert "accepted risk" in result.summary.lower()
+    assert result.status == "failed"
+    assert "unexpected vulnerabilities" in result.summary.lower()
 
 
 def test_exception_stops_accepting_an_advisory_when_a_fix_exists() -> None:
@@ -232,8 +232,8 @@ def test_expired_unexpected_and_cross_profile_exceptions_fail(tmp_path) -> None:
         "schema_version": 1,
         "exceptions": [
             {
-                "advisory_id": "CVE-2025-3000",
-                "aliases": [],
+                "advisory_id": "PYSEC-2026-139",
+                "aliases": ["CVE-2026-4538"],
                 "package": "torch",
                 "profile": "cuda",
                 "owner": "maintainers",
@@ -574,8 +574,8 @@ def test_exception_file_rejects_future_created_date(tmp_path) -> None:
         "schema_version": 1,
         "exceptions": [
             {
-                "advisory_id": "CVE-2025-3000",
-                "aliases": [],
+                "advisory_id": "PYSEC-2026-139",
+                "aliases": ["CVE-2026-4538"],
                 "package": "torch",
                 "profile": "cuda",
                 "owner": "maintainers",

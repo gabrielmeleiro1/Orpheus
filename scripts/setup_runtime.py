@@ -54,10 +54,8 @@ SETUP_STATE_START_PERCENT = 90
 # main() after run_setup() returns successfully.
 SETUP_STATE_COMPLETE_PERCENT = SETUP_STATE_START_PERCENT
 SETUP_COMPLETE_PERCENT = 100
-PYTORCH_RISK_ID = "PYSEC-2026-139/CVE-2026-4538,CVE-2025-3000"
-PYTORCH_RISK_SUMMARY = (
-    "PyTorch 2.10 has unresolved local deserialization and memory-corruption "
-    "advisories with no fixed upstream release. Use trusted model artifacts only."
+_LEGACY_PYTORCH_RISK_IDS = frozenset(
+    {"PYSEC-2026-139/CVE-2026-4538,CVE-2025-3000"}
 )
 
 
@@ -148,7 +146,12 @@ class SetupLock:
             except OSError:
                 return
             pid = -1
-        if age < 0 or age < LOCK_STALE_SECONDS or (pid > 0 and _pid_is_running(pid)):
+        if age < 0 or (pid > 0 and _pid_is_running(pid)):
+            return
+        # A recorded owner that no longer exists cannot still hold the lock.
+        # Recover it immediately so an interrupted download does not block the
+        # next app launch for the generic ambiguous-lock grace period.
+        if pid <= 0 and age < LOCK_STALE_SECONDS:
             return
         stale_path = self.path.with_name(f"{self.path.name}.stale-{uuid.uuid4().hex}")
         try:
@@ -248,11 +251,7 @@ def build_install_plan(
     """Validate identifiers and return fixed, shell-free argument arrays."""
     profile = _validated_profile(profile_id)
     groups = _validated_model_groups(profile, model_groups)
-    if profile.id == "cuda" and not accept_pytorch_risk:
-        raise SetupValidationError(
-            "CUDA setup requires explicit acknowledgement with "
-            "--accept-pytorch-risk. " + PYTORCH_RISK_SUMMARY
-        )
+    del accept_pytorch_risk  # Retained as a no-op for older desktop clients/commands.
 
     executable = sys.executable
     pip_command = (
@@ -274,13 +273,12 @@ def build_install_plan(
         arguments.append("--json")
         model_command = tuple(arguments)
 
-    accepted_risks = (PYTORCH_RISK_ID,) if profile.id == "cuda" else ()
     return InstallPlan(
         profile=profile,
         model_groups=groups,
         pip_command=pip_command,
         model_command=model_command,
-        accepted_risks=accepted_risks,
+        accepted_risks=(),
     )
 
 
@@ -352,11 +350,8 @@ def write_setup_state(
     profile = get_runtime_profile(profile_id)
     groups = _validated_model_groups(profile, model_groups)
     risks = tuple(accepted_risks)
-    allowed_risks = (PYTORCH_RISK_ID,) if profile.id == "cuda" else ()
-    if any(risk not in allowed_risks for risk in risks):
+    if risks:
         raise SetupValidationError("Setup state contains an unknown risk acknowledgement.")
-    if profile.id == "cuda" and PYTORCH_RISK_ID not in risks:
-        raise SetupValidationError("CUDA setup state requires PyTorch risk acknowledgement.")
     installed_at = datetime.now(timezone.utc)
     if backend_instance_id is not None and not re.fullmatch(r"[0-9a-f]{32}", backend_instance_id):
         raise SetupValidationError("Invalid backend instance identity.")
@@ -388,11 +383,12 @@ def _read_setup_state(state_path: Path) -> tuple[dict[str, Any] | None, str | No
         profile = get_runtime_profile(str(raw.get("profile", "")))
         groups = _validated_model_groups(profile, raw.get("model_groups", ()))
         risks = tuple(str(value) for value in raw.get("accepted_risks", ()))
-        allowed_risks = (PYTORCH_RISK_ID,) if profile.id == "cuda" else ()
+        allowed_risks = _LEGACY_PYTORCH_RISK_IDS
         if any(risk not in allowed_risks for risk in risks):
             raise ValueError("unknown risk acknowledgement")
-        if profile.id == "cuda" and PYTORCH_RISK_ID not in risks:
-            raise ValueError("missing PyTorch risk acknowledgement")
+        # Older CUDA state recorded a now-resolved advisory acknowledgement.
+        # Accept it during upgrades but normalize it out of the current state.
+        risks = ()
         installation_id = str(raw.get("installation_id", ""))
         if not re.fullmatch(r"[0-9a-f]{32}", installation_id):
             raise ValueError("invalid installation identity")
@@ -594,11 +590,7 @@ def get_setup_status(
             "compatible": profile.is_compatible(),
             "reason": profile.incompatibility_reason(),
             "model_groups": list(profile.model_groups),
-            "risk": (
-                {"id": PYTORCH_RISK_ID, "summary": PYTORCH_RISK_SUMMARY}
-                if profile.id == "cuda"
-                else None
-            ),
+            "risk": None,
         }
         for profile in runtime_profiles()
     ]
@@ -620,11 +612,7 @@ def get_setup_status(
         timeout_seconds=15.0,
     )
     probe = _probe_profile(state["model_groups"], service)
-    risk = (
-        {"id": PYTORCH_RISK_ID, "summary": PYTORCH_RISK_SUMMARY, "accepted": True}
-        if state["profile"] == "cuda"
-        else None
-    )
+    risk = None
     return {
         "configured": True,
         "profile": state["profile"],
@@ -828,11 +816,7 @@ def run_setup(
         "commands": [list(command) for command in plan.commands],
         "dry_run": dry_run,
         "restart_required": not dry_run,
-        "risk": (
-            {"id": PYTORCH_RISK_ID, "summary": PYTORCH_RISK_SUMMARY, "accepted": True}
-            if plan.profile.id == "cuda"
-            else None
-        ),
+        "risk": None,
     }
     event_emitter = emit or (lambda event: None)
     event_emitter({"event": "plan", "percent": SETUP_PLAN_PERCENT, **result})
@@ -903,7 +887,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Allowlisted model group id. May be repeated.",
     )
-    parser.add_argument("--accept-pytorch-risk", action="store_true")
+    parser.add_argument(
+        "--accept-pytorch-risk",
+        action="store_true",
+        help=argparse.SUPPRESS,  # Legacy no-op accepted for older launchers only.
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--lock-timeout", type=float, default=DEFAULT_LOCK_TIMEOUT_SECONDS)

@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -175,19 +176,16 @@ def test_dry_run_is_non_mutating_and_returns_exact_commands(
     ]
 
 
-def test_cuda_install_requires_explicit_pytorch_risk_acceptance(
+def test_cuda_install_no_longer_requires_resolved_pytorch_risk_acceptance(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
     import scripts.setup_runtime as setup_runtime
 
     _compatible(monkeypatch, "cuda")
-    with pytest.raises(setup_runtime.SetupValidationError, match="accept-pytorch-risk"):
-        setup_runtime.run_setup(
-            profile_id="cuda",
-            model_groups=(),
-            state_path=tmp_path / "state.json",
-        )
+    plan = setup_runtime.build_install_plan("cuda")
+
+    assert plan.accepted_risks == ()
 
 
 def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
@@ -224,7 +222,7 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
     assert all(call[1]["shell"] is False for call in calls)
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert payload == {
-        "accepted_risks": [setup_runtime.PYTORCH_RISK_ID],
+        "accepted_risks": [],
         "installed_at": payload["installed_at"],
         "installation_id": payload["installation_id"],
         "installed_during_backend_instance_id": None,
@@ -395,7 +393,7 @@ def test_status_probes_only_selected_model_groups(
         state_path,
         profile_id=profile,
         model_groups=groups,
-        accepted_risks=(setup_runtime.PYTORCH_RISK_ID,) if profile == "cuda" else (),
+        accepted_risks=(),
     )
     probe = _ProbeService(package_tts_available=False)
 
@@ -614,6 +612,26 @@ def test_recent_ambiguous_lock_fails_closed(tmp_path: Path):
     assert lock_path.exists()
 
 
+def test_recent_lock_owned_by_dead_process_is_recovered(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    import scripts.setup_runtime as setup_runtime
+
+    state_path = tmp_path / "runtime-setup.json"
+    lock_path = state_path.with_name(f"{state_path.name}.lock")
+    lock_path.mkdir()
+    (lock_path / "owner.json").write_text(
+        json.dumps({"pid": 424242, "created_at": time.time(), "token": "dead"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(setup_runtime, "_pid_is_running", lambda pid: False)
+
+    with setup_runtime.SetupLock(state_path, timeout_seconds=0.1):
+        assert lock_path.is_dir()
+    assert not lock_path.exists()
+
+
 def test_corrupt_backend_instance_blocks_setup_before_pip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -670,32 +688,30 @@ def test_desktop_backend_lifespan_attempts_restart_acknowledgement(
     assert setup_runtime.read_setup_state(state_path)["restart_required"] is False
 
 
-def test_tampered_cuda_state_without_risk_acceptance_is_unconfigured(tmp_path: Path):
+def test_legacy_cuda_risk_acknowledgement_is_migrated_away(tmp_path: Path):
     import scripts.setup_runtime as setup_runtime
 
     state_path = tmp_path / "runtime-setup.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "accepted_risks": [],
-                "installed_at": "2026-07-14T00:00:00+00:00",
-                "model_groups": [],
-                "profile": "cuda",
-                "restart_required": True,
-                "schema_version": setup_runtime.STATE_SCHEMA_VERSION,
-            }
-        ),
-        encoding="utf-8",
+    setup_runtime.write_setup_state(
+        state_path,
+        profile_id="cuda",
+        model_groups=(),
+        accepted_risks=(),
     )
+    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    payload["accepted_risks"] = [
+        "PYSEC-2026-139/CVE-2026-4538,CVE-2025-3000"
+    ]
+    state_path.write_text(json.dumps(payload), encoding="utf-8")
 
     status = setup_runtime.get_setup_status(
         state_path=state_path,
         probe_service=_ProbeService(),
     )
 
-    assert status["configured"] is False
-    assert status["ready"] is False
-    assert "risk acknowledgement" in status["state_error"]
+    assert status["configured"] is True
+    assert status["risk"] is None
+    assert setup_runtime.read_setup_state(state_path)["accepted_risks"] == []
 
 
 def test_json_cli_errors_are_single_parseable_terminal_events(

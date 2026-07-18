@@ -48,14 +48,13 @@ python scripts/setup_runtime.py --profile mlx \
   --group tts-mlx --group cleaner-mlx
 
 # Linux/Windows with a supported NVIDIA GPU and driver
-python scripts/setup_runtime.py --profile cuda --accept-pytorch-risk \
+python scripts/setup_runtime.py --profile cuda \
   --group tts-cpu-cuda --group cleaner-cuda
 ```
 
-CUDA is opt-in because its pinned PyTorch release has unresolved upstream
-advisories; the setup command refuses CUDA unless `--accept-pytorch-risk` is
-provided. Use trusted model artifacts only. Run either command with `--dry-run`
-first to inspect its fixed install and download commands.
+CUDA is opt-in and requires a supported NVIDIA GPU and driver. Use trusted
+model artifacts only. Run either command with `--dry-run` first to inspect its
+fixed install and download commands.
 
 The in-app downloader is intentionally available only while running a debug
 desktop build from this source checkout. It uses the checkout's fixed

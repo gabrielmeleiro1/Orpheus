@@ -478,7 +478,7 @@ export function SetupPage({
   const showRiskBlock = installedReady
     ? Boolean(installedIsCuda && installedProfile?.risk)
     : selection.profile === "cuda" && Boolean(selectedProfile?.risk);
-  const adoptDisabled = adopting || (installedIsCuda && !selection.acceptPytorchRisk);
+  const adoptDisabled = adopting || Boolean(installedProfile?.risk && !selection.acceptPytorchRisk);
   const readyToStart = Boolean(listenerReady && runnerReconciled && mutationsAvailable && status && canStartSetup(selection, status) && !busy && !startLocked.current);
   const packagedMode = environment !== null && !mutationsAvailable;
   const backendInstallProfile = backendInstallProfileId(mutationsAvailable, installedRuntime);

@@ -91,6 +91,14 @@ def test_mlx_manifest_has_torch_free_kokoro_phonemization_dependencies() -> None
     assert not any(line.startswith("bitsandbytes") for line in requirement_lines)
 
 
+def test_cuda_manifest_uses_patched_pytorch_for_fixed_advisory() -> None:
+    manifest = runtime_profiles.PROJECT_ROOT / "requirements" / "cuda.txt"
+    contents = manifest.read_text(encoding="utf-8")
+
+    assert "torch==2.13.0" in contents
+    assert "torch==2.10.0" not in contents
+
+
 def test_mlx_requires_arm64_and_macos_14_or_newer() -> None:
     profile = runtime_profiles.get_runtime_profile("mlx")
 
@@ -102,14 +110,12 @@ def test_mlx_requires_arm64_and_macos_14_or_newer() -> None:
     )
 
 
-def test_cuda_profile_discloses_readiness_probe_and_advisory_risk() -> None:
+def test_cuda_profile_discloses_readiness_probe_without_resolved_advisory() -> None:
     profile = runtime_profiles.get_runtime_profile("cuda")
 
     assert "driver" in profile.description.lower()
     assert "gpu" in profile.description.lower()
-    assert profile.risk is not None
-    assert "trusted" in profile.risk.lower()
-    assert "no fixed" in profile.risk.lower()
+    assert profile.risk is None
 
 
 def test_profile_model_groups_are_explicit() -> None:

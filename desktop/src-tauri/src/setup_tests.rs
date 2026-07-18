@@ -195,17 +195,20 @@ fn setup_validation_rejects_unknown_mismatched_and_injection_values() {
 }
 
 #[test]
-fn cuda_requires_explicit_risk_acknowledgement_and_adds_only_fixed_flag() {
+fn cuda_ignores_obsolete_risk_acknowledgement_without_forwarding_a_flag() {
     let repo = Path::new("/trusted/orpheus");
-    let error = build_setup_launch_config_for_platform(
+    let launch_without_ack = build_setup_launch_config_for_platform(
         repo,
         "/trusted/python",
         request("cuda", &["cleaner-cuda"], false),
         "linux",
         "x86_64",
     )
-    .expect_err("risk acknowledgement must be required");
-    assert!(error.contains("acknowledgement"));
+    .expect("CUDA no longer requires a resolved advisory acknowledgement");
+    assert!(!launch_without_ack
+        .args
+        .iter()
+        .any(|arg| arg == "--accept-pytorch-risk"));
 
     let launch = build_setup_launch_config_for_platform(
         repo,
@@ -214,11 +217,8 @@ fn cuda_requires_explicit_risk_acknowledgement_and_adds_only_fixed_flag() {
         "linux",
         "x86_64",
     )
-    .expect("acknowledged CUDA setup");
-    assert_eq!(
-        launch.args.last().map(String::as_str),
-        Some("--accept-pytorch-risk")
-    );
+    .expect("CUDA setup");
+    assert!(!launch.args.iter().any(|arg| arg == "--accept-pytorch-risk"));
 }
 
 #[test]
