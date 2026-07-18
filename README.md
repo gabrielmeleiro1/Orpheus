@@ -128,6 +128,6 @@ see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#where-to-change-x).
 
 Commit source, docs, tests, `requirements*.txt`, `desktop/package-lock.json`,
 and `desktop/src-tauri/Cargo.lock`. Do not commit generated runtime/build
-outputs such as `venv/`, `.env.local`, `data/*.db`, `output/`, `temp/`,
+outputs such as `.venv/`, `.env.local`, `data/*.db`, `output/`, `temp/`,
 `desktop/node_modules/`, `desktop/dist/`, `desktop/src-tauri/target/`, or
 `desktop/src-tauri/binaries/`; these are ignored in `.gitignore`.

@@ -15,14 +15,14 @@ raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)
 PY
 }
 
-if [[ -x "$ROOT/venv/bin/python" ]]; then
-  PYTHON="$ROOT/venv/bin/python"
+if [[ -x "$ROOT/.venv/bin/python" ]]; then
+  PYTHON="$ROOT/.venv/bin/python"
 elif command -v python >/dev/null 2>&1 && python_supports_validation "$(command -v python)"; then
   PYTHON="$(command -v python)"
 elif command -v python3.12 >/dev/null 2>&1; then
   PYTHON="$(command -v python3.12)"
 else
-  echo "Python 3.12 is required for local validation. Create venv/bin/python or install python3.12." >&2
+  echo "Python 3.12 is required for local validation. Create .venv/bin/python or install python3.12." >&2
   exit 1
 fi
 

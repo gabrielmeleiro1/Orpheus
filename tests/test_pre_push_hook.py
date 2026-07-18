@@ -38,11 +38,11 @@ def test_pre_push_hook_has_valid_bash_syntax() -> None:
     assert completed.returncode == 0, completed.stderr
 
 
-def test_pre_push_hook_prefers_project_venv_then_active_python_312() -> None:
+def test_pre_push_hook_prefers_documented_project_venv_then_active_python_312() -> None:
     script = PRE_PUSH_HOOK.read_text(encoding="utf-8")
 
     assert "python_supports_validation()" in script
-    assert 'PYTHON="$ROOT/venv/bin/python"' in script
+    assert 'PYTHON="$ROOT/.venv/bin/python"' in script
     assert (
         'elif command -v python >/dev/null 2>&1 && '
         'python_supports_validation "$(command -v python)"; then'
@@ -55,3 +55,9 @@ def test_pre_push_hook_prefers_project_venv_then_active_python_312() -> None:
     assert 'run_with_timeout 600 "$PYTHON" -m pytest tests' in script
     assert "run_with_timeout 120 python -m ruff check ." not in script
     assert "run_with_timeout 600 python -m pytest tests" not in script
+
+
+def test_documented_project_venv_is_ignored() -> None:
+    ignore_rules = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert ".venv/" in ignore_rules

@@ -116,8 +116,8 @@ cd desktop/src-tauri && cargo test && cargo check
 Static cleanup checks:
 
 ```bash
-venv/bin/python -m ruff check .
-venv/bin/python -m vulture apps modules scripts tools tests vulture_whitelist.py --min-confidence 80 --sort-by-size
+.venv/bin/python -m ruff check .
+.venv/bin/python -m vulture apps modules scripts tools tests vulture_whitelist.py --min-confidence 80 --sort-by-size
 cd desktop
 npm run typecheck
 npm exec --yes knip -- --include dependencies,devDependencies,files,exports,types

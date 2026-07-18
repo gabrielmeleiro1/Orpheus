@@ -10,6 +10,7 @@ __pycache__/
 .hypothesis/
 
 # Virtual environments and local env files
+.venv/
 venv/
 .env
 .env.*
