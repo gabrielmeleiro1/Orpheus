@@ -47,6 +47,7 @@ from modules.storage.models import (
     SourceType,
 )
 from modules.storage.repository import IBookRepository
+from modules.storage.permissions import ensure_owner_only_directory, owner_only
 from modules.tts.api_rate_limit import GlobalAPILimiter
 
 logger = logging.getLogger(__name__)
@@ -231,7 +232,13 @@ class ConversionService:
             return source_path
 
         sources_dir = Path(self._config.db_path).parent / "sources"
-        sources_dir.mkdir(parents=True, exist_ok=True)
+        ensure_owner_only_directory(sources_dir)
+        try:
+            for existing in sources_dir.iterdir():
+                if existing.is_file():
+                    owner_only(existing)
+        except OSError:
+            pass
         durable_path = sources_dir / source_path.name
         index = 1
         while True:
@@ -244,6 +251,7 @@ class ConversionService:
                 except Exception:
                     self._cleanup_partial_durable_source(durable_path)
                     raise
+                owner_only(durable_path)
                 return durable_path
             except FileExistsError:
                 durable_path = sources_dir / f"{source_path.stem}_{index}{source_path.suffix}"

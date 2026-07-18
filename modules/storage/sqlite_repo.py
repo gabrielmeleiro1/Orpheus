@@ -15,6 +15,7 @@ import sqlite3
 
 from modules.storage.migrations import run_migrations
 from modules.storage.maintenance import resolve_stored_path, workspace_root_for_db
+from modules.storage.permissions import ensure_owner_only_directory, owner_only
 from modules.storage.repository import IBookRepository
 from modules.storage.models import (
     Book,
@@ -52,12 +53,13 @@ class SQLiteRepository(IBookRepository):
             db_path: Path to SQLite database file
         """
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_owner_only_directory(self.db_path.parent)
         workspace_root = workspace_root_for_db(self.db_path)
         self._output_dir = Path(output_dir).expanduser() if output_dir is not None else workspace_root / "output"
         self._temp_dir = Path(temp_dir).expanduser() if temp_dir is not None else workspace_root / "temp"
         self._lock = threading.Lock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        owner_only(self.db_path)
         self._conn.row_factory = sqlite3.Row
         # PRAGMAs are applied by run_migrations() -> configure_connection().
         self._init_schema()

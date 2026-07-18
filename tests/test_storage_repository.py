@@ -766,3 +766,13 @@ def test_list_books_search_escapes_like_wildcards(tmp_path):
     # "_" must not act as a single-character wildcard.
     underscore_matches = repo.list_books(BookFilters(search_query="AB_CD"))
     assert [book.id for book in underscore_matches] == [literal_underscore.id]
+
+
+def test_sqlite_database_parent_and_file_are_owner_only(tmp_path):
+    import stat
+
+    db_path = tmp_path / "data" / "app.db"
+    repo = SQLiteRepository(db_path)
+    repo.close()
+    assert stat.S_IMODE(db_path.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(db_path.stat().st_mode) == 0o600

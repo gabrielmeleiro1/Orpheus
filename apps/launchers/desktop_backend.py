@@ -264,6 +264,11 @@ def configure_frozen_espeak_runtime() -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # App-owned databases, sources, temporary audio, and generated artifacts
+    # are private by default. Explicit chmod calls also repair existing roots;
+    # the process umask covers every newly created nested path.
+    if os.name != "nt":
+        os.umask(0o077)
     # Configure packaged espeak paths before freeze_support: multiprocessing
     # children re-enter main and never return from freeze_support.
     configure_frozen_espeak_runtime()

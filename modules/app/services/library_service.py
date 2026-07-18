@@ -29,6 +29,7 @@ from modules.storage.maintenance import (
 )
 from modules.storage.models import BookFilters, BookSummary, ConversionMode
 from modules.storage.repository import IBookRepository
+from modules.storage.permissions import ensure_owner_only_directory, owner_only
 
 MANAGED_UPLOAD_ROOT_NAME = "web_uploads"
 DELETE_STAGING_DIR_NAME = "delete_staging"
@@ -93,6 +94,8 @@ class LibraryService:
             if storage_root is not None
             else self._output_dir.resolve().parent
         )
+        ensure_owner_only_directory(self._output_dir)
+        ensure_owner_only_directory(self._temp_dir)
         self._folder_opener = folder_opener or _default_folder_opener
 
     def _workspace_root(self) -> Path:
@@ -132,6 +135,7 @@ class LibraryService:
             try:
                 if not entry.is_file():
                     continue
+                owner_only(entry)
                 if entry.stat().st_mtime >= cutoff:
                     continue
                 if self._is_source_referenced_by_books(entry):
@@ -211,7 +215,7 @@ class LibraryService:
             )
 
         destination_root = self._upload_root()
-        destination_root.mkdir(parents=True, exist_ok=True)
+        ensure_owner_only_directory(destination_root)
         stored_name = f"{int(datetime.now().timestamp())}_{uuid4().hex[:8]}{suffix}"
         stored_path = destination_root / stored_name
         size_bytes = self._copy_upload_with_size_limit(
@@ -219,6 +223,7 @@ class LibraryService:
             stored_path,
             max(1, int(max_bytes)),
         )
+        owner_only(stored_path)
 
         try:
             preflight = self.preflight_source(stored_path)
@@ -253,11 +258,12 @@ class LibraryService:
             raise UploadTooLargeError(f"Pasted text exceeds {max_bytes} bytes")
 
         destination_root = self._upload_root()
-        destination_root.mkdir(parents=True, exist_ok=True)
+        ensure_owner_only_directory(destination_root)
         original_name = self._safe_markdown_filename(normalized_title)
         stored_name = f"{int(datetime.now().timestamp())}_{uuid4().hex[:8]}_{original_name}"
         stored_path = destination_root / stored_name
         stored_path.write_bytes(source_bytes)
+        owner_only(stored_path)
         preflight = self.preflight_source(stored_path)
 
         return {

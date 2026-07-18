@@ -194,6 +194,11 @@ def test_desktop_backend_main_calls_multiprocessing_freeze_support(monkeypatch) 
     def _fake_configure_frozen_espeak_runtime() -> None:
         call_order.append("configure_frozen_espeak_runtime")
 
+    def _fake_umask(mask: int) -> int:
+        assert mask == 0o077
+        call_order.append("umask")
+        return 0o022
+
     def _fake_freeze_support() -> None:
         call_order.append("freeze_support")
 
@@ -218,6 +223,7 @@ def test_desktop_backend_main_calls_multiprocessing_freeze_support(monkeypatch) 
         "configure_frozen_espeak_runtime",
         _fake_configure_frozen_espeak_runtime,
     )
+    monkeypatch.setattr(desktop_backend.os, "umask", _fake_umask)
     monkeypatch.setattr(desktop_backend.multiprocessing, "freeze_support", _fake_freeze_support)
     monkeypatch.setattr(desktop_backend, "build_parser", lambda: _FakeParser())
     monkeypatch.setattr(desktop_backend, "create_app", lambda **_: object())
@@ -226,7 +232,7 @@ def test_desktop_backend_main_calls_multiprocessing_freeze_support(monkeypatch) 
     exit_code = desktop_backend.main([])
 
     assert exit_code == 0
-    assert call_order[:2] == ["configure_frozen_espeak_runtime", "freeze_support"]
+    assert call_order[:3] == ["umask", "configure_frozen_espeak_runtime", "freeze_support"]
     assert "parse_args" in call_order
 
 
