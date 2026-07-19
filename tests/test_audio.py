@@ -1387,9 +1387,14 @@ class TestM4BPackager:
         text = output_path.read_text(encoding="utf-8")
         assert "title=A \\= title\\; \\#1" in text
         assert "artist=Author\\\\Name" in text
-        assert "comment=line one\\nline two" in text
         assert "title=Chapter \\= One \\# intro" in text
+        # A raw newline must not break the key/value line, and it must not be
+        # escaped either: ffmpeg reads "\" as "next character is literal", so
+        # "\n" round-trips through ffprobe as the letter n ("line onenline
+        # two"). Verified against real ffmpeg. Collapse to a space instead.
+        assert "comment=line one line two" in text
         assert "comment=line one\nline two" not in text
+        assert "\\n" not in text
 
     def test_create_m4b_without_cover_real_ffmpeg_preserves_aac_metadata_and_chapters(self, tmp_path):
         ffmpeg = shutil.which("ffmpeg")
