@@ -160,6 +160,12 @@ export function canStartSetup(selection: SetupSelection, status: RuntimeSetupSta
   if (!profile?.compatible || selection.modelGroups.some((group) => !profile.model_groups.includes(group))) {
     return false;
   }
+  // A profile that offers model groups needs at least one: installing none
+  // provisions no TTS model, which the backend rejects and which would
+  // otherwise leave the app looking configured with nothing to synthesize with.
+  if (profile.model_groups.length > 0 && selection.modelGroups.length === 0) {
+    return false;
+  }
   return !profile.risk || selection.acceptPytorchRisk;
 }
 

@@ -67,6 +67,15 @@ describe("runtime setup selection", () => {
     expect(canStartSetup({ ...cuda, acceptPytorchRisk: true }, cudaStatus)).toBe(true);
   });
 
+  it("blocks a TTS profile with every model group unchecked", () => {
+    const mlx = selectProfile(createSelection(status()), "mlx", status());
+    expect(canStartSetup(mlx, status())).toBe(true);
+    const nothingChecked = { ...mlx, modelGroups: [] };
+    expect(canStartSetup(nothingChecked, status())).toBe(false);
+    // base has no model groups of its own, so it stays installable.
+    expect(canStartSetup(createSelection(status()), status())).toBe(true);
+  });
+
   it("preselects the recommended profile only when no profile was persisted", () => {
     const recommended = status({ recommended_profile: "mlx" });
     expect(createSelection(recommended).profile).toBe("mlx");

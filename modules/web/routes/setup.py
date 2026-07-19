@@ -590,6 +590,18 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
         ) from exc
 
     if profile.id != "base":
+        # Every readiness check below folds over `groups`, so an empty selection
+        # would pass all of them vacuously and persist a "ready" state for a
+        # profile with no TTS model installed. post_model_download guards this
+        # the same way.
+        if not groups:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "invalid_request",
+                    "message": "At least one model group is required.",
+                },
+            )
         packages = _check_selected_profile_packages(profile.id)
         if not packages["ready"]:
             raise HTTPException(

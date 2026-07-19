@@ -1253,3 +1253,66 @@ def test_delete_runtime_rejects_active_conversion(monkeypatch: pytest.MonkeyPatc
     response = client.request("DELETE", "/api/setup/runtime")
     assert response.status_code == 409
     assert response.json()["detail"]["error"] == "conversion_in_progress"
+
+
+def test_adopt_rejects_non_base_profile_with_no_model_groups(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A TTS profile with nothing selected cannot be 'ready' -- no model exists.
+
+    Every readiness check folds over the selected groups, so an empty selection
+    made each one vacuously true and onboarding hid itself with no TTS runtime.
+    """
+    from modules.web.routes import setup as setup_route
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        setup_route,
+        "_check_selected_profile_packages",
+        lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
+    )
+    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+
+    with _client() as client:
+        response = client.post(
+            "/api/setup/adopt",
+            json={"profile": "mlx", "model_groups": []},
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "invalid_request"
+    assert not _state_path(tmp_path).exists()
+
+
+def test_setup_status_is_not_ready_when_no_model_group_is_selected(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Readiness must be judged against the profile's TTS groups, not the selection."""
+    from modules.web.routes import setup as setup_route
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(
+        setup_route,
+        "_check_selected_profile_packages",
+        lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
+    )
+    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+
+    state_path = _state_path(tmp_path)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps({"profile": "mlx", "model_groups": [], "restart_required": False}),
+        encoding="utf-8",
+    )
+
+    with _client() as client:
+        response = client.get("/api/setup/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ready"] is False
+    assert payload["state"] != "ready"
