@@ -105,7 +105,7 @@ def test_storage_repository() -> bool:
         print("✓ Schema migrated to v2 (no processing_jobs/start_time_ms)")
     except Exception as e:
         print(f"✗ Failed to initialize repository: {e}")
-        return False
+        raise
 
     # Test 2: Create book
     print("\n[2] Testing create_book()...")
@@ -124,7 +124,7 @@ def test_storage_repository() -> bool:
         print(f"✓ Created book with ID: {created_book.id}")
     except Exception as e:
         print(f"✗ Failed to create book: {e}")
-        return False
+        raise
 
     # Test 3: Get book
     print("\n[3] Testing get_book()...")
@@ -141,7 +141,7 @@ def test_storage_repository() -> bool:
         print(f"✓ Retrieved book: {book.title} by {book.author}")
     except Exception as e:
         print(f"✗ Failed to get book: {e}")
-        return False
+        raise
 
     # Test 4: Update playback position
     print("\n[4] Testing update_book_playback_position()...")
@@ -155,7 +155,7 @@ def test_storage_repository() -> bool:
         print("✓ Book playback position persisted")
     except Exception as e:
         print(f"✗ Failed playback position update: {e}")
-        return False
+        raise
 
     # Test 5: Bulk create book + chapters
     print("\n[5] Testing create_book_with_chapters()...")
@@ -181,7 +181,7 @@ def test_storage_repository() -> bool:
         print("✓ Bulk transaction inserted book + 3 chapters")
     except Exception as e:
         print(f"✗ Failed bulk insert: {e}")
-        return False
+        raise
 
     # Test 6: get_chapters ordering
     print("\n[6] Testing get_chapters() ordering...")
@@ -191,7 +191,7 @@ def test_storage_repository() -> bool:
         print("✓ Chapters ordered by chapter_number")
     except Exception as e:
         print(f"✗ Failed get_chapters ordering: {e}")
-        return False
+        raise
 
     # Test 7: cascade delete behavior
     print("\n[7] Testing delete_book() cascade...")
@@ -203,7 +203,7 @@ def test_storage_repository() -> bool:
         print("✓ Book delete cascades to chapters")
     except Exception as e:
         print(f"✗ Failed cascade delete: {e}")
-        return False
+        raise
 
     # Test 9: completed chapter summaries only count playable chapter rows
     print("\n[9] Testing list_books() completed chapter summaries...")
@@ -241,15 +241,14 @@ def test_storage_repository() -> bool:
         print("✓ list_books counts only chapters with mp3 paths as completed")
     except Exception as e:
         print(f"✗ Failed completed-chapter summary validation: {e}")
-        return False
+        raise
 
     # Test 10: Deprecated storage API removed
     print("\n[10] Testing deprecated storage API removal...")
     try:
         try:
             importlib.import_module("modules.storage.database")
-            print("✗ Deprecated storage module should not be importable")
-            return False
+            raise AssertionError("Deprecated storage module should not be importable")
         except ModuleNotFoundError:
             pass
 
@@ -257,15 +256,16 @@ def test_storage_repository() -> bool:
             from modules.storage import Database  # type: ignore
 
             _ = Database
-            print("✗ Deprecated Database export should not exist in modules.storage")
-            return False
+            raise AssertionError(
+                "Deprecated Database export should not exist in modules.storage"
+            )
         except ImportError:
             pass
 
         print("✓ Deprecated storage module/export removed")
     except Exception as e:
         print(f"✗ Failed deprecated-storage-removal validation: {e}")
-        return False
+        raise
 
     print("\n" + "=" * 50)
     print("ALL TESTS PASSED ✓")

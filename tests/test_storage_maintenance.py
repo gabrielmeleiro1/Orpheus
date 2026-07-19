@@ -104,10 +104,15 @@ def test_storage_maintenance() -> bool:
             stale_stage_dir.mkdir(parents=True, exist_ok=True)
             (stale_stage_dir / "chunk_0000.wav").write_bytes(b"RIFF")
 
+            # The fixture artifacts are created milliseconds ago, so the default
+            # 24h recency grace would exempt every one of them. Opt out of it to
+            # exercise the stale-artifact path; the grace itself is covered by
+            # test_storage_maintenance_preserves_recent_unreferenced_artifacts.
             audit_before = audit_storage_state(
                 db_path=db_path,
                 output_dir=output_dir,
                 temp_dir=temp_dir,
+                grace_seconds=0,
             )
             assert len(audit_before["stale_chapter_rows"]) >= 1
             assert any("Orphan Book" in p for p in audit_before["orphan_output_dirs"])
@@ -117,6 +122,7 @@ def test_storage_maintenance() -> bool:
                 output_dir=output_dir,
                 temp_dir=temp_dir,
                 aggressive=True,
+                grace_seconds=0,
             )
 
             assert Path(report["backup_path"]).exists()
@@ -150,12 +156,50 @@ def test_storage_maintenance() -> bool:
             print("✓ Referenced upload source moved to data/sources")
     except Exception as exc:
         print(f"✗ Storage maintenance test failed: {exc}")
-        return False
+        raise
 
     print("\n" + "=" * 50)
     print("ALL TESTS PASSED ✓")
     print("=" * 50 + "\n")
     return True
+
+
+def test_storage_maintenance_preserves_recent_unreferenced_artifacts(tmp_path):
+    """The recency grace is the guard against pruning an in-flight conversion.
+
+    An unreferenced directory that was written seconds ago belongs to a run the
+    database has not recorded yet, so an aggressive prune must leave it alone.
+    """
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    data_dir = tmp_path / "data"
+    for directory in (output_dir, temp_dir, data_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    db_path = data_dir / "audiobooks.db"
+    SQLiteRepository(db_path)
+
+    in_flight = output_dir / "In Flight Book"
+    in_flight.mkdir(parents=True, exist_ok=True)
+    in_flight_audio = in_flight / "chapter_01.wav"
+    in_flight_audio.write_bytes(b"RIFFin-flight")
+
+    audit = audit_storage_state(
+        db_path=db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+    )
+    assert not any("In Flight Book" in entry for entry in audit["orphan_output_dirs"])
+
+    prune_stale_records_and_files(
+        db_path=db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+    )
+
+    assert in_flight_audio.exists()
+    assert in_flight_audio.read_bytes() == b"RIFFin-flight"
 
 
 def test_storage_maintenance_keeps_referenced_books_under_symlinked_output_root(tmp_path):

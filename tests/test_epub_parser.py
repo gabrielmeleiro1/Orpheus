@@ -758,14 +758,13 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
         print("✓ EPUBParser initialized successfully")
     except Exception as e:
         print(f"✗ Failed to initialize parser: {e}")
-        return False
+        raise
     
     # Test 2: Invalid file handling
     print("\n[3] Testing invalid file handling...")
     try:
         EPUBParser("/nonexistent/file.epub")
-        print("✗ Should have raised FileNotFoundError")
-        return False
+        raise AssertionError("Should have raised FileNotFoundError")
     except FileNotFoundError:
         print("✓ FileNotFoundError raised correctly")
     
@@ -784,7 +783,7 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
         print(f"✗ Failed to parse document: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        raise
     
     # Test 4: Metadata extraction
     print("\n[5] Testing metadata extraction...")
@@ -797,7 +796,7 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
             print(f"  - {key}: {value}")
     except Exception as e:
         print(f"✗ Metadata extraction failed: {e}")
-        return False
+        raise
     
     # Test 5: Chapter extraction
     print("\n[6] Testing chapter extraction...")
@@ -813,7 +812,7 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
         print(f"✗ Chapter extraction failed: {e}")
         import traceback
         traceback.print_exc()
-        return False
+        raise
     
     # Test 6: Content cleaning
     print("\n[7] Testing content cleaning...")
@@ -826,7 +825,7 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
         print(f"  - Content length: {len(first_chapter.content)} chars")
     except Exception as e:
         print(f"✗ Content cleaning failed: {e}")
-        return False
+        raise
     
     # Test 7: HTML content preserved
     print("\n[8] Testing HTML content preservation...")
@@ -838,7 +837,7 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
         print(f"  - HTML length: {len(first_chapter.html_content)} chars")
     except Exception as e:
         print(f"✗ HTML preservation failed: {e}")
-        return False
+        raise
 
     # Test 8: XHTML parsing should not emit XML-as-HTML warnings
     print("\n[9] Testing XHTML parser warning handling...")
@@ -865,7 +864,7 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
         print("✓ XHTML parsed without XMLParsedAsHTMLWarning")
     except Exception as e:
         print(f"✗ XHTML parser warning handling failed: {e}")
-        return False
+        raise
     
     # Cleanup
     print("\n" + "="*50)

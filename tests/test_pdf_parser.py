@@ -210,14 +210,13 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
         print("✓ PDFParser initialized successfully")
     except Exception as e:
         print(f"✗ Failed to initialize parser: {e}")
-        return False
+        raise
     
     # Test 2: Invalid file handling
     print("\n[3] Testing invalid file handling...")
     try:
         PDFParser("/nonexistent/file.pdf")
-        print("✗ Should have raised FileNotFoundError")
-        return False
+        raise AssertionError("Should have raised FileNotFoundError")
     except FileNotFoundError:
         print("✓ FileNotFoundError raised correctly")
     
@@ -234,7 +233,7 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
         print(f"  - Markdown length: {len(doc.raw_markdown)} chars")
     except Exception as e:
         print(f"✗ Failed to parse document: {e}")
-        return False
+        raise
     
     # Test 4: TOC extraction
     print("\n[5] Testing TOC extraction...")
@@ -246,7 +245,7 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
             print(f"  - [{level}] {title} (p.{page})")
     except Exception as e:
         print(f"✗ Failed to extract TOC: {e}")
-        return False
+        raise
     
     # Test 5: Chapter extraction
     print("\n[6] Testing chapter extraction...")
@@ -257,7 +256,7 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
             print(f"  - Chapter {ch.number}: {ch.title} (p.{ch.start_page}-{ch.end_page})")
     except Exception as e:
         print(f"✗ Chapter extraction failed: {e}")
-        return False
+        raise
     
     # Test 6: Page count
     print("\n[7] Testing page count...")
@@ -267,7 +266,7 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
         print(f"✓ Page count: {page_count}")
     except Exception as e:
         print(f"✗ Page count failed: {e}")
-        return False
+        raise
     
     # Test 7: Markdown content
     print("\n[8] Testing markdown content...")
@@ -280,7 +279,7 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
         print(f"  {markdown[:200]}...")
     except Exception as e:
         print(f"✗ Markdown test failed: {e}")
-        return False
+        raise
     
     # Cleanup
     print("\n" + "="*50)

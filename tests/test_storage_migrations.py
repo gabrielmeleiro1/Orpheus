@@ -167,7 +167,7 @@ def test_storage_migrations() -> bool:
         print("✓ expected indexes present")
     except Exception as exc:
         print(f"✗ Migration test failed: {exc}")
-        return False
+        raise
 
     print("\n" + "=" * 50)
     print("ALL TESTS PASSED ✓")
