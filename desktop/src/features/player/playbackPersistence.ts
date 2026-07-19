@@ -4,6 +4,11 @@ import type { ApiClient } from "../../api/client";
 import { PLAYBACK_SAVE_INTERVAL_SEC } from "../dashboard/dashboardHelpers";
 import type { UseLibraryResult } from "../library/useLibrary";
 
+// Consecutive silent save failures tolerated before telling the user that
+// resume is broken. Automatic saves fire about once a second, so this rides
+// out a brief blip without sitting quiet through a real outage.
+const PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD = 5;
+
 export interface PersistPlaybackOptions {
   bookId?: number | null;
   positionSec?: number;
@@ -48,6 +53,7 @@ export function usePlaybackPersistence({
   const pendingResumePositionSecRef = useRef(0);
   const lastSavedPlaybackBookIdRef = useRef<number | null>(null);
   const lastSavedPlaybackSecRef = useRef<number | null>(null);
+  const consecutiveSaveFailuresRef = useRef(0);
 
   const setPendingResume = useCallback((bookId: number, positionSec: number) => {
     pendingResumeBookIdRef.current = bookId;
@@ -82,6 +88,8 @@ export function usePlaybackPersistence({
         return lastSavedPlaybackSecRef.current;
       }
 
+      const previousSavedBookId = lastSavedPlaybackBookIdRef.current;
+      const previousSavedSec = lastSavedPlaybackSecRef.current;
       lastSavedPlaybackBookIdRef.current = bookId;
       lastSavedPlaybackSecRef.current = normalizedPosition;
 
@@ -90,12 +98,24 @@ export function usePlaybackPersistence({
         const savedPosition = Number(response.position_sec);
         const resolved = Number.isFinite(savedPosition) ? savedPosition : normalizedPosition;
         lastSavedPlaybackSecRef.current = resolved;
+        consecutiveSaveFailuresRef.current = 0;
         if (library.selectedBookId === bookId) {
           library.setSelectedPlaybackPosition(resolved);
         }
         return resolved;
       } catch {
-        if (!options.silent) {
+        // The throttle marker was set optimistically above. Roll it back, or
+        // the next per-second save is skipped as "already saved" and the
+        // position silently stops advancing for the rest of the session.
+        lastSavedPlaybackBookIdRef.current = previousSavedBookId;
+        lastSavedPlaybackSecRef.current = previousSavedSec;
+        consecutiveSaveFailuresRef.current += 1;
+        // Automatic saves stay quiet about a blip, but a sustained failure
+        // means resume is broken and the user should hear about it.
+        if (
+          !options.silent ||
+          consecutiveSaveFailuresRef.current >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD
+        ) {
           onSaveFailed();
         }
         return null;
