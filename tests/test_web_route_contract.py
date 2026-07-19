@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 from modules.web.server import create_app
 
 
@@ -25,9 +28,11 @@ FRONTEND_ROUTE_CONTRACT = {
     "/api/setup/runtime": {"DELETE"},
     "/api/system/capabilities": {"GET"},
     "/api/sources/preflight": {"POST"},
+    "/api/uploads/source": {"POST"},
     "/api/uploads/text": {"POST"},
     "/api/voices/suggest": {"POST"},
     "/api/library": {"GET"},
+    "/api/library/count": {"GET"},
     "/api/library/{book_id}": {"GET", "PATCH", "DELETE"},
     "/api/library/{book_id}/audio": {"GET", "HEAD"},
     "/api/library/{book_id}/chapters/{chapter_number}/cleaning-preview": {"GET"},
@@ -60,3 +65,44 @@ def test_frontend_api_client_routes_exist_with_expected_methods() -> None:
         if not expected_methods.issubset(route_methods[path])
     }
     assert method_mismatches == {}
+
+
+def _normalize_route(path: str) -> str:
+    """Reduce a route to a parameter-name-agnostic shape.
+
+    The TS client interpolates `${bookId}` where the server declares
+    `{book_id}`, so both sides collapse to `{}` for comparison.
+    """
+    path = path.split("?", 1)[0]
+    path = re.sub(r"\$\{[^}]*\}", "{}", path)
+    path = re.sub(r"\{[^}]*\}", "{}", path)
+    return path.rstrip("/") or "/"
+
+
+def _client_source() -> str:
+    client_path = (
+        Path(__file__).resolve().parent.parent / "desktop" / "src" / "api" / "client.ts"
+    )
+    return client_path.read_text(encoding="utf-8")
+
+
+def test_every_route_the_frontend_client_calls_is_in_the_contract() -> None:
+    """The manifest's "keep in sync with client.ts" comment, enforced.
+
+    Without this, adding a client call and forgetting the manifest entry means
+    renaming or deleting that server route leaves every gate green while the
+    desktop app 404s.
+    """
+    called = {
+        _normalize_route(match)
+        for match in re.findall(r"[\"'`](/(?:api|health)[^\"'`]*)[\"'`]", _client_source())
+    }
+    assert called, "no API routes were extracted from client.ts"
+
+    contract = {_normalize_route(path) for path in FRONTEND_ROUTE_CONTRACT}
+    undeclared = sorted(called - contract)
+
+    assert undeclared == [], (
+        "routes called by desktop/src/api/client.ts but missing from "
+        f"FRONTEND_ROUTE_CONTRACT: {undeclared}"
+    )
