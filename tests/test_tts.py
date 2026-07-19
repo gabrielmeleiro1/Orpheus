@@ -14,6 +14,7 @@ from modules.tts.chunker import TextChunker, ChunkConfig
 from modules.tts.cleaner import TextCleaner
 from modules.tts.engine import TTSEngine
 from modules.tts.engine_config import TTSConfig
+from modules.errors import SynthesisError
 
 
 @pytest.fixture(autouse=True)
@@ -274,3 +275,99 @@ class TestSharedModelLock:
         second._model_cache_key = "key-b"
 
         assert first._model_lock is not second._model_lock
+
+
+def _segment_path(kwargs: dict, index: int) -> Path:
+    """Resolve the per-segment WAV path from generate_audio's kwargs.
+
+    mlx_audio accepts either an output_path directory plus a file_prefix, or a
+    file_prefix that is itself a full path stem.
+    """
+    prefix = kwargs["file_prefix"]
+    base = Path(kwargs["output_path"]) / prefix if "output_path" in kwargs else Path(prefix)
+    return base.with_name(f"{base.name}_{index:03d}.wav")
+
+
+class TestMultiSegmentWavAssembly:
+    """Cover the >1 segment branch of file-backed chapter synthesis.
+
+    Existing tests only exercise the single-file and single-segment paths, so a
+    regression that dropped later segments would silently truncate every
+    multi-segment chapter to its first few seconds.
+    """
+
+    @staticmethod
+    def _write_wav(path: Path, samples: np.ndarray, sample_rate: int = 24000) -> None:
+        with wave.open(str(path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(sample_rate)
+            wav_file.writeframes(samples.astype(np.int16).tobytes())
+
+    def test_collects_every_generated_segment_in_order(self, tmp_path):
+        output_path = tmp_path / "chapter.wav"
+        segment_values = [11, 22, 33]
+        frames_per_segment = 5
+
+        def fake_generate_audio(**kwargs):  # noqa: ANN001
+            for index, value in enumerate(segment_values):
+                segment = _segment_path(kwargs, index)
+                self._write_wav(
+                    segment,
+                    np.full(frames_per_segment, value, dtype=np.int16),
+                )
+
+        engine = SimpleNamespace(
+            _model_lock=threading.RLock(),
+            _model_path="model-path",
+            _model=object(),
+        )
+
+        written_path = synthesize_to_output_file_helper(
+            engine,
+            text="Hello world",
+            voice="af_bella",
+            speed=1.0,
+            output_path=output_path,
+            generate_fn=fake_generate_audio,
+        )
+
+        assert written_path == output_path
+        with wave.open(str(output_path), "rb") as wav_file:
+            assert wav_file.getnframes() == frames_per_segment * len(segment_values)
+            frames = np.frombuffer(
+                wav_file.readframes(wav_file.getnframes()), dtype=np.int16
+            )
+        # Order matters: a reordered concat would still have the right length.
+        assert list(frames) == [
+            value for value in segment_values for _ in range(frames_per_segment)
+        ]
+        # Segment files must not be left behind for the next run to pick up.
+        assert sorted(output_path.parent.glob("chapter_*.wav")) == []
+
+    def test_rejects_segments_with_mismatched_audio_parameters(self, tmp_path):
+        output_path = tmp_path / "chapter.wav"
+
+        def fake_generate_audio(**kwargs):  # noqa: ANN001
+            self._write_wav(_segment_path(kwargs, 0), np.ones(4, dtype=np.int16))
+            self._write_wav(
+                _segment_path(kwargs, 1),
+                np.ones(4, dtype=np.int16),
+                sample_rate=48000,
+            )
+
+        engine = SimpleNamespace(
+            _model_lock=threading.RLock(),
+            _model_path="model-path",
+            _model=object(),
+        )
+
+        with pytest.raises(SynthesisError):
+            synthesize_to_output_file_helper(
+                engine,
+                text="Hello world",
+                voice="af_bella",
+                speed=1.0,
+                output_path=output_path,
+                generate_fn=fake_generate_audio,
+            )
