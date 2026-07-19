@@ -158,6 +158,71 @@ def test_storage_maintenance() -> bool:
     return True
 
 
+def test_storage_maintenance_keeps_referenced_books_under_symlinked_output_root(tmp_path):
+    """A symlinked library root must not turn every referenced book into an orphan.
+
+    Users commonly point the output directory at a symlink (an external volume,
+    or macOS's own /var -> /private/var). The audit resolves chapter paths but
+    listed the directory entries unresolved, so the two never matched and an
+    aggressive prune deleted audio that the database still referenced.
+    """
+    real_root = tmp_path.resolve()
+    volume = real_root / "Volumes" / "Media" / "Audiobooks"
+    volume.mkdir(parents=True, exist_ok=True)
+    output_dir = real_root / "library"
+    output_dir.symlink_to(volume)
+
+    temp_dir = real_root / "temp"
+    data_dir = real_root / "data"
+    for directory in (temp_dir, data_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
+    db_path = data_dir / "audiobooks.db"
+    repo = SQLiteRepository(db_path)
+
+    chapter_audio = output_dir / "My Book" / "chapters" / "01_intro.mp3"
+    chapter_audio.parent.mkdir(parents=True, exist_ok=True)
+    chapter_audio.write_bytes(b"ID3 referenced audio")
+
+    repo.create_book_with_chapters(
+        BookCreate(
+            title="My Book",
+            author="Author",
+            source_path=str(real_root / "source.pdf"),
+            source_type=SourceType.PDF,
+            total_chapters=1,
+        ),
+        [
+            ChapterCreate(
+                book_id=0,
+                chapter_number=1,
+                title="Intro",
+                duration_ms=1000,
+                mp3_path=str(chapter_audio),
+            )
+        ],
+    )
+
+    audit = audit_storage_state(
+        db_path=db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        grace_seconds=0,
+    )
+    assert audit["orphan_output_dirs"] == []
+
+    prune_stale_records_and_files(
+        db_path=db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+        grace_seconds=0,
+    )
+
+    assert chapter_audio.exists()
+    assert chapter_audio.read_bytes() == b"ID3 referenced audio"
+
+
 def test_storage_maintenance_respects_custom_output_root(tmp_path):
     workspace = tmp_path / "workspace"
     db_path = workspace / "state" / "audiobooks.db"

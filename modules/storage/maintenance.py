@@ -286,7 +286,12 @@ def audit_storage_state(
             except ValueError:
                 return resolved_path
             if relative.parts:
-                referenced_output_dirs.add(str((output_root / relative.parts[0]).resolve()))
+                # Key on the resolved root plus the entry name. Resolving the
+                # whole entry would dereference a symlinked book directory and
+                # stop it matching the listing below.
+                referenced_output_dirs.add(
+                    str(output_root.resolve() / relative.parts[0])
+                )
             return resolved_path
 
         playable_book_ids: set[int] = set()
@@ -349,19 +354,27 @@ def audit_storage_state(
         # reported by its link path — never resolved to its target — so the
         # delete phase unlinks the link instead of rmtree-ing whatever it
         # points at outside the managed roots.
+        # Map a canonical key (resolved root + entry name) to the entry's own
+        # path, so the comparison survives a symlinked output root while the
+        # delete phase still acts on the undereferenced path.
         actual_output_dirs = (
             {
-                str(p)
+                str(output_root.resolve() / p.name): str(p)
                 for p in output_root.iterdir()
                 if (p.is_symlink() or p.is_dir())
                 and p.name not in RESERVED_OUTPUT_DIR_NAMES
             }
             if output_root.exists()
-            else set()
+            else {}
         )
 
         orphan_output_dirs = _recency_filter(
-            actual_output_dirs - referenced_output_dirs, recency_cutoff
+            (
+                entry_path
+                for key, entry_path in actual_output_dirs.items()
+                if key not in referenced_output_dirs
+            ),
+            recency_cutoff,
         )
 
         temp_upload_dir = temp_root / "web_uploads"
