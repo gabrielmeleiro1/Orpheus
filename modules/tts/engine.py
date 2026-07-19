@@ -174,9 +174,6 @@ class TTSEngine:
         self.config = config or TTSConfig()
         self._model_loaded = False
         self._model = None
-        # generate_audio() access is serialized today, so grouped synthesis is
-        # scheduler-level only and not true model-parallel batch inference.
-        self._model_lock = threading.RLock()
 
         # Determine model path based on quantization
         self._model_path = self._get_model_path()
@@ -215,6 +212,18 @@ class TTSEngine:
     def sample_rate(self) -> int:
         """Get the audio sample rate."""
         return self.config.sample_rate
+
+    @property
+    def _model_lock(self) -> threading.RLock:
+        """Serialize access to the underlying model.
+
+        engine_runtime hands one cached model to every engine sharing a cache
+        key, and the model keeps mutable per-call state, so the lock has to be
+        keyed by that model rather than owned by the instance. Falls back to the
+        model path before the cache key is assigned.
+        """
+        key = getattr(self, "_model_cache_key", None) or self._model_path
+        return model_cache_backend.get_model_lock(str(key))
 
     def _blank_text_silence(self) -> "np.ndarray":
         """Audio for a chunk whose text cleaned away to nothing.

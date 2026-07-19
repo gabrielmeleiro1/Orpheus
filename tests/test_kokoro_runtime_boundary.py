@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import importlib
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -587,3 +588,74 @@ def test_mlx_runtime_uses_default_voice_from_runtime_config() -> None:
 
     engine_config = mock_engine.call_args.args[0]
     assert engine_config.default_voice == "af_bella"
+
+
+def _package_runtime() -> PackageKokoroRuntime:
+    return PackageKokoroRuntime(
+        KokoroRuntimeConfig(
+            runtime_spec=TTSRuntimeSpec(
+                provider="cpu",
+                engine="kokoro",
+                model="hexgrad/Kokoro-82M",
+                quantization="fp32",
+            ),
+            model_name="hexgrad/Kokoro-82M",
+            quantization="fp32",
+            sample_rate=24000,
+        )
+    )
+
+
+def test_package_kokoro_serializes_calls_into_a_shared_pipeline() -> None:
+    """Two runtimes sharing one cached KPipeline must not call it concurrently.
+
+    model_cache hands the same pipeline object to every holder, and KPipeline
+    mutates per-call state, so an unsynchronized voice preview issued during a
+    conversion corrupts the in-flight chunk.
+    """
+    import threading
+
+    in_flight = 0
+    max_in_flight = 0
+    counter_lock = threading.Lock()
+
+    class _StatefulPipeline:
+        def __call__(self, text, voice, speed):  # noqa: ANN001, ANN204
+            nonlocal in_flight, max_in_flight
+            with counter_lock:
+                in_flight += 1
+                max_in_flight = max(max_in_flight, in_flight)
+            try:
+                time.sleep(0.02)
+                yield ("g", "p", np.zeros(4, dtype=np.float32))
+            finally:
+                with counter_lock:
+                    in_flight -= 1
+
+    shared_pipeline = _StatefulPipeline()
+    first = _package_runtime()
+    second = _package_runtime()
+    assert first._cache_key() == second._cache_key()
+    first._pipeline = shared_pipeline
+    second._pipeline = shared_pipeline
+
+    errors: list[BaseException] = []
+
+    def run(runtime: PackageKokoroRuntime) -> None:
+        try:
+            runtime.synthesize("hello there", voice="af_bella")
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=run, args=(first,)),
+        threading.Thread(target=run, args=(second,)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert not errors
+    assert all(not thread.is_alive() for thread in threads)
+    assert max_in_flight == 1, "shared KPipeline was entered concurrently"

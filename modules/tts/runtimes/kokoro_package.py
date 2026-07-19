@@ -221,14 +221,18 @@ class PackageKokoroRuntime:
             raise RuntimeError("Model not loaded. Call load() first.")
 
         started_at = time.perf_counter()
-        audio_chunks = [
-            np.asarray(audio, dtype=np.float32)
-            for _graphemes, _phonemes, audio in self._pipeline(
-                text,
-                voice=self._voice_arg(voice),
-                speed=speed,
-            )
-        ]
+        # The pipeline is shared with every other runtime holding the same cache
+        # key (e.g. a voice preview raised during a conversion). KPipeline keeps
+        # mutable per-call state, so calls into it must not interleave.
+        with model_cache.get_model_lock(self._cache_key()):
+            audio_chunks = [
+                np.asarray(audio, dtype=np.float32)
+                for _graphemes, _phonemes, audio in self._pipeline(
+                    text,
+                    voice=self._voice_arg(voice),
+                    speed=speed,
+                )
+            ]
         if audio_chunks:
             audio = np.concatenate(audio_chunks)
         else:

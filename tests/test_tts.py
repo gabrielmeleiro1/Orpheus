@@ -254,3 +254,23 @@ class TestBlankChunkSynthesis:
         with wave.open(str(output_path), "rb") as wav_file:
             assert wav_file.getnframes() > 0
             assert wav_file.getframerate() == engine.config.sample_rate
+
+
+class TestSharedModelLock:
+    """A cached model is handed to several engines, so its lock must be shared."""
+
+    def test_engines_sharing_a_cache_key_share_one_model_lock(self):
+        first = TTSEngine()
+        second = TTSEngine()
+        first._model_cache_key = "shared-key"
+        second._model_cache_key = "shared-key"
+
+        assert first._model_lock is second._model_lock
+
+    def test_engines_with_different_cache_keys_get_distinct_locks(self):
+        first = TTSEngine()
+        second = TTSEngine()
+        first._model_cache_key = "key-a"
+        second._model_cache_key = "key-b"
+
+        assert first._model_lock is not second._model_lock

@@ -11,6 +11,22 @@ from typing import Any, Optional
 _model_cache: OrderedDict[str, Any] = OrderedDict()
 _model_cache_lock = threading.RLock()
 
+# One use-lock per cache key. get_cached_model hands the same object to every
+# caller, so holders must serialize their calls into it; a per-instance lock
+# cannot do that. Kept separate from the cache itself so a model evicted and
+# reloaded mid-run still contends on the same lock.
+_model_use_locks: dict[str, threading.RLock] = {}
+
+
+def get_model_lock(model_path: str) -> threading.RLock:
+    """Return the shared use-lock guarding calls into a cached model."""
+    with _model_cache_lock:
+        lock = _model_use_locks.get(model_path)
+        if lock is None:
+            lock = threading.RLock()
+            _model_use_locks[model_path] = lock
+        return lock
+
 
 def get_cached_model(model_path: str) -> Optional[Any]:
     """Get model from cache if available."""
