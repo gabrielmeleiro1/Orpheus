@@ -107,7 +107,16 @@ export function useTerminalStateWaiters({
               missingPollCount,
               errorPollCount,
               missingPollThreshold: TERMINAL_MISSING_POLL_THRESHOLD,
-              onTerminalStatus,
+              // pollTerminalStateFromClient invokes this before it returns, so
+              // the post-await `settled` check below is too late: a response
+              // that lands after the next job started would otherwise apply
+              // this job's terminal state and null out activeJobId, disabling
+              // Cancel for the run that is actually in flight.
+              onTerminalStatus: (payload) => {
+                if (!settled) {
+                  onTerminalStatus(payload);
+                }
+              },
             });
             if (settled) {
               return;
