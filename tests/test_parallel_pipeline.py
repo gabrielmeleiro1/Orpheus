@@ -2012,6 +2012,55 @@ class TestWorkerProgressTotals:
                 max_workers=2,
             )
 
+    def test_shared_pool_fingerprint_never_carries_the_raw_cleaner_api_key(
+        self,
+        tmp_path,
+    ):
+        """The fingerprint reaches /api/system/capabilities, so it must not hold the key."""
+        secret = "sk-test-must-not-leak-abc123"
+        config = PipelineConfig(
+            output_dir=tmp_path / "out",
+            temp_dir=tmp_path / "temp",
+            cleaner_backend="api",
+            cleaner_api_key=secret,
+        )
+
+        fingerprint = build_shared_pool_fingerprint(config, max_workers=2)
+
+        assert secret not in [str(entry) for entry in fingerprint]
+        assert secret not in repr(fingerprint)
+
+    def test_shared_pool_fingerprint_still_separates_distinct_cleaner_api_keys(
+        self,
+        tmp_path,
+    ):
+        """Redaction must not collapse two keys into one pool-reuse identity."""
+        first = PipelineConfig(
+            output_dir=tmp_path / "one",
+            temp_dir=tmp_path / "temp-one",
+            cleaner_backend="api",
+            cleaner_api_key="sk-first-key",
+        )
+        second = PipelineConfig(
+            output_dir=tmp_path / "two",
+            temp_dir=tmp_path / "temp-two",
+            cleaner_backend="api",
+            cleaner_api_key="sk-second-key",
+        )
+        absent = PipelineConfig(
+            output_dir=tmp_path / "three",
+            temp_dir=tmp_path / "temp-three",
+            cleaner_backend="api",
+            cleaner_api_key=None,
+        )
+
+        first_fingerprint = build_shared_pool_fingerprint(first, max_workers=2)
+        second_fingerprint = build_shared_pool_fingerprint(second, max_workers=2)
+        absent_fingerprint = build_shared_pool_fingerprint(absent, max_workers=2)
+
+        assert first_fingerprint != second_fingerprint
+        assert first_fingerprint != absent_fingerprint
+
     def test_shared_pool_fingerprint_derives_runtime_spec_for_legacy_config(self):
         class _LegacyConfig:
             tts_runtime = None

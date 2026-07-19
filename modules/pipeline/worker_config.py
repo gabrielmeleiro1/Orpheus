@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import hashlib
+from typing import Any, Optional
 
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtime_options import TTSRuntimeOptions
@@ -192,6 +193,17 @@ def build_worker_pipeline_config(
     )
 
 
+def _redacted_secret(secret: Optional[str]) -> Optional[str]:
+    """Derive a stable, non-reversible stand-in for a secret.
+
+    The fingerprint is exposed by /api/system/capabilities, so it must
+    distinguish two different keys without carrying either one.
+    """
+    if not secret:
+        return None
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
 def build_shared_pool_fingerprint(
     config: PipelineConfig,
     max_workers: int,
@@ -224,7 +236,7 @@ def build_shared_pool_fingerprint(
         [
             config.cleaner_api_base_url,
             config.cleaner_api_key_env,
-            config.cleaner_api_key,
+            _redacted_secret(config.cleaner_api_key),
             config.cleaner_api_model,
             config.cleaner_skip_llm_when_not_needed,
             getattr(config, "source_type", None),
