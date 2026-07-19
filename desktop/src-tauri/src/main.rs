@@ -5,6 +5,8 @@ mod paths;
 mod setup;
 
 #[cfg(test)]
+mod capability_tests;
+#[cfg(test)]
 mod setup_tests;
 
 use backend::{
