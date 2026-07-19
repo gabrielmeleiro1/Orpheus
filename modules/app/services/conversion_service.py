@@ -384,13 +384,23 @@ class ConversionService:
             )
 
     def cancel_conversion(self) -> bool:
+        # Take the job out under the lock, then release it: the pool shutdown
+        # below can block for the worker-startup probe window, and holding
+        # _job_lock across it would stall every job-status read too.
         with self._job_lock:
-            if self._active_job and self._job_is_active_or_pending(self._active_job):
-                cancelled = self._request_job_cancel(self._active_job)
-                if cancelled:
-                    self._shutdown_shared_worker_pool_for_cancel()
-                return cancelled
+            job = (
+                self._active_job
+                if self._active_job and self._job_is_active_or_pending(self._active_job)
+                else None
+            )
+
+        if job is None:
             return False
+
+        cancelled = self._request_job_cancel(job)
+        if cancelled:
+            self._shutdown_shared_worker_pool_for_cancel()
+        return cancelled
 
     def _shutdown_shared_worker_pool_for_cancel(self) -> None:
         if self._shared_worker_pool_manager is None:

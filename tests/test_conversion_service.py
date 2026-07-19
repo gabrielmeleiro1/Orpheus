@@ -5324,3 +5324,72 @@ def test_app_controller_delete_book_allows_other_books_while_job_active(tmp_path
 
     assert controller.delete_book(42) is True
     assert deleted == [42]
+
+
+def test_conversion_service_cancel_does_not_hold_job_lock_during_pool_shutdown(tmp_path):
+    """Cancel must not block job-status reads while the worker pool winds down.
+
+    SharedWorkerPoolManager.shutdown() contends with ensure_started, which holds
+    the pool lock across a per-worker startup probe. Holding _job_lock across
+    that call freezes cancel and every /api/conversions/active read with it.
+    """
+    source_path = tmp_path / "book.epub"
+    source_path.write_text("dummy")
+
+    shutdown_entered = threading.Event()
+    release_shutdown = threading.Event()
+
+    class _BlockingPoolManager:
+        def shutdown(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            _ = (args, kwargs)
+            shutdown_entered.set()
+            assert release_shutdown.wait(timeout=5), "shutdown release timed out"
+
+    class _BlockingPipeline:
+        convert_started = threading.Event()
+        release_convert = threading.Event()
+
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
+            _ = kwargs
+
+        def cancel(self) -> None:
+            return None
+
+        def convert(self, **kwargs) -> PipelineConversionResult:  # noqa: ANN003
+            _ = kwargs
+            type(self).convert_started.set()
+            assert type(self).release_convert.wait(timeout=5), "convert release timed out"
+            return PipelineConversionResult(
+                success=False, title="Book", author="Author", error="Cancelled"
+            )
+
+    service = _make_service(
+        tmp_path,
+        _BlockingPipeline,
+        job_cls=ConversionJob,
+        status_enum=JobStatus,
+        shared_worker_pool_manager=_BlockingPoolManager(),
+    )
+    job = service.start_conversion(
+        source_path=source_path,
+        runtime_options=ConversionRuntimeOptions(voice="af_bella", speed=1.0),
+    )
+    assert _BlockingPipeline.convert_started.wait(timeout=2), "pipeline did not start"
+
+    canceller = threading.Thread(target=service.cancel_conversion, daemon=True)
+    canceller.start()
+    try:
+        assert shutdown_entered.wait(timeout=2), "pool shutdown was never reached"
+
+        # The status read must not wait on the in-progress shutdown.
+        probe: list[bool] = []
+        reader = threading.Thread(target=lambda: probe.append(service.has_active_job()))
+        reader.start()
+        reader.join(timeout=2)
+        assert not reader.is_alive(), "has_active_job blocked on _job_lock during shutdown"
+        assert probe == [True]
+    finally:
+        release_shutdown.set()
+        _BlockingPipeline.release_convert.set()
+        canceller.join(timeout=5)
+        job.wait(timeout=5)
