@@ -147,8 +147,11 @@ def _preflight_epub(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
         book = epub.read_epub(str(source_path))
         title_values = book.get_metadata("DC", "title")
         author_values = book.get_metadata("DC", "creator")
-        title = title_values[0][0].strip() if title_values else source_path.stem
-        author = author_values[0][0].strip() if author_values else None
+        # An empty <dc:title/> yields [(None, {})]; guard the None before strip.
+        title = (title_values[0][0] or "").strip() if title_values else ""
+        title = title or source_path.stem
+        author = (author_values[0][0] or "").strip() if author_values else ""
+        author = author or None
         sections = build_epub_sections(book)
         samples: list[str] = []
         for section in sections:

@@ -183,15 +183,21 @@ class EPUBParser:
         book = self._load_book()
         metadata = {}
         
-        # Title
+        # Title. An empty element (<dc:title/>) yields [(None, {})], which is
+        # truthy, so only record a key when there is real text behind it --
+        # otherwise the caller's .get(key, default) fallback never fires.
         title = book.get_metadata("DC", "title")
         if title:
-            metadata["title"] = title[0][0]
-        
+            title_text = (title[0][0] or "").strip()
+            if title_text:
+                metadata["title"] = title_text
+
         # Author
         creator = book.get_metadata("DC", "creator")
         if creator:
-            metadata["author"] = creator[0][0]
+            creator_text = (creator[0][0] or "").strip()
+            if creator_text:
+                metadata["author"] = creator_text
         
         # Language
         language = book.get_metadata("DC", "language")

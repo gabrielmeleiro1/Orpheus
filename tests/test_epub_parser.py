@@ -932,3 +932,60 @@ def test_epub_extract_chapters_reapplies_options_after_cached_parse(tmp_path, mo
 if __name__ == "__main__":
     success = test_epub_parser()
     sys.exit(0 if success else 1)
+
+
+def _write_epub_with_blank_metadata(output_path: Path) -> None:
+    """Build an EPUB whose dc:title and dc:creator elements are present but empty."""
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("blank-metadata-fixture")
+    book.set_language("en")
+    # ebooklib reports an empty element as [(None, {})], which is truthy.
+    book.add_metadata("DC", "title", None)
+    book.add_metadata("DC", "creator", None)
+
+    chapter = epub.EpubHtml(title="Only Chapter", file_name="ch1.xhtml", lang="en")
+    chapter.content = """
+    <html><body>
+      <h1>Only Chapter</h1>
+      <p>Chapter body text that is comfortably long enough to clear the
+      minimum readable length threshold used by the section builder.</p>
+      <p>More narrative body text keeps this well above the filter.</p>
+    </body></html>
+    """
+    book.add_item(chapter)
+    book.toc = (epub.Link("ch1.xhtml", "Only Chapter", "only-chapter"),)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.spine = ["nav", chapter]
+    epub.write_epub(str(output_path), book)
+
+
+def test_epub_parser_falls_back_to_filename_when_title_element_is_empty(tmp_path: Path) -> None:
+    """An empty <dc:title/> must not produce Document.title == None.
+
+    A None title survives all the way to BookCreate, where the books.title NOT
+    NULL constraint fails after the audio has already been rendered.
+    """
+    sample_epub = tmp_path / "Fallback Book Name.epub"
+    _write_epub_with_blank_metadata(sample_epub)
+
+    document = EPUBParser(sample_epub).parse()
+
+    assert document.title == "Fallback Book Name"
+    assert document.author is None
+
+
+def test_epub_preflight_reads_source_with_empty_title_element(tmp_path: Path) -> None:
+    """Preflight must not report a readable EPUB as malformed."""
+    from modules.ingestion.preflight import preflight_source
+
+    sample_epub = tmp_path / "Fallback Book Name.epub"
+    _write_epub_with_blank_metadata(sample_epub)
+
+    payload = preflight_source(sample_epub)
+
+    assert payload["chapter_count"] >= 1
+    assert payload["sample"]
+    assert not any("malformed or unreadable" in warning for warning in payload["warnings"])
