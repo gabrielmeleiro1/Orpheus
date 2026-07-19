@@ -171,6 +171,9 @@ fn ready_backend_shutdown_ack_before_eof_marks_stopped() {
     assert!(terminal_status.error.is_none());
 }
 
+// POSIX-shaped fixture paths below, so compile this out on Windows rather than
+// filtering it out of every gate at the command line.
+#[cfg(unix)]
 #[test]
 fn build_dev_launch_config_matches_desktop_runtime_contract() {
     let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/tmp/audiobook-app");

@@ -17,7 +17,10 @@ exclude_lines =
     def __repr__
     if __name__ == .__main__.:
     raise NotImplementedError
-    pass
+    # Anchored: exclude_lines patterns are re.search, so a bare `pass` would
+    # also drop any line merely containing the substring (meipass_dir, and
+    # "password", among others).
+    ^\s*pass$
     if TYPE_CHECKING:
     except ImportError:
     # Debug code

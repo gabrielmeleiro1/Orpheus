@@ -157,7 +157,11 @@ def run_smoke_suite() -> int:
 
     for test_path, mode in SMOKE_TEST_MODULES:
         if not (REPO_ROOT / test_path).exists():
-            print(f"WARN SKIP: {test_path} (not found)")
+            # A renamed or deleted module means the suite silently stopped
+            # covering something, so record it as a failure rather than
+            # reporting PASSED for a shorter run than the caller asked for.
+            print(f"FAIL: {test_path} (not found)")
+            results.append((test_path, mode, False, 0.0))
             continue
 
         print(f"> Running {test_path} [{mode}]...", end=" ", flush=True)

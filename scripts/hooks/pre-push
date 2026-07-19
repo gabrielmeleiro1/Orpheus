@@ -101,7 +101,7 @@ echo ""
 echo "> Tauri tests"
 (
   cd desktop/src-tauri
-  AR=/usr/bin/ar CC=/usr/bin/clang CARGO_BUILD_JOBS=1 run_with_timeout 900 cargo test -- --skip build_dev_launch_config_matches_desktop_runtime_contract
+  AR=/usr/bin/ar CC=/usr/bin/clang CARGO_BUILD_JOBS=1 run_with_timeout 900 cargo test
 )
 
 echo ""

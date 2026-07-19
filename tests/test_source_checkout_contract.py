@@ -1,3 +1,4 @@
+import re
 import subprocess
 from pathlib import Path
 
@@ -93,3 +94,35 @@ def test_common_local_build_outputs_are_ignored() -> None:
             check=False,
         )
         assert result.returncode == 0, f"expected generated path to be ignored: {path}"
+
+
+def test_desktop_sync_manifest_carries_every_requirements_include() -> None:
+    """A synced tree must be able to resolve its own pip requirements.
+
+    requirements.txt and requirements-dev.txt are almost entirely `-r`
+    includes, so shipping them without the directory they point at leaves the
+    remote host unable to install anything.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    script = (repo_root / "scripts" / "sync_to_desktop.sh").read_text(encoding="utf-8")
+
+    manifest_block = re.search(r"SYNC_PATHS=\((.*?)\n\)", script, re.S)
+    assert manifest_block, "SYNC_PATHS array not found in sync_to_desktop.sh"
+    synced = {
+        line.strip()
+        for line in manifest_block.group(1).splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+
+    required: set[str] = set()
+    for name in ("requirements.txt", "requirements-dev.txt"):
+        if name not in synced:
+            continue
+        for include in re.findall(
+            r"^-r\s+(\S+)", (repo_root / name).read_text(encoding="utf-8"), re.M
+        ):
+            # A synced path covers an include if it is the file or its root dir.
+            required.add(include.split("/", 1)[0])
+
+    missing = sorted(entry for entry in required if entry not in synced)
+    assert missing == [], f"sync manifest omits requirements includes: {missing}"

@@ -126,3 +126,29 @@ def test_smoke_suite_fails_when_no_tests_run(monkeypatch) -> None:
     )
 
     assert run_tests.run_smoke_suite() == 1
+
+
+def test_smoke_suite_fails_when_one_module_is_missing(monkeypatch) -> None:
+    """A renamed module must not be skipped into a green run.
+
+    Previously only the all-missing case failed, so dropping a single entry --
+    e.g. renaming tests/test_tts.py -- silently stopped running it while the
+    suite still reported PASSED.
+    """
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        run_tests,
+        "run_test",
+        lambda path, mode: (calls.append((path, mode)), (True, 0.0))[1],
+    )
+    monkeypatch.setattr(
+        run_tests,
+        "SMOKE_TEST_MODULES",
+        [
+            ("tests/test_run_tests.py", run_tests.PYTEST),
+            ("tests/renamed_away.py", run_tests.PYTEST),
+        ],
+    )
+
+    assert run_tests.run_smoke_suite() == 1
+    assert calls == [("tests/test_run_tests.py", run_tests.PYTEST)]
