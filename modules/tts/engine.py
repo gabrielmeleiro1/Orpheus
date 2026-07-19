@@ -41,6 +41,9 @@ mx = mlx_compat_backend.mx
 generate_audio = mlx_compat_backend.generate_audio
 _TQDM_LOCK_PATCHED = mlx_compat_backend._TQDM_LOCK_PATCHED
 
+# Duration of the silence emitted for a chunk whose text cleans away entirely.
+BLANK_TEXT_SILENCE_MS = 50
+
 _patch_mlx_load_weights_compat = mlx_compat_backend.patch_mlx_load_weights_compat
 _patch_mlx_generation_result_compat = (
     mlx_compat_backend.patch_mlx_generation_result_compat
@@ -212,6 +215,17 @@ class TTSEngine:
     def sample_rate(self) -> int:
         """Get the audio sample rate."""
         return self.config.sample_rate
+
+    def _blank_text_silence(self) -> "np.ndarray":
+        """Audio for a chunk whose text cleaned away to nothing.
+
+        Chunks such as a horizontal rule or a bare citation marker survive
+        chunking but clean to "". The pipeline requires one audio result per
+        chunk and treats an empty one as a chapter failure, so emit a short
+        silence -- which is also what a scene break should sound like.
+        """
+        frames = max(1, int(self.config.sample_rate * BLANK_TEXT_SILENCE_MS / 1000))
+        return np.zeros(frames, dtype=np.float32)
 
     @property
     def average_chunk_time_ms(self) -> float:
@@ -475,7 +489,7 @@ class TTSEngine:
         start_time = time.time()
 
         if not text.strip():
-            return np.array([], dtype=np.float32)
+            return self._blank_text_silence()
 
         voice = voice or self.config.default_voice
 
@@ -514,10 +528,12 @@ class TTSEngine:
 
         if not text.strip():
             output_path.parent.mkdir(parents=True, exist_ok=True)
+            silence = self._blank_text_silence()
             with wave.open(str(output_path), "wb") as writer:
                 writer.setnchannels(1)
                 writer.setsampwidth(2)
                 writer.setframerate(self.config.sample_rate)
+                writer.writeframes((silence * 32767).astype(np.int16).tobytes())
             return output_path
 
         voice = voice or self.config.default_voice

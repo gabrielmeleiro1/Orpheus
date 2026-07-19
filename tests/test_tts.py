@@ -225,3 +225,32 @@ class TestTTSEngine:
         assert written_path == output_path
         with wave.open(str(output_path), "rb") as wav_file:
             assert wav_file.getnframes() == 3
+
+
+class TestBlankChunkSynthesis:
+    """A chunk that cleans to nothing must not fail the chapter.
+
+    Chunkers emit chunks like "---" or "[1]"; the rule-based cleaner reduces
+    both to "". Returning zero-length audio made _batch_result_has_audio false,
+    which fails the chapter and then refuses to package the whole book.
+    """
+
+    def test_synthesize_returns_audible_silence_for_blank_text(self):
+        engine = TTSEngine()
+
+        audio = engine.synthesize("   ")
+
+        assert audio.dtype == np.float32
+        assert audio.size > 0
+        assert float(np.abs(audio).max()) == 0.0
+
+    def test_synthesize_to_output_file_writes_non_empty_wav_for_blank_text(self, tmp_path):
+        engine = TTSEngine()
+        output_path = tmp_path / "blank.wav"
+
+        written_path = engine.synthesize_to_output_file("", output_path)
+
+        assert written_path == output_path
+        with wave.open(str(output_path), "rb") as wav_file:
+            assert wav_file.getnframes() > 0
+            assert wav_file.getframerate() == engine.config.sample_rate
