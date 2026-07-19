@@ -12,6 +12,7 @@ from typing import Callable, Optional
 from dataclasses import dataclass
 import json
 import logging
+import re
 import subprocess
 import tempfile
 import threading
@@ -57,11 +58,13 @@ def audio_files_support_stream_copy(audio_files: list[Path]) -> bool:
 
 def _escape_ffmetadata_value(value: str) -> str:
     """Escape FFmetadata scalar values so titles cannot break key/value lines."""
+    # ffmpeg reads a backslash as "the next character is literal", so escaping
+    # a newline as \n would decode to the letter n. These are single-line
+    # display strings, so collapse whitespace instead.
+    collapsed = re.sub(r"\s+", " ", str(value)).strip()
     return (
-        str(value)
+        collapsed
         .replace("\\", "\\\\")
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
         .replace("=", "\\=")
         .replace(";", "\\;")
         .replace("#", "\\#")

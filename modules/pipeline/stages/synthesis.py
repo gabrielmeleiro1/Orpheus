@@ -482,6 +482,11 @@ def _with_batch_output_paths(
 
     chapter_temp_dir = runtime.config.temp_dir / f"ch_{chapter.number:03d}_tts"
     chapter_temp_dir.mkdir(parents=True, exist_ok=True)
+    # Register the directory so end-of-run cleanup removes it. Without this the
+    # per-chunk WAVs survive whenever batch validation fails, and the tracked
+    # set is non-empty enough to suppress the temp-root sweep that would
+    # otherwise have caught them.
+    runtime.track_temp_cleanup_path(chapter_temp_dir)
     return [
         replace(item, output_path=chapter_temp_dir / f"chunk_{item.index:04d}.wav")
         for item in batch_items

@@ -320,3 +320,31 @@ def test_pipeline_packaging() -> bool:
 if __name__ == "__main__":
     success = test_pipeline_packaging()
     sys.exit(0 if success else 1)
+
+
+def test_ffmetadata_escaping_collapses_newlines_instead_of_escaping_them():
+    """ffmpeg's ffmetadata reader treats \\ as "next char is literal".
+
+    So a "\\n" escape decodes to the letter n, turning a two-line chapter title
+    into "Chapter 1nThe Beginning" in the finished M4B table of contents.
+    EPUB titles only get .strip()ed, so internal newlines do reach here.
+    """
+    from modules.audio.packager import _escape_ffmetadata_value
+
+    escaped = _escape_ffmetadata_value("Chapter 1\nThe Beginning")
+
+    assert "\n" not in escaped
+    assert "\\n" not in escaped
+    assert escaped == "Chapter 1 The Beginning"
+
+    assert _escape_ffmetadata_value("A\r\nB") == "A B"
+    assert _escape_ffmetadata_value("Tabs\tand   spaces") == "Tabs and spaces"
+
+
+def test_ffmetadata_escaping_still_escapes_delimiter_characters():
+    from modules.audio.packager import _escape_ffmetadata_value
+
+    assert _escape_ffmetadata_value("a=b") == "a\\=b"
+    assert _escape_ffmetadata_value("a;b") == "a\\;b"
+    assert _escape_ffmetadata_value("a#b") == "a\\#b"
+    assert _escape_ffmetadata_value("a\\b") == "a\\\\b"

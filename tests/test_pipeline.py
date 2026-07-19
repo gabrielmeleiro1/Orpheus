@@ -1984,3 +1984,51 @@ def test_ingest_source_dispatches_markdown_parser_for_md(tmp_path):
 
     assert result is document
     mock_markdown_parser.assert_called_once_with(source_path)
+
+
+def test_batch_output_dir_is_registered_for_temp_cleanup(tmp_path):
+    """The per-chunk WAV directory must be tracked so cleanup removes it.
+
+    _cleanup_temp skips its temp-root sweep whenever the tracked set is
+    non-empty, so an untracked ch_NNN_tts directory is never reclaimed -- and
+    on a failed batch validation its chunk WAVs are never unlinked either.
+    """
+    from dataclasses import dataclass
+    from modules.pipeline.stages import synthesis
+
+    temp_dir = tmp_path / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    tracked: list[Path] = []
+
+    @dataclass
+    class _Item:
+        index: int
+        output_path: Path | None = None
+
+    class _Runtime:
+        config = SimpleNamespace(
+            temp_dir=temp_dir,
+            enable_tts_file_batch_results=True,
+        )
+
+        @staticmethod
+        def supports_file_batch_results() -> bool:
+            return True
+
+        @staticmethod
+        def track_temp_cleanup_path(path: Path) -> None:
+            tracked.append(Path(path))
+
+    items = synthesis._with_batch_output_paths(
+        _Runtime(),
+        chapter=SimpleNamespace(number=7),
+        batch_items=[_Item(index=0), _Item(index=1)],
+    )
+
+    chapter_temp_dir = temp_dir / "ch_007_tts"
+    assert chapter_temp_dir.is_dir()
+    assert tracked == [chapter_temp_dir]
+    assert [item.output_path for item in items] == [
+        chapter_temp_dir / "chunk_0000.wav",
+        chapter_temp_dir / "chunk_0001.wav",
+    ]
