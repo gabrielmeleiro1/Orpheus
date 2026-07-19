@@ -2,6 +2,7 @@ import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { StartConversionRequest } from "../../types/api";
+import type { ConversionTerminalJobStatus } from "../../types/conversion";
 import { createQueueItem } from "./conversionPanelModel";
 import { useConversionQueueRunner } from "./useConversionQueueRunner";
 import type { ConversionJobController, StartConversionResult } from "./useConversionJob";
@@ -207,6 +208,55 @@ describe("useConversionQueueRunner", () => {
     await Promise.all([first, second]);
 
     expect(conversionJob.startConversion).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+});
+
+describe("useConversionQueueRunner indeterminate outcomes", () => {
+  it("keeps running the queue when one item's terminal state is unknown", async () => {
+    // A backend health blip swaps the apiClient, which flushes pending waiters
+    // as "unknown". That says nothing about the conversion, so it must not
+    // cancel the books queued behind it.
+    const first = createQueueItem("/tmp/first.epub", "audiobook");
+    const second = createQueueItem("/tmp/second.epub", "audiobook");
+    first.status = "ready";
+    second.status = "ready";
+
+    let startCount = 0;
+    const conversionJob = createConversionJobMock({
+      startConversion: vi.fn(async (): Promise<StartConversionResult> => {
+        startCount += 1;
+        return { ok: true, jobId: `job-${startCount}` };
+      }),
+      waitForTerminalState: vi.fn(async (jobId: string) => ({
+        jobId,
+        status: (jobId === "job-1" ? "unknown" : "completed") as ConversionTerminalJobStatus,
+        message: jobId === "job-1" ? "terminal wait cancelled" : "",
+      })),
+    });
+
+    const items = [first, second];
+    const updateQueueItem = vi.fn((itemId, updater) => {
+      const target = items.find((candidate) => candidate.id === itemId);
+      if (target) Object.assign(target, updater(target));
+    });
+
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: items,
+      selectedQueueItem: first,
+      buildStartPayload: () => payload(),
+      updateQueueItem,
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    await result.current?.onRunQueue();
+
+    expect(startCount).toBe(2);
+    expect(second.status).toBe("done");
+    expect(first.status).not.toBe("done");
     cleanup();
   });
 });

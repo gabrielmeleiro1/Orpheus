@@ -84,6 +84,16 @@ export function useConversionQueueRunner({
         return;
       }
 
+      if (finalStatus === "unknown") {
+        // We lost sight of the job rather than seeing it fail; say so.
+        updateQueueItem(targetItem.id, (current) => ({
+          ...current,
+          status: "warning",
+          error: "conversion status unknown - check Library",
+        }));
+        return;
+      }
+
       const message =
         finalStatus === "cancelled" ? "conversion cancelled" : `conversion ${finalStatus}`;
       updateQueueItem(targetItem.id, (current) => ({
@@ -157,6 +167,21 @@ export function useConversionQueueRunner({
               status: "done",
               error: "",
             }));
+            continue;
+          }
+          // "unknown" means we stopped observing the job (the backend health
+          // monitor swapped the client, or the wait timed out), not that the
+          // conversion failed -- it usually finishes fine. Flag this item for
+          // the user to check, but keep converting the rest of the queue.
+          if (finalStatus === "unknown") {
+            const unknownMessage = "conversion status unknown - check Library";
+            updateQueueItem(item.id, (current) => ({
+              ...current,
+              status: "warning",
+              error: unknownMessage,
+            }));
+            setQueueStatus(unknownMessage);
+            queueCompleted = false;
             continue;
           }
           const message =
