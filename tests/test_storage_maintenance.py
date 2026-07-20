@@ -104,6 +104,10 @@ def test_storage_maintenance() -> bool:
             stale_stage_dir.mkdir(parents=True, exist_ok=True)
             (stale_stage_dir / "chunk_0000.wav").write_bytes(b"RIFF")
 
+            # Close the fixture repository before auditing: an open sqlite
+            # handle blocks the tempdir teardown's file deletion on Windows.
+            repo.close()
+
             # The fixture artifacts are created milliseconds ago, so the default
             # 24h recency grace would exempt every one of them. Opt out of it to
             # exercise the stale-artifact path; the grace itself is covered by
