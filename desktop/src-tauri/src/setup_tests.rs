@@ -69,11 +69,11 @@ fn setup_launch_is_a_fixed_shell_free_command() {
 
     assert_eq!(launch.program, PathBuf::from("/trusted/python"));
     assert_eq!(launch.cwd, repo);
-    assert_eq!(launch.script, repo.join("scripts/setup_runtime.py"));
+    assert_eq!(launch.script, repo.join("scripts").join("setup_runtime.py"));
     assert_eq!(
         launch.args,
         vec![
-            repo.join("scripts/setup_runtime.py").to_string_lossy(),
+            repo.join("scripts").join("setup_runtime.py").to_string_lossy(),
             "--profile".into(),
             "mlx".into(),
             "--models".into(),
