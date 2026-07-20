@@ -1,3 +1,7 @@
+import multiprocessing
+import os
+import threading
+
 import pytest
 from pathlib import Path
 import sys
@@ -24,6 +28,47 @@ def pytest_runtestloop(session):
         if cov_plugin is not None:
             cov_plugin.options.cov_fail_under = 0
     return result
+
+_session_exit_status = 0
+
+
+def pytest_sessionfinish(session, exitstatus):
+    global _session_exit_status
+    _session_exit_status = int(exitstatus)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_unconfigure(config):
+    """Refuse to hang on leaked non-daemon threads.
+
+    Interpreter shutdown joins non-daemon threads before atexit runs, so a
+    single leaked thread turns a fully green session into a process that
+    never exits (observed on the Windows CI runner). By this point every
+    other unconfigure hook — including coverage reporting — has completed,
+    so name the leakers, dump their stacks, and exit with the real status.
+    """
+    result = yield
+    lingering = [
+        thread
+        for thread in threading.enumerate()
+        if thread is not threading.main_thread() and not thread.daemon and thread.is_alive()
+    ]
+    children = multiprocessing.active_children()
+    if lingering or children:
+        import faulthandler
+
+        names = ", ".join(thread.name for thread in lingering) or "none"
+        procs = ", ".join(str(child.pid) for child in children) or "none"
+        sys.stderr.write(
+            f"\n[conftest] leaked non-daemon threads: {names}; "
+            f"live child processes: {procs}\n"
+            "[conftest] dumping stacks and forcing exit to avoid a hang\n"
+        )
+        faulthandler.dump_traceback(file=sys.stderr)
+        sys.stderr.flush()
+        os._exit(_session_exit_status)
+    return result
+
 
 @pytest.fixture(autouse=True)
 def _deterministic_host_memory(monkeypatch):
