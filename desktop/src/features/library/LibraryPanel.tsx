@@ -59,6 +59,16 @@ export function LibraryPanel({
     loadCleaningPreview,
   } = useLibraryPanelState({ library });
 
+  const showPager = library.items.length > 1;
+  const showCleaningPreview = Boolean(cleaningPreview) || cleaningPreviewLoading;
+  // The detail-pane status line stays quiet for the two echoes the form/list
+  // already convey: the empty-library note and the "Selected: <title>" message
+  // (findings 11 & 14). Real messages (saved, repaired, errors) still show.
+  const isRedundantStatus =
+    showEmpty || (!library.loadingDetail && library.statusMessage.startsWith("Selected:"));
+  const showDetailStatus =
+    !library.errorMessage && !isRedundantStatus && (Boolean(library.statusMessage) || library.loadingDetail);
+
   return (
     <section
       id="tab-library"
@@ -74,35 +84,6 @@ export function LibraryPanel({
 
       <div className="library-workspace">
         <aside className="panel-section library-sidebar" aria-label="Library navigation">
-          <div className="library-toolbar library-nav-actions">
-            <button
-              className="btn btn-compact"
-              type="button"
-              disabled={library.loadingList}
-              data-tip="Reload the library index"
-              data-tip-pos="bottom"
-              onClick={() => void library.refreshLibrary()}
-            >
-              Refresh
-            </button>
-            <button
-              className="btn btn-compact"
-              type="button"
-              disabled={library.selectedBookIndex <= 0}
-              onClick={() => void library.selectRelative(-1)}
-            >
-              Prev
-            </button>
-            <button
-              className="btn btn-compact"
-              type="button"
-              disabled={library.selectedBookIndex < 0 || library.selectedBookIndex >= library.items.length - 1}
-              onClick={() => void library.selectRelative(1)}
-            >
-              Next
-            </button>
-          </div>
-
           <div className="library-search-row">
             <label className="field-label" htmlFor="library-search">
               Search
@@ -126,19 +107,58 @@ export function LibraryPanel({
               placeholder="All types"
               onChange={(value) => library.setModeFilter(value as typeof library.modeFilter)}
             />
+            <button
+              className="btn btn-ghost btn-compact library-refresh-btn"
+              type="button"
+              disabled={library.loadingList}
+              data-tip="Reload the library index"
+              data-tip-pos="bottom"
+              onClick={() => void library.refreshLibrary()}
+            >
+              Refresh
+            </button>
           </div>
 
+          {showPager ? (
+            <div className="library-pager">
+              <button
+                className="btn btn-ghost btn-compact"
+                type="button"
+                disabled={library.selectedBookIndex <= 0}
+                onClick={() => void library.selectRelative(-1)}
+              >
+                Previous
+              </button>
+              <button
+                className="btn btn-ghost btn-compact"
+                type="button"
+                disabled={library.selectedBookIndex < 0 || library.selectedBookIndex >= library.items.length - 1}
+                onClick={() => void library.selectRelative(1)}
+              >
+                Next
+              </button>
+            </div>
+          ) : null}
+
           <div id="library-list" className="library-list">
-            {library.loadingList ? <div className="log-line">Loading library…</div> : null}
+            {library.loadingList ? <p className="hint">Loading library…</p> : null}
             {showEmpty ? (
-              <div className="library-empty">
-                <div className="log-line">No converted books yet.</div>
-                {onStartConvert ? (
-                  <button className="btn btn-compact" type="button" onClick={onStartConvert}>
-                    Convert a source
-                  </button>
-                ) : null}
-              </div>
+              library.indexedCount === 0 ? (
+                <div className="empty-state library-empty">
+                  <p className="empty-state-title">No audiobooks yet</p>
+                  <p className="empty-state-hint">Convert a book or document to build your library.</p>
+                  {onStartConvert ? (
+                    <button className="btn btn-primary btn-compact" type="button" onClick={onStartConvert}>
+                      Convert a source
+                    </button>
+                  ) : null}
+                </div>
+              ) : (
+                <div className="empty-state library-empty">
+                  <p className="empty-state-title">No matches</p>
+                  <p className="empty-state-hint">Try a different search or filter.</p>
+                </div>
+              )
             ) : null}
             {library.items.map((item, index) => {
               const isSelected = item.id === library.selectedBookId;
@@ -159,230 +179,238 @@ export function LibraryPanel({
         </aside>
 
         <div className="library-detail-pane">
-          <div className="library-detail-header">
-            <div>
-              <span className="progress-kicker">Selected book</span>
-              <div id="book-summary-title" className="book-summary-value library-title-mirror">
-                {library.bookSummaryTitle}
-              </div>
-              <span id="book-summary-meta" className="book-summary-value">
-                {library.bookSummaryMeta}
-              </span>
-            </div>
-            <span id="book-summary-extra" className="book-summary-value">
-              {library.bookSummaryExtra}
-            </span>
-          </div>
-
-          <div className="panel-section book-detail-section library-detail-form">
-            <div className="form-row">
-              <label className="form-row-label" htmlFor="book-title-edit">Title</label>
-              <div className="form-row-field">
-                <input
-                  id="book-title-edit"
-                  className="field-input"
-                  type="text"
-                  value={editTitle}
-                  disabled={!selected}
-                  onChange={(event) => setEditTitle(event.target.value)}
-                />
-              </div>
-            </div>
-            <div className="form-row">
-              <label className="form-row-label" htmlFor="book-author-edit">Author</label>
-              <div className="form-row-field">
-                <input
-                  id="book-author-edit"
-                  className="field-input"
-                  type="text"
-                  value={editAuthor}
-                  disabled={!selected}
-                  onChange={(event) => setEditAuthor(event.target.value)}
-                />
-              </div>
-            </div>
-            <div className="form-row">
-              <label className="form-row-label" htmlFor="book-tags-edit">Tags</label>
-              <div className="form-row-field">
-                <input
-                  id="book-tags-edit"
-                  className="field-input"
-                  type="text"
-                  placeholder="Comma separated"
-                  value={editTags}
-                  disabled={!selected}
-                  onChange={(event) => setEditTags(event.target.value)}
-                />
-              </div>
-            </div>
-            <div className="form-row">
-              <span
-                className="form-row-label"
-                data-tip="Whether the original source file is still on disk. Repair needs it."
-                data-tip-pos="right"
-              >
-                Source
-              </span>
-              <div className="form-row-field">
-                <span id="book-source-status" className="book-summary-value">
-                  {selected ? (selected.source_available ? "Available" : "Missing") : "—"}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          <div className="action-row library-detail-actions">
-            <button
-              id="library-save-metadata-btn"
-              className="btn btn-compact"
-              type="button"
-              disabled={!selected}
-              data-tip="Write title, author, and tags into the audio files"
-              onClick={() =>
-                void library.updateSelectedBookMetadata({
-                  title: editTitle,
-                  author: editAuthor,
-                  tags: editTags,
-                })
-              }
-            >
-              Save metadata
-            </button>
-            <button
-              id="library-open-folder-btn"
-              className="btn btn-compact"
-              type="button"
-              disabled={!library.selectedBookId}
-              data-tip="Reveal the exported audio in the file manager"
-              onClick={() => void library.openSelectedBookFolder()}
-            >
-              Open folder
-            </button>
-            <button
-              id="library-repair-btn"
-              className="btn btn-compact"
-              type="button"
-              disabled={!library.selectedBookId}
-              data-tip="Re-synthesize chapters whose audio files are missing. Needs the original source."
-              onClick={() => void library.repairSelectedBook()}
-            >
-              Repair
-            </button>
-            <button
-              id="library-delete-btn"
-              className="btn btn-compact btn-danger"
-              type="button"
-              disabled={!library.selectedBookId}
-              data-tip="Remove this book and its audio from the library"
-              onClick={() => void library.deleteSelectedBook()}
-            >
-              Delete
-            </button>
-          </div>
-
-          <div className="panel-section chapter-section">
-            <div className="section-title"><span>Chapters</span></div>
-            <div id="chapter-list" className="chapter-list">
-              {chapters.map((chapter) => {
-                const isCurrent = chapter.number === currentChapterNumber;
-                const playbackLabel = chapterPlaybackStatusLabel({ isCurrent, playing });
-                return (
-                  <div key={chapter.id} className={`chapter-row${isCurrent ? " is-current" : ""}`}>
-                    <button
-                      type="button"
-                      className="chapter-main"
-                      data-tip="Play from this chapter"
-                      onClick={() => onJumpToChapter?.(chapter)}
-                      disabled={!onJumpToChapter}
-                    >
-                      <span className="chapter-number">{String(chapter.number).padStart(2, "0")}</span>
-                      <span className="chapter-title">
-                        {chapter.title || `Chapter ${chapter.number}`}
-                        {playbackLabel ? ` — ${playbackLabel.toLowerCase()}` : ""}
-                      </span>
-                      <span className="chapter-duration">{formatDurationClock(chapter.duration_ms)}</span>
-                    </button>
-                    <button
-                      className="btn btn-compact"
-                      type="button"
-                      disabled={cleaningPreviewLoading}
-                      data-tip="Compare this chapter's text before and after cleaning"
-                      onClick={() => void loadCleaningPreview(chapter.number)}
-                    >
-                      Cleaned text
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          <details className="book-detail-toggle cleaning-preview-toggle" open={Boolean(cleaningPreview)}>
-            <summary>Cleaning preview</summary>
-            <pre id="cleaning-preview">{cleaningPreviewLoading ? "Loading cleaning preview…" : previewText(cleaningPreview)}</pre>
-          </details>
-
-          <details className="book-detail-toggle maintenance-toggle">
-            <summary>Maintenance</summary>
-            <div className="maintenance-actions">
-              <button
-                className="btn btn-compact"
-                type="button"
-                disabled={library.maintenanceLoading}
-                data-tip="Audit storage for orphaned files and missing chapters"
-                onClick={() => void library.loadMaintenanceDiagnostics()}
-              >
-                Diagnostics
-              </button>
-              <button
-                className="btn btn-compact"
-                type="button"
-                disabled={library.maintenanceLoading}
-                data-tip="Copy the library database to a timestamped backup"
-                onClick={() => void library.backupDatabase()}
-              >
-                Back up database
-              </button>
-              <button
-                className="btn btn-compact"
-                type="button"
-                disabled={library.maintenanceLoading}
-                data-tip="Remove orphaned temp files. Finished audio is never touched."
-                onClick={() => void library.cleanupStorage()}
-              >
-                Clean up storage
-              </button>
-              <button
-                className="btn btn-compact"
-                type="button"
-                disabled={!library.canOpenAppData}
-                data-tip="Open the application data folder"
-                onClick={() => void library.openAppDataFolder()}
-              >
-                App data
-              </button>
-            </div>
-            <span className="field-hint">{library.maintenanceMessage}</span>
-            {library.maintenanceReport ? (
-              <div className="maintenance-grid">
-                <div><span>Database</span><strong>{library.maintenanceReport.database_path}</strong></div>
-                <div><span>Output</span><strong>{library.maintenanceReport.output_path}</strong></div>
-                <div><span>Temp uploads</span><strong>{library.maintenanceReport.audit.stale_temp_uploads?.length ?? 0}</strong></div>
-                <div><span>Orphan folders</span><strong>{library.maintenanceReport.audit.orphan_output_dirs?.length ?? 0}</strong></div>
-                <div><span>Stale sources</span><strong>{library.maintenanceReport.audit.stale_book_sources?.length ?? 0}</strong></div>
-                <div><span>Missing chapters</span><strong>{library.maintenanceReport.audit.stale_chapter_rows?.length ?? 0}</strong></div>
-              </div>
-            ) : null}
-          </details>
-
-          {library.errorMessage ? <div className="log-line log-error">{library.errorMessage}</div> : null}
-          {!library.errorMessage && (library.statusMessage || library.loadingDetail) ? (
-            <div className="log-line">{library.loadingDetail ? "Loading selected book…" : library.statusMessage}</div>
+          {library.errorMessage ? (
+            <p className="field-hint is-error status-sentence">{library.errorMessage}</p>
+          ) : null}
+          {showDetailStatus ? (
+            <p className="field-hint status-sentence">
+              {library.loadingDetail ? "Loading selected book…" : library.statusMessage}
+            </p>
           ) : null}
 
-          <details className="book-detail-toggle">
-            <summary>Raw metadata</summary>
-            <pre id="book-detail">{library.bookDetailText}</pre>
+          {selected ? (
+            <>
+              <div className="library-detail-form">
+                <div className="form-grid">
+                  <div className="field-row">
+                    <div className="field">
+                      <label className="field-label" htmlFor="book-title-edit">Title</label>
+                      <input
+                        id="book-title-edit"
+                        className="field-input"
+                        type="text"
+                        value={editTitle}
+                        onChange={(event) => setEditTitle(event.target.value)}
+                      />
+                    </div>
+                    <div className="field">
+                      <label className="field-label" htmlFor="book-author-edit">Author</label>
+                      <input
+                        id="book-author-edit"
+                        className="field-input"
+                        type="text"
+                        value={editAuthor}
+                        onChange={(event) => setEditAuthor(event.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="field">
+                    <label className="field-label" htmlFor="book-tags-edit">Tags</label>
+                    <input
+                      id="book-tags-edit"
+                      className="field-input"
+                      type="text"
+                      placeholder="Comma separated"
+                      value={editTags}
+                      onChange={(event) => setEditTags(event.target.value)}
+                    />
+                  </div>
+                  <p
+                    id="book-source-status"
+                    className="field-hint"
+                    data-tip="Whether the original source file is still on disk. Repair needs it."
+                    data-tip-pos="right"
+                  >
+                    {selected.source_available ? "Source file available" : "Source file missing — repair unavailable"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="library-detail-actions">
+                <button
+                  id="library-save-metadata-btn"
+                  className="btn btn-primary btn-compact"
+                  type="button"
+                  data-tip="Write title, author, and tags into the audio files"
+                  onClick={() =>
+                    void library.updateSelectedBookMetadata({
+                      title: editTitle,
+                      author: editAuthor,
+                      tags: editTags,
+                    })
+                  }
+                >
+                  Save changes
+                </button>
+                <button
+                  id="library-open-folder-btn"
+                  className="btn btn-ghost btn-compact"
+                  type="button"
+                  disabled={!library.selectedBookId}
+                  data-tip="Reveal the exported audio in the file manager"
+                  onClick={() => void library.openSelectedBookFolder()}
+                >
+                  Open folder
+                </button>
+                <div className="library-detail-actions-danger">
+                  <button
+                    id="library-repair-btn"
+                    className="btn btn-ghost btn-compact"
+                    type="button"
+                    disabled={!library.selectedBookId}
+                    data-tip="Re-synthesize chapters whose audio files are missing. Needs the original source."
+                    onClick={() => void library.repairSelectedBook()}
+                  >
+                    Repair
+                  </button>
+                  <button
+                    id="library-delete-btn"
+                    className="btn btn-danger btn-compact"
+                    type="button"
+                    disabled={!library.selectedBookId}
+                    data-tip="Remove this book and its audio from the library"
+                    onClick={() => void library.deleteSelectedBook()}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              <div className="panel-section chapter-section">
+                <div className="section-title"><span>Chapters</span></div>
+                <div id="chapter-list" className="chapter-list">
+                  {chapters.length === 0 ? (
+                    <p className="hint chapter-empty">No chapters yet.</p>
+                  ) : (
+                    chapters.map((chapter) => {
+                      const isCurrent = chapter.number === currentChapterNumber;
+                      const playbackLabel = chapterPlaybackStatusLabel({ isCurrent, playing });
+                      return (
+                        <div key={chapter.id} className={`chapter-row${isCurrent ? " is-current" : ""}`}>
+                          <button
+                            type="button"
+                            className="chapter-main"
+                            aria-current={isCurrent ? "true" : undefined}
+                            aria-label={
+                              playbackLabel
+                                ? `${chapter.title || `Chapter ${chapter.number}`} — ${playbackLabel.toLowerCase()}`
+                                : undefined
+                            }
+                            data-tip="Play from this chapter"
+                            onClick={() => onJumpToChapter?.(chapter)}
+                            disabled={!onJumpToChapter}
+                          >
+                            <span className="chapter-number tabular-nums">{String(chapter.number).padStart(2, "0")}</span>
+                            <span className="chapter-title">
+                              {chapter.title || `Chapter ${chapter.number}`}
+                            </span>
+                            <span className="chapter-duration tabular-nums">{formatDurationClock(chapter.duration_ms)}</span>
+                          </button>
+                          <button
+                            className="btn btn-ghost btn-compact chapter-cleaned-btn"
+                            type="button"
+                            disabled={cleaningPreviewLoading}
+                            data-tip="Compare this chapter's text before and after cleaning"
+                            onClick={() => void loadCleaningPreview(chapter.number)}
+                          >
+                            Cleaned text
+                          </button>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {showCleaningPreview ? (
+                <details className="library-disclosure cleaning-preview-toggle" open>
+                  <summary>Cleaning preview</summary>
+                  <pre id="cleaning-preview">
+                    {cleaningPreviewLoading ? "Loading cleaning preview…" : previewText(cleaningPreview)}
+                  </pre>
+                </details>
+              ) : null}
+            </>
+          ) : showEmpty ? null : (
+            <div className="empty-state">
+              <p className="empty-state-title">No book selected</p>
+              <p className="empty-state-hint">
+                Choose a book from the list to see its chapters, edit its details, and play it.
+              </p>
+            </div>
+          )}
+
+          <details className="library-disclosure maintenance-toggle">
+            <summary>Maintenance</summary>
+            <div className="maintenance-body">
+              <div className="maintenance-actions">
+                <button
+                  className="btn btn-compact"
+                  type="button"
+                  disabled={library.maintenanceLoading}
+                  data-tip="Audit storage for orphaned files and missing chapters"
+                  onClick={() => void library.loadMaintenanceDiagnostics()}
+                >
+                  Diagnostics
+                </button>
+                <button
+                  className="btn btn-compact"
+                  type="button"
+                  disabled={library.maintenanceLoading}
+                  data-tip="Copy the library database to a timestamped backup"
+                  onClick={() => void library.backupDatabase()}
+                >
+                  Back up database
+                </button>
+                <button
+                  className="btn btn-compact"
+                  type="button"
+                  disabled={library.maintenanceLoading}
+                  data-tip="Remove orphaned temp files. Finished audio is never touched."
+                  onClick={() => void library.cleanupStorage()}
+                >
+                  Clean up storage
+                </button>
+                <button
+                  className="btn btn-compact"
+                  type="button"
+                  disabled={!library.canOpenAppData}
+                  data-tip="Open the application data folder"
+                  onClick={() => void library.openAppDataFolder()}
+                >
+                  App data
+                </button>
+              </div>
+              {library.maintenanceMessage ? (
+                <p className="field-hint status-sentence">{library.maintenanceMessage}</p>
+              ) : null}
+              {library.maintenanceReport ? (
+                <div className="maintenance-grid">
+                  <div><span>Database</span><strong>{library.maintenanceReport.database_path}</strong></div>
+                  <div><span>Output</span><strong>{library.maintenanceReport.output_path}</strong></div>
+                  <div><span>Temp uploads</span><strong className="tabular-nums">{library.maintenanceReport.audit.stale_temp_uploads?.length ?? 0}</strong></div>
+                  <div><span>Orphan folders</span><strong className="tabular-nums">{library.maintenanceReport.audit.orphan_output_dirs?.length ?? 0}</strong></div>
+                  <div><span>Stale sources</span><strong className="tabular-nums">{library.maintenanceReport.audit.stale_book_sources?.length ?? 0}</strong></div>
+                  <div><span>Missing chapters</span><strong className="tabular-nums">{library.maintenanceReport.audit.stale_chapter_rows?.length ?? 0}</strong></div>
+                </div>
+              ) : null}
+              {selected ? (
+                <details className="library-disclosure raw-metadata-toggle">
+                  <summary>Raw metadata</summary>
+                  <pre id="book-detail">{library.bookDetailText}</pre>
+                </details>
+              ) : null}
+            </div>
           </details>
         </div>
       </div>

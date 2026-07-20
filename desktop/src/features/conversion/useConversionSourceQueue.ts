@@ -32,7 +32,6 @@ export function useConversionSourceQueue({
   conversionJob,
   queueController,
 }: UseConversionSourceQueueArgs) {
-  const [pasteTitle, setPasteTitle] = useState("");
   const [pastedText, setPastedText] = useState("");
   const [pasteBusy, setPasteBusy] = useState(false);
   const [pasteStatus, setPasteStatus] = useState("Idle");
@@ -193,7 +192,7 @@ export function useConversionSourceQueue({
     try {
       const response = await apiClient.uploadSourceText({
         text,
-        title: pasteTitle.trim() || null,
+        title: null,
       });
       const item = createQueueItem(
         response.source_handle,
@@ -205,7 +204,6 @@ export function useConversionSourceQueue({
         selectItem: !hasSelectedSourceRef.current,
       });
       setPastedText("");
-      setPasteTitle("");
       setPasteStatus("Pasted markdown source added.");
       conversionJob.clearFormError();
     } catch (error: unknown) {
@@ -217,7 +215,6 @@ export function useConversionSourceQueue({
     apiClient,
     conversionJob,
     conversionMode,
-    pasteTitle,
     pastedText,
     queueController,
   ]);
@@ -284,8 +281,6 @@ export function useConversionSourceQueue({
   }, [conversionMode, queueController]);
 
   return {
-    pasteTitle,
-    setPasteTitle,
     pastedText,
     setPastedText,
     pasteBusy,

@@ -15,10 +15,30 @@ interface ProgressPanelProps {
   activeJobId: string | null;
   isCancelling: boolean;
   onCancel: () => Promise<void>;
+  onStartConvert?: () => void;
+}
+
+function hasJobToShow(uiState: ConversionJobStatus): boolean {
+  return (
+    uiState === "running" ||
+    uiState === "completed" ||
+    uiState === "failed" ||
+    uiState === "cancelled"
+  );
 }
 
 const RING_RADIUS = 30;
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+const PLACEHOLDER_VALUES = new Set([
+  "",
+  "—",
+  "Not available",
+  "Not recorded",
+  "Not reported yet",
+  "Elapsed not recorded",
+  "Measuring…",
+]);
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -72,7 +92,26 @@ export function ProgressPanel({
   activeJobId,
   isCancelling,
   onCancel,
+  onStartConvert,
 }: ProgressPanelProps) {
+  if (!hasJobToShow(uiState)) {
+    return (
+      <div className="panel-section progress-empty">
+        <div className="empty-state">
+          <span className="empty-state-title">No conversion running</span>
+          <span className="empty-state-hint">
+            Start a conversion from the Convert tab and its progress will appear here.
+          </span>
+          {onStartConvert ? (
+            <button className="btn btn-primary" type="button" onClick={onStartConvert}>
+              Convert a source
+            </button>
+          ) : null}
+        </div>
+      </div>
+    );
+  }
+
   const boundedProgress = clampPercent(progressPct);
   const activeStage = stages.find((stage) => stage.state === "active") ?? null;
   const canCancel = uiState === "running" && Boolean(activeJobId) && !isCancelling;
@@ -91,6 +130,20 @@ export function ProgressPanel({
   const workersTip = presentation.showLiveWorkers
     ? `Chapters synthesized concurrently. Requested ${performance?.requested_parallel_chapters ?? "—"}, effective ${performance?.effective_parallel_chapters ?? "—"} after warm-up and memory limits.`
     : "Worker pool from the finished job.";
+  const live = presentation.showLiveWorkers;
+  // Terminal snapshots often carry placeholder values; hide those tiles rather
+  // than print "Not available"/"—" (rule 2 / finding 9).
+  const hasValue = (value: string) => !PLACEHOLDER_VALUES.has(value.trim());
+  const showStatusLine = uiState !== "completed";
+  const terminalTiles = live
+    ? []
+    : [
+        hasValue(presentation.workerSummary),
+        hasValue(presentation.throughputSummary),
+        hasValue(presentation.chaptersSummary),
+        hasValue(presentation.modeSummary),
+      ];
+  const showTerminalPerformance = !live && terminalTiles.some(Boolean);
 
   return (
     <>
@@ -107,31 +160,39 @@ export function ProgressPanel({
               label="Overall conversion progress"
             />
           </div>
-          <div className="progress-hero-meta">
-            <span id="status-text" className="progress-status-text">{statusText || uiState}</span>
-            <span
-              id="eta-text"
-              className="progress-chip"
-              data-tip="Estimated time remaining, from current throughput"
-            >
-              {running ? etaText || "ETA pending" : "ETA —"}
-            </span>
-          </div>
+          {showStatusLine || (running && etaText) ? (
+            <div className="progress-hero-meta">
+              {showStatusLine ? (
+                <span id="status-text" className="progress-status-text">{statusText || uiState}</span>
+              ) : null}
+              {running && etaText ? (
+                <span
+                  id="eta-text"
+                  className="progress-chip"
+                  data-tip="Estimated time remaining, from current throughput"
+                >
+                  {etaText}
+                </span>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
-        <button
-          id="progress-cancel-btn"
-          className="btn btn-compact progress-cancel"
-          type="button"
-          disabled={!canCancel}
-          data-tip="Stop the running conversion. Finished chapters are kept."
-          data-tip-pos="left"
-          onClick={() => {
-            void onCancel();
-          }}
-        >
-          {isCancelling ? "Cancelling…" : "Cancel"}
-        </button>
+        {running && activeJobId ? (
+          <button
+            id="progress-cancel-btn"
+            className="btn btn-compact progress-cancel"
+            type="button"
+            disabled={!canCancel}
+            data-tip="Stop the running conversion. Finished chapters are kept."
+            data-tip-pos="left"
+            onClick={() => {
+              void onCancel();
+            }}
+          >
+            {isCancelling ? "Cancelling…" : "Cancel"}
+          </button>
+        ) : null}
       </div>
 
       {presentation.showLiveActiveTask && stageDetails.length > 0 ? (
@@ -173,52 +234,82 @@ export function ProgressPanel({
         ))}
       </div>
 
-      <div className="panel-section performance-section" aria-label="Performance snapshot">
-        <div className="performance-grid">
-          <div className="performance-item" data-tip={workersTip} data-tip-pos="top">
-            <span className="performance-label">Workers</span>
-            <strong>{presentation.workerSummary}</strong>
-            <span>{presentation.queueSummary}</span>
-          </div>
-          <div
-            className="performance-item"
-            data-tip="Processing rates per stage: text cleaning, speech synthesis, audio encoding"
-            data-tip-pos="top"
-          >
-            <span className="performance-label">Throughput</span>
-            <strong>{presentation.throughputSummary}</strong>
-            <span>{presentation.elapsedSummary}</span>
-          </div>
-          <div className="performance-item">
-            <span className="performance-label">{presentation.showLiveWorkers ? "Active chapters" : "Chapters"}</span>
-            <strong>
-              {presentation.showLiveWorkers
-                ? activeTitles.length > 0
-                  ? activeTitles.slice(0, 3).join(", ")
-                  : "None"
-                : "—"}
-            </strong>
-            <span>{presentation.chaptersSummary}</span>
-          </div>
-          <div
-            className="performance-item"
-            data-tip="Worker scheduling and pipeline mode in effect for this job"
-            data-tip-pos="top"
-          >
-            <span className="performance-label">Mode</span>
-            <strong>{presentation.modeSummary}</strong>
-            <span>
-              {presentation.showLiveWorkers && performance?.fallback_reason
-                ? `Fallback: ${performance.fallback_reason}`
-                : presentation.showLiveActiveTask
-                  ? presentation.activeTaskSummary
-                  : presentation.snapshotKind === "final"
-                    ? "Final snapshot"
-                    : "No data recorded"}
-            </span>
+      {live ? (
+        <div className="panel-section performance-section" aria-label="Performance snapshot">
+          <div className="performance-grid">
+            <div className="performance-item" data-tip={workersTip} data-tip-pos="top">
+              <span className="performance-label">Workers</span>
+              <strong>{presentation.workerSummary}</strong>
+              <span>{presentation.queueSummary}</span>
+            </div>
+            <div
+              className="performance-item"
+              data-tip="Processing rates per stage: text cleaning, speech synthesis, audio encoding"
+              data-tip-pos="top"
+            >
+              <span className="performance-label">Throughput</span>
+              <strong>{presentation.throughputSummary}</strong>
+              <span>{presentation.elapsedSummary}</span>
+            </div>
+            <div className="performance-item">
+              <span className="performance-label">Active chapters</span>
+              <strong>{activeTitles.length > 0 ? activeTitles.slice(0, 3).join(", ") : "None"}</strong>
+              <span>{presentation.chaptersSummary}</span>
+            </div>
+            <div
+              className="performance-item"
+              data-tip="Worker scheduling and pipeline mode in effect for this job"
+              data-tip-pos="top"
+            >
+              <span className="performance-label">Mode</span>
+              <strong>{presentation.modeSummary}</strong>
+              <span>
+                {performance?.fallback_reason
+                  ? `Fallback: ${performance.fallback_reason}`
+                  : presentation.activeTaskSummary}
+              </span>
+            </div>
           </div>
         </div>
-      </div>
+      ) : showTerminalPerformance ? (
+        <div className="panel-section performance-section" aria-label="Performance snapshot">
+          <div className="performance-grid">
+            {hasValue(presentation.workerSummary) ? (
+              <div className="performance-item" data-tip={workersTip} data-tip-pos="top">
+                <span className="performance-label">Workers</span>
+                <strong>{presentation.workerSummary}</strong>
+              </div>
+            ) : null}
+            {hasValue(presentation.throughputSummary) ? (
+              <div
+                className="performance-item"
+                data-tip="Processing rates per stage: text cleaning, speech synthesis, audio encoding"
+                data-tip-pos="top"
+              >
+                <span className="performance-label">Throughput</span>
+                <strong>{presentation.throughputSummary}</strong>
+                {hasValue(presentation.elapsedSummary) ? <span>{presentation.elapsedSummary}</span> : null}
+              </div>
+            ) : null}
+            {hasValue(presentation.chaptersSummary) ? (
+              <div className="performance-item">
+                <span className="performance-label">Chapters</span>
+                <strong>{presentation.chaptersSummary}</strong>
+              </div>
+            ) : null}
+            {hasValue(presentation.modeSummary) ? (
+              <div
+                className="performance-item"
+                data-tip="Worker scheduling and pipeline mode in effect for this job"
+                data-tip-pos="top"
+              >
+                <span className="performance-label">Mode</span>
+                <strong>{presentation.modeSummary}</strong>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }

@@ -2,19 +2,31 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   compactSample,
+  describeSourceDisplay,
   extractDroppedPaths,
+  middleTruncate,
   pathsFromUriList,
   normalizeQuantizationValue,
-  nowStatus,
   splitPath,
 } from "./conversionPanelHelpers";
 import { isTauriRuntime } from "../../platform/tauriRuntime";
 
 describe("conversion panel helpers", () => {
-  it("maps backend connection state to status text", () => {
-    expect(nowStatus("checking")).toBe("Checking…");
-    expect(nowStatus("connected")).toBe("Connected");
-    expect(nowStatus("error")).toBe("Error");
+  it("describes upload handles with a friendly basename and no directory", () => {
+    const display = describeSourceDisplay("upload:1699_ab_Pasted Document.md", "Pasted Document.md");
+    expect(display.name).toBe("Pasted Document.md");
+    expect(display.dir).toBe("");
+  });
+
+  it("describes real file paths with a basename and its directory", () => {
+    const display = describeSourceDisplay("/Users/me/Books/source.epub");
+    expect(display.name).toBe("source.epub");
+    expect(display.dir).toBe("/Users/me/Books");
+  });
+
+  it("middle-truncates long values while keeping both ends", () => {
+    expect(middleTruncate("short", 40)).toBe("short");
+    expect(middleTruncate("/a/very/long/directory/path/that/keeps/going/on", 20)).toContain("…");
   });
 
   it("detects Tauri runtime from window internals", () => {

@@ -253,6 +253,11 @@ button.control:hover {
   width: 1px;
 }
 
+/*
+ * One status-dot component everywhere (header + cards). Base is neutral
+ * (unknown/offline); modifiers set the state colour — green ok, amber busy,
+ * red error. Only `.is-connected` pulses.
+ */
 .status-dot {
   background: var(--text-tertiary);
   border-radius: 50%;
@@ -261,9 +266,21 @@ button.control:hover {
   width: 8px;
 }
 
+.status-dot.is-connected,
+.status-dot.is-ok {
+  background: var(--positive);
+}
+
 .status-dot.is-connected {
   animation: status-dot-pulse 2.4s ease-in-out infinite;
-  background: var(--positive);
+}
+
+.status-dot.is-busy {
+  background: var(--warning);
+}
+
+.status-dot.is-error {
+  background: var(--negative);
 }
 
 @keyframes status-dot-pulse {
@@ -317,39 +334,52 @@ button.control:hover {
   margin-bottom: 12px;
 }
 
+/*
+ * The one tracked-caps label style, app-wide. Use `.section-label` for a
+ * card's single top-level section header (e.g. "Audiobook → M4B"). Do NOT
+ * all-caps field labels — those are sentence case (`.field-label` in
+ * controls.css). `.section-title` and `.panel-header` are structural
+ * wrappers that inherit this exact type treatment.
+ */
+.section-label,
+.section-title,
+.panel-header {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .section-title {
   align-items: center;
   border-bottom: 1px solid var(--border-light);
-  color: var(--text-tertiary);
   display: flex;
-  font-size: 10px;
-  font-weight: 600;
   gap: 12px;
   justify-content: space-between;
-  letter-spacing: 0.07em;
   min-height: 30px;
   padding: 6px var(--density-panel-pad);
-  text-transform: uppercase;
 }
 
 .section-title span {
   min-width: 0;
 }
 
+/* Value metas inside a tracked-caps section header stay sentence case. */
+.section-title .section-title-meta {
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .panel-header {
   align-items: center;
   border-bottom: 1px solid var(--border-light);
-  color: var(--text-tertiary);
   display: flex;
-  font-size: 11px;
-  font-weight: 600;
   gap: 12px;
   justify-content: space-between;
-  letter-spacing: 0.07em;
   margin-bottom: 12px;
   min-height: 34px;
   padding: 8px var(--density-panel-pad);
-  text-transform: uppercase;
 }
 
 .panel-header-meta {
@@ -363,6 +393,7 @@ button.control:hover {
   overflow: hidden;
   text-align: right;
   text-overflow: ellipsis;
+  text-transform: none;
   white-space: nowrap;
 }
 

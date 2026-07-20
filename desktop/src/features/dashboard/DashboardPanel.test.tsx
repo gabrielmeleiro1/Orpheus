@@ -63,4 +63,76 @@ describe("DashboardPanel library count", () => {
     expect(libraryCard?.querySelector(".status-number")?.textContent).toBe("4");
     expect(libraryCard?.querySelector(".status-detail")?.textContent).toBe("Books indexed");
   });
+
+  it("shows a single Status tile and no ETA placeholder when ETA is empty", async () => {
+    const library = {
+      items: [],
+      indexedCount: 0,
+      selectedBookDetail: null,
+    } as unknown as UseLibraryResult;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <DashboardPanel
+          hidden={false}
+          library={library}
+          connectionState="connected"
+          health={null}
+          statusMessage="ready"
+          uiState="running"
+          progressPct={50}
+          etaText=""
+          stages={[]}
+          performance={null}
+          currentChapterLabel=""
+          playerTitle=""
+          playing={false}
+          audioVisualizer={{} as AudioAnalyserHandle}
+          elapsedSec={0}
+          durationSec={0}
+        />,
+      );
+    });
+
+    const metricRow = container.querySelector(".metric-row-flow");
+    expect(metricRow?.querySelectorAll(".metric").length).toBe(1);
+    expect(container.textContent).not.toContain("ETA");
+    expect(metricRow?.querySelector(".metric-label")?.textContent).toBe("Status");
+  });
+
+  it("renders exactly one primary action on the idle dashboard", async () => {
+    const library = {
+      items: [],
+      indexedCount: 0,
+      selectedBookDetail: null,
+    } as unknown as UseLibraryResult;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <DashboardPanel
+          hidden={false}
+          library={library}
+          connectionState="connected"
+          health={null}
+          statusMessage="ready"
+          uiState="idle"
+          progressPct={0}
+          etaText=""
+          stages={[]}
+          performance={null}
+          currentChapterLabel=""
+          playerTitle=""
+          playing={false}
+          audioVisualizer={{} as AudioAnalyserHandle}
+          elapsedSec={0}
+          durationSec={0}
+          onStartConvert={() => undefined}
+        />,
+      );
+    });
+
+    expect(container.querySelectorAll(".btn-primary").length).toBe(1);
+  });
 });

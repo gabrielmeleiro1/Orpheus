@@ -48,8 +48,19 @@ function normalizedStatus(state: BackendConnectionState, health: HealthResponse 
   return state;
 }
 
-function stageName(stage: ProgressStageView | undefined): string {
-  return String(stage?.name || "waiting").replace(/_/g, " ");
+function conversionStateLabel(uiState: ConversionJobStatus): string {
+  switch (uiState) {
+    case "running":
+      return "Running";
+    case "completed":
+      return "Complete";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return "Idle";
+  }
 }
 
 export function DashboardPanel({
@@ -62,7 +73,6 @@ export function DashboardPanel({
   progressPct,
   etaText,
   stages,
-  performance,
   currentChapterLabel,
   playerTitle,
   playing,
@@ -73,7 +83,6 @@ export function DashboardPanel({
 }: DashboardPanelProps) {
   const selected = library.selectedBookDetail;
   const recentBooks = library.items.slice(0, 3);
-  const completedStageCount = stages.filter((stage) => stage.state === "done").length;
   const nowLabel = dashboardNowStageLabel(uiState, stages);
   const selectedChapterCount = selected?.chapters.length ?? 0;
   const selectedDurationSec =
@@ -81,17 +90,19 @@ export function DashboardPanel({
   const playbackPercent = durationSec > 0 ? clampPercent((elapsedSec / durationSec) * 100) : 0;
   const conversionPercent = clampPercent(progressPct);
   const conversionIsActive = uiState === "running";
-  const queueText =
-    uiState === "running" && typeof performance?.max_workers === "number"
-      ? `${performance.active_workers ?? 0}/${performance.max_workers} workers`
-      : uiState === "running"
-        ? `${performance?.queued_chapters ?? 0} queued`
-        : "No conversion running";
+  const hasPlayback = playing || durationSec > 0;
+  const hasJob =
+    uiState === "running" || uiState === "completed" || uiState === "failed" || uiState === "cancelled";
   const chapterText =
     selectedChapterCount > 0
       ? `${selectedChapterCount} ${selectedChapterCount === 1 ? "chapter" : "chapters"}`
       : "No chapters";
-  const showEmptyLibraryAction = recentBooks.length === 0 && Boolean(onStartConvert);
+  const stateLabel = conversionStateLabel(uiState);
+  // One "Status" tile: the live stage while running, the outcome once terminal.
+  const statusTileValue = conversionIsActive ? nowLabel : stateLabel;
+  // Avoid the "Complete Complete" echo when the stage label restates the state.
+  const readoutStage = nowLabel.toLowerCase() === stateLabel.toLowerCase() ? "" : nowLabel;
+  const etaValue = etaText ? etaText.replace(/^eta\s*/i, "").trim() : "";
   return (
     <section id="tab-dashboard" className="dashboard-panel" role="tabpanel" aria-label="Dashboard" hidden={hidden}>
       <section className="panel-section v-section dashboard-hero" aria-label="Audiobook overview">
@@ -99,162 +110,144 @@ export function DashboardPanel({
           <span>Overview</span>
         </div>
         <div className="primary-grid">
-          <div className="panel-section v-panel now-playing-panel">
-            <div className="panel-title-row">
-              <div>
-                <h2 className="panel-title">Now Playing</h2>
-                <p className="panel-subtitle">
-                  {selected?.title ? `${selected.title} — ${currentChapterLabel}` : playerTitle}
-                </p>
-              </div>
-              <span className="tiny-badge" data-tip="Position in the current chapter" data-tip-pos="left">
-                {`${playbackPercent}%`}
-              </span>
-            </div>
+          <div className={`panel-section v-panel now-playing-panel${hasPlayback ? "" : " is-empty"}`}>
+            {hasPlayback ? (
+              <>
+                <div className="panel-title-row">
+                  <div>
+                    <h2 className="panel-title">Now playing</h2>
+                    <p className="panel-subtitle">
+                      {selected?.title ? `${selected.title} — ${currentChapterLabel}` : playerTitle}
+                    </p>
+                  </div>
+                  <span
+                    className="tiny-badge"
+                    data-tip="Position in the current chapter"
+                    data-tip-pos="left"
+                  >
+                    {`${playbackPercent}%`}
+                  </span>
+                </div>
 
-            <div className="wave-card" aria-hidden="true">
-              <NowPlayingCanvas visualizer={audioVisualizer} playing={playing} active={!hidden} />
-            </div>
+                <div className="wave-card" aria-hidden="true">
+                  <NowPlayingCanvas visualizer={audioVisualizer} playing={playing} active={!hidden} />
+                </div>
 
-            <div className="metric-row">
-              <div className="metric">
-                <span className="metric-label">Elapsed</span>
-                <strong>{formatClockWithHours(elapsedSec)}</strong>
+                <div className="metric-row">
+                  <div className="metric">
+                    <span className="metric-label">Elapsed</span>
+                    <strong>{formatClockWithHours(elapsedSec)}</strong>
+                  </div>
+                  <div className="metric">
+                    <span className="metric-label">Duration</span>
+                    <strong>
+                      {durationSec > 0 ? formatClockWithHours(durationSec) : formatClockWithHours(selectedDurationSec)}
+                    </strong>
+                  </div>
+                  <div className="metric">
+                    <span className="metric-label">Chapters</span>
+                    <strong className="metric-word">{chapterText}</strong>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="empty-state">
+                <span className="empty-state-title">Nothing playing</span>
+                <span className="empty-state-hint">Open a book from your library to start listening.</span>
+                {onStartConvert ? (
+                  <button className="btn btn-primary" type="button" onClick={onStartConvert}>
+                    Convert a source
+                  </button>
+                ) : null}
               </div>
-              <div className="metric">
-                <span className="metric-label">Duration</span>
-                <strong>{durationSec > 0 ? formatClockWithHours(durationSec) : formatClockWithHours(selectedDurationSec)}</strong>
-              </div>
-              <div className="metric">
-                <span className="metric-label">Chapters</span>
-                <strong>{chapterText}</strong>
-              </div>
-            </div>
+            )}
           </div>
 
           <div className="side-stack">
             <div className="panel-section v-panel status-card">
-              <span className="status-label">Playback</span>
-              <strong className="status-number">{`${playbackPercent}%`}</strong>
-              <span className="status-detail">{selected?.title || "Nothing selected"}</span>
-            </div>
-            <div className="panel-section v-panel status-card">
-              <span className="status-label">Queue</span>
-              <strong className="status-number">{uiState === "running" ? "1 job" : "Idle"}</strong>
-              <span className="status-detail">{queueText}</span>
-            </div>
-            <div className="panel-section v-panel status-card">
               <span className="status-label">Library</span>
-              <strong className="status-number">{library.indexedCount}</strong>
+              <strong className="status-number tabular-nums">{library.indexedCount}</strong>
               <span className="status-detail">{library.indexedCount === 1 ? "Book indexed" : "Books indexed"}</span>
             </div>
           </div>
         </div>
       </section>
 
-      <section className="panel-section v-section">
-        <div className="section-title">
-          <span>Conversion</span>
-          <span>{`${uiState} · ${conversionPercent}%`}</span>
-        </div>
-        <div className="library-strip">
-          <div className="panel-section v-panel book-panel">
-            <div
-              className={`conversion-activity${conversionIsActive ? " is-running" : " is-idle"}`}
-              aria-hidden="true"
-            >
-              <ConversionFlowCanvas active={conversionIsActive} className="conversion-activity-canvas" />
-              <ProgressBar
-                pct={conversionPercent}
-                tone={conversionIsActive ? "active" : "neutral"}
-                size="hairline"
-                label="Conversion progress"
-              />
-              <div className="conversion-activity-readout">
-                <span>{conversionIsActive ? "Run" : "Idle"}</span>
-                <span>{nowLabel}</span>
-              </div>
-            </div>
-            <div className="book-main">
-              <div className="book-heading">
-                <div>
-                  <h2 className="book-title">{selected?.title || "No book selected"}</h2>
-                  <p className="book-subtitle">
-                    {selected ? `${selected.author || "Unknown author"} — ${chapterText}` : "Select or convert a source"}
-                  </p>
-                </div>
-                <span className="tiny-badge" data-tip="Overall progress of the running conversion" data-tip-pos="left">
-                  {`${conversionPercent}%`}
-                </span>
-              </div>
-              <div className="chapter-lines" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-              <div className="metric-row">
-                <div className="metric">
-                  <span className="metric-label">Now</span>
-                  <strong className="metric-capitalize">{nowLabel}</strong>
-                </div>
-                <div className="metric">
-                  <span className="metric-label">ETA</span>
-                  <strong>{etaText ? etaText.replace(/^eta\s*/i, "") : "—"}</strong>
-                </div>
-                <div className="metric">
-                  <span className="metric-label">State</span>
-                  <strong className="metric-capitalize">{uiState}</strong>
-                </div>
-              </div>
-            </div>
+      {hasJob ? (
+        <section className="panel-section v-section">
+          <div className="section-title">
+            <span>Conversion</span>
+            <span className="section-title-meta tabular-nums">{`${stateLabel} · ${conversionPercent}%`}</span>
           </div>
-
-          <div className="panel-section v-panel pipeline-panel">
-            <div className="pipeline-head">Pipeline</div>
-            {stages.map((stage) => (
-              <div className="pipeline-row" key={stage.name}>
-                <div>
-                  <span className="pipeline-name">{stageName(stage)}</span>
-                  <span className="pipeline-meta">{stage.state}</span>
-                </div>
+          <div className="library-strip">
+            <div className="panel-section v-panel book-panel">
+              <div
+                className={`conversion-activity${conversionIsActive ? " is-running" : " is-idle"}`}
+                aria-hidden="true"
+              >
+                <ConversionFlowCanvas active={conversionIsActive} className="conversion-activity-canvas" />
                 <ProgressBar
-                  pct={stage.pct}
-                  tone={conversionIsActive && stage.state === "active" ? "active" : stage.state === "done" ? "done" : "neutral"}
+                  pct={conversionPercent}
+                  tone={conversionIsActive ? "active" : "neutral"}
                   size="hairline"
-                  label={`${stageName(stage)} progress`}
+                  label="Conversion progress"
                 />
-                <span className="percent">{`${clampPercent(stage.pct)}%`}</span>
+                <div className="conversion-activity-readout">
+                  <span>{stateLabel}</span>
+                  {readoutStage ? <span>{readoutStage}</span> : null}
+                </div>
               </div>
-            ))}
+              <div className="book-main">
+                <div className="book-heading">
+                  <div>
+                    <h2 className="book-title">{selected?.title || "Current conversion"}</h2>
+                    <p className="book-subtitle">
+                      {selected ? `${selected.author || "Unknown author"} — ${chapterText}` : "In progress"}
+                    </p>
+                  </div>
+                </div>
+                <div className="chapter-lines" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </div>
+                <div className="metric-row metric-row-flow">
+                  <div className="metric">
+                    <span className="metric-label">Status</span>
+                    <strong className="metric-word metric-capitalize">{statusTileValue}</strong>
+                  </div>
+                  {etaValue ? (
+                    <div className="metric">
+                      <span className="metric-label">ETA</span>
+                      <strong>{etaValue}</strong>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       <div className="lower-grid">
         <section className="panel-section v-section recent-section">
           <div className="section-title">
             <span>Recent</span>
           </div>
-          <div className="recent-list">
-            {recentBooks.length === 0 ? (
-              <div className="recent-row">
-                <span className="square" />
-                <div>
-                  <span className="recent-title">No converted books yet</span>
-                  <span className="recent-meta">Convert a source to get started</span>
-                  {showEmptyLibraryAction ? (
-                    <button className="btn btn-compact" type="button" onClick={onStartConvert}>
-                      Convert a source
-                    </button>
-                  ) : null}
-                </div>
-                <span className="recent-state">--:--</span>
-                <span className="recent-state">Empty</span>
-                <ProgressBar pct={0} tone="neutral" size="hairline" label="No progress" />
-              </div>
-            ) : (
-              recentBooks.map((book) => {
+          {recentBooks.length === 0 ? (
+            <div className="empty-state">
+              <span className="empty-state-title">No converted books yet</span>
+              <span className="empty-state-hint">Convert a source to build your library.</span>
+              {onStartConvert ? (
+                <button className="btn btn-ghost" type="button" onClick={onStartConvert}>
+                  Convert a source
+                </button>
+              ) : null}
+            </div>
+          ) : (
+            <div className="recent-list">
+              {recentBooks.map((book) => {
                 const pct =
                   book.total_chapters > 0 ? clampPercent((book.completed_chapters / book.total_chapters) * 100) : 0;
                 const ready = book.completed_chapters >= book.total_chapters;
@@ -265,7 +258,9 @@ export function DashboardPanel({
                       <span className="recent-title">{book.title || "Untitled"}</span>
                       <span className="recent-meta">{`${book.author || "Unknown"} — ${book.total_chapters || 0} chapters`}</span>
                     </div>
-                    <span className="recent-state">{formatDurationClockWithHours(selected?.id === book.id ? selectedDurationSec * 1000 : null)}</span>
+                    <span className="recent-state tabular-nums">
+                      {formatDurationClockWithHours(selected?.id === book.id ? selectedDurationSec * 1000 : null)}
+                    </span>
                     <span
                       className="recent-state"
                       data-tip={ready ? undefined : "Some chapters are missing audio. Open Library to repair."}
@@ -275,9 +270,9 @@ export function DashboardPanel({
                     <ProgressBar pct={pct} tone={ready ? "done" : "neutral"} size="hairline" label={`${book.title || "Book"} completion`} />
                   </div>
                 );
-              })
-            )}
-          </div>
+              })}
+            </div>
+          )}
         </section>
 
         <section className="panel-section v-section services-section">
@@ -297,13 +292,6 @@ export function DashboardPanel({
               <span className="service-meta">{library.statusMessage || "Ready"}</span>
             </div>
             <span className="service-status">{library.loadingList || library.loadingDetail ? "loading" : "ready"}</span>
-          </div>
-          <div className="service-row">
-            <div>
-              <span className="service-name">Pipeline</span>
-              <span className="service-meta">{`${completedStageCount}/${stages.length} stages complete`}</span>
-            </div>
-            <span className="service-status">{uiState}</span>
           </div>
         </section>
       </div>

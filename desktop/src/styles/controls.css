@@ -1,11 +1,46 @@
+/*
+ * ============================================================================
+ * Shared UI primitives — the single source of truth for controls app-wide.
+ * Feature CSS should CONSUME these class names, not reinvent them.
+ *
+ *   Labels & text
+ *     .field-label / .form-row-label  sentence-case field label (normal weight)
+ *     .section-label                  the one tracked-caps card header (shell.css)
+ *     .hint / .field-hint             one-line helper text (12px, secondary)
+ *     .tabular-nums                   font-variant-numeric for live numbers
+ *
+ *   Inputs
+ *     .field-input                    the one text-input / textarea style
+ *     .term-select-btn                the one select (combobox) trigger style
+ *
+ *   Buttons (three variants only)
+ *     .btn                            secondary / bordered (default)
+ *     .btn.btn-primary                accent CTA, max one per view
+ *     .btn.btn-ghost                  text / row action, no border
+ *     .btn.btn-danger                 destructive MODIFIER (pairs with any)
+ *
+ *   Segmented control
+ *     .seg-control > .seg-control-btn  (Auto/Manual, All/Info/Warn/Error)
+ *
+ *   Layout
+ *     .form-grid                      vertical stack of fields (≤ 34rem)
+ *     .field                          one label+control pair
+ *     .field-row                      two fields side by side (Title + Author)
+ *     .empty-state                    quiet no-data message + one action
+ *
+ * Every interactive element gets the standard accent focus-visible outline
+ * (see the :where() rule near the bottom of this file).
+ * ============================================================================
+ */
+
 .field-label,
 .form-row-label {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   display: block;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .field-input,
@@ -66,20 +101,37 @@
   opacity: 0.35;
 }
 
+/* Primary: accent CTA. Colour/weight only — no baked-in layout, so it works
+   inline in a row or full-width via a `.btn-block` wrapper/utility. */
 .btn-primary {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
   color: var(--accent);
-  font-size: 13px;
   font-weight: 600;
-  margin-top: 20px;
-  min-height: 36px;
-  width: 100%;
 }
 
 .btn-primary:hover {
   background: color-mix(in srgb, var(--accent) 16%, transparent);
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+}
+
+/* Ghost: text / row action. No border, quiet until hovered. Kept a step
+   brighter than plain secondary text so it never reads as disabled. */
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: color-mix(in srgb, var(--text) 32%, var(--text-secondary));
+}
+
+.btn-ghost:hover {
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+/* Full-width utility for a stacked CTA (opt-in, not baked into .btn-primary). */
+.btn-block {
+  width: 100%;
 }
 
 .btn-compact {
@@ -109,8 +161,16 @@
   width: 15px;
 }
 
+/* The one helper-text style: a single-line hint under a field. Max one per
+   field. Backend value/status echoes stay a touch quieter (tertiary). */
+.hint,
 .drop-zone-hint,
-.field-hint,
+.field-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .book-summary-value,
 .preflight-meta,
 .preflight-status,
@@ -169,6 +229,12 @@
   padding: 0;
 }
 
+/* Rule 10: controls stay readable instead of stretching the full column. */
+.form-row-field,
+.form-row-stack {
+  max-width: var(--field-text-width);
+}
+
 .form-row-field > .field-input,
 .form-row-field > .term-select {
   flex: 1 1 220px;
@@ -184,12 +250,74 @@
   padding: 0;
 }
 
+/*
+ * Form layout primitives. `.form-grid` stacks fields with consistent rhythm
+ * and caps text width so inputs never stretch the full column. `.field` is one
+ * label+control pair; `.field-row` puts two `.field`s side by side (Title +
+ * Author, Speed + Quantization) and collapses on narrow widths.
+ */
+.form-grid {
+  display: grid;
+  gap: var(--space-3);
+  max-width: var(--field-text-width);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.field-row {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: 1fr 1fr;
+  min-width: 0;
+}
+
+/*
+ * Quiet empty state: a short message and (optionally) one primary action.
+ * Use instead of rendering disabled forms / placeholder stat tiles when there
+ * is no data.
+ */
+.empty-state {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.empty-state-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.empty-state-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  max-width: var(--field-text-width);
+}
+
+/* Live-updating numbers (timecodes, %, counts) stay aligned. */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one segmented-control style (`.seg-control` is the canonical name;
+   `.segmented-control`/`.segment-btn` are kept as compatibility aliases). */
+.seg-control,
 .segmented-control {
   display: inline-flex;
   gap: 0;
   min-width: 0;
 }
 
+.seg-control-btn,
 .segment-btn {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -198,28 +326,33 @@
   font: inherit;
   font-size: 12px;
   font-weight: 500;
-  min-height: 30px;
+  min-height: var(--density-control-height);
   padding: 0 12px;
   transition: background 120ms ease, color 120ms ease;
 }
 
+.seg-control-btn:first-child,
 .segment-btn:first-child {
   border-radius: var(--radius-sm) 0 0 var(--radius-sm);
 }
 
+.seg-control-btn:last-child,
 .segment-btn:last-child {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
+.seg-control-btn + .seg-control-btn,
 .segment-btn + .segment-btn {
   border-left: 0;
 }
 
+.seg-control-btn:hover:not(.is-active),
 .segment-btn:hover:not(.is-active) {
   background: var(--surface-hover);
   color: var(--text);
 }
 
+.seg-control-btn.is-active,
 .segment-btn.is-active {
   background: var(--surface-active);
   color: var(--text);
@@ -235,6 +368,66 @@
   margin-bottom: 8px;
 }
 
+/*
+ * The one disclosure style (rule 5): a summary with a rotating ▸ affordance
+ * for collapsed sections ("Advanced", "Maintenance"). Feature CSS consumes
+ * `.disclosure`; `.library-disclosure` is a compatibility alias.
+ */
+.disclosure > summary,
+.library-disclosure > summary {
+  align-items: center;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  list-style: none;
+  padding: 8px 0;
+  user-select: none;
+}
+
+.disclosure > summary::-webkit-details-marker,
+.library-disclosure > summary::-webkit-details-marker {
+  display: none;
+}
+
+.disclosure > summary::before,
+.library-disclosure > summary::before {
+  color: var(--text-tertiary);
+  content: "\25B8";
+  display: inline-block;
+  transition: transform 120ms ease;
+}
+
+.disclosure[open] > summary::before,
+.library-disclosure[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.disclosure > summary:hover {
+  color: var(--text);
+}
+
+/*
+ * The one focus indicator: an accent outline on every interactive element.
+ * Zero-specificity :where() so components can still override placement, and
+ * the explicit lists in shell.css win where they set a tighter offset.
+ */
+:where(
+  button,
+  [role="button"],
+  [role="tab"],
+  a[href],
+  input,
+  select,
+  textarea,
+  summary,
+  [tabindex]
+):focus-visible {
+  outline: 1px solid var(--accent-muted);
+  outline-offset: -1px;
+}
+
 @media (max-width: 800px) {
   .form-row {
     grid-template-columns: 1fr;
@@ -242,6 +435,10 @@
 
   .form-row-label {
     padding: 0;
+  }
+
+  .field-row {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -252,6 +449,11 @@
   .btn,
   .btn-player,
   .segment-btn {
+    transition: none;
+  }
+
+  .disclosure > summary::before,
+  .library-disclosure > summary::before {
     transition: none;
   }
 }

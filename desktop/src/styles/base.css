@@ -37,9 +37,18 @@
   --density-status-height: 70px;
   --density-page-x: 20px;
   --density-page-y: 12px;
-  --density-panel-gap: 10px;
-  --density-panel-pad: 10px;
+  --density-panel-gap: 12px;
+  --density-panel-pad: 12px;
   --density-control-height: 30px;
+
+  /* Vertical rhythm — the only spacing steps forms and cards should use. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+
+  /* Text inputs stay readable instead of stretching the full column. */
+  --field-text-width: 34rem;
 
   --scroll-thumb: #2e2e33;
   --scroll-thumb-hover: #3a3a40;

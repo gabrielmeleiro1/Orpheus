@@ -80,8 +80,28 @@ describe("LibraryPanel", () => {
   it("associates metadata labels with their editable controls", () => {
     const html = renderToString(<LibraryPanel hidden={false} library={libraryModel()} />);
 
-    expect(html).toContain('<label class="form-row-label" for="book-title-edit">Title</label>');
-    expect(html).toContain('<label class="form-row-label" for="book-author-edit">Author</label>');
-    expect(html).toContain('<label class="form-row-label" for="book-tags-edit">Tags</label>');
+    expect(html).toContain('<label class="field-label" for="book-title-edit">Title</label>');
+    expect(html).toContain('<label class="field-label" for="book-author-edit">Author</label>');
+    expect(html).toContain('<label class="field-label" for="book-tags-edit">Tags</label>');
+  });
+
+  it("shows a quiet empty state in the detail pane when nothing is selected", () => {
+    const model = libraryModel();
+    model.selectedBookDetail = null;
+    model.selectedBookId = null;
+    model.selectedBookIndex = -1;
+
+    const html = renderToString(<LibraryPanel hidden={false} library={model} />);
+
+    expect(html).toContain("No book selected");
+    // No disabled metadata form or destructive actions before a book is chosen.
+    expect(html).not.toContain('id="book-title-edit"');
+    expect(html).not.toContain('id="library-delete-btn"');
+  });
+
+  it("omits the pager when the list holds a single book", () => {
+    const html = renderToString(<LibraryPanel hidden={false} library={libraryModel()} />);
+
+    expect(html).not.toContain("library-pager");
   });
 });

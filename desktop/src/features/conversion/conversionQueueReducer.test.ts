@@ -39,7 +39,6 @@ describe("conversionQueueReducer", () => {
     expect(state.queueItems).toEqual([item]);
     expect(state.selectedQueueId).toBe(item.id);
     expect(state.sourcePath).toBe("/tmp/book.epub");
-    expect(state.sourceFileLabel).toBe("book.epub selected");
     expect(state.queueStatus).toBe("1 item added");
   });
 
@@ -57,7 +56,6 @@ describe("conversionQueueReducer", () => {
     expect(state.queueItems.map((item) => item.id)).toEqual([second.id]);
     expect(state.selectedQueueId).toBe(second.id);
     expect(state.sourcePath).toBe("/tmp/second.epub");
-    expect(state.sourceFileLabel).toBe("second.epub selected");
   });
 
   it("reorders queue items without changing selection", () => {

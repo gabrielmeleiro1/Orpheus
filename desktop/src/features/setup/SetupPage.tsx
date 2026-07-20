@@ -762,9 +762,11 @@ export function SetupPage({
             <div className="setup-recovery setup-environment" role="note">
               <div>
                 <strong>Local runtime needs a source checkout <InfoTip label="Why installation is unavailable"><span>{environment.reason}</span></InfoTip></strong>
-                <p><code>.venv/bin/python scripts/setup_runtime.py --profile base</code> (Windows: <code>.venv\Scripts\python.exe</code>)</p>
+                <p>Install it from your project checkout by running this command in the project root:</p>
+                <div className="setup-command"><code>.venv/bin/python scripts/setup_runtime.py --profile base</code></div>
+                <p className="setup-command-note">On Windows, run <code>.venv\Scripts\python.exe</code> instead.</p>
               </div>
-              <button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button>
+              <button className="btn btn-ghost btn-compact" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button>
             </div>
           ) : null}
 
@@ -807,7 +809,7 @@ export function SetupPage({
               {showAdvanced ? (
                 <>
                   <fieldset className="setup-section" disabled={busy}>
-                    <legend>Runtime</legend>
+                    <legend className="section-label">Runtime</legend>
                     <div className="setup-profile-grid">
                       {choices.map((profile) => (
                         <label key={profile.id} className={`setup-profile-card${selection.profile === profile.id ? " is-selected" : ""}${profile.disabled ? " is-disabled" : ""}`}>
@@ -826,7 +828,7 @@ export function SetupPage({
                   </fieldset>
 
                   <fieldset className="setup-section setup-model-section" disabled={busy || !selectedProfile || selectedProfile.model_groups.length === 0}>
-                    <legend>Models</legend>
+                    <legend className="section-label">Models</legend>
                     {selectedProfile?.model_groups.length ? (
                       <div className="setup-model-list">
                         {selectedProfile.model_groups.map((groupId) => {
@@ -871,7 +873,7 @@ export function SetupPage({
           {(busy || progress.lifecycle !== "idle" || showRestart) ? (
             <section className="setup-progress" aria-labelledby="setup-progress-heading">
               <div>
-                <div className="setup-section-label" id="setup-progress-heading" ref={progressHeadingRef} tabIndex={-1}>
+                <div className="section-label" id="setup-progress-heading" ref={progressHeadingRef} tabIndex={-1}>
                   Installation <ModelListTip modelGroups={selection.modelGroups} label="Models being installed" />
                 </div>
                 <p className="setup-progress-message" aria-live="polite">{progressMessage}</p>
@@ -890,12 +892,12 @@ export function SetupPage({
 
           {settingsEntry && !busy ? (
             <section className="setup-danger" aria-labelledby="setup-danger-heading">
-              <p className="setup-section-label" id="setup-danger-heading">Local data</p>
+              <p className="section-label" id="setup-danger-heading">Local data</p>
               <div className="setup-danger-box">
                 <p>Delete downloaded models and reset runtime setup.</p>
                 <div className="setup-danger-actions">
                   <button
-                    className="btn setup-danger-btn"
+                    className="btn btn-danger"
                     type="button"
                     disabled={deletePending}
                     onClick={onDeleteClick}
@@ -913,7 +915,7 @@ export function SetupPage({
           <footer className="setup-footer">
             <div className="setup-footer-left">
               {settingsEntry && onExitSettings ? <button id="setup-back-btn" className="btn btn-compact" type="button" onClick={onExitSettings}>Back to dashboard</button> : null}
-              <button className="btn btn-compact setup-tertiary" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button>
+              <button className="btn btn-ghost btn-compact" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button>
             </div>
             <div className="setup-actions">
               {busy && (mutationsAvailable || (packagedMode && downloadPhase === "downloading")) ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}

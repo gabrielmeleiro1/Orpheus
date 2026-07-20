@@ -36,9 +36,6 @@ export function ConversionPanelView({
     >
       <div className="panel-header">
         <span>{shell.isDocumentMode ? "Document → M4A" : "Audiobook → M4B"}</span>
-        {shell.isDocumentMode ? (
-          <span className="panel-header-meta">One narrated file from PDF, EPUB, TXT, or MD</span>
-        ) : null}
       </div>
 
       <SourceQueueView

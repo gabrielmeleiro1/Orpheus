@@ -67,9 +67,67 @@
   color: var(--accent);
 }
 
-.source-file-label {
-  display: block;
-  margin-bottom: 10px;
+.source-chosen {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  min-width: 0;
+}
+
+/* Friendly basename (body font) plus, for real paths, its directory (mono,
+   quieter) — the full path/handle lives in the data-tip tooltip (finding 1). */
+.source-chosen-file {
+  align-items: baseline;
+  display: flex;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+}
+
+.source-chosen-name {
+  color: var(--text-secondary);
+  flex: 0 1 auto;
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-chosen-dir {
+  color: var(--text-tertiary);
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Manual path entry: a quiet disclosure that keeps the capability without
+   competing with the drop zone as the primary picker. */
+.manual-path > summary {
+  color: var(--text-tertiary);
+  cursor: pointer;
+  font-size: 12px;
+  list-style: none;
+  padding: 4px 0;
+  user-select: none;
+  width: max-content;
+}
+
+.manual-path > summary::-webkit-details-marker {
+  display: none;
+}
+
+.manual-path > summary:hover {
+  color: var(--text-secondary);
+}
+
+.manual-path[open] > summary {
+  margin-bottom: 6px;
 }
 
 .paste-panel,
@@ -86,11 +144,11 @@
   align-items: center;
   color: var(--text-tertiary);
   display: flex;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   gap: 10px;
   justify-content: space-between;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   margin-bottom: 10px;
   text-transform: uppercase;
 }
@@ -105,6 +163,14 @@
   line-height: 1.5;
   min-height: 118px;
   resize: vertical;
+}
+
+/* One line under the paste card: either the guiding hint or the status, never
+   both jammed together (finding 2). */
+.paste-panel > .hint,
+.paste-panel > .field-hint {
+  display: block;
+  margin-top: 8px;
 }
 
 .queue-list {
@@ -168,7 +234,13 @@
   white-space: nowrap;
 }
 
-.queue-item-status,
+/* Queue status is a word ("Ready", "Converting…") so it reads in the body
+   font (rule 6), not the mono/tabular treatment reserved for counts. */
+.queue-item-status {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
 .chapter-number,
 .chapter-duration {
   color: var(--text-tertiary);
@@ -218,38 +290,14 @@
   display: none;
 }
 
-.advanced-settings,
-.book-detail-toggle {
+/* Advanced settings use the shared `.disclosure` primitive (controls.css) for
+   its summary + rotating ▸ affordance; only spacing is feature-specific here. */
+.advanced-settings {
   margin-top: 12px;
 }
 
-.advanced-settings summary,
-.book-detail-toggle summary {
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 11px;
-  list-style: none;
-  padding: 10px 0;
-  user-select: none;
-}
-
-.advanced-settings summary {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  display: inline-flex;
-  min-height: 38px;
-  padding: 10px 14px;
-  transition: border-color 120ms ease, color 120ms ease;
-}
-
-.advanced-settings summary:hover {
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.advanced-settings summary::-webkit-details-marker,
-.book-detail-toggle summary::-webkit-details-marker {
-  display: none;
+.advanced-settings-body {
+  padding-top: 4px;
 }
 
 .config-panel {

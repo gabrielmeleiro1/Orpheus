@@ -3,7 +3,7 @@ import { useEffect, type Dispatch, type SetStateAction } from "react";
 import type { ConversionMode } from "../../types/api";
 import { resolveConversionPrimaryAction } from "./conversionPrimaryAction";
 import { cleanerBackendUsesCudaFields } from "./cleanerBackendHelpers";
-import { compactSample, nowStatus, splitPath } from "./conversionPanelHelpers";
+import { compactSample, describeSourceDisplay, splitPath } from "./conversionPanelHelpers";
 import { useConversionOptions } from "./useConversionOptions";
 import { useConversionPreview } from "./useConversionPreview";
 import { useConversionQueueController } from "./useConversionQueueController";
@@ -83,6 +83,20 @@ export function resolveConversionBlocker(input: ConversionBlockerInput): Convers
   return { blockingReason: null, showSettingsShortcut: false };
 }
 
+const QUEUE_STATUS_LABELS: Record<ConversionQueueItem["status"], string> = {
+  ready: "Ready",
+  preflighting: "Inspecting…",
+  warning: "Warning",
+  converting: "Converting…",
+  done: "Done",
+  failed: "Failed",
+};
+
+function queueStatusText(item: ConversionQueueItem): string {
+  const label = QUEUE_STATUS_LABELS[item.status] ?? item.status;
+  return item.error ? `${label}: ${item.error}` : label;
+}
+
 function preflightMeta(preflight: NonNullable<ConversionQueueItem["preflight"]>): string {
   const count = Number(preflight.chapter_count || 0);
   const chapterText = count === 1 ? "1 chapter" : `${count} chapters`;
@@ -97,9 +111,6 @@ export function useConversionPanelState({
   activeTab,
   hidden,
   apiClient,
-  connectionState,
-  health,
-  statusMessage,
   conversionJob,
   onOpenSettings,
   onOpenRuntimeSetup,
@@ -229,20 +240,24 @@ export function useConversionPanelState({
     })) ?? [];
   const selectedPreflightCard = selectedPreflight
     ? {
-        title: selectedPreflight.title || splitPath(queueController.sourcePath) || "untitled source",
+        title: selectedPreflight.title || splitPath(queueController.sourcePath) || "Untitled source",
         meta: preflightMeta(selectedPreflight),
-        author: selectedPreflight.author || "unknown",
-        sourceType: selectedPreflight.source_type || "unknown",
+        author: selectedPreflight.author?.trim() || "",
+        sourceType: selectedPreflight.source_type?.trim() || "",
         warnings: selectedPreflight.warnings,
         sample: selectedPreflight.sample ? compactSample(selectedPreflight.sample, 360) : "No readable sample found.",
       }
     : null;
+  const sourceDisplay = describeSourceDisplay(
+    queueController.sourcePath,
+    queueController.selectedQueueItem?.label,
+  );
   const queueItemViewModels = queueController.queueItems.map((item, index) => {
     const selected = item.id === queueController.selectedQueueId;
     return {
       id: item.id,
       title: item.title || item.label,
-      statusText: `${item.status}${item.error ? ` / ${item.error}` : ""}`,
+      statusText: queueStatusText(item),
       statusClassName: `queue-item-status status-${item.status}`,
       converting: item.status === "converting",
       selected,
@@ -282,11 +297,11 @@ export function useConversionPanelState({
     sourceQueue: {
       isDocumentMode,
       sourcePath: queueController.sourcePath,
-      sourceFileLabel: queueController.sourceFileLabel,
+      sourceFileName: sourceDisplay.name,
+      sourceFileDir: sourceDisplay.dir,
       titleOverride: queueController.titleOverride,
       authorOverride: queueController.authorOverride,
       dragging: sourceQueue.dragging,
-      pasteTitle: sourceQueue.pasteTitle,
       pastedText: sourceQueue.pastedText,
       pasteBusy: sourceQueue.pasteBusy,
       pasteStatus: sourceQueue.pasteStatus,
@@ -347,14 +362,10 @@ export function useConversionPanelState({
       parallelWarmupLoading: optionState.parallelWarmupLoading,
       parallelWorkerError: optionState.parallelWorkerError,
       parallelWorkerStatus: optionState.parallelWorkerStatus,
+      parallelWorkerDetail: optionState.parallelRecommendation?.calculation ?? "",
     },
     conversionActions: {
-      backendStatus: nowStatus(connectionState),
-      healthStatus: health ? (health.status === "ok" ? "Healthy" : health.status) : "Unavailable",
-      jobStatus: conversionJob.activeJobId
-        ? `${conversionJob.activeJobStatus} (${conversionJob.activeJobId})`
-        : "No active conversion",
-      detailStatus: conversionJob.statusText || statusMessage,
+      hasActiveJob: Boolean(conversionJob.activeJobId),
       blockingReason: conversionBlocker.blockingReason,
       showSettingsShortcut: conversionBlocker.showSettingsShortcut,
       startLabel: conversionJob.isStarting
@@ -372,7 +383,6 @@ export function useConversionPanelState({
       setTitleOverride: queueController.setTitleOverride as Dispatch<SetStateAction<string>>,
       setAuthorOverride: queueController.setAuthorOverride as Dispatch<SetStateAction<string>>,
       setDragging: sourceQueue.setDragging,
-      setPasteTitle: sourceQueue.setPasteTitle,
       setPastedText: sourceQueue.setPastedText,
       setPreviewText: preview.setPreviewText,
       setCleanerBackend: optionState.setCleanerBackend,

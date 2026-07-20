@@ -157,17 +157,19 @@ function DashboardApp({
         </nav>
 
         <div className="rail-bottom">
-          <button
-            className="rail-action stop"
-            type="button"
-            disabled={!conversionJob.activeJobId || conversionJob.isCancelling}
-            data-tip="Stop the running conversion. Finished chapters are kept."
-            data-tip-pos="right"
-            onClick={() => void conversionJob.cancelActiveConversion()}
-          >
-            <span className="rail-dot" aria-hidden="true" />
-            <span>{conversionJob.isCancelling ? "Stopping" : "Stop job"}</span>
-          </button>
+          {conversionJob.uiState === "running" ? (
+            <button
+              className="rail-action stop"
+              type="button"
+              disabled={conversionJob.isCancelling}
+              data-tip="Stop the running conversion. Finished chapters are kept."
+              data-tip-pos="right"
+              onClick={() => void conversionJob.cancelActiveConversion()}
+            >
+              <span className="rail-dot" aria-hidden="true" />
+              <span>{conversionJob.isCancelling ? "Stopping" : "Stop job"}</span>
+            </button>
+          ) : null}
           <button
             className="rail-action"
             type="button"
@@ -192,7 +194,9 @@ function DashboardApp({
         <header className="studio-status">
           <div>
             <h1>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
-            <p>{`${runtimeIdentity} · ${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`}</p>
+            {activeTab === "dashboard" ? (
+              <p>{`${runtimeIdentity} · ${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`}</p>
+            ) : null}
           </div>
           <div className="studio-controls">
             {conversionJob.uiState === "running" ? (
@@ -203,7 +207,7 @@ function DashboardApp({
             ) : null}
             <span className={`status-dot${connectionState === "connected" ? " is-connected" : ""}`} title={connectionState} aria-hidden="true" />
             <span className="sr-only" role="status">{`Backend ${connectionState}`}</span>
-            <span className="control clock-control"><LiveClock /></span>
+            <span className="control clock-control" data-tip="Current time" data-tip-pos="bottom"><LiveClock /></span>
           </div>
         </header>
 
@@ -249,8 +253,10 @@ function DashboardApp({
             hidden={activeTab !== "progress"}
           >
             <div className="panel-header">
-              <span>progress</span>
-              <span className="panel-header-meta">{conversionJob.uiState} · {Math.round(conversionJob.progressPct)}%</span>
+              <span>Progress</span>
+              {conversionJob.uiState !== "idle" && conversionJob.uiState !== "unknown" ? (
+                <span className="panel-header-meta">{Math.round(conversionJob.progressPct)}%</span>
+              ) : null}
             </div>
             <ProgressPanel
               uiState={conversionJob.uiState}
@@ -264,6 +270,7 @@ function DashboardApp({
               activeJobId={conversionJob.activeJobId}
               isCancelling={conversionJob.isCancelling}
               onCancel={conversionJob.cancelActiveConversion}
+              onStartConvert={() => setActiveTab("convert")}
             />
           </section>
 

@@ -61,6 +61,15 @@ function clampWorkerLimit(value: number, maxSafe: number): number {
   return Math.max(1, Math.min(Math.max(1, maxSafe), parsed));
 }
 
+function shortWorkerLine(recommendation: ParallelWorkerRecommendation): string {
+  let headline = `Recommended: ${recommendation.recommended_parallel_chapters}`;
+  if (recommendation.max_safe_parallel_chapters > recommendation.recommended_parallel_chapters) {
+    headline += ` (max ${recommendation.max_safe_parallel_chapters})`;
+  }
+  const free = formatBytes(recommendation.available_memory_bytes);
+  return free === "-" ? headline : `${headline} · ${free} free`;
+}
+
 export function useParallelWorkers({
   apiClient,
   systemCapabilities,
@@ -123,9 +132,7 @@ export function useParallelWorkers({
     }
 
     if (recommendation) {
-      setParallelWorkerStatus(
-        `Recommended ${recommendation.recommended_parallel_chapters}; max ${recommendation.max_safe_parallel_chapters}. ${recommendation.calculation}`,
-      );
+      setParallelWorkerStatus(shortWorkerLine(recommendation));
       setParallelWorkerError(!recommendation.memory_measurement_available);
     }
   }, [apiClient, persistedSettingsRef, systemCapabilities]);
@@ -169,7 +176,7 @@ export function useParallelWorkers({
 
     setParallelWarmupLoading(true);
     setParallelWorkerError(false);
-    setParallelWorkerStatus("Running model warm-up memory calibration...");
+    setParallelWorkerStatus("Measuring memory during warm-up…");
     const isLatest = beginParallelWarmup();
     try {
       const quantization = normalizeQuantizationValue(selectedQuantization);
@@ -200,8 +207,11 @@ export function useParallelWorkers({
       }
       setParallelRecommendation(recommendation);
       setParallelManualMaxState(String(recommendation.requested_parallel_chapters));
+      const perWorker = formatBytes(recommendation.estimated_per_worker_memory_bytes);
       setParallelWorkerStatus(
-        `Warm-up estimate ${formatBytes(recommendation.estimated_per_worker_memory_bytes)} per worker. Recommended ${recommendation.recommended_parallel_chapters}; max ${recommendation.max_safe_parallel_chapters}. ${recommendation.reason}`,
+        perWorker === "-"
+          ? shortWorkerLine(recommendation)
+          : `${shortWorkerLine(recommendation)} · ~${perWorker}/worker`,
       );
       setParallelWorkerError(!recommendation.memory_measurement_available);
     } catch (warmupError: unknown) {

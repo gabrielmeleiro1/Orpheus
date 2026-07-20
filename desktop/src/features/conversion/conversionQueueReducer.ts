@@ -11,7 +11,6 @@ export interface PreflightStamp {
 
 export interface ConversionQueueState {
   sourcePath: string;
-  sourceFileLabel: string;
   titleOverride: string;
   authorOverride: string;
   queueItems: ConversionQueueItem[];
@@ -48,7 +47,6 @@ export type ConversionQueueAction =
 export function createConversionQueueInitialState(): ConversionQueueState {
   return {
     sourcePath: "",
-    sourceFileLabel: "",
     titleOverride: "",
     authorOverride: "",
     queueItems: [],
@@ -84,7 +82,6 @@ function applySelectedItem(
       ...state,
       selectedQueueId: null,
       sourcePath: "",
-      sourceFileLabel: "",
       titleOverride: "",
       authorOverride: "",
     };
@@ -94,7 +91,6 @@ function applySelectedItem(
     ...state,
     selectedQueueId: item.id,
     sourcePath: item.sourcePath,
-    sourceFileLabel: `${item.label} selected`,
     titleOverride: item.title,
     authorOverride: item.author,
     previewText: item.preflight?.sample ? compactSample(item.preflight.sample, 220) : state.previewText,
@@ -289,9 +285,6 @@ export function conversionQueueReducer(
         queueItems,
         selectedQueueId: action.updateSelected ? action.stamp.itemId : state.selectedQueueId,
         sourcePath: action.updateSelected ? action.stamp.sourcePath : state.sourcePath,
-        sourceFileLabel: action.updateSelected
-          ? `${splitPath(action.stamp.sourcePath)} selected`
-          : state.sourceFileLabel,
         titleOverride: action.updateSelected
           ? state.titleOverride || action.preflight.title?.trim() || ""
           : state.titleOverride,

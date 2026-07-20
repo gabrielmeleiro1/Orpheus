@@ -17,22 +17,37 @@
   overflow: visible;
 }
 
-.library-nav-actions,
-.library-filter-row {
-  display: flex;
-  gap: 7px;
-  margin-bottom: 12px;
-}
-
-.library-toolbar {
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 10px;
-}
-
+/* Sidebar controls: search, type filter + refresh, and the optional pager. */
 .library-search-row {
   display: grid;
   gap: 6px;
   margin-bottom: 12px;
+}
+
+.library-filter-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.library-filter-row > * {
+  min-width: 0;
+}
+
+.library-refresh-btn {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.library-pager {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.library-pager .btn {
+  flex: 1 1 0;
 }
 
 .library-list {
@@ -50,11 +65,9 @@
   display: none;
 }
 
+/* Quiet empty state inside the narrow sidebar column. */
 .library-empty {
-  display: grid;
-  gap: 10px;
-  justify-items: start;
-  padding: 8px 2px;
+  padding: 24px 8px;
 }
 
 .book-row {
@@ -121,10 +134,11 @@
   white-space: nowrap;
 }
 
+/* Row meta mixes words and counts, so it stays in the body font (rule 6) with
+   tabular figures for the chapter tallies. */
 .book-meta {
   color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
   grid-column: 2;
   overflow: hidden;
@@ -132,57 +146,29 @@
   white-space: nowrap;
 }
 
-.library-detail-header {
-  align-items: flex-start;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
-  min-width: 0;
-  padding: var(--density-panel-pad);
-}
-
-.library-detail-header > * {
-  min-width: 0;
-}
-
-.library-detail-header > span {
-  color: var(--text-secondary);
-  max-width: 260px;
-  text-align: right;
-}
-
-.library-title-mirror {
-  color: var(--text);
-  display: block;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  margin-bottom: 8px;
-}
-
+/* Metadata form: Title + Author share a row via the shared .form-grid/.field-row
+   primitives; width is capped by .form-grid so inputs never stretch the pane. */
 .library-detail-form {
-  background: transparent;
-  border: 0;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-bottom: 0;
-  padding: 0;
-}
-
-.library-detail-form .form-row {
-  min-height: 72px;
-}
-
-.library-detail-form .form-row:last-child {
-  grid-column: 1 / -1;
-  min-height: 50px;
+  margin: 0;
+  min-width: 0;
 }
 
 .library-detail-actions {
+  align-items: center;
   background: var(--surface);
   border: 1px solid var(--border);
-  margin-bottom: 0;
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   padding: var(--density-panel-pad);
+}
+
+/* Destructive actions sit apart, pushed to the trailing edge. */
+.library-detail-actions-danger {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .chapter-section {
@@ -195,6 +181,10 @@
   display: grid;
   gap: 7px;
   padding: var(--density-panel-pad);
+}
+
+.chapter-empty {
+  padding: 4px 0;
 }
 
 .chapter-row {
@@ -218,6 +208,86 @@
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
+/* Chapter row internals — library-scoped so the panel is self-contained. */
+.library-detail-pane .chapter-main {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  cursor: pointer;
+  display: grid;
+  font-size: 13px;
+  gap: 10px;
+  grid-template-columns: 32px minmax(0, 1fr) 54px;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.library-detail-pane .chapter-main:disabled {
+  cursor: default;
+}
+
+.library-detail-pane .chapter-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-detail-pane .chapter-row.is-current .chapter-title {
+  color: var(--accent);
+}
+
+/* Counts and timecodes keep the mono/tabular treatment (rule 6). */
+.library-detail-pane .chapter-number,
+.library-detail-pane .chapter-duration {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.library-detail-pane .chapter-duration {
+  text-align: right;
+}
+
+/* The per-chapter cleaning-preview trigger is a power action: revealed on
+   row hover/focus so casual scanning stays uncluttered, but always reachable. */
+.chapter-cleaned-btn {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.chapter-row:hover .chapter-cleaned-btn,
+.chapter-row:focus-within .chapter-cleaned-btn,
+.chapter-cleaned-btn:focus-visible {
+  opacity: 1;
+}
+
+/* On-demand and maintenance sections use the shared `.disclosure` primitive
+   (controls.css) via the `.library-disclosure` alias; only spacing is local. */
+.library-disclosure {
+  margin-top: 4px;
+}
+
+.raw-metadata-toggle {
+  margin-top: 0;
+}
+
+.maintenance-body {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.maintenance-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 #book-detail,
 #cleaning-preview {
   background: var(--bg-elevated);
@@ -238,7 +308,7 @@
   display: grid;
   gap: 7px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 10px;
+  margin-top: 4px;
 }
 
 .maintenance-grid div {
@@ -249,10 +319,8 @@
 .maintenance-grid span {
   color: var(--text-tertiary);
   display: block;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11px;
+  margin-bottom: 2px;
 }
 
 .maintenance-grid strong {
@@ -276,16 +344,17 @@
 }
 
 @media (max-width: 800px) {
-  .maintenance-grid,
-  .library-detail-form {
+  .maintenance-grid {
     grid-template-columns: 1fr;
   }
 
-  .library-detail-header {
-    flex-direction: column;
+  .library-detail-actions-danger {
+    margin-left: 0;
   }
+}
 
-  .library-detail-header > span {
-    text-align: left;
+@media (prefers-reduced-motion: reduce) {
+  .chapter-cleaned-btn {
+    transition: none;
   }
 }

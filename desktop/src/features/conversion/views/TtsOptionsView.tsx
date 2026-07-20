@@ -57,7 +57,7 @@ export function TtsOptionsView({
           <div className="voice-suggest-actions">
             <button
               id="voice-suggest-btn"
-              className="btn btn-compact"
+              className="btn btn-ghost btn-compact"
               type="button"
               disabled={!capabilities.canRecommendVoice}
               data-tip="Suggest a voice suited to this book from a text sample"
@@ -65,7 +65,9 @@ export function TtsOptionsView({
             >
               {ttsOptions.voiceSuggestBusy ? "Analyzing…" : "Recommend"}
             </button>
-            <span className="voice-suggest-status">{ttsOptions.voiceSuggestStatus}</span>
+            {ttsOptions.voiceSuggestStatus ? (
+              <span className="voice-suggest-status">{ttsOptions.voiceSuggestStatus}</span>
+            ) : null}
           </div>
         </div>
       </div>
@@ -94,9 +96,11 @@ export function TtsOptionsView({
               {ttsOptions.previewBusy ? "…" : "Listen"}
             </button>
           </div>
-          <span id="voice-preview-status" className={`field-hint${ttsOptions.previewError ? " is-error" : ""}`}>
-            {ttsOptions.previewStatus}
-          </span>
+          {ttsOptions.previewStatus ? (
+            <span id="voice-preview-status" className={`field-hint${ttsOptions.previewError ? " is-error" : ""}`}>
+              {ttsOptions.previewStatus}
+            </span>
+          ) : null}
           <audio id="voice-preview-audio" ref={ttsOptions.previewAudioRef} className="voice-preview-audio" preload="none" />
         </div>
       </div>

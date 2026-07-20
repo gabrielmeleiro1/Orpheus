@@ -126,7 +126,7 @@ export function LogPanel({ logs }: LogPanelProps) {
       </div>
 
       <div className="log-toolbar" aria-label="Log filters">
-        <div className="segmented-control log-level-control" role="group" aria-label="Filter by level">
+        <div className="seg-control log-level-control" role="group" aria-label="Filter by level">
           {LEVEL_SEGMENTS.map(({ value, label, tip }) => {
             const count = levelCounts[value];
             return (
@@ -134,7 +134,7 @@ export function LogPanel({ logs }: LogPanelProps) {
                 key={value}
                 id={`log-level-${value}`}
                 type="button"
-                className={`segment-btn${level === value ? " is-active" : ""}`}
+                className={`seg-control-btn${level === value ? " is-active" : ""}`}
                 data-tip={tip}
                 data-tip-pos="bottom"
                 onClick={() => setLevel(value)}
@@ -172,7 +172,7 @@ export function LogPanel({ logs }: LogPanelProps) {
         </span>
         <button
           id="log-copy-btn"
-          className="btn btn-compact"
+          className="btn btn-ghost btn-compact"
           type="button"
           data-tip="Copy the entries currently shown, with timestamps"
           data-tip-pos="bottom"
@@ -193,14 +193,14 @@ export function LogPanel({ logs }: LogPanelProps) {
           onScroll={onScroll}
         >
           {visibleLogs.length === 0 ? (
-            <div className="log-empty">
+            <div className="empty-state log-empty">
               <span className="log-empty-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" focusable="false">
                   <path d="M4 6h16M4 11h16M4 16h9" />
                 </svg>
               </span>
-              <span className="log-empty-title">{logs.length === 0 ? "No events yet" : "No matches"}</span>
-              <span className="log-empty-hint">
+              <span className="empty-state-title">{logs.length === 0 ? "No events yet" : "No matches"}</span>
+              <span className="empty-state-hint">
                 {logs.length === 0
                   ? "Activity streams here while a conversion runs."
                   : "Adjust the filters or search to see more."}

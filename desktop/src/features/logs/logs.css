@@ -10,7 +10,7 @@
   width: 150px;
 }
 
-.log-level-control .segment-btn {
+.log-level-control .seg-control-btn {
   align-items: center;
   display: inline-flex;
   font-size: 11px;
@@ -31,7 +31,7 @@
   text-align: center;
 }
 
-.segment-btn.is-active .log-level-count {
+.seg-control-btn.is-active .log-level-count {
   color: var(--text);
 }
 
@@ -120,14 +120,13 @@
   color: var(--negative);
 }
 
+/* Fill and vertically centre the canonical .empty-state inside the tall log box. */
 .log-empty {
-  align-items: center;
+  min-height: 240px;
+}
+
+.log-empty-icon {
   color: var(--text-tertiary);
-  display: grid;
-  gap: 6px;
-  justify-items: center;
-  padding: 72px 16px;
-  text-align: center;
 }
 
 .log-empty-icon svg {
@@ -138,16 +137,6 @@
   stroke-linecap: round;
   stroke-width: 1.6;
   width: 26px;
-}
-
-.log-empty-title {
-  color: var(--text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.log-empty-hint {
-  font-size: 11px;
 }
 
 .log-jump-latest {

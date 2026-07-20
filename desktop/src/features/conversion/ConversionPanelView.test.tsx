@@ -31,8 +31,8 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
     sourceQueue: {
       isDocumentMode: true,
       dragging: false,
-      sourceFileLabel: "no source selected",
-      pasteTitle: "",
+      sourceFileName: "",
+      sourceFileDir: "",
       pastedText: "",
       pasteBusy: false,
       pasteStatus: "Idle",
@@ -96,12 +96,10 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       parallelWarmupLoading: false,
       parallelWorkerError: false,
       parallelWorkerStatus: "",
+      parallelWorkerDetail: "",
     },
     conversionActions: {
-      backendStatus: "Connected",
-      healthStatus: "Healthy",
-      jobStatus: "No active conversion",
-      detailStatus: "idle",
+      hasActiveJob: false,
       blockingReason: null,
       showSettingsShortcut: false,
       startLabel: "Start conversion",
@@ -115,7 +113,6 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       setTitleOverride: noop,
       setAuthorOverride: noop,
       setDragging: noop,
-      setPasteTitle: noop,
       setPastedText: noop,
       setPreviewText: noop,
       setCleanerBackend: noop,
@@ -194,7 +191,6 @@ describe("ConversionPanelView", () => {
     const html = renderToString(<ConversionPanelView {...viewModel()} />);
 
     const labelsById = {
-      "paste-title-input": "Pasted document title",
       "paste-text-input": "Pasted document text",
       "source-path": "Source path",
       "title-input": "Title override",

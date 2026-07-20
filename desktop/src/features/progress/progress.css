@@ -284,7 +284,7 @@
 .performance-grid {
   display: grid;
   gap: var(--density-panel-gap);
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .performance-item {
@@ -295,10 +295,12 @@
   padding: 10px 12px;
 }
 
+/* Word values ("Measuring…", "None", "manual / parallel") read as body text;
+   the embedded rates/counts still align via tabular-nums (rule 6). */
 .performance-item strong {
   color: var(--text);
   display: block;
-  font-family: var(--font-mono);
+  font-family: var(--font-body);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
   font-weight: 600;

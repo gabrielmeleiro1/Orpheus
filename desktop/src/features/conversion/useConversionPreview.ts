@@ -28,10 +28,10 @@ export function useConversionPreview({
   sampleText,
 }: UseConversionPreviewArgs) {
   const [voiceSuggestBusy, setVoiceSuggestBusy] = useState(false);
-  const [voiceSuggestStatus, setVoiceSuggestStatus] = useState("No recommendation yet");
+  const [voiceSuggestStatus, setVoiceSuggestStatus] = useState("");
   const [previewText, setPreviewText] = useState(VOICE_PREVIEW_DEFAULT_TEXT);
   const [previewBusy, setPreviewBusy] = useState(false);
-  const [previewStatus, setPreviewStatus] = useState("Select a voice and click preview.");
+  const [previewStatus, setPreviewStatus] = useState("");
   const [previewError, setPreviewError] = useState(false);
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);

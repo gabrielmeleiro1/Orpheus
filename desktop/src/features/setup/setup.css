@@ -67,19 +67,14 @@
   padding: 0 32px;
 }
 
+/* Section headers adopt the app-wide tracked-caps `.section-label` (shell.css);
+   these rules only carry setup-specific spacing/focus. */
 .setup-section legend {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
   margin-bottom: 12px;
 }
 
-.setup-section-label {
-  color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
+/* Programmatically focused (tabIndex -1) heading — suppress the focus ring. */
+#setup-progress-heading {
   outline: none;
 }
 
@@ -408,11 +403,36 @@
   padding: 13px 15px;
 }
 
+/* Beats the later `.setup-recovery { align-items: center }` row rule. */
+.setup-recovery.setup-environment {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .setup-environment code {
   color: var(--accent);
   font-family: var(--font-mono);
   font-size: 10px;
   overflow-wrap: anywhere;
+}
+
+/* Rule 3: the install command sits in a calm mono block, framed by a plain
+   sentence; the Windows alternative renders on its own line, not inline. */
+.setup-command {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-top: 8px;
+  padding: 8px 10px;
+}
+
+.setup-command-note {
+  margin-top: 6px;
+}
+
+.setup-environment > button {
+  align-self: flex-start;
 }
 
 .setup-risk > strong,
@@ -493,16 +513,6 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px 12px;
-}
-
-.setup-danger-btn {
-  border-color: color-mix(in srgb, var(--negative) 40%, var(--border));
-  color: var(--negative);
-}
-
-.setup-danger-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--negative) 12%, transparent);
-  border-color: var(--negative);
 }
 
 .setup-danger-note {
@@ -593,18 +603,6 @@
   align-items: center;
   display: flex;
   gap: 8px;
-}
-
-.setup-tertiary {
-  background: transparent;
-  border-color: transparent;
-  color: var(--text-tertiary);
-}
-
-.setup-tertiary:hover {
-  background: var(--surface-hover);
-  border-color: var(--border);
-  color: var(--text-secondary);
 }
 
 .setup-actions {

@@ -97,6 +97,7 @@ export interface AdvancedOptionsViewModel {
   parallelWarmupLoading: boolean;
   parallelWorkerError: boolean;
   parallelWorkerStatus: string;
+  parallelWorkerDetail: string;
 }
 
 interface PreflightCardViewModel {
@@ -123,8 +124,8 @@ interface QueueItemViewModel {
 export interface SourceQueueViewModel {
   isDocumentMode: boolean;
   dragging: boolean;
-  sourceFileLabel: string;
-  pasteTitle: string;
+  sourceFileName: string;
+  sourceFileDir: string;
   pastedText: string;
   pasteBusy: boolean;
   pasteStatus: string;
@@ -144,10 +145,7 @@ export interface SourceQueueViewModel {
 }
 
 export interface ConversionActionsViewModel {
-  backendStatus: string;
-  healthStatus: string;
-  jobStatus: string;
-  detailStatus: string;
+  hasActiveJob: boolean;
   blockingReason: string | null;
   showSettingsShortcut: boolean;
   startLabel: string;
@@ -168,7 +166,6 @@ export interface ConversionPanelActions {
   setTitleOverride: Dispatch<SetStateAction<string>>;
   setAuthorOverride: Dispatch<SetStateAction<string>>;
   setDragging: Dispatch<SetStateAction<boolean>>;
-  setPasteTitle: Dispatch<SetStateAction<string>>;
   setPastedText: Dispatch<SetStateAction<string>>;
   setPreviewText: Dispatch<SetStateAction<string>>;
   setCleanerBackend: (value: string) => void;

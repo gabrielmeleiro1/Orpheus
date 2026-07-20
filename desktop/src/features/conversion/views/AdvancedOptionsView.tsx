@@ -17,7 +17,7 @@ export function AdvancedOptionsView({
   actions,
 }: AdvancedOptionsViewProps) {
   return (
-    <details id="advanced-audio-settings" className="advanced-settings">
+    <details id="advanced-audio-settings" className="advanced-settings disclosure">
       <summary>Advanced</summary>
       <div className="advanced-settings-body">
         <div className="panel-section form-section">
@@ -67,10 +67,10 @@ export function AdvancedOptionsView({
               Workers
             </span>
             <div className="form-row-stack">
-              <div className="segmented-control" aria-label="Parallel worker mode">
+              <div className="seg-control" aria-label="Parallel worker mode">
                 <button
                   id="parallel-worker-mode-auto"
-                  className={`segment-btn${advancedOptions.parallelWorkerMode === "auto" ? " is-active" : ""}`}
+                  className={`seg-control-btn${advancedOptions.parallelWorkerMode === "auto" ? " is-active" : ""}`}
                   type="button"
                   data-tip="Size the worker pool automatically"
                   onClick={() => actions.setParallelWorkerMode("auto")}
@@ -79,7 +79,7 @@ export function AdvancedOptionsView({
                 </button>
                 <button
                   id="parallel-worker-mode-manual"
-                  className={`segment-btn${advancedOptions.parallelWorkerMode === "manual" ? " is-active" : ""}`}
+                  className={`seg-control-btn${advancedOptions.parallelWorkerMode === "manual" ? " is-active" : ""}`}
                   type="button"
                   data-tip="Set the worker count yourself"
                   onClick={() => actions.setParallelWorkerMode("manual")}
@@ -115,16 +115,19 @@ export function AdvancedOptionsView({
                   {advancedOptions.parallelWarmupLoading ? "Warming…" : "Warm-up"}
                 </button>
               </div>
-              <span
-                id="parallel-worker-status"
-                className={`field-hint${advancedOptions.parallelWorkerError ? " is-error" : ""}`}
-              >
-                {advancedOptions.parallelWorkerStatus}
-              </span>
+              {advancedOptions.parallelWorkerStatus ? (
+                <span
+                  id="parallel-worker-status"
+                  className={`field-hint${advancedOptions.parallelWorkerError ? " is-error" : ""}`}
+                  {...(advancedOptions.parallelWorkerDetail
+                    ? { "data-tip": advancedOptions.parallelWorkerDetail }
+                    : {})}
+                >
+                  {advancedOptions.parallelWorkerStatus}
+                </span>
+              ) : null}
             </div>
           </div>
-
-          <span className="field-hint">Text cleaning is configured in Settings.</span>
         </div>
       </div>
     </details>

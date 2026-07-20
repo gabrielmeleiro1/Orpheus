@@ -17,6 +17,14 @@
   padding: var(--density-panel-pad);
 }
 
+/* Idle: no canvas or zero-tiles, just a quiet centered empty state (rule 2). */
+.now-playing-panel.is-empty {
+  align-items: center;
+  grid-template-rows: 1fr;
+  justify-items: center;
+  min-height: 180px;
+}
+
 .panel-title-row,
 .book-heading {
   align-items: flex-start;
@@ -98,6 +106,12 @@
   margin-top: 12px;
 }
 
+/* Conversion card shows one Status tile plus an optional ETA — let them size
+   to how many are present instead of leaving fixed empty columns (finding 8). */
+.metric-row-flow {
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+}
+
 .metric {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -107,19 +121,19 @@
   padding: 8px 10px;
 }
 
+/* Tile / field micro-labels: sentence case, normal weight (rule 7). The one
+   tracked-caps style is reserved for the card's `.section-title` header. */
 .metric-label,
 .performance-label,
 .progress-kicker,
-.status-label,
-.pipeline-head,
-.service-group {
+.status-label {
   color: var(--text-tertiary);
   display: block;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
   margin-bottom: 6px;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .metric strong {
@@ -134,6 +148,13 @@
 
 .metric-capitalize {
   text-transform: capitalize;
+}
+
+/* Word-valued metrics ("No chapters", stage names, state) read as body text;
+   only genuine timecodes/counts stay mono (rule 6). */
+.metric strong.metric-word {
+  font-family: var(--font-body);
+  font-variant-numeric: normal;
 }
 
 .side-stack {
@@ -179,7 +200,7 @@
 .library-strip {
   display: grid;
   gap: var(--density-panel-gap);
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   padding: var(--density-panel-pad);
 }
 
@@ -230,14 +251,12 @@
 .conversion-activity-readout {
   color: var(--text-tertiary);
   display: flex;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
+  font-size: 11px;
   gap: 6px;
   justify-content: space-between;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   min-width: 0;
-  text-transform: uppercase;
+  text-transform: capitalize;
 }
 
 .conversion-activity-readout span {
@@ -266,46 +285,6 @@
 .chapter-lines span {
   border-top: 2px dashed var(--border);
   height: 1px;
-}
-
-.pipeline-panel {
-  padding: var(--density-panel-pad);
-}
-
-.pipeline-row {
-  align-items: center;
-  border-top: 1px solid var(--border);
-  display: grid;
-  gap: var(--density-panel-gap);
-  grid-template-columns: minmax(120px, 150px) minmax(0, 1fr) 42px;
-  min-height: 40px;
-}
-
-.pipeline-row:first-of-type {
-  border-top: 0;
-}
-
-.pipeline-name {
-  color: var(--text);
-  display: block;
-  font-size: 13px;
-  overflow-wrap: anywhere;
-  text-transform: capitalize;
-}
-
-.pipeline-meta {
-  color: var(--text-tertiary);
-  display: block;
-  font-size: 11px;
-  text-transform: capitalize;
-}
-
-.percent {
-  color: var(--text-secondary);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-  text-align: right;
 }
 
 .lower-grid {
@@ -381,10 +360,6 @@
   padding-bottom: 8px;
 }
 
-.service-group {
-  padding: 10px 12px 4px;
-}
-
 .service-row {
   border-top: 1px solid var(--border);
   display: grid;
@@ -425,8 +400,7 @@
 
 @media (max-width: 800px) {
   .book-panel,
-  .recent-row,
-  .pipeline-row {
+  .recent-row {
     grid-template-columns: 1fr;
   }
 
@@ -436,10 +410,6 @@
 
   .metric-row {
     grid-template-columns: 1fr;
-  }
-
-  .percent {
-    text-align: left;
   }
 }
 

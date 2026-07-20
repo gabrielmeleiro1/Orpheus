@@ -87,9 +87,44 @@ export function SourceQueueView({
         <span className="drop-zone-hint">Click to browse or drag and drop</span>
       </div>
 
-      <span id="source-file-label" className="field-hint source-file-label">
-        {sourceQueue.sourceFileLabel}
-      </span>
+      {sourceQueue.sourcePath ? (
+        <div className="source-chosen">
+          <span id="source-file-label" className="source-chosen-file" data-tip={sourceQueue.sourcePath}>
+            <span className="source-chosen-name">{sourceQueue.sourceFileName}</span>
+            {sourceQueue.sourceFileDir ? (
+              <span className="source-chosen-dir">{sourceQueue.sourceFileDir}</span>
+            ) : null}
+          </span>
+          <button
+            id="preflight-source-btn"
+            className="btn btn-ghost btn-compact"
+            type="button"
+            disabled={!capabilities.canInspectSource}
+            data-tip="Analyze the source — chapters, length, warnings — without converting"
+            onClick={() => actions.onInspectCurrentSource()}
+          >
+            Inspect
+          </button>
+        </div>
+      ) : null}
+
+      <details className="manual-path">
+        <summary>Enter path manually</summary>
+        <input
+          id="source-path"
+          aria-label="Source path"
+          className="field-input"
+          type="text"
+          placeholder={sourceQueue.sourcePathPlaceholder}
+          value={sourceQueue.sourcePath}
+          onChange={(event) => {
+            const nextValue = event.target.value;
+            actions.setSourcePath(nextValue);
+            actions.syncSelectedQueueEdits({ sourcePath: nextValue });
+            actions.clearFormError();
+          }}
+        />
+      </details>
 
       {sourceQueue.isDocumentMode ? (
         <div className="panel-section paste-panel" aria-label="Paste markdown source">
@@ -107,17 +142,6 @@ export function SourceQueueView({
             </button>
           </div>
           <div className="paste-grid">
-            <span className="form-row-label">Title</span>
-            <input
-              id="paste-title-input"
-              aria-label="Pasted document title"
-              className="field-input"
-              type="text"
-              placeholder="Pasted Document"
-              value={sourceQueue.pasteTitle}
-              onChange={(event) => actions.setPasteTitle(event.target.value)}
-            />
-            <span className="form-row-label">Text</span>
             <textarea
               id="paste-text-input"
               aria-label="Pasted document text"
@@ -127,7 +151,11 @@ export function SourceQueueView({
               onChange={(event) => actions.setPastedText(event.target.value)}
             />
           </div>
-          <span id="paste-source-status" className="field-hint">{sourceQueue.pasteStatus}</span>
+          {sourceQueue.pasteStatus && sourceQueue.pasteStatus !== "Idle" ? (
+            <p id="paste-source-status" className="field-hint">{sourceQueue.pasteStatus}</p>
+          ) : (
+            <p className="hint">Name it with the Title field below.</p>
+          )}
         </div>
       ) : null}
 
@@ -138,7 +166,7 @@ export function SourceQueueView({
             {capabilities.showRunQueue ? (
               <button
                 id="run-queue-btn"
-                className="btn btn-primary"
+                className="btn btn-primary btn-block"
                 type="button"
                 disabled={!capabilities.canRunQueue}
                 onClick={() => void actions.onRunQueue()}
@@ -180,48 +208,17 @@ export function SourceQueueView({
       </div>
 
       <div ref={reviewAnchorRef} id="conversion-review-anchor" className="panel-section form-section">
-        <div className="form-row">
-          <span className="form-row-label">Source</span>
-          <div className="form-row-field">
-            <input
-              id="source-path"
-              aria-label="Source path"
-              className="field-input"
-              type="text"
-              placeholder={sourceQueue.sourcePathPlaceholder}
-              value={sourceQueue.sourcePath}
-              onChange={(event) => {
-                const nextValue = event.target.value;
-                actions.setSourcePath(nextValue);
-                actions.syncSelectedQueueEdits({ sourcePath: nextValue });
-                actions.clearFormError();
-              }}
-            />
-            <button
-              id="preflight-source-btn"
-              className="btn btn-compact"
-              type="button"
-              disabled={!capabilities.canInspectSource}
-              data-tip="Analyze the source — chapters, length, warnings — without converting"
-              onClick={() => actions.onInspectCurrentSource()}
-            >
-              Inspect
-            </button>
-            <button id="browse-source-btn" className="btn btn-compact" type="button" onClick={() => void actions.onBrowse()}>
-              Browse
-            </button>
-          </div>
-        </div>
-
         {sourceQueue.preflightCard ? (
           <div className="panel-section preflight-card">
             <div className="preflight-title">
               <span>{sourceQueue.preflightCard.title}</span>
               <span>{sourceQueue.preflightCard.meta}</span>
             </div>
-            <div className="preflight-meta">
-              {sourceQueue.preflightCard.author} · {sourceQueue.preflightCard.sourceType}
-            </div>
+            {[sourceQueue.preflightCard.author, sourceQueue.preflightCard.sourceType].filter(Boolean).length > 0 ? (
+              <div className="preflight-meta">
+                {[sourceQueue.preflightCard.author, sourceQueue.preflightCard.sourceType].filter(Boolean).join(" · ")}
+              </div>
+            ) : null}
             {sourceQueue.preflightCard.warnings.length > 0 ? (
               <div className="preflight-warnings">
                 {sourceQueue.preflightCard.warnings.map((warning) => (
@@ -240,39 +237,52 @@ export function SourceQueueView({
           <div className="field-hint preflight-status">{sourceQueue.preflightStatus}</div>
         ) : null}
 
-        <div className="form-row">
-          <span className="form-row-label" data-tip="Overrides the title detected from the source" data-tip-pos="right">Title</span>
-          <div className="form-row-field">
-            <input
-              id="title-input"
-              aria-label="Title override"
-              className="field-input"
-              type="text"
-              placeholder="Optional"
-              value={sourceQueue.titleOverride}
-              onChange={(event) => {
-                actions.setTitleOverride(event.target.value);
-                actions.syncSelectedQueueEdits({ title: event.target.value });
-              }}
-            />
-          </div>
-        </div>
-
-        <div className="form-row">
-          <span className="form-row-label" data-tip="Overrides the author detected from the source" data-tip-pos="right">Author</span>
-          <div className="form-row-field">
-            <input
-              id="author-input"
-              aria-label="Author override"
-              className="field-input"
-              type="text"
-              placeholder="Optional"
-              value={sourceQueue.authorOverride}
-              onChange={(event) => {
-                actions.setAuthorOverride(event.target.value);
-                actions.syncSelectedQueueEdits({ author: event.target.value });
-              }}
-            />
+        <div className="form-grid">
+          <div className="field-row">
+            <div className="field">
+              <label
+                className="field-label"
+                htmlFor="title-input"
+                data-tip="Overrides the title detected from the source"
+                data-tip-pos="right"
+              >
+                Title
+              </label>
+              <input
+                id="title-input"
+                aria-label="Title override"
+                className="field-input"
+                type="text"
+                placeholder="Optional"
+                value={sourceQueue.titleOverride}
+                onChange={(event) => {
+                  actions.setTitleOverride(event.target.value);
+                  actions.syncSelectedQueueEdits({ title: event.target.value });
+                }}
+              />
+            </div>
+            <div className="field">
+              <label
+                className="field-label"
+                htmlFor="author-input"
+                data-tip="Overrides the author detected from the source"
+                data-tip-pos="right"
+              >
+                Author
+              </label>
+              <input
+                id="author-input"
+                aria-label="Author override"
+                className="field-input"
+                type="text"
+                placeholder="Optional"
+                value={sourceQueue.authorOverride}
+                onChange={(event) => {
+                  actions.setAuthorOverride(event.target.value);
+                  actions.syncSelectedQueueEdits({ author: event.target.value });
+                }}
+              />
+            </div>
           </div>
         </div>
       </div>
