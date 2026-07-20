@@ -768,6 +768,7 @@ def test_list_books_search_escapes_like_wildcards(tmp_path):
     assert [book.id for book in underscore_matches] == [literal_underscore.id]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not enforced on Windows")
 def test_sqlite_database_parent_and_file_are_owner_only(tmp_path):
     import stat
 

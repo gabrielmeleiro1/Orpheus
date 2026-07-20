@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 from concurrent.futures import ThreadPoolExecutor
+import sys
 import threading
 import time
 
@@ -159,8 +160,12 @@ def test_setup_status_returns_allowlisted_readiness_contract(
     assert len(payload["backend"]["instance_id"]) == 32
     assert {profile["id"] for profile in payload["profiles"]} == {"base", "mlx", "cuda"}
     cuda = next(profile for profile in payload["profiles"] if profile["id"] == "cuda")
-    assert cuda["compatible"] is False
-    assert isinstance(cuda["reason"], str) and cuda["reason"]
+    if sys.platform == "darwin":
+        assert cuda["compatible"] is False
+        assert isinstance(cuda["reason"], str) and cuda["reason"]
+    else:
+        assert cuda["compatible"] is True
+        assert cuda["reason"] is None
     assert cuda["risk"] is None
     assert _contains_forbidden_key(payload) is False
 

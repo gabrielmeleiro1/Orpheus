@@ -232,7 +232,10 @@ def test_desktop_backend_main_calls_multiprocessing_freeze_support(monkeypatch) 
     exit_code = desktop_backend.main([])
 
     assert exit_code == 0
-    assert call_order[:3] == ["umask", "configure_frozen_espeak_runtime", "freeze_support"]
+    expected = ["configure_frozen_espeak_runtime", "freeze_support"]
+    if os.name != "nt":
+        expected = ["umask", *expected]
+    assert call_order[: len(expected)] == expected
     assert "parse_args" in call_order
 
 

@@ -74,7 +74,10 @@ def test_base_runs_isolated_install_check_import_prohibition_and_audit(tmp_path)
     ]
     assert all(isinstance(command, list) for command in runner.commands)
     assert not any("shell=True" in " ".join(command) for command in runner.commands)
-    assert any("requirements/base.txt" in " ".join(command) for command in runner.commands)
+    assert any(
+        "requirements/base.txt" in " ".join(command).replace("\\", "/")
+        for command in runner.commands
+    )
     isolated_python_commands = [command for command in runner.commands if "-I" in command]
     assert isolated_python_commands
     assert all(command[1:3] == ["-B", "-I"] for command in isolated_python_commands)
@@ -309,8 +312,8 @@ def test_each_profile_uses_a_distinct_clean_environment(monkeypatch, tmp_path) -
 
     assert [profile.status for profile in report.profiles] == ["passed", "passed"]
     create_commands = [command for command in runner.commands if command[1:3] == ["-m", "venv"]]
-    assert create_commands[0][-1].endswith("/base")
-    assert create_commands[1][-1].endswith("/mlx")
+    assert Path(create_commands[0][-1]).name == "base"
+    assert Path(create_commands[1][-1]).name == "mlx"
     assert create_commands[0][-1] != create_commands[1][-1]
     assert report.session_directory is not None
     assert Path(report.session_directory).name.startswith(".orpheus-profile-verify-")

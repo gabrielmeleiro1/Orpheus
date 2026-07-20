@@ -1182,11 +1182,7 @@ class TestPipelineConfigOptions:
             return real_import(name, globals, locals, fromlist, level)
 
         with (
-            patch(
-                "modules.pipeline.parallel.os.sysconf",
-                side_effect=AttributeError("missing"),
-                create=True,
-            ),
+            patch.object(parallel_module, "_detect_physical_ram_bytes", return_value=None),
             patch("builtins.__import__", side_effect=_fake_import),
         ):
             first = parallel_module._detect_available_ram_gb()

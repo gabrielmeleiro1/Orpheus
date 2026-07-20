@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+
+import pytest
 from fastapi.testclient import TestClient
 
 from modules.app.config import AppConfig
@@ -169,6 +172,7 @@ def test_text_upload_bounds_title_and_text_fields(tmp_path):
     assert TextUploadRequest.model_fields["text"].metadata[1].max_length == MAX_TEXT_CHARS
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not enforced on Windows")
 def test_managed_upload_directory_and_file_are_owner_only(tmp_path):
     import stat
 

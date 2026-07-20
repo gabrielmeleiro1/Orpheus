@@ -25,6 +25,22 @@ def pytest_runtestloop(session):
             cov_plugin.options.cov_fail_under = 0
     return result
 
+@pytest.fixture(autouse=True)
+def _deterministic_host_memory(monkeypatch):
+    """Pin the host-RAM probe so worker-count math never depends on the machine.
+
+    VRAMBudget defaults to 70% of physical RAM; on small CI runners that
+    clamps max_workers to 1 and breaks any test asserting a worker count.
+    Tests that exercise the clamp itself pass an explicit budget.
+    """
+    from modules.pipeline import parallel
+
+    monkeypatch.setattr(parallel, "_detect_physical_ram_bytes", lambda: 32 * 1024**3)
+    parallel._detect_available_ram_gb.cache_clear()
+    yield
+    parallel._detect_available_ram_gb.cache_clear()
+
+
 @pytest.fixture
 def registry_snapshot():
     """Preserve registry contents across tests that register custom backends."""

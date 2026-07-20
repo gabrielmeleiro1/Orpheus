@@ -141,8 +141,9 @@ def test_storage_maintenance() -> bool:
                     "SELECT source_path FROM books WHERE id = ?",
                     (keep_book.id,),
                 ).fetchone()[0]
-                assert str(data_dir / "sources") in updated_source
-                assert Path(updated_source).exists()
+                updated_path = Path(updated_source)
+                assert updated_path.resolve().parent == (data_dir / "sources").resolve()
+                assert updated_path.exists()
             finally:
                 conn.close()
 

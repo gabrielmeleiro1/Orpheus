@@ -63,12 +63,12 @@ jobs:
       - name: Check Python sources
         run: python -m ruff check .
 
-      - name: Test Python contract
-        run: python run_tests.py --contract
-
       - name: Install desktop dependencies
         working-directory: desktop
         run: npm ci
+
+      - name: Test Python contract
+        run: python run_tests.py --contract
 
       - name: Check desktop types
         working-directory: desktop
