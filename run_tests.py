@@ -210,7 +210,21 @@ def run_contract_suite() -> int:
     print("=" * 60 + "\n")
     print(f"> Running {' '.join(build_contract_command())}\n")
 
-    result = subprocess.run(build_contract_command(), cwd=REPO_ROOT)
+    kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        # Run the suite on its own hidden console. A console control event
+        # raised anywhere in the pytest process tree is delivered to every
+        # process on the same console — including this wrapper and the CI
+        # step shell, which then reports failure for a green run. Events
+        # cannot cross consoles; explicit std handles keep the output in
+        # the step log.
+        kwargs = {
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+            "stdin": subprocess.DEVNULL,
+            "stdout": sys.stdout,
+            "stderr": sys.stderr,
+        }
+    result = subprocess.run(build_contract_command(), cwd=REPO_ROOT, **kwargs)
     return result.returncode
 
 
