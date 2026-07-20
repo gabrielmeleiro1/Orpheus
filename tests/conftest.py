@@ -48,12 +48,36 @@ def pytest_unconfigure(config):
     so name the leakers, dump their stacks, and exit with the real status.
     """
     result = yield
+    if os.name == "nt":
+        # The session result is final; nothing after this point should be
+        # interruptible. A stray console CTRL_C_EVENT during interpreter
+        # shutdown otherwise corrupts the exit code of a green run.
+        import signal
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     lingering = [
         thread
         for thread in threading.enumerate()
         if thread is not threading.main_thread() and not thread.daemon and thread.is_alive()
     ]
     children = multiprocessing.active_children()
+    try:
+        import psutil
+
+        grandchildren = psutil.Process().children(recursive=True)
+    except Exception:
+        grandchildren = []
+    if grandchildren:
+        details = []
+        for child in grandchildren:
+            try:
+                details.append(f"{child.pid} {' '.join(child.cmdline()[:4])}")
+            except Exception:
+                details.append(str(child.pid))
+        sys.stderr.write(
+            f"\n[conftest] subprocesses alive after the session: {'; '.join(details)}\n"
+        )
+        sys.stderr.flush()
     if lingering or children:
         import faulthandler
 

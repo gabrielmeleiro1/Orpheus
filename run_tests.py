@@ -216,6 +216,15 @@ def run_contract_suite() -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run either the smoke suite or the authoritative pytest contract."""
+    if os.name == "nt":
+        # A console CTRL_C_EVENT reaches every process on the console,
+        # including this wrapper. Our only job is to relay the child suite's
+        # exit code; dying to a stray Ctrl+C aimed at (or leaked from) the
+        # child turns a green run into a failed one. A real Ctrl+C still
+        # stops the run: the child receives it and exits, and we return.
+        import signal
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
     args = parse_args(argv)
 
     if args.verify_profile:
