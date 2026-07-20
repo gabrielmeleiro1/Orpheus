@@ -521,6 +521,20 @@ def test_stale_acknowledgement_never_overwrites_new_install(tmp_path: Path):
     assert current["restart_required"] is True
 
 
+def test_pid_is_running_reports_own_process_alive_and_exited_child_dead():
+    import scripts.setup_runtime as setup_runtime
+
+    # Guards the lock-owner liveness probe. On Windows the naive
+    # os.kill(pid, 0) probe broadcast a console Ctrl+C (signal 0 is
+    # CTRL_C_EVENT) and misreported live owners as dead when the
+    # broadcast failed, letting a concurrent setup steal a held lock.
+    assert setup_runtime._pid_is_running(os.getpid()) is True
+    assert setup_runtime._pid_is_running(-1) is False
+    child = subprocess.Popen([sys.executable, "-c", "pass"])
+    child.wait()
+    assert setup_runtime._pid_is_running(child.pid) is False
+
+
 def test_concurrent_setup_is_excluded_before_second_pip(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

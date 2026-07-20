@@ -177,6 +177,8 @@ class SetupLock:
 def _pid_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        return _windows_pid_is_running(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -186,6 +188,32 @@ def _pid_is_running(pid: int) -> bool:
     except OSError:
         return False
     return True
+
+
+def _windows_pid_is_running(pid: int) -> bool:
+    # os.kill(pid, 0) is a trap on Windows: signal 0 equals CTRL_C_EVENT, so
+    # instead of probing the pid it broadcasts a console Ctrl+C — and when the
+    # broadcast fails it raises, making a live owner look dead and letting a
+    # concurrent setup steal a held lock. Probe through the process API.
+    import ctypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    ERROR_ACCESS_DENIED = 5
+    STILL_ACTIVE = 259
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # Denied access still proves the process exists; treat the owner as
+        # alive so the lock is never stolen on an ambiguous answer.
+        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
+    try:
+        exit_code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return True
+        return exit_code.value == STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def _normalize_identifier(value: str, *, kind: str) -> str:

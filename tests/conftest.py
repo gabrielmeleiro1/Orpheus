@@ -64,7 +64,13 @@ def pytest_unconfigure(config):
     try:
         import psutil
 
-        grandchildren = psutil.Process().children(recursive=True)
+        grandchildren = [
+            child
+            for child in psutil.Process().children(recursive=True)
+            # conhost hosts this process's own hidden console on Windows
+            # (run_tests launches the suite with CREATE_NO_WINDOW).
+            if child.name().lower() != "conhost.exe"
+        ]
     except Exception:
         grandchildren = []
     if grandchildren:
