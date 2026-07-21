@@ -153,6 +153,11 @@
   text-transform: uppercase;
 }
 
+/* The label must never wrap under the full-width Run queue button. */
+.queue-header > span {
+  white-space: nowrap;
+}
+
 .paste-grid {
   display: grid;
   gap: 8px;

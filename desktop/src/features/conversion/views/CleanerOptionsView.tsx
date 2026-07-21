@@ -20,18 +20,6 @@ export function CleanerOptionsView({
 }: CleanerOptionsViewProps) {
   return (
     <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" hidden={hidden}>
-      <div className="panel-header">
-        <span>Settings</span>
-        <button
-          id="runtime-setup-btn"
-          className="btn btn-compact"
-          type="button"
-          onClick={actions.onOpenRuntimeSetup}
-        >
-          Runtime setup
-        </button>
-      </div>
-
       <div className="config-grid">
         <div className="panel-section config-panel-section">
           <div className="section-title">
@@ -41,6 +29,14 @@ export function CleanerOptionsView({
             >
               Cleaner runtime
             </span>
+            <button
+              id="runtime-setup-btn"
+              className="btn btn-ghost btn-compact"
+              type="button"
+              onClick={actions.onOpenRuntimeSetup}
+            >
+              Runtime setup
+            </button>
           </div>
           <div className="form-row">
             <span className="form-row-label">Backend</span>

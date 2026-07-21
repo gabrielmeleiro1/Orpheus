@@ -6,7 +6,6 @@ import { useRuntimeIdentityLabel } from "./app/usePrimaryRuntime";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
-import { LiveClock } from "./features/dashboard/LiveClock";
 import { LibraryPanel } from "./features/library/LibraryPanel";
 import { useLibrary } from "./features/library/useLibrary";
 import { LogPanel } from "./features/logs/LogPanel";
@@ -207,7 +206,6 @@ function DashboardApp({
             ) : null}
             <span className={`status-dot${connectionState === "connected" ? " is-connected" : ""}`} title={connectionState} aria-hidden="true" />
             <span className="sr-only" role="status">{`Backend ${connectionState}`}</span>
-            <span className="control clock-control" data-tip="Current time" data-tip-pos="bottom"><LiveClock /></span>
           </div>
         </header>
 
@@ -254,12 +252,6 @@ function DashboardApp({
             aria-label="Conversion progress"
             hidden={activeTab !== "progress"}
           >
-            <div className="panel-header">
-              <span>Progress</span>
-              {conversionJob.uiState !== "idle" && conversionJob.uiState !== "unknown" ? (
-                <span className="panel-header-meta">{Math.round(conversionJob.progressPct)}%</span>
-              ) : null}
-            </div>
             <ProgressPanel
               uiState={conversionJob.uiState}
               statusText={conversionJob.statusText}

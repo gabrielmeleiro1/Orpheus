@@ -134,7 +134,6 @@ vi.mock("./features/conversion/ConversionPanel", () => ({
   ),
 }));
 vi.mock("./features/dashboard/DashboardPanel", () => ({ DashboardPanel: () => null }));
-vi.mock("./features/dashboard/LiveClock", () => ({ LiveClock: () => null }));
 vi.mock("./features/library/LibraryPanel", () => ({ LibraryPanel: () => null }));
 vi.mock("./features/logs/LogPanel", () => ({ LogPanel: () => null }));
 vi.mock("./features/player/PlayerPanel", () => ({ PlayerPanel: () => null }));

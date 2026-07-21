@@ -107,7 +107,6 @@ vi.mock("./features/setup/setupBridge", () => ({
   restartOrpheusBackend: () => mocks.setupBridge.restart(),
 }));
 vi.mock("./features/dashboard/DashboardPanel", () => ({ DashboardPanel: () => null }));
-vi.mock("./features/dashboard/LiveClock", () => ({ LiveClock: () => null }));
 vi.mock("./features/library/LibraryPanel", () => ({ LibraryPanel: () => null }));
 vi.mock("./features/logs/LogPanel", () => ({ LogPanel: () => null }));
 vi.mock("./features/player/PlayerPanel", () => ({ PlayerPanel: () => null }));

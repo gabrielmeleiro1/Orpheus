@@ -766,7 +766,6 @@ export function SetupPage({
                 <div className="setup-command"><code>.venv/bin/python scripts/setup_runtime.py --profile base</code></div>
                 <p className="setup-command-note">On Windows, run <code>.venv\Scripts\python.exe</code> instead.</p>
               </div>
-              <button className="btn btn-ghost btn-compact" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button>
             </div>
           ) : null}
 

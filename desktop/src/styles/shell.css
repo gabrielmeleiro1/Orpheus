@@ -293,12 +293,6 @@ button.control:hover {
   }
 }
 
-.clock-control {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: 0.04em;
-}
 
 .converting-control {
   border-color: color-mix(in srgb, var(--accent) 30%, transparent);
