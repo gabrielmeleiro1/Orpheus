@@ -109,6 +109,21 @@ describe("LibraryPanel", () => {
     expect(html).not.toContain("library-pager");
   });
 
+  it("keeps visible details inert while a different selected book is loading", () => {
+    const model = libraryModel();
+    model.selectedBookId = 2;
+    model.loadingDetail = true;
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<LibraryPanel hidden={false} library={model} />);
+
+    const detailPane = container.querySelector(".library-detail-pane");
+    expect(detailPane?.classList.contains("is-loading")).toBe(true);
+    expect(detailPane?.getAttribute("aria-busy")).toBe("true");
+    expect((container.querySelector("#book-title-edit") as HTMLInputElement).disabled).toBe(true);
+    expect((container.querySelector("#library-save-metadata-btn") as HTMLButtonElement).disabled).toBe(true);
+    expect((container.querySelector("#library-delete-btn") as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("requires an inline confirmation before deleting the selected book", async () => {
     const model = libraryModel();
     const container = document.createElement("div");

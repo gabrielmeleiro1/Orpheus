@@ -227,7 +227,6 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       setSelectedBookIndex(index);
       selectedBookIdRef.current = nextBook.id;
       setSelectedBookId(nextBook.id);
-      setSelectedBookDetail(null);
       setErrorMessage("");
       return loadBookDetail(nextBook.id);
     },

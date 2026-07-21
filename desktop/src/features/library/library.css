@@ -15,6 +15,11 @@
   gap: 12px;
   min-width: 0;
   overflow: visible;
+  transition: opacity 120ms ease;
+}
+
+.library-detail-pane.is-loading {
+  opacity: 0.72;
 }
 
 /* Sidebar controls: search, type filter + refresh, and the optional pager. */
@@ -360,6 +365,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .library-detail-pane,
   .chapter-cleaned-btn {
     transition: none;
   }

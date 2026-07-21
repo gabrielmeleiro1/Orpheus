@@ -183,6 +183,43 @@ describe("useLibrary indexed total", () => {
     expect(getLibraryProbe().indexedCount).toBe(0);
   });
 
+  it("keeps the previous book detail visible until the next selection loads", async () => {
+    const secondBook = { ...book, id: 2, title: "Second book" };
+    const secondDetail = { ...detail, id: 2, title: "Second book" };
+    const secondDetailRequest = deferred<LibraryBookDetail>();
+    const getLibrary = vi.fn(async () => ({ items: [book, secondBook], count: 2 }));
+    const getLibraryBook = vi.fn((bookId: number) => (
+      bookId === book.id ? Promise.resolve(detail) : secondDetailRequest.promise
+    ));
+    const apiClient = { getLibrary, getLibraryBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(getLibraryProbe().selectedBookDetail).toEqual(detail);
+
+    let selectPromise!: Promise<LibraryBookDetail | null>;
+    await act(async () => {
+      selectPromise = getLibraryProbe().selectBook(1);
+      await Promise.resolve();
+    });
+
+    expect(getLibraryProbe().selectedBookId).toBe(secondBook.id);
+    expect(getLibraryProbe().loadingDetail).toBe(true);
+    expect(getLibraryProbe().selectedBookDetail).toEqual(detail);
+
+    await act(async () => {
+      secondDetailRequest.resolve(secondDetail);
+      expect(await selectPromise).toEqual(secondDetail);
+    });
+    expect(getLibraryProbe().loadingDetail).toBe(false);
+    expect(getLibraryProbe().selectedBookDetail).toEqual(secondDetail);
+  });
+
   it("aborts and fences an in-flight detail request when a search returns no results", async () => {
     const detailRequest = deferred<LibraryBookDetail>();
     let detailSignal: AbortSignal | undefined;

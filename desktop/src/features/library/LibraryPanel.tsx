@@ -47,6 +47,9 @@ export function LibraryPanel({
   const showEmpty = !library.loadingList && !library.errorMessage && library.items.length === 0;
   const selected = library.selectedBookDetail;
   const chapters = useMemo(() => selected?.chapters ?? [], [selected?.chapters]);
+  const detailTransitionPending = Boolean(
+    selected && (library.loadingDetail || selected.id !== library.selectedBookId),
+  );
   const [deleteConfirmationBookId, setDeleteConfirmationBookId] = useState<number | null>(null);
   const {
     editTitle,
@@ -62,7 +65,7 @@ export function LibraryPanel({
 
   useEffect(() => {
     setDeleteConfirmationBookId(null);
-  }, [selected?.id]);
+  }, [library.selectedBookId, selected?.id]);
 
   const showPager = library.items.length > 1;
   const showCleaningPreview = Boolean(cleaningPreview) || cleaningPreviewLoading;
@@ -183,7 +186,10 @@ export function LibraryPanel({
           </div>
         </aside>
 
-        <div className="library-detail-pane">
+        <div
+          className={`library-detail-pane${detailTransitionPending ? " is-loading" : ""}`}
+          aria-busy={detailTransitionPending}
+        >
           {library.errorMessage ? (
             <p className="field-hint is-error status-sentence">{library.errorMessage}</p>
           ) : null}
@@ -205,6 +211,7 @@ export function LibraryPanel({
                         className="field-input"
                         type="text"
                         value={editTitle}
+                        disabled={detailTransitionPending}
                         onChange={(event) => setEditTitle(event.target.value)}
                       />
                     </div>
@@ -215,6 +222,7 @@ export function LibraryPanel({
                         className="field-input"
                         type="text"
                         value={editAuthor}
+                        disabled={detailTransitionPending}
                         onChange={(event) => setEditAuthor(event.target.value)}
                       />
                     </div>
@@ -227,6 +235,7 @@ export function LibraryPanel({
                       type="text"
                       placeholder="Comma separated"
                       value={editTags}
+                      disabled={detailTransitionPending}
                       onChange={(event) => setEditTags(event.target.value)}
                     />
                   </div>
@@ -246,6 +255,7 @@ export function LibraryPanel({
                   id="library-save-metadata-btn"
                   className="btn btn-primary btn-compact"
                   type="button"
+                  disabled={detailTransitionPending}
                   data-tip="Write title, author, and tags into the audio files"
                   onClick={() =>
                     void library.updateSelectedBookMetadata({
@@ -261,7 +271,7 @@ export function LibraryPanel({
                   id="library-open-folder-btn"
                   className="btn btn-ghost btn-compact"
                   type="button"
-                  disabled={!library.selectedBookId}
+                  disabled={detailTransitionPending || !library.selectedBookId}
                   data-tip="Reveal the exported audio in the file manager"
                   onClick={() => void library.openSelectedBookFolder()}
                 >
@@ -272,7 +282,7 @@ export function LibraryPanel({
                     id="library-repair-btn"
                     className="btn btn-ghost btn-compact"
                     type="button"
-                    disabled={!library.selectedBookId}
+                    disabled={detailTransitionPending || !library.selectedBookId}
                     data-tip="Re-synthesize chapters whose audio files are missing. Needs the original source."
                     onClick={() => void library.repairSelectedBook()}
                   >
@@ -295,6 +305,7 @@ export function LibraryPanel({
                         id="library-delete-confirm-btn"
                         className="btn btn-danger btn-compact"
                         type="button"
+                        disabled={detailTransitionPending}
                         onClick={() => {
                           setDeleteConfirmationBookId(null);
                           void library.deleteSelectedBook();
@@ -308,7 +319,7 @@ export function LibraryPanel({
                       id="library-delete-btn"
                       className="btn btn-danger btn-compact"
                       type="button"
-                      disabled={!library.selectedBookId}
+                      disabled={detailTransitionPending || !library.selectedBookId}
                       data-tip="Remove this book and its audio from the library"
                       onClick={() => setDeleteConfirmationBookId(selected.id)}
                     >
@@ -340,7 +351,7 @@ export function LibraryPanel({
                             }
                             data-tip="Play from this chapter"
                             onClick={() => onJumpToChapter?.(chapter)}
-                            disabled={!onJumpToChapter}
+                            disabled={detailTransitionPending || !onJumpToChapter}
                           >
                             <span className="chapter-number tabular-nums">{String(chapter.number).padStart(2, "0")}</span>
                             <span className="chapter-title">
@@ -351,7 +362,7 @@ export function LibraryPanel({
                           <button
                             className="btn btn-ghost btn-compact chapter-cleaned-btn"
                             type="button"
-                            disabled={cleaningPreviewLoading}
+                            disabled={detailTransitionPending || cleaningPreviewLoading}
                             data-tip="Compare this chapter's text before and after cleaning"
                             onClick={() => void loadCleaningPreview(chapter.number)}
                           >
