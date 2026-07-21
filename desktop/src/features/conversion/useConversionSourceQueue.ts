@@ -33,6 +33,8 @@ export function useConversionSourceQueue({
   queueController,
 }: UseConversionSourceQueueArgs) {
   const [pastedText, setPastedText] = useState("");
+  const [pastedTitle, setPastedTitle] = useState("");
+  const [pastedAuthor, setPastedAuthor] = useState("");
   const [pasteBusy, setPasteBusy] = useState(false);
   const [pasteStatus, setPasteStatus] = useState("Idle");
   const [dragging, setDragging] = useState(false);
@@ -187,14 +189,8 @@ export function useConversionSourceQueue({
       return;
     }
 
-    // The Title/Author fields name the paste — but only when the user typed
-    // them for it. When a queue item is selected the fields mirror that item,
-    // and mirrored values must not leak onto the new source.
-    const selectedItem = queueController.selectedQueueItem;
-    const typedTitle = queueController.titleOverride.trim();
-    const typedAuthor = queueController.authorOverride.trim();
-    const pasteTitle = selectedItem && typedTitle === selectedItem.title.trim() ? "" : typedTitle;
-    const pasteAuthor = selectedItem && typedAuthor === selectedItem.author.trim() ? "" : typedAuthor;
+    const pasteTitle = pastedTitle.trim();
+    const pasteAuthor = pastedAuthor.trim();
 
     setPasteBusy(true);
     setPasteStatus("Creating markdown source…");
@@ -219,6 +215,8 @@ export function useConversionSourceQueue({
       // primary action target it rather than a stale earlier row.
       queueController.addPastedSource(item, { selectItem: true });
       setPastedText("");
+      setPastedTitle("");
+      setPastedAuthor("");
       setPasteStatus("Pasted markdown source added.");
       conversionJob.clearFormError();
     } catch (error: unknown) {
@@ -230,7 +228,9 @@ export function useConversionSourceQueue({
     apiClient,
     conversionJob,
     conversionMode,
+    pastedAuthor,
     pastedText,
+    pastedTitle,
     queueController,
   ]);
 
@@ -298,6 +298,10 @@ export function useConversionSourceQueue({
   return {
     pastedText,
     setPastedText,
+    pastedTitle,
+    setPastedTitle,
+    pastedAuthor,
+    setPastedAuthor,
     pasteBusy,
     pasteStatus,
     dragging,

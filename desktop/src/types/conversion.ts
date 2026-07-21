@@ -274,6 +274,8 @@ interface ActiveConversionJob {
   book_id: number | null;
   status: ConversionJobStatus;
   error: string | null;
+  title: string | null;
+  author: string | null;
 }
 
 export interface ActiveConversionResponse {

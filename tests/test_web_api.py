@@ -28,6 +28,34 @@ def _make_client_with_controller(controller):
     return TestClient(create_app(controller=controller))
 
 
+def test_active_conversion_route_serializes_job_metadata():
+    job = SimpleNamespace(
+        id="job-1",
+        book_id=None,
+        status=SimpleNamespace(value="running"),
+        error=None,
+        title="Reloaded title",
+        author="Reloaded author",
+        is_active=lambda: True,
+    )
+    controller = SimpleNamespace(
+        config=SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output")),
+        get_active_job=lambda: job,
+    )
+
+    response = _make_client_with_controller(controller).get("/api/conversions/active")
+
+    assert response.status_code == 200
+    assert response.json()["job"] == {
+        "id": "job-1",
+        "book_id": None,
+        "status": "running",
+        "error": None,
+        "title": "Reloaded title",
+        "author": "Reloaded author",
+    }
+
+
 def test_openai_model_list_route_fetches_models_with_pasted_key(monkeypatch):
     from modules.tts import cleaner_api as cleaner_api_module
 

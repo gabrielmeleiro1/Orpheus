@@ -58,6 +58,8 @@ def job_payload(job) -> dict:
         "book_id": book_id,
         "status": _status_value(status),
         "error": error,
+        "title": getattr(job, "title", None),
+        "author": getattr(job, "author", None),
     }
 
 

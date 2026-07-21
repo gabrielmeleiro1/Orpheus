@@ -150,11 +150,37 @@ export function SourceQueueView({
               value={sourceQueue.pastedText}
               onChange={(event) => actions.setPastedText(event.target.value)}
             />
+            <div className="field-row">
+              <div className="field">
+                <label className="field-label" htmlFor="paste-title-input">Title</label>
+                <input
+                  id="paste-title-input"
+                  aria-label="Paste title"
+                  className="field-input"
+                  type="text"
+                  placeholder="Optional"
+                  value={sourceQueue.pastedTitle}
+                  onChange={(event) => actions.setPastedTitle(event.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label className="field-label" htmlFor="paste-author-input">Author</label>
+                <input
+                  id="paste-author-input"
+                  aria-label="Paste author"
+                  className="field-input"
+                  type="text"
+                  placeholder="Optional"
+                  value={sourceQueue.pastedAuthor}
+                  onChange={(event) => actions.setPastedAuthor(event.target.value)}
+                />
+              </div>
+            </div>
           </div>
           {sourceQueue.pasteStatus && sourceQueue.pasteStatus !== "Idle" ? (
             <p id="paste-source-status" className="field-hint">{sourceQueue.pasteStatus}</p>
           ) : (
-            <p className="hint">Name it with the Title field below.</p>
+            <p className="hint">Optional metadata applies only to this paste.</p>
           )}
         </div>
       ) : null}

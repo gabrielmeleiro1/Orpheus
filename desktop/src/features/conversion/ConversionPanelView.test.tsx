@@ -34,6 +34,8 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       sourceFileName: "",
       sourceFileDir: "",
       pastedText: "",
+      pastedTitle: "",
+      pastedAuthor: "",
       pasteBusy: false,
       pasteStatus: "Idle",
       queueItems: [],
@@ -114,6 +116,8 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       setAuthorOverride: noop,
       setDragging: noop,
       setPastedText: noop,
+      setPastedTitle: noop,
+      setPastedAuthor: noop,
       setPreviewText: noop,
       setCleanerBackend: noop,
       setCleanerModel: noop,
@@ -192,6 +196,8 @@ describe("ConversionPanelView", () => {
 
     const labelsById = {
       "paste-text-input": "Pasted document text",
+      "paste-title-input": "Paste title",
+      "paste-author-input": "Paste author",
       "source-path": "Source path",
       "title-input": "Title override",
       "author-input": "Author override",

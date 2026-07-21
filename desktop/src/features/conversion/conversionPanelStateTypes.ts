@@ -127,6 +127,8 @@ export interface SourceQueueViewModel {
   sourceFileName: string;
   sourceFileDir: string;
   pastedText: string;
+  pastedTitle: string;
+  pastedAuthor: string;
   pasteBusy: boolean;
   pasteStatus: string;
   queueItems: QueueItemViewModel[];
@@ -167,6 +169,8 @@ export interface ConversionPanelActions {
   setAuthorOverride: Dispatch<SetStateAction<string>>;
   setDragging: Dispatch<SetStateAction<boolean>>;
   setPastedText: Dispatch<SetStateAction<string>>;
+  setPastedTitle: Dispatch<SetStateAction<string>>;
+  setPastedAuthor: Dispatch<SetStateAction<string>>;
   setPreviewText: Dispatch<SetStateAction<string>>;
   setCleanerBackend: (value: string) => void;
   setCleanerModel: (value: string) => void;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type {
+  ActiveConversionResponse,
   ConversionJobStatus,
   ConversionJobTerminalEvent,
   DesktopEventPayload,
@@ -37,7 +38,7 @@ interface UseEventStreamResult {
   logs: EventStreamLogEntry[];
   isCancelling: boolean;
   cancelActiveConversion: () => Promise<void>;
-  refreshActiveConversionState: () => Promise<void>;
+  refreshActiveConversionState: () => Promise<ActiveConversionResponse | null>;
   waitForTerminalState: (jobId: string) => Promise<ConversionJobTerminalEvent>;
 }
 
@@ -137,7 +138,7 @@ export function useEventStream({
   const refreshActiveConversionState = useCallback(async () => {
     if (!apiClient) {
       applyReducerAction({ type: "refreshNoClient" });
-      return;
+      return null;
     }
 
     try {
@@ -152,12 +153,12 @@ export function useEventStream({
             state: terminalStatus,
             message: response.job.error || `conversion ${terminalStatus}`,
           });
-          return;
+          return response;
         }
       }
       if (!response.active || !response.job) {
         applyReducerAction({ type: "refreshInactive" });
-        return;
+        return response;
       }
 
       applyReducerAction({
@@ -167,6 +168,7 @@ export function useEventStream({
           status: response.job.status,
         },
       });
+      return response;
     } catch {
       // The reconcile fallback polls every couple of seconds while a cancel is
       // in flight; log only the first failure of a streak so a transient (or
@@ -177,6 +179,7 @@ export function useEventStream({
         lookupFailedRef.current = true;
         pushLog("warn", "active conversion lookup failed");
       }
+      return null;
     }
   }, [apiClient, applyEventPayload, applyReducerAction, pushLog]);
 

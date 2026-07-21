@@ -230,6 +230,42 @@ def _start_repair_and_wait(
     return job
 
 
+def test_conversion_and_repair_jobs_capture_display_metadata(tmp_path, monkeypatch):
+    source_path = tmp_path / "book.md"
+    source_path.write_text("body", encoding="utf-8")
+    monkeypatch.setattr(threading.Thread, "start", lambda _thread: None)
+
+    conversion_service = _make_service(
+        tmp_path,
+        _PipelineStub,
+        job_cls=ConversionJob,
+        status_enum=JobStatus,
+    )
+    conversion_job = conversion_service.start_conversion(
+        source_path=source_path,
+        title="Requested title",
+        author="Requested author",
+        runtime_options=_default_runtime_options(),
+    )
+
+    assert conversion_job.title == "Requested title"
+    assert conversion_job.author == "Requested author"
+
+    repair_service = _make_service(
+        tmp_path,
+        _PipelineStub,
+        job_cls=ConversionJob,
+        status_enum=JobStatus,
+    )
+    repair_job = repair_service.start_repair(
+        book_id=77,
+        runtime_options=_default_runtime_options(),
+    )
+
+    assert repair_job.title == "Stub Book"
+    assert repair_job.author == "Stub"
+
+
 def test_app_config_defaults_cleaning_artifact_saving_on(tmp_path):
     config = AppConfig(
         data_dir=tmp_path / "data",

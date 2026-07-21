@@ -79,6 +79,8 @@ class ConversionJob:
     id: str
     book_id: Optional[int]
     status: JobStatus
+    title: Optional[str] = None
+    author: Optional[str] = None
     pipeline: Optional[Any] = None
     result: Optional[ConversionResult] = None
     error: Optional[str] = None

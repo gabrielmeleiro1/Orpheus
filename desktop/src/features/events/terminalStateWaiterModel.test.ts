@@ -21,7 +21,14 @@ describe("terminal state waiter polling", () => {
   it("reports terminal active jobs from a mocked client", async () => {
     const onTerminalStatus = vi.fn();
     const result = await pollTerminalState({
-      apiClient: createClient({ id: "job-1", book_id: null, status: "failed", error: "boom" }),
+      apiClient: createClient({
+        id: "job-1",
+        book_id: null,
+        status: "failed",
+        error: "boom",
+        title: null,
+        author: null,
+      }),
       jobId: "job-1",
       missingPollCount: 0,
       missingPollThreshold: 3,
@@ -39,7 +46,14 @@ describe("terminal state waiter polling", () => {
 
   it("resolves as unknown after repeated missing or different active jobs", async () => {
     const result = await pollTerminalState({
-      apiClient: createClient({ id: "job-2", book_id: null, status: "running", error: null }),
+      apiClient: createClient({
+        id: "job-2",
+        book_id: null,
+        status: "running",
+        error: null,
+        title: null,
+        author: null,
+      }),
       jobId: "job-1",
       missingPollCount: 2,
       missingPollThreshold: 3,
@@ -60,7 +74,14 @@ describe("terminal state waiter polling", () => {
 
   it("resets missing count while the watched job is still active", async () => {
     const result = await pollTerminalState({
-      apiClient: createClient({ id: "job-1", book_id: null, status: "running", error: null }),
+      apiClient: createClient({
+        id: "job-1",
+        book_id: null,
+        status: "running",
+        error: null,
+        title: null,
+        author: null,
+      }),
       jobId: "job-1",
       missingPollCount: 2,
       missingPollThreshold: 3,
@@ -109,7 +130,14 @@ describe("terminal state waiter polling", () => {
 
   it("resets the error count once a poll succeeds again", async () => {
     const result = await pollTerminalState({
-      apiClient: createClient({ id: "job-1", book_id: null, status: "running", error: null }),
+      apiClient: createClient({
+        id: "job-1",
+        book_id: null,
+        status: "running",
+        error: null,
+        title: null,
+        author: null,
+      }),
       jobId: "job-1",
       missingPollCount: 0,
       errorPollCount: 4,

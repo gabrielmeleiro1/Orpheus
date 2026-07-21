@@ -204,7 +204,13 @@ class ConversionService:
         with self._job_lock:
             self._ensure_job_slot_available_locked()
             job_id = f"conv_{time.time_ns()}_{next(self._job_sequence)}"
-            job = self._job_cls(id=job_id, book_id=None, status=self._status.IDLE)
+            job = self._job_cls(
+                id=job_id,
+                book_id=None,
+                status=self._status.IDLE,
+                title=title,
+                author=author,
+            )
             self._active_job = job
 
         # Copying a large upload into durable storage must not run under the
@@ -313,7 +319,13 @@ class ConversionService:
                 raise RuntimeError("Book cleanup is in progress")
             self._ensure_job_slot_available_locked()
             job_id = f"repair_{book_id}_{time.time_ns()}_{next(self._job_sequence)}"
-            job = self._job_cls(id=job_id, book_id=book_id, status=self._status.IDLE)
+            job = self._job_cls(
+                id=job_id,
+                book_id=book_id,
+                status=self._status.IDLE,
+                title=getattr(book, "title", None),
+                author=getattr(book, "author", None),
+            )
             self._active_job = job
 
         return self._start_pipeline_job(
