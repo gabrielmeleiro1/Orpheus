@@ -166,9 +166,15 @@
 
 /* Destructive actions sit apart, pushed to the trailing edge. */
 .library-detail-actions-danger {
+  align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-left: auto;
+}
+
+.library-delete-confirmation {
+  max-width: 220px;
 }
 
 .chapter-section {

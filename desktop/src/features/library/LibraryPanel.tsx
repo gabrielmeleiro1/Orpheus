@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { CleaningPreviewResponse, LibraryChapterDetail } from "../../types/api";
 import { formatDurationClock } from "../../format/time";
@@ -47,6 +47,7 @@ export function LibraryPanel({
   const showEmpty = !library.loadingList && !library.errorMessage && library.items.length === 0;
   const selected = library.selectedBookDetail;
   const chapters = useMemo(() => selected?.chapters ?? [], [selected?.chapters]);
+  const [deleteConfirmationBookId, setDeleteConfirmationBookId] = useState<number | null>(null);
   const {
     editTitle,
     editAuthor,
@@ -58,6 +59,10 @@ export function LibraryPanel({
     cleaningPreviewLoading,
     loadCleaningPreview,
   } = useLibraryPanelState({ library });
+
+  useEffect(() => {
+    setDeleteConfirmationBookId(null);
+  }, [selected?.id]);
 
   const showPager = library.items.length > 1;
   const showCleaningPreview = Boolean(cleaningPreview) || cleaningPreviewLoading;
@@ -273,16 +278,43 @@ export function LibraryPanel({
                   >
                     Repair
                   </button>
-                  <button
-                    id="library-delete-btn"
-                    className="btn btn-danger btn-compact"
-                    type="button"
-                    disabled={!library.selectedBookId}
-                    data-tip="Remove this book and its audio from the library"
-                    onClick={() => void library.deleteSelectedBook()}
-                  >
-                    Delete
-                  </button>
+                  {deleteConfirmationBookId === selected.id ? (
+                    <>
+                      <span className="field-hint library-delete-confirmation" role="status">
+                        Delete {selected.title || "this book"}?
+                      </span>
+                      <button
+                        id="library-delete-cancel-btn"
+                        className="btn btn-ghost btn-compact"
+                        type="button"
+                        onClick={() => setDeleteConfirmationBookId(null)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        id="library-delete-confirm-btn"
+                        className="btn btn-danger btn-compact"
+                        type="button"
+                        onClick={() => {
+                          setDeleteConfirmationBookId(null);
+                          void library.deleteSelectedBook();
+                        }}
+                      >
+                        Delete book
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      id="library-delete-btn"
+                      className="btn btn-danger btn-compact"
+                      type="button"
+                      disabled={!library.selectedBookId}
+                      data-tip="Remove this book and its audio from the library"
+                      onClick={() => setDeleteConfirmationBookId(selected.id)}
+                    >
+                      Delete
+                    </button>
+                  )}
                 </div>
               </div>
 

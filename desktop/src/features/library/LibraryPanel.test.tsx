@@ -1,3 +1,7 @@
+// @vitest-environment happy-dom
+
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
@@ -103,5 +107,44 @@ describe("LibraryPanel", () => {
     const html = renderToString(<LibraryPanel hidden={false} library={libraryModel()} />);
 
     expect(html).not.toContain("library-pager");
+  });
+
+  it("requires an inline confirmation before deleting the selected book", async () => {
+    const model = libraryModel();
+    const container = document.createElement("div");
+    document.body.append(container);
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<LibraryPanel hidden={false} library={model} />);
+      });
+
+      await act(async () => {
+        (container.querySelector("#library-delete-btn") as HTMLButtonElement).click();
+      });
+
+      expect(model.deleteSelectedBook).not.toHaveBeenCalled();
+      expect(container.querySelector("#library-delete-cancel-btn")).not.toBeNull();
+      expect(container.querySelector("#library-delete-confirm-btn")?.textContent).toBe("Delete book");
+
+      await act(async () => {
+        (container.querySelector("#library-delete-cancel-btn") as HTMLButtonElement).click();
+      });
+      expect(model.deleteSelectedBook).not.toHaveBeenCalled();
+      expect(container.querySelector("#library-delete-confirm-btn")).toBeNull();
+
+      await act(async () => {
+        (container.querySelector("#library-delete-btn") as HTMLButtonElement).click();
+      });
+      await act(async () => {
+        (container.querySelector("#library-delete-confirm-btn") as HTMLButtonElement).click();
+      });
+      expect(model.deleteSelectedBook).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
   });
 });
