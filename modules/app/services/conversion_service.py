@@ -713,11 +713,13 @@ class ConversionService:
         if callbacks and callbacks.on_log:
             callbacks.on_log(message, "info")
         if callbacks and callbacks.on_event:
+            # No performance payload here: the pool snapshot describes the idle
+            # worker pool (parallel mode, zero counters), and clients treat any
+            # attached snapshot as the job's final performance numbers.
             callbacks.on_event(
                 make_log_event(
                     message=message,
                     level="info",
-                    performance=pool_snapshot,
                 )
             )
 

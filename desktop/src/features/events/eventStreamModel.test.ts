@@ -189,7 +189,11 @@ describe("event stream reducer actions", () => {
       message: " hello ",
       performance: { active_workers: 2 },
     };
-    const logged = eventStreamReducer(createInitialEventStreamState(), {
+    const running = {
+      ...createInitialEventStreamState(),
+      uiState: "running" as const,
+    };
+    const logged = eventStreamReducer(running, {
       type: "log",
       payload,
       logId: 2,
@@ -206,6 +210,33 @@ describe("event stream reducer actions", () => {
     expect(logged.state.performanceSnapshot).toEqual({ active_workers: 2 });
     expect(pushed.state.logs.map((entry) => entry.msg)).toEqual(["second", "hello"]);
     expect(pushed.state.logs[0].level).toBe("info");
+  });
+
+  it("ignores log-carried performance once the job is no longer running", () => {
+    // Reproduces the live-captured stream: the backend's terminal progress
+    // event carries the truthful final snapshot, then a trailing "[PERF]
+    // worker_pool_*" log arrives with the idle pool snapshot (parallel mode,
+    // zero counters). That log must not clobber the final numbers.
+    const finalSnapshot = { pipeline_mode: "sequential", completed_chapters: 1 };
+    const completed = {
+      ...createInitialEventStreamState(),
+      uiState: "completed" as const,
+      performanceSnapshot: finalSnapshot,
+    };
+    const logged = eventStreamReducer(completed, {
+      type: "log",
+      payload: {
+        event_type: "log",
+        level: "info",
+        message: "[PERF] worker_pool_reuse_hits=0",
+        performance: { pipeline_mode: "parallel", completed_chapters: 0 },
+      },
+      logId: 4,
+      fallbackTimestamp: "11:00:02",
+    });
+
+    expect(logged.state.performanceSnapshot).toEqual(finalSnapshot);
+    expect(logged.state.logs[0].msg).toBe("[PERF] worker_pool_reuse_hits=0");
   });
 
   it("handles refresh and cancellation actions", () => {

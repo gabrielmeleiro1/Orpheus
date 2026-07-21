@@ -307,9 +307,14 @@ export function eventStreamReducer(
       };
     }
     case "log": {
-      const withPerformance = action.payload.performance
-        ? { ...state, performanceSnapshot: action.payload.performance }
-        : state;
+      // Log-carried snapshots are live telemetry; once the job left "running"
+      // the terminal progress event holds the final numbers and trailing logs
+      // (e.g. the idle pool's "[PERF] worker_pool_*" summary) must not
+      // overwrite them.
+      const withPerformance =
+        action.payload.performance && state.uiState === "running"
+          ? { ...state, performanceSnapshot: action.payload.performance }
+          : state;
       return {
         state: addLog(
           withPerformance,
