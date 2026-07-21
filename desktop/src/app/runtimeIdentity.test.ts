@@ -173,4 +173,45 @@ describe("runtime identity settings notification", () => {
     expect(listener).toHaveBeenCalledTimes(1);
     window.removeEventListener(DESKTOP_SETTINGS_CHANGED_EVENT, listener);
   });
+
+  it("ignores an unconfigured persisted backend and reports the auto-selected local one", () => {
+    // The conversion views only honor cleaner_backend when
+    // cleaner_backend_configured is true; otherwise they auto-pick the
+    // preferred local backend. The header label must apply the same policy or
+    // it reports "Cloud API" while the app will actually use Local MLX.
+    const label = buildRuntimeIdentityLabelFromSnapshot({
+      capabilities,
+      modelOptions,
+      settings: {
+        cleaner_backend: "openai",
+        cleaner_backend_configured: false,
+      },
+    });
+    expect(label).toBe("TTS: MLX · Cleaner: Local MLX");
+  });
+
+  it("falls back to the preferred available backend when nothing is persisted", () => {
+    const label = buildRuntimeIdentityLabelFromSnapshot({
+      capabilities,
+      modelOptions,
+      settings: {},
+    });
+    expect(label).toBe("TTS: MLX · Cleaner: Local MLX");
+  });
+
+  it("ignores a configured backend that is no longer available", () => {
+    const unavailableMlx: SystemCapabilitiesResponse = {
+      ...capabilities,
+      cleaner_runtime_availability: { mlx: false },
+    };
+    const label = buildRuntimeIdentityLabelFromSnapshot({
+      capabilities: unavailableMlx,
+      modelOptions,
+      settings: {
+        cleaner_backend: "mlx",
+        cleaner_backend_configured: true,
+      },
+    });
+    expect(label).toBe("TTS: MLX · Cleaner: Cloud API");
+  });
 });
