@@ -37,6 +37,9 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
   const eventStream = useEventStream({ apiClient, baseUrl });
   const [isStarting, setIsStarting] = useState(false);
   const [formError, setFormError] = useState("");
+  // Title/author of the last successfully started job, so status surfaces can
+  // label the job itself rather than whatever the library has selected.
+  const [activeJobMeta, setActiveJobMeta] = useState<{ title: string; author: string } | null>(null);
   const startInFlightRef = useRef(false);
 
   const clearFormError = useCallback(() => {
@@ -78,6 +81,10 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
           setFormError(error);
           return { ok: false, error };
         }
+        setActiveJobMeta({
+          title: String(payload.title ?? "").trim(),
+          author: String(payload.author ?? "").trim(),
+        });
         return { ok: true, jobId: response.job_id };
       } catch (error: unknown) {
         const message = normalizeErrorMessage(error);
@@ -98,6 +105,8 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
   return {
     ...eventStream,
     activeJobStatus: eventStream.uiState,
+    activeJobTitle: activeJobMeta?.title ?? "",
+    activeJobAuthor: activeJobMeta?.author ?? "",
     isStarting,
     formError,
     clearFormError,

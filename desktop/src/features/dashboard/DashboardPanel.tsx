@@ -10,7 +10,7 @@ import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
 import { ConversionFlowCanvas } from "./ConversionFlowCanvas";
 import { NowPlayingCanvas } from "./NowPlayingCanvas";
 import { ProgressBar } from "../../ui/ProgressBar";
-import { formatClockWithHours, formatDurationClockWithHours } from "../../format/time";
+import { formatClockWithHours } from "../../format/time";
 import { dashboardNowStageLabel } from "../progress/progressTerminalPresentation";
 import "./dashboard.css";
 
@@ -25,6 +25,8 @@ interface DashboardPanelProps {
   etaText: string;
   stages: ProgressStageView[];
   performance: PerformanceSnapshot | null;
+  jobTitle?: string;
+  jobAuthor?: string;
   currentChapterLabel: string;
   playerTitle: string;
   playing: boolean;
@@ -73,6 +75,8 @@ export function DashboardPanel({
   progressPct,
   etaText,
   stages,
+  jobTitle,
+  jobAuthor,
   currentChapterLabel,
   playerTitle,
   playing,
@@ -200,9 +204,9 @@ export function DashboardPanel({
               <div className="book-main">
                 <div className="book-heading">
                   <div>
-                    <h2 className="book-title">{selected?.title || "Current conversion"}</h2>
+                    <h2 className="book-title">{jobTitle || "Current conversion"}</h2>
                     <p className="book-subtitle">
-                      {selected ? `${selected.author || "Unknown author"} — ${chapterText}` : "In progress"}
+                      {jobAuthor || (conversionIsActive ? "In progress" : "Latest job")}
                     </p>
                   </div>
                 </div>
@@ -251,16 +255,16 @@ export function DashboardPanel({
                 const pct =
                   book.total_chapters > 0 ? clampPercent((book.completed_chapters / book.total_chapters) * 100) : 0;
                 const ready = book.completed_chapters >= book.total_chapters;
+                const chapterCount = book.total_chapters || 0;
                 return (
                   <div className="recent-row" key={book.id}>
                     <span className="square" />
                     <div>
                       <span className="recent-title">{book.title || "Untitled"}</span>
-                      <span className="recent-meta">{`${book.author || "Unknown"} — ${book.total_chapters || 0} chapters`}</span>
+                      <span className="recent-meta">
+                        {`${book.author || "Unknown author"} — ${chapterCount} ${chapterCount === 1 ? "chapter" : "chapters"}`}
+                      </span>
                     </div>
-                    <span className="recent-state tabular-nums">
-                      {formatDurationClockWithHours(selected?.id === book.id ? selectedDurationSec * 1000 : null)}
-                    </span>
                     <span
                       className="recent-state"
                       data-tip={ready ? undefined : "Some chapters are missing audio. Open Library to repair."}

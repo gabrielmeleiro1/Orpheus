@@ -310,7 +310,7 @@
   border-top: 1px solid var(--border);
   display: grid;
   gap: 10px;
-  grid-template-columns: 20px minmax(220px, 1fr) 82px 72px 96px;
+  grid-template-columns: 20px minmax(220px, 1fr) 72px 96px;
   min-height: 52px;
   padding: 0 10px;
   transition: background 100ms ease;

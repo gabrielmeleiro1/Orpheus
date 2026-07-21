@@ -223,6 +223,8 @@ function DashboardApp({
             etaText={conversionJob.etaText}
             stages={conversionJob.stages}
             performance={conversionJob.performanceSnapshot}
+            jobTitle={conversionJob.activeJobTitle}
+            jobAuthor={conversionJob.activeJobAuthor}
             currentChapterLabel={player.currentChapterLabel}
             playerTitle={player.title}
             playing={player.playing}
