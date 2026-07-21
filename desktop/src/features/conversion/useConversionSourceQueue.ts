@@ -187,12 +187,21 @@ export function useConversionSourceQueue({
       return;
     }
 
+    // The Title/Author fields name the paste — but only when the user typed
+    // them for it. When a queue item is selected the fields mirror that item,
+    // and mirrored values must not leak onto the new source.
+    const selectedItem = queueController.selectedQueueItem;
+    const typedTitle = queueController.titleOverride.trim();
+    const typedAuthor = queueController.authorOverride.trim();
+    const pasteTitle = selectedItem && typedTitle === selectedItem.title.trim() ? "" : typedTitle;
+    const pasteAuthor = selectedItem && typedAuthor === selectedItem.author.trim() ? "" : typedAuthor;
+
     setPasteBusy(true);
     setPasteStatus("Creating markdown source…");
     try {
       const response = await apiClient.uploadSourceText({
         text,
-        title: null,
+        title: pasteTitle || null,
       });
       const item = createQueueItem(
         response.source_handle,
@@ -200,9 +209,15 @@ export function useConversionSourceQueue({
         response.original_name,
         response.preflight,
       );
-      queueController.addPastedSource(item, {
-        selectItem: !hasSelectedSourceRef.current,
-      });
+      if (pasteTitle) {
+        item.title = pasteTitle;
+      }
+      if (pasteAuthor) {
+        item.author = pasteAuthor;
+      }
+      // A paste is always a new source; select it so the Title field and the
+      // primary action target it rather than a stale earlier row.
+      queueController.addPastedSource(item, { selectItem: true });
       setPastedText("");
       setPasteStatus("Pasted markdown source added.");
       conversionJob.clearFormError();

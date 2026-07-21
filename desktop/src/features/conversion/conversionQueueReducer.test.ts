@@ -102,6 +102,27 @@ describe("conversionQueueReducer", () => {
     expect(state.itemRevisions[item.id]).toBe(1);
   });
 
+  it("does not rename queue rows that already converted or are converting", () => {
+    // Typing a title for the NEXT paste must not retitle the row of a job
+    // that already ran — the finished book keeps its original title, so a
+    // renamed row would lie about what was converted.
+    const done = { ...createQueueItem("/tmp/done.epub", "audiobook"), title: "Original", status: "done" as const };
+    let state = conversionQueueReducer(createConversionQueueInitialState(), {
+      type: "itemsAdded",
+      items: [done],
+      selectFirst: true,
+    });
+
+    state = conversionQueueReducer(state, {
+      type: "selectedQueueItemEdited",
+      patch: { title: "Next Paste Title" },
+    });
+
+    expect(state.queueItems[0].title).toBe("Original");
+    // The shared field state still tracks what the user typed for reuse.
+    expect(state.titleOverride).toBe("Next Paste Title");
+  });
+
   it("rejects stale preflight results when source revision changed", () => {
     const item = createQueueItem("/tmp/book.epub", "audiobook");
     let state = conversionQueueReducer(createConversionQueueInitialState(), {

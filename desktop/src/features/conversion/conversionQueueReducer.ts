@@ -214,6 +214,11 @@ export function conversionQueueReducer(
         if (item.id !== state.selectedQueueId) {
           return item;
         }
+        // A row that converted (or is converting) records what that job ran
+        // with; edits meant for the next source must not rewrite its history.
+        if (item.status === "done" || item.status === "converting") {
+          return item;
+        }
         changedSourcePath = Boolean(action.patch.sourcePath && action.patch.sourcePath !== item.sourcePath);
         return {
           ...item,
