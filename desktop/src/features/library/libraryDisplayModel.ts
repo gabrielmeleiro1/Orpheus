@@ -19,7 +19,13 @@ const EMPTY_SUMMARY: BookSummaryView = {
 export function formatSummaryMeta(item: LibraryBookSummary): string {
   const mode = item.conversion_mode === "document_audio" ? "document" : "audiobook";
   const source = item.source_available ? "" : " · source missing";
-  return `${item.author || "Unknown author"} · ${mode} · ${item.completed_chapters || 0}/${item.total_chapters || 0}${source}`;
+  const completed = item.completed_chapters || 0;
+  const total = item.total_chapters || 0;
+  const chapters =
+    completed >= total
+      ? `${total} ${total === 1 ? "chapter" : "chapters"}`
+      : `${completed}/${total} chapters`;
+  return `${item.author || "Unknown author"} · ${mode} · ${chapters}${source}`;
 }
 
 // Preformatted display strings for the selected-book detail header.

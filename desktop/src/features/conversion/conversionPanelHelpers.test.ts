@@ -18,6 +18,12 @@ describe("conversion panel helpers", () => {
     expect(display.dir).toBe("");
   });
 
+  it("strips the upload prefix from a handle when no friendly label is available", () => {
+    const display = describeSourceDisplay("upload:1784641704_6851dab0_Pasted Document.md");
+    expect(display.name).toBe("Pasted Document.md");
+    expect(display.dir).toBe("");
+  });
+
   it("describes real file paths with a basename and its directory", () => {
     const display = describeSourceDisplay("/Users/me/Books/source.epub");
     expect(display.name).toBe("source.epub");

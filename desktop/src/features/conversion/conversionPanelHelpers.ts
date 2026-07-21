@@ -41,7 +41,9 @@ export function describeSourceDisplay(sourcePath: string, label?: string): Sourc
   const isHandle = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[a-z]:[\\/]/i.test(trimmed);
   const name = friendlyLabel || splitPath(trimmed);
   if (isHandle) {
-    return { name, dir: "" };
+    // Never surface the raw handle: "upload:<stamp>_<hash>_<file>" collapses
+    // to its original file name when no queue-item label is around.
+    return { name: friendlyLabel || name.replace(/^upload:\d+_[0-9a-f]+_/i, ""), dir: "" };
   }
 
   const separatorIndex = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));

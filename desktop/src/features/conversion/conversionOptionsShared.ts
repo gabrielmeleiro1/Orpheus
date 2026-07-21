@@ -46,12 +46,14 @@ export function savePersistedSettings(settings: PersistedSettings): void {
   }
 }
 
+// Labels show display names only — raw ids stay out of visible copy but
+// remain matchable through the search haystack.
 export function mapEngineOption(engine: TtsEngineOption): TermSelectOption {
   const id = String(engine.id ?? "").trim();
   const displayName = String(engine.display_name ?? engine.name ?? "").trim();
   return {
     value: id,
-    label: displayName ? `${id} - ${displayName}` : id,
+    label: displayName || id,
   };
 }
 
@@ -63,7 +65,7 @@ export function mapVoiceOption(voice: TtsVoiceOption): TermSelectOption {
 
   return {
     value: voiceId,
-    label: voiceId + (name ? ` - ${name}` : "") + (locale ? ` (${locale})` : ""),
+    label: (name || voiceId) + (locale ? ` (${locale})` : ""),
     search: [voiceId, name, locale, styleTags].join(" ").toLowerCase(),
   };
 }

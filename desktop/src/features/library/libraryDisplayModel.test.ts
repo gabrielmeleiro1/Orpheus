@@ -40,8 +40,15 @@ function detail(overrides: Partial<LibraryBookDetail> = {}): LibraryBookDetail {
 }
 
 describe("formatSummaryMeta", () => {
-  it("formats an audiobook row with completion counts", () => {
-    expect(formatSummaryMeta(summary())).toBe("Ada · audiobook · 4/10");
+  it("formats an incomplete audiobook row with completion counts", () => {
+    expect(formatSummaryMeta(summary())).toBe("Ada · audiobook · 4/10 chapters");
+  });
+
+  it("shows a plain chapter count when the book is fully converted", () => {
+    expect(formatSummaryMeta(summary({ completed_chapters: 10 }))).toBe("Ada · audiobook · 10 chapters");
+    expect(
+      formatSummaryMeta(summary({ completed_chapters: 1, total_chapters: 1 })),
+    ).toBe("Ada · audiobook · 1 chapter");
   });
 
   it("labels document audio and flags missing sources and unknown authors", () => {
@@ -49,7 +56,7 @@ describe("formatSummaryMeta", () => {
       formatSummaryMeta(
         summary({ author: null, conversion_mode: "document_audio", source_available: false }),
       ),
-    ).toBe("Unknown author · document · 4/10 · source missing");
+    ).toBe("Unknown author · document · 4/10 chapters · source missing");
   });
 });
 
