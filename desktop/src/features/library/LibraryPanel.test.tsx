@@ -143,6 +143,7 @@ describe("LibraryPanel", () => {
       expect(model.deleteSelectedBook).not.toHaveBeenCalled();
       expect(container.querySelector("#library-delete-cancel-btn")).not.toBeNull();
       expect(container.querySelector("#library-delete-confirm-btn")?.textContent).toBe("Delete book");
+      expect(container.querySelector(".library-delete-confirmation")?.textContent).toContain("cannot be undone");
 
       await act(async () => {
         (container.querySelector("#library-delete-cancel-btn") as HTMLButtonElement).click();

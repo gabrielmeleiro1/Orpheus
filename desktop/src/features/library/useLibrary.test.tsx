@@ -271,7 +271,8 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn(async () => ({ book_id: book.id, deleted: true }));
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
+    const browserConfirm = vi.fn(() => false);
+    Object.defineProperty(window, "confirm", { configurable: true, value: browserConfirm });
 
     await act(async () => {
       root = createRoot(container);
@@ -287,6 +288,7 @@ describe("useLibrary indexed total", () => {
     });
 
     expect(deleted).toBe(true);
+    expect(browserConfirm).not.toHaveBeenCalled();
     expect(deleteBook).toHaveBeenCalledWith(book.id, undefined);
     expect(getLibraryProbe().items).toEqual([]);
     expect(getLibraryProbe().indexedCount).toBe(0);

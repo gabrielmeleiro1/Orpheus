@@ -291,7 +291,7 @@ export function LibraryPanel({
                   {deleteConfirmationBookId === selected.id ? (
                     <>
                       <span className="field-hint library-delete-confirmation" role="status">
-                        Delete {selected.title || "this book"}?
+                        Delete {selected.title || "this book"}? This cannot be undone.
                       </span>
                       <button
                         id="library-delete-cancel-btn"
