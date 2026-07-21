@@ -6,6 +6,7 @@ import "./term-select.css";
 
 interface TermSelectProps {
   id: string;
+  className?: string;
   label?: string;
   value: string;
   options: TermSelectOption[];
@@ -14,7 +15,7 @@ interface TermSelectProps {
   onChange: (value: string) => void;
 }
 
-export function TermSelect({ id, label, value, options, placeholder, disabled, onChange }: TermSelectProps) {
+export function TermSelect({ id, className, label, value, options, placeholder, disabled, onChange }: TermSelectProps) {
   const menuId = `${id}-listbox`;
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : null;
@@ -39,7 +40,7 @@ export function TermSelect({ id, label, value, options, placeholder, disabled, o
   const activeDescendantId = open && highlightIndex >= 0 ? `${menuId}-option-${highlightIndex}` : undefined;
 
   return (
-    <div id={id} className="term-select" ref={rootRef}>
+    <div id={id} className={`term-select${className ? ` ${className}` : ""}`} ref={rootRef}>
       <button
         type="button"
         className="term-select-btn"

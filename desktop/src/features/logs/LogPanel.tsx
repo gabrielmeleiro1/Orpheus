@@ -126,7 +126,7 @@ export function LogPanel({ logs }: LogPanelProps) {
       </div>
 
       <div className="log-toolbar" aria-label="Log filters">
-        <div className="seg-control log-level-control" role="group" aria-label="Filter by level">
+        <div className="seg-control log-level-control log-filter-control" role="group" aria-label="Filter by level">
           {LEVEL_SEGMENTS.map(({ value, label, tip }) => {
             const count = levelCounts[value];
             return (
@@ -148,6 +148,7 @@ export function LogPanel({ logs }: LogPanelProps) {
 
         <TermSelect
           id="log-category-filter"
+          className="log-filter-control"
           label="Filter by source"
           value={category}
           options={CATEGORY_OPTIONS}
@@ -157,7 +158,7 @@ export function LogPanel({ logs }: LogPanelProps) {
 
         <input
           id="log-search"
-          className="field-input log-search"
+          className="field-input log-search log-filter-control"
           type="search"
           placeholder="Search…"
           aria-label="Search log messages"
