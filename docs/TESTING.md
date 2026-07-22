@@ -11,7 +11,7 @@ environment-dependent work stays opt-in.
 
 | Tier | Command | What it proves | What it does not prove |
 | --- | --- | --- | --- |
-| Contract | `python run_tests.py --contract` | Python/core pytest gate with coverage floor (`--cov-fail-under=69`), strict markers, and the default marker filter (`not property`, `not benchmark`, `not slow`, `not ui`) | Desktop build, Tauri/Rust shell, packaged sidecar, release installer, real GPU hardware, property fuzzing, long benchmarks |
+| Contract | `python run_tests.py --contract` | Python/core pytest gate with coverage floor (`--cov-fail-under=85`), strict markers, and the default marker filter (`not property`, `not benchmark`, `not slow`, `not ui`) | Desktop build, Tauri/Rust shell, packaged sidecar, release installer, real GPU hardware, property fuzzing, long benchmarks |
 | Smoke | `python run_tests.py` | Curated script/pytest modules in `SMOKE_TEST_MODULES` for quick local iteration | Full contract coverage, desktop release matrix, optional suites |
 | Focused pytest | `python -m pytest --no-cov <paths>` | Targeted regression for one subsystem without global coverage enforcement | Cross-surface release readiness |
 | Property | `pytest -m property` | Invariant/fuzz coverage for parsers and cleaners | Runtime performance or UI behavior |
@@ -49,7 +49,7 @@ python -m pytest tests -m "not property and not benchmark and not slow and not u
 The contract keeps `pytest.ini` defaults intact, including:
 - `--strict-markers`
 - coverage reporting
-- `--cov-fail-under=69`
+- `--cov-fail-under=85`
 
 Coverage output is generated under `.artifacts/coverage/` so contract runs do
 not leave `htmlcov/`, `coverage.xml`, or `.coverage` at the repository root.

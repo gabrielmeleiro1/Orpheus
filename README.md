@@ -134,3 +134,16 @@ and `desktop/src-tauri/Cargo.lock`. Do not commit generated runtime/build
 outputs such as `.venv/`, `.env.local`, `data/*.db`, `output/`, `temp/`,
 `desktop/node_modules/`, `desktop/dist/`, `desktop/src-tauri/target/`, or
 `desktop/src-tauri/binaries/`; these are ignored in `.gitignore`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, verification gates, and PR
+conventions, and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
+
+## License
+
+The source code is licensed under the [MIT License](LICENSE). Packaged
+application builds bundle third-party components under other licenses,
+including AGPL-3.0 (PyMuPDF, EbookLib) and GPL-3.0 (espeak-ng) — see
+[THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) before redistributing
+binaries.
