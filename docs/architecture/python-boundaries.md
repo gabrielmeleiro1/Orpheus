@@ -1,8 +1,8 @@
 # Python Package Boundaries
 
-Inventory for Workstream 1 of `docs/CODEBASE_CLEANUP_PLAN.md`. Generated from
-static import analysis (`ast` walk of `modules/**/*.py`) plus spot reads of
-entry points. No production code was changed.
+Package boundary inventory for the Python backend. Generated from static
+import analysis (`ast` walk of `modules/**/*.py`) plus spot reads of entry
+points.
 
 ## Layered Dependency Map
 

@@ -1,8 +1,7 @@
 # Desktop and Frontend Boundaries
 
-Inventory for Workstream 1 of `docs/CODEBASE_CLEANUP_PLAN.md`. Covers
-`desktop/src`, `desktop/src-tauri`, and how the React shell talks to the Python
-backend. No production code was changed.
+Package boundary inventory for the desktop shell. Covers `desktop/src`,
+`desktop/src-tauri`, and how the React shell talks to the Python backend.
 
 ## High-Level Shape
 

@@ -1,8 +1,8 @@
 # Developer Tooling Boundaries
 
-Inventory for Workstream 1 of `docs/CODEBASE_CLEANUP_PLAN.md`. Covers
-`scripts/`, `tools/`, `benchmarks/`, git hooks, desktop build helpers, and the
-`python -m orpheus bench` entry point. No production code was changed.
+Package boundary inventory for developer tooling. Covers `scripts/`, `tools/`,
+`benchmarks/`, git hooks, desktop build helpers, and the
+`python -m orpheus bench` entry point.
 
 ## Tooling Layer Map
 

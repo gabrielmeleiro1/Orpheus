@@ -29,6 +29,7 @@ venv/
 .artifacts/
 docs/plans/
 .claude/
+scripts/sync_to_desktop.sh
 
 # Coverage and test output
 .coverage
@@ -51,6 +52,7 @@ tests/data/*.db-wal
 data/*.db
 data/*.db-shm
 data/*.db-wal
+data/sources/
 output/
 temp/
 desktop/release/
