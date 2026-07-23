@@ -23,9 +23,14 @@ _PAGE_NUMBER_RESIDUE_RE = re.compile(r"^\s*\d{1,4}[Il]\s*$")
 _LINE_BREAK_HYPHEN_RE = re.compile(
     r"(?<!-)\b(?P<prefix>[A-Za-z]{2,})-\s*\n\s*(?P<suffix>[a-z]{3,})\b"
 )
+# The left-hand compound is matched atomically (lookahead capture + backref)
+# and its hyphenated segments are bounded, so a hyphen-dense page cannot drive
+# the quadratic backtracking the naive ``[A-Za-z]+(?:-[A-Za-z]+)*`` form causes.
+# ``run`` keeps the trailing hyphen; the known-repair dictionary keys never
+# exceed a couple of hyphenated segments, so the {1,4}/{0,4} bounds are ample.
 _KNOWN_HYPHENATED_LINE_BREAK_RE = re.compile(
-    r"\b(?P<left>[A-Za-z]+(?:-[A-Za-z]+)*)-\s*\n\s*"
-    r"(?P<right>[a-z]+(?:-[a-z]+)*)\b"
+    r"\b(?=(?P<run>(?:[A-Za-z]+-){1,4}))(?P=run)\s*\n\s*"
+    r"(?P<right>[a-z]+(?:-[a-z]+){0,4})\b"
 )
 _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS = {
     "alto-relievo": "alto-relievo",
@@ -205,12 +210,12 @@ def repair_line_break_hyphenation(text: str, *, known_corpus_repairs: bool = Fal
         known_repairs = {**known_repairs, **_KNOWN_CORPUS_LINE_BREAK_REPAIRS}
 
     def _repair_known_compound(match: re.Match[str]) -> str:
-        left = match.group("left")
-        candidate = f"{left}-{match.group('right')}".casefold()
+        run = match.group("run")  # includes the trailing line-break hyphen
+        candidate = f"{run}{match.group('right')}".casefold()
         repair = known_repairs.get(candidate)
         if repair is None:
             return match.group(0)
-        if left[:1].isupper():
+        if run[:1].isupper():
             return repair[:1].upper() + repair[1:]
         return repair
 

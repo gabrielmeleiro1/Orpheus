@@ -1986,6 +1986,20 @@ def test_ingest_source_dispatches_markdown_parser_for_md(tmp_path):
     mock_markdown_parser.assert_called_once_with(source_path)
 
 
+def test_ingest_source_describes_extensionless_file_clearly(tmp_path):
+    source_path = tmp_path / "README"
+    source_path.write_text(
+        "plain text without a supported extension", encoding="utf-8"
+    )
+    pipeline = MagicMock()
+
+    with pytest.raises(
+        ValueError,
+        match=r"Unsupported file type: \(no extension\).*\.pdf.*\.epub.*\.txt.*\.md",
+    ):
+        ingest_source(pipeline, source_path)
+
+
 def test_batch_output_dir_is_registered_for_temp_cleanup(tmp_path):
     """The per-chunk WAV directory must be tracked so cleanup removes it.
 

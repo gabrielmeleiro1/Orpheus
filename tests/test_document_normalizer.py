@@ -1,6 +1,9 @@
 import logging
 import re
 
+import pytest
+
+from modules.errors import ChapterTooLongError
 from modules.ingestion.models import Chapter, Document
 from modules.text.document_normalizer import normalize_extracted_document
 
@@ -330,6 +333,130 @@ def test_normalizer_keeps_document_when_filtering_would_remove_all_chapters(capl
     assert [chapter.title for chapter in normalized.chapters] == ["A Poem", "Copyright"]
     assert normalized.skipped_non_prose_sections == []
     assert any("unfiltered" in record.getMessage() for record in caplog.records)
+
+
+def test_normalizer_keeps_single_verse_chapter_instead_of_deleting_it(caplog):
+    # Finding 1: a single free-verse poem (one chapter) is low_prose_density and
+    # would filter to nothing, aborting the conversion. A lone readable chapter
+    # that is merely verse/list-shaped must be kept, not deleted.
+    document = Document(title="Lone Poem", chapters=[_verse_chapter(1, "Aubade")])
+
+    with caplog.at_level(logging.WARNING):
+        normalized = normalize_extracted_document(document, source_type="txt")
+
+    assert [chapter.title for chapter in normalized.chapters] == ["Aubade"]
+    assert normalized.chapters[0].content.strip()
+
+
+def test_normalizer_still_filters_lone_copyright_page_to_nothing():
+    # A standalone pure back-matter section (a copyright page on its own) is
+    # legitimately allowed to filter to nothing -- the single-chapter safety net
+    # must not resurrect genuine back matter.
+    document = Document(
+        title="Front Matter Only",
+        chapters=[Chapter(number=1, title="Copyright", content=_SHORT_COPYRIGHT)],
+    )
+
+    normalized = normalize_extracted_document(document, source_type="txt")
+
+    assert normalized.chapters == []
+    assert [section["reason"] for section in normalized.skipped_non_prose_sections] == [
+        "copyright"
+    ]
+
+
+def test_normalizer_keeps_minority_poem_chapter_in_prose_book(caplog):
+    # Finding 2: a lone embedded poem chapter inside a multi-chapter prose novel
+    # must survive; deleting it silently loses audio content.
+    prose = "The room was quiet and the evening settled over the town. " * 8
+    chapters = [
+        _verse_chapter(10, "Interlude")
+        if index == 10
+        else Chapter(number=index, title=f"Chapter {index}", content=prose)
+        for index in range(1, 21)
+    ]
+    document = Document(title="A Novel with an Interlude", chapters=chapters)
+
+    with caplog.at_level(logging.WARNING):
+        normalized = normalize_extracted_document(document, source_type="txt")
+
+    titles = [chapter.title for chapter in normalized.chapters]
+    assert len(normalized.chapters) == 20
+    assert "Interlude" in titles
+    assert normalized.skipped_non_prose_sections == []
+
+
+def test_normalizer_splits_overlong_single_paragraph_at_sentence_boundaries():
+    # Finding 4: a hard-wrapped single paragraph above the word cap must fall
+    # back to sentence splitting instead of raising ChapterTooLongError.
+    cap = 40
+    sentences = [
+        f"Sentence number {index} tells a small part of the long story here."
+        for index in range(1, 30)
+    ]
+    content = " ".join(sentences)
+    assert "\n\n" not in content
+    assert len(content.split()) > cap
+    document = Document(
+        title="Wrapped", chapters=[Chapter(number=1, title="Wrapped", content=content)]
+    )
+
+    normalized = normalize_extracted_document(
+        document,
+        source_type="txt",
+        max_chapter_words=cap,
+        skip_non_prose_sections=False,
+    )
+
+    assert len(normalized.chapters) >= 2
+    assert all(len(chapter.content.split()) <= cap for chapter in normalized.chapters)
+    joined = " ".join(
+        " ".join(chapter.content.split()) for chapter in normalized.chapters
+    )
+    for index in (1, 15, 29):
+        assert f"Sentence number {index}" in joined
+
+
+def test_normalizer_splits_overlong_dialogue_with_curly_quotes():
+    cap = 24
+    dialogue = " ".join(
+        f"“This is dialogue sentence number {index}.” “The reply remains readable too.”"
+        for index in range(1, 20)
+    )
+    document = Document(
+        title="Dialogue",
+        chapters=[Chapter(number=1, title="Dialogue", content=dialogue)],
+    )
+
+    normalized = normalize_extracted_document(
+        document,
+        source_type="txt",
+        max_chapter_words=cap,
+        skip_non_prose_sections=False,
+    )
+
+    assert len(normalized.chapters) >= 2
+    assert all(len(chapter.content.split()) <= cap for chapter in normalized.chapters)
+    joined = " ".join(chapter.content for chapter in normalized.chapters)
+    assert "dialogue sentence number 1" in joined
+    assert "dialogue sentence number 19" in joined
+
+
+def test_normalizer_still_raises_for_single_overlong_sentence():
+    cap = 10
+    content = "word " * 60  # 60 words, no sentence boundaries at all
+    document = Document(
+        title="Blob",
+        chapters=[Chapter(number=1, title="Blob", content=content.strip())],
+    )
+
+    with pytest.raises(ChapterTooLongError):
+        normalize_extracted_document(
+            document,
+            source_type="txt",
+            max_chapter_words=cap,
+            skip_non_prose_sections=False,
+        )
 
 
 def test_normalizer_disables_low_prose_rule_for_verse_heavy_books():

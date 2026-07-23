@@ -385,7 +385,8 @@ class _EPUBSectionBuilder:
 
     def _read_toc_entries(self) -> list[_TOCEntry]:
         entries: list[_TOCEntry] = []
-        for order, node in enumerate(_flatten_toc_nodes(getattr(self.book, "toc", []) or [])):
+        toc = _normalize_toc(getattr(self.book, "toc", None))
+        for order, node in enumerate(_flatten_toc_nodes(toc)):
             title = str(getattr(node, "title", "") or "").strip()
             href = str(getattr(node, "href", "") or "").strip()
 
@@ -690,6 +691,20 @@ class _DocumentResolver:
         if len(suffix_matches) == 1:
             return suffix_matches[0]
         return None
+
+
+def _normalize_toc(toc: Any) -> list[Any]:
+    """Normalize ``book.toc`` to a list of nodes.
+
+    ebooklib usually exposes a list/tuple, but a nav-only spine EPUB can yield a
+    bare, non-iterable ``Link``. Wrapping a lone node keeps ``_flatten_toc_nodes``
+    from raising ``TypeError: 'Link' object is not iterable`` out of the parser.
+    """
+    if toc is None:
+        return []
+    if isinstance(toc, (list, tuple)):
+        return list(toc)
+    return [toc]
 
 
 def _flatten_toc_nodes(nodes: Iterable[Any]) -> Iterable[Any]:

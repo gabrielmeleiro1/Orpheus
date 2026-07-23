@@ -55,7 +55,11 @@ def ingest_source(runtime: Any, source_path: Path):
 
         parser = MarkdownParser(source_path)
     else:
-        raise ValueError(f"Unsupported file type: {suffix}")
+        described = suffix or "(no extension)"
+        raise ValueError(
+            f"Unsupported file type: {described}. "
+            "Supported formats are .pdf, .epub, .txt, and .md."
+        )
 
     runtime.log_verbose("[PARSER] Parsing content...", "process")
     document = parser.parse()

@@ -929,6 +929,32 @@ def test_epub_extract_chapters_reapplies_options_after_cached_parse(tmp_path, mo
         parser.extract_chapters(max_chapter_words=2)
 
 
+def test_build_epub_sections_handles_bare_link_toc() -> None:
+    # Finding 5: ebooklib can hand back a bare, non-iterable Link for a nav-only
+    # spine EPUB. build_epub_sections must not let a raw TypeError escape.
+    from ebooklib import epub
+
+    from modules.ingestion.epub_sections import build_epub_sections
+
+    book = epub.EpubBook()
+    book.set_identifier("nav-only-spine")
+    chapter = epub.EpubHtml(title="The Only Story", file_name="story.xhtml", lang="en")
+    chapter.id = "story"
+    chapter.content = (
+        "<html><body><h1>The Only Story</h1><p>"
+        + ("This nav-only EPUB has a single readable chapter. " * 10)
+        + "</p></body></html>"
+    )
+    book.add_item(chapter)
+    book.spine = ["story"]
+    book.toc = epub.Link("story.xhtml", "The Only Story", "story")
+
+    sections = build_epub_sections(book)
+
+    assert [section.title for section in sections] == ["The Only Story"]
+    assert "single readable chapter" in sections[0].content
+
+
 if __name__ == "__main__":
     success = test_epub_parser()
     sys.exit(0 if success else 1)

@@ -11,6 +11,7 @@ import string
 from modules.errors import ChapterTooLongError
 from modules.ingestion.models import Chapter, Document
 from modules.ingestion.content_filter import (
+    ContentClassification,
     SkippedSection,
     classify_chapter_content,
     filter_audiobook_chapters,
@@ -65,6 +66,63 @@ _EPUB_NON_NARRATIVE_TITLE_RE = re.compile(
     r")$",
     re.IGNORECASE,
 )
+# Titles that corroborate a low-prose chapter being genuine front/back matter
+# rather than an embedded poem/list/screenplay. Only these justify deleting an
+# otherwise-readable low-prose chapter that sits inside a prose book.
+_LOW_PROSE_BACK_MATTER_TITLE_RE = re.compile(
+    r"^(?:"
+    r"(?:table\s+of\s+)?contents|toc|"
+    r"index|name\s+index|subject\s+index|"
+    r"copyright(?:\s+page)?|legal|imprint|colophon|"
+    r"bibliography|references|works\s+cited|"
+    r"acknowledge?ments?|"
+    r"glossary|"
+    r"notes?|endnotes?|footnotes?|"
+    r"appendix(?:es|\s+[a-z0-9]+)?|appendices|"
+    r"permissions?|credits?|"
+    r"also\s+by(?:\s+.+)?|"
+    r"list\s+of\s+(?:maps|figures|illustrations|tables)|"
+    r"about\s+the\s+(?:author|publisher)"
+    r")$",
+    re.IGNORECASE,
+)
+# classify_chapter_content reasons that mark genuine non-narrative matter. A
+# low-prose chapter is readable content wrongly shaped like verse/lists, so it
+# is deliberately excluded here.
+_BACK_MATTER_REASONS = frozenset(
+    {
+        "copyright",
+        "table_of_contents",
+        "list_of_maps",
+        "index",
+        "references",
+        "epub_non_narrative",
+    }
+)
+
+
+def _is_low_prose_back_matter_title(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", title or "").strip().strip(" .:-–—")
+    return bool(normalized and _LOW_PROSE_BACK_MATTER_TITLE_RE.match(normalized))
+
+
+def _has_prose_body(chapters: list[Chapter]) -> bool:
+    """True when at least one chapter is genuine narrative prose.
+
+    A lone low-prose chapter (a poem/list) is only protected from deletion when
+    it sits *among* real prose; a book that is nothing but verse and back matter
+    is left to the normal filter plus the all-removed safety net.
+    """
+    for chapter in chapters:
+        content = str(chapter.content)
+        if not content.strip():
+            continue
+        classification = classify_chapter_content(
+            str(chapter.title).strip(), content, enable_low_prose_density=True
+        )
+        if not classification.should_skip:
+            return True
+    return False
 
 
 def _normalize_repeated_candidate(line: str) -> str:
@@ -316,6 +374,48 @@ def _paragraphs_for_split(content: str) -> list[str]:
     return [paragraph.strip() for paragraph in re.split(r"\n\s*\n+", content) if paragraph.strip()]
 
 
+# Mirrors the TTS chunker's sentence-boundary detector so a single hard-wrapped
+# paragraph (OCR/export text without blank lines) can still be split rather than
+# aborting the whole conversion.
+_SENTENCE_BOUNDARY_RE = re.compile(
+    r'(?<=[.!?])["\'”’]?\s+(?=[A-Z"\'“‘])'
+)
+
+
+def _sentences_for_split(paragraph: str) -> list[str]:
+    return [
+        sentence.strip()
+        for sentence in _SENTENCE_BOUNDARY_RE.split(paragraph)
+        if sentence.strip()
+    ]
+
+
+def _split_units_for_overlong_chapter(
+    chapter: Chapter, paragraphs: list[str], *, max_chapter_words: int
+) -> list[str]:
+    """Return packable units, falling back to sentence splitting for a single
+    over-cap paragraph. Only a lone sentence above the cap is still fatal."""
+    units: list[str] = []
+    for paragraph in paragraphs:
+        if len(paragraph.split()) <= max_chapter_words:
+            units.append(paragraph)
+            continue
+
+        sentences = _sentences_for_split(paragraph)
+        if len(sentences) <= 1:
+            raise ChapterTooLongError(
+                chapter.number, len(paragraph.split()), max_chapter_words
+            )
+        for sentence in sentences:
+            sentence_words = len(sentence.split())
+            if sentence_words > max_chapter_words:
+                raise ChapterTooLongError(
+                    chapter.number, sentence_words, max_chapter_words
+                )
+            units.append(sentence)
+    return units
+
+
 def _split_overlong_chapter(chapter: Chapter, *, max_chapter_words: int) -> list[Chapter]:
     word_count = len(str(chapter.content).split())
     if word_count <= max_chapter_words:
@@ -325,15 +425,14 @@ def _split_overlong_chapter(chapter: Chapter, *, max_chapter_words: int) -> list
     if not paragraphs:
         return [chapter]
 
-    for paragraph in paragraphs:
-        paragraph_word_count = len(paragraph.split())
-        if paragraph_word_count > max_chapter_words:
-            raise ChapterTooLongError(chapter.number, paragraph_word_count, max_chapter_words)
+    split_units = _split_units_for_overlong_chapter(
+        chapter, paragraphs, max_chapter_words=max_chapter_words
+    )
 
     parts: list[str] = []
     current: list[str] = []
     current_words = 0
-    for paragraph in paragraphs:
+    for paragraph in split_units:
         paragraph_words = len(paragraph.split())
         if current and current_words + paragraph_words > max_chapter_words:
             parts.append("\n\n".join(current))
@@ -349,7 +448,7 @@ def _split_overlong_chapter(chapter: Chapter, *, max_chapter_words: int) -> list
         return [chapter]
 
     LOGGER.info(
-        "Split chapter %s (%s words) into %s parts at paragraph boundaries",
+        "Split chapter %s (%s words) into %s parts at paragraph/sentence boundaries",
         chapter.number,
         word_count,
         len(parts),
@@ -370,7 +469,8 @@ def normalize_extracted_document(
     """Return a copy of ``document`` after parser-specific deterministic cleanup.
 
     Chapters above ``max_chapter_words`` are split at paragraph boundaries
-    before downstream chunking/validation. A single paragraph above the cap
+    before downstream chunking/validation; a single over-cap paragraph falls
+    back to sentence-boundary splitting. Only a single sentence above the cap
     remains pathological and raises ``ChapterTooLongError``.
     """
     if not is_dataclass(document):
@@ -390,6 +490,7 @@ def normalize_extracted_document(
     enable_low_prose_density = not (
         skip_non_prose_sections and _is_verse_heavy(chapters)
     )
+    has_prose_body = skip_non_prose_sections and _has_prose_body(chapters)
 
     normalized_chapters, skipped_sections = _normalize_chapters(
         chapters,
@@ -399,19 +500,25 @@ def normalize_extracted_document(
         enable_low_prose_density=enable_low_prose_density,
         repeated_headers=repeated_headers,
         max_chapter_words=max_chapter_words,
+        has_prose_body=has_prose_body,
     )
 
     # A non-prose filter that deletes the entire book is always wrong for an
     # audiobook app. If filtering would remove every chapter of a multi-chapter
     # book while the source had readable content, keep the document unfiltered
     # and warn instead. A single standalone back-matter section (an index or
-    # copyright page on its own) is still allowed to filter down to nothing.
+    # copyright page on its own) is still allowed to filter down to nothing --
+    # but a single readable chapter that is merely verse/list-shaped must be
+    # kept, so a lone chapter dropped only for low prose density also resurrects.
     had_readable_content = any(str(chapter.content).strip() for chapter in chapters)
+    removed_only_readable_low_prose = bool(skipped_sections) and all(
+        section.reason not in _BACK_MATTER_REASONS for section in skipped_sections
+    )
     if (
         skip_non_prose_sections
         and had_readable_content
-        and len(chapters) > 1
         and not normalized_chapters
+        and (len(chapters) > 1 or removed_only_readable_low_prose)
     ):
         LOGGER.warning(
             "Non-prose filtering would remove all %d chapters of %r; "
@@ -456,6 +563,7 @@ def _normalize_chapters(
     enable_low_prose_density: bool,
     repeated_headers: set[str],
     max_chapter_words: int,
+    has_prose_body: bool = False,
 ) -> tuple[list[Chapter], list[SkippedSection]]:
     skipped_sections: list[SkippedSection] = []
     normalized_chapters: list[Chapter] = []
@@ -466,6 +574,21 @@ def _normalize_chapters(
             classification = classify_chapter_content(
                 title, content, enable_low_prose_density=enable_low_prose_density
             )
+            # An isolated low-prose chapter (a lone poem/list/screenplay) inside
+            # a prose book is readable audio content, not back matter, so keep it
+            # unless its title corroborates it being genuine front/back matter.
+            if (
+                classification.should_skip
+                and classification.reason == "low_prose_density"
+                and has_prose_body
+                and not _is_low_prose_back_matter_title(title)
+            ):
+                LOGGER.warning(
+                    "Keeping low-prose chapter %r among prose chapters instead of "
+                    "deleting it as non-prose.",
+                    title,
+                )
+                classification = ContentClassification(False, None, classification.confidence)
             if classification.should_skip:
                 skipped_sections.append(
                     SkippedSection(
@@ -511,8 +634,13 @@ def _normalize_chapters(
 
     renumbered_chapters = _renumber(normalized_chapters)
     if apply_non_prose_filter:
+        # Low-prose dropping was already decided per-chapter above (with the
+        # among-prose protection); disabling it here keeps the second pass from
+        # silently re-deleting a protected poem while still re-checking the
+        # structural back-matter classifiers on normalized content.
+        second_pass_low_prose = enable_low_prose_density and not has_prose_body
         retained_chapters, filtered_skipped = filter_audiobook_chapters(
-            renumbered_chapters, enable_low_prose_density=enable_low_prose_density
+            renumbered_chapters, enable_low_prose_density=second_pass_low_prose
         )
         skipped_sections.extend(filtered_skipped)
         renumbered_chapters = retained_chapters

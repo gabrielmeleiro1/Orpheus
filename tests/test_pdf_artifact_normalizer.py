@@ -94,6 +94,32 @@ def test_known_corpus_policies_opt_in_strips_inline_footnote_blocks() -> None:
     assert "Body after." in normalized[0]["text"]
 
 
+def test_repair_line_break_hyphenation_is_fast_on_pathological_page() -> None:
+    # Finding 3: a hyphen-dense page must not trigger quadratic backtracking.
+    import time
+
+    from modules.ingestion.pdf_artifact_normalizer import repair_line_break_hyphenation
+
+    text = "word-" * 8000  # trailing hyphens, no line break to satisfy the match
+
+    start = time.perf_counter()
+    repair_line_break_hyphenation(text)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 1.0, f"hyphenation repair took {elapsed:.3f}s"
+
+
+def test_repair_line_break_hyphenation_still_joins_known_compounds() -> None:
+    from modules.ingestion.pdf_artifact_normalizer import repair_line_break_hyphenation
+
+    # Single-segment known compound split across a line break.
+    assert repair_line_break_hyphenation("photo-\nreconnaissance") == "photo-reconnaissance"
+    # Multi-segment known compound.
+    assert repair_line_break_hyphenation("coming-into-\nbeing") == "coming-into-being"
+    # Capitalized prefix is preserved on repair.
+    assert repair_line_break_hyphenation("Auto-\npilot") == "Auto-pilot"
+
+
 def test_default_line_repairs_do_not_apply_corpus_specific_rewrites() -> None:
     from modules.ingestion.pdf_artifact_normalizer import repair_line_break_hyphenation
 
