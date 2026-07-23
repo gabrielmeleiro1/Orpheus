@@ -166,6 +166,99 @@ def test_start_conversion_rejects_overlong_title_before_controller_call():
     assert controller.called is False
 
 
+@pytest.mark.parametrize("non_finite", ["NaN", "Infinity", "-Infinity"])
+def test_non_finite_api_numbers_return_json_safe_422(non_finite):
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(
+                temp_dir=Path("temp"), output_dir=Path("output")
+            )
+            self.called = False
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.called = True
+            raise AssertionError("validation must reject before controller call")
+
+        def update_book_playback_position(self, book_id, position_sec):
+            _ = (book_id, position_sec)
+            self.called = True
+            raise AssertionError("validation must reject before controller call")
+
+    controller = _Controller()
+    client = _make_client_with_controller(controller)
+
+    conversion = client.post(
+        "/api/conversions",
+        content=(
+            '{"source_path":"/tmp/book.pdf","runtime_options":'
+            f'{{"speed":{non_finite}}}}}'
+        ),
+        headers={"content-type": "application/json"},
+    )
+    playback = client.put(
+        "/api/library/1/playback-position",
+        content=f'{{"position_sec":{non_finite}}}',
+        headers={"content-type": "application/json"},
+    )
+
+    assert conversion.status_code == 422
+    assert playback.status_code == 422
+    assert controller.called is False
+    json.dumps(conversion.json(), allow_nan=False)
+    json.dumps(playback.json(), allow_nan=False)
+
+
+@pytest.mark.parametrize("speed", [0.49, 3.01, -1.0, 1e300])
+def test_conversion_speed_bounds_reject_extremes_before_controller_call(speed):
+    class _Controller:
+        def __init__(self):
+            self.config = SimpleNamespace(
+                temp_dir=Path("temp"), output_dir=Path("output")
+            )
+            self.called = False
+
+        def start_conversion(self, **kwargs):  # noqa: ANN003
+            self.called = True
+            raise AssertionError("validation must reject before controller call")
+
+    controller = _Controller()
+    response = _make_client_with_controller(controller).post(
+        "/api/conversions",
+        json={
+            "source_path": "/tmp/book.pdf",
+            "runtime_options": {"speed": speed},
+        },
+    )
+
+    assert response.status_code == 422
+    assert controller.called is False
+
+
+def test_options_routes_translate_controller_errors():
+    class _Controller:
+        def list_openai_models(self, *, api_key):
+            _ = api_key
+            raise RuntimeError("provider rejected key")
+
+        def warmup_parallel_worker_recommendation(self, **kwargs):  # noqa: ANN003
+            _ = kwargs
+            raise ValueError("unknown engine")
+
+    client = _make_client_with_controller(_Controller())
+
+    openai = client.post(
+        "/api/options/openai/models", json={"api_key": "sk-invalid"}
+    )
+    warmup = client.post(
+        "/api/options/parallel/warmup", json={"tts_engine": "not-an-engine"}
+    )
+
+    assert openai.status_code == 502
+    assert openai.json() == {"detail": "provider rejected key"}
+    assert warmup.status_code == 400
+    assert warmup.json() == {"detail": "unknown engine"}
+
+
 def test_conversion_routes_forward_full_frontend_selection_payloads_on_start_and_repair():
     class _Status:
         value = "running"

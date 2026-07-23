@@ -594,6 +594,19 @@ pub(crate) fn build_dev_launch_config_for_root(
     ))
 }
 
+/// Base backend environment plus the debug-only dev-CORS opt-in.
+///
+/// Debug builds (`tauri dev`) serve the frontend from the Vite dev server, so
+/// the backend must allow `http://localhost:5173` in CORS. Release builds
+/// (`tauri build`) compile with `debug_assertions` off and never set this flag,
+/// so packaged backends only accept the `tauri.localhost` origin.
+fn backend_launch_env(runtime_paths: &DesktopRuntimePaths) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = runtime_paths.as_env().into_iter().collect();
+    #[cfg(debug_assertions)]
+    env.push(("ORPHEUS_DESKTOP_DEV".to_string(), "1".to_string()));
+    env
+}
+
 fn build_dev_launch_config_with_python(
     runtime_paths: &DesktopRuntimePaths,
     project_root: &Path,
@@ -610,7 +623,7 @@ fn build_dev_launch_config_with_python(
             "0".to_string(),
         ],
         cwd: Some(project_root.to_path_buf()),
-        env: runtime_paths.as_env().into_iter().collect(),
+        env: backend_launch_env(runtime_paths),
     }
 }
 
@@ -636,7 +649,7 @@ pub fn build_sidecar_launch_config(
             "0".to_string(),
         ],
         cwd: None,
-        env: runtime_paths.as_env().into_iter().collect(),
+        env: backend_launch_env(runtime_paths),
     }
 }
 

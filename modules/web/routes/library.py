@@ -6,7 +6,7 @@ import mimetypes
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import FileResponse
 
 from modules.web.deps import ControllerDep, call_with_http_errors
@@ -30,6 +30,10 @@ _AUDIO_MEDIA_TYPES = {
 
 
 class PlaybackPositionRequest(BaseModel):
+    # Reject NaN/±Infinity: they otherwise 500 the handler or persist a
+    # non-finite position that later serializes as invalid JSON.
+    model_config = ConfigDict(allow_inf_nan=False)
+
     position_sec: float = Field(..., ge=0)
 
 

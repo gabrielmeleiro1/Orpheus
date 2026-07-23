@@ -42,6 +42,17 @@ MODEL_GROUPS: Mapping[str, tuple[str, ...]] = {
     "cleaner-cuda": (CLEANER_CUDA_DEFAULT_MODEL,),
 }
 
+# Pinned Hugging Face commit revisions for every curated model. Each download is
+# fetched at exactly this commit, so a fresh install is reproducible and an
+# upstream repo update (or compromise) cannot silently change what ships. Bump a
+# SHA here deliberately when adopting a new model revision.
+MODEL_REVISIONS: Mapping[str, str] = {
+    KOKORO_MLX_DEFAULT_MODEL_REPO: "a71e4d38b236d968966a2002c4c895dbd12b1c3c",
+    KOKORO_PACKAGE_DEFAULT_MODEL: "f3ff3571791e39611d31c381e3a41a3af07b4987",
+    CLEANER_MLX_DEFAULT_MODEL: "7f0dc925e0d0afb0322d96f9255cfddf2ba5636e",
+    CLEANER_CUDA_DEFAULT_MODEL: "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+}
+
 
 @dataclass(frozen=True)
 class _ReceiptFile:
@@ -66,6 +77,11 @@ def _normalize_model_id(model_id: str) -> str:
             f"Model must be a Hugging Face repository id, not a URL: {model_id!r}."
         )
     return normalized_model_id
+
+
+def pinned_revision_for(model_id: str) -> str | None:
+    """Return the pinned commit revision for a curated model, if one exists."""
+    return MODEL_REVISIONS.get(_normalize_model_id(model_id))
 
 
 def _deduplicate_model_ids(model_ids: Iterable[str]) -> tuple[str, ...]:
@@ -548,21 +564,27 @@ def download_model_snapshot(
         ) from exc
 
     kwargs: dict[str, object] = {"repo_id": model_id}
+    pinned_revision = pinned_revision_for(model_id)
+    if pinned_revision is not None:
+        kwargs["revision"] = pinned_revision
     if cache_dir is not None:
         kwargs["cache_dir"] = str(cache_dir)
     if local_dir is not None:
         kwargs["local_dir"] = str(local_dir)
 
     snapshot_path = Path(snapshot_download(**kwargs))
+    # Record the trusted pinned revision when we have one; otherwise fall back to
+    # the resolved snapshot directory name (the commit sha under snapshots/).
+    receipt_revision = pinned_revision or (
+        snapshot_path.name.lower()
+        if snapshot_path.parent.name == "snapshots"
+        and _REVISION_RE.fullmatch(snapshot_path.name.lower())
+        else None
+    )
     write_download_receipt(
         snapshot_path,
         model_id=model_id,
-        revision=(
-            snapshot_path.name.lower()
-            if snapshot_path.parent.name == "snapshots"
-            and _REVISION_RE.fullmatch(snapshot_path.name.lower())
-            else None
-        ),
+        revision=receipt_revision,
     )
     return snapshot_path
 

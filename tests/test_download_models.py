@@ -319,10 +319,51 @@ def test_download_model_snapshot_passes_cache_and_local_dirs(
     assert calls == [
         {
             "repo_id": "hexgrad/Kokoro-82M",
+            "revision": download_models.MODEL_REVISIONS["hexgrad/Kokoro-82M"],
             "cache_dir": str(tmp_path / "cache"),
             "local_dir": str(tmp_path / "bundle"),
         }
     ]
+
+
+def test_every_curated_model_is_pinned_to_a_commit_revision() -> None:
+    pinned = download_models.MODEL_REVISIONS
+    curated = {
+        model_id
+        for model_ids in download_models.MODEL_GROUPS.values()
+        for model_id in model_ids
+    }
+    assert curated <= set(pinned), curated - set(pinned)
+    for model_id, revision in pinned.items():
+        assert download_models._REVISION_RE.fullmatch(revision), (model_id, revision)
+
+
+def test_pinned_model_download_passes_revision_and_records_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_id = "hexgrad/Kokoro-82M"
+    expected_revision = download_models.MODEL_REVISIONS[model_id]
+    calls: list[dict[str, object]] = []
+    snapshot = tmp_path / "models--hexgrad--Kokoro-82M" / "snapshots" / expected_revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+
+    def fake_snapshot_download(**kwargs: object) -> str:
+        calls.append(kwargs)
+        return str(snapshot)
+
+    fake_module = ModuleType("huggingface_hub")
+    fake_module.snapshot_download = fake_snapshot_download  # type: ignore[attr-defined]
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
+
+    download_models.download_model_snapshot(model_id)
+
+    assert calls[0]["revision"] == expected_revision
+    payload = json.loads(
+        (snapshot / download_models.DOWNLOAD_RECEIPT_FILENAME).read_text(encoding="utf-8")
+    )
+    assert payload["revision"] == expected_revision
 
 
 def test_successful_snapshot_download_writes_valid_completion_receipt(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -242,7 +243,10 @@ def test_desktop_mode_cors_allows_only_exact_vite_dev_origin(tmp_path: Path) -> 
     audio_path.write_bytes(b"ID3desktop-audio")
     controller = _FakeController(audio_path)
 
-    with _make_desktop_client(controller) as client:
+    # The Vite dev origin is only allowed when the launcher opts in (debug build).
+    with patch.dict(os.environ, {"ORPHEUS_DESKTOP_DEV": "1"}), _make_desktop_client(
+        controller
+    ) as client:
         allowed = client.options(
             "/api/library",
             headers={
@@ -274,6 +278,37 @@ def test_desktop_mode_cors_allows_only_exact_vite_dev_origin(tmp_path: Path) -> 
     assert "access-control-allow-origin" not in arbitrary_localhost.headers
     assert arbitrary_loopback.status_code == 400
     assert "access-control-allow-origin" not in arbitrary_loopback.headers
+
+
+def test_desktop_mode_packaged_build_rejects_vite_dev_origin(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.m4b"
+    audio_path.write_bytes(b"ID3desktop-audio")
+    controller = _FakeController(audio_path)
+
+    # Without the debug-build opt-in, the Vite dev origin must NOT be in the CORS
+    # allowlist, while the packaged tauri.localhost origin still works.
+    env = {key: value for key, value in os.environ.items() if key != "ORPHEUS_DESKTOP_DEV"}
+    with patch.dict(os.environ, env, clear=True), _make_desktop_client(controller) as client:
+        dev_origin = client.options(
+            "/api/library",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+        packaged_origin = client.options(
+            "/api/library",
+            headers={
+                "Origin": "http://tauri.localhost",
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization",
+            },
+        )
+
+    assert "access-control-allow-origin" not in dev_origin.headers
+    assert packaged_origin.status_code == 200
+    assert packaged_origin.headers["access-control-allow-origin"] == "http://tauri.localhost"
 
 
 def test_desktop_mode_requires_scoped_sse_query_token(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
 
@@ -17,6 +17,9 @@ router = APIRouter()
 
 
 class VoicePreviewRequest(BaseModel):
+    # Reject NaN/±Infinity so a non-finite speed 422s instead of 500ing.
+    model_config = ConfigDict(allow_inf_nan=False)
+
     voice: str = Field(..., min_length=1)
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     text: Optional[str] = Field(default=None, max_length=320)

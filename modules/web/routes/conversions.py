@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal, Optional
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
 from modules.app import ConversionCallbacks, ConversionRuntimeOptions
 from modules.contracts.conversion_runtime_options import (
@@ -23,6 +23,12 @@ from modules.web.source_handles import resolve_source_reference
 router = APIRouter()
 
 
+class _InfNanSafeModel(BaseModel):
+    # Reject NaN/±Infinity on float fields (e.g. speed): they otherwise 500
+    # the handler instead of returning a clean 422.
+    model_config = ConfigDict(allow_inf_nan=False)
+
+
 class _ConversionRuntimeOptionsRequestMixin:
     def to_app_options(self) -> ConversionRuntimeOptions:
         return ConversionRuntimeOptions(
@@ -35,7 +41,7 @@ class _ConversionRuntimeOptionsRequestMixin:
 
 ConversionRuntimeOptionsRequest = create_model(
     "ConversionRuntimeOptionsRequest",
-    __base__=(BaseModel, _ConversionRuntimeOptionsRequestMixin),
+    __base__=(_InfNanSafeModel, _ConversionRuntimeOptionsRequestMixin),
     **build_runtime_option_pydantic_fields(CONVERSION_RUNTIME_OPTION_SPECS),
 )
 

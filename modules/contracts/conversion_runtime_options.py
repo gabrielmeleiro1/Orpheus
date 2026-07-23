@@ -19,7 +19,7 @@ class RuntimeOptionFieldSpec:
 
 CONVERSION_RUNTIME_OPTION_SPECS: tuple[RuntimeOptionFieldSpec, ...] = (
     RuntimeOptionFieldSpec("voice", str, "am_adam"),
-    RuntimeOptionFieldSpec("speed", float, 1.0),
+    RuntimeOptionFieldSpec("speed", float, 1.0, {"ge": 0.5, "le": 3.0}),
     RuntimeOptionFieldSpec("tts_engine", Optional[str], None),
     RuntimeOptionFieldSpec("tts_quantization", Optional[str], None),
     RuntimeOptionFieldSpec("tts_provider", Optional[str], None),

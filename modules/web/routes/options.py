@@ -11,7 +11,7 @@ from modules.contracts.conversion_runtime_options import (
     build_runtime_option_pydantic_fields,
     parallel_warmup_runtime_option_specs,
 )
-from modules.web.deps import ControllerDep
+from modules.web.deps import ControllerDep, call_with_http_errors
 
 router = APIRouter()
 
@@ -51,7 +51,12 @@ def get_voice_options(controller: ControllerDep, engine: Optional[str] = None) -
 
 @router.post("/api/options/openai/models")
 def list_openai_models(payload: OpenAIModelListRequest, controller: ControllerDep) -> dict:
-    return controller.list_openai_models(api_key=payload.api_key)
+    # A rejected/expired key is an upstream failure, not an internal one; surface
+    # the provider's message as 502 rather than a bare, opaque 500.
+    return call_with_http_errors(
+        lambda: controller.list_openai_models(api_key=payload.api_key),
+        runtime_status=502,
+    )
 
 
 @router.post("/api/options/parallel/warmup")
@@ -59,18 +64,20 @@ def warmup_parallel_workers(
     payload: ParallelWarmupRequest,
     controller: ControllerDep,
 ) -> dict:
-    return controller.warmup_parallel_worker_recommendation(
-        voice=payload.voice,
-        speed=payload.speed,
-        tts_engine=payload.tts_engine,
-        tts_quantization=payload.tts_quantization,
-        cleaner_model=payload.cleaner_model,
-        cleaner_backend=payload.cleaner_backend,
-        cleaner_cuda_device=payload.cleaner_cuda_device,
-        cleaner_cuda_quantization=payload.cleaner_cuda_quantization,
-        cleaner_api_model=payload.cleaner_api_model,
-        cleaner_api_key=payload.cleaner_api_key,
-        max_parallel_chapters=payload.max_parallel_chapters,
+    return call_with_http_errors(
+        lambda: controller.warmup_parallel_worker_recommendation(
+            voice=payload.voice,
+            speed=payload.speed,
+            tts_engine=payload.tts_engine,
+            tts_quantization=payload.tts_quantization,
+            cleaner_model=payload.cleaner_model,
+            cleaner_backend=payload.cleaner_backend,
+            cleaner_cuda_device=payload.cleaner_cuda_device,
+            cleaner_cuda_quantization=payload.cleaner_cuda_quantization,
+            cleaner_api_model=payload.cleaner_api_model,
+            cleaner_api_key=payload.cleaner_api_key,
+            max_parallel_chapters=payload.max_parallel_chapters,
+        )
     )
 
 
