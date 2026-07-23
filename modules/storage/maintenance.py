@@ -121,6 +121,53 @@ def unique_destination_path(base_path: Path) -> Path:
         counter += 1
 
 
+# Retention cap for our own generated artifacts (timestamped DB backups and
+# prune report JSON). Without a cap these directories grow without bound over a
+# library's lifetime. Backups double as prune's safety net, so keep a generous
+# window rather than a tight one.
+DEFAULT_RETENTION_KEEP = 30
+
+
+def _enforce_retention(
+    directory: Path, glob_pattern: str, keep: int | None = None
+) -> list[str]:
+    """Keep only the ``keep`` newest regular files matching ``glob_pattern``.
+
+    ``keep`` defaults to :data:`DEFAULT_RETENTION_KEEP`, read at call time so the
+    cap stays configurable. Only plain files matching the pattern are ever
+    removed; symlinks, subdirectories and unrelated files are never touched.
+    Best-effort — any deletion error is swallowed so retention can never break the
+    caller.
+    """
+    if keep is None:
+        keep = DEFAULT_RETENTION_KEEP
+    if keep <= 0 or not directory.is_dir():
+        return []
+    try:
+        matches = [p for p in directory.glob(glob_pattern) if p.is_file() and not p.is_symlink()]
+    except OSError:
+        return []
+    if len(matches) <= keep:
+        return []
+    timestamped_matches: list[tuple[float, Path]] = []
+    for match in matches:
+        try:
+            timestamped_matches.append((match.stat().st_mtime, match))
+        except OSError:
+            # A concurrent delete, permission change, or filesystem race should
+            # preserve the ambiguous entry and must never fail backup/prune.
+            continue
+    timestamped_matches.sort(key=lambda item: item[0], reverse=True)
+    removed: list[str] = []
+    for _, stale in timestamped_matches[keep:]:
+        try:
+            stale.unlink()
+            removed.append(str(stale))
+        except OSError:
+            continue
+    return removed
+
+
 def backup_database(
     db_path: Path | str,
     backup_dir: Path | str | None = None,
@@ -143,6 +190,9 @@ def backup_database(
     finally:
         target_conn.close()
         source_conn.close()
+    # Cap the backups directory so it does not grow without bound; the just-made
+    # backup is newest and always retained.
+    _enforce_retention(target_dir, f"{source.stem}_*{source.suffix}")
     return target
 
 
@@ -508,6 +558,115 @@ def _move_referenced_upload_sources(
 DURABLE_PLAYBACK_SUFFIXES = (".m4b", ".m4a")
 
 
+# Any recognized audio artifact — packaged single-file books *or* per-chapter
+# renders — marks a directory as holding finished conversion work. The orphan
+# sweep must never rmtree such a directory (it may be a moved/renamed book whose
+# row we could not match), even though only ``.m4b``/``.m4a`` are reconciled as a
+# playback pointer. Includes ``.mp3`` so a chapter-audio library is protected too.
+AUDIO_ARTIFACT_SUFFIXES = (".m4b", ".m4a", ".mp3")
+
+
+def _dir_has_direct_audio(directory: Path) -> bool:
+    """True when ``directory`` directly contains a recognized audio file.
+
+    Missing paths yield ``False``. Any other inspection failure yields ``True``
+    so destructive cleanup fails closed instead of deleting a directory whose
+    contents could not be verified.
+    """
+    try:
+        children = directory.iterdir()
+        for child in children:
+            try:
+                is_file = child.is_file()
+            except FileNotFoundError:
+                continue
+            except OSError:
+                return True
+            if is_file and child.suffix.lower() in AUDIO_ARTIFACT_SUFFIXES:
+                return True
+        return False
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True
+
+
+def _dir_contains_finished_audio(directory: Path) -> bool:
+    """True when a *real* directory holds finished audio (packaged or per-chapter).
+
+    Symlinks are never followed (returns ``False``) so the orphan sweep still
+    unlinks a symlinked entry rather than inspecting whatever it points at outside
+    the managed roots. This is the guard that keeps prune from destroying a
+    finished audiobook whose owning book row could not be matched.
+    """
+    if directory.is_symlink() or not directory.is_dir():
+        return False
+    return _dir_has_direct_audio(directory) or _dir_has_direct_audio(directory / "chapters")
+
+
+def _referenced_output_dir_keys(
+    conn: sqlite3.Connection,
+    workspace_root: Path,
+    output_root: Path,
+    temp_root: Path,
+) -> set[str]:
+    """Return the canonical keys of output directories any book currently claims.
+
+    A key is ``str(output_root.resolve() / <top-level entry name>)`` — the same
+    keying the audit uses — computed from every book's playback path and every
+    chapter's mp3 path (reflecting reconciliations already applied on ``conn``).
+    """
+    output_root_resolved = output_root.resolve()
+    keys: set[str] = set()
+
+    def _add(raw: Optional[str]) -> None:
+        resolved = resolve_stored_path(
+            raw, workspace_root, output_root=output_root, temp_root=temp_root
+        )
+        if resolved is None:
+            return
+        try:
+            relative = resolved.resolve().relative_to(output_root_resolved)
+        except ValueError:
+            return
+        if relative.parts:
+            keys.add(str(output_root_resolved / relative.parts[0]))
+
+    for row in conn.execute("SELECT playback_path FROM books").fetchall():
+        _add(row["playback_path"])
+    for row in conn.execute(
+        "SELECT mp3_path FROM chapters WHERE mp3_path IS NOT NULL AND mp3_path != ''"
+    ).fetchall():
+        _add(row["mp3_path"])
+    return keys
+
+
+def _unclaimed_finished_audio_dirs(
+    output_root: Path, referenced_keys: set[str]
+) -> list[str]:
+    """List real output subdirectories that hold finished audio yet no book claims.
+
+    Such a directory may be a moved/renamed book's audio that lost its DB linkage;
+    its existence means we are *not* confident any fileless book row is truly
+    orphaned, so the caller keeps those rows instead of deleting them.
+    """
+    if not output_root.exists():
+        return []
+    output_root_resolved = output_root.resolve()
+    unclaimed: list[str] = []
+    for entry in output_root.iterdir():
+        if entry.name in RESERVED_OUTPUT_DIR_NAMES:
+            continue
+        if entry.is_symlink() or not entry.is_dir():
+            continue
+        key = str(output_root_resolved / entry.name)
+        if key in referenced_keys:
+            continue
+        if _dir_contains_finished_audio(entry):
+            unclaimed.append(str(entry.resolve()))
+    return sorted(unclaimed)
+
+
 def _durable_audio_file_in_dir(directory: Path) -> Optional[Path]:
     """Return a durable playable file directly inside ``directory`` if present.
 
@@ -535,14 +694,23 @@ def _candidate_book_output_dirs(
     workspace_root: Path,
     output_root: Path,
     temp_root: Path,
+    allow_title_fallback: bool = True,
 ) -> list[Path]:
-    """Best-effort resolution of a book's on-disk output directory.
+    """Best-effort resolution of a book's *own* on-disk output directory.
 
-    Uses any resolvable playback/chapter paths first (their parent, minus a
-    trailing ``chapters`` segment) and falls back to the title-derived directory
-    name the conversion pipeline uses. Only directories inside the output root are
-    returned, so a stale or traversing stored path can never redirect the scan
-    outside managed storage.
+    Uses only directories derived from the book's own resolvable playback/chapter
+    paths (their parent, minus a trailing ``chapters`` segment). Only directories
+    inside the output root are returned, so a stale or traversing stored path can
+    never redirect the scan outside managed storage.
+
+    The title-derived directory name is a *guess* (``sanitize_book_title(title)``)
+    that ignores the pipeline's dedup suffixes (``Title (2)``) and library renames,
+    so it can resolve into a directory another book owns. It is therefore only
+    appended when ``allow_title_fallback`` is true — which the caller restricts to
+    books that carry no stored playback/chapter pointer at all (the genuine
+    post-migration case), never to a book whose stored pointer merely failed to
+    resolve. This is what prevents reconciling a moved/renamed book onto a
+    different book's audio.
     """
     output_root_resolved = output_root.resolve()
     candidates: list[Path] = []
@@ -574,9 +742,10 @@ def _candidate_book_output_dirs(
     for raw in chapter_raw_paths:
         _add_from_stored(raw)
 
-    safe_title = sanitize_book_title(title or "")
-    if safe_title:
-        _add_dir(output_root / safe_title)
+    if allow_title_fallback:
+        safe_title = sanitize_book_title(title or "")
+        if safe_title:
+            _add_dir(output_root / safe_title)
 
     return candidates
 
@@ -589,13 +758,20 @@ def _find_ondisk_playback_artifact(
     workspace_root: Path,
     output_root: Path,
     temp_root: Path,
+    allow_title_fallback: bool = True,
 ) -> Optional[tuple[Path, str]]:
     """Locate a durable on-disk playback artifact for a book whose DB playback
     metadata is missing/stale.
 
     Returns ``(artifact_path, playback_status)`` — a top-level ``.m4b``/``.m4a``
     maps to ``packaged`` playback, per-chapter files under ``chapters/`` map to
-    ``chapter_audio`` — or ``None`` when the book is genuinely orphaned on disk.
+    ``chapter_audio`` — or ``None`` when the book cannot be safely located on disk.
+
+    Only the book's own directories are searched (see
+    :func:`_candidate_book_output_dirs`); ``allow_title_fallback`` widens the
+    search to the title-derived directory guess and must stay off for books that
+    carry a stored pointer, so a rename/move never cross-wires the book onto
+    another book's audio.
     """
     for directory in _candidate_book_output_dirs(
         title=title,
@@ -604,6 +780,7 @@ def _find_ondisk_playback_artifact(
         workspace_root=workspace_root,
         output_root=output_root,
         temp_root=temp_root,
+        allow_title_fallback=allow_title_fallback,
     ):
         packaged = _durable_audio_file_in_dir(directory)
         if packaged is not None:
@@ -654,6 +831,9 @@ def prune_stale_records_and_files(
         "deleted_durable_sources": [],
         "moved_sources": [],
         "reconciled_playback": [],
+        "preserved_book_rows": [],
+        "preserved_output_dirs": [],
+        "unclaimed_audio_dirs": [],
     }
 
     conn = _connect(db_file)
@@ -710,6 +890,16 @@ def prune_stale_records_and_files(
             # delete such a book and reconcile its playback metadata so the row is
             # playable again and its output directory stays referenced (otherwise
             # the orphan-output-dir sweep below would still rmtree the audio).
+            #
+            # The title-derived directory guess is only trusted for books that
+            # carry no stored pointer at all (the genuine post-migration case). A
+            # book whose stored playback/chapter pointer merely failed to resolve
+            # (a rename, or a data-dir move that invalidated absolute paths) must
+            # not be reconciled by title, or it can be cross-wired onto a
+            # different book's audio.
+            has_stored_pointer = bool(
+                (book_row["playback_path"] or "").strip()
+            ) or bool(chapter_rows)
             ondisk_artifact = _find_ondisk_playback_artifact(
                 title=book_row["title"],
                 playback_raw=book_row["playback_path"],
@@ -717,6 +907,7 @@ def prune_stale_records_and_files(
                 workspace_root=workspace_root,
                 output_root=output_root,
                 temp_root=temp_root,
+                allow_title_fallback=not has_stored_pointer,
             )
             if ondisk_artifact is not None:
                 artifact_path, playback_status = ondisk_artifact
@@ -740,6 +931,25 @@ def prune_stale_records_and_files(
                 continue
 
             books_to_delete.append(int(book_row["id"]))
+
+        # Safety gate before deleting any fileless row: if a finished-audio
+        # directory exists on disk that no surviving book claims (reconciliations
+        # above are already reflected on ``conn``), it may be the audio of a
+        # moved/renamed book we could not link. We are then *not* confident these
+        # rows are truly orphaned, so we keep them rather than destroy library
+        # metadata for a book whose audio still exists. Genuine orphans (no
+        # unclaimed audio anywhere) are still deleted.
+        if books_to_delete:
+            unclaimed_audio = _unclaimed_finished_audio_dirs(
+                output_root,
+                _referenced_output_dir_keys(
+                    conn, workspace_root, output_root, temp_root
+                ),
+            )
+            if unclaimed_audio:
+                actions["preserved_book_rows"] = books_to_delete
+                actions["unclaimed_audio_dirs"] = unclaimed_audio
+                books_to_delete = []
 
         if books_to_delete:
             placeholders = ",".join(["?"] * len(books_to_delete))
@@ -767,6 +977,14 @@ def prune_stale_records_and_files(
     )
     for raw in audit_mid["orphan_output_dirs"]:
         path = Path(raw)
+        # Never rmtree a real directory that still holds finished audio, even when
+        # unreferenced: it may be a moved/renamed book's audiobook that lost its DB
+        # linkage. Leaving a stale directory is infinitely preferable to destroying
+        # a finished audiobook. Symlinked entries are not protected here — they are
+        # unlinked (link only) by _delete_orphan_entry below.
+        if _dir_contains_finished_audio(path):
+            actions["preserved_output_dirs"].append(str(path))
+            continue
         if _delete_orphan_entry(path, output_root, expect_dir=True):
             actions["deleted_output_dirs"].append(str(path))
 
@@ -817,4 +1035,6 @@ def prune_stale_records_and_files(
     report_path = reports_dir / f"db_prune_{stamp}.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     report["report_path"] = str(report_path.resolve())
+    # Cap the reports directory; the report just written is newest and retained.
+    _enforce_retention(reports_dir, "db_prune_*.json")
     return report

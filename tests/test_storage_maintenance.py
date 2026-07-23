@@ -1148,6 +1148,275 @@ def test_prune_still_deletes_migrated_book_without_ondisk_audio(tmp_path):
     assert book.id in report["actions"]["deleted_book_rows"]
 
 
+def test_prune_does_not_cross_wire_duplicate_title_book_or_destroy_audio(tmp_path):
+    """A duplicate-title book whose stored playback pointer was invalidated (a
+    data-dir move / library rename) must never be reconciled onto a *different*
+    book's audio by a bare sanitized-title guess, and the orphan sweep must not
+    rmtree the real audio.
+
+    Real audio lives in the pipeline's dedup-suffixed ``Dup Title (2)`` while a
+    decoy ``Dup Title`` (the exact title-derived guess) holds unrelated audio.
+    """
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    real_dir = output_dir / "Dup Title (2)"
+    real_dir.mkdir(parents=True)
+    real_audio = real_dir / "book.m4b"
+    real_audio.write_bytes(b"REAL AUDIO")
+
+    decoy_dir = output_dir / "Dup Title"
+    decoy_dir.mkdir(parents=True)
+    decoy_audio = decoy_dir / "other.m4b"
+    decoy_audio.write_bytes(b"DECOY AUDIO")
+
+    repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        book = repo.create_book(
+            BookCreate(
+                title="Dup Title",
+                source_path=str(root / "gone.pdf"),
+                source_type=SourceType.PDF,
+                # Stored pointer once resolved but a move invalidated it.
+                playback_path=str(output_dir / "Moved Away" / "book.m4b"),
+                playback_status=PlaybackStatus.PACKAGED,
+            )
+        )
+    finally:
+        repo.close()
+
+    report = prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+        grace_seconds=0.0,
+    )
+
+    # Neither real nor decoy audio is destroyed.
+    assert real_audio.exists()
+    assert decoy_audio.exists()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT playback_path FROM books WHERE id = ?", (book.id,)
+        ).fetchone()
+    finally:
+        conn.close()
+
+    # The row survives and was NOT cross-wired onto the decoy's audio.
+    assert row is not None
+    stored_playback = row[0]
+    if stored_playback is not None:
+        assert Path(stored_playback).resolve() != decoy_audio.resolve()
+    assert book.id not in report["actions"]["deleted_book_rows"]
+    reconciled_targets = {
+        Path(entry["playback_path"]).resolve()
+        for entry in report["actions"]["reconciled_playback"]
+    }
+    assert decoy_audio.resolve() not in reconciled_targets
+
+
+def test_prune_preserves_renamed_book_row_and_audio_when_unlinkable(tmp_path):
+    """A completed book whose on-disk folder no longer matches its title and whose
+    stored pointer is invalid (e.g. an absolute path invalidated by a machine move)
+    must keep its row and its audio: an unclaimed finished-audio directory means we
+    cannot be confident the book is orphaned."""
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    real_dir = output_dir / "Original Folder"
+    real_dir.mkdir(parents=True)
+    real_audio = real_dir / "audiobook.m4b"
+    real_audio.write_bytes(b"IRREPLACEABLE AUDIO")
+
+    repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        book = repo.create_book(
+            BookCreate(
+                title="Renamed In Library",
+                source_path=str(root / "gone.pdf"),
+                source_type=SourceType.PDF,
+                playback_path=str(output_dir / "Ghost Folder" / "ghost.m4b"),
+                playback_status=PlaybackStatus.PACKAGED,
+            )
+        )
+    finally:
+        repo.close()
+
+    report = prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+        grace_seconds=0.0,
+    )
+
+    assert real_audio.exists()
+    assert real_audio.read_bytes() == b"IRREPLACEABLE AUDIO"
+    assert str(real_dir.resolve()) in report["actions"]["preserved_output_dirs"]
+    assert book.id not in report["actions"]["deleted_book_rows"]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute("SELECT id FROM books WHERE id = ?", (book.id,)).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+
+
+def test_prune_never_rmtrees_output_dir_holding_chapter_mp3_audio(tmp_path):
+    """The orphan sweep must protect a directory whose only audio is per-chapter
+    ``.mp3`` renders, not just packaged ``.m4b`` files."""
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # A finished-audio directory that no DB row references at all.
+    orphan_audio_dir = output_dir / "Unlinked Chapters"
+    chapters = orphan_audio_dir / "chapters"
+    chapters.mkdir(parents=True)
+    (chapters / "01.mp3").write_bytes(b"ID3 chapter one")
+    (chapters / "02.mp3").write_bytes(b"ID3 chapter two")
+
+    # A genuinely audio-free orphan directory that SHOULD be swept.
+    junk_dir = output_dir / "Junk"
+    junk_dir.mkdir(parents=True)
+    (junk_dir / "notes.txt").write_text("no audio here", encoding="utf-8")
+
+    repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
+    repo.close()
+
+    report = prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+        grace_seconds=0.0,
+    )
+
+    assert (chapters / "01.mp3").exists()
+    assert str(orphan_audio_dir.resolve()) in report["actions"]["preserved_output_dirs"]
+    assert not junk_dir.exists()
+    assert str(junk_dir.resolve()) in report["actions"]["deleted_output_dirs"]
+
+
+def test_prune_fails_closed_when_audio_directory_cannot_be_fully_inspected(
+    tmp_path, monkeypatch
+):
+    root = tmp_path
+    db_path = root / "data" / "audiobooks.db"
+    output_dir = root / "output"
+    temp_dir = root / "temp"
+    output_dir.mkdir(parents=True)
+    temp_dir.mkdir(parents=True)
+
+    audio_dir = output_dir / "Uninspectable Book"
+    audio_dir.mkdir()
+    blocked_entry = audio_dir / "blocked.metadata"
+    blocked_entry.write_text("metadata", encoding="utf-8")
+    audio_file = audio_dir / "book.m4b"
+    audio_file.write_bytes(b"IRREPLACEABLE AUDIO")
+
+    SQLiteRepository(
+        db_path, output_dir=output_dir, temp_dir=temp_dir
+    ).close()
+
+    real_is_file = Path.is_file
+
+    def deny_one_entry(path):
+        if path == blocked_entry:
+            raise PermissionError("simulated unreadable directory entry")
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", deny_one_entry)
+
+    report = prune_stale_records_and_files(
+        db_path,
+        output_dir=output_dir,
+        temp_dir=temp_dir,
+        aggressive=True,
+        grace_seconds=0.0,
+    )
+
+    assert audio_file.read_bytes() == b"IRREPLACEABLE AUDIO"
+    assert str(audio_dir.resolve()) in report["actions"]["preserved_output_dirs"]
+
+
+def test_backup_and_report_directories_are_retention_capped(tmp_path, monkeypatch):
+    """Timestamped backups and prune reports must not grow without bound."""
+    monkeypatch.setattr(maintenance_module, "DEFAULT_RETENTION_KEEP", 3)
+
+    db_path = tmp_path / "data" / "audiobooks.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    SQLiteRepository(db_path).close()
+
+    backup_dir = db_path.parent / "backups"
+    for _ in range(6):
+        # Distinct timestamps come from unique_destination_path suffixes within
+        # the same second; force ordering by backdating already-written files.
+        made = backup_database(db_path)
+        assert made.exists()
+
+    remaining = list(backup_dir.glob("audiobooks_*.db"))
+    assert len(remaining) <= 3
+
+    reports_dir = tmp_path / "output" / "reports"
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(6):
+        stale = reports_dir / f"db_prune_2026010{index}_000000.json"
+        stale.write_text("{}", encoding="utf-8")
+
+    kept = maintenance_module._enforce_retention(reports_dir, "db_prune_*.json", keep=3)
+    assert len(list(reports_dir.glob("db_prune_*.json"))) == 3
+    assert len(kept) == 3  # three oldest removed
+
+
+def test_retention_is_best_effort_when_file_metadata_races(
+    tmp_path, monkeypatch
+):
+    directory = tmp_path / "backups"
+    directory.mkdir()
+    files = []
+    for index in range(4):
+        path = directory / f"audiobooks_{index}.db"
+        path.write_bytes(str(index).encode("ascii"))
+        files.append(path)
+
+    inaccessible = files[0]
+    real_stat = Path.stat
+    stat_calls = 0
+
+    def race_stat(path, *args, **kwargs):
+        nonlocal stat_calls
+        if path == inaccessible:
+            stat_calls += 1
+            if stat_calls == 3:
+                raise PermissionError("simulated metadata race")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", race_stat)
+
+    removed = maintenance_module._enforce_retention(
+        directory, "audiobooks_*.db", keep=1
+    )
+
+    assert real_stat(inaccessible).st_size == 1
+    assert removed
+
+
 if __name__ == "__main__":
     success = test_storage_maintenance()
     sys.exit(0 if success else 1)

@@ -18,6 +18,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import modules.storage.sqlite_repo as sqlite_repo_module
 from modules.storage.models import (
     BookCreate,
     ChapterCreate,
@@ -777,3 +778,216 @@ def test_sqlite_database_parent_and_file_are_owner_only(tmp_path):
     repo.close()
     assert stat.S_IMODE(db_path.parent.stat().st_mode) == 0o700
     assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+
+def test_repository_quarantines_corrupt_database_and_recreates_fresh(tmp_path):
+    """A corrupt/non-SQLite database file must not turn every request into an
+    opaque 500: the repository quarantines the unreadable file aside and recreates
+    an empty, usable library (defect: corrupt DB availability)."""
+    db_path = tmp_path / "data" / "audiobooks.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Seed a valid DB with content, then clobber it into garbage plus a leftover
+    # WAL sidecar to exercise sidecar quarantining.
+    SQLiteRepository(db_path).close()
+    db_path.write_bytes(b"SQLite format 3\x00" + b"\xde\xad" * 500)
+    wal_sidecar = db_path.with_name(db_path.name + "-wal")
+    wal_sidecar.write_bytes(b"stale wal pages")
+
+    repo = SQLiteRepository(db_path)
+    try:
+        assert repo.count_books() == 0  # fresh, usable library
+        created = repo.create_book(
+            BookCreate(
+                title="After Recovery",
+                source_path="/tmp/x.epub",
+                source_type=SourceType.EPUB,
+                total_chapters=1,
+            )
+        )
+        assert created.id is not None
+    finally:
+        repo.close()
+
+    quarantined = list(db_path.parent.glob("audiobooks.db.corrupt-*"))
+    assert quarantined, "corrupt database was not quarantined aside"
+    assert not wal_sidecar.exists()  # sidecar moved with the main file
+
+
+def test_repository_does_not_wipe_future_schema_database(tmp_path):
+    """A database written by a newer Orpheus build is a real user's data: the
+    repository must raise a clear, catchable error and never quarantine/wipe it."""
+    from modules.storage.migrations import (
+        FutureSchemaError,
+        LATEST_SCHEMA_VERSION,
+        run_migrations,
+    )
+
+    db_path = tmp_path / "data" / "audiobooks.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    conn = sqlite3.connect(db_path)
+    run_migrations(conn)
+    conn.execute(
+        "INSERT INTO schema_migrations(version) VALUES (?)",
+        (LATEST_SCHEMA_VERSION + 1,),
+    )
+    conn.commit()
+    conn.close()
+    original_bytes = db_path.read_bytes()
+
+    with pytest.raises(FutureSchemaError):
+        SQLiteRepository(db_path)
+
+    # The user's newer-schema database is untouched: no quarantine, same bytes.
+    assert not list(db_path.parent.glob("audiobooks.db.corrupt-*"))
+    assert db_path.read_bytes() == original_bytes
+
+
+def test_repository_does_not_quarantine_healthy_database_on_transient_lock(
+    tmp_path, monkeypatch
+):
+    """A transient SQLite operational failure is not proof of corruption.
+
+    The open must fail with the original error while leaving the healthy database
+    and its user data in place.
+    """
+    db_path = tmp_path / "data" / "audiobooks.db"
+    repo = SQLiteRepository(db_path)
+    book = repo.create_book(
+        BookCreate(
+            title="Keep Me",
+            source_path="/tmp/keep-me.epub",
+            source_type=SourceType.EPUB,
+            total_chapters=1,
+        )
+    )
+    repo.close()
+
+    real_run_migrations = sqlite_repo_module.run_migrations
+    calls = 0
+
+    def fail_once_with_lock(conn):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_run_migrations(conn)
+
+    monkeypatch.setattr(
+        sqlite_repo_module, "run_migrations", fail_once_with_lock
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        SQLiteRepository(db_path)
+
+    assert not list(db_path.parent.glob("audiobooks.db.corrupt-*"))
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT title FROM books WHERE id = ?", (book.id,)
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row == ("Keep Me",)
+
+
+def test_repository_never_overwrites_existing_quarantine(tmp_path, monkeypatch):
+    """Two recovery attempts in one timestamp bucket must preserve both files."""
+    db_path = tmp_path / "data" / "audiobooks.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_bytes(b"not a sqlite database")
+
+    class FrozenDateTime:
+        @classmethod
+        def now(cls):
+            return cls()
+
+        def strftime(self, _format):
+            return "20260723_120000"
+
+    monkeypatch.setattr(sqlite_repo_module, "datetime", FrozenDateTime)
+    existing = db_path.with_name(
+        "audiobooks.db.corrupt-20260723_120000"
+    )
+    existing.write_bytes(b"older quarantine")
+
+    repo = SQLiteRepository(db_path)
+    repo.close()
+
+    assert existing.read_bytes() == b"older quarantine"
+    quarantines = sorted(db_path.parent.glob("audiobooks.db.corrupt-*"))
+    assert len(quarantines) == 2
+    assert any(path.read_bytes() == b"not a sqlite database" for path in quarantines)
+
+
+def test_repository_never_deletes_sidecar_when_quarantine_move_fails(
+    tmp_path, monkeypatch
+):
+    """Recovery must fail safely and restore the main DB if a WAL move fails."""
+    db_path = tmp_path / "data" / "audiobooks.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    original_database = b"not a sqlite database"
+    db_path.write_bytes(original_database)
+    wal_path = db_path.with_name(db_path.name + "-wal")
+
+    real_replace = Path.replace
+
+    def fail_wal_replace(path, target):
+        if path == db_path:
+            result = real_replace(path, target)
+            # SQLite may discard an invalid pre-existing WAL while opening the
+            # corrupt main file. Materialize it at the recovery boundary so this
+            # test exercises our sidecar move failure deterministically.
+            wal_path.write_bytes(b"user recovery data")
+            return result
+        if path == wal_path:
+            raise OSError("simulated sidecar move failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_wal_replace)
+
+    with pytest.raises(OSError, match="simulated sidecar move failure"):
+        SQLiteRepository(db_path)
+
+    assert db_path.read_bytes() == original_database
+    assert wal_path.read_bytes() == b"user recovery data"
+    assert not list(db_path.parent.glob("audiobooks.db.corrupt-*"))
+
+
+def test_repository_rolls_back_already_moved_wal_when_shm_quarantine_fails(
+    tmp_path, monkeypatch
+):
+    """A later sidecar failure must not leave earlier moves split across paths."""
+    db_path = tmp_path / "data" / "audiobooks.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    original_database = b"not a sqlite database"
+    original_wal = b"user wal recovery data"
+    original_shm = b"user shm recovery data"
+    db_path.write_bytes(original_database)
+    wal_path = db_path.with_name(db_path.name + "-wal")
+    shm_path = db_path.with_name(db_path.name + "-shm")
+
+    real_replace = Path.replace
+
+    def fail_shm_replace(path, target):
+        if path == db_path:
+            result = real_replace(path, target)
+            # SQLite may discard invalid sidecars while opening the corrupt main
+            # file, so materialize both at the recovery boundary.
+            wal_path.write_bytes(original_wal)
+            shm_path.write_bytes(original_shm)
+            return result
+        if path == shm_path:
+            raise OSError("simulated shm move failure")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_shm_replace)
+
+    with pytest.raises(OSError, match="simulated shm move failure"):
+        SQLiteRepository(db_path)
+
+    assert db_path.read_bytes() == original_database
+    assert wal_path.read_bytes() == original_wal
+    assert shm_path.read_bytes() == original_shm
+    assert not list(db_path.parent.glob("audiobooks.db.corrupt-*"))

@@ -6,6 +6,7 @@ Concrete implementation of IBookRepository using SQLite.
 
 from __future__ import annotations
 
+import logging
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -13,7 +14,7 @@ from pathlib import Path
 from typing import Any, Optional
 import sqlite3
 
-from modules.storage.migrations import run_migrations
+from modules.storage.migrations import FutureSchemaError, run_migrations
 from modules.storage.maintenance import resolve_stored_path, workspace_root_for_db
 from modules.storage.permissions import ensure_owner_only_directory, owner_only
 from modules.storage.repository import IBookRepository
@@ -28,6 +29,29 @@ from modules.storage.models import (
     PlaybackStatus,
     SourceType,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _is_explicit_sqlite_corruption(error: sqlite3.DatabaseError) -> bool:
+    """Return true only for SQLite's explicit corruption classifications."""
+    error_code = getattr(error, "sqlite_errorcode", None)
+    if not isinstance(error_code, int):
+        return False
+    primary_code = error_code & 0xFF
+    return primary_code in {sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB}
+
+
+def _unique_quarantine_path(base_path: Path) -> Path:
+    """Return a sibling path without ever selecting an existing quarantine."""
+    if not base_path.exists():
+        return base_path
+    counter = 1
+    while True:
+        candidate = base_path.with_name(f"{base_path.name}_{counter}")
+        if not candidate.exists():
+            return candidate
+        counter += 1
 
 
 class SQLiteRepository(IBookRepository):
@@ -81,7 +105,86 @@ class SQLiteRepository(IBookRepository):
             self._conn.close()
 
     def _init_schema(self):
-        """Initialize or migrate database schema."""
+        """Initialize or migrate database schema.
+
+        A corrupt/truncated/non-SQLite file raises ``sqlite3.DatabaseError`` here.
+        Rather than let that propagate out of the (lazily constructed) repository
+        and turn every API request into an opaque 500 with no path to recovery, we
+        confirm the damage, quarantine the unreadable file aside, and recreate an
+        empty library so the app comes back up. A ``FutureSchemaError`` (a real
+        user's data written by a newer Orpheus build) is deliberately *not* caught
+        — it must surface so the user is told to update, never silently wiped.
+        """
+        try:
+            with self._connection() as conn:
+                run_migrations(conn)
+        except FutureSchemaError:
+            raise
+        except sqlite3.DatabaseError as error:
+            if not _is_explicit_sqlite_corruption(error):
+                self._conn.close()
+                raise
+            self._quarantine_corrupt_database(error)
+
+    def _quarantine_corrupt_database(self, error: sqlite3.DatabaseError) -> None:
+        """Rename an unreadable database aside and recreate a fresh empty one."""
+        try:
+            integrity_row = self._conn.execute("PRAGMA integrity_check").fetchone()
+            integrity = integrity_row[0] if integrity_row else "unknown"
+        except sqlite3.DatabaseError:
+            # A file too damaged for integrity_check itself is corruption enough.
+            integrity = "unreadable"
+
+        try:
+            self._conn.close()
+        except sqlite3.DatabaseError:
+            pass
+
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        quarantine_path = _unique_quarantine_path(
+            self.db_path.with_name(f"{self.db_path.name}.corrupt-{stamp}")
+        )
+        moved_paths: list[tuple[Path, Path]] = []
+        try:
+            self.db_path.replace(quarantine_path)
+            moved_paths.append((self.db_path, quarantine_path))
+            # Move any WAL/SHM sidecars with the main file so the fresh database
+            # does not inherit stale journal pages.
+            for suffix in ("-wal", "-shm"):
+                sidecar = self.db_path.with_name(self.db_path.name + suffix)
+                if sidecar.exists():
+                    quarantined_sidecar = _unique_quarantine_path(
+                        quarantine_path.with_name(quarantine_path.name + suffix)
+                    )
+                    sidecar.replace(quarantined_sidecar)
+                    moved_paths.append((sidecar, quarantined_sidecar))
+        except OSError:
+            # A quarantine is one recovery unit. If any sidecar move fails, put
+            # every completed move back so a later launch never sees a database
+            # split between the live and quarantine paths.
+            for original, quarantined in reversed(moved_paths):
+                try:
+                    quarantined.replace(original)
+                except OSError:
+                    logger.exception(
+                        "Failed to roll back database quarantine move from %s to %s",
+                        quarantined,
+                        original,
+                    )
+            raise
+
+        logger.warning(
+            "Storage database at %s was unreadable (integrity_check: %s; %s); "
+            "quarantined it to %s and recreated an empty library.",
+            self.db_path,
+            integrity,
+            error,
+            quarantine_path,
+        )
+
+        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        owner_only(self.db_path)
+        self._conn.row_factory = sqlite3.Row
         with self._connection() as conn:
             run_migrations(conn)
 
