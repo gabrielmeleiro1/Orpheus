@@ -132,6 +132,52 @@ describe("useConversionSourceQueue", () => {
     expect(getProbe().pastedAuthor).toBe("");
   });
 
+  it("guards against a same-frame double 'Add to queue' click", async () => {
+    let resolveUpload!: (value: { source_handle: string; original_name: string; preflight: null }) => void;
+    const uploadSourceText = vi.fn(
+      () =>
+        new Promise<{ source_handle: string; original_name: string; preflight: null }>((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+    const addPastedSource = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <Probe
+          apiClient={{ uploadSourceText }}
+          conversionJob={{ clearFormError: vi.fn() }}
+          queueController={{
+            selectedQueueId: null,
+            sourcePath: "",
+            selectedQueueItem: null,
+            titleOverride: "",
+            authorOverride: "",
+            addPastedSource,
+          }}
+        />,
+      );
+    });
+    const getProbe = () =>
+      (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> })
+        .sourceQueueProbe;
+
+    await act(async () => {
+      getProbe().setPastedText("Body text");
+    });
+
+    // Two clicks dispatched before the first upload resolves (same frame).
+    await act(async () => {
+      const first = getProbe().onAddPastedText();
+      const second = getProbe().onAddPastedText();
+      resolveUpload({ source_handle: "upload:1_hash_paste.md", original_name: "paste.md", preflight: null });
+      await Promise.all([first, second]);
+    });
+
+    expect(uploadSourceText).toHaveBeenCalledTimes(1);
+    expect(addPastedSource).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves the complete paste draft when upload fails", async () => {
     const uploadSourceText = vi.fn(async () => {
       throw new Error("upload unavailable");

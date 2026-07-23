@@ -1,4 +1,5 @@
 import { TermSelect } from "../TermSelect";
+import { normalizeSpeedInput } from "../conversionOptionsShared";
 import type {
   AdvancedOptionsViewModel,
   ConversionCapabilities,
@@ -34,6 +35,7 @@ export function AdvancedOptionsView({
                 step={0.05}
                 value={advancedOptions.speedInput}
                 onChange={(event) => actions.setSpeed(event.target.value)}
+                onBlur={(event) => actions.setSpeed(normalizeSpeedInput(event.target.value))}
               />
             </div>
           </div>

@@ -1,10 +1,35 @@
 import { describe, expect, it } from "vitest";
 
+import { resolveAutoTabSwitch } from "./App";
 import {
   decideBackendRecovery,
   nextBrowserHealthState,
   resolveBackendMonitorFailure,
 } from "./app/useBackendClient";
+
+describe("resolveAutoTabSwitch", () => {
+  it("switches a passive tab to Progress when a job starts running", () => {
+    expect(resolveAutoTabSwitch({ previousUiState: "idle", uiState: "running", activeTab: "dashboard" })).toBe("progress");
+    expect(resolveAutoTabSwitch({ previousUiState: "idle", uiState: "running", activeTab: "progress" })).toBe("progress");
+  });
+
+  it("switches a passive tab to Library when a job completes", () => {
+    expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "completed", activeTab: "dashboard" })).toBe("library");
+  });
+
+  it("does not steal focus from an active working tab", () => {
+    for (const activeTab of ["convert", "document", "logs", "library", "settings"] as const) {
+      expect(resolveAutoTabSwitch({ previousUiState: "idle", uiState: "running", activeTab })).toBeNull();
+      expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "completed", activeTab })).toBeNull();
+    }
+  });
+
+  it("returns null when there is no running/completed transition", () => {
+    expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "running", activeTab: "dashboard" })).toBeNull();
+    expect(resolveAutoTabSwitch({ previousUiState: "completed", uiState: "completed", activeTab: "dashboard" })).toBeNull();
+    expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "idle", activeTab: "dashboard" })).toBeNull();
+  });
+});
 
 describe("resolveBackendMonitorFailure", () => {
   it("preserves the current endpoint after a transient monitor error while lifecycle remains ready", () => {

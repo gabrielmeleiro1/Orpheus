@@ -70,12 +70,22 @@ export function mapVoiceOption(voice: TtsVoiceOption): TermSelectOption {
   };
 }
 
+// The number input advertises min=0.5 max=3, but a typed value bypasses those
+// attributes, so clamp here (mirrors clampWorkerLimit for the workers field).
+// The backend also rejects out-of-range speed with a 422; this is the UX guard.
+export const MIN_NARRATION_SPEED = 0.5;
+export const MAX_NARRATION_SPEED = 3;
+
 export function parseSpeed(value: string): number {
   const parsed = Number.parseFloat(value);
   if (!Number.isFinite(parsed) || parsed <= 0) {
     return 1;
   }
-  return parsed;
+  return Math.min(MAX_NARRATION_SPEED, Math.max(MIN_NARRATION_SPEED, parsed));
+}
+
+export function normalizeSpeedInput(value: string): string {
+  return String(parseSpeed(value));
 }
 
 export function findEngine(models: ModelOptionsResponse | null, engineId: string): TtsEngineOption | null {

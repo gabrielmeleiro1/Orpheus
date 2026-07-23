@@ -42,6 +42,7 @@ export function useConversionSourceQueue({
   const applySourcePathsRef = useRef<(paths: string[]) => void>(() => {});
   const hasSelectedSourceRef = useRef(false);
   const browserFileInputRef = useRef<HTMLInputElement>(null);
+  const pasteInFlightRef = useRef(false);
 
   useEffect(() => {
     hasSelectedSourceRef.current = Boolean(
@@ -178,6 +179,12 @@ export function useConversionSourceQueue({
   );
 
   const onAddPastedText = useCallback(async () => {
+    // A ref guard (not the pasteBusy state) closes the same-frame double-click
+    // gap: two clicks dispatched before React re-renders both see the stale
+    // disabled state, but the ref flips synchronously so only the first runs.
+    if (pasteInFlightRef.current) {
+      return;
+    }
     if (!apiClient) {
       setPasteStatus("Backend is not connected.");
       return;
@@ -192,6 +199,7 @@ export function useConversionSourceQueue({
     const pasteTitle = pastedTitle.trim();
     const pasteAuthor = pastedAuthor.trim();
 
+    pasteInFlightRef.current = true;
     setPasteBusy(true);
     setPasteStatus("Creating markdown source…");
     try {
@@ -223,6 +231,7 @@ export function useConversionSourceQueue({
       setPasteStatus(error instanceof Error ? error.message : "Paste upload failed");
     } finally {
       setPasteBusy(false);
+      pasteInFlightRef.current = false;
     }
   }, [
     apiClient,

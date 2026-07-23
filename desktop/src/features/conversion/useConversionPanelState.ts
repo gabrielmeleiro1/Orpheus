@@ -42,6 +42,21 @@ export interface ConversionBlocker {
   showSettingsShortcut: boolean;
 }
 
+export function resolveStartDisabled(input: {
+  blockingReason: string | null;
+  queueRunning: boolean;
+  isStarting: boolean;
+  hasActiveJob: boolean;
+}): boolean {
+  // hasActiveJob closes two defects at once: a second "Start conversion" click
+  // firing another POST while the first job is still in flight, and the button
+  // looking actionable (but being a no-op) while a single queued job converts.
+  return input.blockingReason !== null
+    || input.queueRunning
+    || input.isStarting
+    || input.hasActiveJob;
+}
+
 export function canRunConversionQueue(input: {
   apiClientAvailable: boolean;
   queueRunning: boolean;
@@ -180,10 +195,12 @@ export function useConversionPanelState({
     cleanerModel: optionState.cleanerModel,
   });
 
-  const startDisabled =
-    conversionBlocker.blockingReason !== null ||
-    queueRunner.queueRunning ||
-    conversionJob.isStarting;
+  const startDisabled = resolveStartDisabled({
+    blockingReason: conversionBlocker.blockingReason,
+    queueRunning: queueRunner.queueRunning,
+    isStarting: conversionJob.isStarting,
+    hasActiveJob: Boolean(conversionJob.activeJobId),
+  });
 
   const canRunQueue = canRunConversionQueue({
     apiClientAvailable: Boolean(apiClient),

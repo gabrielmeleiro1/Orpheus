@@ -126,7 +126,7 @@ export function CleanerOptionsView({
             <div className="form-row">
               <span
                 className="form-row-label"
-                data-tip="Stored locally and only sent to this provider"
+                data-tip="Kept for this session only and sent only to this provider. Re-enter it after reconnecting."
                 data-tip-pos="right"
               >
                 API key

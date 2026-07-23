@@ -25,6 +25,28 @@ import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
 
 type BackendClientState = ReturnType<typeof useBackendClient>;
 
+// Tabs the app may auto-switch away from when a job starts or finishes. On any
+// other tab the user is actively working, so we leave their focus alone rather
+// than yanking them to Progress/Library mid-action.
+const PASSIVE_AUTO_SWITCH_TABS: ReadonlySet<DashboardTab> = new Set<DashboardTab>([
+  "dashboard",
+  "progress",
+]);
+
+export function resolveAutoTabSwitch(input: {
+  previousUiState: string;
+  uiState: string;
+  activeTab: DashboardTab;
+}): DashboardTab | null {
+  if (input.previousUiState !== "running" && input.uiState === "running") {
+    return PASSIVE_AUTO_SWITCH_TABS.has(input.activeTab) ? "progress" : null;
+  }
+  if (input.previousUiState !== "completed" && input.uiState === "completed") {
+    return PASSIVE_AUTO_SWITCH_TABS.has(input.activeTab) ? "library" : null;
+  }
+  return null;
+}
+
 function DashboardApp({
   backend,
   onOpenRuntimeSetup,
@@ -62,16 +84,21 @@ function DashboardApp({
     const previous = previousUiStateRef.current;
     previousUiStateRef.current = conversionJob.uiState;
 
-    if (previous !== "running" && conversionJob.uiState === "running") {
-      setActiveTab("progress");
-      return;
-    }
-
+    // Refresh the library on completion regardless of the active tab — that is a
+    // data refresh, not a focus change.
     if (previous !== "completed" && conversionJob.uiState === "completed") {
       void refreshLibrary();
-      setActiveTab("library");
     }
-  }, [conversionJob.uiState, refreshLibrary]);
+
+    const nextTab = resolveAutoTabSwitch({
+      previousUiState: previous,
+      uiState: conversionJob.uiState,
+      activeTab,
+    });
+    if (nextTab) {
+      setActiveTab(nextTab);
+    }
+  }, [activeTab, conversionJob.uiState, refreshLibrary]);
 
   const { playRelative, seekBy, seekTo, togglePlay } = player;
   useGlobalShortcuts({
