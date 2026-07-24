@@ -239,20 +239,31 @@ class SharedWorkerPoolManager:
         self._current_failed.clear()
         self._current_chapter_titles.clear()
 
-    def _finish_thread_executor_shutdown(self, executor: Any) -> None:
+    def _finish_thread_executor_shutdown(
+        self,
+        executor: Any,
+        completion_event: threading.Event | None = None,
+        failure_holder: list[BaseException] | None = None,
+        cancel_futures: bool = True,
+    ) -> None:
         """Shutdown a thread executor and release its stopping barrier."""
         try:
             self._call_executor_shutdown(
                 executor,
                 wait=True,
-                cancel_futures=True,
+                cancel_futures=cancel_futures,
             )
-        except Exception:
+        except Exception as exc:
             # Keep the barrier set: without confirmation from shutdown(), a
             # successor must not start while the old worker may still mutate
             # conversion artifacts.
             logger.exception("Cancelled thread worker executor failed to shut down")
+            if failure_holder is not None:
+                failure_holder.append(exc)
             return
+        finally:
+            if completion_event is not None:
+                completion_event.set()
 
         with self._lock:
             if self._stopping_executor is executor:
@@ -781,6 +792,13 @@ class SharedWorkerPoolManager:
 
         with self._lock:
             executor = self._state.executor
+            use_processes = self._state.use_processes
+            if executor is not None and not use_processes:
+                # Thread workers cannot be force-terminated after a bounded
+                # wait. Keep a barrier until the asynchronous wait=True
+                # shutdown confirms that the executor has quiesced.
+                self._stopping_executor = executor
+                self._stopping_done.clear()
             self._state = _PoolState(
                 executor=None,
                 config_fingerprint=None,
@@ -792,13 +810,26 @@ class SharedWorkerPoolManager:
         if executor is None:
             return True
 
+        timeout = (
+            self._shutdown_timeout_seconds
+            if timeout_seconds is None
+            else max(0.0, float(timeout_seconds))
+        )
+        if not use_processes:
+            completion_event = threading.Event()
+            failures: list[BaseException] = []
+            threading.Thread(
+                target=self._finish_thread_executor_shutdown,
+                args=(executor, completion_event, failures, cancel_futures),
+                name="shared-worker-shutdown",
+                daemon=True,
+            ).start()
+            completed = completion_event.wait(timeout=timeout)
+            return completed and not failures
+
         return self._shutdown_executor_bounded(
             executor,
-            timeout_seconds=(
-                self._shutdown_timeout_seconds
-                if timeout_seconds is None
-                else max(0.0, float(timeout_seconds))
-            ),
+            timeout_seconds=timeout,
             cancel_futures=cancel_futures,
         )
 

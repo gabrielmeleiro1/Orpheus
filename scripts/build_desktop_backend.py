@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import shutil
@@ -74,6 +75,7 @@ MLX_CORE_EXTENSION = Path("_internal") / "mlx" / "core.cpython-312-darwin.so"
 MLX_ROOT_DYLIB = Path("_internal") / "libmlx.dylib"
 MLX_NESTED_DYLIB = Path("_internal") / "mlx" / "lib" / "libmlx.dylib"
 ESPEAK_DATA_DIR = Path("_internal") / "espeakng_loader" / "espeak-ng-data"
+RUNTIME_PROFILE_RESOURCE = Path("runtime-profile.json")
 
 
 def _default_python_executable() -> str:
@@ -313,6 +315,7 @@ def required_sidecar_resources(
 ) -> tuple[Path, ...]:
     profile = _resolve_runtime_profile(target_triple, runtime_profile)
     resources: list[Path] = []
+    resources.append(RUNTIME_PROFILE_RESOURCE)
     resources.extend(REQUIREMENTS_MANIFEST_PYINSTALLER_RESOURCES)
     if profile in {"mlx", "cuda"}:
         resources.extend(PHONEMIZER_REQUIRED_PYINSTALLER_RESOURCES)
@@ -438,11 +441,12 @@ def _validate_sidecar_resources(
     runtime_profile: str | None = None,
 ) -> None:
     resolved_target = target_triple or _resolve_target_triple("")
+    resolved_profile = _resolve_runtime_profile(resolved_target, runtime_profile)
     missing = [
         resource
         for resource in required_sidecar_resources(
             resolved_target,
-            runtime_profile=runtime_profile,
+            runtime_profile=resolved_profile,
         )
         if not (sidecar_dir / resource).is_file()
     ]
@@ -452,6 +456,22 @@ def _validate_sidecar_resources(
             "PyInstaller sidecar is missing required runtime resources:\n"
             f"{formatted}\n"
             "Rebuild with a spec that collects platform runtime package data."
+        )
+
+    marker_path = sidecar_dir / RUNTIME_PROFILE_RESOURCE
+    try:
+        marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Packaged runtime profile marker is invalid: {marker_path}"
+        ) from exc
+    if not isinstance(marker_payload, dict):
+        raise RuntimeError(f"Packaged runtime profile marker is invalid: {marker_path}")
+    marker_profile = str(marker_payload.get("profile", "")).strip().lower()
+    if marker_profile != resolved_profile:
+        raise RuntimeError(
+            "Packaged runtime profile mismatch: "
+            f"expected {resolved_profile!r}, found {marker_profile!r}."
         )
 
 
@@ -612,6 +632,10 @@ def _copy_sidecar_for_tauri(
         target_triple=target_triple,
     )
     resolved_profile = _resolve_runtime_profile(target_triple, runtime_profile)
+    (TAURI_SIDECAR_RESOURCE_DIR / RUNTIME_PROFILE_RESOURCE).write_text(
+        json.dumps({"profile": resolved_profile}, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
     if resolved_profile == "mlx":
         _normalize_mlx_dylib_layout(TAURI_SIDECAR_RESOURCE_DIR)
     if resolved_profile in {"mlx", "cuda"}:

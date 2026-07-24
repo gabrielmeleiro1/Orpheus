@@ -27,6 +27,8 @@ from modules.web.server import create_app
 # libespeak-ng POSIX path_home buffer (speech.h N_PATH_HOME).
 # Limit is filesystem bytes (C char buffer), not Python string code points.
 _LIBESPEAK_PATH_HOME_LIMIT = 160
+_SUPPORTED_RUNTIME_PROFILES = frozenset({"base", "mlx", "cuda"})
+_RUNTIME_PROFILE_MARKER = "runtime-profile.json"
 
 
 def _path_filesystem_byte_length(path: Path | str) -> int:
@@ -156,11 +158,48 @@ def _write_ready_file(payload: dict[str, object]) -> None:
     os.replace(temp_file, ready_file)
 
 
+def _runtime_profile_identity() -> str:
+    """Resolve the runtime identity embedded by the sidecar build."""
+    if getattr(sys, "frozen", False):
+        marker_path = Path(sys.executable).resolve().parent / _RUNTIME_PROFILE_MARKER
+        try:
+            payload = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"Packaged runtime profile marker is missing or invalid: {marker_path}"
+            ) from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError(
+                f"Packaged runtime profile marker is missing or invalid: {marker_path}"
+            )
+        profile = str(payload.get("profile", "")).strip().lower()
+        if profile not in _SUPPORTED_RUNTIME_PROFILES:
+            raise RuntimeError(
+                f"Packaged runtime profile marker has an unsupported profile: {profile!r}"
+            )
+        return profile
+
+    configured = os.environ.get("ORPHEUS_RUNTIME_PROFILE", "").strip().lower()
+    if not configured:
+        return "development"
+    if configured not in _SUPPORTED_RUNTIME_PROFILES:
+        raise RuntimeError(f"Unsupported ORPHEUS_RUNTIME_PROFILE: {configured!r}")
+    return configured
+
+
 class _DesktopReadyServer(uvicorn.Server):
-    def __init__(self, config: uvicorn.Config, *, ready_host: str, token: str) -> None:
+    def __init__(
+        self,
+        config: uvicorn.Config,
+        *,
+        ready_host: str,
+        token: str,
+        runtime_profile: str,
+    ) -> None:
         super().__init__(config)
         self._ready_host = ready_host
         self._token = token
+        self._runtime_profile = runtime_profile
         self.ready_emitted = False
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
@@ -174,6 +213,7 @@ class _DesktopReadyServer(uvicorn.Server):
             "host": self._ready_host,
             "port": bound_port,
             "token": self._token,
+            "runtime_profile": self._runtime_profile,
         }
         _write_ready_file(payload)
         print(json.dumps(payload, separators=(",", ":")), flush=True)
@@ -278,6 +318,11 @@ def main(argv: list[str] | None = None) -> int:
     multiprocessing.freeze_support()
     args = build_parser().parse_args(argv)
     token = secrets.token_urlsafe(32)
+    try:
+        runtime_profile = _runtime_profile_identity()
+    except RuntimeError as exc:
+        print(f"failed to start desktop backend: {exc}", file=sys.stderr)
+        return 1
     app = create_app(desktop_mode=True, desktop_api_token=token)
     config = uvicorn.Config(
         app,
@@ -286,7 +331,12 @@ def main(argv: list[str] | None = None) -> int:
         access_log=False,
         log_level="warning",
     )
-    server = _DesktopReadyServer(config, ready_host=args.host, token=token)
+    server = _DesktopReadyServer(
+        config,
+        ready_host=args.host,
+        token=token,
+        runtime_profile=runtime_profile,
+    )
 
     try:
         server.run()

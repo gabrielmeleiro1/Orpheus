@@ -655,7 +655,11 @@ class LibraryService:
             return None
 
         chapter_path = self._resolve_stored_path(getattr(selected, "mp3_path", None))
-        artifact_dir = chapter_path.parent if chapter_path is not None else None
+        artifact_dir = (
+            chapter_path.parent
+            if chapter_path is not None and self._is_within_output_root(chapter_path)
+            else None
+        )
         if artifact_dir is None:
             return {
                 "book_id": book_id,

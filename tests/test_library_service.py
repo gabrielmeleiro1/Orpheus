@@ -291,6 +291,54 @@ def test_library_service_reads_chapter_cleaning_preview(tmp_path):
     assert preview["trace_rows"][0]["chunk_index"] == 1
 
 
+def test_library_service_cleaning_preview_rejects_chapter_path_outside_output(
+    tmp_path,
+):
+    output_root = tmp_path / "output"
+    outside_dir = tmp_path / "private"
+    outside_dir.mkdir()
+    outside_audio = outside_dir / "01_chapter.mp3"
+    outside_audio.write_text("audio", encoding="utf-8")
+    secret = outside_dir / "chapter_01_before_cleaning.md"
+    secret.write_text("must not be exposed", encoding="utf-8")
+    repository = _DeleteRepositoryStub(
+        (
+            Book(
+                id=13,
+                title="Corrupt Record",
+                author="Tester",
+                source_path=str(tmp_path / "source.md"),
+                source_type=SourceType.MD,
+                conversion_mode=ConversionMode.AUDIOBOOK,
+                total_chapters=1,
+                playback_path=None,
+                playback_status=PlaybackStatus.CHAPTER_AUDIO,
+                playback_position_sec=0.0,
+                created_at=datetime(2026, 4, 1, 9, 0, 0),
+                updated_at=datetime(2026, 4, 1, 9, 5, 0),
+            ),
+            [
+                Chapter(
+                    id=22,
+                    book_id=13,
+                    chapter_number=1,
+                    title="Chapter 1",
+                    duration_ms=1000,
+                    mp3_path=str(outside_audio),
+                )
+            ],
+        )
+    )
+    service = LibraryService(repository, output_dir=output_root)
+
+    preview = service.get_chapter_cleaning_preview(13, 1)
+
+    assert preview is not None
+    assert preview["available"] is False
+    assert preview["before_text"] == ""
+    assert secret.read_text(encoding="utf-8") == "must not be exposed"
+
+
 def test_library_service_delete_book_removes_uploaded_source_copy(tmp_path):
     temp_dir = tmp_path / "temp"
     source_path = temp_dir / "web_uploads" / "uploaded.epub"

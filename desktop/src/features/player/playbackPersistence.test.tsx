@@ -83,6 +83,34 @@ describe("playback persistence serialization", () => {
     };
   }
 
+  async function mountWithClientSwap(
+    initialApiClient: ApiClient,
+    library = createLibrary(),
+    onSaveFailed = vi.fn(),
+  ): Promise<{ swapClient: (apiClient: ApiClient) => Promise<void> }> {
+    let activeApiClient = initialApiClient;
+    function Probe() {
+      result = usePlaybackPersistence({
+        apiClient: activeApiClient,
+        library,
+        audioRef: { current: createAudio() },
+        loadedBookId: library.selectedBookId,
+        onSaveFailed,
+      });
+      return null;
+    }
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe />);
+    });
+    return {
+      swapClient: async (apiClient: ApiClient) => {
+        activeApiClient = apiClient;
+        await act(async () => root.render(<Probe />));
+      },
+    };
+  }
+
   it("waits for an earlier save before sending a newer position", async () => {
     let resolveFirst!: (value: { position_sec: number }) => void;
     const updateBookPlaybackPosition = vi
@@ -161,6 +189,95 @@ describe("playback persistence serialization", () => {
     expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(2);
     expect(updateBookPlaybackPosition).toHaveBeenNthCalledWith(1, 1, 10);
     resolveBookOne({ position_sec: 10 });
+  });
+
+  it("ignores a stale success from an earlier API client generation", async () => {
+    let resolveOldSave!: (value: { position_sec: number }) => void;
+    const oldClient = {
+      updateBookPlaybackPosition: vi.fn(
+        () => new Promise<{ position_sec: number }>((resolve) => { resolveOldSave = resolve; }),
+      ),
+    } as unknown as ApiClient;
+    const newClient = {
+      updateBookPlaybackPosition: vi.fn().mockResolvedValue({ position_sec: 90 }),
+    } as unknown as ApiClient;
+    const library = createLibrary(1);
+    const mounted = await mountWithClientSwap(oldClient, library);
+
+    let staleSave!: Promise<number | null>;
+    await act(async () => {
+      staleSave = result.persistBookPlaybackPosition(1, 60, { force: true });
+    });
+    await vi.waitFor(() => expect(oldClient.updateBookPlaybackPosition).toHaveBeenCalledTimes(1));
+
+    await mounted.swapClient(newClient);
+    await act(async () => resolveOldSave({ position_sec: 60 }));
+
+    await expect(staleSave).resolves.toBeNull();
+    expect(library.setSelectedPlaybackPosition).not.toHaveBeenCalled();
+
+    await expect(result.persistBookPlaybackPosition(1, 90, { force: true })).resolves.toBe(90);
+    expect(newClient.updateBookPlaybackPosition).toHaveBeenCalledWith(1, 90);
+    expect(library.setSelectedPlaybackPosition).toHaveBeenCalledWith(90);
+  });
+
+  it("starts non-force saves on a new client without old tails or markers", async () => {
+    let resolveHungSave!: (value: { position_sec: number }) => void;
+    const oldClient = {
+      updateBookPlaybackPosition: vi
+        .fn()
+        .mockResolvedValueOnce({ position_sec: 60 })
+        .mockImplementationOnce(
+          () => new Promise<{ position_sec: number }>((resolve) => { resolveHungSave = resolve; }),
+        ),
+    } as unknown as ApiClient;
+    const newClient = {
+      updateBookPlaybackPosition: vi.fn().mockResolvedValue({ position_sec: 65 }),
+    } as unknown as ApiClient;
+    const library = createLibrary(1);
+    const mounted = await mountWithClientSwap(oldClient, library);
+
+    await expect(result.persistBookPlaybackPosition(1, 60, { force: true })).resolves.toBe(60);
+    let hungSave!: Promise<number | null>;
+    await act(async () => {
+      hungSave = result.persistBookPlaybackPosition(1, 61, { force: true });
+    });
+    await vi.waitFor(() => expect(oldClient.updateBookPlaybackPosition).toHaveBeenCalledTimes(2));
+
+    await mounted.swapClient(newClient);
+    const currentSave = result.persistBookPlaybackPosition(1, 65, { silent: true });
+    await vi.waitFor(() => expect(newClient.updateBookPlaybackPosition).toHaveBeenCalledWith(1, 65));
+    await expect(currentSave).resolves.toBe(65);
+
+    resolveHungSave({ position_sec: 61 });
+    await expect(hungSave).resolves.toBeNull();
+    expect(library.setSelectedPlaybackPosition).toHaveBeenCalledWith(65);
+  });
+
+  it("ignores a stale failure from an earlier API client generation", async () => {
+    let rejectOldSave!: (error: Error) => void;
+    const oldClient = {
+      updateBookPlaybackPosition: vi.fn(
+        () => new Promise<{ position_sec: number }>((_, reject) => { rejectOldSave = reject; }),
+      ),
+    } as unknown as ApiClient;
+    const newClient = {
+      updateBookPlaybackPosition: vi.fn().mockResolvedValue({ position_sec: 90 }),
+    } as unknown as ApiClient;
+    const onSaveFailed = vi.fn();
+    const mounted = await mountWithClientSwap(oldClient, createLibrary(1), onSaveFailed);
+
+    let staleSave!: Promise<number | null>;
+    await act(async () => {
+      staleSave = result.persistBookPlaybackPosition(1, 60, { force: true });
+    });
+    await vi.waitFor(() => expect(oldClient.updateBookPlaybackPosition).toHaveBeenCalledTimes(1));
+
+    await mounted.swapClient(newClient);
+    await act(async () => rejectOldSave(new Error("backend replaced")));
+
+    await expect(staleSave).resolves.toBeNull();
+    expect(onSaveFailed).not.toHaveBeenCalled();
   });
 
   it("ignores deferred silent failures from a book that is no longer selected", async () => {

@@ -43,7 +43,11 @@ def _write_requirements_manifests(onedir: Path) -> None:
         (manifest_dir / f"{name}.txt").write_text("packaging\n", encoding="utf-8")
 
 
-def _write_required_pyinstaller_resources(onedir: Path) -> None:
+def _write_required_pyinstaller_resources(
+    onedir: Path,
+    *,
+    runtime_profile: str = "mlx",
+) -> None:
     internal_dir = onedir / "_internal"
     (internal_dir / "mlx" / "lib").mkdir(parents=True)
     (internal_dir / "mlx" / "lib" / "mlx.metallib").write_text("metal", encoding="utf-8")
@@ -53,6 +57,10 @@ def _write_required_pyinstaller_resources(onedir: Path) -> None:
         encoding="utf-8",
     )
     _write_requirements_manifests(onedir)
+    (onedir / "runtime-profile.json").write_text(
+        json.dumps({"profile": runtime_profile}),
+        encoding="utf-8",
+    )
 
 
 def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary(
@@ -114,6 +122,9 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
     assert (copied_executable.parent / "bin" / "ffprobe").read_text(
         encoding="utf-8"
     ) == "ffprobe source"
+    assert json.loads(
+        (copied_executable.parent / "runtime-profile.json").read_text(encoding="utf-8")
+    ) == {"profile": "mlx"}
     if os.name != "nt":
         assert (copied_executable.parent / "bin" / "ffmpeg").stat().st_mode & stat.S_IXUSR
         assert (copied_executable.parent / "bin" / "ffprobe").stat().st_mode & stat.S_IXUSR
@@ -299,6 +310,26 @@ def test_validate_existing_sidecar_requires_executable_and_runtime_resources(
     _write_required_pyinstaller_resources(sidecar_dir)
     _write_executable(sidecar_dir / "bin" / "ffmpeg")
     _write_executable(sidecar_dir / "bin" / "ffprobe")
+
+    (sidecar_dir / "runtime-profile.json").write_text(
+        json.dumps({"profile": "base"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="runtime profile mismatch"):
+        build_desktop_backend.validate_existing_sidecar(
+            target_triple="aarch64-apple-darwin",
+            runtime_profile="mlx",
+        )
+    (sidecar_dir / "runtime-profile.json").write_text("[]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="runtime profile marker is invalid"):
+        build_desktop_backend.validate_existing_sidecar(
+            target_triple="aarch64-apple-darwin",
+            runtime_profile="mlx",
+        )
+    (sidecar_dir / "runtime-profile.json").write_text(
+        json.dumps({"profile": "mlx"}),
+        encoding="utf-8",
+    )
 
     assert (
         build_desktop_backend.validate_existing_sidecar(

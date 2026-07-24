@@ -56,6 +56,16 @@ export function usePlaybackPersistence({
   const saveSequenceRef = useRef(0);
   const saveTailsRef = useRef<Map<number, Promise<number | null>>>(new Map());
   const consecutiveSaveFailuresRef = useRef<Map<number, number>>(new Map());
+  const playbackClientGenerationRef = useRef(0);
+  const playbackClientIdentityRef = useRef(apiClient);
+  if (playbackClientIdentityRef.current !== apiClient) {
+    playbackClientIdentityRef.current = apiClient;
+    playbackClientGenerationRef.current += 1;
+    lastSavedPlaybackRef.current.clear();
+    committedPlaybackRef.current.clear();
+    consecutiveSaveFailuresRef.current.clear();
+    saveTailsRef.current.clear();
+  }
   const selectedBookIdRef = useRef(library.selectedBookId);
   selectedBookIdRef.current = library.selectedBookId;
   const loadedBookIdRef = useRef(loadedBookId);
@@ -84,6 +94,11 @@ export function usePlaybackPersistence({
         return null;
       }
 
+      const requestApiClient = apiClient;
+      const requestClientGeneration = playbackClientGenerationRef.current;
+      const ownsCurrentClientGeneration = () =>
+        playbackClientGenerationRef.current === requestClientGeneration &&
+        playbackClientIdentityRef.current === requestApiClient;
       const normalizedPosition = Math.max(0, Math.round((Number(positionSec) || 0) * 10) / 10);
       const force = Boolean(options.force);
       const previousMarker = lastSavedPlaybackRef.current.get(bookId) ?? null;
@@ -100,8 +115,14 @@ export function usePlaybackPersistence({
       lastSavedPlaybackRef.current.set(bookId, { positionSec: normalizedPosition, token });
       const previousTail = saveTailsRef.current.get(bookId) ?? Promise.resolve(null);
       const operation = previousTail.catch(() => null).then(async () => {
+        if (!ownsCurrentClientGeneration()) {
+          return null;
+        }
         try {
-          const response = await apiClient.updateBookPlaybackPosition(bookId, normalizedPosition);
+          const response = await requestApiClient.updateBookPlaybackPosition(bookId, normalizedPosition);
+          if (!ownsCurrentClientGeneration()) {
+            return null;
+          }
           const savedPosition = Number(response.position_sec);
           const resolved = Number.isFinite(savedPosition) ? savedPosition : normalizedPosition;
           committedPlaybackRef.current.set(bookId, resolved);
@@ -115,6 +136,9 @@ export function usePlaybackPersistence({
           consecutiveSaveFailuresRef.current.delete(bookId);
           return resolved;
         } catch {
+          if (!ownsCurrentClientGeneration()) {
+            return null;
+          }
           const currentMarker = lastSavedPlaybackRef.current.get(bookId);
           if (currentMarker?.token === token) {
             const committedPosition = committedPlaybackRef.current.get(bookId);

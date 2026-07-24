@@ -353,6 +353,32 @@ def test_backup_database_includes_committed_wal_pages_and_uses_unique_names(tmp_
         assert title == "WAL Backed"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not portable")
+def test_prune_backup_and_report_are_owner_only(tmp_path):
+    db_path = tmp_path / "data" / "audiobooks.db"
+    output_dir = tmp_path / "output"
+    temp_dir = tmp_path / "temp"
+    SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir).close()
+
+    previous_umask = os.umask(0o022)
+    try:
+        report = prune_stale_records_and_files(
+            db_path,
+            output_dir=output_dir,
+            temp_dir=temp_dir,
+            aggressive=True,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    backup_path = Path(report["backup_path"])
+    report_path = Path(report["report_path"])
+    assert backup_path.stat().st_mode & 0o777 == 0o600
+    assert backup_path.parent.stat().st_mode & 0o777 == 0o700
+    assert report_path.stat().st_mode & 0o777 == 0o600
+    assert report_path.parent.stat().st_mode & 0o777 == 0o700
+
+
 def test_prune_preserves_packaged_only_books_and_output_dirs(tmp_path):
     root = tmp_path
     db_path = root / "data" / "audiobooks.db"

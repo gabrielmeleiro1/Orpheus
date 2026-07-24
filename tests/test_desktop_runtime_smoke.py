@@ -153,6 +153,45 @@ def test_packaged_app_sidecar_resolver_uses_embedded_resource_not_staging(tmp_pa
     assert command[0] == str(embedded)
 
 
+def test_packaged_runtime_profile_resolver_reads_confined_marker(tmp_path: Path) -> None:
+    app_bundle = tmp_path / "Orpheus.app"
+    marker = (
+        app_bundle
+        / "Contents/Resources/binaries/orpheus-desktop-backend/runtime-profile.json"
+    )
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{"profile": "base"}\n', encoding="utf-8")
+
+    assert desktop_runtime_smoke.resolve_packaged_runtime_profile(app_bundle) == "base"
+
+
+def test_packaged_runtime_profile_resolver_rejects_invalid_or_escaping_marker(
+    tmp_path: Path,
+) -> None:
+    invalid_bundle = tmp_path / "Invalid.app"
+    invalid_marker = (
+        invalid_bundle
+        / "Contents/Resources/binaries/orpheus-desktop-backend/runtime-profile.json"
+    )
+    invalid_marker.parent.mkdir(parents=True)
+    invalid_marker.write_text('{"profile": "development"}\n', encoding="utf-8")
+    with pytest.raises(desktop_runtime_smoke.SmokeFailure, match="runtime profile"):
+        desktop_runtime_smoke.resolve_packaged_runtime_profile(invalid_bundle)
+
+    escaping_bundle = tmp_path / "EscapingProfile.app"
+    escaping_parent = (
+        escaping_bundle
+        / "Contents/Resources/binaries/orpheus-desktop-backend"
+    )
+    escaping_parent.mkdir(parents=True)
+    outside = tmp_path / "outside/runtime-profile.json"
+    outside.parent.mkdir()
+    outside.write_text('{"profile": "base"}\n', encoding="utf-8")
+    escaping_parent.joinpath("runtime-profile.json").symlink_to(outside)
+    with pytest.raises(ValueError, match="inside app bundle"):
+        desktop_runtime_smoke.resolve_packaged_runtime_profile(escaping_bundle)
+
+
 @pytest.mark.parametrize("app_path", [Path("not-an-app"), Path("Orpheus.app/Contents")])
 def test_packaged_app_sidecar_resolver_rejects_non_app_bundle(tmp_path: Path, app_path: Path) -> None:
     with pytest.raises(ValueError, match=r"\.app"):
@@ -624,6 +663,66 @@ def test_run_iteration_records_ready_and_warm_library_timings(monkeypatch, tmp_p
     assert result.warm_library_seconds < warm_library_budget_seconds
     assert result.authenticated_library_requests == request_count
     assert observed == {"requests": request_count, "skip_sse": True}
+
+
+def test_run_iteration_rejects_packaged_runtime_profile_mismatch(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    app_bundle = tmp_path / "Orpheus.app"
+    marker = (
+        app_bundle
+        / "Contents/Resources/binaries/orpheus-desktop-backend/runtime-profile.json"
+    )
+    marker.parent.mkdir(parents=True)
+    marker.write_text('{"profile": "base"}\n', encoding="utf-8")
+    ready = desktop_runtime_smoke.ReadyPayload(
+        host="127.0.0.1",
+        port=12345,
+        token="synthetic-token",
+        runtime_profile="cuda",
+    )
+    runtime_paths = desktop_runtime_smoke.RuntimePaths(
+        root=tmp_path / "runtime",
+        data_dir=tmp_path / "runtime/data",
+        output_dir=tmp_path / "runtime/output",
+        temp_dir=tmp_path / "runtime/temp",
+        db_path=tmp_path / "runtime/data/audiobooks.db",
+        ready_file=tmp_path / "runtime/backend-ready.json",
+    )
+    monkeypatch.setattr(
+        desktop_runtime_smoke,
+        "start_backend",
+        lambda **_kwargs: (object(), ready, [], []),
+    )
+    monkeypatch.setattr(
+        desktop_runtime_smoke.RuntimePaths,
+        "create",
+        classmethod(lambda cls: runtime_paths),
+    )
+    monkeypatch.setattr(desktop_runtime_smoke, "stop_backend", lambda _process: None)
+    monkeypatch.setattr(
+        desktop_runtime_smoke,
+        "run_api_checks",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("profile must be checked before API requests")
+        ),
+    )
+
+    result = desktop_runtime_smoke.run_iteration(
+        1,
+        backend="sidecar",
+        sidecar_path=None,
+        app_bundle=app_bundle,
+        python_executable=sys.executable,
+        request_count=1,
+        timeout_seconds=30.0,
+        reduced_path=True,
+        skip_sse=True,
+    )
+
+    assert result.passed is False
+    assert "runtime profile mismatch" in (result.error or "").lower()
 
 
 def test_run_iteration_runs_ffmpeg_runtime_check_when_requested(monkeypatch, tmp_path: Path) -> None:

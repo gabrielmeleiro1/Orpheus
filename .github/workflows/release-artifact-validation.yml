@@ -98,6 +98,7 @@ jobs:
           FFPROBE="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/bin/ffprobe"
           LICENSE_FILE="$APP_BUNDLE/Contents/Resources/LICENSE"
           THIRD_PARTY_LICENSES="$APP_BUNDLE/Contents/Resources/THIRD_PARTY_LICENSES.md"
+          RUNTIME_PROFILE_MARKER="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/runtime-profile.json"
           APP_EXECUTABLE_COUNT="$(find "$APP_BUNDLE/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print | wc -l | tr -d ' ')"
           test "$APP_EXECUTABLE_COUNT" = "1"
           APP_EXECUTABLE="$(find "$APP_BUNDLE/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print -quit)"
@@ -109,6 +110,8 @@ jobs:
           for notice in "$LICENSE_FILE" "$THIRD_PARTY_LICENSES"; do
             test -s "$notice"
           done
+          test -s "$RUNTIME_PROFILE_MARKER"
+          python -c 'import json, sys; payload = json.load(open(sys.argv[1], encoding="utf-8")); assert payload == {"profile": "base"}' "$RUNTIME_PROFILE_MARKER"
 
           case "$(rustc -vV | awk '/^host:/ {print $2}')" in
             aarch64-apple-darwin) EXPECTED_ARCH="arm64" ;;
@@ -124,6 +127,7 @@ jobs:
             echo "EXPECTED_ARCH=$EXPECTED_ARCH"
             echo "LICENSE_FILE=$LICENSE_FILE"
             echo "THIRD_PARTY_LICENSES=$THIRD_PARTY_LICENSES"
+            echo "RUNTIME_PROFILE_MARKER=$RUNTIME_PROFILE_MARKER"
             file "$APP_EXECUTABLE" "$SIDECAR" "$FFMPEG" "$FFPROBE"
           } | tee release-artifact-verification.log
 

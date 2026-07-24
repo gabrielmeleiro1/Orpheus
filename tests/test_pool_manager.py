@@ -554,6 +554,86 @@ def test_shared_pool_stopping_barrier_blocks_successor_until_thread_worker_quies
             manager.shutdown(timeout_seconds=0.0)
 
 
+def test_shared_pool_shutdown_barrier_blocks_successor_after_active_run_cancels() -> None:
+    reset_executor_class_state(_UncooperativeThreadExecutor)
+    chapters = [_Chapter(number=1, title="One")]
+    cancellation_requested = threading.Event()
+    first_results: list[ChapterResult] = []
+    second_results: list[ChapterResult] = []
+    shutdown_results: list[bool] = []
+
+    with patch(
+        "modules.pipeline.pool_manager.ThreadPoolExecutor",
+        _UncooperativeThreadExecutor,
+    ):
+        manager = SharedWorkerPoolManager(max_workers=1, shutdown_timeout_seconds=0.05)
+        manager._use_processes = False  # noqa: SLF001
+        first_runner = threading.Thread(
+            target=lambda: first_results.extend(
+                manager.run_parallel(
+                    chapters=chapters,
+                    process_func=_process,
+                    config_fingerprint="shutdown-race",
+                    cancel_requested=cancellation_requested.is_set,
+                )
+            ),
+            daemon=True,
+        )
+        first_runner.start()
+
+        try:
+            deadline = time.monotonic() + 2.0
+            while not _UncooperativeThreadExecutor.instances:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("thread executor was not created")
+                time.sleep(0.01)
+            first_executor = _UncooperativeThreadExecutor.instances[0]
+
+            shutdown_runner = threading.Thread(
+                target=lambda: shutdown_results.append(
+                    manager.shutdown(timeout_seconds=0.05)
+                ),
+                daemon=True,
+            )
+            shutdown_runner.start()
+            assert first_executor.shutdown_entered.wait(timeout=1.0)
+            shutdown_runner.join(timeout=1.0)
+            assert not shutdown_runner.is_alive()
+            assert shutdown_results == [False]
+
+            cancellation_requested.set()
+            first_runner.join(timeout=1.0)
+            assert not first_runner.is_alive()
+            assert first_results == []
+            assert first_executor.worker_finished.is_set() is False
+
+            second_runner = threading.Thread(
+                target=lambda: second_results.extend(
+                    manager.run_parallel(
+                        chapters=chapters,
+                        process_func=_process,
+                        config_fingerprint="successor",
+                    )
+                ),
+                daemon=True,
+            )
+            second_runner.start()
+            second_runner.join(timeout=0.2)
+            assert second_runner.is_alive()
+            assert len(_UncooperativeThreadExecutor.instances) == 1
+
+            first_executor.release_worker.set()
+            second_runner.join(timeout=2.0)
+            assert not second_runner.is_alive()
+            assert second_results
+            assert len(_UncooperativeThreadExecutor.instances) == 2
+        finally:
+            if _UncooperativeThreadExecutor.instances:
+                _UncooperativeThreadExecutor.instances[0].release_worker.set()
+            first_runner.join(timeout=2.0)
+            manager.shutdown(timeout_seconds=0.0)
+
+
 def test_shared_pool_cancellation_clears_current_job_metrics() -> None:
     reset_executor_class_state(_QuiescingCancellationExecutor)
     chapters = [_Chapter(number=1, title="One")]

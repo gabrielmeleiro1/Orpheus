@@ -125,6 +125,44 @@ def test_desktop_backend_launcher_emits_ready_json_for_ephemeral_port(tmp_path: 
         _stop_process(process)
 
 
+def test_desktop_backend_launcher_reports_selected_runtime_profile(tmp_path: Path) -> None:
+    _skip_if_loopback_bind_unavailable()
+    process = _launch_desktop_backend(
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "0",
+        cwd=tmp_path,
+        env_overrides={"ORPHEUS_RUNTIME_PROFILE": "base"},
+    )
+    try:
+        payload = _read_ready_payload(process)
+        assert payload["runtime_profile"] == "base"
+    finally:
+        _stop_process(process)
+
+
+@pytest.mark.parametrize("payload", [[], None])
+def test_frozen_launcher_rejects_non_object_runtime_profile_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    payload,
+) -> None:
+    from apps.launchers import desktop_backend
+
+    executable = tmp_path / "orpheus-desktop-backend"
+    executable.write_text("", encoding="utf-8")
+    executable.with_name("runtime-profile.json").write_text(
+        json.dumps(payload),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(desktop_backend.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(desktop_backend.sys, "executable", str(executable))
+
+    with pytest.raises(RuntimeError, match="marker is missing or invalid"):
+        desktop_backend._runtime_profile_identity()
+
+
 def test_desktop_backend_launcher_writes_ready_file_for_packaged_handoff(tmp_path: Path) -> None:
     _skip_if_loopback_bind_unavailable()
     ready_file = tmp_path / "runtime" / "backend-ready.json"
@@ -208,10 +246,18 @@ def test_desktop_backend_main_calls_multiprocessing_freeze_support(monkeypatch) 
             return argparse.Namespace(host="127.0.0.1", port=0)
 
     class _FakeServer:
-        def __init__(self, config: object, *, ready_host: str, token: str) -> None:
+        def __init__(
+            self,
+            config: object,
+            *,
+            ready_host: str,
+            token: str,
+            runtime_profile: str,
+        ) -> None:
             _ = config
             _ = ready_host
             _ = token
+            _ = runtime_profile
             call_order.append("server_init")
             self.ready_emitted = True
 

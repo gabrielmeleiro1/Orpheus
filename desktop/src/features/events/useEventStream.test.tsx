@@ -227,6 +227,54 @@ describe("useEventStream reconciliation fencing", () => {
     expect(getProbe().progressPct).toBe(0);
   });
 
+  it("ignores stale logs from an older job but keeps current and terminal logs", async () => {
+    const getActiveConversion = vi.fn(async () => ({ active: false, job: null }));
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = {
+      getActiveConversion,
+    } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe />);
+    });
+
+    await act(async () => {
+      getProbe().markConversionStarted("job-b");
+      transportHarness.onPayload?.({
+        event_type: "log",
+        job_id: "job-a",
+        level: "info",
+        message: "old job log",
+      });
+      transportHarness.onPayload?.({
+        event_type: "log",
+        job_id: "job-b",
+        level: "info",
+        message: "current job log",
+      });
+    });
+
+    expect(getProbe().logs.some((entry) => entry.msg === "old job log")).toBe(false);
+    expect(getProbe().logs.some((entry) => entry.msg === "current job log")).toBe(true);
+
+    await act(async () => {
+      transportHarness.onPayload?.({
+        event_type: "state",
+        job_id: "job-b",
+        state: "completed",
+      });
+      transportHarness.onPayload?.({
+        event_type: "log",
+        job_id: "job-b",
+        level: "info",
+        message: "terminal summary",
+      });
+    });
+
+    expect(getProbe().activeJobId).toBeNull();
+    expect(getProbe().logs.some((entry) => entry.msg === "terminal summary")).toBe(true);
+  });
+
   it("releases ownership after terminal state so the next job can run", async () => {
     const getActiveConversion = vi.fn(async () => ({ active: false, job: null }));
     (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = { getActiveConversion } as unknown as ApiClient;

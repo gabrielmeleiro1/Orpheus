@@ -15,6 +15,7 @@ from typing import Any, Optional
 from modules.pipeline.book_workspace import sanitize_book_title
 from modules.storage.migrations import BUSY_TIMEOUT_MS
 from modules.storage.models import PlaybackStatus
+from modules.storage.permissions import ensure_owner_only_directory, owner_only
 
 
 def _connect(db_path: Path | str) -> sqlite3.Connection:
@@ -180,7 +181,7 @@ def backup_database(
         raise FileNotFoundError(f"Database not found: {source}")
 
     target_dir = Path(backup_dir) if backup_dir else source.parent / "backups"
-    target_dir.mkdir(parents=True, exist_ok=True)
+    ensure_owner_only_directory(target_dir)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     target = unique_destination_path(target_dir / f"{source.stem}_{stamp}{source.suffix}")
     source_conn = _connect(source)
@@ -190,6 +191,7 @@ def backup_database(
     finally:
         target_conn.close()
         source_conn.close()
+    owner_only(target)
     # Cap the backups directory so it does not grow without bound; the just-made
     # backup is newest and always retained.
     _enforce_retention(target_dir, f"{source.stem}_*{source.suffix}")
@@ -1030,10 +1032,11 @@ def prune_stale_records_and_files(
     }
 
     reports_dir = output_root / "reports"
-    reports_dir.mkdir(parents=True, exist_ok=True)
+    ensure_owner_only_directory(reports_dir)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     report_path = reports_dir / f"db_prune_{stamp}.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    owner_only(report_path)
     report["report_path"] = str(report_path.resolve())
     # Cap the reports directory; the report just written is newest and retained.
     _enforce_retention(reports_dir, "db_prune_*.json")

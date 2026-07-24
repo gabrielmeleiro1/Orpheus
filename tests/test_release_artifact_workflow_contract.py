@@ -42,6 +42,8 @@ def test_release_workflow_builds_then_verifies_and_smokes_packaged_app() -> None
         'FFPROBE="$APP_BUNDLE',
         'LICENSE_FILE="$APP_BUNDLE/Contents/Resources/LICENSE"',
         'THIRD_PARTY_LICENSES="$APP_BUNDLE/Contents/Resources/THIRD_PARTY_LICENSES.md"',
+        'RUNTIME_PROFILE_MARKER="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/runtime-profile.json"',
+        'assert payload == {"profile": "base"}',
         "--app-bundle",
         "--backend sidecar",
         "--check-ffmpeg-runtime",

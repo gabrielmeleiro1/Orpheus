@@ -49,6 +49,7 @@ DEFAULT_RESOURCE_SIDECAR = (
     / "orpheus-desktop-backend"
 )
 REDUCED_MACOS_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+PACKAGED_RUNTIME_PROFILES = frozenset({"base", "mlx", "cuda"})
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,7 @@ class ReadyPayload:
     host: str
     port: int
     token: str
+    runtime_profile: str = "development"
 
     @property
     def base_url(self) -> str:
@@ -262,6 +264,41 @@ def resolve_packaged_app_sidecar(app_bundle: Path) -> Path:
     return _validate_runtime_binary(resolved_sidecar, "packaged sidecar")
 
 
+def resolve_packaged_runtime_profile(app_bundle: Path) -> str:
+    """Read the build profile marker from the fixed packaged sidecar resource."""
+    requested = Path(app_bundle).expanduser()
+    if requested.suffix != ".app":
+        raise ValueError(f"packaged app bundle must have a .app suffix: {requested}")
+    if not requested.exists():
+        raise FileNotFoundError(f"packaged app bundle not found: {requested}")
+    bundle = requested.resolve()
+    if not bundle.is_dir():
+        raise ValueError(f"packaged app bundle is not a directory: {requested}")
+
+    marker = (
+        bundle
+        / "Contents/Resources/binaries/orpheus-desktop-backend/runtime-profile.json"
+    )
+    if not marker.is_file():
+        raise FileNotFoundError(f"packaged runtime profile marker not found: {marker}")
+    resolved_marker = marker.resolve()
+    try:
+        resolved_marker.relative_to(bundle)
+    except ValueError as exc:
+        raise ValueError(
+            f"packaged runtime profile marker must stay inside app bundle: {marker}"
+        ) from exc
+
+    try:
+        payload = json.loads(resolved_marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SmokeFailure(f"invalid packaged runtime profile marker: {marker}") from exc
+    profile = payload.get("profile") if isinstance(payload, dict) else None
+    if profile not in PACKAGED_RUNTIME_PROFILES:
+        raise SmokeFailure(f"unexpected packaged runtime profile: {profile!r}")
+    return str(profile)
+
+
 def build_backend_command(
     *,
     backend: str,
@@ -337,13 +374,21 @@ def _parse_ready_payload(raw: dict[str, Any]) -> ReadyPayload:
     host = str(raw.get("host", ""))
     port = raw.get("port")
     token = str(raw.get("token", ""))
+    runtime_profile = str(raw.get("runtime_profile", ""))
     if host not in {"127.0.0.1", "localhost"}:
         raise SmokeFailure(f"unexpected ready host: {host!r}")
     if not isinstance(port, int) or port <= 0:
         raise SmokeFailure(f"unexpected ready port: {port!r}")
     if not token:
         raise SmokeFailure("ready payload did not include a token")
-    return ReadyPayload(host=host, port=port, token=token)
+    if runtime_profile not in {*PACKAGED_RUNTIME_PROFILES, "development"}:
+        raise SmokeFailure(f"unexpected ready runtime profile: {runtime_profile!r}")
+    return ReadyPayload(
+        host=host,
+        port=port,
+        token=token,
+        runtime_profile=runtime_profile,
+    )
 
 
 def _load_ready_file(path: Path) -> ReadyPayload | None:
@@ -1315,6 +1360,13 @@ def run_iteration(
             conversion_journey=conversion_journey,
         )
         ready_seconds = time.monotonic() - ready_started
+        if app_bundle is not None:
+            packaged_profile = resolve_packaged_runtime_profile(app_bundle)
+            if ready.runtime_profile != packaged_profile:
+                raise SmokeFailure(
+                    "packaged runtime profile mismatch: "
+                    f"marker={packaged_profile!r}, ready={ready.runtime_profile!r}"
+                )
         api_metrics = run_api_checks(
             ready,
             request_count=request_count,

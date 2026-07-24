@@ -104,7 +104,11 @@ export function useEventStream({
 
   const applyEventPayload = useCallback(
     (payload: DesktopEventPayload) => {
-      if (payload.event_type === "state" || payload.event_type === "progress") {
+      if (
+        payload.event_type === "state" ||
+        payload.event_type === "progress" ||
+        payload.event_type === "log"
+      ) {
         const eventJobId = String(payload.job_id ?? "").trim();
         if (
           eventJobId &&
