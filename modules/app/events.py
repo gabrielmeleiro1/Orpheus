@@ -51,6 +51,10 @@ class ProgressEvent:
     chunk_current: int = 0
     chunk_total: int = 0
     performance: dict[str, Any] = field(default_factory=dict)
+    # Every asynchronous conversion update is scoped to its owning job. Keep
+    # this optional for compatibility with direct pipeline/TUI callers that do
+    # not have a controller job identifier.
+    job_id: str | None = None
 
 
 def _normalize_counter(value: int | None) -> int:
@@ -155,6 +159,8 @@ class LogEvent:
     level: str
     message: str
     performance: dict[str, Any] = field(default_factory=dict)
+    # See ProgressEvent.job_id; controller-emitted logs always provide it.
+    job_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -183,6 +189,7 @@ def make_progress_event(
     chunk_current: int | None = None,
     chunk_total: int | None = None,
     performance: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> ProgressEvent:
     """Create a normalized progress event."""
     pct = max(0.0, min(1.0, progress))
@@ -213,6 +220,7 @@ def make_progress_event(
         chunk_current=normalized_chunk_current,
         chunk_total=normalized_chunk_total,
         performance=normalized_performance,
+        job_id=job_id,
     )
 
 
@@ -221,6 +229,7 @@ def make_log_event(
     level: str = "info",
     *,
     performance: dict[str, Any] | None = None,
+    job_id: str | None = None,
 ) -> LogEvent:
     """Create a normalized log event."""
     return LogEvent(
@@ -229,6 +238,7 @@ def make_log_event(
         level=level.lower(),
         message=message,
         performance=_normalize_performance(performance),
+        job_id=job_id,
     )
 
 

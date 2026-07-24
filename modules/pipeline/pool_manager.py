@@ -80,6 +80,11 @@ class SharedWorkerPoolManager:
             worker_init_config=None,
         )
         self._lock = threading.RLock()
+        # A manager owns one shared executor; concurrent runs would otherwise
+        # reset each other's progress state and race cancellation against pool
+        # replacement.  Serialize run ownership while retaining worker-level
+        # chapter parallelism inside each run.
+        self._run_lock = threading.Lock()
         self._reuse_hits = 0
         self._restarts = 0
         self._health_failures = 0
@@ -97,6 +102,9 @@ class SharedWorkerPoolManager:
         self._startup_failures = 0
         self._last_startup_error: Optional[str] = None
         self._cancelled_jobs = 0
+        self._stopping_executor: Any | None = None
+        self._stopping_done = threading.Event()
+        self._stopping_done.set()
 
     @staticmethod
     def _call_executor_shutdown(
@@ -214,6 +222,75 @@ class SharedWorkerPoolManager:
             self._health_failures += 1
             return False
 
+    def _wait_for_stopping_executor(self) -> None:
+        """Wait until a previously cancelled executor has fully quiesced."""
+        while True:
+            with self._lock:
+                stopping = self._stopping_executor
+                done = self._stopping_done
+            if stopping is None:
+                return
+            done.wait()
+
+    def _clear_current_job_locked(self) -> None:
+        self._current_total = 0
+        self._current_submitted.clear()
+        self._current_completed.clear()
+        self._current_failed.clear()
+        self._current_chapter_titles.clear()
+
+    def _finish_thread_executor_shutdown(self, executor: Any) -> None:
+        """Shutdown a thread executor and release its stopping barrier."""
+        try:
+            self._call_executor_shutdown(
+                executor,
+                wait=True,
+                cancel_futures=True,
+            )
+        except Exception:
+            # Keep the barrier set: without confirmation from shutdown(), a
+            # successor must not start while the old worker may still mutate
+            # conversion artifacts.
+            logger.exception("Cancelled thread worker executor failed to shut down")
+            return
+
+        with self._lock:
+            if self._stopping_executor is executor:
+                self._stopping_executor = None
+                self._stopping_done.set()
+
+    def _stop_executor_after_cancellation(self, executor: Any) -> None:
+        """Stop a cancelled executor without allowing identity supersession."""
+        with self._lock:
+            if self._state.executor is not executor:
+                return
+            process_executor = bool(self._state.use_processes)
+            self._stopping_executor = executor
+            self._stopping_done.clear()
+            self._state.executor = None
+            self._state.config_fingerprint = None
+            self._state.worker_init_config = None
+            self._clear_current_job_locked()
+
+        if process_executor:
+            self._shutdown_executor_bounded(
+                executor,
+                timeout_seconds=self._shutdown_timeout_seconds,
+                cancel_futures=True,
+            )
+            with self._lock:
+                if self._stopping_executor is executor:
+                    self._stopping_executor = None
+                    self._stopping_done.set()
+            return
+
+        threading.Thread(
+            target=self._finish_thread_executor_shutdown,
+            args=(executor,),
+            name="cancelled-thread-worker-shutdown",
+            daemon=True,
+        ).start()
+
     def _reset_current_job_locked(self, chapters: list[Any]) -> None:
         self._current_total = len(chapters)
         self._current_submitted = set()
@@ -280,6 +357,7 @@ class SharedWorkerPoolManager:
     def _abort_parallel_run(
         self,
         *,
+        executor: Any,
         submitted: dict[Any, int],
         progress_callback: Callable[..., None] | None,
         completed: int,
@@ -287,8 +365,15 @@ class SharedWorkerPoolManager:
     ) -> list[ChapterResult]:
         for future in list(submitted):
             future.cancel()
+
+        # A running future cannot be cancelled.  Stop process workers before
+        # returning, or retain a stopping barrier for thread workers until
+        # executor.shutdown(wait=True) confirms quiescence.
+        self._stop_executor_after_cancellation(executor)
         submitted.clear()
-        self._cancelled_jobs += 1
+        with self._lock:
+            self._cancelled_jobs += 1
+            self._clear_current_job_locked()
         self._emit_progress(
             progress_callback,
             completed,
@@ -418,6 +503,11 @@ class SharedWorkerPoolManager:
 
         Restarts the pool when fingerprint or worker count changes.
         """
+        # Cancellation of a thread-backed run returns before an uncooperative
+        # worker necessarily exits.  Do not let a successor overlap that
+        # worker's artifact writes; the cancellation path releases this
+        # barrier only after executor.shutdown(wait=True) confirms quiescence.
+        self._wait_for_stopping_executor()
         requested_workers = max(1, int(max_workers or self._state.max_workers or 1))
         if available_vram_gb is not None and available_device_memory_gb is not None:
             raise ValueError(
@@ -468,6 +558,35 @@ class SharedWorkerPoolManager:
             self._run_startup_probes_locked()
 
     def run_parallel(
+        self,
+        *,
+        chapters: list[Any],
+        process_func: Callable[[Any, int, Any], Any],
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        config_fingerprint: Any,
+        max_workers: Optional[int] = None,
+        available_vram_gb: Optional[float] = None,
+        available_device_memory_gb: Optional[float] = None,
+        worker_init_config: Optional[dict[str, Any]] = None,
+        memory_policy: Optional[Any] = None,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> list[ChapterResult]:
+        """Run one chapter batch while owning the shared executor lifecycle."""
+        with self._run_lock:
+            return self._run_parallel_impl(
+                chapters=chapters,
+                process_func=process_func,
+                progress_callback=progress_callback,
+                config_fingerprint=config_fingerprint,
+                max_workers=max_workers,
+                available_vram_gb=available_vram_gb,
+                available_device_memory_gb=available_device_memory_gb,
+                worker_init_config=worker_init_config,
+                memory_policy=memory_policy,
+                cancel_requested=cancel_requested,
+            )
+
+    def _run_parallel_impl(
         self,
         *,
         chapters: list[Any],
@@ -557,6 +676,7 @@ class SharedWorkerPoolManager:
         while submitted:
             if self._is_cancel_requested(cancel_requested):
                 return self._abort_parallel_run(
+                    executor=executor,
                     submitted=submitted,
                     progress_callback=progress_callback,
                     completed=completed,
@@ -571,6 +691,7 @@ class SharedWorkerPoolManager:
             if not done:
                 if self._is_cancel_requested(cancel_requested):
                     return self._abort_parallel_run(
+                        executor=executor,
                         submitted=submitted,
                         progress_callback=progress_callback,
                         completed=completed,
@@ -644,6 +765,20 @@ class SharedWorkerPoolManager:
         cancel_futures: bool = True,
     ) -> bool:
         """Shutdown the shared pool and reset lifecycle state with a bounded wait."""
+        # A cancelled thread executor may be outside ``_state`` while its
+        # worker is still unwinding.  Respect that stopping barrier instead of
+        # reporting success and allowing a later ensure_started() to overlap
+        # it.  A zero timeout remains a non-blocking probe.
+        with self._lock:
+            stopping_done = self._stopping_done if self._stopping_executor is not None else None
+        if stopping_done is not None:
+            timeout = (
+                self._shutdown_timeout_seconds
+                if timeout_seconds is None
+                else max(0.0, float(timeout_seconds))
+            )
+            return stopping_done.wait(timeout=timeout)
+
         with self._lock:
             executor = self._state.executor
             self._state = _PoolState(

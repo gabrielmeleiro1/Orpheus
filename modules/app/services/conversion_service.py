@@ -483,7 +483,12 @@ class ConversionService:
             runtime_options=runtime_options,
         )
 
-    def _create_pipeline_callbacks(self, callbacks: Optional[Any]):
+    def _create_pipeline_callbacks(
+        self,
+        callbacks: Optional[Any],
+        *,
+        job_id: str | None = None,
+    ):
         last_stage_value: Optional[str] = None
         last_progress_emit_at: Optional[float] = None
         progress_started_at: Optional[float] = None
@@ -557,6 +562,7 @@ class ConversionService:
                         chunk_current=progress_snapshot.chunk_current,
                         chunk_total=progress_snapshot.chunk_total,
                         performance=performance,
+                        job_id=job_id,
                     )
                 )
 
@@ -564,7 +570,9 @@ class ConversionService:
             if callbacks and callbacks.on_log:
                 callbacks.on_log(message, msg_type)
             if callbacks and callbacks.on_event:
-                callbacks.on_event(make_log_event(message=message, level=msg_type))
+                callbacks.on_event(
+                    make_log_event(message=message, level=msg_type, job_id=job_id)
+                )
 
         return on_progress, on_verbose
 
@@ -705,7 +713,12 @@ class ConversionService:
         if callbacks and callbacks.on_event:
             callbacks.on_event(make_state_event(JobState.CANCELLED, job.id, message))
 
-    def _emit_conversion_summary(self, callbacks: Optional[Any]) -> None:
+    def _emit_conversion_summary(
+        self,
+        callbacks: Optional[Any],
+        *,
+        job_id: str | None = None,
+    ) -> None:
         pool_snapshot = {}
         if self._shared_worker_pool_manager is not None:
             try:
@@ -732,6 +745,7 @@ class ConversionService:
                 make_log_event(
                     message=message,
                     level="info",
+                    job_id=job_id,
                 )
             )
 
@@ -755,7 +769,10 @@ class ConversionService:
         try:
             pipeline_config = self._create_pipeline_config(**command.pipeline_config_kwargs())
             command.adjust_pipeline_config(pipeline_config)
-            on_progress, on_verbose = self._create_pipeline_callbacks(callbacks)
+            on_progress, on_verbose = self._create_pipeline_callbacks(
+                callbacks,
+                job_id=getattr(job, "id", None),
+            )
             pipeline = self._pipeline_cls(
                 config=pipeline_config,
                 progress_callback=on_progress,
@@ -812,7 +829,7 @@ class ConversionService:
                 cleanup_first=bool(pipeline is not None and command.cleanup_first(pipeline)),
             )
             self._detach_pipeline_from_job(job)
-            self._emit_conversion_summary(callbacks)
+            self._emit_conversion_summary(callbacks, job_id=getattr(job, "id", None))
 
     @staticmethod
     def _attach_pipeline_to_job(job: Any, pipeline: Any) -> bool:
@@ -855,7 +872,7 @@ class ConversionService:
                 error_message=str(exc),
                 callbacks=callbacks,
             )
-            self._emit_conversion_summary(callbacks)
+            self._emit_conversion_summary(callbacks, job_id=getattr(job, "id", None))
             return
 
         self._execute_pipeline_job(

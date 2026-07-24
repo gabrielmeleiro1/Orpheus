@@ -180,6 +180,87 @@ class _AsyncTrackingExecutor(_FakeExecutor):
         return future
 
 
+class _QuiescingCancellationExecutor(_FakeExecutor):
+    """Executor double that exposes whether cancellation waits for a worker."""
+
+    instances: list["_QuiescingCancellationExecutor"] = []
+
+    def __init__(self, *args, **kwargs):  # noqa: ANN003
+        super().__init__(*args, **kwargs)
+        self.shutdown_entered = threading.Event()
+        self.release_worker = threading.Event()
+        self.worker_started = threading.Event()
+        self.worker_finished = threading.Event()
+        type(self).instances.append(self)
+
+    def submit(self, fn, *args, **kwargs):  # noqa: ANN003
+        if fn in (_worker_startup_probe, _health_ping):
+            return super().submit(fn, *args, **kwargs)
+
+        future: Future = Future()
+
+        def _run() -> None:
+            self.worker_started.set()
+            self.release_worker.wait(timeout=3)
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:  # pragma: no cover - defensive
+                future.set_exception(exc)
+            finally:
+                self.worker_finished.set()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return future
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:  # noqa: ARG002
+        self.shutdown_entered.set()
+        if wait:
+            self.worker_finished.wait(timeout=3)
+
+
+class _UncooperativeThreadExecutor(_FakeExecutor):
+    """Thread executor double whose first chapter ignores cancellation."""
+
+    instances: list["_UncooperativeThreadExecutor"] = []
+
+    def __init__(self, *args, **kwargs):  # noqa: ANN003
+        super().__init__(*args, **kwargs)
+        self.is_first = not type(self).instances
+        self.release_worker = threading.Event()
+        self.worker_finished = threading.Event()
+        self.shutdown_entered = threading.Event()
+        type(self).instances.append(self)
+
+    def submit(self, fn, *args, **kwargs):  # noqa: ANN003
+        if fn in (_worker_startup_probe, _health_ping):
+            return super().submit(fn, *args, **kwargs)
+
+        future: Future = Future()
+        if not self.is_first:
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:  # pragma: no cover - defensive
+                future.set_exception(exc)
+            return future
+
+        def _run() -> None:
+            self.release_worker.wait(timeout=3)
+            try:
+                future.set_result(fn(*args, **kwargs))
+            except Exception as exc:  # pragma: no cover - defensive
+                future.set_exception(exc)
+            finally:
+                self.worker_finished.set()
+
+        threading.Thread(target=_run, daemon=True).start()
+        return future
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:  # noqa: ARG002
+        self.shutdown_entered.set()
+        if wait and self.is_first:
+            self.worker_finished.wait(timeout=3)
+
+
 class _InspectableAsyncExecutor(_AsyncTrackingExecutor):
     instances: list["_InspectableAsyncExecutor"] = []
 
@@ -351,6 +432,171 @@ def test_shared_pool_normalizes_result_time_failure() -> None:
         error="result boom",
     )
     assert results[2].duration_ms == 3
+
+
+def test_shared_pool_cancellation_waits_for_running_worker_quiescence() -> None:
+    reset_executor_class_state(_QuiescingCancellationExecutor)
+    chapters = [_Chapter(number=1, title="One")]
+    cancellation_requested = threading.Event()
+    results: list[ChapterResult] = []
+
+    with patch(
+        "modules.pipeline.pool_manager.ProcessPoolExecutor",
+        _QuiescingCancellationExecutor,
+    ):
+        manager = SharedWorkerPoolManager(max_workers=1)
+        runner = threading.Thread(
+            target=lambda: results.extend(
+                manager.run_parallel(
+                    chapters=chapters,
+                    process_func=_process,
+                    config_fingerprint="cancel-quiescence",
+                    cancel_requested=cancellation_requested.is_set,
+                )
+            ),
+            daemon=True,
+        )
+        runner.start()
+
+        try:
+            deadline = time.monotonic() + 2.0
+            while not _QuiescingCancellationExecutor.instances:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("executor was not created")
+                time.sleep(0.01)
+            executor = _QuiescingCancellationExecutor.instances[0]
+
+            deadline = time.monotonic() + 2.0
+            while not executor.worker_started.is_set():
+                if time.monotonic() >= deadline:
+                    raise AssertionError("chapter worker was not submitted")
+                time.sleep(0.01)
+
+            cancellation_requested.set()
+            assert executor.shutdown_entered.wait(timeout=1.0)
+            assert not executor.worker_finished.is_set()
+
+            executor.release_worker.set()
+            runner.join(timeout=2.0)
+            assert not runner.is_alive()
+            assert executor.worker_finished.is_set()
+            assert results == []
+        finally:
+            executor = _QuiescingCancellationExecutor.instances[0]
+            executor.release_worker.set()
+            runner.join(timeout=2.0)
+            manager.shutdown(timeout_seconds=0.0)
+
+
+def test_shared_pool_stopping_barrier_blocks_successor_until_thread_worker_quiesces() -> None:
+    reset_executor_class_state(_UncooperativeThreadExecutor)
+    chapters = [_Chapter(number=1, title="One")]
+    cancellation_requested = threading.Event()
+    first_results: list[ChapterResult] = []
+    second_results: list[ChapterResult] = []
+
+    with patch(
+        "modules.pipeline.pool_manager.ThreadPoolExecutor",
+        _UncooperativeThreadExecutor,
+    ):
+        manager = SharedWorkerPoolManager(max_workers=1, shutdown_timeout_seconds=0.05)
+        manager._use_processes = False  # noqa: SLF001
+        first_runner = threading.Thread(
+            target=lambda: first_results.extend(
+                manager.run_parallel(
+                    chapters=chapters,
+                    process_func=_process,
+                    config_fingerprint="thread-cancel",
+                    cancel_requested=cancellation_requested.is_set,
+                )
+            ),
+            daemon=True,
+        )
+        first_runner.start()
+
+        try:
+            deadline = time.monotonic() + 2.0
+            while not _UncooperativeThreadExecutor.instances:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("thread executor was not created")
+                time.sleep(0.01)
+            first_executor = _UncooperativeThreadExecutor.instances[0]
+            cancellation_requested.set()
+            first_runner.join(timeout=1.0)
+            assert not first_runner.is_alive()
+            assert first_results == []
+            assert first_executor.worker_finished.is_set() is False
+
+            second_runner = threading.Thread(
+                target=lambda: second_results.extend(
+                    manager.run_parallel(
+                        chapters=chapters,
+                        process_func=_process,
+                        config_fingerprint="thread-cancel",
+                    )
+                ),
+                daemon=True,
+            )
+            second_runner.start()
+            second_runner.join(timeout=0.2)
+            assert second_runner.is_alive()
+            assert len(_UncooperativeThreadExecutor.instances) == 1
+
+            first_executor.release_worker.set()
+            second_runner.join(timeout=2.0)
+            assert not second_runner.is_alive()
+            assert second_results
+            assert len(_UncooperativeThreadExecutor.instances) == 2
+        finally:
+            if _UncooperativeThreadExecutor.instances:
+                _UncooperativeThreadExecutor.instances[0].release_worker.set()
+            first_runner.join(timeout=2.0)
+            manager.shutdown(timeout_seconds=0.0)
+
+
+def test_shared_pool_cancellation_clears_current_job_metrics() -> None:
+    reset_executor_class_state(_QuiescingCancellationExecutor)
+    chapters = [_Chapter(number=1, title="One")]
+    cancellation_requested = threading.Event()
+
+    with patch(
+        "modules.pipeline.pool_manager.ProcessPoolExecutor",
+        _QuiescingCancellationExecutor,
+    ):
+        manager = SharedWorkerPoolManager(max_workers=1)
+        runner = threading.Thread(
+            target=lambda: manager.run_parallel(
+                chapters=chapters,
+                process_func=_process,
+                config_fingerprint="cancel-metrics",
+                cancel_requested=cancellation_requested.is_set,
+            ),
+            daemon=True,
+        )
+        runner.start()
+        try:
+            deadline = time.monotonic() + 2.0
+            while not _QuiescingCancellationExecutor.instances:
+                if time.monotonic() >= deadline:
+                    raise AssertionError("executor was not created")
+                time.sleep(0.01)
+            executor = _QuiescingCancellationExecutor.instances[0]
+            cancellation_requested.set()
+            assert executor.worker_started.wait(timeout=2.0)
+            assert executor.shutdown_entered.wait(timeout=2.0)
+            executor.release_worker.set()
+            runner.join(timeout=2.0)
+            assert not runner.is_alive()
+            snapshot = manager.snapshot()
+            assert snapshot["running_chapters"] == 0
+            assert snapshot["queued_chapters"] == 0
+            assert snapshot["completed_chapters"] == 0
+            assert snapshot["failed_chapters"] == 0
+        finally:
+            executor = _QuiescingCancellationExecutor.instances[0]
+            executor.release_worker.set()
+            runner.join(timeout=2.0)
+            manager.shutdown(timeout_seconds=0.0)
 
 
 def test_shared_pool_progress_callback_includes_performance_snapshot() -> None:

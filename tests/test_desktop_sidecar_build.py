@@ -19,6 +19,16 @@ from scripts import build_desktop_backend
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_tauri_bundle_declares_project_and_third_party_license_resources() -> None:
+    config = json.loads(
+        (PROJECT_ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+    )
+
+    resources = config["bundle"]["resources"]
+    assert resources["../../LICENSE"] == "LICENSE"
+    assert resources["../../THIRD_PARTY_LICENSES.md"] == "THIRD_PARTY_LICENSES.md"
+
+
 def _write_executable(path: Path, content: str = "executable") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")

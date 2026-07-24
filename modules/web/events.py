@@ -115,17 +115,16 @@ class EventBroker:
         return dropped
 
     def publish(self, event: Any) -> None:
-        payload = self._decorate_payload(normalize_event(event))
+        normalized = normalize_event(event)
         with self._subscribers_lock:
-            subscribers = list(self._subscribers)
-
-        dropped = 0
-        for subscriber in subscribers:
-            if self._publish_to_subscriber(subscriber, payload):
-                dropped += 1
-
-        if dropped:
-            with self._subscribers_lock:
+            if self._closed:
+                return
+            payload = self._decorate_payload(normalized)
+            dropped = 0
+            for subscriber in self._subscribers:
+                if self._publish_to_subscriber(subscriber, payload):
+                    dropped += 1
+            if dropped:
                 self._dropped_event_count += dropped
 
 

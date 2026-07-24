@@ -97,6 +97,20 @@ def test_event_broker_tolerates_full_queue_between_drop_and_publish(monkeypatch)
     broker.unsubscribe(subscriber)
 
 
+def test_event_broker_late_publish_cannot_displace_shutdown_sentinel() -> None:
+    from modules.app.events import make_log_event
+    from modules.web.events import EventBroker, STREAM_CLOSE_SENTINEL
+
+    broker = EventBroker(max_queue_size=1)
+    subscriber = broker.subscribe()
+
+    broker.shutdown()
+    broker.publish(make_log_event("too late", "info"))
+
+    assert subscriber.get_nowait() is STREAM_CLOSE_SENTINEL
+    broker.unsubscribe(subscriber)
+
+
 def test_progress_event_throughput_delivers_latest_state_within_budget() -> None:
     from modules.app.events import make_progress_event
     from modules.web.events import EventBroker

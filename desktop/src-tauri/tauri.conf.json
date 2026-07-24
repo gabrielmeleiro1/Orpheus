@@ -28,7 +28,9 @@
     "active": true,
     "targets": "all",
     "resources": {
-      "binaries": "binaries"
+      "binaries": "binaries",
+      "../../LICENSE": "LICENSE",
+      "../../THIRD_PARTY_LICENSES.md": "THIRD_PARTY_LICENSES.md"
     },
     "icon": [
       "icons/icon.ico",

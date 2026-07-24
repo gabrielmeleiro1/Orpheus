@@ -96,6 +96,8 @@ jobs:
           SIDECAR="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
           FFMPEG="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/bin/ffmpeg"
           FFPROBE="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/bin/ffprobe"
+          LICENSE_FILE="$APP_BUNDLE/Contents/Resources/LICENSE"
+          THIRD_PARTY_LICENSES="$APP_BUNDLE/Contents/Resources/THIRD_PARTY_LICENSES.md"
           APP_EXECUTABLE_COUNT="$(find "$APP_BUNDLE/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print | wc -l | tr -d ' ')"
           test "$APP_EXECUTABLE_COUNT" = "1"
           APP_EXECUTABLE="$(find "$APP_BUNDLE/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print -quit)"
@@ -103,6 +105,9 @@ jobs:
           for resource in "$SIDECAR" "$FFMPEG" "$FFPROBE"; do
             test -f "$resource"
             test -x "$resource"
+          done
+          for notice in "$LICENSE_FILE" "$THIRD_PARTY_LICENSES"; do
+            test -s "$notice"
           done
 
           case "$(rustc -vV | awk '/^host:/ {print $2}')" in
@@ -117,6 +122,8 @@ jobs:
             echo "APP_BUNDLE=$APP_BUNDLE"
             echo "DMG_PATH=$DMG_PATH"
             echo "EXPECTED_ARCH=$EXPECTED_ARCH"
+            echo "LICENSE_FILE=$LICENSE_FILE"
+            echo "THIRD_PARTY_LICENSES=$THIRD_PARTY_LICENSES"
             file "$APP_EXECUTABLE" "$SIDECAR" "$FFMPEG" "$FFPROBE"
           } | tee release-artifact-verification.log
 

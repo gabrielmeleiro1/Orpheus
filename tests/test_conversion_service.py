@@ -1750,6 +1750,26 @@ def test_conversion_service_throttles_progress_callbacks_to_stage_boundaries_and
     ]
 
 
+def test_conversion_service_progress_and_logs_include_job_id(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+    events = []
+    callbacks = ConversionCallbacks(on_event=events.append)
+
+    on_progress, on_verbose = service._create_pipeline_callbacks(
+        callbacks,
+        job_id="conv-current",
+    )
+
+    with patch(
+        "modules.app.services.conversion_service.time.monotonic",
+        side_effect=[0.0],
+    ):
+        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean", None)
+    on_verbose("verbose", "info")
+
+    assert [event.job_id for event in events] == ["conv-current", "conv-current"]
+
+
 def test_conversion_service_progress_events_include_explicit_overall_and_stage_progress(
     tmp_path,
 ):

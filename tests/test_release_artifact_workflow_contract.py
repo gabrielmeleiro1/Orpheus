@@ -40,6 +40,8 @@ def test_release_workflow_builds_then_verifies_and_smokes_packaged_app() -> None
         'file "$executable"',
         'FFMPEG="$APP_BUNDLE',
         'FFPROBE="$APP_BUNDLE',
+        'LICENSE_FILE="$APP_BUNDLE/Contents/Resources/LICENSE"',
+        'THIRD_PARTY_LICENSES="$APP_BUNDLE/Contents/Resources/THIRD_PARTY_LICENSES.md"',
         "--app-bundle",
         "--backend sidecar",
         "--check-ffmpeg-runtime",
