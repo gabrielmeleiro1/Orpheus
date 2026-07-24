@@ -8,7 +8,7 @@ import zipfile
 from typing import Any, Optional
 
 from .text_encoding import read_source_text
-from .markdown_parser import markdown_headings
+from .markdown_parser import markdown_headings, strip_leading_front_matter
 from .pdf_preflight import analyze_pdf_text_layer
 
 from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
@@ -65,7 +65,7 @@ def _preflight_text(source_path: Path, source_type: str, max_sample_chars: int) 
 def _preflight_markdown(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
     warnings: list[str] = []
     payload = _base_payload(source_path, "md", warnings)
-    text = read_source_text(source_path)
+    text = strip_leading_front_matter(read_source_text(source_path))
     heading_matches = markdown_headings(text)
     headings = [title for _, title in heading_matches]
     heading_lines = {line_number for line_number, _ in heading_matches}

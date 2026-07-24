@@ -102,6 +102,65 @@ describe("conversionQueueReducer", () => {
     expect(state.itemRevisions[item.id]).toBe(1);
   });
 
+  it("clears stale preflight state and bumps revision when the source path is emptied", () => {
+    const inspected = createQueueItem(
+      "/tmp/book.epub",
+      "audiobook",
+      undefined,
+      preflight({ title: "Inspected" }),
+    );
+    let state = conversionQueueReducer(createConversionQueueInitialState(), {
+      type: "itemsAdded",
+      items: [inspected],
+      selectFirst: true,
+    });
+    state = {
+      ...state,
+      preflightStatus: "Preflight completed.",
+      previewText: "stale sample",
+    };
+
+    state = conversionQueueReducer(state, {
+      type: "selectedQueueItemEdited",
+      patch: { sourcePath: "" },
+    });
+
+    expect(state.queueItems[0]).toMatchObject({
+      sourcePath: "",
+      preflight: null,
+      status: "ready",
+      error: "",
+    });
+    expect(state.sourcePath).toBe("");
+    expect(state.itemRevisions[inspected.id]).toBe(1);
+    expect(state.preflightStatus).toBe("");
+    expect(state.previewText).toBeNull();
+  });
+
+  it("detaches an immutable history row when a different manual source is entered", () => {
+    const done = {
+      ...createQueueItem("/tmp/done.epub", "audiobook"),
+      status: "done" as const,
+    };
+    let state = conversionQueueReducer(createConversionQueueInitialState(), {
+      type: "itemsAdded",
+      items: [done],
+      selectFirst: true,
+    });
+
+    state = conversionQueueReducer(state, {
+      type: "selectedQueueItemEdited",
+      patch: { sourcePath: "/tmp/next.epub" },
+    });
+
+    expect(state.queueItems[0]).toMatchObject({
+      sourcePath: "/tmp/done.epub",
+      status: "done",
+    });
+    expect(state.selectedQueueId).toBeNull();
+    expect(state.sourcePath).toBe("/tmp/next.epub");
+  });
+
   it("does not rename queue rows that already converted or are converting", () => {
     // Typing a title for the NEXT paste must not retitle the row of a job
     // that already ran — the finished book keeps its original title, so a

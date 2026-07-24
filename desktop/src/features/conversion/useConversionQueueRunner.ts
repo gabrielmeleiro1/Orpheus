@@ -129,7 +129,9 @@ export function useConversionQueueRunner({
     }
 
     const runnableItems = queueItems.filter(
-      (item) => item.status === "ready" || item.status === "warning",
+      (item) =>
+        Boolean(item.sourcePath.trim()) &&
+        (item.status === "ready" || item.status === "warning"),
     );
     if (runnableItems.length === 0) {
       const hasPendingPreflight = queueItems.some((item) => item.status === "preflighting");

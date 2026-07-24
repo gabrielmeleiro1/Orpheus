@@ -141,6 +141,25 @@ def test_preflight_markdown_ignores_headings_inside_fenced_code(tmp_path: Path) 
         assert "## Not a chapter" in payload["sample"]
 
 
+def test_preflight_markdown_excludes_leading_yaml_front_matter_from_sample(tmp_path: Path) -> None:
+    source = tmp_path / "front-matter.md"
+    source.write_text(
+        "---\n"
+        "title: Front Matter Book\n"
+        "author: Example Author\n"
+        "---\n"
+        "# Chapter One\n\n"
+        "Spoken prose.\n",
+        encoding="utf-8",
+    )
+
+    payload = preflight_source(source)
+
+    assert payload["title"] == "Chapter One"
+    assert payload["chapter_count"] == 1
+    assert payload["sample"] == "Spoken prose."
+
+
 def test_preflight_text_decodes_utf16_sample_without_nul_artifacts(tmp_path: Path) -> None:
     source = tmp_path / "utf16_notes.txt"
     source.write_bytes("Too much sanity may be madness.\n\nSecond paragraph.".encode("utf-16"))

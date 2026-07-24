@@ -202,6 +202,48 @@ describe("useConversionQueueController", () => {
     expect(getController().preflightStatus).toBe("Inspecting disconnect.epub...");
   });
 
+  it("aborts and invalidates preflight when the selected source path is cleared", async () => {
+    const request = deferred<SourcePreflight>();
+    let requestSignal: AbortSignal | undefined;
+    const client = {
+      preflightSource: vi.fn(
+        (_sourcePath: string, options?: { signal?: AbortSignal }) => {
+          requestSignal = options?.signal;
+          return request.promise;
+        },
+      ),
+    };
+    const item = createQueueItem("/tmp/clear.epub", "audiobook");
+
+    await act(async () => {
+      root?.render(<Probe apiClient={client} />);
+    });
+    act(() => {
+      getController().addQueueItems([item], { selectFirst: true });
+    });
+    expect(requestSignal?.aborted).toBe(false);
+
+    act(() => {
+      getController().syncSelectedQueueEdits({ sourcePath: "" });
+    });
+
+    expect(requestSignal?.aborted).toBe(true);
+    expect(getController().sourcePath).toBe("");
+    expect(getController().queueItems[0]).toMatchObject({
+      sourcePath: "",
+      preflight: null,
+      status: "ready",
+      error: "",
+    });
+
+    request.resolve(preflight({ title: "Stale result" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(getController().queueItems[0].preflight).toBeNull();
+  });
+
   it("aborts an in-flight preflight and safely ignores its completion after unmount", async () => {
     const request = deferred<SourcePreflight>();
     let requestSignal: AbortSignal | undefined;

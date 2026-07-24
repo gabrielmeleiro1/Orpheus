@@ -253,7 +253,11 @@ export function useConversionQueueController({
 
   const syncSelectedQueueEdits = useCallback(
     (patch: QueueEditPatch) => {
-      if (patch.sourcePath && selectedQueueItem) {
+      if (
+        patch.sourcePath !== undefined &&
+        selectedQueueItem &&
+        patch.sourcePath !== selectedQueueItem.sourcePath
+      ) {
         abortPreflight(selectedQueueItem.id);
       }
       dispatch({ type: "selectedQueueItemEdited", patch });

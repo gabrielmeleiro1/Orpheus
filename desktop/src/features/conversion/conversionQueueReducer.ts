@@ -209,6 +209,26 @@ export function conversionQueueReducer(
       if (!state.selectedQueueId) {
         return state;
       }
+      const selectedItem = state.queueItems.find(
+        (item) => item.id === state.selectedQueueId,
+      );
+      const selectedSourceChanged =
+        action.patch.sourcePath !== undefined &&
+        action.patch.sourcePath !== selectedItem?.sourcePath;
+      if (
+        selectedSourceChanged &&
+        (selectedItem?.status === "done" || selectedItem?.status === "converting")
+      ) {
+        return {
+          ...state,
+          selectedQueueId: null,
+          sourcePath: action.patch.sourcePath ?? state.sourcePath,
+          titleOverride: action.patch.title ?? state.titleOverride,
+          authorOverride: action.patch.author ?? state.authorOverride,
+          preflightStatus: "",
+          previewText: null,
+        };
+      }
       let changedSourcePath = false;
       const queueItems = state.queueItems.map((item) => {
         if (item.id !== state.selectedQueueId) {
@@ -219,14 +239,16 @@ export function conversionQueueReducer(
         if (item.status === "done" || item.status === "converting") {
           return item;
         }
-        changedSourcePath = Boolean(action.patch.sourcePath && action.patch.sourcePath !== item.sourcePath);
+        changedSourcePath =
+          action.patch.sourcePath !== undefined &&
+          action.patch.sourcePath !== item.sourcePath;
         return {
           ...item,
           ...action.patch,
           label: action.patch.sourcePath ? splitPath(action.patch.sourcePath) : item.label,
-          preflight: action.patch.sourcePath ? null : item.preflight,
-          status: action.patch.sourcePath ? "ready" : item.status,
-          error: action.patch.sourcePath ? "" : item.error,
+          preflight: changedSourcePath ? null : item.preflight,
+          status: changedSourcePath ? "ready" : item.status,
+          error: changedSourcePath ? "" : item.error,
         };
       });
       return {
@@ -235,6 +257,8 @@ export function conversionQueueReducer(
         sourcePath: action.patch.sourcePath ?? state.sourcePath,
         titleOverride: action.patch.title ?? state.titleOverride,
         authorOverride: action.patch.author ?? state.authorOverride,
+        preflightStatus: changedSourcePath ? "" : state.preflightStatus,
+        previewText: changedSourcePath ? null : state.previewText,
         itemRevisions: changedSourcePath
           ? bumpRevision(state.itemRevisions, state.selectedQueueId)
           : state.itemRevisions,

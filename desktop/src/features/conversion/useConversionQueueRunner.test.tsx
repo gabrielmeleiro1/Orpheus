@@ -73,6 +73,29 @@ afterEach(() => {
 });
 
 describe("useConversionQueueRunner", () => {
+  it("does not submit a ready queue row whose source path is blank", async () => {
+    const item = createQueueItem("", "audiobook");
+    item.status = "ready";
+    const conversionJob = createConversionJobMock();
+    const setQueueStatus = vi.fn();
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [item],
+      selectedQueueItem: item,
+      buildStartPayload: () => payload(""),
+      updateQueueItem: vi.fn(),
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus,
+    });
+
+    await result.current?.onRunQueue();
+
+    expect(conversionJob.startConversion).not.toHaveBeenCalled();
+    expect(setQueueStatus).toHaveBeenLastCalledWith("No queued items to convert.");
+    cleanup();
+  });
+
   it("uses startConversion error result for queued item failures", async () => {
     const item = createQueueItem("/tmp/book.epub", "audiobook");
     item.status = "ready";

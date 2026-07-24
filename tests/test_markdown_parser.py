@@ -78,3 +78,68 @@ def test_markdown_parser_ignores_headings_inside_fenced_code(tmp_path, fence):
 
     assert [chapter.title for chapter in document.chapters] == ["Guide", "Real chapter"]
     assert "## Not a chapter" in document.chapters[0].content
+
+
+def test_markdown_parser_strips_leading_yaml_front_matter_from_chapter_speech(tmp_path):
+    source_path = tmp_path / "front-matter.md"
+    source_path.write_text(
+        "---\n"
+        "title: Front Matter Book\n"
+        "author: Example Author\n"
+        "---\n"
+        "# Chapter One\n\n"
+        "Spoken prose.\n",
+        encoding="utf-8",
+    )
+
+    document = MarkdownParser(source_path).parse()
+
+    assert [chapter.title for chapter in document.chapters] == ["Chapter One"]
+    assert document.chapters[0].content == "Spoken prose."
+    assert "Front Matter Book" not in document.chapters[0].content
+    assert "Example Author" not in document.chapters[0].content
+
+
+def test_markdown_parser_preserves_unclosed_front_matter_and_later_thematic_breaks(tmp_path):
+    unclosed_path = tmp_path / "unclosed.md"
+    unclosed_path.write_text(
+        "---\n"
+        "title: This is still prose\n"
+        "# Chapter One\n\n"
+        "Spoken prose.\n",
+        encoding="utf-8",
+    )
+    unclosed = MarkdownParser(unclosed_path).parse()
+    assert "title: This is still prose" in unclosed.chapters[0].content
+
+    thematic_path = tmp_path / "thematic.md"
+    thematic_path.write_text(
+        "# Chapter One\n\n"
+        "Before the break.\n\n"
+        "---\n\n"
+        "After the break.\n\n"
+        "## Chapter Two\n\n"
+        "Second chapter.\n",
+        encoding="utf-8",
+    )
+    thematic = MarkdownParser(thematic_path).parse()
+    assert [chapter.title for chapter in thematic.chapters] == ["Chapter One", "Chapter Two"]
+    assert "---" in thematic.chapters[0].content
+
+
+def test_markdown_parser_strips_front_matter_from_utf16_source(tmp_path):
+    source_path = tmp_path / "utf16-front-matter.md"
+    source_path.write_bytes(
+        (
+            "---\n"
+            "title: UTF-16 Book\n"
+            "---\n"
+            "# Chapter One\n\n"
+            "Encoded prose.\n"
+        ).encode("utf-16")
+    )
+
+    document = MarkdownParser(source_path).parse()
+
+    assert document.chapters[0].content == "Encoded prose."
+    assert "\x00" not in document.chapters[0].content

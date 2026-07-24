@@ -17,6 +17,23 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
+def strip_leading_front_matter(raw_text: str) -> str:
+    """Remove a closed YAML front-matter block at the start of a document.
+
+    Only a delimiter on the first line can open the block, and an unclosed
+    block is left untouched so malformed documents are not silently truncated.
+    Later thematic ``---`` separators remain ordinary Markdown content.
+    """
+    lines = raw_text.splitlines(keepends=True)
+    if not lines or lines[0].strip() != "---":
+        return raw_text
+
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() in {"---", "..."}:
+            return "".join(lines[index + 1 :])
+    return raw_text
+
+
 def markdown_headings(raw_text: str) -> list[tuple[int, str]]:
     """Return heading lines outside fenced code blocks.
 
@@ -66,10 +83,11 @@ class MarkdownParser:
 
     def parse(self) -> Document:
         raw_text = read_source_text(self.file_path)
-        sections = self._split_sections(raw_text)
+        content_text = strip_leading_front_matter(raw_text)
+        sections = self._split_sections(content_text)
         title = sections[0].title if sections else self.file_path.stem
         chapters = sections or [
-            Chapter(number=1, title=self.file_path.stem, content=raw_text.strip())
+            Chapter(number=1, title=self.file_path.stem, content=content_text.strip())
         ]
         if not any(chapter.content.strip() for chapter in chapters):
             raise CorruptedFileError(
