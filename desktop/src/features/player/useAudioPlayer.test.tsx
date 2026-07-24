@@ -1,3 +1,7 @@
+// @vitest-environment happy-dom
+
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToString } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -133,5 +137,86 @@ describe("useAudioPlayer audio load failures", () => {
 
     expect(audio.src).toContain("token=fresh");
     expect(audio.currentTime).toBe(123);
+  });
+
+  it("retries recovery after an initial recovery attempt fails", async () => {
+    const apiClient = {
+      getLibraryAudioUrl: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("endpoint unavailable"))
+        .mockResolvedValueOnce("http://127.0.0.1:43123/api/library/7/audio?token=recovered"),
+    } as unknown as ApiClient;
+    const detail = createBookDetail();
+    const player = renderPlayer({ apiClient, library: createLibraryMock(detail) });
+    const audio = createFakeAudio();
+    player.current!.audioRef.current = audio;
+
+    player.current!.audioProps.onError();
+    await vi.waitFor(() => expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    player.current!.audioProps.onError();
+    await vi.waitFor(() => expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(2));
+    expect(audio.src).toContain("token=recovered");
+  });
+
+  it("does not let an older recovery settle clear a newer attempt", async () => {
+    let resolveFirst!: (url: string) => void;
+    let resolveSecond!: (url: string) => void;
+    const apiClient = {
+      getLibraryAudioUrl: vi
+        .fn()
+        .mockImplementationOnce(() => new Promise<string>((resolve) => { resolveFirst = resolve; }))
+        .mockImplementationOnce(() => new Promise<string>((resolve) => { resolveSecond = resolve; })),
+    } as unknown as ApiClient;
+    const detail = createBookDetail();
+    const player = renderPlayer({ apiClient, library: createLibraryMock(detail) });
+    const audio = createFakeAudio();
+    player.current!.audioRef.current = audio;
+
+    player.current!.audioProps.onError();
+    await vi.waitFor(() => expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(1));
+    player.current!.audioProps.onTimeUpdate({} as never);
+    player.current!.audioProps.onError();
+    await vi.waitFor(() => expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(2));
+
+    resolveFirst("http://127.0.0.1:43123/api/library/7/audio?token=first");
+    await Promise.resolve();
+    player.current!.audioProps.onError();
+    expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(2);
+    resolveSecond("http://127.0.0.1:43123/api/library/7/audio?token=second");
+  });
+
+  it("does not seek the current book after a stale chapter load resolves", async () => {
+    let resolveA!: (url: string) => void;
+    const updateBookPlaybackPosition = vi.fn(async (_id: number, position: number) => ({ position_sec: position }));
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn((id: number) => id === 7
+        ? new Promise<string>((resolve) => { resolveA = resolve; })
+        : Promise.resolve("http://desktop.test/book-b")),
+      updateBookPlaybackPosition,
+    } as unknown as ApiClient;
+    const detailA = createBookDetail();
+    detailA.chapters = [{ id: 1, number: 1, title: "one", duration_ms: 10000, mp3_path: null }];
+    const detailB = { ...createBookDetail(), id: 8, title: "B", playback_url: "/api/library/8/audio" };
+    const library = createLibraryMock(detailA);
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => { root.render(<Probe />); });
+    const audio = createFakeAudio();
+    current.audioRef.current = audio;
+    const staleJump = current.jumpToChapter({ id: 2, number: 2, title: "two", duration_ms: 1000, mp3_path: null });
+    Object.assign(library, { selectedBookId: 8, selectedBookDetail: detailB });
+    await act(async () => { root.render(<Probe />); });
+    await current.togglePlay();
+    updateBookPlaybackPosition.mockClear();
+    audio.currentTime = 42;
+    resolveA("http://desktop.test/book-a");
+    await staleJump;
+    expect(audio.currentTime).toBe(42);
+    expect(updateBookPlaybackPosition).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
   });
 });

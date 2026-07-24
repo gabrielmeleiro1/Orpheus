@@ -51,8 +51,10 @@ export function usePlaybackPersistence({
 }: UsePlaybackPersistenceArgs): PlaybackPersistence {
   const pendingResumeBookIdRef = useRef<number | null>(null);
   const pendingResumePositionSecRef = useRef(0);
-  const lastSavedPlaybackBookIdRef = useRef<number | null>(null);
-  const lastSavedPlaybackSecRef = useRef<number | null>(null);
+  const lastSavedPlaybackRef = useRef<Map<number, { positionSec: number; token: number }>>(new Map());
+  const committedPlaybackRef = useRef<Map<number, number>>(new Map());
+  const saveSequenceRef = useRef(0);
+  const saveTailsRef = useRef<Map<number, Promise<number | null>>>(new Map());
   const consecutiveSaveFailuresRef = useRef(0);
 
   const setPendingResume = useCallback((bookId: number, positionSec: number) => {
@@ -66,8 +68,10 @@ export function usePlaybackPersistence({
   }, []);
 
   const markPlaybackSaved = useCallback((bookId: number, positionSec: number) => {
-    lastSavedPlaybackBookIdRef.current = bookId;
-    lastSavedPlaybackSecRef.current = positionSec;
+    lastSavedPlaybackRef.current.set(bookId, {
+      positionSec,
+      token: ++saveSequenceRef.current,
+    });
   }, []);
 
   const persistBookPlaybackPosition = useCallback(
@@ -78,48 +82,62 @@ export function usePlaybackPersistence({
 
       const normalizedPosition = Math.max(0, Math.round((Number(positionSec) || 0) * 10) / 10);
       const force = Boolean(options.force);
+      const previousMarker = lastSavedPlaybackRef.current.get(bookId) ?? null;
 
       if (
         !force &&
-        lastSavedPlaybackBookIdRef.current === bookId &&
-        lastSavedPlaybackSecRef.current !== null &&
-        Math.abs(normalizedPosition - lastSavedPlaybackSecRef.current) < PLAYBACK_SAVE_INTERVAL_SEC
+        previousMarker &&
+        Math.abs(normalizedPosition - previousMarker.positionSec) < PLAYBACK_SAVE_INTERVAL_SEC
       ) {
-        return lastSavedPlaybackSecRef.current;
+        return previousMarker.positionSec;
       }
 
-      const previousSavedBookId = lastSavedPlaybackBookIdRef.current;
-      const previousSavedSec = lastSavedPlaybackSecRef.current;
-      lastSavedPlaybackBookIdRef.current = bookId;
-      lastSavedPlaybackSecRef.current = normalizedPosition;
-
-      try {
-        const response = await apiClient.updateBookPlaybackPosition(bookId, normalizedPosition);
-        const savedPosition = Number(response.position_sec);
-        const resolved = Number.isFinite(savedPosition) ? savedPosition : normalizedPosition;
-        lastSavedPlaybackSecRef.current = resolved;
-        consecutiveSaveFailuresRef.current = 0;
-        if (library.selectedBookId === bookId) {
-          library.setSelectedPlaybackPosition(resolved);
+      const token = ++saveSequenceRef.current;
+      lastSavedPlaybackRef.current.set(bookId, { positionSec: normalizedPosition, token });
+      const previousTail = saveTailsRef.current.get(bookId) ?? Promise.resolve(null);
+      const operation = previousTail.catch(() => null).then(async () => {
+        try {
+          const response = await apiClient.updateBookPlaybackPosition(bookId, normalizedPosition);
+          const savedPosition = Number(response.position_sec);
+          const resolved = Number.isFinite(savedPosition) ? savedPosition : normalizedPosition;
+          committedPlaybackRef.current.set(bookId, resolved);
+          const currentMarker = lastSavedPlaybackRef.current.get(bookId);
+          if (currentMarker?.token === token) {
+            lastSavedPlaybackRef.current.set(bookId, { positionSec: resolved, token });
+            if (library.selectedBookId === bookId) {
+              library.setSelectedPlaybackPosition(resolved);
+            }
+          }
+          consecutiveSaveFailuresRef.current = 0;
+          return resolved;
+        } catch {
+          const currentMarker = lastSavedPlaybackRef.current.get(bookId);
+          if (currentMarker?.token === token) {
+            const committedPosition = committedPlaybackRef.current.get(bookId);
+            if (committedPosition !== undefined) {
+              lastSavedPlaybackRef.current.set(bookId, { positionSec: committedPosition, token });
+            } else {
+              lastSavedPlaybackRef.current.delete(bookId);
+            }
+          }
+          consecutiveSaveFailuresRef.current += 1;
+          if (
+            !options.silent ||
+            consecutiveSaveFailuresRef.current >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD
+          ) {
+            onSaveFailed();
+          }
+          return null;
         }
-        return resolved;
-      } catch {
-        // The throttle marker was set optimistically above. Roll it back, or
-        // the next per-second save is skipped as "already saved" and the
-        // position silently stops advancing for the rest of the session.
-        lastSavedPlaybackBookIdRef.current = previousSavedBookId;
-        lastSavedPlaybackSecRef.current = previousSavedSec;
-        consecutiveSaveFailuresRef.current += 1;
-        // Automatic saves stay quiet about a blip, but a sustained failure
-        // means resume is broken and the user should hear about it.
-        if (
-          !options.silent ||
-          consecutiveSaveFailuresRef.current >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD
-        ) {
-          onSaveFailed();
+      });
+      let trackedTail!: Promise<number | null>;
+      trackedTail = operation.finally(() => {
+        if (saveTailsRef.current.get(bookId) === trackedTail) {
+          saveTailsRef.current.delete(bookId);
         }
-        return null;
-      }
+      });
+      saveTailsRef.current.set(bookId, trackedTail);
+      return trackedTail;
     },
     [apiClient, library, onSaveFailed],
   );

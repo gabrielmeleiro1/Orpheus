@@ -6,20 +6,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useConversionJob } from "./useConversionJob";
 
-const { refreshActiveConversionState } = vi.hoisted(() => ({
+const { refreshActiveConversionState, markConversionStarted } = vi.hoisted(() => ({
   refreshActiveConversionState: vi.fn(),
+  markConversionStarted: vi.fn(),
 }));
 
 vi.mock("../events/useEventStream", () => ({
   useEventStream: () => ({
     activeJobId: "job-1",
     refreshActiveConversionState,
+    markConversionStarted,
     uiState: "running",
   }),
 }));
 
 function Probe(): null {
-  const result = useConversionJob({ apiClient: {} as never, baseUrl: "http://desktop.test" });
+  const result = useConversionJob({
+    apiClient: (globalThis as typeof globalThis & { conversionApi?: never }).conversionApi ?? ({} as never),
+    baseUrl: "http://desktop.test",
+  });
   (globalThis as typeof globalThis & { conversionJobProbe?: typeof result }).conversionJobProbe = result;
   return null;
 }
@@ -43,6 +48,7 @@ describe("useConversionJob metadata reconciliation", () => {
     await act(async () => root.unmount());
     container.remove();
     delete (globalThis as typeof globalThis & { conversionJobProbe?: unknown }).conversionJobProbe;
+    delete (globalThis as typeof globalThis & { conversionApi?: unknown }).conversionApi;
     vi.clearAllMocks();
   });
 
@@ -67,5 +73,43 @@ describe("useConversionJob metadata reconciliation", () => {
     expect(refreshActiveConversionState).toHaveBeenCalled();
     expect(getProbe().activeJobTitle).toBe("Reloaded title");
     expect(getProbe().activeJobAuthor).toBe("Reloaded author");
+  });
+
+  it("fences a stale active lookup after a newer conversion starts", async () => {
+    const apiClient = {
+      startConversion: vi.fn(async () => ({ job_id: "job-b" })),
+    };
+    (globalThis as typeof globalThis & { conversionApi: typeof apiClient }).conversionApi = apiClient;
+    refreshActiveConversionState.mockResolvedValue({
+      active: false,
+      job: {
+        id: "job-a",
+        book_id: null,
+        status: "running",
+        error: null,
+        title: "stale",
+        author: "stale",
+      },
+    });
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe />);
+    });
+
+    await act(async () => {
+      const result = await getProbe().startConversion({
+        source_path: "/tmp/book.epub",
+        conversion_mode: "audiobook",
+        title: "Book B",
+        author: "Author B",
+        runtime_options: { tts_engine: "engine", voice: "voice", speed: 1 },
+      });
+      expect(result).toEqual({ ok: true, jobId: "job-b" });
+    });
+
+    expect(markConversionStarted).toHaveBeenCalledWith("job-b");
+    expect(getProbe().activeJobTitle).toBe("Book B");
+    expect(getProbe().activeJobAuthor).toBe("Author B");
   });
 });

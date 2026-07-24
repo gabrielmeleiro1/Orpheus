@@ -94,6 +94,7 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
           title: String(payload.title ?? "").trim(),
           author: String(payload.author ?? "").trim(),
         });
+        eventStream.markConversionStarted(response.job_id);
         return { ok: true, jobId: response.job_id };
       } catch (error: unknown) {
         const message = normalizeErrorMessage(error);
@@ -104,7 +105,7 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
         setIsStarting(false);
       }
     },
-    [apiClient],
+    [apiClient, eventStream.markConversionStarted],
   );
 
   useEffect(() => {

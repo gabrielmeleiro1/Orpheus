@@ -32,7 +32,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   // Monotonic load id + latest-selection mirror guard loadBookAudio against
   // rapid next/previous: an older in-flight load must never set src/state late.
   const loadSequenceRef = useRef(0);
-  const playbackRecoveryBookIdRef = useRef<number | null>(null);
+  const playbackRecoveryAttemptsRef = useRef<Map<number, symbol>>(new Map());
   const selectedBookIdLatestRef = useRef<number | null>(library.selectedBookId);
   selectedBookIdLatestRef.current = library.selectedBookId;
 
@@ -346,14 +346,23 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
 
   const jumpToChapter = useCallback(
     async (chapter: LibraryChapterDetail): Promise<void> => {
-      if (!library.selectedBookDetail || !playerEligible) {
+      const requestedBookId = library.selectedBookId;
+      const requestedDetail = library.selectedBookDetail;
+      if (!requestedBookId || !requestedDetail || !playerEligible) {
         return;
       }
 
       setPlayerDismissedBookId(null);
-      await loadSelectedBookAudio(false);
+      await loadBookAudio(requestedBookId, requestedDetail, false);
 
-      const target = chapterStartSeconds(library.selectedBookDetail.chapters, chapter.number);
+      if (
+        selectedBookIdLatestRef.current !== requestedBookId ||
+        loadedBookIdRef.current !== requestedBookId
+      ) {
+        return;
+      }
+
+      const target = chapterStartSeconds(requestedDetail.chapters, chapter.number);
       const audio = audioRef.current;
       if (!audio || !audio.src) {
         return;
@@ -363,11 +372,17 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       audio.currentTime = Math.max(0, Math.min(duration || target, target));
       setElapsedSec(Math.floor(audio.currentTime || 0));
       updatePlayerStatus();
-      void persistLoadedBookPlaybackPosition({ force: true, silent: true });
+      void persistLoadedBookPlaybackPosition({
+        bookId: requestedBookId,
+        positionSec: audio.currentTime,
+        force: true,
+        silent: true,
+      });
     },
     [
       library.selectedBookDetail,
-      loadSelectedBookAudio,
+      library.selectedBookId,
+      loadBookAudio,
       persistLoadedBookPlaybackPosition,
       playerEligible,
       updatePlayerStatus,
@@ -408,18 +423,26 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     if (!bookId || !detail?.playback_url || !audio) {
       return;
     }
-    if (playbackRecoveryBookIdRef.current === bookId) {
+    if (playbackRecoveryAttemptsRef.current.has(bookId)) {
       return;
     }
 
-    playbackRecoveryBookIdRef.current = bookId;
+    const recoveryToken = Symbol("playback-recovery");
+    playbackRecoveryAttemptsRef.current.set(bookId, recoveryToken);
     setPendingResume(bookId, Number(audio.currentTime || detail.playback_position_sec || 0));
     setPlayerTitle("Reconnecting playback…");
-    void loadBookAudio(bookId, detail, isPlaying, true);
+    void loadBookAudio(bookId, detail, isPlaying, true).finally(() => {
+      if (playbackRecoveryAttemptsRef.current.get(bookId) === recoveryToken) {
+        playbackRecoveryAttemptsRef.current.delete(bookId);
+      }
+    });
   }, [isPlaying, library.selectedBookDetail, library.selectedBookId, loadBookAudio, setPendingResume]);
 
   const markPlaybackHealthy = useCallback(() => {
-    playbackRecoveryBookIdRef.current = null;
+    const bookId = loadedBookIdRef.current ?? selectedBookIdLatestRef.current;
+    if (bookId !== null) {
+      playbackRecoveryAttemptsRef.current.delete(bookId);
+    }
   }, []);
 
   useEffect(() => {

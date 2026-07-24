@@ -39,6 +39,7 @@ interface UseEventStreamResult {
   isCancelling: boolean;
   cancelActiveConversion: () => Promise<void>;
   refreshActiveConversionState: () => Promise<ActiveConversionResponse | null>;
+  markConversionStarted: (jobId: string) => void;
   waitForTerminalState: (jobId: string) => Promise<ConversionJobTerminalEvent>;
 }
 
@@ -62,6 +63,10 @@ export function useEventStream({
   const logSequenceRef = useRef(0);
   const activeJobIdRef = useRef<string | null>(null);
   const lookupFailedRef = useRef(false);
+  const runtimeMutationGenerationRef = useRef(0);
+  const reconciliationRequestSequenceRef = useRef(0);
+  const cancellationAttemptSequenceRef = useRef(0);
+  const mountedRef = useRef(true);
 
   const nextLogId = useCallback(() => {
     logSequenceRef.current += 1;
@@ -99,6 +104,19 @@ export function useEventStream({
 
   const applyEventPayload = useCallback(
     (payload: DesktopEventPayload) => {
+      if (payload.event_type === "state" || payload.event_type === "progress") {
+        const eventJobId = String(payload.job_id ?? "").trim();
+        if (
+          eventJobId &&
+          activeJobIdRef.current &&
+          eventJobId !== activeJobIdRef.current
+        ) {
+          return;
+        }
+      }
+      if (payload.event_type === "progress" || payload.event_type === "state") {
+        runtimeMutationGenerationRef.current += 1;
+      }
       if (payload.event_type === "progress") {
         applyReducerAction({ type: "progress", payload });
         return;
@@ -136,13 +154,25 @@ export function useEventStream({
   }, [resolveTerminalState]);
 
   const refreshActiveConversionState = useCallback(async () => {
+    const requestId = ++reconciliationRequestSequenceRef.current;
+    const reconciliationGeneration = runtimeMutationGenerationRef.current;
     if (!apiClient) {
+      if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+        return null;
+      }
       applyReducerAction({ type: "refreshNoClient" });
       return null;
     }
 
     try {
       const response = await apiClient.getActiveConversion();
+      if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+        return null;
+      }
+      // Claim this reconciliation before applying it so a concurrent lookup
+      // that captured the same generation cannot land afterward and overwrite
+      // the response accepted here.
+      runtimeMutationGenerationRef.current += 1;
       lookupFailedRef.current = false;
       if (response.job) {
         const terminalStatus = normalizeTerminalStatus(response.job.status);
@@ -170,6 +200,9 @@ export function useEventStream({
       });
       return response;
     } catch {
+      if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+        return null;
+      }
       // The reconcile fallback polls every couple of seconds while a cancel is
       // in flight; log only the first failure of a streak so a transient (or
       // persistent) outage cannot spam the log. A later success resets the
@@ -183,6 +216,18 @@ export function useEventStream({
     }
   }, [apiClient, applyEventPayload, applyReducerAction, pushLog]);
 
+  const markConversionStarted = useCallback(
+    (jobId: string) => {
+      const normalizedJobId = String(jobId ?? "").trim();
+      if (!normalizedJobId || !mountedRef.current) {
+        return;
+      }
+      runtimeMutationGenerationRef.current += 1;
+      applyReducerAction({ type: "setActiveJobId", jobId: normalizedJobId });
+    },
+    [applyReducerAction],
+  );
+
   const handleStreamOpen = useCallback(() => {
     void refreshActiveConversionState();
   }, [refreshActiveConversionState]);
@@ -194,6 +239,13 @@ export function useEventStream({
     onOpen: handleStreamOpen,
     onPayload: applyEventPayload,
   });
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     void refreshActiveConversionState();
@@ -229,16 +281,25 @@ export function useEventStream({
       return;
     }
 
+    const attemptId = ++cancellationAttemptSequenceRef.current;
+    const lookupGeneration = runtimeMutationGenerationRef.current;
     applyReducerAction({ type: "cancelStart" });
 
+    let targetJobId: string | null = activeJobIdRef.current;
     try {
-      let targetJobId = activeJobIdRef.current;
-
       if (!targetJobId) {
         const active = await apiClient.getActiveConversion();
+        if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current || lookupGeneration !== runtimeMutationGenerationRef.current) {
+          if (mountedRef.current) {
+            pushLog("warn", "cancellation superseded by a newer conversion");
+            applyReducerAction({ type: "cancelRejected" });
+          }
+          return;
+        }
         if (active.active && active.job) {
           targetJobId = active.job.id;
           activeJobIdRef.current = targetJobId;
+          runtimeMutationGenerationRef.current += 1;
           applyReducerAction({ type: "setActiveJobId", jobId: targetJobId });
         }
       }
@@ -249,7 +310,40 @@ export function useEventStream({
         return;
       }
 
+      if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current) {
+        return;
+      }
+      if (
+        activeJobIdRef.current === null ||
+        modelStateRef.current.terminalJobIds.includes(targetJobId)
+      ) {
+        return;
+      }
+      if (activeJobIdRef.current !== targetJobId) {
+        if (mountedRef.current) {
+          pushLog("warn", "cancellation superseded by a newer conversion");
+          applyReducerAction({ type: "cancelRejected" });
+        }
+        return;
+      }
+
       const response = await apiClient.cancelConversion(targetJobId);
+      if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current) {
+        return;
+      }
+      if (
+        activeJobIdRef.current === null ||
+        modelStateRef.current.terminalJobIds.includes(targetJobId)
+      ) {
+        return;
+      }
+      if (activeJobIdRef.current !== targetJobId) {
+        if (mountedRef.current) {
+          pushLog("warn", "cancellation superseded by a newer conversion");
+          applyReducerAction({ type: "cancelRejected" });
+        }
+        return;
+      }
       if (!response.cancelled) {
         pushLog("error", "cancel failed");
         applyReducerAction({ type: "cancelRejected" });
@@ -263,6 +357,14 @@ export function useEventStream({
         fallbackTimestamp: nowTimestamp(),
       });
     } catch (error: unknown) {
+      if (
+        !mountedRef.current ||
+        attemptId !== cancellationAttemptSequenceRef.current ||
+        (targetJobId !== null && activeJobIdRef.current !== targetJobId) ||
+        (targetJobId === null && lookupGeneration !== runtimeMutationGenerationRef.current)
+      ) {
+        return;
+      }
       const message = error instanceof Error ? error.message : "cancel request failed";
       pushLog("error", message);
       applyReducerAction({ type: "cancelRejected" });
@@ -284,6 +386,7 @@ export function useEventStream({
     isCancelling: modelState.isCancelling,
     cancelActiveConversion,
     refreshActiveConversionState,
+    markConversionStarted,
     // Stable memoized callback from useTerminalStateWaiters; it normalizes the
     // job id itself, so no per-render wrapper is needed.
     waitForTerminalState,
