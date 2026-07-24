@@ -3,11 +3,55 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import multiprocessing as mp
 import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
+
+
+def _invoke_acquire(acquire: Any, timeout: Optional[float]) -> Any:
+    """Call an acquire method using only a signature-compatible argument list."""
+    try:
+        signature = inspect.signature(acquire)
+    except (TypeError, ValueError):
+        # Built-in acquire methods generally expose the standard semaphore
+        # signature but cannot always be introspected. Invoke once so an
+        # internal TypeError is never mistaken for a signature mismatch.
+        if timeout is None:
+            return acquire()
+        return acquire(True, timeout)
+
+    candidates = [(), (True,)] if timeout is None else [(True, timeout), (timeout,)]
+    for args in candidates:
+        try:
+            signature.bind(*args)
+        except TypeError:
+            continue
+        return acquire(*args)
+
+    # Preserve the native error for an unsupported signature, without retrying
+    # after the method body has run.
+    if timeout is None:
+        return acquire()
+    return acquire(True, timeout)
+
+
+def _acquire_succeeded(result: Any) -> bool:
+    # Some limiter wrappers return ``None`` on success, while semaphore
+    # implementations return a truthy/falsey boolean.
+    return result is None or bool(result)
+
+
+async def _await_task_to_completion(task: asyncio.Task[Any]) -> Any:
+    """Await a shielded task despite repeated cancellation of this task."""
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
 
 
 class GlobalAPILimiter:
@@ -28,7 +72,7 @@ class GlobalAPILimiter:
 
         # Keep construction lightweight while preserving process sharing for
         # process-backed chapter workers. Stats remain local to this process.
-        self._semaphore = mp.BoundedSemaphore(self.max_concurrency)
+        self._semaphore = mp.get_context("spawn").BoundedSemaphore(self.max_concurrency)
 
     @property
     def semaphore(self):
@@ -39,11 +83,8 @@ class GlobalAPILimiter:
             return
 
         start = time.perf_counter()
-        try:
-            acquired = self._semaphore.acquire(True, timeout)
-        except TypeError:
-            acquired = self._semaphore.acquire(True)
-        if not acquired:
+        acquired = _invoke_acquire(self._semaphore.acquire, timeout)
+        if not _acquire_succeeded(acquired):
             raise TimeoutError("Global API limiter acquire timed out")
 
         wait_ms = (time.perf_counter() - start) * 1000
@@ -103,13 +144,31 @@ async def acquire_global_limiter_async(
         yield
         return
 
+    def _acquire() -> bool:
+        return _acquire_succeeded(_invoke_acquire(limiter.acquire, timeout))
+
+    acquire_task = asyncio.create_task(asyncio.to_thread(_acquire))
     try:
-        await asyncio.to_thread(limiter.acquire, True, timeout)
-    except TypeError:
-        if timeout is None:
-            await asyncio.to_thread(limiter.acquire)
-        else:
-            await asyncio.to_thread(limiter.acquire, timeout)
+        acquired = await asyncio.shield(acquire_task)
+    except asyncio.CancelledError:
+        # Keep waiting for the worker thread: it may acquire after this task is
+        # cancelled, and that permit must be returned before cancellation is
+        # propagated to the caller.
+        try:
+            acquired = await _await_task_to_completion(acquire_task)
+        except BaseException:
+            acquired = False
+        if acquired:
+            release_task = asyncio.create_task(asyncio.to_thread(limiter.release))
+            try:
+                await _await_task_to_completion(release_task)
+            except BaseException:
+                pass
+        raise
+
+    if not acquired:
+        raise TimeoutError("Global API limiter acquire timed out")
+
     try:
         yield
     finally:

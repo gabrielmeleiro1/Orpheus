@@ -679,6 +679,223 @@ def test_engine_runtime_helpers_cover_warmup_and_metrics_contract() -> None:
     assert engine_runtime.get_metrics(tts)["warmup_complete"] is True
 
 
+def test_engine_runtime_explicit_quantization_override_does_not_reuse_canonical_cache() -> None:
+    canonical_key = "('mlx', 'kokoro', 'Kokoro-82M', 'bf16', None, ())"
+    bf16_model = object()
+    four_bit_model = object()
+    cached = {canonical_key: bf16_model}
+    tts = SimpleNamespace(
+        config=SimpleNamespace(
+            model_name="Kokoro-82M",
+            quantization="bf16",
+            runtime_cache_key=canonical_key,
+        ),
+        _model_loaded=False,
+        _model=None,
+        _model_path="Kokoro-82M-bf16",
+        _model_cache_key=canonical_key,
+        _canonical_quantization="bf16",
+        _canonical_cache_key=canonical_key,
+    )
+    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    tts.config.quantization = "Q4"
+
+    with patch.object(engine_runtime, "_get_cached_model", side_effect=cached.get) as mock_get, \
+         patch.object(
+             engine_runtime.mlx_compat_backend,
+             "load_tts_model",
+             return_value=four_bit_model,
+             create=True,
+         ) as mock_load:
+        engine_runtime.load_model(tts, quantization="Q4")
+
+    assert tts._model is four_bit_model
+    assert tts._model is not bf16_model
+    assert tts._model_path == "Kokoro-82M-4bit"
+    assert tts._model_cache_key != canonical_key
+    assert tts.config.runtime_cache_key == canonical_key
+    mock_load.assert_called_once_with("Kokoro-82M-4bit")
+    assert mock_get.call_args.args[0] == tts._model_cache_key
+
+
+def test_engine_runtime_quantization_aliases_share_override_cache_identity() -> None:
+    canonical_key = "('mlx', 'kokoro', 'Kokoro-82M', 'bf16', None, ())"
+    four_bit_model = object()
+    cache: dict[str, object] = {}
+
+    def load_engine(quantization: str):
+        tts = SimpleNamespace(
+            config=SimpleNamespace(
+                model_name="Kokoro-82M",
+                quantization="bf16",
+                runtime_cache_key=canonical_key,
+            ),
+            _model_loaded=False,
+            _model=None,
+            _model_path="Kokoro-82M-bf16",
+            _model_cache_key=canonical_key,
+            _canonical_quantization="bf16",
+            _canonical_cache_key=canonical_key,
+        )
+        tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+        with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get), \
+             patch.object(
+                 engine_runtime.mlx_compat_backend,
+                 "load_tts_model",
+                 return_value=four_bit_model,
+                 create=True,
+             ) as mock_load:
+            engine_runtime.load_model(tts, quantization=quantization)
+        return tts, mock_load
+
+    first, first_load = load_engine("Q4")
+    cache[first._model_cache_key] = first._model
+    second, second_load = load_engine("4BIT")
+
+    assert first._model_cache_key == second._model_cache_key
+    assert second._model is four_bit_model
+    first_load.assert_called_once()
+    second_load.assert_not_called()
+
+
+def test_engine_runtime_repeated_override_alias_keeps_effective_private_key() -> None:
+    canonical_key = "('mlx', 'kokoro', 'Kokoro-82M', 'bf16', None, ())"
+    private_key = repr((canonical_key, "Kokoro-82M-4bit", "4bit"))
+    bf16_model = object()
+    four_bit_model = object()
+    cache = {canonical_key: bf16_model, private_key: four_bit_model}
+    tts = SimpleNamespace(
+        config=SimpleNamespace(
+            model_name="Kokoro-82M",
+            quantization="bf16",
+            runtime_cache_key=canonical_key,
+        ),
+        _model_loaded=False,
+        _model=None,
+        _model_path="Kokoro-82M-bf16",
+        _model_cache_key=canonical_key,
+    )
+    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+
+    with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get):
+        engine_runtime.load_model(tts, quantization="Q4")
+        tts._model_loaded = False
+        engine_runtime.load_model(tts, quantization="4BIT")
+        assert tts._model_cache_key == private_key
+        assert tts._model is four_bit_model
+
+        tts._model_loaded = False
+        engine_runtime.load_model(tts, quantization="bf16")
+
+    assert tts._model_cache_key == canonical_key
+    assert tts._model is bf16_model
+
+
+def test_engine_runtime_no_arg_load_tracks_mutated_config_quantization() -> None:
+    canonical_key = "('mlx', 'kokoro', 'Kokoro-82M', 'bf16', None, ())"
+    private_key = repr((canonical_key, "Kokoro-82M-4bit", "4bit"))
+    bf16_model = object()
+    four_bit_model = object()
+    cache = {canonical_key: bf16_model, private_key: four_bit_model}
+    tts = SimpleNamespace(
+        config=SimpleNamespace(
+            model_name="Kokoro-82M",
+            quantization="bf16",
+            runtime_cache_key=canonical_key,
+        ),
+        _model_loaded=False,
+        _model=None,
+        _model_path="Kokoro-82M-bf16",
+        _model_cache_key=canonical_key,
+    )
+    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    tts.config.quantization = "4bit"
+
+    with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get):
+        engine_runtime.load_model(tts)
+
+    assert tts._model is four_bit_model
+    assert tts._model_path == "Kokoro-82M-4bit"
+    assert tts._model_cache_key == private_key
+
+
+def test_engine_runtime_no_arg_load_switches_private_variants_and_canonical_model() -> None:
+    canonical_key = "('mlx', 'kokoro', 'Kokoro-82M', 'bf16', None, ())"
+    q4_key = repr((canonical_key, "Kokoro-82M-4bit", "4bit"))
+    q8_key = repr((canonical_key, "Kokoro-82M-8bit", "8bit"))
+    bf16_model = object()
+    four_bit_model = object()
+    eight_bit_model = object()
+    cache = {canonical_key: bf16_model, q4_key: four_bit_model, q8_key: eight_bit_model}
+    tts = SimpleNamespace(
+        config=SimpleNamespace(
+            model_name="Kokoro-82M",
+            quantization="bf16",
+            runtime_cache_key=canonical_key,
+        ),
+        _model_loaded=False,
+        _model=None,
+        _model_path="Kokoro-82M-bf16",
+        _model_cache_key=canonical_key,
+    )
+    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+
+    with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get):
+        engine_runtime.load_model(tts, quantization="4bit")
+        tts._model_loaded = False
+        tts.config.quantization = "8bit"
+        engine_runtime.load_model(tts)
+        assert tts._model is eight_bit_model
+        assert tts._model_path == "Kokoro-82M-8bit"
+        assert tts._model_cache_key == q8_key
+
+        tts._model_loaded = False
+        tts.config.quantization = "bf16"
+        engine_runtime.load_model(tts)
+
+    assert tts._model is bf16_model
+    assert tts._model_path == "Kokoro-82M-bf16"
+    assert tts._model_cache_key == canonical_key
+
+
+def test_engine_runtime_model_path_mutation_does_not_reuse_canonical_model() -> None:
+    canonical_key = "('mlx', 'kokoro', 'Model-A', 'bf16', None, ())"
+    canonical_model = object()
+    model_b = object()
+    cache = {canonical_key: canonical_model}
+    tts = SimpleNamespace(
+        config=SimpleNamespace(
+            model_name="Model-A",
+            quantization="bf16",
+            runtime_cache_key=canonical_key,
+        ),
+        _model_loaded=False,
+        _model=None,
+        _model_path="Model-A-bf16",
+        _model_cache_key=canonical_key,
+        _canonical_quantization="bf16",
+        _canonical_cache_key=canonical_key,
+        _canonical_model_path="Model-A-bf16",
+    )
+    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    tts.config.model_name = "Model-B"
+
+    with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get), \
+         patch.object(
+             engine_runtime.mlx_compat_backend,
+             "load_tts_model",
+             return_value=model_b,
+             create=True,
+         ) as mock_load:
+        engine_runtime.load_model(tts)
+
+    assert tts._model is model_b
+    assert tts._model is not canonical_model
+    assert tts._model_path == "Model-B-bf16"
+    assert tts._model_cache_key != canonical_key
+    mock_load.assert_called_once_with("Model-B-bf16")
+
+
 def test_app_controller_capabilities_use_runtime_probe_service(monkeypatch) -> None:
     monkeypatch.setattr("modules.tts.runtime_spec.platform.system", lambda: "Linux")
     monkeypatch.setattr("modules.tts.runtime_spec.platform.machine", lambda: "x86_64")

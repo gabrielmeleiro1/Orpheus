@@ -46,18 +46,63 @@ def get_model_cache_key(config) -> str:  # noqa: ANN001
     return get_model_path(config)
 
 
+def _get_override_cache_key(
+    canonical_key: str,
+    model_path: str,
+    quantization: str,
+) -> str:
+    """Keep an explicit runtime override private to its effective variant."""
+    return repr((canonical_key, str(model_path), normalize_quantization(quantization)))
+
+
+def _infer_quantization_from_model_path(model_path: object) -> str | None:
+    normalized_path = str(model_path or "").strip().lower()
+    for quantization in ("bf16", "4bit", "6bit", "8bit"):
+        if normalized_path.endswith(f"-{quantization}"):
+            return quantization
+    return None
+
+
 def load_model(engine, quantization: Optional[str] = None) -> None:  # noqa: ANN001
     """Load the configured model, optionally updating quantization first."""
     if engine._model_loaded:  # noqa: SLF001
         return
 
-    if quantization:
-        engine.config.quantization = quantization
-        engine._model_path = engine._get_model_path()  # noqa: SLF001
-        engine._model_cache_key = get_model_cache_key(engine.config)  # noqa: SLF001
+    canonical_cache_key = getattr(engine, "_canonical_cache_key", None)  # noqa: SLF001
+    if canonical_cache_key is None:
+        canonical_cache_key = getattr(engine, "_model_cache_key", None)  # noqa: SLF001
+        if canonical_cache_key is None:
+            canonical_cache_key = get_model_cache_key(engine.config)
+        engine._canonical_cache_key = canonical_cache_key  # noqa: SLF001
 
-    if not hasattr(engine, "_model_cache_key"):
-        engine._model_cache_key = get_model_cache_key(engine.config)  # noqa: SLF001
+    canonical_quantization = getattr(engine, "_canonical_quantization", None)  # noqa: SLF001
+    if canonical_quantization is None:
+        canonical_quantization = _infer_quantization_from_model_path(
+            getattr(engine, "_model_path", None)
+        ) or normalize_quantization(getattr(engine.config, "quantization", "bf16"))
+        engine._canonical_quantization = canonical_quantization  # noqa: SLF001
+    canonical_model_path = getattr(engine, "_canonical_model_path", None)  # noqa: SLF001
+    if canonical_model_path is None:
+        canonical_model_path = getattr(engine, "_model_path", None)  # noqa: SLF001
+        engine._canonical_model_path = canonical_model_path  # noqa: SLF001
+
+    if quantization is not None:
+        engine.config.quantization = quantization
+    effective_quantization = normalize_quantization(
+        getattr(engine.config, "quantization", "bf16")
+    )
+    engine._model_path = engine._get_model_path()  # noqa: SLF001
+    if (
+        effective_quantization != canonical_quantization
+        or engine._model_path != canonical_model_path  # noqa: SLF001
+    ):
+        engine._model_cache_key = _get_override_cache_key(  # noqa: SLF001
+            canonical_cache_key,
+            engine._model_path,  # noqa: SLF001
+            effective_quantization,
+        )
+    else:
+        engine._model_cache_key = canonical_cache_key  # noqa: SLF001
 
     cached_model = _get_cached_model(engine._model_cache_key)  # noqa: SLF001
     if cached_model is not None:

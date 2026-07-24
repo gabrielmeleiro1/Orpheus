@@ -59,6 +59,7 @@ def synthesize_to_output_path(
     import soundfile as sf
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    _remove_stale_generated_files(output_path)
 
     with engine._model_lock:  # noqa: SLF001
         gen_kwargs = {
@@ -96,6 +97,11 @@ def synthesize_to_output_path(
     segments = [sf.read(str(path), dtype="float32")[0] for path in generated_paths]
     audio = np.concatenate([np.asarray(segment, dtype=np.float32) for segment in segments])
     sf.write(str(output_path), audio, engine.config.sample_rate, subtype="PCM_16")
+    for generated_path in generated_paths:
+        try:
+            generated_path.unlink()
+        except Exception:
+            pass
     return audio
 
 
@@ -133,8 +139,10 @@ def _remove_stale_generated_files(output_path: Path) -> None:
             candidate.unlink()
         except FileNotFoundError:
             pass
-        except Exception:
-            pass
+        except OSError as exc:
+            raise SynthesisError(
+                f"Unable to remove stale generated audio file: {candidate}"
+            ) from exc
 
 
 def synthesize_to_output_file(

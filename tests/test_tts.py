@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import modules.tts.engine as tts_engine_module
 import modules.tts.cleaner as cleaner_module
 from modules.tts.engine_output import synthesize_to_file as synthesize_to_file_helper
+from modules.tts.engine_output import synthesize_to_output_path as synthesize_to_output_path_helper
 from modules.tts.engine_output import synthesize_to_output_file as synthesize_to_output_file_helper
 from modules.tts.chunker import TextChunker, ChunkConfig
 from modules.tts.cleaner import TextCleaner
@@ -226,6 +227,139 @@ class TestTTSEngine:
         assert written_path == output_path
         with wave.open(str(output_path), "rb") as wav_file:
             assert wav_file.getnframes() == 3
+
+    def test_engine_output_path_helper_replaces_stale_output_and_consumes_segments(self, tmp_path):
+        output_path = tmp_path / "sample.wav"
+        with wave.open(str(output_path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes((np.array([9], dtype=np.int16)).tobytes())
+
+        def fake_generate_audio(**kwargs):  # noqa: ANN001
+            target = output_path.with_name(f"{output_path.stem}_000.wav")
+            with wave.open(str(target), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(24000)
+                wav_file.writeframes((np.array([1, 2, 3], dtype=np.int16)).tobytes())
+
+        engine = SimpleNamespace(
+            _model_lock=threading.RLock(),
+            _model_path="model-path",
+            _model=object(),
+            config=SimpleNamespace(sample_rate=24000),
+        )
+
+        audio = synthesize_to_output_path_helper(
+            engine,
+            text="Hello world",
+            voice="af_bella",
+            speed=1.0,
+            output_path=output_path,
+            generate_fn=fake_generate_audio,
+        )
+
+        assert np.allclose(audio, np.array([1, 2, 3], dtype=np.float32) / 32768)
+        with wave.open(str(output_path), "rb") as wav_file:
+            assert np.array_equal(
+                np.frombuffer(wav_file.readframes(wav_file.getnframes()), dtype=np.int16),
+                np.array([1, 2, 3], dtype=np.int16),
+            )
+        assert not output_path.with_name("sample_000.wav").exists()
+
+    @pytest.mark.parametrize(
+        "output_helper",
+        [synthesize_to_output_path_helper, synthesize_to_output_file_helper],
+        ids=["samples", "file"],
+    )
+    def test_output_helpers_abort_when_stale_final_cannot_be_removed(
+        self,
+        tmp_path,
+        monkeypatch,
+        output_helper,
+    ):
+        output_path = tmp_path / "sample.wav"
+        with wave.open(str(output_path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(np.array([9], dtype=np.int16).tobytes())
+
+        generate_calls = []
+        original_unlink = Path.unlink
+
+        def locked_unlink(path, *args, **kwargs):  # noqa: ANN001
+            if path == output_path:
+                raise PermissionError("output is locked")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", locked_unlink)
+        engine = SimpleNamespace(
+            _model_lock=threading.RLock(),
+            _model_path="model-path",
+            _model=object(),
+            config=SimpleNamespace(sample_rate=24000),
+        )
+
+        with pytest.raises(SynthesisError, match="stale generated audio"):
+            output_helper(
+                engine,
+                text="Hello world",
+                voice="af_bella",
+                speed=1.0,
+                output_path=output_path,
+                generate_fn=lambda **kwargs: generate_calls.append(kwargs),
+            )
+
+        assert generate_calls == []
+
+    @pytest.mark.parametrize(
+        "output_helper",
+        [synthesize_to_output_path_helper, synthesize_to_output_file_helper],
+        ids=["samples", "file"],
+    )
+    def test_output_helpers_abort_when_stale_segment_cannot_be_removed(
+        self,
+        tmp_path,
+        monkeypatch,
+        output_helper,
+    ):
+        output_path = tmp_path / "sample.wav"
+        segment_path = tmp_path / "sample_000.wav"
+        with wave.open(str(segment_path), "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(24000)
+            wav_file.writeframes(np.array([9], dtype=np.int16).tobytes())
+
+        generate_calls = []
+        original_unlink = Path.unlink
+
+        def locked_unlink(path, *args, **kwargs):  # noqa: ANN001
+            if path == segment_path:
+                raise OSError("segment is locked")
+            return original_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "unlink", locked_unlink)
+        engine = SimpleNamespace(
+            _model_lock=threading.RLock(),
+            _model_path="model-path",
+            _model=object(),
+            config=SimpleNamespace(sample_rate=24000),
+        )
+
+        with pytest.raises(SynthesisError, match="stale generated audio"):
+            output_helper(
+                engine,
+                text="Hello world",
+                voice="af_bella",
+                speed=1.0,
+                output_path=output_path,
+                generate_fn=lambda **kwargs: generate_calls.append(kwargs),
+            )
+
+        assert generate_calls == []
 
 
 class TestBlankChunkSynthesis:

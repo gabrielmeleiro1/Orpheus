@@ -20,6 +20,7 @@ from .engine_config import TTSConfig
 from . import engine_output, engine_runtime
 from . import mlx_compat as mlx_compat_backend
 from . import model_cache as model_cache_backend
+from .quantization import normalize_quantization
 
 logger = logging.getLogger(__name__)
 
@@ -176,8 +177,11 @@ class TTSEngine:
         self._model = None
 
         # Determine model path based on quantization
+        self._canonical_quantization = normalize_quantization(self.config.quantization)
         self._model_path = self._get_model_path()
+        self._canonical_model_path = self._model_path
         self._model_cache_key = engine_runtime.get_model_cache_key(self.config)
+        self._canonical_cache_key = self._model_cache_key
 
         # Track synthesis statistics
         self._total_chunks_processed = 0
