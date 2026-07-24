@@ -48,6 +48,20 @@ export interface UseCleanerOptionsResult {
   cleanerRuntimeError: boolean;
 }
 
+// Provider failures arrive as our proxy's message wrapping the provider's raw
+// JSON error body; surface just the human sentence inside it when present.
+export function compactProviderError(message: string): string {
+  const match = message.match(/"message":\s*"((?:[^"\\]|\\.)+)"/);
+  if (!match) {
+    return message;
+  }
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch {
+    return match[1];
+  }
+}
+
 function resolveInitialBackendSelection(
   modelOptions: ModelOptionsResponse | null,
   systemCapabilities: SystemCapabilitiesResponse | null,
@@ -108,6 +122,8 @@ export function useCleanerOptions({
   const [cleanerRuntimeStatus, setCleanerRuntimeStatus] = useState("Checking cleaner runtime...");
   const [cleanerRuntimeError, setCleanerRuntimeError] = useState(false);
   const beginOpenAiModelFetch = useLatestRequest();
+  const lastAutoFetchedKeyRef = useRef("");
+  const openAiModelFetchLoadingRef = useRef(false);
 
   const availableCleanerBackendOptions = useMemo(
     () => filterAvailableCleanerBackendOptions(resolveCleanerBackendOptions(modelOptions), systemCapabilities),
@@ -125,7 +141,10 @@ export function useCleanerOptions({
   );
 
   const cleanerModelOptions = useMemo(() => {
-    if (cleanerBackendRequiresApiKey(modelOptions, cleanerBackend) && fetchedOpenAiModelOptions.length > 0) {
+    // API-key backends list models live from the provider once a key is
+    // pasted; a canned fallback list would advertise models the key may not
+    // actually have access to.
+    if (cleanerBackendRequiresApiKey(modelOptions, cleanerBackend)) {
       return fetchedOpenAiModelOptions;
     }
 
@@ -165,6 +184,9 @@ export function useCleanerOptions({
       setOpenAiModelFetchError(false);
       setCleanerRuntimeStatus("Checking cleaner runtime...");
       setCleanerRuntimeError(false);
+      lastAutoFetchedKeyRef.current = "";
+      openAiModelFetchLoadingRef.current = false;
+      beginOpenAiModelFetch();
       return;
     }
 
@@ -191,7 +213,7 @@ export function useCleanerOptions({
       : undefined;
     selectCleanerBackend(initialSelection.backendId, persistedCudaDefaults);
     cleanerOptionsHydratedRef.current = true;
-  }, [apiClient, modelOptions, persistedSettingsRef, selectCleanerBackend, systemCapabilities]);
+  }, [apiClient, beginOpenAiModelFetch, modelOptions, persistedSettingsRef, selectCleanerBackend, systemCapabilities]);
 
   useEffect(() => {
     if (!apiClient || !modelOptions || !cleanerBackend) {
@@ -273,12 +295,24 @@ export function useCleanerOptions({
   }, []);
 
   const setCleanerApiKey = useCallback((value: string) => {
-    setCleanerApiKeyState(value);
-    setOpenAiModelFetchError(false);
-    if (!value.trim()) {
+    const normalizedValue = value.trim();
+    if (normalizedValue !== cleanerApiKey.trim()) {
+      // A key identifies the provider model list. Invalidate any request and
+      // selection tied to the previous key before accepting the new value.
+      openAiModelFetchLoadingRef.current = false;
+      beginOpenAiModelFetch();
+      setFetchedOpenAiModelOptions([]);
+      setCleanerModelState("");
+      setOpenAiModelFetchLoading(false);
+      lastAutoFetchedKeyRef.current = "";
       setOpenAiModelFetchStatus("Paste an API key to fetch available models.");
     }
-  }, []);
+    setCleanerApiKeyState(value);
+    setOpenAiModelFetchError(false);
+    if (!normalizedValue) {
+      setOpenAiModelFetchStatus("Paste an API key to fetch available models.");
+    }
+  }, [beginOpenAiModelFetch, cleanerApiKey]);
 
   const fetchOpenAiModelIds = useCallback(async () => {
     if (!apiClient) {
@@ -300,7 +334,13 @@ export function useCleanerOptions({
       return;
     }
 
+    if (openAiModelFetchLoadingRef.current) {
+      return;
+    }
+
     setCleanerBackendConfigured(true);
+    lastAutoFetchedKeyRef.current = normalizedKey;
+    openAiModelFetchLoadingRef.current = true;
     setOpenAiModelFetchLoading(true);
     setOpenAiModelFetchError(false);
     setOpenAiModelFetchStatus(`Fetching ${selectedCleanerBackend.display_name} models...`);
@@ -320,16 +360,46 @@ export function useCleanerOptions({
       );
       setOpenAiModelFetchError(options.length === 0);
     } catch (fetchError: unknown) {
-      if (isLatest() && !isAbortLikeError(fetchError)) {
+      if (
+        isLatest() &&
+        !isAbortLikeError(fetchError)
+      ) {
         setOpenAiModelFetchError(true);
-        setOpenAiModelFetchStatus(fetchError instanceof Error ? fetchError.message : "Cleaner model fetch failed.");
+        setOpenAiModelFetchStatus(
+          fetchError instanceof Error
+            ? compactProviderError(fetchError.message)
+            : "Cleaner model fetch failed.",
+        );
       }
     } finally {
       if (isLatest()) {
+        openAiModelFetchLoadingRef.current = false;
         setOpenAiModelFetchLoading(false);
       }
     }
   }, [apiClient, beginOpenAiModelFetch, cleanerApiKey, selectedCleanerBackend]);
+
+  // Fetch provider models automatically once a pasted key settles, so the
+  // model list fills without a manual "Fetch models" click. The length gate
+  // skips half-typed keys and the ref stops re-fetching an unchanged (e.g.
+  // already-rejected) key; the manual button stays as the retry path.
+  useEffect(() => {
+    const normalizedKey = cleanerApiKey.trim();
+    if (!apiClient || !selectedCleanerBackend?.requires_api_key) {
+      return;
+    }
+    if (normalizedKey.length < 20 || lastAutoFetchedKeyRef.current === normalizedKey) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      if (openAiModelFetchLoadingRef.current) {
+        return;
+      }
+      lastAutoFetchedKeyRef.current = normalizedKey;
+      void fetchOpenAiModelIds();
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [apiClient, cleanerApiKey, fetchOpenAiModelIds, selectedCleanerBackend]);
 
   return {
     cleanerBackend,

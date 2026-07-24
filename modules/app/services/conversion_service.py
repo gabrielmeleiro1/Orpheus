@@ -93,7 +93,9 @@ class ConversionService:
         self._job_lock = threading.Lock()
         self._job_sequence = count()
         self._storage_cleanup_active = False
+        self._storage_cleanup_owner: int | None = None
         self._book_cleanup_ids: set[int] = set()
+        self._book_cleanup_owners: dict[int, int] = {}
         self._tts_session = TtsEngineSession()
 
     def _job_is_active_or_pending(self, job: Any) -> bool:
@@ -156,20 +158,42 @@ class ConversionService:
         """Atomically verify no job is active and block new starts until
         :meth:`end_storage_cleanup` — closes the check-then-prune race."""
         with self._job_lock:
+            if self._storage_cleanup_active:
+                raise RuntimeError("Storage cleanup is already in progress")
             if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
                 raise RuntimeError(
                     "Cannot clean up storage while a conversion is queued or running"
                 )
+            if self._book_cleanup_ids:
+                raise RuntimeError(
+                    "Cannot start storage cleanup while a book cleanup is in progress"
+                )
             self._storage_cleanup_active = True
+            self._storage_cleanup_owner = threading.get_ident()
 
     def end_storage_cleanup(self) -> None:
         with self._job_lock:
+            if not self._storage_cleanup_active:
+                return
+            if self._storage_cleanup_owner != threading.get_ident():
+                raise RuntimeError(
+                    "Cannot end storage cleanup reserved by another owner"
+                )
             self._storage_cleanup_active = False
+            self._storage_cleanup_owner = None
 
     def begin_book_cleanup(self, book_id: int) -> None:
         """Reserve a book for deletion while preventing a same-book job start."""
         normalized_book_id = int(book_id)
         with self._job_lock:
+            if self._storage_cleanup_active:
+                raise RuntimeError(
+                    "Cannot start book cleanup while storage cleanup is in progress"
+                )
+            if normalized_book_id in self._book_cleanup_ids:
+                raise RuntimeError(
+                    f"Book cleanup for {normalized_book_id} is already in progress"
+                )
             active_job = self._active_job
             if (
                 active_job is not None
@@ -180,10 +204,19 @@ class ConversionService:
                     "Cannot delete a book while it is being converted or repaired"
                 )
             self._book_cleanup_ids.add(normalized_book_id)
+            self._book_cleanup_owners[normalized_book_id] = threading.get_ident()
 
     def end_book_cleanup(self, book_id: int) -> None:
         with self._job_lock:
-            self._book_cleanup_ids.discard(int(book_id))
+            normalized_book_id = int(book_id)
+            if normalized_book_id not in self._book_cleanup_ids:
+                return
+            if self._book_cleanup_owners.get(normalized_book_id) != threading.get_ident():
+                raise RuntimeError(
+                    f"Cannot end book cleanup for {normalized_book_id} reserved by another owner"
+                )
+            self._book_cleanup_ids.remove(normalized_book_id)
+            self._book_cleanup_owners.pop(normalized_book_id, None)
 
     def start_conversion(
         self,

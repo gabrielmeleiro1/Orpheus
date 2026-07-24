@@ -113,6 +113,9 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const listAbortRef = useRef<AbortController | null>(null);
   const detailAbortRef = useRef<AbortController | null>(null);
   const selectedBookIdRef = useRef<number | null>(null);
+  const inFlightDeleteTokensRef = useRef(
+    new Map<number, { token: symbol; controller: AbortController }>(),
+  );
   const selectionGenerationRef = useRef(0);
   const preservedStatusRef = useRef<string | null>(null);
   const currentListContextRef = useRef<{ query: string; modeFilter: LibraryModeFilter }>({
@@ -120,6 +123,13 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     modeFilter: "all",
   });
   currentListContextRef.current = { query: searchQuery.trim(), modeFilter };
+
+  const clearInFlightDeleteRequests = useCallback(() => {
+    for (const { controller } of inFlightDeleteTokensRef.current.values()) {
+      controller.abort();
+    }
+    inFlightDeleteTokensRef.current.clear();
+  }, []);
 
   const resetLibraryState = useCallback(() => {
     listAbortRef.current?.abort();
@@ -131,6 +141,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     beginMutationRequest();
     beginPreviewRequest();
     beginEntityActionRequest();
+    clearInFlightDeleteRequests();
     preservedStatusRef.current = null;
     setItems([]);
     setIndexedCount(0);
@@ -143,7 +154,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     setLoadingDetail(false);
     setErrorMessage("");
     setStatusMessage(backendDisconnected ? "Backend disconnected" : "Waiting for backend");
-  }, [backendDisconnected, beginDetailRequest, beginEntityActionRequest, beginListRequest, beginMutationRequest, beginPreviewRequest]);
+  }, [backendDisconnected, beginDetailRequest, beginEntityActionRequest, beginListRequest, beginMutationRequest, beginPreviewRequest, clearInFlightDeleteRequests]);
 
   const loadBookDetail = useCallback(
     async (
@@ -375,6 +386,16 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       return false;
     }
 
+    const deleteOwnerToken = Symbol();
+    if (inFlightDeleteTokensRef.current.has(selectedBookId)) {
+      return false;
+    }
+    const deleteController = new AbortController();
+    inFlightDeleteTokensRef.current.set(selectedBookId, {
+      token: deleteOwnerToken,
+      controller: deleteController,
+    });
+
     const title = selectedBookDetail?.title || items.find((item) => item.id === selectedBookId)?.title || "selected book";
     const deletedStatus = `Deleted ${title}`;
     const selectionGenerationAtDeleteStart = selectionGenerationRef.current;
@@ -418,7 +439,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     setSelectedBookDetail(null);
 
     try {
-      await repository.deleteBook(selectedBookId);
+      await repository.deleteBook(selectedBookId, { signal: deleteController.signal });
       if (!isCurrentMutation()) {
         return true;
       }
@@ -487,6 +508,10 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       setErrorMessage(message);
       setStatusMessage(message);
       return false;
+    } finally {
+      if (inFlightDeleteTokensRef.current.get(selectedBookId)?.token === deleteOwnerToken) {
+        inFlightDeleteTokensRef.current.delete(selectedBookId);
+      }
     }
   }, [beginApiOwnedRequest, beginDetailRequest, beginListRequest, beginMutationRequest, beginPreviewRequest, indexedCount, items, loadLibrary, repository, selectedBookDetail, selectedBookId, selectedBookIndex]);
 
@@ -640,6 +665,26 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       };
     });
   }, []);
+
+  useEffect(() => {
+    return () => {
+      listAbortRef.current?.abort();
+      detailAbortRef.current?.abort();
+      clearInFlightDeleteRequests();
+      beginListRequest();
+      beginDetailRequest();
+      beginMutationRequest();
+      beginPreviewRequest();
+      beginEntityActionRequest();
+    };
+  }, [beginDetailRequest, beginEntityActionRequest, beginListRequest, beginMutationRequest, beginPreviewRequest, clearInFlightDeleteRequests]);
+
+  useEffect(() => {
+    // A new API client/backend owns a distinct mutation context. Retire any
+    // delete owners from the previous context so a hung request cannot block
+    // retries against the replacement client.
+    clearInFlightDeleteRequests();
+  }, [apiClient, backendDisconnected, clearInFlightDeleteRequests]);
 
   useEffect(() => {
     if (!repository || backendDisconnected) {

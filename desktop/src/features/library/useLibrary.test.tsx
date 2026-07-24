@@ -765,7 +765,9 @@ describe("useLibrary indexed total", () => {
 
     expect(deleted).toBe(true);
     expect(browserConfirm).not.toHaveBeenCalled();
-    expect(deleteBook).toHaveBeenCalledWith(book.id, undefined);
+    expect(deleteBook).toHaveBeenCalledWith(book.id, {
+      signal: expect.any(AbortSignal),
+    });
     expect(getLibraryProbe().items).toEqual([]);
     expect(getLibraryProbe().indexedCount).toBe(0);
   });
@@ -876,6 +878,110 @@ describe("useLibrary indexed total", () => {
     expect(deleted).toBe(false);
     expect(getLibraryProbe().items).toEqual([book]);
     expect(getLibraryProbe().indexedCount).toBe(1);
+  });
+
+  it("ignores a duplicate delete while the same book delete is in flight", async () => {
+    const firstDeleteRequest = deferred<{ book_id: number; deleted: boolean }>();
+    const getLibrary = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [book], count: 1 })
+      .mockResolvedValueOnce({ items: [], count: 0 });
+    const getLibraryBook = vi.fn(async () => detail);
+    const deleteBook = vi
+      .fn()
+      .mockImplementationOnce(() => firstDeleteRequest.promise)
+      .mockResolvedValueOnce({ book_id: book.id, deleted: true });
+    const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    const renderedLibrary = getLibraryProbe();
+    let firstDelete!: Promise<boolean>;
+    let duplicateDelete!: Promise<boolean>;
+    await act(async () => {
+      firstDelete = renderedLibrary.deleteSelectedBook();
+      duplicateDelete = renderedLibrary.deleteSelectedBook();
+      await Promise.resolve();
+    });
+
+    expect(deleteBook).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      firstDeleteRequest.reject(new Error("delete failed"));
+      expect(await firstDelete).toBe(false);
+      expect(await duplicateDelete).toBe(false);
+    });
+
+    expect(getLibraryProbe().items).toEqual([book]);
+
+    let retryDeleted = false;
+    await act(async () => {
+      retryDeleted = await getLibraryProbe().deleteSelectedBook();
+    });
+
+    expect(retryDeleted).toBe(true);
+    expect(deleteBook).toHaveBeenCalledTimes(2);
+    expect(getLibraryProbe().items).toEqual([]);
+  });
+
+  it("releases a stale delete owner when the API client is replaced", async () => {
+    const deleteRequestA = deferred<{ book_id: number; deleted: boolean }>();
+    const getLibraryA = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBookA = vi.fn(async () => detail);
+    const deleteBookA = vi.fn(() => deleteRequestA.promise);
+    const apiClientA = { getLibrary: getLibraryA, getLibraryBook: getLibraryBookA, deleteBook: deleteBookA } as unknown as ApiClient;
+
+    const getLibraryB = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [book], count: 1 })
+      .mockResolvedValueOnce({ items: [], count: 0 });
+    const getLibraryBookB = vi.fn(async () => detail);
+    const deleteBookB = vi.fn(async () => ({ book_id: book.id, deleted: true }));
+    const apiClientB = { getLibrary: getLibraryB, getLibraryBook: getLibraryBookB, deleteBook: deleteBookB } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClientA} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let staleDelete!: Promise<boolean>;
+    await act(async () => {
+      staleDelete = getLibraryProbe().deleteSelectedBook();
+      await Promise.resolve();
+    });
+    expect(deleteBookA).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={apiClientB} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    expect(getLibraryProbe().selectedBookId).toBe(book.id);
+    let replacementDeleted = false;
+    await act(async () => {
+      replacementDeleted = await getLibraryProbe().deleteSelectedBook();
+    });
+    expect(replacementDeleted).toBe(true);
+    expect(deleteBookB).toHaveBeenCalledTimes(1);
+    expect(getLibraryProbe().items).toEqual([]);
+
+    await act(async () => {
+      deleteRequestA.resolve({ book_id: book.id, deleted: true });
+      expect(await staleDelete).toBe(true);
+    });
+    expect(getLibraryProbe().items).toEqual([]);
+    expect(getLibraryProbe().selectedBookId).toBeNull();
   });
 
   it("reconciles a failed delete without clobbering a newer user selection", async () => {

@@ -5297,6 +5297,90 @@ def test_conversion_service_begin_storage_cleanup_rejects_active_job(tmp_path):
         service.begin_storage_cleanup()
 
 
+def test_conversion_service_begin_storage_cleanup_rejects_second_reservation(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    service.begin_storage_cleanup()
+    try:
+        with pytest.raises(RuntimeError, match="already in progress"):
+            service.begin_storage_cleanup()
+    finally:
+        service.end_storage_cleanup()
+
+
+def test_conversion_service_begin_book_cleanup_rejects_duplicate_reservation(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    service.begin_book_cleanup(42)
+    try:
+        with pytest.raises(RuntimeError, match="already in progress"):
+            service.begin_book_cleanup(42)
+    finally:
+        service.end_book_cleanup(42)
+
+
+def test_conversion_service_storage_and_book_cleanup_reservations_are_exclusive(
+    tmp_path,
+):
+    service = _make_service(tmp_path, _PipelineStub)
+
+    service.begin_storage_cleanup()
+    try:
+        with pytest.raises(RuntimeError, match="storage cleanup"):
+            service.begin_book_cleanup(42)
+    finally:
+        service.end_storage_cleanup()
+
+    service.begin_book_cleanup(42)
+    try:
+        with pytest.raises(RuntimeError, match="storage cleanup"):
+            service.begin_storage_cleanup()
+    finally:
+        service.end_book_cleanup(42)
+
+
+def test_conversion_service_storage_cleanup_end_cannot_clear_another_owner(
+    tmp_path,
+):
+    service = _make_service(tmp_path, _PipelineStub)
+    service.begin_storage_cleanup()
+    errors = []
+
+    def _end_from_other_owner():
+        try:
+            service.end_storage_cleanup()
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_end_from_other_owner)
+    thread.start()
+    thread.join(timeout=3.0)
+
+    assert errors and "owner" in str(errors[0]).lower()
+    assert service._storage_cleanup_active is True  # noqa: SLF001
+    service.end_storage_cleanup()
+
+
+def test_conversion_service_book_cleanup_end_cannot_clear_another_owner(tmp_path):
+    service = _make_service(tmp_path, _PipelineStub)
+    service.begin_book_cleanup(42)
+    errors = []
+
+    def _end_from_other_owner():
+        try:
+            service.end_book_cleanup(42)
+        except RuntimeError as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_end_from_other_owner)
+    thread.start()
+    thread.join(timeout=3.0)
+
+    assert errors and "owner" in str(errors[0]).lower()
+    assert 42 in service._book_cleanup_ids  # noqa: SLF001
+    service.end_book_cleanup(42)
+
+
 def test_conversion_service_book_cleanup_blocks_same_book_repair(tmp_path):
     service = _make_service(tmp_path, _PipelineStub)
     service.begin_book_cleanup(42)

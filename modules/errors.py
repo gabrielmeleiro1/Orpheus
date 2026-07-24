@@ -299,8 +299,17 @@ def validate_epub(file_path: Path) -> bool:
             if 'mimetype' not in names:
                 raise EPUBParsingError("Missing mimetype file", file_path=file_path)
             
-            # Check mimetype content
-            mimetype = zf.read('mimetype').decode('utf-8').strip()
+            # Check mimetype content.  Encrypted members, malformed payloads,
+            # and invalid encodings must stay inside the typed validation
+            # boundary rather than leaking zipfile/Unicode exceptions.
+            try:
+                mimetype = zf.read('mimetype').decode('utf-8').strip()
+            except Exception as exc:
+                raise EPUBParsingError(
+                    "Unable to read EPUB mimetype",
+                    details=str(exc),
+                    file_path=file_path,
+                ) from exc
             if mimetype != 'application/epub+zip':
                 raise EPUBParsingError(
                     f"Invalid mimetype: {mimetype}",
