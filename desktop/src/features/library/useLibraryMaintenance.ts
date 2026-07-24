@@ -105,13 +105,6 @@ export function useLibraryMaintenance({
       setMaintenanceMessage("backend disconnected");
       return;
     }
-    if (
-      typeof window.confirm === "function" &&
-      !window.confirm("Clean stale storage records and orphan files? A database backup will be created first.")
-    ) {
-      return;
-    }
-
     const isCurrent = beginMaintenanceRequest();
     setMaintenanceLoading(true);
     try {
@@ -121,6 +114,9 @@ export function useLibraryMaintenance({
       }
       setMaintenanceMessage("cleanup complete");
       await runDiagnostics(isCurrent);
+      if (!isCurrent()) {
+        return;
+      }
       await onAfterCleanup();
     } catch (error: unknown) {
       if (isCurrent() && !isAbortLikeError(error)) {

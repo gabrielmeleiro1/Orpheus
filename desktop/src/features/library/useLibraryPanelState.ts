@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { CleaningPreviewResponse } from "../../types/api";
 import type { UseLibraryResult } from "./useLibrary";
@@ -32,22 +32,39 @@ export function useLibraryPanelState({ library }: UseLibraryPanelStateArgs): Use
   const [editTags, setEditTags] = useState("");
   const [cleaningPreview, setCleaningPreview] = useState<CleaningPreviewResponse | null>(null);
   const [cleaningPreviewLoading, setCleaningPreviewLoading] = useState(false);
+  const previewGenerationRef = useRef(0);
+  const selectedBookIdRef = useRef<number | null>(selected?.id ?? null);
+  selectedBookIdRef.current = selected?.id ?? null;
 
   useEffect(() => {
+    previewGenerationRef.current += 1;
     setEditTitle(selected?.title ?? "");
     setEditAuthor(selected?.author ?? "");
     setEditTags(selected?.tags ?? "");
     setCleaningPreview(null);
+    setCleaningPreviewLoading(false);
   }, [selected?.id, selected?.title, selected?.author, selected?.tags]);
 
   const loadCleaningPreview = useCallback(
     async (chapterNumber: number): Promise<void> => {
+      const requestGeneration = ++previewGenerationRef.current;
+      const requestBookId = selected?.id ?? null;
       setCleaningPreviewLoading(true);
       try {
         const preview = await library.loadCleaningPreview(chapterNumber);
-        setCleaningPreview(preview);
+        if (
+          previewGenerationRef.current === requestGeneration &&
+          selectedBookIdRef.current === requestBookId
+        ) {
+          setCleaningPreview(preview);
+        }
       } finally {
-        setCleaningPreviewLoading(false);
+        if (
+          previewGenerationRef.current === requestGeneration &&
+          selectedBookIdRef.current === requestBookId
+        ) {
+          setCleaningPreviewLoading(false);
+        }
       }
     },
     [library],

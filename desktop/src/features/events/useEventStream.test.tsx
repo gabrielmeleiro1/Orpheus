@@ -299,6 +299,23 @@ describe("useEventStream reconciliation fencing", () => {
     expect(getProbe().logs.some((entry) => entry.msg.includes("old failure"))).toBe(false);
   });
 
+  it("clears the old cancellation latch as soon as a newer conversion starts", async () => {
+    let rejectOld!: (error: Error) => void;
+    const cancelConversion = vi.fn(() => new Promise((_, reject) => { rejectOld = reject; }));
+    const getActiveConversion = vi.fn(async () => ({ active: false, job: null }));
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = { getActiveConversion, cancelConversion } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    await act(async () => { getProbe().markConversionStarted("job-a"); });
+    const oldCancel = getProbe().cancelActiveConversion();
+    await vi.waitFor(() => expect(cancelConversion).toHaveBeenCalledWith("job-a"));
+    await act(async () => { getProbe().markConversionStarted("job-b"); });
+    expect(getProbe().activeJobId).toBe("job-b");
+    expect(getProbe().isCancelling).toBe(false);
+    await act(async () => { rejectOld(new Error("old failure")); await oldCancel; });
+    expect(getProbe().isCancelling).toBe(false);
+    expect(getProbe().logs.some((entry) => entry.msg.includes("old failure"))).toBe(false);
+  });
+
   it("lets only the latest same-job cancellation response mutate state", async () => {
     const resolvers: Array<(response: { cancelled: boolean }) => void> = [];
     const cancelConversion = vi.fn(() => new Promise<{ cancelled: boolean }>((resolve) => { resolvers.push(resolve); }));
@@ -331,6 +348,8 @@ describe("useEventStream reconciliation fencing", () => {
     await vi.waitFor(() => expect(resolvers).toHaveLength(2));
     await act(async () => { resolvers[0]?.(activeResponse("job-a")); await older; });
     expect(cancelConversion).not.toHaveBeenCalled();
+    expect(getProbe().isCancelling).toBe(true);
+    expect(getProbe().logs.some((entry) => entry.msg.includes("superseded"))).toBe(false);
     await act(async () => { resolvers[1]?.(activeResponse("job-b")); await newer; });
     expect(cancelConversion).toHaveBeenCalledWith("job-b");
   });

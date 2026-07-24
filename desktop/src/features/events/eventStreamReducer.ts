@@ -66,6 +66,7 @@ export type EventStreamAction =
   | { type: "cancelStart" }
   | { type: "cancelRejected" }
   | ({ type: "cancelAccepted"; jobId: string } & LogActionFields)
+  | { type: "conversionStarted"; jobId: string }
   | { type: "setActiveJobId"; jobId: string | null };
 
 export interface EventStreamReduceResult {
@@ -406,6 +407,16 @@ export function eventStreamReducer(
           action.logId,
           action.fallbackTimestamp,
         ),
+      };
+    case "conversionStarted":
+      return {
+        state: {
+          ...state,
+          activeJobId: action.jobId,
+          cancelledJobId: null,
+          cancellingJobId: null,
+          isCancelling: false,
+        },
       };
     case "setActiveJobId":
       return { state: { ...state, activeJobId: action.jobId } };

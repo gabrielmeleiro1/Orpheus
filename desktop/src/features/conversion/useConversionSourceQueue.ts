@@ -13,7 +13,7 @@ import type { ApiClient } from "../../api/client";
 import type { ConversionMode } from "../../types/api";
 import { extractDroppedPaths, pathsFromUriList } from "./conversionPanelHelpers";
 import { isTauriRuntime } from "../../platform/tauriRuntime";
-import { createQueueItem } from "./conversionPanelModel";
+import { createQueueItem, type ConversionQueueItem } from "./conversionPanelModel";
 import type { ConversionJobController } from "./useConversionJob";
 import type { useConversionQueueController } from "./useConversionQueueController";
 
@@ -42,7 +42,16 @@ export function useConversionSourceQueue({
   const applySourcePathsRef = useRef<(paths: string[]) => void>(() => {});
   const hasSelectedSourceRef = useRef(false);
   const browserFileInputRef = useRef<HTMLInputElement>(null);
+  const browserUploadBatchRef = useRef(0);
+  const mountedRef = useRef(false);
   const pasteInFlightRef = useRef(false);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     hasSelectedSourceRef.current = Boolean(
@@ -76,7 +85,7 @@ export function useConversionSourceQueue({
     }
 
     let mounted = true;
-    const unlistenHandles: UnlistenFn[] = [];
+    const unlistenHandles = new Set<UnlistenFn>();
 
     const applyDropPayload = (payload: unknown) => {
       const paths = extractDroppedPaths(payload);
@@ -87,38 +96,41 @@ export function useConversionSourceQueue({
       applySourcePathsRef.current(paths);
     };
 
-    const register = async () => {
+    const register = async (eventName: string, handler: Parameters<typeof listen>[1]) => {
       try {
-        const listeners = await Promise.all([
-          listen<unknown>("tauri://file-drop", (event) => applyDropPayload(event.payload)),
-          listen<unknown>("tauri://drag-drop", (event) => applyDropPayload(event.payload)),
-          listen("tauri://drag-enter", () => {
-            if (mounted) {
-              setDragging(true);
-            }
-          }),
-          listen("tauri://drag-over", () => {
-            if (mounted) {
-              setDragging(true);
-            }
-          }),
-          listen("tauri://drag-leave", () => {
-            if (mounted) {
-              setDragging(false);
-            }
-          }),
-        ]);
-        unlistenHandles.push(...listeners);
+        const unlisten = await listen(eventName, handler);
+        if (!mounted) {
+          unlisten();
+          return;
+        }
+        unlistenHandles.add(unlisten);
       } catch {
         // Ignore event registration failures in non-desktop contexts.
       }
     };
 
-    void register();
+    void register("tauri://file-drop", (event) => applyDropPayload(event.payload));
+    void register("tauri://drag-drop", (event) => applyDropPayload(event.payload));
+    void register("tauri://drag-enter", () => {
+      if (mounted) {
+        setDragging(true);
+      }
+    });
+    void register("tauri://drag-over", () => {
+      if (mounted) {
+        setDragging(true);
+      }
+    });
+    void register("tauri://drag-leave", () => {
+      if (mounted) {
+        setDragging(false);
+      }
+    });
 
     return () => {
       mounted = false;
       for (const unlisten of unlistenHandles) {
+        unlistenHandles.delete(unlisten);
         unlisten();
       }
     };
@@ -153,47 +165,76 @@ export function useConversionSourceQueue({
         return;
       }
 
+      const batchId = ++browserUploadBatchRef.current;
       queueController.setPreflightStatus(`Uploading ${files.length === 1 ? files[0].name : `${files.length} sources`}...`);
-      try {
-        const responses = await Promise.all(files.map((file) => apiClient.uploadSourceFile(file)));
-        const items = responses.map((response) =>
-          createQueueItem(
-            response.source_handle,
-            conversionMode,
-            response.original_name,
-            response.preflight,
-          ),
-        );
-        queueController.addQueueItems(items, {
-          selectFirst: !hasSelectedSourceRef.current,
-        });
-        queueController.setPreflightStatus(
-          files.length === 1 ? "Source uploaded." : `${files.length} sources uploaded.`,
-        );
-        conversionJob.clearFormError();
-      } catch (error: unknown) {
-        queueController.setPreflightStatus(error instanceof Error ? error.message : "source upload failed");
+      const results = await Promise.allSettled(files.map(async (file) => apiClient.uploadSourceFile(file)));
+      if (!mountedRef.current) {
+        return;
       }
+
+      const responses = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+      const failedCount = results.length - responses.length;
+
+      if (responses.length > 0) {
+        const items = responses.map((response) =>
+          createQueueItem(response.source_handle, conversionMode, response.original_name, response.preflight),
+        );
+        const selectFirst = !hasSelectedSourceRef.current;
+        if (selectFirst) {
+          hasSelectedSourceRef.current = true;
+        }
+        queueController.addQueueItems(items, {
+          selectFirst,
+        });
+        conversionJob.clearFormError();
+        if (batchId !== browserUploadBatchRef.current) {
+          return;
+        }
+        if (failedCount === 0) {
+          queueController.setPreflightStatus(
+            files.length === 1 ? "Source uploaded." : `${files.length} sources uploaded.`,
+          );
+        } else {
+          queueController.setPreflightStatus(
+            `Added ${responses.length} ${responses.length === 1 ? "source" : "sources"}; ${failedCount} upload${failedCount === 1 ? "" : "s"} failed.`,
+          );
+        }
+        return;
+      }
+
+      if (batchId !== browserUploadBatchRef.current) {
+        return;
+      }
+      const firstFailure = results.find((result) => result.status === "rejected");
+      const detail =
+        firstFailure?.status === "rejected"
+          ? firstFailure.reason instanceof Error
+            ? firstFailure.reason.message
+            : String(firstFailure.reason || "unknown error")
+          : "unknown error";
+      queueController.setPreflightStatus(
+        files.length === 1 ? `Source upload failed: ${detail}` : `All ${files.length} source uploads failed: ${detail}`,
+      );
     },
     [apiClient, conversionJob, conversionMode, queueController],
   );
 
-  const onAddPastedText = useCallback(async () => {
+  const onAddPastedText = useCallback(async (): Promise<ConversionQueueItem | null> => {
     // A ref guard (not the pasteBusy state) closes the same-frame double-click
     // gap: two clicks dispatched before React re-renders both see the stale
     // disabled state, but the ref flips synchronously so only the first runs.
     if (pasteInFlightRef.current) {
-      return;
+      return null;
     }
     if (!apiClient) {
       setPasteStatus("Backend is not connected.");
-      return;
+      return null;
     }
 
     const text = pastedText.trim();
     if (!text) {
       setPasteStatus("Paste text before adding.");
-      return;
+      return null;
     }
 
     const pasteTitle = pastedTitle.trim();
@@ -227,8 +268,10 @@ export function useConversionSourceQueue({
       setPastedAuthor("");
       setPasteStatus("Pasted markdown source added.");
       conversionJob.clearFormError();
+      return item;
     } catch (error: unknown) {
       setPasteStatus(error instanceof Error ? error.message : "Paste upload failed");
+      return null;
     } finally {
       setPasteBusy(false);
       pasteInFlightRef.current = false;

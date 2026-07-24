@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { CleaningPreviewResponse, LibraryChapterDetail } from "../../types/api";
 import { formatDurationClock } from "../../format/time";
@@ -51,6 +51,8 @@ export function LibraryPanel({
     selected && (library.loadingDetail || selected.id !== library.selectedBookId),
   );
   const [deleteConfirmationBookId, setDeleteConfirmationBookId] = useState<number | null>(null);
+  const [cleanupConfirmationArmed, setCleanupConfirmationArmed] = useState(false);
+  const cleanupConfirmationRef = useRef(false);
   const {
     editTitle,
     editAuthor,
@@ -65,6 +67,8 @@ export function LibraryPanel({
 
   useEffect(() => {
     setDeleteConfirmationBookId(null);
+    cleanupConfirmationRef.current = false;
+    setCleanupConfirmationArmed(false);
   }, [library.selectedBookId, selected?.id]);
 
   const showPager = library.items.length > 1;
@@ -415,15 +419,54 @@ export function LibraryPanel({
                 >
                   Back up database
                 </button>
-                <button
-                  className="btn btn-compact"
-                  type="button"
-                  disabled={library.maintenanceLoading}
-                  data-tip="Remove orphaned temp files. Finished audio is never touched."
-                  onClick={() => void library.cleanupStorage()}
-                >
-                  Clean up storage
-                </button>
+                {cleanupConfirmationArmed ? (
+                  <>
+                    <span className="field-hint library-cleanup-confirmation" role="status">
+                      Clean stale storage records and orphan files? A database backup will be created first.
+                    </span>
+                    <button
+                      id="library-cleanup-cancel-btn"
+                      className="btn btn-ghost btn-compact"
+                      type="button"
+                      onClick={() => {
+                        cleanupConfirmationRef.current = false;
+                        setCleanupConfirmationArmed(false);
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      id="library-cleanup-confirm-btn"
+                      className="btn btn-danger btn-compact"
+                      type="button"
+                      disabled={library.maintenanceLoading}
+                      onClick={() => {
+                        if (!cleanupConfirmationRef.current) {
+                          return;
+                        }
+                        cleanupConfirmationRef.current = false;
+                        setCleanupConfirmationArmed(false);
+                        void library.cleanupStorage();
+                      }}
+                    >
+                      Clean up storage
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    id="library-cleanup-btn"
+                    className="btn btn-compact"
+                    type="button"
+                    disabled={library.maintenanceLoading}
+                    data-tip="Remove orphaned temp files. Finished audio is never touched."
+                    onClick={() => {
+                      cleanupConfirmationRef.current = true;
+                      setCleanupConfirmationArmed(true);
+                    }}
+                  >
+                    Clean up storage
+                  </button>
+                )}
                 <button
                   className="btn btn-compact"
                   type="button"

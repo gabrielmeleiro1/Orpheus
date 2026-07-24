@@ -67,9 +67,11 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const beginListRequest = useLatestRequest();
   const beginDetailRequest = useLatestRequest();
   const beginMutationRequest = useLatestRequest();
+  const beginPreviewRequest = useLatestRequest();
   const listAbortRef = useRef<AbortController | null>(null);
   const detailAbortRef = useRef<AbortController | null>(null);
   const selectedBookIdRef = useRef<number | null>(null);
+  const selectionGenerationRef = useRef(0);
   const preservedStatusRef = useRef<string | null>(null);
   const currentListContextRef = useRef<{ query: string; modeFilter: LibraryModeFilter }>({
     query: "",
@@ -89,6 +91,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     setItems([]);
     setIndexedCount(0);
     selectedBookIdRef.current = null;
+    selectionGenerationRef.current += 1;
     setSelectedBookId(null);
     setSelectedBookIndex(-1);
     setSelectedBookDetail(null);
@@ -181,6 +184,8 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
           detailAbortRef.current = null;
           beginDetailRequest();
           selectedBookIdRef.current = null;
+          selectionGenerationRef.current += 1;
+          beginPreviewRequest();
           setSelectedBookId(null);
           setSelectedBookIndex(-1);
           setSelectedBookDetail(null);
@@ -195,6 +200,10 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         }
 
         const nextBook = nextItems[nextIndex];
+        if (nextBook.id !== selectedBookIdRef.current) {
+          selectionGenerationRef.current += 1;
+          beginPreviewRequest();
+        }
         setSelectedBookIndex(nextIndex);
         selectedBookIdRef.current = nextBook.id;
         setSelectedBookId(nextBook.id);
@@ -213,7 +222,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         }
       }
     },
-    [backendDisconnected, beginListRequest, loadBookDetail, modeFilter, repository, resetLibraryState],
+    [backendDisconnected, beginDetailRequest, beginListRequest, beginPreviewRequest, loadBookDetail, modeFilter, repository, resetLibraryState],
   );
 
   const selectBook = useCallback(
@@ -223,6 +232,10 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       }
 
       const nextBook = items[index];
+      if (nextBook.id !== selectedBookIdRef.current) {
+        selectionGenerationRef.current += 1;
+        beginPreviewRequest();
+      }
       preservedStatusRef.current = null;
       setSelectedBookIndex(index);
       selectedBookIdRef.current = nextBook.id;
@@ -230,7 +243,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       setErrorMessage("");
       return loadBookDetail(nextBook.id);
     },
-    [items, loadBookDetail],
+    [beginPreviewRequest, items, loadBookDetail],
   );
 
   const selectRelative = useCallback(
@@ -364,14 +377,24 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         return;
       }
 
+      const targetBookId = selectedBookId;
+      const targetSelectionGeneration = selectionGenerationRef.current;
+      const isCurrentMutation = beginMutationRequest();
       setErrorMessage("");
 
       try {
-        const updated = await repository.updateBook(selectedBookId, {
+        const updated = await repository.updateBook(targetBookId, {
           title: payload.title.trim() || null,
           author: payload.author.trim() || null,
           tags: payload.tags.trim(),
         });
+        if (
+          !isCurrentMutation() ||
+          selectedBookIdRef.current !== targetBookId ||
+          selectionGenerationRef.current !== targetSelectionGeneration
+        ) {
+          return;
+        }
         setSelectedBookDetail((current) => ({
           ...(current ?? updated),
           ...updated,
@@ -380,7 +403,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         }));
         setItems((current) =>
           current.map((item) =>
-            item.id === selectedBookId
+            item.id === targetBookId
               ? {
                   ...item,
                   title: updated.title,
@@ -393,12 +416,19 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         );
         setStatusMessage("Metadata saved");
       } catch (error: unknown) {
+        if (
+          !isCurrentMutation() ||
+          selectedBookIdRef.current !== targetBookId ||
+          selectionGenerationRef.current !== targetSelectionGeneration
+        ) {
+          return;
+        }
         const message = error instanceof Error ? error.message : "failed to update book";
         setErrorMessage(message);
         setStatusMessage(message);
       }
     },
-    [repository, selectedBookId],
+    [beginMutationRequest, repository, selectedBookId],
   );
 
   const loadCleaningPreview = useCallback(
@@ -408,19 +438,27 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         return null;
       }
 
+      const targetBookId = selectedBookId;
+      const isCurrentPreview = beginPreviewRequest();
       setErrorMessage("");
       try {
-        const preview = await repository.getCleaningPreview(selectedBookId, chapterNumber);
+        const preview = await repository.getCleaningPreview(targetBookId, chapterNumber);
+        if (!isCurrentPreview() || selectedBookIdRef.current !== targetBookId) {
+          return null;
+        }
         setStatusMessage(preview.available ? `Loaded cleaning preview for chapter ${chapterNumber}` : "Cleaning preview unavailable");
         return preview;
       } catch (error: unknown) {
+        if (!isCurrentPreview() || selectedBookIdRef.current !== targetBookId) {
+          return null;
+        }
         const message = error instanceof Error ? error.message : "failed to load cleaning preview";
         setErrorMessage(message);
         setStatusMessage(message);
         return null;
       }
     },
-    [repository, selectedBookId],
+    [beginPreviewRequest, repository, selectedBookId],
   );
 
   const repairSelectedBook = useCallback(async (): Promise<void> => {

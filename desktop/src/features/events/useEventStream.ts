@@ -223,7 +223,7 @@ export function useEventStream({
         return;
       }
       runtimeMutationGenerationRef.current += 1;
-      applyReducerAction({ type: "setActiveJobId", jobId: normalizedJobId });
+      applyReducerAction({ type: "conversionStarted", jobId: normalizedJobId });
     },
     [applyReducerAction],
   );
@@ -289,11 +289,12 @@ export function useEventStream({
     try {
       if (!targetJobId) {
         const active = await apiClient.getActiveConversion();
-        if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current || lookupGeneration !== runtimeMutationGenerationRef.current) {
-          if (mountedRef.current) {
-            pushLog("warn", "cancellation superseded by a newer conversion");
-            applyReducerAction({ type: "cancelRejected" });
-          }
+        if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current) {
+          return;
+        }
+        if (lookupGeneration !== runtimeMutationGenerationRef.current) {
+          pushLog("warn", "cancellation superseded by a newer conversion");
+          applyReducerAction({ type: "cancelRejected" });
           return;
         }
         if (active.active && active.job) {

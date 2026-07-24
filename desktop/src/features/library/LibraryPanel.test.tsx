@@ -163,4 +163,43 @@ describe("LibraryPanel", () => {
       container.remove();
     }
   });
+
+  it("requires inline confirmation before cleaning storage", async () => {
+    const model = libraryModel();
+    const container = document.createElement("div");
+    document.body.append(container);
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const root = createRoot(container);
+
+    try {
+      await act(async () => {
+        root.render(<LibraryPanel hidden={false} library={model} />);
+      });
+
+      await act(async () => {
+        (container.querySelector("#library-cleanup-btn") as HTMLButtonElement).click();
+      });
+      expect(model.cleanupStorage).not.toHaveBeenCalled();
+      expect(container.querySelector("#library-cleanup-cancel-btn")).not.toBeNull();
+      expect(container.querySelector("#library-cleanup-confirm-btn")).not.toBeNull();
+
+      await act(async () => {
+        (container.querySelector("#library-cleanup-cancel-btn") as HTMLButtonElement).click();
+      });
+      expect(model.cleanupStorage).not.toHaveBeenCalled();
+      expect(container.querySelector("#library-cleanup-confirm-btn")).toBeNull();
+
+      await act(async () => {
+        (container.querySelector("#library-cleanup-btn") as HTMLButtonElement).click();
+      });
+      await act(async () => {
+        (container.querySelector("#library-cleanup-confirm-btn") as HTMLButtonElement).click();
+      });
+      expect(model.cleanupStorage).toHaveBeenCalledTimes(1);
+      expect(container.querySelector("#library-cleanup-confirm-btn")).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
 });
