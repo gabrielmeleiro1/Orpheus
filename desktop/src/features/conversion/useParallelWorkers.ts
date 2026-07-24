@@ -2,42 +2,21 @@ import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from
 
 import type { ApiClient } from "../../api/client";
 import type {
-  CleanerBackendOption,
   ParallelWorkerRecommendation,
   SystemCapabilitiesResponse,
 } from "../../types/api";
 
-import { buildCleanerRuntimePayloadFields } from "./cleanerBackendHelpers";
-import { normalizeQuantizationValue } from "./conversionPanelHelpers";
 import type { PersistedSettings } from "./conversionOptionsShared";
-import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
 
-const DEFAULT_PARALLEL_WORKER_MODE = "manual";
 const DEFAULT_PARALLEL_WORKER_LIMIT = 4;
-
-interface ParallelWarmupContext {
-  selectedVoice: string;
-  speed: number;
-  selectedEngine: string;
-  selectedQuantization: string;
-  cleanerBackend: string;
-  selectedCleanerBackend: CleanerBackendOption | null;
-  cleanerModel: string;
-  cleanerApiKey: string;
-  cleanerCudaDevice: string;
-  cleanerCudaQuantization: string;
-}
 
 export interface UseParallelWorkersArgs {
   apiClient: ApiClient | null;
   systemCapabilities: SystemCapabilitiesResponse | null;
   persistedSettingsRef: MutableRefObject<PersistedSettings>;
-  warmupContext: ParallelWarmupContext;
 }
 
 export interface UseParallelWorkersResult {
-  parallelWorkerMode: "auto" | "manual";
-  setParallelWorkerMode: (value: "auto" | "manual") => void;
   parallelManualMax: string;
   setParallelManualMax: (value: string) => void;
   manualParallelWorkerUpperBound: number;
@@ -45,8 +24,6 @@ export interface UseParallelWorkersResult {
   parallelRecommendation: ParallelWorkerRecommendation | null;
   parallelWorkerStatus: string;
   parallelWorkerError: boolean;
-  parallelWarmupLoading: boolean;
-  runParallelWarmup: () => Promise<void>;
 }
 
 function formatBytes(bytes: number | null | undefined): string {
@@ -62,27 +39,23 @@ function clampWorkerLimit(value: number, maxSafe: number): number {
 }
 
 function shortWorkerLine(recommendation: ParallelWorkerRecommendation): string {
-  let headline = `Recommended: ${recommendation.recommended_parallel_chapters}`;
+  let headline = `Recommended for this machine: ${recommendation.recommended_parallel_chapters}`;
   if (recommendation.max_safe_parallel_chapters > recommendation.recommended_parallel_chapters) {
-    headline += ` (max ${recommendation.max_safe_parallel_chapters})`;
+    headline += ` (up to ${recommendation.max_safe_parallel_chapters})`;
   }
   const free = formatBytes(recommendation.available_memory_bytes);
-  return free === "-" ? headline : `${headline} · ${free} free`;
+  return free === "-" ? headline : `${headline} · ${free} memory free`;
 }
 
 export function useParallelWorkers({
   apiClient,
   systemCapabilities,
   persistedSettingsRef,
-  warmupContext,
 }: UseParallelWorkersArgs): UseParallelWorkersResult {
-  const [parallelWorkerMode, setParallelWorkerModeState] = useState<"auto" | "manual">(DEFAULT_PARALLEL_WORKER_MODE);
   const [parallelManualMax, setParallelManualMaxState] = useState(String(DEFAULT_PARALLEL_WORKER_LIMIT));
   const [parallelRecommendation, setParallelRecommendation] = useState<ParallelWorkerRecommendation | null>(null);
   const [parallelWorkerStatus, setParallelWorkerStatus] = useState("Worker recommendation unavailable.");
   const [parallelWorkerError, setParallelWorkerError] = useState(false);
-  const [parallelWarmupLoading, setParallelWarmupLoading] = useState(false);
-  const beginParallelWarmup = useLatestRequest();
 
   const manualParallelWorkerUpperBound = useMemo(() => {
     return Math.max(
@@ -94,21 +67,15 @@ export function useParallelWorkers({
   }, [parallelRecommendation]);
 
   const selectedParallelWorkerLimit = useMemo(() => {
-    const maxSafe = parallelRecommendation?.max_safe_parallel_chapters ?? 1;
-    if (parallelWorkerMode === "auto") {
-      return clampWorkerLimit(parallelRecommendation?.recommended_parallel_chapters ?? 1, maxSafe);
-    }
     return clampWorkerLimit(Number.parseInt(parallelManualMax, 10), manualParallelWorkerUpperBound);
-  }, [manualParallelWorkerUpperBound, parallelManualMax, parallelRecommendation, parallelWorkerMode]);
+  }, [manualParallelWorkerUpperBound, parallelManualMax]);
 
   useEffect(() => {
     if (!apiClient) {
-      setParallelWorkerModeState(DEFAULT_PARALLEL_WORKER_MODE);
       setParallelManualMaxState(String(DEFAULT_PARALLEL_WORKER_LIMIT));
       setParallelRecommendation(null);
       setParallelWorkerStatus("Worker recommendation unavailable.");
       setParallelWorkerError(false);
-      setParallelWarmupLoading(false);
       return;
     }
 
@@ -120,11 +87,6 @@ export function useParallelWorkers({
     setParallelRecommendation(recommendation);
 
     const persisted = persistedSettingsRef.current;
-    if (persisted.parallel_worker_mode === "auto") {
-      setParallelWorkerModeState("auto");
-    } else {
-      setParallelWorkerModeState(DEFAULT_PARALLEL_WORKER_MODE);
-    }
     if (Number.isFinite(persisted.parallel_manual_max) && (persisted.parallel_manual_max ?? 0) > 0) {
       setParallelManualMaxState(String(persisted.parallel_manual_max));
     } else if (recommendation) {
@@ -136,10 +98,6 @@ export function useParallelWorkers({
       setParallelWorkerError(!recommendation.memory_measurement_available);
     }
   }, [apiClient, persistedSettingsRef, systemCapabilities]);
-
-  const setParallelWorkerMode = useCallback((value: "auto" | "manual") => {
-    setParallelWorkerModeState(value);
-  }, []);
 
   const setParallelManualMax = useCallback(
     (value: string) => {
@@ -154,89 +112,7 @@ export function useParallelWorkers({
     [manualParallelWorkerUpperBound],
   );
 
-  const runParallelWarmup = useCallback(async () => {
-    if (!apiClient) {
-      setParallelWorkerError(true);
-      setParallelWorkerStatus("Backend is not connected.");
-      return;
-    }
-
-    const {
-      selectedVoice,
-      speed,
-      selectedEngine,
-      selectedQuantization,
-      cleanerBackend,
-      selectedCleanerBackend,
-      cleanerModel,
-      cleanerApiKey,
-      cleanerCudaDevice,
-      cleanerCudaQuantization,
-    } = warmupContext;
-
-    setParallelWarmupLoading(true);
-    setParallelWorkerError(false);
-    setParallelWorkerStatus("Measuring memory during warm-up…");
-    const isLatest = beginParallelWarmup();
-    try {
-      const quantization = normalizeQuantizationValue(selectedQuantization);
-      const requestedWarmupMax =
-        parallelWorkerMode === "manual"
-          ? selectedParallelWorkerLimit
-          : parallelRecommendation?.requested_parallel_chapters ??
-            parallelRecommendation?.max_safe_parallel_chapters ??
-            Math.max(DEFAULT_PARALLEL_WORKER_LIMIT, Number.parseInt(parallelManualMax, 10) || 1);
-      const cleanerFields = buildCleanerRuntimePayloadFields({
-        selectedBackend: selectedCleanerBackend,
-        cleanerBackend,
-        cleanerModel,
-        cleanerApiKey,
-        cleanerCudaDevice,
-        cleanerCudaQuantization,
-      });
-      const recommendation = await apiClient.warmupParallelWorkers({
-        voice: selectedVoice || "am_adam",
-        speed,
-        tts_engine: selectedEngine || null,
-        tts_quantization: quantization,
-        ...cleanerFields,
-        max_parallel_chapters: requestedWarmupMax,
-      });
-      if (!isLatest()) {
-        return;
-      }
-      setParallelRecommendation(recommendation);
-      setParallelManualMaxState(String(recommendation.requested_parallel_chapters));
-      const perWorker = formatBytes(recommendation.estimated_per_worker_memory_bytes);
-      setParallelWorkerStatus(
-        perWorker === "-"
-          ? shortWorkerLine(recommendation)
-          : `${shortWorkerLine(recommendation)} · ~${perWorker}/worker`,
-      );
-      setParallelWorkerError(!recommendation.memory_measurement_available);
-    } catch (warmupError: unknown) {
-      if (isLatest() && !isAbortLikeError(warmupError)) {
-        setParallelWorkerError(true);
-        setParallelWorkerStatus(warmupError instanceof Error ? warmupError.message : "Parallel warm-up failed.");
-      }
-    } finally {
-      if (isLatest()) {
-        setParallelWarmupLoading(false);
-      }
-    }
-  }, [
-    apiClient,
-    beginParallelWarmup,
-    parallelManualMax,
-    parallelRecommendation,
-    parallelWorkerMode,
-    selectedParallelWorkerLimit,
-    warmupContext,
-  ]);
-
   return {
-    parallelWorkerMode,
-    setParallelWorkerMode,
     parallelManualMax,
     setParallelManualMax,
     manualParallelWorkerUpperBound,
@@ -244,7 +120,5 @@ export function useParallelWorkers({
     parallelRecommendation,
     parallelWorkerStatus,
     parallelWorkerError,
-    parallelWarmupLoading,
-    runParallelWarmup,
   };
 }

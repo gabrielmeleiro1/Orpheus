@@ -40,7 +40,6 @@ export interface ConversionCapabilities {
   canInspectSource: boolean;
   canPreviewVoice: boolean;
   canRecommendVoice: boolean;
-  canRunParallelWarmup: boolean;
   canRunQueue: boolean;
   canStartConversion: boolean;
   canCancelJob: boolean;
@@ -90,11 +89,12 @@ export interface AdvancedOptionsViewModel {
   speedInput: string;
   selectedQuantization: string;
   quantizationOptions: TermSelectOption[];
-  parallelWorkerMode: "auto" | "manual";
+  // Hidden while the active engine offers no real precision alternatives
+  // (a lone "default"/engine-default pair loads the identical model).
+  showQuantization: boolean;
   manualParallelWorkerUpperBound: number;
   selectedParallelWorkerLimit: number;
   parallelManualMax: string;
-  parallelWarmupLoading: boolean;
   parallelWorkerError: boolean;
   parallelWorkerStatus: string;
   parallelWorkerDetail: string;
@@ -182,11 +182,10 @@ export interface ConversionPanelActions {
   setSelectedVoice: (value: string) => void;
   setSpeed: (value: string) => void;
   setSelectedQuantization: (value: string) => void;
-  setParallelWorkerMode: (value: "auto" | "manual") => void;
   setParallelManualMax: (value: string) => void;
   onBrowse: () => Promise<void>;
   onBrowserFilesSelected: (event: ChangeEvent<HTMLInputElement>) => void;
-  onAddPastedText: () => Promise<void>;
+  onAddPastedText: () => Promise<ConversionQueueItem | null>;
   onDropZoneDrop: (event: DragEvent<HTMLDivElement>) => void;
   onInspectCurrentSource: () => void;
   onPreviewVoice: () => Promise<void>;
@@ -194,7 +193,6 @@ export interface ConversionPanelActions {
   onRunQueue: () => Promise<void>;
   onStartConversion: () => Promise<void>;
   onFetchCleanerModels: () => Promise<void>;
-  onRunParallelWarmup: () => Promise<void>;
   onRefreshJob: () => Promise<void>;
   onCancelJob: () => Promise<void>;
   clearFormError: () => void;

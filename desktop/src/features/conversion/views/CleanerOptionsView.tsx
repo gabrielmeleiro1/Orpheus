@@ -31,8 +31,9 @@ export function CleanerOptionsView({
             </span>
             <button
               id="runtime-setup-btn"
-              className="btn btn-ghost btn-compact"
+              className="btn btn-primary"
               type="button"
+              data-tip="Install or repair the on-device cleaner and TTS runtimes"
               onClick={actions.onOpenRuntimeSetup}
             >
               Runtime setup
@@ -69,7 +70,7 @@ export function CleanerOptionsView({
                 label="Cleaner model"
                 value={cleanerOptions.cleanerModel}
                 options={cleanerOptions.cleanerModelOptions}
-                placeholder="-"
+                placeholder={cleanerOptions.requiresApiKey ? "Paste an API key to load models" : "-"}
                 disabled={cleanerOptions.cleanerModelOptions.length === 0}
                 onChange={actions.setCleanerModel}
               />

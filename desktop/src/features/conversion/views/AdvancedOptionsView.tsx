@@ -2,44 +2,51 @@ import { TermSelect } from "../TermSelect";
 import { normalizeSpeedInput } from "../conversionOptionsShared";
 import type {
   AdvancedOptionsViewModel,
-  ConversionCapabilities,
   ConversionPanelActions,
 } from "../conversionPanelStateTypes";
 
 interface AdvancedOptionsViewProps {
   advancedOptions: AdvancedOptionsViewModel;
-  capabilities: ConversionCapabilities;
   actions: ConversionPanelActions;
+}
+
+function collapsedSummary(advancedOptions: AdvancedOptionsViewModel): string {
+  const speed = advancedOptions.speedInput.trim() || "1";
+  const workers = advancedOptions.selectedParallelWorkerLimit;
+  const workerText = workers > 1 ? `${workers} chapters at once` : "one chapter at a time";
+  return `Speed ${speed} · ${workerText}`;
 }
 
 export function AdvancedOptionsView({
   advancedOptions,
-  capabilities,
   actions,
 }: AdvancedOptionsViewProps) {
   return (
-    <details id="advanced-audio-settings" className="advanced-settings disclosure">
-      <summary>Advanced</summary>
-      <div className="advanced-settings-body">
-        <div className="panel-section form-section">
-          <div className="form-row">
-            <span className="form-row-label" data-tip="Narration speed baked into the audio. 1.0 is natural pace." data-tip-pos="right">Speed</span>
-            <div className="form-row-field">
-              <input
-                id="speed-input"
-                aria-label="Narration speed"
-                className="field-input short-input"
-                type="number"
-                min={0.5}
-                max={3}
-                step={0.05}
-                value={advancedOptions.speedInput}
-                onChange={(event) => actions.setSpeed(event.target.value)}
-                onBlur={(event) => actions.setSpeed(normalizeSpeedInput(event.target.value))}
-              />
-            </div>
+    <details id="advanced-audio-settings" className="advanced-settings disclosure disclosure-card">
+      <summary>
+        <span>Advanced</span>
+        <span className="disclosure-card-meta">{collapsedSummary(advancedOptions)}</span>
+      </summary>
+      <div className="advanced-settings-body form-section">
+        <div className="form-row">
+          <span className="form-row-label" data-tip="Narration speed baked into the audio. 1.0 is natural pace." data-tip-pos="right">Speed</span>
+          <div className="form-row-field">
+            <input
+              id="speed-input"
+              aria-label="Narration speed"
+              className="field-input short-input"
+              type="number"
+              min={0.5}
+              max={3}
+              step={0.05}
+              value={advancedOptions.speedInput}
+              onChange={(event) => actions.setSpeed(event.target.value)}
+              onBlur={(event) => actions.setSpeed(normalizeSpeedInput(event.target.value))}
+            />
           </div>
+        </div>
 
+        {advancedOptions.showQuantization ? (
           <div className="form-row">
             <span
               className="form-row-label"
@@ -59,76 +66,41 @@ export function AdvancedOptionsView({
               />
             </div>
           </div>
+        ) : null}
 
-          <div className="form-row">
-            <span
-              className="form-row-label"
-              data-tip="How many chapters synthesize at once. Auto sizes the pool from a warm-up benchmark."
-              data-tip-pos="right"
-            >
-              Workers
-            </span>
-            <div className="form-row-stack">
-              <div className="seg-control" aria-label="Parallel worker mode">
-                <button
-                  id="parallel-worker-mode-auto"
-                  className={`seg-control-btn${advancedOptions.parallelWorkerMode === "auto" ? " is-active" : ""}`}
-                  type="button"
-                  data-tip="Size the worker pool automatically"
-                  onClick={() => actions.setParallelWorkerMode("auto")}
-                >
-                  Auto
-                </button>
-                <button
-                  id="parallel-worker-mode-manual"
-                  className={`seg-control-btn${advancedOptions.parallelWorkerMode === "manual" ? " is-active" : ""}`}
-                  type="button"
-                  data-tip="Set the worker count yourself"
-                  onClick={() => actions.setParallelWorkerMode("manual")}
-                >
-                  Manual
-                </button>
-              </div>
-              <div className="form-row-field compact-row">
-                <input
-                  id="parallel-worker-max-input"
-                  aria-label="Maximum parallel workers"
-                  className="field-input short-input"
-                  type="number"
-                  min={1}
-                  max={advancedOptions.manualParallelWorkerUpperBound}
-                  step={1}
-                  disabled={advancedOptions.parallelWorkerMode === "auto"}
-                  value={
-                    advancedOptions.parallelWorkerMode === "auto"
-                      ? advancedOptions.selectedParallelWorkerLimit
-                      : advancedOptions.parallelManualMax
-                  }
-                  onChange={(event) => actions.setParallelManualMax(event.target.value)}
-                />
-                <button
-                  id="parallel-worker-warmup-btn"
-                  className="btn btn-compact"
-                  type="button"
-                  disabled={!capabilities.canRunParallelWarmup}
-                  data-tip="Benchmark how many parallel workers this machine sustains"
-                  onClick={() => void actions.onRunParallelWarmup()}
-                >
-                  {advancedOptions.parallelWarmupLoading ? "Warming…" : "Warm-up"}
-                </button>
-              </div>
-              {advancedOptions.parallelWorkerStatus ? (
-                <span
-                  id="parallel-worker-status"
-                  className={`field-hint${advancedOptions.parallelWorkerError ? " is-error" : ""}`}
-                  {...(advancedOptions.parallelWorkerDetail
-                    ? { "data-tip": advancedOptions.parallelWorkerDetail }
-                    : {})}
-                >
-                  {advancedOptions.parallelWorkerStatus}
-                </span>
-              ) : null}
+        <div className="form-row">
+          <span
+            className="form-row-label"
+            data-tip="How many chapters synthesize at the same time. Each one loads its own copy of the voice model, so higher values need more memory."
+            data-tip-pos="right"
+          >
+            Parallel chapters
+          </span>
+          <div className="form-row-stack">
+            <div className="form-row-field">
+              <input
+                id="parallel-worker-max-input"
+                aria-label="Chapters converted in parallel"
+                className="field-input short-input"
+                type="number"
+                min={1}
+                max={advancedOptions.manualParallelWorkerUpperBound}
+                step={1}
+                value={advancedOptions.parallelManualMax}
+                onChange={(event) => actions.setParallelManualMax(event.target.value)}
+              />
             </div>
+            {advancedOptions.parallelWorkerStatus ? (
+              <span
+                id="parallel-worker-status"
+                className={`field-hint${advancedOptions.parallelWorkerError ? " is-error" : ""}`}
+                {...(advancedOptions.parallelWorkerDetail
+                  ? { "data-tip": advancedOptions.parallelWorkerDetail }
+                  : {})}
+              >
+                {advancedOptions.parallelWorkerStatus}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>

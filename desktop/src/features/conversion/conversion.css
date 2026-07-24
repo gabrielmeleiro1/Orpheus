@@ -295,14 +295,15 @@
   display: none;
 }
 
-/* Advanced settings use the shared `.disclosure` primitive (controls.css) for
-   its summary + rotating ▸ affordance; only spacing is feature-specific here. */
+/* Advanced settings use the shared `.disclosure-card` primitive (controls.css)
+   for its card summary + rotating ▸ affordance; only spacing lives here. */
 .advanced-settings {
+  margin-bottom: 12px;
   margin-top: 12px;
 }
 
 .advanced-settings-body {
-  padding-top: 4px;
+  margin-bottom: 0;
 }
 
 .config-panel {

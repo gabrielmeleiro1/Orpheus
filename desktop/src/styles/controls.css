@@ -409,6 +409,69 @@
 }
 
 /*
+ * Card disclosure (rule 5 variant): `.disclosure.disclosure-card` renders the
+ * summary as a full-width tracked-caps card header (matches .section-title),
+ * so a collapsed section reads as a clickable panel rather than loose text.
+ * `.disclosure-card-meta` is an optional sentence-case value preview shown on
+ * the right while collapsed.
+ */
+.disclosure-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.disclosure-card > summary {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  justify-content: space-between;
+  letter-spacing: 0.08em;
+  min-height: 34px;
+  padding: 8px var(--density-panel-pad);
+  text-transform: uppercase;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.disclosure-card > summary::before {
+  margin-right: 2px;
+}
+
+.disclosure-card > summary > span:first-of-type {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.disclosure-card > summary:hover {
+  background: var(--bg-elevated);
+  border-radius: var(--radius);
+  color: var(--text);
+}
+
+.disclosure-card[open] > summary {
+  border-bottom: 1px solid var(--border-light);
+}
+
+.disclosure-card[open] > summary:hover {
+  border-radius: var(--radius) var(--radius) 0 0;
+}
+
+.disclosure-card-meta {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.disclosure-card[open] > summary .disclosure-card-meta {
+  display: none;
+}
+
+/*
  * The one focus indicator: an accent outline on every interactive element.
  * Zero-specificity :where() so components can still override placement, and
  * the explicit lists in shell.css win where they set a tighter offset.

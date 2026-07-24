@@ -56,8 +56,6 @@ function optionState(overrides: Partial<OptionState> = {}): OptionState {
     openAiModelFetchError: false,
     cleanerRuntimeStatus: "",
     cleanerRuntimeError: false,
-    parallelWorkerMode: "auto",
-    setParallelWorkerMode: () => undefined,
     parallelManualMax: "1",
     setParallelManualMax: () => undefined,
     manualParallelWorkerUpperBound: 4,
@@ -65,8 +63,6 @@ function optionState(overrides: Partial<OptionState> = {}): OptionState {
     parallelRecommendation: null,
     parallelWorkerStatus: "",
     parallelWorkerError: false,
-    parallelWarmupLoading: false,
-    runParallelWarmup: async () => undefined,
   };
   return { ...base, ...overrides } as OptionState;
 }
@@ -81,7 +77,7 @@ describe("conversion runtime option payloads", () => {
       cleaner_backend: "mlx",
       cleaner_model: "mlx/model",
       tts_options: { quantization: "8bit" },
-      parallel_worker_mode: "auto",
+      parallel_worker_mode: "manual",
       max_parallel_chapters: 1,
       enable_parallel: false,
     });
@@ -104,7 +100,6 @@ describe("conversion runtime option payloads", () => {
           }),
           cleanerModel: " gpt-4.1-mini ",
           cleanerApiKey: " sk-test ",
-          parallelWorkerMode: "manual",
           selectedParallelWorkerLimit: 3,
         }),
       ),

@@ -12,10 +12,18 @@ if PROJECT_ROOT in sys.path:
     sys.path.remove(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
 
+_MARKER_ONLY_COVERAGE_GATES = frozenset({"property", "benchmark", "slow", "ui"})
+
+
+def _marker_only_coverage_gate(config) -> bool:
+    """Return whether a focused marker run should skip the global threshold."""
+    markexpr = str(getattr(config.option, "markexpr", "") or "").strip()
+    return markexpr in _MARKER_ONLY_COVERAGE_GATES
+
 
 def pytest_configure(config):
     selected_args = {Path(arg).as_posix() for arg in config.args}
-    if selected_args == {"tests/test_web_route_contract.py"}:
+    if selected_args == {"tests/test_web_route_contract.py"} or _marker_only_coverage_gate(config):
         config.option.cov_fail_under = 0
 
 
@@ -23,7 +31,7 @@ def pytest_configure(config):
 def pytest_runtestloop(session):
     result = yield
     selected_args = {Path(arg).as_posix() for arg in session.config.args}
-    if selected_args == {"tests/test_web_route_contract.py"}:
+    if selected_args == {"tests/test_web_route_contract.py"} or _marker_only_coverage_gate(session.config):
         cov_plugin = session.config.pluginmanager.getplugin("_cov")
         if cov_plugin is not None:
             cov_plugin.options.cov_fail_under = 0

@@ -51,7 +51,6 @@ export function ConversionPanelView({
       />
       <AdvancedOptionsView
         advancedOptions={advancedOptions}
-        capabilities={capabilities}
         actions={actions}
       />
       <ConversionActionsView

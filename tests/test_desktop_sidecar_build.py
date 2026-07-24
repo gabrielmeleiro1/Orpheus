@@ -611,6 +611,19 @@ def test_base_backend_build_excludes_local_tts_spacy_stack() -> None:
     assert '"en_core_web_sm"' in base_branch
 
 
+def test_backend_sidecar_spec_excludes_build_only_test_frameworks() -> None:
+    spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
+    analysis_excludes = spec_text.split("excludes=profile_excludes + [", 1)[1].split(
+        "\n    ],",
+        1,
+    )[0]
+
+    assert '"fsspec.conftest"' in analysis_excludes
+    assert '"hypothesis"' in analysis_excludes
+    assert '"pytest"' in analysis_excludes
+    assert '"_pytest"' in analysis_excludes
+
+
 def test_backend_sidecar_spec_collects_bitsandbytes_for_cuda_packaging() -> None:
     spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
 

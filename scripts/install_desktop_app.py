@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_APP_BUNDLE = (
@@ -45,10 +46,25 @@ def install_app_bundle(
     if temp_app.exists():
         shutil.rmtree(temp_app)
 
-    shutil.copytree(source_app, temp_app, symlinks=True)
-    if target_app.exists():
-        shutil.rmtree(target_app)
-    temp_app.replace(target_app)
+    previous_app: Path | None = None
+    try:
+        shutil.copytree(source_app, temp_app, symlinks=True)
+        if target_app.exists():
+            previous_app = applications_dir / (
+                f".{source_app.stem}.previous-{uuid4().hex}.app"
+            )
+            target_app.replace(previous_app)
+        try:
+            temp_app.replace(target_app)
+        except BaseException:
+            if previous_app is not None and previous_app.exists() and not target_app.exists():
+                previous_app.replace(target_app)
+            raise
+        if previous_app is not None:
+            shutil.rmtree(previous_app)
+    finally:
+        if temp_app.exists():
+            shutil.rmtree(temp_app)
     if remove_source_after_install:
         shutil.rmtree(source_app)
     return target_app

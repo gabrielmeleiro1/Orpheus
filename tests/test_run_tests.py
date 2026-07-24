@@ -2,9 +2,22 @@
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 import sys
 
+import pytest
+
 import run_tests
+
+
+_CONFTEST_SPEC = importlib.util.spec_from_file_location(
+    "project_conftest",
+    Path(__file__).with_name("conftest.py"),
+)
+assert _CONFTEST_SPEC and _CONFTEST_SPEC.loader
+conftest = importlib.util.module_from_spec(_CONFTEST_SPEC)
+_CONFTEST_SPEC.loader.exec_module(conftest)
 
 
 def test_parse_args_defaults_to_smoke_mode() -> None:
@@ -20,6 +33,52 @@ def test_build_contract_command_uses_repo_pytest_contract() -> None:
     assert command[-2:] == ["-m", run_tests.CORE_MARKER_EXPRESSION]
     assert "-o" not in command
     assert "addopts=" not in " ".join(command)
+
+
+@pytest.mark.parametrize(
+    ("markexpr", "expected_threshold"),
+    [
+        ("property", 0),
+        ("benchmark", 0),
+        ("slow", 0),
+        ("ui", 0),
+        ("not slow", 85),
+        ("", 85),
+    ],
+)
+def test_marker_only_commands_disable_global_coverage_threshold(
+    markexpr: str,
+    expected_threshold: int,
+) -> None:
+    class Options:
+        pass
+
+    Options.markexpr = markexpr
+    Options.cov_fail_under = 85
+
+    class Config:
+        option = Options()
+        args = []
+
+    config = Config()
+    conftest.pytest_configure(config)
+
+    assert config.option.cov_fail_under == expected_threshold
+
+
+def test_marker_only_coverage_helper_requires_exact_expression() -> None:
+    class Options:
+        markexpr = "property or benchmark"
+        cov_fail_under = 85
+
+    class Config:
+        option = Options()
+        args = []
+
+    config = Config()
+    conftest.pytest_configure(config)
+
+    assert config.option.cov_fail_under == 85
 
 
 def test_main_smoke_success_mentions_contract_not_checked(

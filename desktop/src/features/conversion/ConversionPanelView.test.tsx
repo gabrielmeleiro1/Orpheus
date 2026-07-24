@@ -20,7 +20,6 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       canInspectSource: true,
       canPreviewVoice: false,
       canRecommendVoice: false,
-      canRunParallelWarmup: false,
       canRunQueue: false,
       canStartConversion: true,
       canCancelJob: false,
@@ -91,11 +90,10 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       speedInput: "1",
       selectedQuantization: "",
       quantizationOptions: [],
-      parallelWorkerMode: "auto",
+      showQuantization: false,
       manualParallelWorkerUpperBound: 1,
       selectedParallelWorkerLimit: 1,
       parallelManualMax: "1",
-      parallelWarmupLoading: false,
       parallelWorkerError: false,
       parallelWorkerStatus: "",
       parallelWorkerDetail: "",
@@ -129,11 +127,10 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       setSelectedVoice: noop,
       setSpeed: noop,
       setSelectedQuantization: noop,
-      setParallelWorkerMode: noop,
       setParallelManualMax: noop,
       onBrowse: promiseNoop,
       onBrowserFilesSelected: noop,
-      onAddPastedText: promiseNoop,
+      onAddPastedText: vi.fn(async () => null),
       onDropZoneDrop: noop,
       onInspectCurrentSource: noop,
       onPreviewVoice: promiseNoop,
@@ -141,7 +138,6 @@ function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): Conversio
       onRunQueue: promiseNoop,
       onStartConversion: promiseNoop,
       onFetchCleanerModels: promiseNoop,
-      onRunParallelWarmup: promiseNoop,
       onRefreshJob: promiseNoop,
       onCancelJob: promiseNoop,
       clearFormError: noop,
@@ -191,6 +187,40 @@ describe("ConversionPanelView", () => {
     expect(html).toContain("Runtime setup");
   });
 
+  it("shows the quantization selector only when the engine offers a real choice", () => {
+    const base = viewModel();
+    expect(renderToString(<ConversionPanelView {...base} />)).not.toContain("tts-quantization-select");
+
+    const withChoice = viewModel({
+      advancedOptions: {
+        ...base.advancedOptions,
+        quantizationOptions: [
+          { value: "", label: "default" },
+          { value: "bf16", label: "bf16" },
+          { value: "8bit", label: "8bit" },
+        ],
+        showQuantization: true,
+      },
+    });
+    expect(renderToString(<ConversionPanelView {...withChoice} />)).toContain("tts-quantization-select");
+  });
+
+  it("summarizes the collapsed advanced settings in the disclosure header", () => {
+    const base = viewModel();
+    const html = renderToString(
+      <ConversionPanelView
+        {...viewModel({
+          advancedOptions: {
+            ...base.advancedOptions,
+            speedInput: "1.2",
+            selectedParallelWorkerLimit: 3,
+          },
+        })}
+      />,
+    );
+    expect(html).toContain("Speed 1.2 · 3 chapters at once");
+  });
+
   it("gives every editable conversion control a programmatic label", () => {
     const html = renderToString(<ConversionPanelView {...viewModel()} />);
 
@@ -204,7 +234,7 @@ describe("ConversionPanelView", () => {
       "voice-search": "Search voices",
       "voice-preview-text": "Voice preview text",
       "speed-input": "Narration speed",
-      "parallel-worker-max-input": "Maximum parallel workers",
+      "parallel-worker-max-input": "Chapters converted in parallel",
     };
     for (const [id, label] of Object.entries(labelsById)) {
       expect(html).toMatch(new RegExp(`id="${id}"[^>]*aria-label="${label}"`));

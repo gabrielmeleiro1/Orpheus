@@ -57,6 +57,15 @@ def test_release_workflow_builds_then_verifies_and_smokes_packaged_app() -> None
     assert "Contents/MacOS/Orpheus" not in text
 
 
+def test_release_workflow_verifies_base_profile_in_a_clean_environment() -> None:
+    _parsed, text = _workflow()
+
+    assert "python run_tests.py --verify-profile base" in text
+    assert text.index("python run_tests.py --verify-profile base") < text.index(
+        "npm run desktop:build"
+    )
+
+
 def test_source_validation_keeps_windows_rust_job() -> None:
     text = (ROOT / ".github/workflows/source-validation.yml").read_text(encoding="utf-8")
     assert "windows-latest" in text

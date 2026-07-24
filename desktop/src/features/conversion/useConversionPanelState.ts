@@ -1,4 +1,4 @@
-import { useEffect, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, type Dispatch, type SetStateAction } from "react";
 
 import type { ConversionMode } from "../../types/api";
 import { resolveConversionPrimaryAction } from "./conversionPrimaryAction";
@@ -27,6 +27,7 @@ const BROWSER_SOURCE_ACCEPT = ".pdf,.epub,.txt,.md";
 export interface ConversionBlockerInput {
   apiClientAvailable: boolean;
   sourcePath: string;
+  hasPastedText: boolean;
   selectedEngine: string;
   selectedVoice: string;
   cleanerRuntimeError: boolean;
@@ -47,6 +48,8 @@ export function resolveStartDisabled(input: {
   queueRunning: boolean;
   isStarting: boolean;
   hasActiveJob: boolean;
+  pasteBusy: boolean;
+  sourcelessPasteReady: boolean;
 }): boolean {
   // hasActiveJob closes two defects at once: a second "Start conversion" click
   // firing another POST while the first job is still in flight, and the button
@@ -54,7 +57,8 @@ export function resolveStartDisabled(input: {
   return input.blockingReason !== null
     || input.queueRunning
     || input.isStarting
-    || input.hasActiveJob;
+    || input.hasActiveJob
+    || (input.pasteBusy && input.sourcelessPasteReady);
 }
 
 export function canRunConversionQueue(input: {
@@ -73,7 +77,8 @@ export function resolveConversionBlocker(input: ConversionBlockerInput): Convers
   if (!input.apiClientAvailable) {
     return { blockingReason: "Backend connection is unavailable.", showSettingsShortcut: false };
   }
-  if (!input.sourcePath.trim()) {
+  // Un-queued pasted text counts as a source: starting will queue it first.
+  if (!input.sourcePath.trim() && !input.hasPastedText) {
     return { blockingReason: "Select a source before starting conversion.", showSettingsShortcut: false };
   }
   if (!input.selectedEngine) {
@@ -89,6 +94,15 @@ export function resolveConversionBlocker(input: ConversionBlockerInput): Convers
     const cleanerName = input.cleanerDisplayName.trim() || "The selected cleaner";
     return {
       blockingReason: cleanerName + " requires an API key. Add it in Settings.",
+      showSettingsShortcut: true,
+    };
+  }
+  // API-backed cleaners list models live from the provider; until the pasted
+  // key has produced one there is nothing valid to convert with.
+  if (input.cleanerRequiresApiKey && !input.cleanerModel) {
+    const cleanerName = input.cleanerDisplayName.trim() || "cleaner";
+    return {
+      blockingReason: "No " + cleanerName + " models loaded yet. Check the API key in Settings.",
       showSettingsShortcut: true,
     };
   }
@@ -181,10 +195,12 @@ export function useConversionPanelState({
   });
 
   const requiresCleanerApiKey = optionState.selectedCleanerBackend?.requires_api_key ?? false;
+  const hasPastedText = isDocumentMode && Boolean(sourceQueue.pastedText.trim());
 
   const conversionBlocker = resolveConversionBlocker({
     apiClientAvailable: Boolean(apiClient),
     sourcePath: queueController.sourcePath,
+    hasPastedText,
     selectedEngine: optionState.selectedEngine,
     selectedVoice: optionState.selectedVoice,
     cleanerRuntimeError: optionState.cleanerRuntimeError,
@@ -195,12 +211,30 @@ export function useConversionPanelState({
     cleanerModel: optionState.cleanerModel,
   });
 
+  const sourcelessPasteReady = hasPastedText && !queueController.sourcePath.trim();
   const startDisabled = resolveStartDisabled({
     blockingReason: conversionBlocker.blockingReason,
     queueRunning: queueRunner.queueRunning,
     isStarting: conversionJob.isStarting,
     hasActiveJob: Boolean(conversionJob.activeJobId),
+    pasteBusy: sourceQueue.pasteBusy,
+    sourcelessPasteReady,
   });
+
+  const { onAddPastedText } = sourceQueue;
+  const { onStartConversion: startQueueItemConversion } = queueRunner;
+  const onStartConversion = useCallback(async () => {
+    // Pasted text that was never queued is still a startable source: queue it
+    // now and convert the resulting item directly.
+    if (sourcelessPasteReady) {
+      const pastedItem = await onAddPastedText();
+      if (pastedItem) {
+        await startQueueItemConversion(pastedItem);
+      }
+      return;
+    }
+    await startQueueItemConversion();
+  }, [onAddPastedText, sourcelessPasteReady, startQueueItemConversion]);
 
   const canRunQueue = canRunConversionQueue({
     apiClientAvailable: Boolean(apiClient),
@@ -226,7 +260,7 @@ export function useConversionPanelState({
         return;
       }
       if (!startDisabled) {
-        void queueRunner.onStartConversion();
+        void onStartConversion();
       }
     };
     return () => {
@@ -236,9 +270,9 @@ export function useConversionPanelState({
     };
   }, [
     canRunQueue,
+    onStartConversion,
     primaryAction.primary,
     queueRunner.onRunQueue,
-    queueRunner.onStartConversion,
     startCommandRef,
     startDisabled,
   ]);
@@ -303,7 +337,6 @@ export function useConversionPanelState({
         !preview.voiceSuggestBusy &&
         Boolean(queueController.sourcePath.trim()) &&
         Boolean(optionState.selectedEngine),
-      canRunParallelWarmup: Boolean(apiClient) && !optionState.parallelWarmupLoading,
       canRunQueue: primaryAction.showRunQueue && canRunQueue,
       canStartConversion: primaryAction.showStartConversion && !startDisabled,
       canCancelJob: !cancelDisabled,
@@ -374,11 +407,12 @@ export function useConversionPanelState({
       speedInput: optionState.speedInput,
       selectedQuantization: optionState.selectedQuantization,
       quantizationOptions: optionState.quantizationOptions,
-      parallelWorkerMode: optionState.parallelWorkerMode,
+      // Options are ["default", <engine default>] when the engine supports a
+      // single precision; only a third entry means there is a real choice.
+      showQuantization: optionState.quantizationOptions.length > 2,
       manualParallelWorkerUpperBound: optionState.manualParallelWorkerUpperBound,
       selectedParallelWorkerLimit: optionState.selectedParallelWorkerLimit,
       parallelManualMax: optionState.parallelManualMax,
-      parallelWarmupLoading: optionState.parallelWarmupLoading,
       parallelWorkerError: optionState.parallelWorkerError,
       parallelWorkerStatus: optionState.parallelWorkerStatus,
       parallelWorkerDetail: optionState.parallelRecommendation?.calculation ?? "",
@@ -416,7 +450,6 @@ export function useConversionPanelState({
       setSelectedVoice: optionState.setSelectedVoice,
       setSpeed: optionState.setSpeed,
       setSelectedQuantization: optionState.setSelectedQuantization,
-      setParallelWorkerMode: optionState.setParallelWorkerMode,
       setParallelManualMax: optionState.setParallelManualMax,
       onBrowse: sourceQueue.onBrowse,
       onBrowserFilesSelected: sourceQueue.onBrowserFilesSelected,
@@ -426,9 +459,8 @@ export function useConversionPanelState({
       onPreviewVoice: preview.onPreviewVoice,
       onRecommendVoice: preview.onRecommendVoice,
       onRunQueue: queueRunner.onRunQueue,
-      onStartConversion: queueRunner.onStartConversion,
+      onStartConversion,
       onFetchCleanerModels: optionState.fetchOpenAiModelIds,
-      onRunParallelWarmup: optionState.runParallelWarmup,
       onRefreshJob: conversionJob.refreshActiveConversion,
       onCancelJob: conversionJob.cancelActiveConversion,
       clearFormError: conversionJob.clearFormError,

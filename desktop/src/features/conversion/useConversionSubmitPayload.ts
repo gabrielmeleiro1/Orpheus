@@ -32,7 +32,9 @@ export function buildRuntimeOptions(
     tts_quantization: quantization,
     ...cleanerFields,
     tts_options: { quantization },
-    parallel_worker_mode: optionState.parallelWorkerMode,
+    // The UI no longer offers auto worker sizing (it always resolved to a
+    // single sequential worker for the shipped engine); the count is manual.
+    parallel_worker_mode: "manual",
     max_parallel_chapters: optionState.selectedParallelWorkerLimit,
     enable_parallel: optionState.selectedParallelWorkerLimit > 1,
   };

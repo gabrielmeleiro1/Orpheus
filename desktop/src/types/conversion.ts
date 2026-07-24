@@ -141,20 +141,6 @@ export interface ParallelWorkerRecommendation {
   calculation: string;
 }
 
-export interface ParallelWarmupRequest {
-  voice: string;
-  speed: number;
-  tts_engine?: string | null;
-  tts_quantization?: string | null;
-  cleaner_model?: string | null;
-  cleaner_backend?: string | null;
-  cleaner_cuda_device?: string | null;
-  cleaner_cuda_quantization?: string | null;
-  cleaner_api_model?: string | null;
-  cleaner_api_key?: string | null;
-  max_parallel_chapters: number;
-}
-
 interface TtsRuntimeOptions {
   model_name?: string | null;
   tts_model_name?: string | null;

@@ -19,8 +19,6 @@ import type {
   ModelOptionsResponse,
   OpenBookFolderResponse,
   OpenAIModelListResponse,
-  ParallelWarmupRequest,
-  ParallelWorkerRecommendation,
   PlaybackPositionUpdateResponse,
   RepairConversionRequest,
   SourcePreflight,
@@ -109,7 +107,6 @@ export interface ApiClient {
     options?: ApiRequestOptions,
   ): Promise<RuntimeModelDownloadStatus>;
   cancelRuntimeModelDownload(options?: ApiRequestOptions): Promise<RuntimeModelDownloadStatus>;
-  warmupParallelWorkers(payload: ParallelWarmupRequest, options?: ApiRequestOptions): Promise<ParallelWorkerRecommendation>;
   preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight>;
   uploadSourceFile(file: File, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
   uploadSourceText(payload: SourceTextUploadRequest, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
@@ -483,17 +480,6 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     });
   }
 
-  async function warmupParallelWorkers(
-    payload: ParallelWarmupRequest,
-    options?: ApiRequestOptions,
-  ): Promise<ParallelWorkerRecommendation> {
-    return requestJson<ParallelWorkerRecommendation>("/api/options/parallel/warmup", {
-      method: "POST",
-      body: JSON.stringify(payload),
-      ...options,
-    });
-  }
-
   async function preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight> {
     return requestJson<SourcePreflight>("/api/sources/preflight", {
       method: "POST",
@@ -769,7 +755,6 @@ export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient
     getRuntimeModelDownloadStatus,
     startRuntimeModelDownload,
     cancelRuntimeModelDownload,
-    warmupParallelWorkers,
     preflightSource,
     uploadSourceFile,
     uploadSourceText,

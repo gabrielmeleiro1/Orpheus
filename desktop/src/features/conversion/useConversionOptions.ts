@@ -50,8 +50,6 @@ export interface UseConversionOptionsResult {
   openAiModelFetchError: boolean;
   cleanerRuntimeStatus: string;
   cleanerRuntimeError: boolean;
-  parallelWorkerMode: "auto" | "manual";
-  setParallelWorkerMode: (value: "auto" | "manual") => void;
   parallelManualMax: string;
   setParallelManualMax: (value: string) => void;
   manualParallelWorkerUpperBound: number;
@@ -59,8 +57,6 @@ export interface UseConversionOptionsResult {
   parallelRecommendation: ParallelWorkerRecommendation | null;
   parallelWorkerStatus: string;
   parallelWorkerError: boolean;
-  parallelWarmupLoading: boolean;
-  runParallelWarmup: () => Promise<void>;
 }
 
 export function useConversionOptions({ apiClient, conversionMode }: UseConversionOptionsArgs): UseConversionOptionsResult {
@@ -81,18 +77,6 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
     apiClient,
     systemCapabilities: ttsOptions.systemCapabilities,
     persistedSettingsRef,
-    warmupContext: {
-      selectedVoice: ttsOptions.selectedVoice,
-      speed: ttsOptions.speed,
-      selectedEngine: ttsOptions.selectedEngine,
-      selectedQuantization: ttsOptions.selectedQuantization,
-      cleanerBackend: cleanerOptions.cleanerBackend,
-      selectedCleanerBackend: cleanerOptions.selectedCleanerBackend,
-      cleanerModel: cleanerOptions.cleanerModel,
-      cleanerApiKey: cleanerOptions.cleanerApiKey,
-      cleanerCudaDevice: cleanerOptions.cleanerCudaDevice,
-      cleanerCudaQuantization: cleanerOptions.cleanerCudaQuantization,
-    },
   });
 
   useEffect(() => {
@@ -110,7 +94,7 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
       cleaner_backend_configured: cleanerOptions.cleanerBackendConfigured,
       cleaner_cuda_device: cleanerOptions.cleanerCudaDevice || undefined,
       cleaner_cuda_quantization: cleanerOptions.cleanerCudaQuantization || undefined,
-      parallel_worker_mode: parallelWorkers.parallelWorkerMode,
+      parallel_worker_mode: "manual" as const,
       parallel_manual_max: parallelWorkers.selectedParallelWorkerLimit,
     };
 
@@ -122,7 +106,6 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
     cleanerOptions.cleanerCudaDevice,
     cleanerOptions.cleanerCudaQuantization,
     cleanerOptions.cleanerModel,
-    parallelWorkers.parallelWorkerMode,
     parallelWorkers.selectedParallelWorkerLimit,
     ttsOptions.selectedEngine,
     ttsOptions.selectedQuantization,
@@ -177,8 +160,6 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
     openAiModelFetchError: cleanerOptions.openAiModelFetchError,
     cleanerRuntimeStatus: cleanerOptions.cleanerRuntimeStatus,
     cleanerRuntimeError: cleanerOptions.cleanerRuntimeError,
-    parallelWorkerMode: parallelWorkers.parallelWorkerMode,
-    setParallelWorkerMode: parallelWorkers.setParallelWorkerMode,
     parallelManualMax: parallelWorkers.parallelManualMax,
     setParallelManualMax: parallelWorkers.setParallelManualMax,
     manualParallelWorkerUpperBound: parallelWorkers.manualParallelWorkerUpperBound,
@@ -186,7 +167,5 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
     parallelRecommendation: parallelWorkers.parallelRecommendation,
     parallelWorkerStatus: parallelWorkers.parallelWorkerStatus,
     parallelWorkerError: parallelWorkers.parallelWorkerError,
-    parallelWarmupLoading: parallelWorkers.parallelWarmupLoading,
-    runParallelWarmup: parallelWorkers.runParallelWarmup,
   };
 }

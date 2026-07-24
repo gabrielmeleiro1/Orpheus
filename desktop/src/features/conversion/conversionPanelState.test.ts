@@ -8,6 +8,8 @@ describe("resolveStartDisabled", () => {
     queueRunning: false,
     isStarting: false,
     hasActiveJob: false,
+    pasteBusy: false,
+    sourcelessPasteReady: false,
   };
 
   it("enables the primary action when nothing is blocking or in flight", () => {
@@ -23,6 +25,14 @@ describe("resolveStartDisabled", () => {
     expect(resolveStartDisabled({ ...ready, isStarting: true })).toBe(true);
   });
 
+  it("disables the action while pasted text is being queued", () => {
+    expect(resolveStartDisabled({ ...ready, pasteBusy: true, sourcelessPasteReady: true })).toBe(true);
+  });
+
+  it("keeps an existing source startable while an unrelated paste upload is busy", () => {
+    expect(resolveStartDisabled({ ...ready, pasteBusy: true })).toBe(false);
+  });
+
   it("disables the action when a blocker is present", () => {
     expect(resolveStartDisabled({ ...ready, blockingReason: "Select a source." })).toBe(true);
   });
@@ -33,6 +43,7 @@ describe("conversion blocker guidance", () => {
     expect(resolveConversionBlocker({
       apiClientAvailable: true,
       sourcePath: "/tmp/book.epub",
+      hasPastedText: false,
       selectedEngine: "kokoro",
       selectedVoice: "af_heart",
       cleanerRuntimeError: false,
@@ -51,6 +62,7 @@ describe("conversion blocker guidance", () => {
     expect(resolveConversionBlocker({
       apiClientAvailable: true,
       sourcePath: "",
+      hasPastedText: false,
       selectedEngine: "",
       selectedVoice: "",
       cleanerRuntimeError: false,
@@ -62,6 +74,60 @@ describe("conversion blocker guidance", () => {
     })).toEqual({
       blockingReason: "Select a source before starting conversion.",
       showSettingsShortcut: false,
+    });
+  });
+
+  it("accepts un-queued pasted text in place of a selected source", () => {
+    expect(resolveConversionBlocker({
+      apiClientAvailable: true,
+      sourcePath: "",
+      hasPastedText: true,
+      selectedEngine: "kokoro",
+      selectedVoice: "af_heart",
+      cleanerRuntimeError: false,
+      cleanerRequiresApiKey: false,
+      cleanerApiKey: "",
+      cleanerDisplayName: "",
+      cleanerModelOptionsCount: 0,
+      cleanerModel: "",
+    })).toEqual({ blockingReason: null, showSettingsShortcut: false });
+  });
+
+  it("still enforces the remaining prerequisites when only pasted text is present", () => {
+    expect(resolveConversionBlocker({
+      apiClientAvailable: true,
+      sourcePath: "",
+      hasPastedText: true,
+      selectedEngine: "",
+      selectedVoice: "",
+      cleanerRuntimeError: false,
+      cleanerRequiresApiKey: false,
+      cleanerApiKey: "",
+      cleanerDisplayName: "",
+      cleanerModelOptionsCount: 0,
+      cleanerModel: "",
+    })).toEqual({
+      blockingReason: "Select a TTS engine before starting conversion.",
+      showSettingsShortcut: false,
+    });
+  });
+
+  it("blocks an API-backed cleaner until its key has produced a model list", () => {
+    expect(resolveConversionBlocker({
+      apiClientAvailable: true,
+      sourcePath: "/tmp/book.epub",
+      hasPastedText: false,
+      selectedEngine: "kokoro",
+      selectedVoice: "af_heart",
+      cleanerRuntimeError: false,
+      cleanerRequiresApiKey: true,
+      cleanerApiKey: "sk-live-key",
+      cleanerDisplayName: "Cloud API",
+      cleanerModelOptionsCount: 0,
+      cleanerModel: "",
+    })).toEqual({
+      blockingReason: "No Cloud API models loaded yet. Check the API key in Settings.",
+      showSettingsShortcut: true,
     });
   });
 

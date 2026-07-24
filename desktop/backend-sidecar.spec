@@ -134,6 +134,12 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=profile_excludes + [
+        # fsspec's PyInstaller hook can discover its test conftest, which
+        # otherwise pulls the complete pytest and Hypothesis stacks into PYZ.
+        "fsspec.conftest",
+        "hypothesis",
+        "pytest",
+        "_pytest",
         "IPython",
         "PyQt5",
         "PyQt6",

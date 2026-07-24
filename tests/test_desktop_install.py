@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from scripts.install_desktop_app import install_app_bundle
 
 
@@ -50,3 +52,59 @@ def test_install_app_bundle_can_remove_source_after_install_to_avoid_spotlight_d
     assert installed_app == applications_dir / "Orpheus.app"
     assert installed_app.is_dir()
     assert not source_app.exists()
+
+
+def test_install_app_bundle_preserves_existing_app_when_final_swap_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_app = tmp_path / "build" / "Orpheus.app"
+    applications_dir = tmp_path / "Applications"
+    existing_app = applications_dir / "Orpheus.app"
+
+    _create_app_bundle(source_app, "new")
+    _create_app_bundle(existing_app, "old")
+
+    original_replace = Path.replace
+
+    def fail_installing_swap(path: Path, target: Path) -> Path:
+        if path.name == ".Orpheus.installing.app":
+            raise OSError("simulated final install swap failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_installing_swap)
+
+    with pytest.raises(OSError, match="simulated final install swap failure"):
+        install_app_bundle(source_app, applications_dir=applications_dir)
+
+    assert existing_app.is_dir()
+    assert (existing_app / "Contents" / "Info.plist").read_text(
+        encoding="utf-8"
+    ) == "old"
+
+
+def test_install_app_bundle_removes_partial_staging_bundle_when_copy_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source_app = tmp_path / "build" / "Orpheus.app"
+    applications_dir = tmp_path / "Applications"
+    existing_app = applications_dir / "Orpheus.app"
+    staging_app = applications_dir / ".Orpheus.installing.app"
+
+    _create_app_bundle(source_app, "new")
+    _create_app_bundle(existing_app, "old")
+
+    def fail_partial_copy(_source: Path, target: Path, **_kwargs: object) -> None:
+        _create_app_bundle(target, "partial")
+        raise OSError("simulated copy failure")
+
+    monkeypatch.setattr("scripts.install_desktop_app.shutil.copytree", fail_partial_copy)
+
+    with pytest.raises(OSError, match="simulated copy failure"):
+        install_app_bundle(source_app, applications_dir=applications_dir)
+
+    assert not staging_app.exists()
+    assert (existing_app / "Contents" / "Info.plist").read_text(
+        encoding="utf-8"
+    ) == "old"
