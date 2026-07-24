@@ -34,6 +34,7 @@ type PreflightService = (
 interface InFlightPreflight {
   stamp: PreflightStamp;
   controller: AbortController;
+  clientGeneration: number;
 }
 
 function resolveSetStateAction<T>(current: T, action: SetStateAction<T>): T {
@@ -51,19 +52,49 @@ export function useConversionQueueController({
   const stateRef = useRef<ConversionQueueState>(state);
   const inFlightPreflightsRef = useRef<Map<string, InFlightPreflight>>(new Map());
   const preflightServiceRef = useRef<PreflightService>(runSourcePreflight);
+  const mountedRef = useRef(false);
+  const clientContextRef = useRef({
+    apiClient,
+    generation: 0,
+  });
+
+  if (clientContextRef.current.apiClient !== apiClient) {
+    clientContextRef.current = {
+      apiClient,
+      generation: clientContextRef.current.generation + 1,
+    };
+  }
+  const clientGeneration = clientContextRef.current.generation;
 
   useEffect(() => {
     stateRef.current = state;
   }, [state]);
 
   useEffect(() => {
+    mountedRef.current = true;
     return () => {
+      mountedRef.current = false;
       for (const request of inFlightPreflightsRef.current.values()) {
         request.controller.abort();
       }
       inFlightPreflightsRef.current.clear();
     };
   }, []);
+
+  useEffect(() => {
+    for (const [itemId, request] of inFlightPreflightsRef.current) {
+      if (request.clientGeneration !== clientGeneration) {
+        request.controller.abort();
+        inFlightPreflightsRef.current.delete(itemId);
+      }
+    }
+  }, [clientGeneration]);
+
+  const isCurrentClientGeneration = useCallback(
+    (generation: number) =>
+      mountedRef.current && clientContextRef.current.generation === generation,
+    [],
+  );
 
   const selectedQueueItem = useMemo(
     () => state.queueItems.find((item) => item.id === state.selectedQueueId) ?? null,
@@ -80,6 +111,9 @@ export function useConversionQueueController({
 
   const runPreflightForItem = useCallback(
     async (item: ConversionQueueItem, options?: { updateSelected?: boolean }) => {
+      if (!isCurrentClientGeneration(clientGeneration)) {
+        return;
+      }
       abortPreflight(item.id);
 
       if (!apiClient) {
@@ -94,13 +128,29 @@ export function useConversionQueueController({
 
       const stamp = getPreflightStamp(stateRef.current, item);
       const controller = new AbortController();
-      inFlightPreflightsRef.current.set(item.id, { stamp, controller });
+      inFlightPreflightsRef.current.set(item.id, {
+        stamp,
+        controller,
+        clientGeneration,
+      });
       dispatch({ type: "preflightStarted", stamp });
+
+      const isCurrentRequest = () => {
+        const current = inFlightPreflightsRef.current.get(item.id);
+        return (
+          isCurrentClientGeneration(clientGeneration) &&
+          current?.controller === controller &&
+          current.clientGeneration === clientGeneration
+        );
+      };
 
       try {
         const preflight =
           item.preflight ??
           (await preflightServiceRef.current(apiClient, item.sourcePath, controller.signal));
+        if (!isCurrentRequest()) {
+          return;
+        }
         dispatch({
           type: "preflightSucceeded",
           stamp,
@@ -108,7 +158,7 @@ export function useConversionQueueController({
           updateSelected: Boolean(options?.updateSelected),
         });
       } catch (error: unknown) {
-        if (!isSilentAbort(error)) {
+        if (isCurrentRequest() && !isSilentAbort(error)) {
           dispatch({
             type: "preflightFailed",
             stamp,
@@ -117,12 +167,17 @@ export function useConversionQueueController({
         }
       } finally {
         const current = inFlightPreflightsRef.current.get(item.id);
-        if (current?.stamp.revision === stamp.revision) {
+        if (current?.controller === controller) {
           inFlightPreflightsRef.current.delete(item.id);
         }
       }
     },
-    [abortPreflight, apiClient],
+    [
+      abortPreflight,
+      apiClient,
+      clientGeneration,
+      isCurrentClientGeneration,
+    ],
   );
 
   const runPreflightQueue = useCallback(

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,6 +16,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: listenMock }));
 
 interface ProbeProps {
   apiClient?: unknown;
+  conversionMode?: "audiobook" | "document_audio";
   conversionJob?: unknown;
   queueController?: unknown;
   setPreflightStatus?: (value: string) => void;
@@ -23,13 +24,14 @@ interface ProbeProps {
 
 function Probe({
   apiClient = null,
+  conversionMode = "audiobook",
   conversionJob,
   queueController,
   setPreflightStatus = vi.fn(),
 }: ProbeProps): null {
   const result = useConversionSourceQueue({
     apiClient: apiClient as never,
-    conversionMode: "audiobook",
+    conversionMode,
     conversionJob: (conversionJob ?? { clearFormError: vi.fn() }) as never,
     queueController: (queueController ?? {
         selectedQueueId: null,
@@ -47,6 +49,9 @@ describe("useConversionSourceQueue", () => {
   let container: HTMLDivElement;
 
   beforeEach(() => {
+    invokeMock.mockReset();
+    listenMock.mockReset();
+    listenMock.mockImplementation(async () => vi.fn());
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: {} });
     container = document.createElement("div");
@@ -75,6 +80,40 @@ describe("useConversionSourceQueue", () => {
     });
 
     expect(setPreflightStatus).toHaveBeenCalledWith("Could not open file picker: dialog unavailable");
+  });
+
+  it("keeps current source callbacks live through StrictMode effect replay", async () => {
+    invokeMock.mockResolvedValueOnce(["/strict-mode.md"]);
+    const addQueueItems = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <StrictMode>
+          <Probe
+            conversionJob={{ clearFormError: vi.fn() }}
+            queueController={{
+              selectedQueueId: null,
+              sourcePath: "",
+              addQueueItems,
+              setPreflightStatus: vi.fn(),
+            }}
+          />
+        </StrictMode>,
+      );
+    });
+
+    await act(async () => {
+      await (
+        globalThis as typeof globalThis & {
+          sourceQueueProbe: ReturnType<typeof useConversionSourceQueue>;
+        }
+      ).sourceQueueProbe.onBrowse();
+    });
+
+    expect(addQueueItems).toHaveBeenCalledWith(
+      [expect.objectContaining({ sourcePath: "/strict-mode.md" })],
+      { selectFirst: true },
+    );
   });
 
   it("keeps successful browser uploads queued in input order when another selected file fails", async () => {
@@ -256,6 +295,176 @@ describe("useConversionSourceQueue", () => {
     expect(setPreflightStatus).toHaveBeenLastCalledWith("Source uploaded.");
   });
 
+  it.each(["api client", "conversion mode"] as const)(
+    "ignores a browser upload completion after the %s changes",
+    async (changedContext) => {
+      type UploadResponse = { source_handle: string; original_name: string; preflight: null };
+      let resolveUpload!: (value: UploadResponse) => void;
+      const uploadSourceFile = vi.fn(
+        () =>
+          new Promise<UploadResponse>((resolve) => {
+            resolveUpload = resolve;
+          }),
+      );
+      const originalApiClient = { uploadSourceFile };
+      const replacementApiClient = { uploadSourceFile: vi.fn() };
+      const addQueueItems = vi.fn();
+      const setPreflightStatus = vi.fn();
+      const clearFormError = vi.fn();
+      const queueController = {
+        selectedQueueId: null,
+        sourcePath: "",
+        addQueueItems,
+        setPreflightStatus,
+      };
+
+      await act(async () => {
+        root = createRoot(container);
+        root.render(
+          <Probe
+            apiClient={originalApiClient}
+            conversionJob={{ clearFormError }}
+            queueController={queueController}
+          />,
+        );
+      });
+      const uploadPromise = (
+        globalThis as typeof globalThis & {
+          sourceQueueProbe: ReturnType<typeof useConversionSourceQueue>;
+        }
+      ).sourceQueueProbe.onBrowserFilesSelected({
+        target: { files: [new File(["old"], "old.md")], value: "old" },
+      } as never);
+
+      await act(async () => {
+        root.render(
+          <Probe
+            apiClient={changedContext === "api client" ? replacementApiClient : originalApiClient}
+            conversionMode={changedContext === "conversion mode" ? "document_audio" : "audiobook"}
+            conversionJob={{ clearFormError }}
+            queueController={queueController}
+          />,
+        );
+      });
+      resolveUpload({ source_handle: "upload:old", original_name: "old.md", preflight: null });
+      await act(async () => {
+        await uploadPromise;
+      });
+
+      expect(addQueueItems).not.toHaveBeenCalled();
+      expect(clearFormError).not.toHaveBeenCalled();
+      expect(setPreflightStatus).toHaveBeenCalledTimes(1);
+      expect(setPreflightStatus).toHaveBeenLastCalledWith("Uploading old.md...");
+    },
+  );
+
+  it.each(["api client", "conversion mode", "unmount"] as const)(
+    "ignores a deferred native browse result after %s",
+    async (staleReason) => {
+      let resolvePicker!: (paths: string[]) => void;
+      invokeMock.mockImplementationOnce(
+        () =>
+          new Promise<string[]>((resolve) => {
+            resolvePicker = resolve;
+          }),
+      );
+      const originalApiClient = {};
+      const replacementApiClient = {};
+      const addQueueItems = vi.fn();
+      const clearFormError = vi.fn();
+      const queueController = {
+        selectedQueueId: null,
+        sourcePath: "",
+        addQueueItems,
+        setPreflightStatus: vi.fn(),
+      };
+
+      await act(async () => {
+        root = createRoot(container);
+        root.render(
+          <Probe
+            apiClient={originalApiClient}
+            conversionJob={{ clearFormError }}
+            queueController={queueController}
+          />,
+        );
+      });
+      const browsePromise = (
+        globalThis as typeof globalThis & {
+          sourceQueueProbe: ReturnType<typeof useConversionSourceQueue>;
+        }
+      ).sourceQueueProbe.onBrowse();
+
+      await act(async () => {
+        if (staleReason === "unmount") {
+          root.unmount();
+          return;
+        }
+        root.render(
+          <Probe
+            apiClient={staleReason === "api client" ? replacementApiClient : originalApiClient}
+            conversionMode={staleReason === "conversion mode" ? "document_audio" : "audiobook"}
+            conversionJob={{ clearFormError }}
+            queueController={queueController}
+          />,
+        );
+      });
+      resolvePicker(["/old.md"]);
+      await act(async () => {
+        await browsePromise;
+      });
+
+      expect(addQueueItems).not.toHaveBeenCalled();
+      expect(clearFormError).not.toHaveBeenCalled();
+    },
+  );
+
+  it("claims first selection synchronously across native browse and drop paths", async () => {
+    invokeMock.mockResolvedValueOnce(["/native.md"]);
+    const addQueueItems = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <Probe
+          conversionJob={{ clearFormError: vi.fn() }}
+          queueController={{
+            selectedQueueId: null,
+            sourcePath: "",
+            addQueueItems,
+            setPreflightStatus: vi.fn(),
+          }}
+        />,
+      );
+    });
+    const getProbe = () =>
+      (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> })
+        .sourceQueueProbe;
+
+    await act(async () => {
+      await getProbe().onBrowse();
+    });
+    act(() => {
+      getProbe().onDropZoneDrop({
+        preventDefault: vi.fn(),
+        dataTransfer: {
+          getData: () => "file:///dropped.md",
+          files: [],
+        },
+      } as never);
+    });
+
+    expect(addQueueItems).toHaveBeenNthCalledWith(
+      1,
+      [expect.objectContaining({ sourcePath: "/native.md" })],
+      { selectFirst: true },
+    );
+    expect(addQueueItems).toHaveBeenNthCalledWith(
+      2,
+      [expect.objectContaining({ sourcePath: "/dropped.md" })],
+      { selectFirst: false },
+    );
+  });
+
   it("cleans up every Tauri listener exactly once when registration resolves around unmount", async () => {
     type Registration = {
       resolve: (unlisten: () => void) => void;
@@ -360,6 +569,219 @@ describe("useConversionSourceQueue", () => {
     expect(getProbe().pastedText).toBe("");
     expect(getProbe().pastedTitle).toBe("");
     expect(getProbe().pastedAuthor).toBe("");
+  });
+
+  it.each(["api client", "conversion mode"] as const)(
+    "ignores a pasted-source completion after the %s changes",
+    async (changedContext) => {
+      type UploadResponse = { source_handle: string; original_name: string; preflight: null };
+      let resolveUpload!: (value: UploadResponse) => void;
+      const uploadSourceText = vi.fn(
+        () =>
+          new Promise<UploadResponse>((resolve) => {
+            resolveUpload = resolve;
+          }),
+      );
+      const originalApiClient = { uploadSourceText };
+      const replacementApiClient = { uploadSourceText: vi.fn() };
+      const addPastedSource = vi.fn();
+      const clearFormError = vi.fn();
+      const queueController = {
+        selectedQueueId: null,
+        sourcePath: "",
+        selectedQueueItem: null,
+        titleOverride: "",
+        authorOverride: "",
+        addPastedSource,
+      };
+
+      await act(async () => {
+        root = createRoot(container);
+        root.render(
+          <Probe
+            apiClient={originalApiClient}
+            conversionJob={{ clearFormError }}
+            queueController={queueController}
+          />,
+        );
+      });
+      const getProbe = () =>
+        (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> })
+          .sourceQueueProbe;
+      await act(async () => {
+        getProbe().setPastedText("Context-owned draft");
+      });
+      let pastePromise!: ReturnType<ReturnType<typeof useConversionSourceQueue>["onAddPastedText"]>;
+      act(() => {
+        pastePromise = getProbe().onAddPastedText();
+      });
+
+      await act(async () => {
+        root.render(
+          <Probe
+            apiClient={changedContext === "api client" ? replacementApiClient : originalApiClient}
+            conversionMode={changedContext === "conversion mode" ? "document_audio" : "audiobook"}
+            conversionJob={{ clearFormError }}
+            queueController={queueController}
+          />,
+        );
+      });
+      resolveUpload({ source_handle: "upload:old-paste", original_name: "old.md", preflight: null });
+      let returnedItem: Awaited<typeof pastePromise>;
+      await act(async () => {
+        returnedItem = await pastePromise;
+      });
+
+      expect(returnedItem!).toBeNull();
+      expect(addPastedSource).not.toHaveBeenCalled();
+      expect(clearFormError).not.toHaveBeenCalled();
+      expect(getProbe().pastedText).toBe("Context-owned draft");
+      expect(getProbe().pasteStatus).not.toBe("Pasted markdown source added.");
+      expect(getProbe().pasteBusy).toBe(false);
+    },
+  );
+
+  it("ignores a pasted-source completion after unmount", async () => {
+    type UploadResponse = { source_handle: string; original_name: string; preflight: null };
+    let resolveUpload!: (value: UploadResponse) => void;
+    const uploadSourceText = vi.fn(
+      () =>
+        new Promise<UploadResponse>((resolve) => {
+          resolveUpload = resolve;
+        }),
+    );
+    const addPastedSource = vi.fn();
+    const clearFormError = vi.fn();
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <Probe
+          apiClient={{ uploadSourceText }}
+          conversionJob={{ clearFormError }}
+          queueController={{
+            selectedQueueId: null,
+            sourcePath: "",
+            selectedQueueItem: null,
+            titleOverride: "",
+            authorOverride: "",
+            addPastedSource,
+          }}
+        />,
+      );
+    });
+    const getProbe = () =>
+      (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> })
+        .sourceQueueProbe;
+    await act(async () => {
+      getProbe().setPastedText("Unmounted draft");
+    });
+    let pastePromise!: ReturnType<ReturnType<typeof useConversionSourceQueue>["onAddPastedText"]>;
+    act(() => {
+      pastePromise = getProbe().onAddPastedText();
+    });
+
+    await act(async () => {
+      root.unmount();
+    });
+    resolveUpload({ source_handle: "upload:stale-paste", original_name: "stale.md", preflight: null });
+    let returnedItem: Awaited<typeof pastePromise>;
+    await act(async () => {
+      returnedItem = await pastePromise;
+    });
+
+    expect(returnedItem!).toBeNull();
+    expect(addPastedSource).not.toHaveBeenCalled();
+    expect(clearFormError).not.toHaveBeenCalled();
+  });
+
+  it("keeps a current paste request guarded when an older context request settles", async () => {
+    type UploadResponse = { source_handle: string; original_name: string; preflight: null };
+    let resolveOldUpload!: (value: UploadResponse) => void;
+    let resolveCurrentUpload!: (value: UploadResponse) => void;
+    const oldUploadSourceText = vi.fn(
+      () =>
+        new Promise<UploadResponse>((resolve) => {
+          resolveOldUpload = resolve;
+        }),
+    );
+    const currentUploadSourceText = vi.fn(
+      () =>
+        new Promise<UploadResponse>((resolve) => {
+          resolveCurrentUpload = resolve;
+        }),
+    );
+    const addPastedSource = vi.fn();
+    const clearFormError = vi.fn();
+    const queueController = {
+      selectedQueueId: null,
+      sourcePath: "",
+      selectedQueueItem: null,
+      titleOverride: "",
+      authorOverride: "",
+      addPastedSource,
+    };
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <Probe
+          apiClient={{ uploadSourceText: oldUploadSourceText }}
+          conversionJob={{ clearFormError }}
+          queueController={queueController}
+        />,
+      );
+    });
+    const getProbe = () =>
+      (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> })
+        .sourceQueueProbe;
+    await act(async () => {
+      getProbe().setPastedText("Reusable draft");
+    });
+    let oldPastePromise!: ReturnType<ReturnType<typeof useConversionSourceQueue>["onAddPastedText"]>;
+    act(() => {
+      oldPastePromise = getProbe().onAddPastedText();
+    });
+
+    await act(async () => {
+      root.render(
+        <Probe
+          apiClient={{ uploadSourceText: currentUploadSourceText }}
+          conversionJob={{ clearFormError }}
+          queueController={queueController}
+        />,
+      );
+    });
+    let currentPastePromise!: ReturnType<ReturnType<typeof useConversionSourceQueue>["onAddPastedText"]>;
+    act(() => {
+      currentPastePromise = getProbe().onAddPastedText();
+    });
+    expect(currentUploadSourceText).toHaveBeenCalledTimes(1);
+
+    resolveOldUpload({ source_handle: "upload:old", original_name: "old.md", preflight: null });
+    await act(async () => {
+      await oldPastePromise;
+    });
+    let duplicateResult!: Awaited<ReturnType<ReturnType<typeof useConversionSourceQueue>["onAddPastedText"]>>;
+    await act(async () => {
+      duplicateResult = await getProbe().onAddPastedText();
+    });
+    expect(duplicateResult).toBeNull();
+    expect(currentUploadSourceText).toHaveBeenCalledTimes(1);
+
+    resolveCurrentUpload({ source_handle: "upload:current", original_name: "current.md", preflight: null });
+    let currentResult: Awaited<typeof currentPastePromise>;
+    await act(async () => {
+      currentResult = await currentPastePromise;
+    });
+
+    expect(currentResult!).toEqual(expect.objectContaining({ sourcePath: "upload:current" }));
+    expect(addPastedSource).toHaveBeenCalledTimes(1);
+    expect(addPastedSource).toHaveBeenCalledWith(
+      expect.objectContaining({ sourcePath: "upload:current" }),
+      { selectItem: true },
+    );
+    expect(clearFormError).toHaveBeenCalledTimes(1);
   });
 
   it("guards against a same-frame double 'Add to queue' click", async () => {

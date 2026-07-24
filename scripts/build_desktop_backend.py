@@ -171,7 +171,7 @@ def _is_darwin_target(target_triple: str) -> bool:
 
 def _is_apple_silicon_target(target_triple: str) -> bool:
     normalized = target_triple.lower()
-    return normalized.startswith("aarch64-") and "apple-darwin" in normalized
+    return _target_architecture(target_triple) == "aarch64" and "apple-darwin" in normalized
 
 
 def _target_os(target_triple: str) -> str:
@@ -192,17 +192,49 @@ def _host_os() -> str:
     return "unknown"
 
 
+def _normalize_architecture(value: str) -> str:
+    """Normalize common host/target architecture aliases."""
+    normalized = value.strip().lower().replace("-", "_")
+    return {
+        "amd64": "x86_64",
+        "x64": "x86_64",
+        "x86_64": "x86_64",
+        "aarch64": "aarch64",
+        "arm64": "aarch64",
+    }.get(normalized, normalized)
+
+
+def _target_architecture(target_triple: str) -> str:
+    return _normalize_architecture(target_triple.split("-", 1)[0])
+
+
 def _validate_pyinstaller_target_matches_host(target_triple: str) -> None:
     target_os = _target_os(target_triple)
     host_os = _host_os()
-    if target_os == "unknown" or host_os == "unknown" or target_os == host_os:
-        return
-    raise RuntimeError(
-        "Cross-OS PyInstaller builds are not supported.\n"
-        f"Host OS: {host_os}\n"
-        f"Target triple: {target_triple}\n"
-        "Run this script on the target operating system or pass a same-OS target triple."
-    )
+    if target_os != "unknown" and host_os != "unknown" and target_os != host_os:
+        raise RuntimeError(
+            "Cross-OS PyInstaller builds are not supported.\n"
+            f"Host OS: {host_os}\n"
+            f"Target triple: {target_triple}\n"
+            "Run this script on the target operating system or pass a same-OS target triple."
+        )
+
+    host_architecture = _normalize_architecture(platform.machine())
+    target_architecture = _target_architecture(target_triple)
+    if (
+        host_architecture
+        and target_architecture
+        and host_architecture not in {"unknown", ""}
+        and target_architecture not in {"unknown", ""}
+        and host_architecture != target_architecture
+    ):
+        raise RuntimeError(
+            "Host/target architecture mismatch: PyInstaller builds must run on the target architecture.\n"
+            f"Host architecture: {host_architecture}\n"
+            f"Target architecture: {target_architecture}\n"
+            f"Target triple: {target_triple}\n"
+            "Run this script on a matching host architecture or pass a same-architecture target triple."
+        )
 
 
 def _validate_runtime_profile_host(target_triple: str, runtime_profile: str) -> None:
@@ -416,8 +448,9 @@ def validate_existing_sidecar(
     ):
         raise RuntimeError(
             "The packaged desktop backend sidecar is missing or not executable. "
-            "Build it before running desktop:build:\n"
-            "  python scripts/build_desktop_backend.py --runtime-profile base|mlx|cuda"
+            "Build it directly or run the Tauri release build:\n"
+            "  python scripts/build_desktop_backend.py --runtime-profile base|mlx|cuda\n"
+            "  (from desktop/) npm run desktop:build"
         )
 
     # Without an explicit profile, validate the resources common to every

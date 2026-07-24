@@ -113,8 +113,9 @@ Desktop sidecar changes:
 
 ```bash
 python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py
-python scripts/build_desktop_backend.py
-cd desktop/src-tauri && cargo test && cargo check
+cd desktop
+npm run desktop:build
+cd src-tauri && cargo test && cargo check
 ```
 
 Static cleanup checks:
@@ -242,7 +243,6 @@ cd src-tauri
 cargo test
 cargo check
 cd ../..
-python scripts/build_desktop_backend.py
 cd desktop
 npm run desktop:build
 npm run desktop:install
@@ -253,7 +253,7 @@ Release-candidate evidence should include:
 - focused backend/web command above
 - `cd desktop && npm run typecheck && npm test -- --run && npm run build`
 - `cd desktop/src-tauri && cargo test && cargo check`
-- `python scripts/build_desktop_backend.py && cd desktop && npm run desktop:build`
+- `cd desktop && npm run desktop:build` (Tauri fresh-build hook runs the sidecar and frontend first)
 - installed-app launch/quit smoke, plus one real short conversion/playback before
   considering a release candidate reliable
 

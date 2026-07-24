@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
-import type { LibraryBookDetail, LibraryBookSummary } from "../../types/api";
+import type { CleaningPreviewResponse, LibraryBookDetail, LibraryBookSummary } from "../../types/api";
 import { useLibrary, type UseLibraryResult } from "./useLibrary";
 
 const book: LibraryBookSummary = {
@@ -31,6 +31,17 @@ const detail: LibraryBookDetail = {
   chapters: [],
 };
 
+const cleaningPreview: CleaningPreviewResponse = {
+  book_id: book.id,
+  chapter_number: 1,
+  title: "Chapter 1",
+  available: true,
+  before_text: "before",
+  llm_input_text: "input",
+  cleaned_text: "cleaned",
+  trace_rows: [],
+};
+
 function LibraryProbe({ apiClient, backendDisconnected = false }: { apiClient: ApiClient | null; backendDisconnected?: boolean }): null {
   const library = useLibrary({ apiClient, backendDisconnected });
   (globalThis as typeof globalThis & { libraryProbe?: UseLibraryResult }).libraryProbe = library;
@@ -50,6 +61,11 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reje
   });
   return { promise, resolve, reject };
 }
+
+const queryModeChanges: Array<[string, (library: UseLibraryResult) => void]> = [
+  ["search query", (library) => library.setSearchQuery("new context")],
+  ["mode filter", (library) => library.setModeFilter("document_audio")],
+];
 
 describe("useLibrary indexed total", () => {
   let root: Root;
@@ -183,6 +199,124 @@ describe("useLibrary indexed total", () => {
     expect(getLibraryProbe().indexedCount).toBe(0);
   });
 
+  it("invalidates an in-flight list immediately when the API client identity changes", async () => {
+    const oldListRequest = deferred<{ items: LibraryBookSummary[]; count: number }>();
+    const oldGetLibrary = vi.fn(() => oldListRequest.promise);
+    const newGetLibrary = vi.fn(async () => ({ items: [], count: 0 }));
+    const oldClient = { getLibrary: oldGetLibrary } as unknown as ApiClient;
+    const newClient = { getLibrary: newGetLibrary } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={oldClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(oldGetLibrary).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={newClient} />);
+    });
+    await act(async () => {
+      oldListRequest.resolve({ items: [book], count: 1 });
+      await oldListRequest.promise;
+    });
+
+    expect(newGetLibrary).not.toHaveBeenCalled();
+    expect(getLibraryProbe().items).toEqual([]);
+    expect(getLibraryProbe().selectedBookId).toBeNull();
+  });
+
+  it.each(queryModeChanges)(
+    "invalidates an in-flight list immediately when the %s changes",
+    async (_label, changeContext) => {
+      const oldListRequest = deferred<{ items: LibraryBookSummary[]; count: number }>();
+      const getLibrary = vi.fn(() => oldListRequest.promise);
+      const apiClient = { getLibrary } as unknown as ApiClient;
+
+      await act(async () => {
+        root = createRoot(container);
+        root.render(<LibraryProbe apiClient={apiClient} />);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(220);
+      });
+
+      await act(async () => {
+        changeContext(getLibraryProbe());
+      });
+      await act(async () => {
+        oldListRequest.resolve({ items: [book], count: 1 });
+        await oldListRequest.promise;
+      });
+
+      expect(getLibraryProbe().items).toEqual([]);
+      expect(getLibraryProbe().selectedBookId).toBeNull();
+    },
+  );
+
+  it("invalidates an in-flight detail immediately when the API client identity changes", async () => {
+    const oldDetailRequest = deferred<LibraryBookDetail>();
+    const oldClient = {
+      getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
+      getLibraryBook: vi.fn(() => oldDetailRequest.promise),
+    } as unknown as ApiClient;
+    const newClient = {
+      getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
+      getLibraryBook: vi.fn(async () => detail),
+    } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={oldClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(getLibraryProbe().loadingDetail).toBe(true);
+
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={newClient} />);
+    });
+    await act(async () => {
+      oldDetailRequest.resolve(detail);
+      await oldDetailRequest.promise;
+    });
+
+    expect(getLibraryProbe().selectedBookDetail).toBeNull();
+    expect(getLibraryProbe().statusMessage).not.toBe("Selected: Indexed book");
+  });
+
+  it.each(queryModeChanges)(
+    "invalidates an in-flight detail immediately when the %s changes",
+    async (_label, changeContext) => {
+      const oldDetailRequest = deferred<LibraryBookDetail>();
+      const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+      const getLibraryBook = vi.fn(() => oldDetailRequest.promise);
+      const apiClient = { getLibrary, getLibraryBook } as unknown as ApiClient;
+
+      await act(async () => {
+        root = createRoot(container);
+        root.render(<LibraryProbe apiClient={apiClient} />);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(220);
+      });
+
+      await act(async () => {
+        changeContext(getLibraryProbe());
+      });
+      await act(async () => {
+        oldDetailRequest.resolve(detail);
+        await oldDetailRequest.promise;
+      });
+
+      expect(getLibraryProbe().selectedBookDetail).toBeNull();
+      expect(getLibraryProbe().statusMessage).not.toBe("Selected: Indexed book");
+    },
+  );
+
   it("keeps the previous book detail visible until the next selection loads", async () => {
     const secondBook = { ...book, id: 2, title: "Second book" };
     const secondDetail = { ...detail, id: 2, title: "Second book" };
@@ -266,6 +400,300 @@ describe("useLibrary indexed total", () => {
       await selectionPromise;
     });
     expect(getLibraryProbe().selectedBookDetail).toEqual(secondDetail);
+  });
+
+  it("invalidates metadata preview and entity responses when the API client identity changes", async () => {
+    const metadataRequest = deferred<LibraryBookDetail>();
+    const previewRequest = deferred<CleaningPreviewResponse>();
+    const folderRequest = deferred<{ book_id: number; folder_path: string }>();
+    const oldClient = {
+      getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
+      getLibraryBook: vi.fn(async () => detail),
+      updateLibraryBook: vi.fn(() => metadataRequest.promise),
+      getCleaningPreview: vi.fn(() => previewRequest.promise),
+      openBookFolder: vi.fn(() => folderRequest.promise),
+    } as unknown as ApiClient;
+    const newClient = {
+      getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
+      getLibraryBook: vi.fn(async () => detail),
+    } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={oldClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let metadataPromise!: Promise<void>;
+    let previewPromise!: Promise<CleaningPreviewResponse | null>;
+    let folderPromise!: Promise<void>;
+    await act(async () => {
+      metadataPromise = getLibraryProbe().updateSelectedBookMetadata({
+        title: "Old client title",
+        author: "Author",
+        tags: "",
+      });
+      previewPromise = getLibraryProbe().loadCleaningPreview(1);
+      folderPromise = getLibraryProbe().openSelectedBookFolder();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={newClient} />);
+    });
+    let previewResult: CleaningPreviewResponse | null = cleaningPreview;
+    await act(async () => {
+      metadataRequest.resolve({ ...detail, title: "Old client title" });
+      previewRequest.resolve(cleaningPreview);
+      folderRequest.resolve({ book_id: book.id, folder_path: "/old-client" });
+      previewResult = await previewPromise;
+      await Promise.all([metadataPromise, folderPromise]);
+    });
+
+    expect(previewResult).toBeNull();
+    expect(getLibraryProbe().selectedBookDetail?.title).toBe("Indexed book");
+    expect(getLibraryProbe().items[0]?.title).toBe("Indexed book");
+    expect(getLibraryProbe().statusMessage).not.toContain("old-client");
+    expect(getLibraryProbe().statusMessage).not.toBe("Metadata saved");
+  });
+
+  it("invalidates metadata preview and open-folder responses when the search query changes", async () => {
+    const metadataRequest = deferred<LibraryBookDetail>();
+    const previewRequest = deferred<CleaningPreviewResponse>();
+    const folderRequest = deferred<{ book_id: number; folder_path: string }>();
+    const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBook = vi.fn(async () => detail);
+    const updateLibraryBook = vi.fn(() => metadataRequest.promise);
+    const getCleaningPreview = vi.fn(() => previewRequest.promise);
+    const openBookFolder = vi.fn(() => folderRequest.promise);
+    const apiClient = {
+      getLibrary,
+      getLibraryBook,
+      updateLibraryBook,
+      getCleaningPreview,
+      openBookFolder,
+    } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let metadataPromise!: Promise<void>;
+    let previewPromise!: Promise<CleaningPreviewResponse | null>;
+    let folderPromise!: Promise<void>;
+    await act(async () => {
+      metadataPromise = getLibraryProbe().updateSelectedBookMetadata({
+        title: "Stale title",
+        author: "Author",
+        tags: "",
+      });
+      previewPromise = getLibraryProbe().loadCleaningPreview(1);
+      folderPromise = getLibraryProbe().openSelectedBookFolder();
+      getLibraryProbe().setSearchQuery("new context");
+      await Promise.resolve();
+    });
+
+    let previewResult: CleaningPreviewResponse | null = cleaningPreview;
+    await act(async () => {
+      metadataRequest.resolve({ ...detail, title: "Stale title" });
+      previewRequest.resolve(cleaningPreview);
+      folderRequest.resolve({ book_id: book.id, folder_path: "/stale-folder" });
+      previewResult = await previewPromise;
+      await Promise.all([metadataPromise, folderPromise]);
+    });
+
+    expect(previewResult).toBeNull();
+    expect(getLibraryProbe().selectedBookDetail?.title).toBe("Indexed book");
+    expect(getLibraryProbe().items[0]?.title).toBe("Indexed book");
+    expect(getLibraryProbe().statusMessage).not.toContain("stale-folder");
+    expect(getLibraryProbe().statusMessage).not.toBe("Metadata saved");
+  });
+
+  it("invalidates a repair response when the mode filter changes", async () => {
+    const repairRequest = deferred<{ job_id: string }>();
+    const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBook = vi.fn(async () => detail);
+    const repairConversion = vi.fn(() => repairRequest.promise);
+    const apiClient = { getLibrary, getLibraryBook, repairConversion } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let repairPromise!: Promise<void>;
+    await act(async () => {
+      repairPromise = getLibraryProbe().repairSelectedBook();
+      getLibraryProbe().setModeFilter("document_audio");
+      await Promise.resolve();
+    });
+    await act(async () => {
+      repairRequest.resolve({ job_id: "stale-repair" });
+      await repairPromise;
+    });
+
+    expect(getLibraryProbe().statusMessage).not.toBe("Repair started: stale-repair");
+  });
+
+  it("ignores an open-folder success from a previously selected book", async () => {
+    const secondBook = { ...book, id: 2, title: "Second book" };
+    const secondDetail = { ...detail, id: 2, title: "Second book" };
+    const openRequest = deferred<{ book_id: number; folder_path: string }>();
+    const getLibrary = vi.fn(async () => ({ items: [book, secondBook], count: 2 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => (bookId === book.id ? detail : secondDetail));
+    const openBookFolder = vi.fn(() => openRequest.promise);
+    const apiClient = { getLibrary, getLibraryBook, openBookFolder } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let openPromise!: Promise<void>;
+    await act(async () => {
+      openPromise = getLibraryProbe().openSelectedBookFolder();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await getLibraryProbe().selectBook(1);
+    });
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
+
+    await act(async () => {
+      openRequest.resolve({ book_id: book.id, folder_path: "/old-book" });
+      await openPromise;
+    });
+
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
+    expect(getLibraryProbe().errorMessage).toBe("");
+  });
+
+  it("ignores a repair failure from a previously selected book", async () => {
+    const secondBook = { ...book, id: 2, title: "Second book" };
+    const secondDetail = { ...detail, id: 2, title: "Second book" };
+    const repairRequest = deferred<{ job_id: string }>();
+    const getLibrary = vi.fn(async () => ({ items: [book, secondBook], count: 2 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => (bookId === book.id ? detail : secondDetail));
+    const repairConversion = vi.fn(() => repairRequest.promise);
+    const apiClient = { getLibrary, getLibraryBook, repairConversion } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let repairPromise!: Promise<void>;
+    await act(async () => {
+      repairPromise = getLibraryProbe().repairSelectedBook();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await getLibraryProbe().selectBook(1);
+    });
+
+    await act(async () => {
+      repairRequest.reject(new Error("old repair failed"));
+      await repairPromise;
+    });
+
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
+    expect(getLibraryProbe().errorMessage).toBe("");
+  });
+
+  it("keeps the newest open-folder result when an older request rejects later", async () => {
+    const firstOpen = deferred<{ book_id: number; folder_path: string }>();
+    const secondOpen = deferred<{ book_id: number; folder_path: string }>();
+    const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBook = vi.fn(async () => detail);
+    const openBookFolder = vi.fn()
+      .mockImplementationOnce(() => firstOpen.promise)
+      .mockImplementationOnce(() => secondOpen.promise);
+    const apiClient = { getLibrary, getLibraryBook, openBookFolder } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let firstPromise!: Promise<void>;
+    let secondPromise!: Promise<void>;
+    await act(async () => {
+      firstPromise = getLibraryProbe().openSelectedBookFolder();
+      secondPromise = getLibraryProbe().openSelectedBookFolder();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      secondOpen.resolve({ book_id: book.id, folder_path: "/new" });
+      await secondPromise;
+    });
+    expect(getLibraryProbe().statusMessage).toBe("opened folder: /new");
+
+    await act(async () => {
+      firstOpen.reject(new Error("old open failed"));
+      await firstPromise;
+    });
+    expect(getLibraryProbe().statusMessage).toBe("opened folder: /new");
+    expect(getLibraryProbe().errorMessage).toBe("");
+  });
+
+  it("rejects an old preview after disconnect and reconnect select the same book id", async () => {
+    const previewRequest = deferred<CleaningPreviewResponse>();
+    const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBook = vi.fn(async () => detail);
+    const getCleaningPreview = vi.fn(() => previewRequest.promise);
+    const apiClient = { getLibrary, getLibraryBook, getCleaningPreview } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let previewPromise!: Promise<CleaningPreviewResponse | null>;
+    await act(async () => {
+      previewPromise = getLibraryProbe().loadCleaningPreview(1);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={apiClient} backendDisconnected />);
+    });
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(getLibraryProbe().selectedBookId).toBe(book.id);
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Indexed book");
+
+    let previewResult: CleaningPreviewResponse | null = cleaningPreview;
+    await act(async () => {
+      previewRequest.resolve(cleaningPreview);
+      previewResult = await previewPromise;
+    });
+
+    expect(previewResult).toBeNull();
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Indexed book");
   });
 
   it("aborts and fences an in-flight detail request when a search returns no results", async () => {
@@ -450,6 +878,181 @@ describe("useLibrary indexed total", () => {
     expect(getLibraryProbe().indexedCount).toBe(1);
   });
 
+  it("reconciles a failed delete without clobbering a newer user selection", async () => {
+    const secondBook = { ...book, id: 2, title: "Second book" };
+    const secondDetail = { ...detail, id: 2, title: "Second book" };
+    const deleteRequest = deferred<{ book_id: number; deleted: boolean }>();
+    const getLibrary = vi.fn(async () => ({ items: [book, secondBook], count: 2 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => (bookId === secondBook.id ? secondDetail : detail));
+    const deleteBook = vi.fn(() => deleteRequest.promise);
+    const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let deletePromise!: Promise<boolean>;
+    await act(async () => {
+      deletePromise = getLibraryProbe().deleteSelectedBook();
+      await Promise.resolve();
+    });
+    expect(getLibraryProbe().items.map((item) => item.id)).toEqual([2]);
+
+    await act(async () => {
+      await getLibraryProbe().selectBook(0);
+    });
+    expect(getLibraryProbe().selectedBookId).toBe(secondBook.id);
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
+
+    let deleted = true;
+    await act(async () => {
+      deleteRequest.reject(new Error("delete failed"));
+      deleted = await deletePromise;
+    });
+
+    expect(deleted).toBe(false);
+    expect(getLibraryProbe().items.map((item) => item.id)).toEqual([1, 2]);
+    expect(getLibraryProbe().selectedBookId).toBe(secondBook.id);
+    expect(getLibraryProbe().selectedBookDetail).toEqual(secondDetail);
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
+    expect(getLibraryProbe().errorMessage).toBe("");
+  });
+
+  it("preserves a newer selected-book error while reconciling a failed delete", async () => {
+    const secondBook = { ...book, id: 2, title: "Second book" };
+    const thirdBook = { ...book, id: 3, title: "Third book" };
+    const secondDetail = { ...detail, id: 2, title: "Second book" };
+    const thirdDetail = { ...detail, id: 3, title: "Third book" };
+    const deleteRequest = deferred<{ book_id: number; deleted: boolean }>();
+    const getLibrary = vi.fn(async () => ({ items: [book, secondBook, thirdBook], count: 3 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => {
+      if (bookId === secondBook.id) {
+        return secondDetail;
+      }
+      if (bookId === thirdBook.id) {
+        return thirdDetail;
+      }
+      return detail;
+    });
+    const deleteBook = vi.fn(() => deleteRequest.promise);
+    const repairConversion = vi.fn().mockRejectedValue(new Error("newer repair failed"));
+    const apiClient = { getLibrary, getLibraryBook, deleteBook, repairConversion } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let deletePromise!: Promise<boolean>;
+    await act(async () => {
+      deletePromise = getLibraryProbe().deleteSelectedBook();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await getLibraryProbe().selectBook(1);
+    });
+    await act(async () => {
+      await getLibraryProbe().repairSelectedBook();
+    });
+    expect(getLibraryProbe().errorMessage).toBe("newer repair failed");
+
+    await act(async () => {
+      deleteRequest.reject(new Error("delete failed"));
+      await deletePromise;
+    });
+
+    expect(getLibraryProbe().items.map((item) => item.id)).toEqual([1, 2, 3]);
+    expect(getLibraryProbe().selectedBookId).toBe(thirdBook.id);
+    expect(getLibraryProbe().statusMessage).toBe("newer repair failed");
+    expect(getLibraryProbe().errorMessage).toBe("newer repair failed");
+  });
+
+  it("does not publish a deleted status over a newer selection after delete succeeds", async () => {
+    const secondBook = { ...book, id: 2, title: "Second book" };
+    const secondDetail = { ...detail, id: 2, title: "Second book" };
+    const deleteRequest = deferred<{ book_id: number; deleted: boolean }>();
+    const getLibrary = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [book, secondBook], count: 2 })
+      .mockResolvedValueOnce({ items: [secondBook], count: 1 });
+    const getLibraryBook = vi.fn(async (bookId: number) => (bookId === secondBook.id ? secondDetail : detail));
+    const deleteBook = vi.fn(() => deleteRequest.promise);
+    const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let deletePromise!: Promise<boolean>;
+    await act(async () => {
+      deletePromise = getLibraryProbe().deleteSelectedBook();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await getLibraryProbe().selectBook(0);
+    });
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
+
+    await act(async () => {
+      deleteRequest.resolve({ book_id: book.id, deleted: true });
+      await deletePromise;
+    });
+
+    expect(getLibraryProbe().items).toEqual([secondBook]);
+    expect(getLibraryProbe().selectedBookId).toBe(secondBook.id);
+    expect(getLibraryProbe().statusMessage).toBe("Selected: Second book");
+    expect(getLibraryProbe().errorMessage).toBe("");
+  });
+
+  it.each(queryModeChanges)(
+    "does not publish or reconcile a stale delete when the %s changes",
+    async (_label, changeContext) => {
+      const deleteRequest = deferred<{ book_id: number; deleted: boolean }>();
+      const getLibrary = vi
+        .fn()
+        .mockResolvedValueOnce({ items: [book], count: 1 })
+        .mockResolvedValueOnce({ items: [], count: 0 });
+      const getLibraryBook = vi.fn(async () => detail);
+      const deleteBook = vi.fn(() => deleteRequest.promise);
+      const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
+
+      await act(async () => {
+        root = createRoot(container);
+        root.render(<LibraryProbe apiClient={apiClient} />);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(220);
+      });
+
+      let deletePromise!: Promise<boolean>;
+      await act(async () => {
+        deletePromise = getLibraryProbe().deleteSelectedBook();
+        changeContext(getLibraryProbe());
+        await Promise.resolve();
+      });
+      await act(async () => {
+        deleteRequest.resolve({ book_id: book.id, deleted: true });
+        await deletePromise;
+      });
+
+      expect(getLibrary).toHaveBeenCalledTimes(2);
+      expect(getLibraryProbe().items).toEqual([]);
+      expect(getLibraryProbe().statusMessage).not.toBe("Deleted Indexed book");
+      expect(getLibraryProbe().statusMessage).not.toBe("Deleting Indexed book…");
+    },
+  );
+
   it("does not refresh or repopulate after delete succeeds following disconnect", async () => {
     const deleteRequest = deferred<{ book_id: number; deleted: boolean }>();
     const getLibrary = vi.fn().mockResolvedValue({ items: [book], count: 1 });
@@ -516,6 +1119,145 @@ describe("useLibrary indexed total", () => {
     expect(getLibrary).toHaveBeenCalledTimes(1);
     expect(getLibraryProbe().items).toEqual([]);
     expect(getLibraryProbe().indexedCount).toBe(0);
+  });
+
+  it("invalidates cleanup continuation when the backend disconnects", async () => {
+    const cleanupRequest = deferred<{ deleted_files: number; deleted_rows: number }>();
+    const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBook = vi.fn(async () => detail);
+    const getMaintenanceDiagnostics = vi.fn(async () => ({
+      database_path: "db",
+      output_path: "out",
+      temp_path: "tmp",
+      app_data_path: "app",
+      audit: {},
+    }));
+    const cleanupStorage = vi.fn(() => cleanupRequest.promise);
+    const apiClient = {
+      getLibrary,
+      getLibraryBook,
+      getMaintenanceDiagnostics,
+      cleanupStorage,
+    } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let cleanupPromise!: Promise<void>;
+    await act(async () => {
+      cleanupPromise = getLibraryProbe().cleanupStorage();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={apiClient} backendDisconnected />);
+    });
+    await act(async () => {
+      cleanupRequest.resolve({ deleted_files: 0, deleted_rows: 0 });
+      await cleanupPromise;
+    });
+
+    expect(getMaintenanceDiagnostics).not.toHaveBeenCalled();
+    expect(getLibrary).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates cleanup continuation when the current search changes", async () => {
+    const cleanupRequest = deferred<{ deleted_files: number; deleted_rows: number }>();
+    const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBook = vi.fn(async () => detail);
+    const getMaintenanceDiagnostics = vi.fn(async () => ({
+      database_path: "db",
+      output_path: "out",
+      temp_path: "tmp",
+      app_data_path: "app",
+      audit: {},
+    }));
+    const cleanupStorage = vi.fn(() => cleanupRequest.promise);
+    const apiClient = {
+      getLibrary,
+      getLibraryBook,
+      getMaintenanceDiagnostics,
+      cleanupStorage,
+    } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let cleanupPromise!: Promise<void>;
+    await act(async () => {
+      cleanupPromise = getLibraryProbe().cleanupStorage();
+      getLibraryProbe().setSearchQuery("new context");
+      await Promise.resolve();
+    });
+    await act(async () => {
+      cleanupRequest.resolve({ deleted_files: 0, deleted_rows: 0 });
+      await cleanupPromise;
+    });
+
+    expect(getMaintenanceDiagnostics).not.toHaveBeenCalled();
+    expect(getLibrary).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidates cleanup continuation when a newer list refresh starts", async () => {
+    const cleanupRequest = deferred<{ deleted_files: number; deleted_rows: number }>();
+    const refreshRequest = deferred<{ items: LibraryBookSummary[]; count: number }>();
+    const getLibrary = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [book], count: 1 })
+      .mockImplementationOnce(() => refreshRequest.promise)
+      .mockResolvedValue({ items: [book], count: 1 });
+    const getLibraryBook = vi.fn(async () => detail);
+    const getMaintenanceDiagnostics = vi.fn(async () => ({
+      database_path: "db",
+      output_path: "out",
+      temp_path: "tmp",
+      app_data_path: "app",
+      audit: {},
+    }));
+    const cleanupStorage = vi.fn(() => cleanupRequest.promise);
+    const apiClient = {
+      getLibrary,
+      getLibraryBook,
+      getMaintenanceDiagnostics,
+      cleanupStorage,
+    } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    let cleanupPromise!: Promise<void>;
+    let refreshPromise!: Promise<void>;
+    await act(async () => {
+      cleanupPromise = getLibraryProbe().cleanupStorage();
+      refreshPromise = getLibraryProbe().refreshLibrary();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      cleanupRequest.resolve({ deleted_files: 0, deleted_rows: 0 });
+      await cleanupPromise;
+    });
+
+    expect(getMaintenanceDiagnostics).not.toHaveBeenCalled();
+    expect(getLibrary).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      refreshRequest.resolve({ items: [book], count: 1 });
+      await refreshPromise;
+    });
   });
 
   it("revalidates the current query after a newer search starts during delete", async () => {

@@ -273,7 +273,7 @@ def test_validate_existing_sidecar_requires_executable_and_runtime_resources(
     sidecar_dir = tmp_path / "binaries" / "orpheus-desktop-backend"
     monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", sidecar_dir)
 
-    with pytest.raises(RuntimeError, match="Build it before running desktop:build"):
+    with pytest.raises(RuntimeError, match="Build it directly or run the Tauri release build"):
         build_desktop_backend.validate_existing_sidecar(
             target_triple="aarch64-apple-darwin",
             runtime_profile="mlx",
@@ -293,10 +293,21 @@ def test_validate_existing_sidecar_requires_executable_and_runtime_resources(
     )
 
 
-def test_desktop_build_script_validates_existing_sidecar_before_tauri() -> None:
+def test_desktop_build_script_delegates_fresh_sidecar_build_to_tauri() -> None:
     package_json = (PROJECT_ROOT / "desktop" / "package.json").read_text(encoding="utf-8")
 
-    assert '"desktop:build": "python ../scripts/build_desktop_backend.py --validate-existing && tauri build"' in package_json
+    assert '"desktop:build": "tauri build"' in package_json
+
+
+def test_tauri_build_freshens_sidecar_before_frontend() -> None:
+    tauri_config = (PROJECT_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        '"beforeBuildCommand": "python ../scripts/build_desktop_backend.py && npm run build"'
+        in tauri_config
+    )
 
 
 def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
@@ -330,6 +341,56 @@ def test_validate_runtime_dependencies_rejects_cross_os_target(monkeypatch) -> N
             "python",
             target_triple="aarch64-apple-darwin",
         )
+
+
+@pytest.mark.parametrize(
+    ("host_machine", "target_triple"),
+    [
+        ("x86_64", "aarch64-unknown-linux-gnu"),
+        ("amd64", "arm64-unknown-linux-gnu"),
+        ("arm64", "x86_64-unknown-linux-gnu"),
+        ("aarch64", "amd64-unknown-linux-gnu"),
+    ],
+)
+def test_validate_runtime_dependencies_rejects_host_target_architecture_mismatch_before_probes(
+    monkeypatch,
+    host_machine: str,
+    target_triple: str,
+) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_desktop_backend.platform, "machine", lambda: host_machine)
+
+    def fail_if_probed(*_args, **_kwargs):  # noqa: ANN001, ANN002
+        pytest.fail("dependency/PyInstaller probes must not run for an architecture mismatch")
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", fail_if_probed)
+
+    with pytest.raises(RuntimeError, match="architecture mismatch"):
+        build_desktop_backend._validate_runtime_dependencies(  # noqa: SLF001
+            "python",
+            target_triple=target_triple,
+            runtime_profile="base",
+        )
+
+
+@pytest.mark.parametrize(
+    ("host_machine", "target_triple"),
+    [
+        ("amd64", "x86_64-unknown-linux-gnu"),
+        ("x86_64", "amd64-unknown-linux-gnu"),
+        ("arm64", "aarch64-unknown-linux-gnu"),
+        ("aarch64", "arm64-unknown-linux-gnu"),
+    ],
+)
+def test_validate_pyinstaller_target_normalizes_architecture_aliases(
+    monkeypatch,
+    host_machine: str,
+    target_triple: str,
+) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_desktop_backend.platform, "machine", lambda: host_machine)
+
+    build_desktop_backend._validate_pyinstaller_target_matches_host(target_triple)  # noqa: SLF001
 
 
 def test_cuda_backend_build_prerequisites_include_bitsandbytes() -> None:

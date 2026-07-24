@@ -45,13 +45,49 @@ export function useConversionSourceQueue({
   const browserUploadBatchRef = useRef(0);
   const mountedRef = useRef(false);
   const pasteInFlightRef = useRef(false);
+  const pasteRequestRef = useRef(0);
+  const queueControllerRef = useRef(queueController);
+  const conversionJobRef = useRef(conversionJob);
+  const sourceContextRef = useRef({
+    apiClient,
+    conversionMode,
+    generation: 0,
+  });
+
+  queueControllerRef.current = queueController;
+  conversionJobRef.current = conversionJob;
+  if (
+    sourceContextRef.current.apiClient !== apiClient ||
+    sourceContextRef.current.conversionMode !== conversionMode
+  ) {
+    sourceContextRef.current = {
+      apiClient,
+      conversionMode,
+      generation: sourceContextRef.current.generation + 1,
+    };
+    pasteRequestRef.current += 1;
+    pasteInFlightRef.current = false;
+  }
+  const sourceContextGeneration = sourceContextRef.current.generation;
 
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      pasteRequestRef.current += 1;
+      pasteInFlightRef.current = false;
     };
   }, []);
+
+  useEffect(() => {
+    setPasteBusy(false);
+  }, [apiClient, conversionMode]);
+
+  const isCurrentSourceContext = useCallback(
+    (generation: number) =>
+      mountedRef.current && sourceContextRef.current.generation === generation,
+    [],
+  );
 
   useEffect(() => {
     hasSelectedSourceRef.current = Boolean(
@@ -65,19 +101,21 @@ export function useConversionSourceQueue({
         .map((path) => path.trim())
         .filter(Boolean)
         .map((path) => createQueueItem(path, conversionMode));
-      queueController.addQueueItems(items, {
-        selectFirst: !hasSelectedSourceRef.current,
+      const selectFirst = !hasSelectedSourceRef.current;
+      if (items.length > 0 && selectFirst) {
+        hasSelectedSourceRef.current = true;
+      }
+      queueControllerRef.current.addQueueItems(items, {
+        selectFirst,
       });
       if (items.length > 0) {
-        conversionJob.clearFormError();
+        conversionJobRef.current.clearFormError();
       }
     },
-    [conversionJob, conversionMode, queueController],
+    [conversionMode],
   );
 
-  useEffect(() => {
-    applySourcePathsRef.current = applySourcePaths;
-  }, [applySourcePaths]);
+  applySourcePathsRef.current = applySourcePaths;
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -137,21 +175,32 @@ export function useConversionSourceQueue({
   }, []);
 
   const onBrowse = useCallback(async () => {
+    if (!isCurrentSourceContext(sourceContextGeneration)) {
+      return;
+    }
+
     if (isTauriRuntime()) {
       try {
         const selectedPaths = await invoke<string[]>("choose_source_files");
-        if (Array.isArray(selectedPaths) && selectedPaths.length > 0) {
-          applySourcePaths(selectedPaths);
+        if (
+          isCurrentSourceContext(sourceContextGeneration) &&
+          Array.isArray(selectedPaths) &&
+          selectedPaths.length > 0
+        ) {
+          applySourcePathsRef.current(selectedPaths);
         }
       } catch (error: unknown) {
+        if (!isCurrentSourceContext(sourceContextGeneration)) {
+          return;
+        }
         const detail = error instanceof Error ? error.message : String(error || "unknown error");
-        queueController.setPreflightStatus(`Could not open file picker: ${detail}`);
+        queueControllerRef.current.setPreflightStatus(`Could not open file picker: ${detail}`);
       }
       return;
     }
 
     browserFileInputRef.current?.click();
-  }, [applySourcePaths, queueController]);
+  }, [isCurrentSourceContext, sourceContextGeneration]);
 
   const onBrowserFilesSelected = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
@@ -160,15 +209,18 @@ export function useConversionSourceQueue({
       if (files.length === 0) {
         return;
       }
+      if (!isCurrentSourceContext(sourceContextGeneration)) {
+        return;
+      }
       if (!apiClient) {
-        queueController.setPreflightStatus("Backend is not connected.");
+        queueControllerRef.current.setPreflightStatus("Backend is not connected.");
         return;
       }
 
       const batchId = ++browserUploadBatchRef.current;
-      queueController.setPreflightStatus(`Uploading ${files.length === 1 ? files[0].name : `${files.length} sources`}...`);
+      queueControllerRef.current.setPreflightStatus(`Uploading ${files.length === 1 ? files[0].name : `${files.length} sources`}...`);
       const results = await Promise.allSettled(files.map(async (file) => apiClient.uploadSourceFile(file)));
-      if (!mountedRef.current) {
+      if (!isCurrentSourceContext(sourceContextGeneration)) {
         return;
       }
 
@@ -183,19 +235,19 @@ export function useConversionSourceQueue({
         if (selectFirst) {
           hasSelectedSourceRef.current = true;
         }
-        queueController.addQueueItems(items, {
+        queueControllerRef.current.addQueueItems(items, {
           selectFirst,
         });
-        conversionJob.clearFormError();
+        conversionJobRef.current.clearFormError();
         if (batchId !== browserUploadBatchRef.current) {
           return;
         }
         if (failedCount === 0) {
-          queueController.setPreflightStatus(
+          queueControllerRef.current.setPreflightStatus(
             files.length === 1 ? "Source uploaded." : `${files.length} sources uploaded.`,
           );
         } else {
-          queueController.setPreflightStatus(
+          queueControllerRef.current.setPreflightStatus(
             `Added ${responses.length} ${responses.length === 1 ? "source" : "sources"}; ${failedCount} upload${failedCount === 1 ? "" : "s"} failed.`,
           );
         }
@@ -212,14 +264,22 @@ export function useConversionSourceQueue({
             ? firstFailure.reason.message
             : String(firstFailure.reason || "unknown error")
           : "unknown error";
-      queueController.setPreflightStatus(
+      queueControllerRef.current.setPreflightStatus(
         files.length === 1 ? `Source upload failed: ${detail}` : `All ${files.length} source uploads failed: ${detail}`,
       );
     },
-    [apiClient, conversionJob, conversionMode, queueController],
+    [
+      apiClient,
+      conversionMode,
+      isCurrentSourceContext,
+      sourceContextGeneration,
+    ],
   );
 
   const onAddPastedText = useCallback(async (): Promise<ConversionQueueItem | null> => {
+    if (!isCurrentSourceContext(sourceContextGeneration)) {
+      return null;
+    }
     // A ref guard (not the pasteBusy state) closes the same-frame double-click
     // gap: two clicks dispatched before React re-renders both see the stale
     // disabled state, but the ref flips synchronously so only the first runs.
@@ -240,6 +300,7 @@ export function useConversionSourceQueue({
     const pasteTitle = pastedTitle.trim();
     const pasteAuthor = pastedAuthor.trim();
 
+    const pasteRequest = ++pasteRequestRef.current;
     pasteInFlightRef.current = true;
     setPasteBusy(true);
     setPasteStatus("Creating markdown source…");
@@ -248,6 +309,12 @@ export function useConversionSourceQueue({
         text,
         title: pasteTitle || null,
       });
+      if (
+        !isCurrentSourceContext(sourceContextGeneration) ||
+        pasteRequestRef.current !== pasteRequest
+      ) {
+        return null;
+      }
       const item = createQueueItem(
         response.source_handle,
         conversionMode,
@@ -262,28 +329,38 @@ export function useConversionSourceQueue({
       }
       // A paste is always a new source; select it so the Title field and the
       // primary action target it rather than a stale earlier row.
-      queueController.addPastedSource(item, { selectItem: true });
+      queueControllerRef.current.addPastedSource(item, { selectItem: true });
       setPastedText("");
       setPastedTitle("");
       setPastedAuthor("");
       setPasteStatus("Pasted markdown source added.");
-      conversionJob.clearFormError();
+      conversionJobRef.current.clearFormError();
       return item;
     } catch (error: unknown) {
+      if (
+        !isCurrentSourceContext(sourceContextGeneration) ||
+        pasteRequestRef.current !== pasteRequest
+      ) {
+        return null;
+      }
       setPasteStatus(error instanceof Error ? error.message : "Paste upload failed");
       return null;
     } finally {
-      setPasteBusy(false);
-      pasteInFlightRef.current = false;
+      if (pasteRequestRef.current === pasteRequest) {
+        pasteInFlightRef.current = false;
+        if (isCurrentSourceContext(sourceContextGeneration)) {
+          setPasteBusy(false);
+        }
+      }
     }
   }, [
     apiClient,
-    conversionJob,
     conversionMode,
+    isCurrentSourceContext,
     pastedAuthor,
     pastedText,
     pastedTitle,
-    queueController,
+    sourceContextGeneration,
   ]);
 
   const onDropZoneDrop = useCallback(

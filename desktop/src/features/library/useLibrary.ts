@@ -65,6 +65,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
   const maintenance = useLibraryMaintenance({
     apiClient,
     onAfterCleanup: list.reloadCurrentQuery,
+    getReloadContextGeneration: list.getReloadContextGeneration,
   });
 
   return {

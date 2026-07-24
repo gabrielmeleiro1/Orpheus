@@ -140,10 +140,12 @@ cd desktop
 npm run desktop:build
 ```
 
-`desktop:build` validates that the required sidecar executable and common
-runtime resources already exist before invoking Tauri. It does not rebuild or
-change the selected runtime profile; run `build_desktop_backend.py` first as
-shown above.
+`desktop:build` is the Tauri release build command. Tauri's
+`beforeBuildCommand` first runs `python ../scripts/build_desktop_backend.py`
+to create a fresh architecture-matched sidecar, then runs `npm run build` for
+the frontend before packaging. The diagnostic `--validate-existing` mode is
+available when you need to inspect an already-produced sidecar, but it is not
+part of the release path.
 
 During `desktop:build`, Tauri embeds the `binaries/` resource declared in `tauri.conf.json`.
 The production app launches the executable inside that bundled onedir resource instead of
@@ -163,6 +165,9 @@ and remove the temporary build-output `.app` so Spotlight shows the installed ap
 cd desktop
 npm run desktop:release
 ```
+
+`desktop:release` delegates to the same Tauri build hook (fresh sidecar,
+frontend, then bundle) before installing the resulting app.
 
 The desktop bundle keeps the stable app name and bundle identifier:
 `Orpheus.app` / `com.orpheus.desktop`. The current release metadata is `1.0.0`,
@@ -196,7 +201,6 @@ cd src-tauri
 cargo test
 cargo check
 cd ../..
-python scripts/build_desktop_backend.py --runtime-profile mlx
 cd desktop
 npm run desktop:build
 npm run desktop:install
