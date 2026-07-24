@@ -24,6 +24,25 @@ function getAudioContextConstructor(): typeof AudioContext | null {
   return window.AudioContext ?? (window as WebKitAudioWindow).webkitAudioContext ?? null;
 }
 
+/**
+ * Whether routing a streaming `<audio>` element through Web Audio
+ * (`createMediaElementSource`) keeps producing sound.
+ *
+ * WebKit engines — macOS WKWebView and Linux WebKitGTK, i.e. the packaged Tauri
+ * webview on those platforms — silence the element once it is routed through a
+ * MediaElementAudioSourceNode, even though `currentTime` keeps advancing. Since
+ * routing is irreversible per element, the live analyser must never touch the
+ * playback element there. Blink engines (Chrome/Chromium/Edge, including Windows
+ * WebView2 and the dev preview) route reliably, so the visualizer is enabled
+ * only for them. Elsewhere the canvas falls back to its idle animation.
+ */
+export function mediaElementRoutingIsReliable(): boolean {
+  if (typeof navigator === "undefined") {
+    return false;
+  }
+  return /\bChrome\/\d/.test(navigator.userAgent);
+}
+
 function isClosed(context: AudioContext): boolean {
   return context.state === "closed";
 }
@@ -91,6 +110,15 @@ export function useAudioAnalyser(
 
     const AudioContextConstructor = getAudioContextConstructor();
     if (!AudioContextConstructor) {
+      analyserRef.current = null;
+      setStatus("unsupported");
+      return;
+    }
+
+    // Never route the playback element through Web Audio on engines where that
+    // silences output (WebKit / the packaged macOS + Linux Tauri webview).
+    // Playing audio must always be heard; the visualizer is optional.
+    if (!mediaElementRoutingIsReliable()) {
       analyserRef.current = null;
       setStatus("unsupported");
       return;

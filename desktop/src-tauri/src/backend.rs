@@ -601,6 +601,8 @@ pub(crate) fn build_dev_launch_config_for_root(
 /// (`tauri build`) compile with `debug_assertions` off and never set this flag,
 /// so packaged backends only accept the `tauri.localhost` origin.
 fn backend_launch_env(runtime_paths: &DesktopRuntimePaths) -> Vec<(String, String)> {
+    // `mut` is only used under debug_assertions; release builds never push.
+    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut env: Vec<(String, String)> = runtime_paths.as_env().into_iter().collect();
     #[cfg(debug_assertions)]
     env.push(("ORPHEUS_DESKTOP_DEV".to_string(), "1".to_string()));
