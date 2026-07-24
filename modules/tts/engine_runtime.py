@@ -139,16 +139,32 @@ def warmup_model(
 def unload_model(engine, keep_in_cache: bool = True) -> None:  # noqa: ANN001
     """Unload the current model and reset runtime state."""
     if not keep_in_cache:
-        model_cache_backend.clear_model_cache(
-            mx_module=mlx_compat_backend.mx,
-            mlx_available=mlx_compat_backend.MLX_AVAILABLE,
-        )
+        cache_key = getattr(engine, "_model_cache_key", None)
+        owned_model = getattr(engine, "_model", None)
+        if owned_model is None:
+            owned_model = getattr(engine, "_last_cached_model", None)
+        if cache_key is not None and owned_model is not None:
+            model_cache_backend.discard_cached_model_if_same(
+                cache_key,
+                owned_model,
+                mx_module=mlx_compat_backend.mx,
+                mlx_available=mlx_compat_backend.MLX_AVAILABLE,
+            )
+        else:
+            # Legacy/detached engines without ownership metadata still need a
+            # fail-safe hard clear.
+            model_cache_backend.clear_model_cache(
+                mx_module=mlx_compat_backend.mx,
+                mlx_available=mlx_compat_backend.MLX_AVAILABLE,
+            )
+        engine._last_cached_model = None  # noqa: SLF001
 
     if not engine._model_loaded:  # noqa: SLF001
         return
 
     if keep_in_cache and engine._model is not None:  # noqa: SLF001
         _set_cached_model(engine._model_cache_key, engine._model)  # noqa: SLF001
+        engine._last_cached_model = engine._model  # noqa: SLF001
 
     engine._model = None  # noqa: SLF001
     engine._model_loaded = False  # noqa: SLF001

@@ -43,6 +43,7 @@ class PackageKokoroRuntime:
         self.provider = config.runtime_spec.provider
         self.sample_rate = config.sample_rate
         self._pipeline = None
+        self._last_cached_pipeline = None
         self._chunks_processed = 0
         self._total_chunk_time_ms = 0.0
 
@@ -74,6 +75,7 @@ class PackageKokoroRuntime:
         cached_pipeline = model_cache.get_cached_model(self._cache_key())
         if cached_pipeline is not None:
             self._pipeline = cached_pipeline
+            self._last_cached_pipeline = cached_pipeline
             logger.info("Package Kokoro runtime loaded from cache")
             return
 
@@ -117,6 +119,7 @@ class PackageKokoroRuntime:
 
         self._maybe_compile_pipeline_model()
         model_cache.set_cached_model(self._cache_key(), self._pipeline)
+        self._last_cached_pipeline = self._pipeline
 
     def _maybe_compile_pipeline_model(self) -> None:
         """Optionally torch.compile the vocoder decoder (opt-in, CUDA-oriented).
@@ -197,8 +200,17 @@ class PackageKokoroRuntime:
         sf.write(str(output_path), audio, self.sample_rate)
 
     def unload(self, *, keep_in_cache: bool = True) -> None:
-        if not keep_in_cache:
-            model_cache.pop_cached_model(self._cache_key())
+        pipeline = self._pipeline
+        if pipeline is None:
+            pipeline = self._last_cached_pipeline
+        if not keep_in_cache and pipeline is not None:
+            model_cache.discard_cached_model_if_same(
+                self._cache_key(),
+                pipeline,
+            )
+            self._last_cached_pipeline = None
+        elif keep_in_cache and pipeline is not None:
+            self._last_cached_pipeline = pipeline
         self._pipeline = None
 
     def warmup(

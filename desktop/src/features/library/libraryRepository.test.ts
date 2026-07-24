@@ -78,6 +78,24 @@ describe("libraryRepository listBooks pagination", () => {
     expect(getLibrary).toHaveBeenCalledTimes(1);
     expect(getLibraryCount).toHaveBeenCalledWith(undefined);
   });
+
+  it("surfaces an explicit error when every safety page is full", async () => {
+    const fullPage = Array.from({ length: LIBRARY_PAGE_SIZE }, (_, index) =>
+      makeBookSummary(index),
+    );
+    const getLibrary = vi.fn().mockResolvedValue({
+      items: fullPage,
+      count: fullPage.length,
+    });
+    const apiClient = { getLibrary } as unknown as ApiClient;
+
+    const repository = createLibraryRepository(apiClient);
+
+    await expect(repository.listBooks("", "all")).rejects.toThrow(
+      "Library result reached the 25000-book safety limit; narrow your search or filter",
+    );
+    expect(getLibrary).toHaveBeenCalledTimes(50);
+  });
 });
 
 describe("libraryRepository repair payloads", () => {

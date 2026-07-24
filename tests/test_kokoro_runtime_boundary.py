@@ -606,6 +606,43 @@ def _package_runtime() -> PackageKokoroRuntime:
     )
 
 
+def test_package_runtime_hard_unload_preserves_newer_same_key_cache_entry() -> None:
+    from modules.tts import model_cache
+
+    model_cache.clear_model_cache()
+    runtime = _package_runtime()
+    retired_pipeline = object()
+    replacement_pipeline = object()
+    runtime._pipeline = retired_pipeline  # noqa: SLF001
+    model_cache.set_cached_model(runtime._cache_key(), replacement_pipeline)  # noqa: SLF001
+
+    try:
+        runtime.unload(keep_in_cache=False)
+        assert model_cache.get_cached_model(runtime._cache_key()) is replacement_pipeline  # noqa: SLF001
+    finally:
+        model_cache.clear_model_cache()
+
+
+def test_package_runtime_detached_hard_unload_releases_owned_cache_reference() -> None:
+    from modules.tts import model_cache
+
+    model_cache.clear_model_cache()
+    runtime = _package_runtime()
+    retired_pipeline = object()
+    replacement_pipeline = object()
+    runtime._pipeline = retired_pipeline  # noqa: SLF001
+    model_cache.set_cached_model(runtime._cache_key(), retired_pipeline)  # noqa: SLF001
+    runtime.unload(keep_in_cache=True)
+    model_cache.set_cached_model(runtime._cache_key(), replacement_pipeline)  # noqa: SLF001
+
+    try:
+        runtime.unload(keep_in_cache=False)
+        assert runtime._last_cached_pipeline is None  # noqa: SLF001
+        assert model_cache.get_cached_model(runtime._cache_key()) is replacement_pipeline  # noqa: SLF001
+    finally:
+        model_cache.clear_model_cache()
+
+
 def test_package_kokoro_serializes_calls_into_a_shared_pipeline() -> None:
     """Two runtimes sharing one cached KPipeline must not call it concurrently.
 

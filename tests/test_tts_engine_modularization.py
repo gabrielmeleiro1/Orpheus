@@ -156,6 +156,48 @@ def test_runtime_hard_unload_clears_stale_cache_when_engine_already_detached() -
     mock_clear.assert_called_once_with(mx_module=sentinel_mx, mlx_available=True)
 
 
+def test_runtime_hard_unload_preserves_newer_cache_entry_for_same_key() -> None:
+    model_cache.clear_model_cache()
+    retired_model = object()
+    replacement_model = object()
+    tts = SimpleNamespace(
+        _model_loaded=True,
+        _model=retired_model,
+        _model_cache_key="shared-key",
+        _warmup_complete=True,
+        _last_warmup_ms=1.0,
+    )
+    model_cache.set_cached_model("shared-key", replacement_model)
+
+    try:
+        engine_runtime.unload_model(tts, keep_in_cache=False)
+        assert model_cache.get_cached_model("shared-key") is replacement_model
+    finally:
+        model_cache.clear_model_cache()
+
+
+def test_runtime_hard_unload_releases_detached_cached_model_reference() -> None:
+    model_cache.clear_model_cache()
+    retired_model = object()
+    replacement_model = object()
+    tts = SimpleNamespace(
+        _model_loaded=True,
+        _model=retired_model,
+        _model_cache_key="shared-key",
+        _warmup_complete=True,
+        _last_warmup_ms=1.0,
+    )
+    engine_runtime.unload_model(tts, keep_in_cache=True)
+    model_cache.set_cached_model("shared-key", replacement_model)
+
+    try:
+        engine_runtime.unload_model(tts, keep_in_cache=False)
+        assert tts._last_cached_model is None
+        assert model_cache.get_cached_model("shared-key") is replacement_model
+    finally:
+        model_cache.clear_model_cache()
+
+
 def test_tts_engine_has_no_threaded_batch_executor_scaffolding() -> None:
     assert not hasattr(engine.TTSEngine, "_ensure_batch_executor")
 

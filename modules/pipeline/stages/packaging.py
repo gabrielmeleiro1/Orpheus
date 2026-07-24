@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from modules.pipeline.book_workspace import sanitize_book_title
 from modules.pipeline.result_validation import (
     format_failure_notes,
     select_packaging_audio_inputs,
@@ -118,9 +119,11 @@ def package_chapters(
     # Output path: cap the sanitized title so the filename (plus the atomic
     # temp-name suffix) stays under filesystem limits, and never emit a bare
     # ".m4b"/".m4a" hidden file when the title sanitizes to nothing.
-    safe_title = "".join(c if c.isalnum() or c in " -_" else "_" for c in title)[:50]
-    if not safe_title:
+    safe_title = sanitize_book_title(title)
+    if not str(title or "").strip():
         safe_title = "audiobook"
+    else:
+        safe_title = safe_title[:50]
     conversion_mode = getattr(runtime.config, "conversion_mode", "audiobook")
     cancel_requested = getattr(runtime, "check_cancelled", None)
 

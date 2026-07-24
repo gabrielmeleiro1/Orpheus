@@ -65,3 +65,24 @@ def test_sanitize_book_title_strips_separators_and_falls_back(tmp_path):
     assert ".." not in sanitize_book_title("..")
     assert sanitize_book_title("") == UNTITLED_BOOK_DIR
     assert sanitize_book_title("   ") == UNTITLED_BOOK_DIR
+
+
+def test_sanitize_book_title_rejects_windows_reserved_and_trimmed_names():
+    for title in ("CON", "nul", "COM1", "LPT9", "CON.txt"):
+        sanitized = sanitize_book_title(title)
+        assert sanitized.casefold() not in {"con", "nul", "com1", "lpt9"}
+        assert sanitized.rstrip(" .") == sanitized
+
+    assert sanitize_book_title("Book title... ") == "Book title"
+    assert sanitize_book_title("...") == UNTITLED_BOOK_DIR
+
+
+def test_prepare_book_workspace_keeps_reserved_title_artifacts_isolated(tmp_path):
+    output_root = tmp_path / "output"
+
+    reserved = prepare_book_workspace(output_root, "CON")
+    normal = prepare_book_workspace(output_root, "CON_")
+
+    assert reserved.output_dir != normal.output_dir
+    assert reserved.output_dir.parent == output_root
+    assert normal.output_dir.parent == output_root

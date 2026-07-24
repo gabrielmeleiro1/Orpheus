@@ -20,6 +20,7 @@ class TtsEngineSession:
         self._engine: Any = None
         self._key: tuple[Any, ...] | None = None
         self._idle_timer: threading.Timer | None = None
+        self._generation = 0
 
     @staticmethod
     def cache_key(config: PipelineConfig) -> tuple[Any, ...] | None:
@@ -54,9 +55,13 @@ class TtsEngineSession:
             if self._key != key or self._engine is None:
                 return
             engine = self._engine
+            timer = self._idle_timer
             self._engine = None
             self._key = None
-        self._cancel_idle_unload()
+            self._idle_timer = None
+            self._generation += 1
+        if timer is not None:
+            timer.cancel()
         pipeline._tts_engine = engine  # noqa: SLF001
 
     def adopt(self, pipeline: Any) -> None:
@@ -82,8 +87,14 @@ class TtsEngineSession:
 
         with self._lock:
             previous_engine = self._engine
+            previous_timer = self._idle_timer
+            self._generation += 1
+            generation = self._generation
             self._engine = engine
             self._key = key
+            self._idle_timer = None
+        if previous_timer is not None:
+            previous_timer.cancel()
         if previous_engine is not None and previous_engine is not engine:
             try:
                 previous_engine.unload(keep_in_cache=False)
@@ -91,7 +102,9 @@ class TtsEngineSession:
                 logger.debug("Failed to replace hot TTS engine", exc_info=True)
 
         self._schedule_idle_unload(
-            float(getattr(config, "tts_idle_timeout_seconds", 300.0) or 0.0)
+            float(getattr(config, "tts_idle_timeout_seconds", 300.0) or 0.0),
+            expected_engine=engine,
+            expected_generation=generation,
         )
 
     def release(self, pipeline: Any, *, cleanup_first: bool) -> None:
@@ -110,29 +123,69 @@ class TtsEngineSession:
         with self._lock:
             timer = self._idle_timer
             self._idle_timer = None
+            self._generation += 1
         if timer is not None:
             timer.cancel()
 
-    def _schedule_idle_unload(self, timeout_seconds: float) -> None:
-        self._cancel_idle_unload()
+    def _schedule_idle_unload(
+        self,
+        timeout_seconds: float,
+        *,
+        expected_engine: Any,
+        expected_generation: int,
+    ) -> None:
         if timeout_seconds <= 0:
-            self._unload_idle_engine()
+            self._unload_idle_engine(
+                expected_engine=expected_engine,
+                expected_generation=expected_generation,
+            )
             return
-        timer = threading.Timer(timeout_seconds, self._unload_idle_engine)
+        timer = threading.Timer(
+            timeout_seconds,
+            lambda: self._unload_idle_engine(
+                expected_engine=expected_engine,
+                expected_generation=expected_generation,
+            ),
+        )
         timer.daemon = True
         with self._lock:
+            if (
+                self._engine is not expected_engine
+                or self._generation != expected_generation
+            ):
+                return
+            previous_timer = self._idle_timer
             self._idle_timer = timer
+        if previous_timer is not None:
+            previous_timer.cancel()
         timer.start()
 
-    def _unload_idle_engine(self) -> None:
+    def _unload_idle_engine(
+        self,
+        *,
+        expected_engine: Any = None,
+        expected_generation: int | None = None,
+    ) -> None:
         with self._lock:
+            if expected_engine is not None and (
+                self._engine is not expected_engine
+                or self._generation != expected_generation
+            ):
+                return
             engine = self._engine
+            timer = self._idle_timer
             self._engine = None
             self._key = None
             self._idle_timer = None
-        if engine is None:
-            return
-        try:
-            engine.unload(keep_in_cache=False)
-        except Exception:
-            logger.debug("Failed to unload idle service TTS engine", exc_info=True)
+            self._generation += 1
+            if timer is not None:
+                timer.cancel()
+            if engine is None:
+                return
+            try:
+                # Keep session ownership fenced until the hard unload is
+                # complete. A successor must not load/adopt the same runtime
+                # while the retired engine can still evict shared cache state.
+                engine.unload(keep_in_cache=False)
+            except Exception:
+                logger.debug("Failed to unload idle service TTS engine", exc_info=True)

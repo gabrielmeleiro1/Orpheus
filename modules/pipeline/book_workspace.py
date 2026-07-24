@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 
 MAX_BOOK_TITLE_PATH_BYTES = 120
 UNTITLED_BOOK_DIR = "Untitled"
+_WINDOWS_RESERVED_BASENAME_RE = re.compile(
+    r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -39,11 +44,19 @@ def _truncate_utf8_segment(value: str, max_bytes: int) -> str:
 
 def sanitize_book_title(book_title: str) -> str:
     """Normalize a title into the current output-directory naming scheme."""
+    normalized_title = str(book_title or "").strip().rstrip(" .")
+    if not normalized_title:
+        return UNTITLED_BOOK_DIR
+
     safe_title = "".join(
         char if char.isalnum() or char in " -_" else "_"
-        for char in str(book_title or "")
-    ).strip()
-    return _truncate_utf8_segment(safe_title or UNTITLED_BOOK_DIR, MAX_BOOK_TITLE_PATH_BYTES)
+        for char in normalized_title
+    ).strip(" .")
+    if not safe_title:
+        return UNTITLED_BOOK_DIR
+    if _WINDOWS_RESERVED_BASENAME_RE.match(normalized_title):
+        safe_title = f"_{safe_title}"
+    return _truncate_utf8_segment(safe_title, MAX_BOOK_TITLE_PATH_BYTES)
 
 
 def _candidate_title_with_suffix(safe_title: str, suffix: str) -> str:

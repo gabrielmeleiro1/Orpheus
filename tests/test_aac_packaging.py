@@ -550,6 +550,24 @@ class TestPackagingSafeTitle:
 
         assert m4b_path.name == "audiobook.m4b"
 
+    def test_package_chapters_sanitizes_windows_reserved_title_basename(self, tmp_path):
+        from modules.pipeline.stages.packaging import package_chapters
+
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        with patch("modules.audio.packager.M4BPackager"):
+            m4b_path = package_chapters(
+                self._runtime(tmp_path),
+                [self._chapter_result(tmp_path)],
+                "CON",
+                "Author",
+                output_dir,
+            )
+
+        assert m4b_path.name.casefold() != "con.m4b"
+        assert m4b_path.stem.casefold() != "con"
+
 
 class TestDocumentAudioPackagerReencode:
     @patch("subprocess.run")

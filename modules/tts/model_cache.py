@@ -52,6 +52,28 @@ def pop_cached_model(model_path: str) -> Optional[Any]:
         return _model_cache.pop(model_path, None)
 
 
+def discard_cached_model_if_same(
+    model_path: str,
+    expected_model: Any,
+    *,
+    mx_module: Any = None,
+    mlx_available: bool = False,
+) -> bool:
+    """Discard only the cache entry still owned by a retiring engine."""
+    with _model_cache_lock:
+        if _model_cache.get(model_path) is not expected_model:
+            return False
+        _model_cache.pop(model_path, None)
+        gc.collect()
+        if mlx_available and mx_module is not None:
+            try:
+                mx_module.clear_cache()
+            except Exception:
+                pass
+        gc.collect()
+        return True
+
+
 def clear_model_cache(mx_module: Any = None, mlx_available: bool = False) -> None:
     """Clear cache and optionally clear MLX cache."""
     with _model_cache_lock:

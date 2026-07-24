@@ -64,10 +64,13 @@ export function createLibraryRepository(apiClient: ApiClient): LibraryRepository
       }, options);
       items.push(...response.items);
       if (response.items.length < LIBRARY_PAGE_SIZE) {
-        break;
+        return items;
       }
     }
-    return items;
+    throw new Error(
+      `Library result reached the ${LIBRARY_PAGE_SIZE * LIBRARY_MAX_PAGES}-book safety limit; `
+      + "narrow your search or filter and try again",
+    );
   }
 
   return {
