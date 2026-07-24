@@ -1,13 +1,14 @@
+#[cfg(unix)]
+use super::setup::resolve_setup_python;
 #[cfg(windows)]
 use super::setup::windows_taskkill_path;
 use super::setup::{
     build_setup_launch_config_for_platform,
     build_setup_launch_config_for_platform_with_runtime_paths, cancel_with_sink_for_test,
-    read_progress_events, resolve_setup_python, runtime_setup_environment_for_test,
-    sanitize_progress_line, setup_command_env_for_test, start_supervised_for_test,
-    start_supervised_with_hook_for_test, windows_setup_creation_flags, EventSink,
-    SetupLaunchConfig, SetupLifecycle, SetupProgressEvent, SetupRequest, SetupRunnerState,
-    WindowsLaunchPhase, SETUP_PROGRESS_EVENT,
+    read_progress_events, runtime_setup_environment_for_test, sanitize_progress_line,
+    setup_command_env_for_test, start_supervised_for_test, start_supervised_with_hook_for_test,
+    windows_setup_creation_flags, EventSink, SetupLaunchConfig, SetupLifecycle, SetupProgressEvent,
+    SetupRequest, SetupRunnerState, WindowsLaunchPhase, SETUP_PROGRESS_EVENT,
 };
 use super::{
     restart_after_setup_transaction, restart_after_setup_with_readiness, wait_for_backend_ready,
@@ -73,7 +74,9 @@ fn setup_launch_is_a_fixed_shell_free_command() {
     assert_eq!(
         launch.args,
         vec![
-            repo.join("scripts").join("setup_runtime.py").to_string_lossy(),
+            repo.join("scripts")
+                .join("setup_runtime.py")
+                .to_string_lossy(),
             "--profile".into(),
             "mlx".into(),
             "--models".into(),
@@ -517,8 +520,7 @@ fn setup_restart_releases_lock_before_readiness_wait() {
             move || {
                 // The lock must be released before the readiness wait so a
                 // concurrent shutdown/restart can acquire it.
-                *lock_free_during_wait.lock().expect("wait flag") =
-                    restart_lock.try_lock().is_ok();
+                *lock_free_during_wait.lock().expect("wait flag") = restart_lock.try_lock().is_ok();
                 Ok(())
             }
         },

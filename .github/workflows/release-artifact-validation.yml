@@ -1,0 +1,141 @@
+name: Release artifact validation
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+    branches:
+      - "release/**"
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-smoke:
+    name: Package and smoke (macOS)
+    runs-on: macos-14
+    env:
+      ORPHEUS_RUNTIME_PROFILE: base
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements/base.txt
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          rustup default 1.88.0
+
+      - name: Install FFmpeg
+        run: brew install ffmpeg
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Check Python sources
+        run: python -m ruff check .
+
+      - name: Test Python contract
+        run: python run_tests.py --contract
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Check desktop types
+        working-directory: desktop
+        run: npm run typecheck
+
+      - name: Test desktop frontend
+        working-directory: desktop
+        run: npm test -- --run
+
+      - name: Test Tauri shell
+        working-directory: desktop/src-tauri
+        run: cargo test --locked -- --test-threads=1
+
+      - name: Check Tauri shell
+        working-directory: desktop/src-tauri
+        run: cargo check --locked
+
+      - name: Build release artifact
+        working-directory: desktop
+        run: npm run desktop:build
+
+      - name: Verify packaged app, sidecar, resources, and architectures
+        env:
+          APP_BUNDLE: desktop/src-tauri/target/release/bundle/macos/Orpheus.app
+          BUNDLE_DIR: desktop/src-tauri/target/release/bundle
+        run: |
+          set -euo pipefail
+          test -d "$APP_BUNDLE"
+          DMG_PATH="$(find "$BUNDLE_DIR" -maxdepth 2 -type f -name '*.dmg' -print -quit)"
+          test -n "$DMG_PATH"
+          test -f "$DMG_PATH"
+
+          SIDECAR="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
+          FFMPEG="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/bin/ffmpeg"
+          FFPROBE="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/bin/ffprobe"
+          for resource in "$SIDECAR" "$FFMPEG" "$FFPROBE"; do
+            test -f "$resource"
+            test -x "$resource"
+          done
+
+          case "$(rustc -vV | awk '/^host:/ {print $2}')" in
+            aarch64-apple-darwin) EXPECTED_ARCH="arm64" ;;
+            x86_64-apple-darwin) EXPECTED_ARCH="x86_64" ;;
+            *) echo "unsupported macOS Rust host" >&2; exit 1 ;;
+          esac
+          for executable in "$APP_BUNDLE/Contents/MacOS/Orpheus" "$SIDECAR" "$FFMPEG" "$FFPROBE"; do
+            file "$executable" | grep -E "$EXPECTED_ARCH"
+          done
+          {
+            echo "APP_BUNDLE=$APP_BUNDLE"
+            echo "DMG_PATH=$DMG_PATH"
+            echo "EXPECTED_ARCH=$EXPECTED_ARCH"
+            file "$APP_BUNDLE/Contents/MacOS/Orpheus" "$SIDECAR" "$FFMPEG" "$FFPROBE"
+          } | tee release-artifact-verification.log
+
+      - name: Smoke packaged app sidecar and embedded FFmpeg
+        env:
+          APP_BUNDLE: desktop/src-tauri/target/release/bundle/macos/Orpheus.app
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="$(command -v python)"
+          PATH=/usr/bin:/bin:/usr/sbin:/sbin "$PYTHON_BIN" scripts/desktop_runtime_smoke.py \
+            --backend sidecar \
+            --app-bundle "$APP_BUNDLE" \
+            --reduced-path \
+            --check-ffmpeg-runtime 2>&1 | tee release-artifact-smoke.log
+
+      - name: Upload release artifacts and smoke logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orpheus-macos-release-artifacts
+          if-no-files-found: warn
+          path: |
+            desktop/src-tauri/target/release/bundle/macos/Orpheus.app
+            desktop/src-tauri/target/release/bundle/**/*.dmg
+            release-artifact-verification.log
+            release-artifact-smoke.log

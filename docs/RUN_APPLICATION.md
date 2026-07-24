@@ -109,21 +109,36 @@ python -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0
 
 ### Build desktop sidecar for production packaging
 
-Build the backend sidecar into Tauri's bundled resource directory using the
-profile already installed in the active environment:
+The release path is `npm run desktop:build`; do not prebuild a sidecar first.
+Select the installed runtime profile through the environment so Tauri's fresh
+sidecar hook inherits it:
 
 ```bash
-# Base: no local ML runtime
-python scripts/build_desktop_backend.py --runtime-profile base
-
-# Apple Silicon local runtime
-python scripts/build_desktop_backend.py --runtime-profile mlx
-
-# NVIDIA runtime (after the CUDA setup above)
-python scripts/build_desktop_backend.py --runtime-profile cuda
+# POSIX shell
+cd desktop
+ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build
+ORPHEUS_RUNTIME_PROFILE=mlx npm run desktop:build
+ORPHEUS_RUNTIME_PROFILE=cuda npm run desktop:build
 ```
 
-This command:
+```powershell
+# PowerShell
+Set-Location desktop
+$env:ORPHEUS_RUNTIME_PROFILE = "base" # or "mlx" / "cuda"
+npm run desktop:build
+Remove-Item Env:ORPHEUS_RUNTIME_PROFILE
+```
+
+When `ORPHEUS_RUNTIME_PROFILE` is unset, the builder defaults to `mlx` for an
+Apple Silicon target and `base` elsewhere. Only `base`, `mlx`, and `cuda` are
+accepted. An explicit standalone `--runtime-profile` takes precedence over the
+environment and is useful for diagnosing the sidecar builder directly:
+
+```bash
+python scripts/build_desktop_backend.py --runtime-profile base
+```
+
+The sidecar build:
 - validates only the selected profile's runtime dependencies, plus PyInstaller
   and system binaries needed by the sidecar build
 - builds `apps.launchers.desktop_backend` via `desktop/backend-sidecar.spec`
@@ -131,14 +146,8 @@ This command:
   `desktop/src-tauri/binaries/orpheus-desktop-backend/`
 - copies the exact resolved `ffmpeg` and `ffprobe` executables into the sidecar
   `bin/` directory and fails if those packaged runtime resources are missing
-- removes stale one-file target-triple sidecars from `desktop/src-tauri/binaries/`
-
-Then build the desktop app bundle:
-
-```bash
-cd desktop
-npm run desktop:build
-```
+- removes stale target-triple sidecar files and directories from
+  `desktop/src-tauri/binaries/`
 
 `desktop:build` is the Tauri release build command. Tauri's
 `beforeBuildCommand` first runs `python ../scripts/build_desktop_backend.py`
@@ -146,6 +155,12 @@ to create a fresh architecture-matched sidecar, then runs `npm run build` for
 the frontend before packaging. The diagnostic `--validate-existing` mode is
 available when you need to inspect an already-produced sidecar, but it is not
 part of the release path.
+
+Tauri exports the selected Rust target as `TAURI_ENV_TARGET_TRIPLE`; the
+sidecar builder uses it before `CARGO_BUILD_TARGET` or `TARGET`, and rejects a
+host/target OS or architecture mismatch before dependency or PyInstaller
+probes. This prevents a native PyInstaller executable for the wrong
+architecture from entering the bundle.
 
 During `desktop:build`, Tauri embeds the `binaries/` resource declared in `tauri.conf.json`.
 The production app launches the executable inside that bundled onedir resource instead of
@@ -167,7 +182,9 @@ npm run desktop:release
 ```
 
 `desktop:release` delegates to the same Tauri build hook (fresh sidecar,
-frontend, then bundle) before installing the resulting app.
+frontend, then bundle) before installing the resulting app. Prefix it with
+`ORPHEUS_RUNTIME_PROFILE=base|mlx|cuda` in a POSIX shell, or set the equivalent
+`$env:ORPHEUS_RUNTIME_PROFILE` in PowerShell, to select a non-default profile.
 
 The desktop bundle keeps the stable app name and bundle identifier:
 `Orpheus.app` / `com.orpheus.desktop`. The current release metadata is `1.0.0`,

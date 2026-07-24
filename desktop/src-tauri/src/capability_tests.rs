@@ -44,7 +44,10 @@ fn permissions(capability: &Value) -> Vec<String> {
         .iter()
         .filter_map(|entry| match entry {
             Value::String(identifier) => Some(identifier.clone()),
-            Value::Object(map) => map.get("identifier").and_then(Value::as_str).map(str::to_string),
+            Value::Object(map) => map
+                .get("identifier")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             _ => None,
         })
         .collect()

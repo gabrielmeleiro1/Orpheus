@@ -1,5 +1,7 @@
 use crate::paths::DesktopRuntimePaths;
 use crate::setup::resolve_setup_python;
+#[cfg(windows)]
+use crate::setup::{resume_suspended_child_threads, WindowsJob};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -196,6 +198,16 @@ pub struct RunningBackend {
     generation: u64,
     #[cfg(unix)]
     process_group_id: Option<i32>,
+    #[cfg(windows)]
+    job: Arc<WindowsJob>,
+}
+
+#[cfg(any(test, windows))]
+pub(crate) type BackendLaunchPhase = crate::setup::WindowsLaunchPhase;
+
+#[cfg(any(test, windows))]
+pub(crate) fn backend_windows_creation_flags() -> u32 {
+    crate::setup::windows_setup_creation_flags()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -231,6 +243,7 @@ fn terminate_backend_process(
     timeout: Duration,
     shutdown_ack: Option<&AtomicBool>,
     #[cfg(unix)] process_group_id: Option<i32>,
+    #[cfg(windows)] job: Option<&WindowsJob>,
 ) -> ShutdownOutcome {
     if let Ok(Some(_)) = child.try_wait() {
         return ShutdownOutcome::AlreadyExited;
@@ -276,6 +289,11 @@ fn terminate_backend_process(
     #[cfg(unix)]
     if let Some(process_group_id) = process_group_id {
         let _ = send_signal_to_process_group(process_group_id, libc::SIGKILL);
+    }
+
+    #[cfg(windows)]
+    if let Some(job) = job {
+        job.terminate();
     }
 
     let _ = child.kill();
@@ -423,14 +441,16 @@ impl RunningBackend {
             Some(self.shutdown_ack.as_ref()),
             #[cfg(unix)]
             self.process_group_id,
+            #[cfg(windows)]
+            Some(self.job.as_ref()),
         );
 
         let _ = self.child.wait();
-        let stdout_joined = join_reader_thread(self.stdout_thread, BACKEND_READER_JOIN_TIMEOUT);
-        let stderr_joined = join_reader_thread(self.stderr_thread, BACKEND_READER_JOIN_TIMEOUT);
+        let _stdout_joined = join_reader_thread(self.stdout_thread, BACKEND_READER_JOIN_TIMEOUT);
+        let _stderr_joined = join_reader_thread(self.stderr_thread, BACKEND_READER_JOIN_TIMEOUT);
 
         #[cfg(unix)]
-        if (!stdout_joined || !stderr_joined) && self.process_group_id.is_some() {
+        if (!_stdout_joined || !_stderr_joined) && self.process_group_id.is_some() {
             let _ = send_signal_to_process_group(self.process_group_id.unwrap(), libc::SIGKILL);
         }
 
@@ -629,7 +649,7 @@ fn build_dev_launch_config_with_python(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(crate) fn build_dev_launch_config_for_test(
     runtime_paths: &DesktopRuntimePaths,
     project_root: &Path,
@@ -685,11 +705,12 @@ fn launch_backend(
     command.process_group(0);
 
     // Put the backend in its own process group so a graceful CTRL_BREAK can
-    // target it without signalling this process. 0x0200 = CREATE_NEW_PROCESS_GROUP.
+    // target it without signalling this process. Keep it suspended until the
+    // process has been assigned to a kill-on-close Job Object.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        command.creation_flags(0x0000_0200);
+        command.creation_flags(crate::setup::windows_setup_creation_flags());
     }
 
     let mut child = command.spawn().map_err(|error| {
@@ -702,13 +723,53 @@ fn launch_backend(
     #[cfg(unix)]
     let process_group_id = i32::try_from(child.id()).ok();
 
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
+    #[cfg(windows)]
+    let mut windows_phase = BackendLaunchPhase::Built;
+    #[cfg(windows)]
+    if let Err(error) = windows_phase.mark_spawned_suspended() {
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Ok(mut guard) = manager.lock() {
+            guard.mark_failed_for_generation(generation, error.clone());
+        }
+        return Err(error);
+    }
+
+    #[cfg(windows)]
+    let job = match WindowsJob::assign(&child) {
+        Ok(job) => job,
+        Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
             if let Ok(mut guard) = manager.lock() {
-                guard.mark_failed("failed to capture desktop backend stdout");
+                guard.mark_failed_for_generation(generation, error.clone());
+            }
+            return Err(error);
+        }
+    };
+    #[cfg(windows)]
+    if let Err(error) = windows_phase.mark_job_assigned() {
+        job.terminate();
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Ok(mut guard) = manager.lock() {
+            guard.mark_failed_for_generation(generation, error.clone());
+        }
+        return Err(error);
+    }
+
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            #[cfg(windows)]
+            job.terminate();
+            let _ = child.kill();
+            let _ = child.wait();
+            if let Ok(mut guard) = manager.lock() {
+                guard.mark_failed_for_generation(
+                    generation,
+                    "failed to capture desktop backend stdout",
+                );
             }
             return Err("failed to capture desktop backend stdout".to_string());
         }
@@ -716,14 +777,40 @@ fn launch_backend(
     let stderr = match child.stderr.take() {
         Some(stderr) => stderr,
         None => {
+            #[cfg(windows)]
+            job.terminate();
             let _ = child.kill();
             let _ = child.wait();
             if let Ok(mut guard) = manager.lock() {
-                guard.mark_failed("failed to capture desktop backend stderr");
+                guard.mark_failed_for_generation(
+                    generation,
+                    "failed to capture desktop backend stderr",
+                );
             }
             return Err("failed to capture desktop backend stderr".to_string());
         }
     };
+
+    #[cfg(windows)]
+    if let Err(error) = resume_suspended_child_threads(child.id()) {
+        job.terminate();
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Ok(mut guard) = manager.lock() {
+            guard.mark_failed_for_generation(generation, error.clone());
+        }
+        return Err(error);
+    }
+    #[cfg(windows)]
+    if let Err(error) = windows_phase.mark_resumed() {
+        job.terminate();
+        let _ = child.kill();
+        let _ = child.wait();
+        if let Ok(mut guard) = manager.lock() {
+            guard.mark_failed_for_generation(generation, error.clone());
+        }
+        return Err(error);
+    }
 
     let stdout_manager = Arc::clone(&manager);
     let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -802,6 +889,8 @@ fn launch_backend(
         generation,
         #[cfg(unix)]
         process_group_id,
+        #[cfg(windows)]
+        job,
     })
 }
 

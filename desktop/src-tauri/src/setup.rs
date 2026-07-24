@@ -225,7 +225,7 @@ pub(crate) struct ActiveProcess {
 
 #[cfg(windows)]
 #[derive(Debug)]
-struct WindowsJob {
+pub(crate) struct WindowsJob {
     handle: WindowsHandle,
 }
 
@@ -251,7 +251,7 @@ impl Drop for WindowsHandle {
 
 #[cfg(windows)]
 impl WindowsJob {
-    fn assign(child: &Child) -> Result<Arc<Self>, String> {
+    pub(crate) fn assign(child: &Child) -> Result<Arc<Self>, String> {
         use std::mem::{size_of, zeroed};
         use std::os::windows::io::AsRawHandle;
         use windows_sys::Win32::System::JobObjects::{
@@ -292,7 +292,7 @@ impl WindowsJob {
         Ok(job)
     }
 
-    fn terminate(&self) {
+    pub(crate) fn terminate(&self) {
         use windows_sys::Win32::System::JobObjects::TerminateJobObject;
         unsafe {
             TerminateJobObject(self.handle.0, 1);
@@ -301,7 +301,7 @@ impl WindowsJob {
 }
 
 #[cfg(windows)]
-fn resume_suspended_child_threads(process_id: u32) -> Result<(), String> {
+pub(crate) fn resume_suspended_child_threads(process_id: u32) -> Result<(), String> {
     use std::mem::size_of;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -567,7 +567,7 @@ impl SetupRunnerState {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn active_pid(&self) -> Option<u32> {
         self.inner
             .lock()

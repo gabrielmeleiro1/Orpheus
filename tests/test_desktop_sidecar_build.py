@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -54,6 +56,7 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
     executable = onedir / "orpheus-desktop-backend"
     legacy_external_bin = binaries_dir / "orpheus-desktop-backend-aarch64-apple-darwin"
     other_legacy_external_bin = binaries_dir / "orpheus-desktop-backend-x86_64-apple-darwin"
+    legacy_external_dir = binaries_dir / "orpheus-desktop-backend-amd64-unknown-linux-gnu"
     ffmpeg_source = _write_executable(tmp_path / "tools" / "ffmpeg", "ffmpeg source")
     ffprobe_source = _write_executable(tmp_path / "tools" / "ffprobe", "ffprobe source")
 
@@ -72,6 +75,8 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
     binaries_dir.mkdir(parents=True)
     legacy_external_bin.write_text("old onefile binary", encoding="utf-8")
     other_legacy_external_bin.write_text("old x86 onefile binary", encoding="utf-8")
+    (legacy_external_dir / "_internal").mkdir(parents=True)
+    (legacy_external_dir / "_internal" / "stale.txt").write_text("stale", encoding="utf-8")
 
     monkeypatch.setattr(build_desktop_backend, "DIST_DIR", dist_dir)
     monkeypatch.setattr(build_desktop_backend, "TAURI_BINARIES_DIR", binaries_dir)
@@ -104,6 +109,7 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
         assert (copied_executable.parent / "bin" / "ffprobe").stat().st_mode & stat.S_IXUSR
     assert not legacy_external_bin.exists()
     assert not other_legacy_external_bin.exists()
+    assert not legacy_external_dir.exists()
 
 
 def test_copy_sidecar_for_tauri_requires_mlx_metal_library(
@@ -294,20 +300,45 @@ def test_validate_existing_sidecar_requires_executable_and_runtime_resources(
 
 
 def test_desktop_build_script_delegates_fresh_sidecar_build_to_tauri() -> None:
-    package_json = (PROJECT_ROOT / "desktop" / "package.json").read_text(encoding="utf-8")
+    package_json = json.loads(
+        (PROJECT_ROOT / "desktop" / "package.json").read_text(encoding="utf-8")
+    )
 
-    assert '"desktop:build": "tauri build"' in package_json
+    assert package_json["scripts"]["desktop:build"] == "tauri build"
+    assert package_json["scripts"]["desktop:release"].startswith("tauri build")
 
 
 def test_tauri_build_freshens_sidecar_before_frontend() -> None:
-    tauri_config = (PROJECT_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
-        encoding="utf-8"
+    tauri_config = json.loads(
+        (PROJECT_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
+            encoding="utf-8"
+        )
     )
 
-    assert (
-        '"beforeBuildCommand": "python ../scripts/build_desktop_backend.py && npm run build"'
-        in tauri_config
+    assert tauri_config["build"]["beforeBuildCommand"] == (
+        "python ../scripts/build_desktop_backend.py && npm run build"
     )
+
+
+def test_release_docs_describe_fresh_profiled_tauri_sidecar_build() -> None:
+    docs = {
+        path: (PROJECT_ROOT / path).read_text(encoding="utf-8")
+        for path in (
+            "README.md",
+            "docs/RUN_APPLICATION.md",
+            "docs/TESTING.md",
+            "docs/ARCHITECTURE.md",
+            "docs/DEPENDENCIES.md",
+            "docs/architecture/tooling-boundaries.md",
+        )
+    }
+
+    for contents in docs.values():
+        assert "ORPHEUS_RUNTIME_PROFILE" in contents
+    assert "TAURI_ENV_TARGET_TRIPLE" in docs["docs/RUN_APPLICATION.md"]
+    assert "TAURI_ENV_TARGET_TRIPLE" in docs["docs/ARCHITECTURE.md"]
+    assert "required before `desktop:build` or `desktop:release`" not in docs["README.md"]
+    assert "Sidecar must already exist" not in docs["docs/ARCHITECTURE.md"]
 
 
 def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
@@ -331,6 +362,122 @@ def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
     resolved = build_desktop_backend._validate_runtime_dependencies("python")  # noqa: SLF001
 
     assert resolved == {"ffmpeg": ffmpeg, "ffprobe": ffprobe}
+
+
+@pytest.mark.parametrize(
+    ("runtime_profile", "target_triple"),
+    [
+        ("base", "x86_64-unknown-linux-gnu"),
+        ("mlx", "aarch64-apple-darwin"),
+        ("cuda", "x86_64-unknown-linux-gnu"),
+    ],
+)
+def test_runtime_profile_uses_environment_when_cli_omitted(
+    monkeypatch,
+    runtime_profile: str,
+    target_triple: str,
+) -> None:
+    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", runtime_profile)
+
+    assert build_desktop_backend._resolve_runtime_profile(target_triple, None) == runtime_profile
+
+
+def test_explicit_runtime_profile_wins_over_environment(monkeypatch) -> None:
+    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "cuda")
+
+    assert (
+        build_desktop_backend._resolve_runtime_profile(  # noqa: SLF001
+            "x86_64-unknown-linux-gnu",
+            "base",
+        )
+        == "base"
+    )
+
+
+def test_invalid_environment_runtime_profile_fails_before_dependency_probes(monkeypatch) -> None:
+    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "bogus")
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_desktop_backend.platform, "machine", lambda: "x86_64")
+
+    def fail_if_probed(*_args, **_kwargs):  # noqa: ANN001, ANN002
+        pytest.fail("dependency/PyInstaller probes must not run for an invalid profile")
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", fail_if_probed)
+
+    with pytest.raises(RuntimeError, match="ORPHEUS_RUNTIME_PROFILE.*bogus"):
+        build_desktop_backend._validate_runtime_dependencies(  # noqa: SLF001
+            "python",
+            target_triple="x86_64-unknown-linux-gnu",
+        )
+
+
+def test_architecture_mismatch_precedes_invalid_environment_profile(monkeypatch) -> None:
+    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "bogus")
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_desktop_backend.platform, "machine", lambda: "x86_64")
+
+    def fail_if_probed(*_args, **_kwargs):  # noqa: ANN001, ANN002
+        pytest.fail("dependency/PyInstaller probes must not run for an architecture mismatch")
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", fail_if_probed)
+
+    with pytest.raises(RuntimeError, match="architecture mismatch"):
+        build_desktop_backend._validate_runtime_dependencies(  # noqa: SLF001
+            "python",
+            target_triple="aarch64-unknown-linux-gnu",
+        )
+
+
+def test_main_checks_architecture_before_environment_profile(monkeypatch) -> None:
+    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "bogus")
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_desktop_backend.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "_parse_args",
+        lambda: SimpleNamespace(
+            target_triple="aarch64-unknown-linux-gnu",
+            runtime_profile=None,
+            python="python",
+            no_clean=False,
+            validate_existing=False,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="architecture mismatch"):
+        build_desktop_backend.main()
+
+
+def test_target_triple_prefers_tauri_environment(monkeypatch) -> None:
+    monkeypatch.setenv("TAURI_ENV_TARGET_TRIPLE", "aarch64-apple-darwin")
+    monkeypatch.setenv("CARGO_BUILD_TARGET", "x86_64-unknown-linux-gnu")
+    monkeypatch.setenv("TARGET", "x86_64-pc-windows-msvc")
+
+    assert build_desktop_backend._resolve_target_triple("") == "aarch64-apple-darwin"
+    assert (
+        build_desktop_backend._resolve_target_triple("x86_64-apple-darwin")
+        == "x86_64-apple-darwin"
+    )
+
+
+def test_default_python_prefers_windows_project_virtualenv(monkeypatch, tmp_path: Path) -> None:
+    windows_python = _write_executable(tmp_path / ".venv" / "Scripts" / "python.exe")
+    _write_executable(tmp_path / ".venv" / "bin" / "python")
+    monkeypatch.setattr(build_desktop_backend, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(build_desktop_backend.sys, "executable", "fallback-python")
+
+    assert build_desktop_backend._default_python_executable() == str(windows_python)
+
+
+def test_default_python_prefers_posix_project_virtualenv(monkeypatch, tmp_path: Path) -> None:
+    posix_python = _write_executable(tmp_path / ".venv" / "bin" / "python")
+    _write_executable(tmp_path / ".venv" / "Scripts" / "python.exe")
+    monkeypatch.setattr(build_desktop_backend, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(build_desktop_backend.sys, "executable", "fallback-python")
+
+    assert build_desktop_backend._default_python_executable() == str(posix_python)
 
 
 def test_validate_runtime_dependencies_rejects_cross_os_target(monkeypatch) -> None:

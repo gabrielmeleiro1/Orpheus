@@ -79,8 +79,9 @@ Desktop runtime modes:
   - `AUDIOBOOK_DESKTOP_USE_SIDECAR=1` forces the sidecar path in debug builds.
 - Production package: `cd desktop && npm run desktop:build`
   - Tauri launches bundled sidecar from `Contents/Resources/binaries/orpheus-desktop-backend/`
-  - Sidecar must already exist under `desktop/src-tauri/binaries/`
-  - Sidecar is produced by `python scripts/build_desktop_backend.py` as a PyInstaller onedir resource
+  - `beforeBuildCommand` first produces a fresh PyInstaller onedir sidecar, then builds the frontend
+  - `ORPHEUS_RUNTIME_PROFILE=base|mlx|cuda` selects the packaged profile; the target default is used when unset
+  - Tauri supplies `TAURI_ENV_TARGET_TRIPLE`, and the sidecar builder rejects host/target architecture mismatches before probing dependencies
 - Release install: `cd desktop && npm run desktop:release`
   - rebuilds the sidecar
   - builds the `.dmg`
@@ -274,6 +275,6 @@ For non-trivial changes:
 5. For desktop or release confidence, additionally run:
    - `cd desktop && npm run typecheck && npm run build`
    - `cd desktop/src-tauri && cargo test && cargo check`
-   - `python scripts/build_desktop_backend.py && cd desktop && npm run desktop:build`
+   - `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build`
    - `cd desktop && npm run desktop:install`, followed by installed-app smoke
 6. Update docs if architecture boundaries changed.

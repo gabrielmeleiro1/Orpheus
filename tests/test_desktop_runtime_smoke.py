@@ -69,6 +69,19 @@ def test_parse_args_accepts_opt_in_ffmpeg_runtime_check() -> None:
     assert args.check_ffmpeg_runtime is True
 
 
+def test_parse_args_accepts_packaged_app_bundle() -> None:
+    args = desktop_runtime_smoke.parse_args(["--backend", "sidecar", "--app-bundle", "/tmp/Orpheus.app"])
+
+    assert args.app_bundle == Path("/tmp/Orpheus.app")
+
+
+def test_packaged_app_bundle_requires_sidecar_backend() -> None:
+    args = desktop_runtime_smoke.parse_args(["--app-bundle", "/tmp/Orpheus.app"])
+
+    with pytest.raises(ValueError, match="sidecar"):
+        desktop_runtime_smoke.validate_args(args)
+
+
 def test_parse_args_accepts_opt_in_conversion_journey() -> None:
     args = desktop_runtime_smoke.parse_args(
         [
@@ -121,6 +134,77 @@ def test_backend_command_requires_existing_sidecar(tmp_path: Path) -> None:
         assert str(missing_sidecar) in str(exc)
     else:
         raise AssertionError("missing sidecar path should fail")
+
+
+def test_packaged_app_sidecar_resolver_uses_embedded_resource_not_staging(tmp_path: Path) -> None:
+    app_bundle = tmp_path / "Orpheus.app"
+    embedded = app_bundle / "Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
+    staging = tmp_path / "staging/orpheus-desktop-backend"
+    _write_executable(embedded)
+    _write_executable(staging)
+
+    assert desktop_runtime_smoke.resolve_packaged_app_sidecar(app_bundle) == embedded
+    command = desktop_runtime_smoke.build_backend_command(
+        backend="sidecar",
+        sidecar_path=staging,
+        app_bundle=app_bundle,
+        python_executable=sys.executable,
+    )
+    assert command[0] == str(embedded)
+
+
+@pytest.mark.parametrize("app_path", [Path("not-an-app"), Path("Orpheus.app/Contents")])
+def test_packaged_app_sidecar_resolver_rejects_non_app_bundle(tmp_path: Path, app_path: Path) -> None:
+    with pytest.raises(ValueError, match=r"\.app"):
+        desktop_runtime_smoke.resolve_packaged_app_sidecar(tmp_path / app_path)
+
+
+def test_packaged_app_sidecar_resolver_rejects_missing_or_escaping_resource(tmp_path: Path) -> None:
+    missing = tmp_path / "Missing.app"
+    missing.mkdir()
+    with pytest.raises(FileNotFoundError):
+        desktop_runtime_smoke.resolve_packaged_app_sidecar(missing)
+
+    escaping = tmp_path / "Escaping.app"
+    embedded_parent = escaping / "Contents/Resources/binaries/orpheus-desktop-backend"
+    embedded_parent.mkdir(parents=True)
+    outside = _write_executable(tmp_path / "outside/orpheus-desktop-backend")
+    embedded = embedded_parent / "orpheus-desktop-backend"
+    embedded.symlink_to(outside)
+    with pytest.raises(ValueError, match="inside app bundle"):
+        desktop_runtime_smoke.resolve_packaged_app_sidecar(escaping)
+
+
+def test_packaged_app_ffmpeg_check_uses_same_embedded_sidecar_resource(tmp_path: Path) -> None:
+    app_bundle = tmp_path / "Orpheus.app"
+    sidecar = _write_executable(
+        app_bundle / "Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
+    )
+    ffmpeg = _write_executable(sidecar.parent / "bin/ffmpeg")
+    ffprobe = _write_executable(sidecar.parent / "bin/ffprobe")
+
+    assert desktop_runtime_smoke.resolve_ffmpeg_runtime_binaries(
+        backend="sidecar",
+        sidecar_path=tmp_path / "staging/orpheus-desktop-backend",
+        app_bundle=app_bundle,
+    ) == {"ffmpeg": ffmpeg, "ffprobe": ffprobe}
+
+
+def test_packaged_app_ffmpeg_check_rejects_resources_outside_bundle(tmp_path: Path) -> None:
+    app_bundle = tmp_path / "Orpheus.app"
+    sidecar = _write_executable(
+        app_bundle / "Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
+    )
+    outside_ffmpeg = _write_executable(tmp_path / "outside/ffmpeg")
+    _write_executable(sidecar.parent / "bin/ffprobe")
+    sidecar.parent.joinpath("bin/ffmpeg").symlink_to(outside_ffmpeg)
+
+    with pytest.raises(ValueError, match="inside app bundle"):
+        desktop_runtime_smoke.resolve_ffmpeg_runtime_binaries(
+            backend="sidecar",
+            sidecar_path=None,
+            app_bundle=app_bundle,
+        )
 
 
 def test_success_rate_threshold_uses_all_iterations() -> None:

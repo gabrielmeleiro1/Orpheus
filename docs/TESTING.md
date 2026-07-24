@@ -114,9 +114,14 @@ Desktop sidecar changes:
 ```bash
 python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py
 cd desktop
-npm run desktop:build
+ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build
 cd src-tauri && cargo test && cargo check
 ```
+
+PowerShell uses
+`$env:ORPHEUS_RUNTIME_PROFILE = "base"; npm run desktop:build`. The Tauri build
+hook always creates the sidecar afresh before the frontend, so no separate
+prebuild command is required.
 
 Static cleanup checks:
 
@@ -267,6 +272,33 @@ Coverage note:
 - Packaged-user-flow checks (file picker through completed conversion/playback)
   still require installed-app smoke validation.
 
+### Packaged app smoke (macOS)
+
+To exercise sidecar startup plus packaged `ffmpeg`/`ffprobe` under a Finder-like
+reduced `PATH` without running an ML conversion, point the smoke harness at the
+actual `.app` bundle. The resolver accepts only the embedded resource at
+`Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend`
+and never falls back to `desktop/src-tauri/binaries`:
+
+```bash
+python scripts/desktop_runtime_smoke.py \
+  --backend sidecar \
+  --app-bundle desktop/src-tauri/target/release/bundle/macos/Orpheus.app \
+  --reduced-path \
+  --check-ffmpeg-runtime
+```
+
+### Release artifact validation (macOS)
+
+The `Release artifact validation` workflow runs on `workflow_dispatch`, `v*`
+tags, and `release/**` branches. It installs the repository toolchain, runs
+the source/desktop gates, builds with `ORPHEUS_RUNTIME_PROFILE=base`, and
+verifies the `.app`, DMG, embedded sidecar, `ffmpeg`, and `ffprobe` all exist,
+are executable, and match the runner architecture. It then runs the smoke
+harness against that same embedded sidecar with the reduced Finder-like
+`PATH`. The `.app`, DMG, verification log, and smoke output are uploaded even
+when a later validation step fails.
+
 ## Optional Extended Suites
 
 These suites stay outside the default contract because they are slow, noisy, or
@@ -344,7 +376,7 @@ thresholds in `orpheus/bench/validity.py`.
 | TTS / runtime | `python -m pytest --no-cov tests/test_tts*.py tests/test_runtime_recovery.py` | `python -m orpheus bench full path/to/book.md --chapter-limit 1 --profile-tts-chunks` |
 | API / web payloads | `python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_conversion_service.py` | `cd desktop && npm run typecheck && npm test -- --run` |
 | Storage / library paths | `python -m pytest --no-cov tests/test_storage_*.py tests/test_library_service.py tests/test_book_workspace.py` | — |
-| Desktop sidecar / packaging | `python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py` | `python scripts/build_desktop_backend.py && cd desktop/src-tauri && cargo test` |
+| Desktop sidecar / packaging | `python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py` | `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build && cd src-tauri && cargo test` |
 | Benchmark / perf regressions | `python -m orpheus bench quick` | `scripts/benchmark_nagel_repeated.py …` then `python -m orpheus bench compare BASELINE CURRENT` |
 | Full release candidate | `python run_tests.py --contract` | Desktop release matrix in [Desktop Release Readiness Verification](#desktop-release-readiness-verification) |
 

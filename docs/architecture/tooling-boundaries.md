@@ -22,7 +22,7 @@ Package boundary inventory for developer tooling. Covers `scripts/`, `tools/`,
 │ single_book/       │ │ _loop_runner   │ │ parallel_workers     │
 └────────────────────┘ └────────────────┘ └──────────────────────┘
 
-Desktop build: scripts/build_desktop_backend.py → PyInstaller → src-tauri/binaries/
+Desktop build: tauri build hook → build_desktop_backend.py → PyInstaller → src-tauri/binaries/
 Validation:    scripts/hooks/pre-push → pytest + desktop + cargo
 Smoke:         run_tests.py, scripts/desktop_runtime_smoke.py
 ```
@@ -94,6 +94,10 @@ JSON summary writers, env application (`_apply_cleaner_env`).
 
 - Output: `desktop/src-tauri/binaries/orpheus-desktop-backend` (+ platform triple artifacts)
 - Bundles FFmpeg via `resolve_ffmpeg_binary`
+- Tauri's build hook creates this output afresh before the frontend build;
+  `ORPHEUS_RUNTIME_PROFILE` selects `base`, `mlx`, or `cuda`
+- `TAURI_ENV_TARGET_TRIPLE` propagates the Tauri target, which must match the
+  PyInstaller host architecture
 - Profile-aware `BASE_REQUIRED_MODULES`, `MLX_REQUIRED_MODULES`, and
   `CUDA_REQUIRED_MODULES` lists must stay aligned with each profile's import graph
   or its sidecar fails at runtime

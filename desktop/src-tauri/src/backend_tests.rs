@@ -1,9 +1,139 @@
+#[cfg(unix)]
+use super::build_dev_launch_config_for_test;
 use super::{
     backend_shutdown_force_kill_max, backend_shutdown_graceful_timeout,
-    build_dev_launch_config_for_root, build_dev_launch_config_for_test, parse_ready_line,
-    parse_shutdown_line, read_ready_payload_from_file, resolve_sidecar_path, sidecar_binary_stem,
+    build_dev_launch_config_for_root, parse_ready_line, parse_shutdown_line,
+    read_ready_payload_from_file, resolve_sidecar_path, sidecar_binary_stem,
     sidecar_source_filename, BackendLifecycle, BackendManager,
 };
+
+#[test]
+fn backend_windows_launch_protocol_requires_job_before_resume() {
+    let mut phase = super::BackendLaunchPhase::Built;
+    assert!(phase.mark_resumed().is_err());
+    phase.mark_spawned_suspended().expect("suspended spawn");
+    assert!(phase.mark_resumed().is_err());
+    phase.mark_job_assigned().expect("job assignment");
+    phase.mark_resumed().expect("resume after containment");
+    assert_eq!(phase, super::BackendLaunchPhase::Resumed);
+}
+
+#[test]
+fn backend_windows_launch_flags_include_suspended_process_group() {
+    let flags = super::backend_windows_creation_flags();
+    assert_ne!(flags & 0x0000_0004, 0, "CREATE_SUSPENDED is required");
+    assert_ne!(
+        flags & 0x0000_0200,
+        0,
+        "CREATE_NEW_PROCESS_GROUP is required"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn forced_backend_shutdown_terminates_root_and_descendant_in_job() {
+    use std::fs;
+    use std::thread;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn process_is_running(pid: u32) -> bool {
+        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return false;
+        }
+        let mut exit_code = 0_u32;
+        let running = unsafe { GetExitCodeProcess(handle, &mut exit_code) != 0 }
+            && exit_code == STILL_ACTIVE as u32;
+        unsafe { CloseHandle(handle) };
+        running
+    }
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("expected system time after unix epoch")
+        .as_nanos();
+    let marker = std::env::temp_dir().join(format!("orpheus-backend-descendant-{unique}.txt"));
+    let script = r#"import json, os, pathlib, signal, subprocess, sys, time
+marker = pathlib.Path(sys.argv[1])
+# Keep the root alive when terminate_backend_process sends CTRL_BREAK, so this
+# test must exercise the forced Job Object termination path. Put the descendant
+# in its own console process group so it cannot receive that graceful signal.
+if hasattr(signal, "SIGBREAK"):
+    signal.signal(signal.SIGBREAK, lambda _signum, _frame: None)
+descendant = subprocess.Popen(
+    [sys.executable, "-c", "import time; time.sleep(60)"],
+    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+)
+marker.write_text(f"{os.getpid()} {descendant.pid}", encoding="ascii")
+print(json.dumps({"event":"ready","host":"127.0.0.1","port":1,"token":"test"}), flush=True)
+while True:
+    time.sleep(1)
+"#;
+    let launch = super::ProcessLaunchConfig {
+        program: super::python_program(),
+        args: vec![
+            "-c".to_string(),
+            script.to_string(),
+            marker.to_string_lossy().into_owned(),
+        ],
+        cwd: None,
+        env: Vec::new(),
+    };
+    let manager = std::sync::Arc::new(std::sync::Mutex::new(super::BackendManager::default()));
+    let mut running = super::launch_backend(std::sync::Arc::clone(&manager), launch)
+        .expect("expected backend launch to assign a Job Object");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let pids = loop {
+        if let Ok(contents) = fs::read_to_string(&marker) {
+            let pids = contents
+                .split_whitespace()
+                .map(|pid| pid.parse::<u32>().expect("valid process id"))
+                .collect::<Vec<_>>();
+            if pids.len() == 2 {
+                break pids;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "backend fixture did not start"
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
+    assert!(process_is_running(pids[0]));
+    assert!(process_is_running(pids[1]));
+
+    let outcome = super::terminate_backend_process(
+        &mut running.child,
+        Duration::from_millis(100),
+        None,
+        Some(running.job.as_ref()),
+    );
+    assert_eq!(outcome, super::ShutdownOutcome::ForcedKill);
+    let _ = running.child.wait();
+
+    // Verify Job Object termination itself killed both processes. Do this
+    // before dropping `running`; otherwise KILL_ON_JOB_CLOSE would mask a
+    // broken TerminateJobObject call.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while process_is_running(pids[0]) || process_is_running(pids[1]) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "forced backend shutdown left a process alive"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(!process_is_running(pids[0]));
+    assert!(!process_is_running(pids[1]));
+
+    drop(running);
+    let _ = fs::remove_file(marker);
+}
 use crate::paths::DesktopRuntimePaths;
 use std::path::{Path, PathBuf};
 
@@ -432,6 +562,8 @@ while True:
         .stderr(Stdio::piped())
         .spawn()
         .expect("expected test process to launch");
+    #[cfg(windows)]
+    let job = super::setup::WindowsJob::assign(&child).expect("expected job assignment");
     let stdout = child.stdout.take().expect("expected stdout pipe");
     let stderr = child.stderr.take().expect("expected stderr pipe");
 
@@ -458,7 +590,10 @@ while True:
         stderr_thread,
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
+        #[cfg(unix)]
         process_group_id: None,
+        #[cfg(windows)]
+        job,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     running.stop(&manager);
@@ -593,6 +728,8 @@ while True:
         .stderr(Stdio::piped())
         .spawn()
         .expect("expected test process to launch");
+    #[cfg(windows)]
+    let job = super::setup::WindowsJob::assign(&child).expect("expected job assignment");
     let stdout = child.stdout.take().expect("expected stdout pipe");
     let stderr = child.stderr.take().expect("expected stderr pipe");
 
@@ -619,7 +756,10 @@ while True:
         stderr_thread,
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
+        #[cfg(unix)]
         process_group_id: None,
+        #[cfg(windows)]
+        job,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     let started_at = Instant::now();
@@ -666,6 +806,8 @@ while True:
         .stderr(Stdio::piped())
         .spawn()
         .expect("expected test process to launch");
+    #[cfg(windows)]
+    let job = super::setup::WindowsJob::assign(&child).expect("expected job assignment");
     let stdout = child.stdout.take().expect("expected stdout pipe");
     let stderr = child.stderr.take().expect("expected stderr pipe");
 
@@ -686,7 +828,10 @@ while True:
         stderr_thread,
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
+        #[cfg(unix)]
         process_group_id: None,
+        #[cfg(windows)]
+        job,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     let started_at = Instant::now();

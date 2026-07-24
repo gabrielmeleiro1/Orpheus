@@ -77,9 +77,16 @@ ESPEAK_DATA_DIR = Path("_internal") / "espeakng_loader" / "espeak-ng-data"
 
 
 def _default_python_executable() -> str:
-    repo_python = PROJECT_ROOT / ".venv" / "bin" / "python"
-    if repo_python.is_file():
-        return str(repo_python)
+    posix_python = PROJECT_ROOT / ".venv" / "bin" / "python"
+    windows_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+    candidates = (
+        (windows_python, posix_python)
+        if platform.system().lower() == "windows"
+        else (posix_python, windows_python)
+    )
+    for repo_python in candidates:
+        if repo_python.is_file():
+            return str(repo_python)
     return sys.executable
 
 
@@ -97,8 +104,9 @@ def _parse_args() -> argparse.Namespace:
         choices=("base", "mlx", "cuda"),
         default=None,
         help=(
-            "Runtime bundled into the sidecar. Defaults to mlx for Apple Silicon "
-            "targets and base elsewhere; CUDA is always explicit."
+            "Runtime bundled into the sidecar. Explicit CLI selection overrides "
+            "ORPHEUS_RUNTIME_PROFILE; otherwise the environment value is used, "
+            "then mlx for Apple Silicon targets or base elsewhere."
         ),
     )
     parser.add_argument(
@@ -259,8 +267,21 @@ def default_runtime_profile(target_triple: str) -> str:
 
 
 def _resolve_runtime_profile(target_triple: str, runtime_profile: str | None) -> str:
-    profile = (runtime_profile or default_runtime_profile(target_triple)).strip().lower()
+    environment_profile = ""
+    if runtime_profile is None:
+        environment_profile = os.getenv("ORPHEUS_RUNTIME_PROFILE", "").strip()
+    selected_profile = (
+        runtime_profile
+        if runtime_profile is not None
+        else environment_profile or default_runtime_profile(target_triple)
+    )
+    profile = selected_profile.strip().lower()
     if profile not in {"base", "mlx", "cuda"}:
+        if environment_profile:
+            raise RuntimeError(
+                "Invalid ORPHEUS_RUNTIME_PROFILE "
+                f"{environment_profile!r}; expected one of: base, mlx, cuda."
+            )
         raise RuntimeError(f"Unknown runtime profile: {runtime_profile!r}")
     if profile == "mlx" and not _is_apple_silicon_target(target_triple):
         raise RuntimeError("The MLX runtime profile requires an aarch64 Apple Darwin target.")
@@ -581,12 +602,6 @@ def _copy_sidecar_for_tauri(
         formatted = "\n".join(f"  - {binary}" for binary in missing_ffmpeg_binaries)
         raise RuntimeError(f"Missing required runtime binaries:\n{formatted}")
 
-    legacy_tauri_name = (
-        f"{SIDE_CAR_STEM}-{target_triple}.exe"
-        if _is_windows_target(target_triple)
-        else f"{SIDE_CAR_STEM}-{target_triple}"
-    )
-    legacy_output_binary = TAURI_BINARIES_DIR / legacy_tauri_name
     TAURI_BINARIES_DIR.mkdir(parents=True, exist_ok=True)
     if TAURI_SIDECAR_RESOURCE_DIR.exists():
         shutil.rmtree(TAURI_SIDECAR_RESOURCE_DIR)
@@ -606,10 +621,11 @@ def _copy_sidecar_for_tauri(
         target_triple=target_triple,
         runtime_profile=resolved_profile,
     )
-    legacy_output_binary.unlink(missing_ok=True)
-    for stale_binary in TAURI_BINARIES_DIR.glob(f"{SIDE_CAR_STEM}-*"):
-        if stale_binary.is_file():
-            stale_binary.unlink()
+    for stale_sidecar in TAURI_BINARIES_DIR.glob(f"{SIDE_CAR_STEM}-*"):
+        if stale_sidecar.is_symlink() or stale_sidecar.is_file():
+            stale_sidecar.unlink()
+        elif stale_sidecar.is_dir():
+            shutil.rmtree(stale_sidecar)
 
     output_binary = TAURI_SIDECAR_RESOURCE_DIR / pyinstaller_binary_name
     if not _is_windows_target(target_triple):
@@ -632,6 +648,7 @@ def main() -> int:
         print(f"Tauri sidecar executable: {output_binary}")
         return 0
 
+    _validate_pyinstaller_target_matches_host(target_triple)
     runtime_profile = _resolve_runtime_profile(target_triple, args.runtime_profile)
     ffmpeg_binaries = _validate_runtime_dependencies(
         args.python,

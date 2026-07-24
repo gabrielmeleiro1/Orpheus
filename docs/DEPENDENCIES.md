@@ -114,12 +114,13 @@ install, cancel, or setup-restart actions. It never accepts an interpreter,
 script, model path, or shell command from the frontend.
 
 Packaged releases and browser sessions report dynamic setup as unavailable.
-Their sidecar must already contain the profile selected at build time with
-`scripts/build_desktop_backend.py --runtime-profile base|mlx|cuda`. A packaged
-`base` build still supports document ingestion, conversion workflows that do
-not require local models, library management, and playback. To change a
-packaged runtime profile, build a new artifact from a trusted source checkout;
-the packaged app does not reach back to a build-machine checkout path.
+During `npm run desktop:build`, Tauri freshly builds the sidecar with the
+profile selected by `ORPHEUS_RUNTIME_PROFILE=base|mlx|cuda`; no separate
+sidecar prebuild is required. A packaged `base` build still supports document
+ingestion, conversion workflows that do not require local models, library
+management, and playback. To change a packaged runtime profile, build a new
+artifact from a trusted source checkout; the packaged app does not reach back
+to a build-machine checkout path.
 
 Local ML runtimes are opt-in profiles. Install exactly one when local synthesis
 or cleaning is needed:
@@ -141,13 +142,28 @@ its installed version, source URL, archive hash declaration, and every hashed
 from a temporary metadata-only audit view; all other installed distributions
 must remain covered by strict `pip-audit`.
 
-The desktop sidecar builder follows the same boundary. It defaults to `mlx` for
-an `aarch64-apple-darwin` target and to `base` elsewhere. CUDA packaging must be
-requested explicitly:
+The desktop sidecar builder follows the same boundary. An explicit
+`--runtime-profile` wins, then `ORPHEUS_RUNTIME_PROFILE` is used, then the
+builder defaults to `mlx` for an `aarch64-apple-darwin` target and `base`
+elsewhere. Select CUDA for the Tauri release build with:
 
 ```bash
-python scripts/build_desktop_backend.py --runtime-profile cuda
+# POSIX
+cd desktop
+ORPHEUS_RUNTIME_PROFILE=cuda npm run desktop:build
 ```
+
+```powershell
+# PowerShell
+Set-Location desktop
+$env:ORPHEUS_RUNTIME_PROFILE = "cuda"
+npm run desktop:build
+Remove-Item Env:ORPHEUS_RUNTIME_PROFILE
+```
+
+Tauri passes its target through `TAURI_ENV_TARGET_TRIPLE`. The sidecar builder
+uses that value ahead of Cargo's generic target variables and rejects
+cross-architecture PyInstaller builds before dependency probes.
 
 ### CUDA cleaner backend
 
@@ -289,6 +305,10 @@ Rust dependencies are declared in `desktop/src-tauri/Cargo.toml` and locked in
 cd desktop
 npm run desktop:build
 ```
+
+This command also runs the Tauri fresh-sidecar hook. Set
+`ORPHEUS_RUNTIME_PROFILE` in the invoking POSIX shell or PowerShell session to
+choose the packaged profile.
 
 ## Environment
 

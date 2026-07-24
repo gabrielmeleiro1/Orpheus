@@ -153,6 +153,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Packaged sidecar executable to use when --backend=sidecar.",
     )
     parser.add_argument(
+        "--app-bundle",
+        type=Path,
+        default=None,
+        help=(
+            "Packaged .app bundle whose embedded sidecar must be used. "
+            "This is deterministic and never falls back to source staging."
+        ),
+    )
+    parser.add_argument(
         "--iterations",
         type=int,
         default=1,
@@ -231,10 +240,33 @@ def resolve_default_sidecar_path() -> Path:
     return DEFAULT_RESOURCE_SIDECAR
 
 
+def resolve_packaged_app_sidecar(app_bundle: Path) -> Path:
+    """Resolve only the sidecar embedded at the fixed Tauri app resource path."""
+    requested = Path(app_bundle).expanduser()
+    if requested.suffix != ".app":
+        raise ValueError(f"packaged app bundle must have a .app suffix: {requested}")
+    if not requested.exists():
+        raise FileNotFoundError(f"packaged app bundle not found: {requested}")
+    bundle = requested.resolve()
+    if not bundle.is_dir():
+        raise ValueError(f"packaged app bundle is not a directory: {requested}")
+
+    sidecar = bundle / "Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
+    if not sidecar.exists():
+        raise FileNotFoundError(f"embedded packaged sidecar not found: {sidecar}")
+    resolved_sidecar = sidecar.resolve()
+    try:
+        resolved_sidecar.relative_to(bundle)
+    except ValueError as exc:
+        raise ValueError(f"embedded packaged sidecar must stay inside app bundle: {sidecar}") from exc
+    return _validate_runtime_binary(resolved_sidecar, "packaged sidecar")
+
+
 def build_backend_command(
     *,
     backend: str,
     sidecar_path: Path | None,
+    app_bundle: Path | None = None,
     python_executable: str,
 ) -> list[str]:
     if backend == "python":
@@ -248,7 +280,11 @@ def build_backend_command(
             "0",
         ]
 
-    resolved_sidecar = sidecar_path or resolve_default_sidecar_path()
+    resolved_sidecar = (
+        resolve_packaged_app_sidecar(app_bundle)
+        if app_bundle is not None
+        else sidecar_path or resolve_default_sidecar_path()
+    )
     if not resolved_sidecar.is_file():
         raise FileNotFoundError(f"sidecar executable not found: {resolved_sidecar}")
     return [str(resolved_sidecar), "--host", "127.0.0.1", "--port", "0"]
@@ -370,11 +406,24 @@ def _validate_runtime_binary(path: Path, label: str) -> Path:
     return path
 
 
-def _resolve_sidecar_runtime_binary(bin_dir: Path, binary: str) -> Path:
+def _resolve_sidecar_runtime_binary(
+    bin_dir: Path,
+    binary: str,
+    *,
+    allowed_root: Path | None = None,
+) -> Path:
     candidates = (bin_dir / binary, bin_dir / f"{binary}.exe")
     for candidate in candidates:
         if candidate.is_file():
-            return _validate_runtime_binary(candidate, binary)
+            resolved = _validate_runtime_binary(candidate.resolve(), binary)
+            if allowed_root is not None:
+                try:
+                    resolved.relative_to(allowed_root)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{binary} runtime binary must stay inside app bundle: {candidate}"
+                    ) from exc
+            return resolved
     formatted = ", ".join(str(candidate) for candidate in candidates)
     raise SmokeFailure(f"{binary} runtime binary is not executable: {formatted}")
 
@@ -383,15 +432,29 @@ def resolve_ffmpeg_runtime_binaries(
     *,
     backend: str,
     sidecar_path: Path | None,
+    app_bundle: Path | None = None,
 ) -> dict[str, Path]:
     if backend == "sidecar":
-        resolved_sidecar = sidecar_path or resolve_default_sidecar_path()
+        resolved_sidecar = (
+            resolve_packaged_app_sidecar(app_bundle)
+            if app_bundle is not None
+            else sidecar_path or resolve_default_sidecar_path()
+        )
         if not resolved_sidecar.is_file():
             raise FileNotFoundError(f"sidecar executable not found: {resolved_sidecar}")
         bin_dir = resolved_sidecar.parent / "bin"
+        app_root = app_bundle.expanduser().resolve() if app_bundle is not None else None
         return {
-            "ffmpeg": _resolve_sidecar_runtime_binary(bin_dir, "ffmpeg"),
-            "ffprobe": _resolve_sidecar_runtime_binary(bin_dir, "ffprobe"),
+            "ffmpeg": _resolve_sidecar_runtime_binary(
+                bin_dir,
+                "ffmpeg",
+                allowed_root=app_root,
+            ),
+            "ffprobe": _resolve_sidecar_runtime_binary(
+                bin_dir,
+                "ffprobe",
+                allowed_root=app_root,
+            ),
         }
 
     from modules.audio.ffmpeg import resolve_ffmpeg_binary
@@ -432,11 +495,16 @@ def run_ffmpeg_runtime_check(
     *,
     backend: str,
     sidecar_path: Path | None,
+    app_bundle: Path | None = None,
     runtime_paths: RuntimePaths,
     timeout_seconds: float,
     reduced_path: bool,
 ) -> None:
-    binaries = resolve_ffmpeg_runtime_binaries(backend=backend, sidecar_path=sidecar_path)
+    binaries = resolve_ffmpeg_runtime_binaries(
+        backend=backend,
+        sidecar_path=sidecar_path,
+        app_bundle=app_bundle,
+    )
     runtime_paths.temp_dir.mkdir(parents=True, exist_ok=True)
     probe_output = runtime_paths.temp_dir / "ffmpeg-runtime-check.wav"
     env = _runtime_command_env(reduced_path=reduced_path)
@@ -492,6 +560,7 @@ def start_backend(
     *,
     backend: str,
     sidecar_path: Path | None,
+    app_bundle: Path | None = None,
     python_executable: str,
     runtime_paths: RuntimePaths,
     timeout_seconds: float,
@@ -501,6 +570,7 @@ def start_backend(
     command = build_backend_command(
         backend=backend,
         sidecar_path=sidecar_path,
+        app_bundle=app_bundle,
         python_executable=python_executable,
     )
     process = subprocess.Popen(
@@ -1218,6 +1288,7 @@ def run_iteration(
     *,
     backend: str,
     sidecar_path: Path | None,
+    app_bundle: Path | None = None,
     python_executable: str,
     request_count: int,
     timeout_seconds: float,
@@ -1236,6 +1307,7 @@ def run_iteration(
         process, ready, _stdout, _stderr = start_backend(
             backend=backend,
             sidecar_path=sidecar_path,
+            app_bundle=app_bundle,
             python_executable=python_executable,
             runtime_paths=runtime_paths,
             timeout_seconds=timeout_seconds,
@@ -1253,6 +1325,7 @@ def run_iteration(
             run_ffmpeg_runtime_check(
                 backend=backend,
                 sidecar_path=sidecar_path,
+                app_bundle=app_bundle,
                 runtime_paths=runtime_paths,
                 timeout_seconds=timeout_seconds,
                 reduced_path=reduced_path,
@@ -1294,6 +1367,8 @@ def run_iteration(
 
 
 def validate_args(args: argparse.Namespace) -> None:
+    if args.app_bundle is not None and args.backend != "sidecar":
+        raise ValueError("--app-bundle requires --backend sidecar")
     if args.iterations < 1:
         raise ValueError("--iterations must be at least 1")
     if args.requests < 1:
@@ -1330,6 +1405,7 @@ def main(argv: list[str] | None = None) -> int:
             index,
             backend=args.backend,
             sidecar_path=args.sidecar_path,
+            app_bundle=args.app_bundle,
             python_executable=sys.executable,
             request_count=args.requests,
             timeout_seconds=args.timeout_seconds,

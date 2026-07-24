@@ -100,16 +100,21 @@ cd desktop
 npm run desktop:release
 ```
 
-`desktop:release` bundles the default runtime profile for the host (`mlx` on
-Apple Silicon), so install that profile first — the build aborts if its
-packages are missing. To package a `base`-only app instead:
+`desktop:release` builds a fresh sidecar and frontend before packaging. It
+bundles `ORPHEUS_RUNTIME_PROFILE` when set, otherwise the target default
+(`mlx` on Apple Silicon and `base` elsewhere), so install that profile first.
+To package a `base`-only app instead:
 
 ```bash
-python scripts/build_desktop_backend.py --runtime-profile base
 cd desktop
-npm run desktop:build
+ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build
 npm run desktop:install
 ```
+
+PowerShell uses
+`$env:ORPHEUS_RUNTIME_PROFILE = "base"; npm run desktop:build`.
+See the platform examples in
+[docs/RUN_APPLICATION.md](docs/RUN_APPLICATION.md#build-desktop-sidecar-for-production-packaging).
 
 ## Common Tasks
 
@@ -118,7 +123,7 @@ npm run desktop:install
 | Run desktop app (dev) | `cd desktop && npm run desktop:dev` | Tauri launches Vite, Rust shell, and Python backend on an ephemeral port. |
 | Run API only | `python -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0` | Loopback FastAPI server; stdout emits one `{"event":"ready",...}` JSON line. |
 | Run benchmark | `python -m orpheus bench parse path/to/book.pdf` | See [docs/TESTING.md](docs/TESTING.md#empirical-benchmark-suite) for `clean`, `full`, and `suite` modes. |
-| Build base sidecar | `python scripts/build_desktop_backend.py --runtime-profile base` | Bundles no local ML runtime. Use `mlx` or `cuda` only after installing that profile; required before `desktop:build` or `desktop:release`. |
+| Build base desktop bundle | `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build` | Tauri freshly builds the base sidecar and frontend before packaging. Use `mlx` or `cuda` only after installing that profile. |
 | Focused tests | `python -m pytest --no-cov <paths>` | Parser, cleaner, TTS, API, storage, and desktop matrices in [docs/TESTING.md](docs/TESTING.md#focused-checks). |
 | Python/core gate | `python run_tests.py --contract` | Default merge gate; excludes property, benchmark, slow, and UI suites. |
 | Clean profile gate | `python run_tests.py --verify-profile base --verify-profile mlx` | Fresh install, import, dependency, prohibited-package, and exact-environment audit checks. Run CUDA on NVIDIA hardware. |
