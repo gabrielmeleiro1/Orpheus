@@ -144,6 +144,39 @@ describe("useConversionQueueRunner", () => {
     cleanup();
   });
 
+  it("starts a passed item (just-queued paste) even when nothing is selected", async () => {
+    const pastedItem = createQueueItem("upload:1_hash_paste.md", "document_audio");
+    pastedItem.status = "ready";
+    const conversionJob = createConversionJobMock();
+    const buildStartPayload = vi.fn((item?: typeof pastedItem) => payload(item?.sourcePath));
+    const statuses: string[] = [];
+    const updateQueueItem = vi.fn((itemId, updater) => {
+      expect(itemId).toBe(pastedItem.id);
+      statuses.push(updater(pastedItem).status);
+    });
+    const syncSelectedQueueEdits = vi.fn();
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [pastedItem],
+      selectedQueueItem: null,
+      buildStartPayload,
+      updateQueueItem,
+      syncSelectedQueueEdits,
+      setQueueStatus: vi.fn(),
+    });
+
+    await result.current?.onStartConversion(pastedItem);
+
+    expect(buildStartPayload).toHaveBeenCalledWith(pastedItem);
+    expect(conversionJob.startConversion).toHaveBeenCalledWith(
+      expect.objectContaining({ source_path: "upload:1_hash_paste.md" }),
+    );
+    expect(syncSelectedQueueEdits).not.toHaveBeenCalled();
+    expect(statuses).toEqual(["converting", "converting", "done"]);
+    cleanup();
+  });
+
   it("marks the selected queue item failed when a single start fails to launch", async () => {
     const item = createQueueItem("/tmp/book.epub", "audiobook");
     item.status = "ready";
@@ -208,6 +241,141 @@ describe("useConversionQueueRunner", () => {
     await Promise.all([first, second]);
 
     expect(conversionJob.startConversion).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+
+  it("prevents two same-task queue runs from starting any item twice", async () => {
+    const first = createQueueItem("/tmp/first.epub", "audiobook");
+    const second = createQueueItem("/tmp/second.epub", "audiobook");
+    first.status = "ready";
+    second.status = "ready";
+    let resolveFirstStart!: (value: StartConversionResult) => void;
+    let startCount = 0;
+    const conversionJob = createConversionJobMock({
+      startConversion: vi.fn(() => {
+        startCount += 1;
+        if (startCount === 1) {
+          return new Promise<StartConversionResult>((resolve) => {
+            resolveFirstStart = resolve;
+          });
+        }
+        return Promise.resolve<StartConversionResult>({ ok: true, jobId: `job-${startCount}` });
+      }),
+    });
+    const items = [first, second];
+    const updateQueueItem = vi.fn((itemId, updater) => {
+      const target = items.find((item) => item.id === itemId);
+      if (target) {
+        Object.assign(target, updater(target));
+      }
+    });
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: items,
+      selectedQueueItem: first,
+      buildStartPayload: (item) => payload(item?.sourcePath),
+      updateQueueItem,
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    const firstRun = result.current!.onRunQueue();
+    const secondRun = result.current!.onRunQueue();
+
+    expect(conversionJob.startConversion).toHaveBeenCalledTimes(1);
+    resolveFirstStart({ ok: true, jobId: "job-1" });
+    await Promise.all([firstRun, secondRun]);
+
+    expect(conversionJob.startConversion).toHaveBeenCalledTimes(2);
+    expect(conversionJob.startConversion).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ source_path: "/tmp/first.epub" }),
+    );
+    expect(conversionJob.startConversion).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ source_path: "/tmp/second.epub" }),
+    );
+    cleanup();
+  });
+
+  it("blocks a queue run while a direct start owns the command", async () => {
+    const item = createQueueItem("/tmp/book.epub", "audiobook");
+    item.status = "ready";
+    let resolveStart!: (value: StartConversionResult) => void;
+    const conversionJob = createConversionJobMock({
+      startConversion: vi.fn(
+        () => new Promise<StartConversionResult>((resolve) => { resolveStart = resolve; }),
+      ),
+    });
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [item],
+      selectedQueueItem: item,
+      buildStartPayload: () => payload(),
+      updateQueueItem: vi.fn(),
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    const directStart = result.current!.onStartConversion();
+    const queueRun = result.current!.onRunQueue();
+
+    expect(conversionJob.startConversion).toHaveBeenCalledTimes(1);
+    resolveStart({ ok: true, jobId: "job-1" });
+    await Promise.all([directStart, queueRun]);
+    cleanup();
+  });
+
+  it("blocks a direct start while a queue run owns the command", async () => {
+    const item = createQueueItem("/tmp/book.epub", "audiobook");
+    item.status = "ready";
+    let resolveStart!: (value: StartConversionResult) => void;
+    const conversionJob = createConversionJobMock({
+      startConversion: vi.fn(
+        () => new Promise<StartConversionResult>((resolve) => { resolveStart = resolve; }),
+      ),
+    });
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [item],
+      selectedQueueItem: item,
+      buildStartPayload: () => payload(),
+      updateQueueItem: vi.fn(),
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    const queueRun = result.current!.onRunQueue();
+    const directStart = result.current!.onStartConversion();
+
+    expect(conversionJob.startConversion).toHaveBeenCalledTimes(1);
+    resolveStart({ ok: true, jobId: "job-1" });
+    await Promise.all([queueRun, directStart]);
+    cleanup();
+  });
+
+  it("releases command ownership so a later queue run can start", async () => {
+    const item = createQueueItem("/tmp/book.epub", "audiobook");
+    item.status = "ready";
+    const conversionJob = createConversionJobMock();
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [item],
+      selectedQueueItem: item,
+      buildStartPayload: () => payload(),
+      updateQueueItem: vi.fn(),
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    await result.current!.onStartConversion();
+    await result.current!.onRunQueue();
+
+    expect(conversionJob.startConversion).toHaveBeenCalledTimes(2);
     cleanup();
   });
 });

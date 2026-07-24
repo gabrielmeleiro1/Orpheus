@@ -339,7 +339,23 @@ export function eventStreamReducer(
         ),
       };
     case "refreshNoClient":
-      return { state: { ...state, activeJobId: null, uiState: "idle" } };
+      return {
+        state: {
+          ...state,
+          uiState: "idle",
+          statusText: "Backend disconnected",
+          progressPct: 0,
+          etaText: "",
+          stages: createProgressStages(),
+          currentStage: "",
+          currentMessage: "",
+          performanceSnapshot: null,
+          activeJobId: null,
+          isCancelling: false,
+          cancellingJobId: null,
+          runningJobId: null,
+        },
+      };
     case "refreshInactive":
       return {
         state: {

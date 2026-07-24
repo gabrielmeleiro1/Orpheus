@@ -55,7 +55,11 @@ export function usePlaybackPersistence({
   const committedPlaybackRef = useRef<Map<number, number>>(new Map());
   const saveSequenceRef = useRef(0);
   const saveTailsRef = useRef<Map<number, Promise<number | null>>>(new Map());
-  const consecutiveSaveFailuresRef = useRef(0);
+  const consecutiveSaveFailuresRef = useRef<Map<number, number>>(new Map());
+  const selectedBookIdRef = useRef(library.selectedBookId);
+  selectedBookIdRef.current = library.selectedBookId;
+  const loadedBookIdRef = useRef(loadedBookId);
+  loadedBookIdRef.current = loadedBookId;
 
   const setPendingResume = useCallback((bookId: number, positionSec: number) => {
     pendingResumeBookIdRef.current = bookId;
@@ -104,11 +108,11 @@ export function usePlaybackPersistence({
           const currentMarker = lastSavedPlaybackRef.current.get(bookId);
           if (currentMarker?.token === token) {
             lastSavedPlaybackRef.current.set(bookId, { positionSec: resolved, token });
-            if (library.selectedBookId === bookId) {
+            if (selectedBookIdRef.current === bookId) {
               library.setSelectedPlaybackPosition(resolved);
             }
           }
-          consecutiveSaveFailuresRef.current = 0;
+          consecutiveSaveFailuresRef.current.delete(bookId);
           return resolved;
         } catch {
           const currentMarker = lastSavedPlaybackRef.current.get(bookId);
@@ -120,10 +124,13 @@ export function usePlaybackPersistence({
               lastSavedPlaybackRef.current.delete(bookId);
             }
           }
-          consecutiveSaveFailuresRef.current += 1;
+          const failureCount = (consecutiveSaveFailuresRef.current.get(bookId) ?? 0) + 1;
+          consecutiveSaveFailuresRef.current.set(bookId, failureCount);
+          const ownsCurrentPlayback =
+            selectedBookIdRef.current === bookId && loadedBookIdRef.current === bookId;
           if (
-            !options.silent ||
-            consecutiveSaveFailuresRef.current >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD
+            ownsCurrentPlayback &&
+            (!options.silent || failureCount >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD)
           ) {
             onSaveFailed();
           }

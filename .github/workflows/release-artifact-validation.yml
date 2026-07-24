@@ -96,6 +96,10 @@ jobs:
           SIDECAR="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
           FFMPEG="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/bin/ffmpeg"
           FFPROBE="$APP_BUNDLE/Contents/Resources/binaries/orpheus-desktop-backend/bin/ffprobe"
+          APP_EXECUTABLE_COUNT="$(find "$APP_BUNDLE/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print | wc -l | tr -d ' ')"
+          test "$APP_EXECUTABLE_COUNT" = "1"
+          APP_EXECUTABLE="$(find "$APP_BUNDLE/Contents/MacOS" -maxdepth 1 -type f -perm -111 -print -quit)"
+          test -x "$APP_EXECUTABLE"
           for resource in "$SIDECAR" "$FFMPEG" "$FFPROBE"; do
             test -f "$resource"
             test -x "$resource"
@@ -106,14 +110,14 @@ jobs:
             x86_64-apple-darwin) EXPECTED_ARCH="x86_64" ;;
             *) echo "unsupported macOS Rust host" >&2; exit 1 ;;
           esac
-          for executable in "$APP_BUNDLE/Contents/MacOS/Orpheus" "$SIDECAR" "$FFMPEG" "$FFPROBE"; do
+          for executable in "$APP_EXECUTABLE" "$SIDECAR" "$FFMPEG" "$FFPROBE"; do
             file "$executable" | grep -E "$EXPECTED_ARCH"
           done
           {
             echo "APP_BUNDLE=$APP_BUNDLE"
             echo "DMG_PATH=$DMG_PATH"
             echo "EXPECTED_ARCH=$EXPECTED_ARCH"
-            file "$APP_BUNDLE/Contents/MacOS/Orpheus" "$SIDECAR" "$FFMPEG" "$FFPROBE"
+            file "$APP_EXECUTABLE" "$SIDECAR" "$FFMPEG" "$FFPROBE"
           } | tee release-artifact-verification.log
 
       - name: Smoke packaged app sidecar and embedded FFmpeg

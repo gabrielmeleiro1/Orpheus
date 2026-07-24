@@ -31,22 +31,26 @@ export function useConversionQueueRunner({
   setQueueStatus,
 }: UseConversionQueueRunnerArgs) {
   const [queueRunning, setQueueRunning] = useState(false);
-  const startCommandInFlightRef = useRef(false);
+  const commandInFlightRef = useRef(false);
 
-  const onStartConversion = useCallback(async () => {
-    if (startCommandInFlightRef.current) {
+  const onStartConversion = useCallback(async (itemOverride?: ConversionQueueItem) => {
+    if (commandInFlightRef.current) {
       return;
     }
-    startCommandInFlightRef.current = true;
-    const targetItem = selectedQueueItem;
+    const targetItem = itemOverride ?? selectedQueueItem;
     const payload = buildStartPayload(targetItem ?? undefined);
+    commandInFlightRef.current = true;
     try {
       if (targetItem) {
-        syncSelectedQueueEdits({
-          sourcePath: payload.source_path,
-          title: payload.title ?? "",
-          author: payload.author ?? "",
-        });
+        // An override (e.g. a just-queued paste) is the payload's source of
+        // truth already; syncing would only reset its preflight state.
+        if (!itemOverride) {
+          syncSelectedQueueEdits({
+            sourcePath: payload.source_path,
+            title: payload.title ?? "",
+            author: payload.author ?? "",
+          });
+        }
         updateQueueItem(targetItem.id, (current) => ({
           ...current,
           status: "converting",
@@ -111,7 +115,7 @@ export function useConversionQueueRunner({
         }));
       }
     } finally {
-      startCommandInFlightRef.current = false;
+      commandInFlightRef.current = false;
     }
   }, [buildStartPayload, conversionJob, selectedQueueItem, syncSelectedQueueEdits, updateQueueItem]);
 
@@ -120,7 +124,7 @@ export function useConversionQueueRunner({
       setQueueStatus("Backend is not connected.");
       return;
     }
-    if (queueRunning) {
+    if (queueRunning || commandInFlightRef.current) {
       return;
     }
 
@@ -135,6 +139,7 @@ export function useConversionQueueRunner({
       return;
     }
 
+    commandInFlightRef.current = true;
     setQueueRunning(true);
     setQueueStatus(
       `Running ${runnableItems.length} queued item${runnableItems.length === 1 ? "" : "s"}...`,
@@ -211,6 +216,7 @@ export function useConversionQueueRunner({
       }
       await conversionJob.refreshActiveConversion();
     } finally {
+      commandInFlightRef.current = false;
       setQueueRunning(false);
     }
   }, [

@@ -287,6 +287,42 @@ describe("event stream reducer actions", () => {
     );
   });
 
+  it("clears conversion telemetry when the backend client disappears", () => {
+    const running = eventStreamReducer(createInitialEventStreamState(), {
+      type: "state",
+      payload: { event_type: "state", state: "running", job_id: "job-1", message: "started" },
+    }).state;
+    const withTelemetry = eventStreamReducer(running, {
+      type: "progress",
+      payload: {
+        event_type: "progress",
+        job_id: "job-1",
+        stage: "synthesizing",
+        overall_progress: 72,
+        eta: 45,
+        message: "working",
+        performance: { active_workers: 2 },
+      },
+    }).state;
+
+    const disconnected = eventStreamReducer(withTelemetry, { type: "refreshNoClient" }).state;
+
+    expect(disconnected).toMatchObject({
+      uiState: "idle",
+      statusText: "Backend disconnected",
+      progressPct: 0,
+      etaText: "",
+      stages: createProgressStages(),
+      currentStage: "",
+      currentMessage: "",
+      performanceSnapshot: null,
+      activeJobId: null,
+      isCancelling: false,
+      cancellingJobId: null,
+      runningJobId: null,
+    });
+  });
+
   it("keeps the cancellation status while the reconcile poll still sees the job running", () => {
     const running = eventStreamReducer(createInitialEventStreamState(), {
       type: "state",

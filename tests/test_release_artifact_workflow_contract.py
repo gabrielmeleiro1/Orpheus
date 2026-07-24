@@ -35,7 +35,8 @@ def test_release_workflow_builds_then_verifies_and_smokes_packaged_app() -> None
         "npm run desktop:build",
         "EXPECTED_ARCH",
         "Contents/Resources/binaries/orpheus-desktop-backend",
-        "Contents/MacOS/Orpheus",
+        'APP_EXECUTABLE="$(find "$APP_BUNDLE/Contents/MacOS"',
+        'test -x "$APP_EXECUTABLE"',
         'file "$executable"',
         'FFMPEG="$APP_BUNDLE',
         'FFPROBE="$APP_BUNDLE',
@@ -49,6 +50,7 @@ def test_release_workflow_builds_then_verifies_and_smokes_packaged_app() -> None
         assert entry in text
     assert text.index("npm run desktop:build") < text.index("EXPECTED_ARCH")
     assert text.index("EXPECTED_ARCH") < text.index("desktop_runtime_smoke.py")
+    assert "Contents/MacOS/Orpheus" not in text
 
 
 def test_source_validation_keeps_windows_rust_job() -> None:
