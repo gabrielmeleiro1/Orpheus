@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .models import ChapterResult
-from .worker_errors import WorkerStartupError, WorkerStartupStatus
+from .worker_errors import StartupErrorKind, WorkerStartupError, WorkerStartupStatus
 from .worker_runtime import _init_worker, get_worker_startup_status
 
 logger = logging.getLogger(__name__)
@@ -460,12 +460,37 @@ class SharedWorkerPoolManager:
             executor.submit(_worker_startup_probe) for _ in range(probe_count)
         ]
         failures: list[WorkerStartupStatus] = []
+        _done, pending = wait(
+            futures,
+            timeout=self._startup_probe_timeout_seconds,
+        )
+        runtime_config = (self._state.worker_init_config or {}).get("tts_runtime")
+        provider = "unknown"
+        device = None
+        if isinstance(runtime_config, dict):
+            provider = str(runtime_config.get("provider") or provider)
+            device = runtime_config.get("device")
+        timeout_message = (
+            "worker startup probe timed out after "
+            f"{self._startup_probe_timeout_seconds:g}s"
+        )
 
         for future in futures:
-            try:
-                status = self._normalize_startup_status(
-                    future.result(timeout=self._startup_probe_timeout_seconds)
+            if future in pending:
+                future.cancel()
+                failures.append(
+                    WorkerStartupStatus(
+                        success=False,
+                        provider=provider,
+                        device=device,
+                        error_type=StartupErrorKind.INFRASTRUCTURE,
+                        message=timeout_message,
+                        phase="startup_probe",
+                    )
                 )
+                continue
+            try:
+                status = self._normalize_startup_status(future.result())
             except Exception as exc:
                 failures.append(
                     WorkerStartupStatus(

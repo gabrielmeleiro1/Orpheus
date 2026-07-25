@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 import sys
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,7 +26,9 @@ from modules.pipeline.worker_errors import (
 from modules.tts.cleaner_errors import CleanerRuntimeMemoryError, CleanerRuntimeUnavailable
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from worker_pool_test_helpers import (
+    PendingStartupProbeExecutor,
     ProbeTrackingExecutor,
+    TrackableFuture,
     make_failing_probe_executor,
     make_startup_status,
     reset_executor_class_state,
@@ -139,6 +142,92 @@ def test_startup_probe_failure_shuts_down_executor_and_raises() -> None:
     assert failing_executor.shutdown_calls >= 1
     assert manager.snapshot()["running"] is False
     assert manager._startup_failures == 1
+
+
+def test_startup_probe_timeouts_share_one_deadline_and_are_infrastructure_failures() -> None:
+    reset_executor_class_state(PendingStartupProbeExecutor)
+    runtime = TTSRuntimeSpec.from_legacy(
+        "kokoro",
+        "bf16",
+        model="mlx-community/Kokoro-82M",
+    )
+
+    with patch(
+        "modules.pipeline.pool_manager.ProcessPoolExecutor",
+        PendingStartupProbeExecutor,
+    ):
+        manager = SharedWorkerPoolManager(
+            max_workers=4,
+            shutdown_timeout_seconds=0.0,
+            startup_probe_timeout_seconds=0.05,
+        )
+        started_at = time.perf_counter()
+        with pytest.raises(WorkerStartupError) as raised:
+            manager.ensure_started(
+                "startup-timeout",
+                worker_init_config={"tts_runtime": runtime.to_dict()},
+            )
+        elapsed = time.perf_counter() - started_at
+
+    executor = PendingStartupProbeExecutor.instances[0]
+    assert elapsed < 0.14
+    assert len(raised.value.statuses) == 4
+    assert {status.error_type for status in raised.value.statuses} == {
+        "WorkerInfrastructureError"
+    }
+    assert all(
+        "timed out after 0.05s" in (status.message or "")
+        for status in raised.value.statuses
+    )
+    assert all(status.provider == "mlx" for status in raised.value.statuses)
+    assert all(
+        future.cancelled_explicitly for future in executor.pending_probe_futures
+    )
+
+
+def test_startup_probe_mixed_results_preserve_submission_order() -> None:
+    unavailable = WorkerStartupStatus(
+        success=False,
+        provider="mlx",
+        device=None,
+        error_type="WorkerRuntimeUnavailableError",
+        message="runtime unavailable",
+        phase="tts_load",
+    )
+
+    class MixedStartupProbeExecutor(PendingStartupProbeExecutor):
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN003
+            super().__init__(*args, **kwargs)
+            self.probe_calls = 0
+
+        def submit(self, fn, *args, **kwargs):  # noqa: ANN003
+            if fn is not _worker_startup_probe:
+                return super().submit(fn, *args, **kwargs)
+            self.probe_calls += 1
+            future = TrackableFuture()
+            if self.probe_calls == 1:
+                self.pending_probe_futures.append(future)
+            else:
+                future.set_result(unavailable)
+            return future
+
+    reset_executor_class_state(MixedStartupProbeExecutor)
+    with patch(
+        "modules.pipeline.pool_manager.ProcessPoolExecutor",
+        MixedStartupProbeExecutor,
+    ):
+        manager = SharedWorkerPoolManager(
+            max_workers=2,
+            shutdown_timeout_seconds=0.0,
+            startup_probe_timeout_seconds=0.01,
+        )
+        with pytest.raises(WorkerStartupError) as raised:
+            manager.ensure_started("mixed-startup-results")
+
+    assert [status.error_type for status in raised.value.statuses] == [
+        "WorkerInfrastructureError",
+        "WorkerRuntimeUnavailableError",
+    ]
 
 
 def test_pool_reuse_uses_health_ping_not_startup_probes() -> None:

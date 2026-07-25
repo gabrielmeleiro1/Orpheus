@@ -61,6 +61,28 @@ class NeverCompletingChapterExecutor(FakeExecutor):
         return future
 
 
+class PendingStartupProbeExecutor(FakeExecutor):
+    """Executor whose worker startup probes never complete."""
+
+    instances: list[PendingStartupProbeExecutor] = []
+    shutdown_calls = 0
+
+    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN003
+        super().__init__(*args, **kwargs)
+        self.pending_probe_futures: list[TrackableFuture] = []
+        type(self).instances.append(self)
+
+    def submit(self, fn, *args, **kwargs):  # noqa: ANN003
+        if fn is _worker_startup_probe:
+            future = TrackableFuture()
+            self.pending_probe_futures.append(future)
+            return future
+        return super().submit(fn, *args, **kwargs)
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:  # noqa: ARG002
+        type(self).shutdown_calls += 1
+
+
 class ProbeTrackingExecutor(FakeExecutor):
     created = 0
     instances: list[ProbeTrackingExecutor] = []

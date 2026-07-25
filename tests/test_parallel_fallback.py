@@ -32,6 +32,7 @@ from modules.pipeline.worker_errors import (
 )
 from worker_pool_test_helpers import (
     NeverCompletingChapterExecutor,
+    PendingStartupProbeExecutor,
     ProgressCapture,
     RecordMemoryPolicy,
     assert_pending_futures_cancelled,
@@ -858,6 +859,48 @@ def test_worker_startup_infrastructure_error_retries_via_real_probes() -> None:
         failure_status,
         progress=progress,
     )
+
+    assert len(results) == 2
+    assert all(result.error is None for result in results)
+    assert pipeline.runtime_flags_seen == [False, False]
+    assert any(
+        payload.get("fallback_reason") == "worker_infrastructure_error"
+        for payload in progress.payloads
+    )
+
+
+def test_worker_startup_timeout_retries_sequential_via_real_pool_boundary() -> None:
+    reset_executor_class_state(PendingStartupProbeExecutor)
+    progress = ProgressCapture()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        manager = SharedWorkerPoolManager(
+            max_workers=2,
+            shutdown_timeout_seconds=0.0,
+            startup_probe_timeout_seconds=0.01,
+        )
+        cfg = PipelineConfig(
+            output_dir=tmp_path / "output",
+            temp_dir=tmp_path / "temp",
+            enable_parallel=True,
+            max_parallel_chapters=2,
+            shared_worker_pool_manager=manager,
+        )
+        pipeline = _SharedManagerProbePipeline(config=cfg)
+        pipeline.progress_callback = progress.callback
+        chapters = _startup_probe_chapters()
+
+        with patch(
+            "modules.pipeline.pool_manager.ProcessPoolExecutor",
+            PendingStartupProbeExecutor,
+        ):
+            results = pipeline.stages.process_chapters_parallel(
+                chapters,
+                cfg.output_dir,
+            )
+
+        manager.shutdown()
 
     assert len(results) == 2
     assert all(result.error is None for result in results)
