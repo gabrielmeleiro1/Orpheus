@@ -9,6 +9,11 @@ Orpheus is a local-first desktop app that converts PDF, EPUB, Markdown, and text
 3. Use [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for runtime boundaries, API contracts, and [where to change X](docs/ARCHITECTURE.md#where-to-change-x).
 4. Use [docs/RUN_APPLICATION.md](docs/RUN_APPLICATION.md) to run, package, or install the app.
 5. Use [docs/TESTING.md](docs/TESTING.md) for the local verification matrix.
+6. For an unsigned Apple Silicon GitHub Release, use
+   [docs/RELEASING_MACOS.md](docs/RELEASING_MACOS.md) (maintainers) and
+   [docs/UNSIGNED_MACOS_INSTALL.md](docs/UNSIGNED_MACOS_INSTALL.md) (install).
+   Source CI (`.github/workflows/source-validation.yml`) is not the full local
+   release gate; `scripts/release_qualification.py` is.
 
 ## Repository Layout
 
@@ -129,6 +134,8 @@ See the platform examples in
 | Clean profile gate | `python run_tests.py --verify-profile base --verify-profile mlx` | Fresh install, import, dependency, prohibited-package, and exact-environment audit checks. Run CUDA on NVIDIA hardware. |
 
 For packaging, install, and release verification, use [docs/RUN_APPLICATION.md](docs/RUN_APPLICATION.md).
+For unsigned macOS DMG qualification and manual GitHub publishing, use
+[docs/RELEASING_MACOS.md](docs/RELEASING_MACOS.md).
 For where to change parsers, cleaners, TTS, the conversion form, API payloads, or storage schema,
 see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#where-to-change-x).
 

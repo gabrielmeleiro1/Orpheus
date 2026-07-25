@@ -177,7 +177,7 @@ never passed.
 | Desktop auth/server | Tauri token/readiness → loopback FastAPI → API/SSE/media | missing/wrong/scoped token, CORS origin, traversal, shutdown, malformed readiness | No new breaking defect after current implementation audit | Existing auth, web, readiness, media-path, and runtime contract suites | — | Luna-high application/storage plus root integration audit: no Critical/Important findings | Contract 1,675; runtime contract 60; packaged sidecar authenticated smoke passed | Host firewall/security-product behavior remains untested |
 | Tauri/process lifecycle | app start/replace/close → sidecar readiness → graceful/forced shutdown; setup child supervision | stale generations, inherited pipes, process groups, timeout/cancel, restart authorization, Windows flags | Earlier hardening held; no new breaking defect found | 79 Rust tests plus Python launcher/runtime contracts | — | Root audit plus Luna-high native-path review: approved | `cargo fmt`, 79 tests, native check, Windows MSVC cross-target check all green | Windows/Linux native execution and signed macOS launch were unavailable |
 | Runtime profiles | setup/manifests → clean profile verification → sidecar marker → capability probe | host dependency leakage, wrong target/profile, prohibited packages, marker mismatch, missing runtime/model | Packaged sidecar identity was implicit; release build did not prove a clean base dependency set | runtime marker/smoke/profile/workflow contract tests | `fe164f0`, `636202b` | Different Luna-high release/application reviewers approved | 60 focused runtime tests; packaged marker is `{"profile":"base"}` | MLX/CUDA installs, hardware probes, and real model assets intentionally not exercised |
-| Release licenses/dependencies | lock/manifests → source checks → build → bundle resources | missing notices, vulnerable dev transitive, Python/Rust/npm integrity | Licenses were absent from bundle; `postcss 8.5.10` had two high advisories | sidecar/resource workflow tests; lock consistency/audit checks | `e112a32`, `06d2245` | Separate Luna-high release and processing reviewers approved | npm audit: 0; pip check: clean; cargo audit: 0 vulnerabilities; licenses present | Rust audit retains upstream informational unmaintained crates and Linux-only `glib 0.18.5` unsound advisory |
+| Release licenses/dependencies | lock/manifests → source checks → build → bundle resources | missing notices, vulnerable dev transitive, Python/Rust/npm integrity | Licenses were absent from bundle; `postcss 8.5.10` had two high advisories | sidecar/resource workflow tests; lock consistency/audit checks | `e112a32`, `06d2245` | Separate Luna-high release and processing reviewers approved | npm audit: 0; pip check: clean; pip-audit: 0 known vulnerabilities; cargo audit: 0 vulnerabilities; licenses present | Rust audit retains upstream informational unmaintained crates and Linux-only `glib 0.18.5` unsound advisory |
 | Installer | built `.app` → hidden staging → target swap → optional source removal | copy failure, final rename failure, rollback, cleanup failure, existing install preservation | Existing app was removed before a safe swap; partial staging survived copy failure | 4 installer tests including final-swap and partial-copy failures | `d0650f9` | Luna-high processing found staging gap; different desktop reviewer approved correction | 4 focused tests and Ruff green; never run against `/Applications` | Process death or backup-removal failure can leave a hidden recoverable backup |
 | Test gates | exact full/contract/marker commands → pytest-cov | narrow marker collection, empty lane, false coverage regression | Global 85% threshold falsely failed populated property/benchmark lanes | `test_run_tests.py` exact-expression/threshold regressions | `19b7854` | Luna-high processing reviewer verified hook ordering and non-exempt threshold | property 29, benchmark 12 pass; slow 5 skip; full 1,716 at 86.62% | Python `-m ui` has zero marked tests and exits 5; React Vitest is the actual UI gate |
 | Packaged artifact | committed source + protected EPUB hardening → PyInstaller/Vite/Rust → `.app`/DMG → sidecar smoke | architecture, execute bits, resources, profile identity, dependency contents, FFmpeg runtime, reduced PATH, DMG integrity | The `fsspec` PyInstaller hook discovered `fsspec.conftest`, pulling the complete pytest and Hypothesis stacks into the production PYZ | sidecar-spec exclusion contract plus real pre/post-build PYZ inspection | `22ed685` plus all applicable commits above | Two independent Luna-high reviewers approved runtime safety; root rebuilt and inspected the archive | pytest, `_pytest`, Hypothesis, `fsspec.conftest`, coverage, mypy, and Ruff absent; arm64 executables; 105,814,039-byte valid DMG; authenticated smoke 100% | Unsigned/unnotarized local build; fixture conversion skipped because base bundle has no local TTS (`mlx` absent) |
@@ -185,7 +185,7 @@ never passed.
 ## Final observed verification
 
 - Ruff: all checks passed.
-- Authoritative contract: 1,675 passed, 46 deselected, 86.17% coverage.
+- Authoritative contract: 1,675 passed, 46 deselected, 86.16% coverage.
 - Full Python suite: 1,716 passed, 5 skipped, 86.62% coverage.
 - Property: 29 passed. Benchmark: 12 passed. Slow: 5 skipped because
   credentials/model runtime were unavailable. Python UI marker: 0 selected,
@@ -213,6 +213,10 @@ never passed.
 - Signing: strict deep verification failed because this local build has no
   sealed distribution signature. Signing and notarization remain a release
   blocker, not a passed check.
+- Python dependency audit: `pip-audit` is pinned in `requirements-dev.txt` and
+  installed in the project virtualenv. It reports no known vulnerabilities.
+  `en-core-web-sm` is skipped because it is not distributed on PyPI and cannot
+  be audited from the index.
 - No merge, push, deployment, installation, optional-runtime install, model
   download, real-data mutation, or installed-app replacement was performed.
 
@@ -291,3 +295,56 @@ work in `modules/errors.py`, `modules/ingestion/epub_parser.py`,
 audited and tested but intentionally not committed, reset, restored, or
 rewritten. No user runtime data, existing library/database, installed app,
 model directory, or real output path was mutated.
+
+## Addendum: branch consolidation (2026-07-25)
+
+The audit's evidence above was measured with the EPUB ZIP-limit work still
+uncommitted, so those figures describe the working tree rather than `47ceaaa`
+alone. That work is now committed as `185dba3`, and two previously separate
+lines of work were merged into this branch:
+
+- `feature/worker-startup-timeout-recovery` (worker startup timeout recovery).
+- `feature/app-performance` (desktop performance and macOS release
+  qualification, 32 commits).
+
+Their staged-but-uncommitted plan documents were committed on their own
+branches first (`8a8e88c`, `5862a66`). Two staged edits were deliberately not
+carried across: both replaced a placeholder username with the real account
+name, which hardcoded a home directory into a contributor-facing document and
+narrowed a redaction test to the running user.
+
+Conflicts were resolved to keep both sides' guarantees; where the two branches
+had solved the same problem differently, the stronger mechanism was kept and
+the weaker one folded into it. On-demand library paging replaces the eager
+25,000-book fetch, so that safety-limit error no longer exists by design.
+
+Post-merge verification on the consolidated branch:
+
+- Ruff: all checks passed.
+- Full Python suite: 1,915 passed, 5 skipped, 86.66% coverage.
+- Frontend: both TypeScript configurations passed; 63 Vitest files and 462
+  tests passed; production Vite build passed.
+- Rust: 102 tests passed; native `cargo check --locked` passed.
+
+### Repackaged artifact (merged branch)
+
+The base profile was rebuilt from the merged branch, so the `47ceaaa` digests
+recorded above are superseded:
+
+- `Orpheus_1.0.0_aarch64.dmg`, 122,116,883 bytes, SHA-256
+  `3aadba2f83f2d0bbdce0eda9390a96b3a29d2be6ceb89a9cd37662361e9896d1`.
+- Sidecar SHA-256
+  `08932b67f321038baedb91e1777b747e7720a51219a7d533c4e990e0deadfdc7`.
+- App, sidecar, FFmpeg, and FFprobe are executable arm64 Mach-O files; the
+  embedded marker reports `base`; both license resources are present.
+- Frozen-module inspection: 2,358 modules in the rebuilt PYZ, with pytest,
+  `_pytest`, Hypothesis, `fsspec.conftest`, coverage, mypy, and Ruff all
+  absent, so the packaging exclusion survived the merge.
+- `hdiutil verify` succeeded. The reduced-PATH sidecar startup/auth/SSE/
+  library/FFmpeg smoke passed at 100%.
+
+Signing status changed. The pre-merge build reported `Sealed Resources=none`
+and failed `codesign --verify --deep --strict`; the merged build seals 1,712
+files and passes strict verification. The artifact is still ad hoc signed with
+no team identifier, so `spctl` rejects it: Developer ID signing and
+notarization remain the release blocker, but the missing-seal defect is fixed.

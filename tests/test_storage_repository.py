@@ -59,6 +59,29 @@ def test_count_books_returns_unfiltered_total_after_create_and_delete(tmp_path):
     assert repo.count_books() == 1
 
 
+def test_create_books_bulk_inserts_in_bounded_batches(tmp_path):
+    repo = SQLiteRepository(tmp_path / "library.db")
+    books = [
+        BookCreate(
+            title=f"Bulk {index:04d}",
+            source_path=f"/tmp/bulk-{index:04d}.pdf",
+            source_type=SourceType.PDF,
+            author="Bulk Author",
+            total_chapters=1,
+            tags="bulk",
+        )
+        for index in range(1200)
+    ]
+    inserted = repo.create_books(books, batch_size=500)
+    assert inserted == 1200
+    assert repo.count_books() == 1200
+    summaries = repo.list_books(BookFilters(limit=1200))
+    assert len(summaries) == 1200
+    assert {item.title for item in summaries} == {
+        f"Bulk {index:04d}" for index in range(1200)
+    }
+
+
 def test_storage_repository() -> bool:
     """Run all repository storage tests."""
     test_dir = PROJECT_ROOT / "tests" / "data"

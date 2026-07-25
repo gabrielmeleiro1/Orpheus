@@ -1,4 +1,4 @@
-use crate::paths::DesktopRuntimePaths;
+use crate::paths::{resolve_desktop_runtime_paths, DesktopRuntimePaths};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1738,7 +1738,7 @@ pub async fn start_runtime_setup(
         .path()
         .app_data_dir()
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
-    let runtime_paths = DesktopRuntimePaths::from_app_data_dir(app_data_dir);
+    let runtime_paths = resolve_desktop_runtime_paths(app_data_dir)?;
     let launch = production_launch_config(request.clone(), &runtime_paths)?;
     start_supervised(
         state.inner().clone(),

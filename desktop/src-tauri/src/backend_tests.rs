@@ -586,12 +586,14 @@ while True:
 
     let running = super::RunningBackend {
         child,
-        stdout_thread,
-        stderr_thread,
+        stdout_thread: Some(stdout_thread),
+        stderr_thread: Some(stderr_thread),
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
         #[cfg(unix)]
         process_group_id: None,
+        child_reaped: false,
+        emergency_teardown_armed: true,
         #[cfg(windows)]
         job,
     };
@@ -641,11 +643,13 @@ while True:
         .expect("expected test process to launch");
 
     thread::sleep(Duration::from_millis(150));
+    let mut child_reaped = false;
     let outcome = super::terminate_backend_process(
         &mut child,
         Duration::from_millis(250),
         None,
         Some(i32::MAX),
+        &mut child_reaped,
     );
 
     assert_eq!(outcome, super::ShutdownOutcome::GracefulTerminated);
@@ -752,12 +756,14 @@ while True:
 
     let running = super::RunningBackend {
         child,
-        stdout_thread,
-        stderr_thread,
+        stdout_thread: Some(stdout_thread),
+        stderr_thread: Some(stderr_thread),
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
         #[cfg(unix)]
         process_group_id: None,
+        child_reaped: false,
+        emergency_teardown_armed: true,
         #[cfg(windows)]
         job,
     };
@@ -824,12 +830,14 @@ while True:
 
     let running = super::RunningBackend {
         child,
-        stdout_thread,
-        stderr_thread,
+        stdout_thread: Some(stdout_thread),
+        stderr_thread: Some(stderr_thread),
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
         #[cfg(unix)]
         process_group_id: None,
+        child_reaped: false,
+        emergency_teardown_armed: true,
         #[cfg(windows)]
         job,
     };
@@ -891,8 +899,14 @@ while True:
         "expected timeout test process to still be running before stop"
     );
 
-    let outcome =
-        super::terminate_backend_process(&mut child, Duration::from_millis(250), None, None);
+    let mut child_reaped = false;
+    let outcome = super::terminate_backend_process(
+        &mut child,
+        Duration::from_millis(250),
+        None,
+        None,
+        &mut child_reaped,
+    );
     assert_eq!(outcome, super::ShutdownOutcome::ForcedKill);
 
     let marker_contents =
@@ -1225,4 +1239,341 @@ while True:
         second.stop(&manager);
     }
     let _ = fs::remove_file(&marker_path);
+}
+
+#[cfg(unix)]
+fn process_is_alive(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+    let result = unsafe { libc::kill(pid, 0) };
+    result == 0
+}
+
+#[cfg(unix)]
+fn wait_until_process_exits(pid: i32, timeout: std::time::Duration) -> bool {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + timeout;
+    while process_is_alive(pid) {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    true
+}
+
+#[cfg(unix)]
+fn launch_backend_with_grandchild() -> (
+    super::RunningBackend,
+    std::sync::Arc<std::sync::Mutex<BackendManager>>,
+    i32,
+    i32,
+    PathBuf,
+) {
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp_root = unique_temp_path("drop-teardown");
+    fs::create_dir_all(&temp_root).expect("temp root");
+    let pid_path = temp_root.join("grandchild.pid");
+    let ready_path = temp_root.join("grandchild.ready");
+
+    let script = r#"import pathlib, signal, subprocess, sys, time
+pid_path = pathlib.Path(sys.argv[1])
+ready_path = pathlib.Path(sys.argv[2])
+grandchild_code = r'''
+import pathlib, signal, sys, time
+ready_path = pathlib.Path(sys.argv[1])
+def on_term(sig, frame):
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, on_term)
+ready_path.write_text("ready")
+while True:
+    time.sleep(0.1)
+'''
+grandchild = subprocess.Popen(
+    [sys.executable, "-c", grandchild_code, str(ready_path)],
+    stdout=sys.stdout,
+    stderr=sys.stderr,
+)
+pid_path.write_text(str(grandchild.pid))
+def on_term(sig, frame):
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, on_term)
+print('{"event":"ready","host":"127.0.0.1","port":9555,"token":"drop-test"}', flush=True)
+while True:
+    time.sleep(0.1)
+"#;
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let running = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".to_string(),
+                script.to_string(),
+                pid_path.to_string_lossy().into_owned(),
+                ready_path.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("backend fixture launch");
+
+    let child_pid = i32::try_from(running.child.id()).expect("child pid");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while (!pid_path.is_file() || !ready_path.is_file()) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(pid_path.is_file(), "expected grandchild pid fixture");
+    assert!(ready_path.is_file(), "expected grandchild ready fixture");
+    let grandchild_pid: i32 = fs::read_to_string(&pid_path)
+        .expect("grandchild pid")
+        .trim()
+        .parse()
+        .expect("integer grandchild pid");
+
+    (running, manager, child_pid, grandchild_pid, temp_root)
+}
+
+#[cfg(unix)]
+#[test]
+fn dropping_running_backend_without_stop_kills_process_group() {
+    use std::fs;
+    use std::time::Duration;
+
+    let (running, _manager, child_pid, grandchild_pid, temp_root) =
+        launch_backend_with_grandchild();
+
+    // Last-chance teardown path: drop without calling ordinary stop().
+    drop(running);
+
+    let child_gone = wait_until_process_exits(child_pid, Duration::from_secs(2));
+    let grandchild_gone = wait_until_process_exits(grandchild_pid, Duration::from_secs(2));
+    if !child_gone || !grandchild_gone {
+        let _ = unsafe { libc::kill(grandchild_pid, libc::SIGKILL) };
+        let _ = unsafe { libc::kill(child_pid, libc::SIGKILL) };
+    }
+    assert!(
+        child_gone,
+        "Drop fallback must kill backend child pid {child_pid}"
+    );
+    assert!(
+        grandchild_gone,
+        "Drop fallback must kill backend process-group grandchild pid {grandchild_pid}"
+    );
+
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+fn launch_backend_leader_exits_leaving_same_group_grandchild() -> (
+    super::RunningBackend,
+    std::sync::Arc<std::sync::Mutex<BackendManager>>,
+    i32,
+    i32,
+    PathBuf,
+) {
+    use std::fs;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp_root = unique_temp_path("leader-exit-grandchild");
+    fs::create_dir_all(&temp_root).expect("temp root");
+    let pid_path = temp_root.join("grandchild.pid");
+    let ready_path = temp_root.join("grandchild.ready");
+    let leader_exited_path = temp_root.join("leader.exited");
+
+    // Leader spawns a same-process-group grandchild, then exits. The grandchild
+    // remains in the owned group — the Drop/emergency path must still kill it
+    // even though child.try_wait() reports the leader has already exited.
+    let script = r#"import os, pathlib, signal, subprocess, sys, time
+pid_path = pathlib.Path(sys.argv[1])
+ready_path = pathlib.Path(sys.argv[2])
+leader_exited_path = pathlib.Path(sys.argv[3])
+grandchild_code = r'''
+import pathlib, signal, sys, time
+ready_path = pathlib.Path(sys.argv[1])
+def on_term(sig, frame):
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, on_term)
+ready_path.write_text("ready")
+while True:
+    time.sleep(0.1)
+'''
+grandchild = subprocess.Popen(
+    [sys.executable, "-c", grandchild_code, str(ready_path)],
+    stdout=sys.stdout,
+    stderr=sys.stderr,
+)
+pid_path.write_text(str(grandchild.pid))
+# Wait until grandchild is ready, then exit the leader while leaving it alive.
+deadline = time.time() + 3
+while not ready_path.is_file() and time.time() < deadline:
+    time.sleep(0.025)
+leader_exited_path.write_text(str(os.getpid()))
+raise SystemExit(0)
+"#;
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let running = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".to_string(),
+                script.to_string(),
+                pid_path.to_string_lossy().into_owned(),
+                ready_path.to_string_lossy().into_owned(),
+                leader_exited_path.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("backend fixture launch");
+
+    let child_pid = i32::try_from(running.child.id()).expect("child pid");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while (!pid_path.is_file() || !ready_path.is_file() || !leader_exited_path.is_file())
+        && Instant::now() < deadline
+    {
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(pid_path.is_file(), "expected grandchild pid fixture");
+    assert!(ready_path.is_file(), "expected grandchild ready fixture");
+    assert!(
+        leader_exited_path.is_file(),
+        "expected leader exit marker fixture"
+    );
+    let grandchild_pid: i32 = fs::read_to_string(&pid_path)
+        .expect("grandchild pid")
+        .trim()
+        .parse()
+        .expect("integer grandchild pid");
+
+    // Leader wrote its exit marker and then exited; do not reap via waitpid —
+    // RunningBackend must retain the unreaped child so Drop can still prove
+    // process-group ownership. Brief settle so the leader is a zombie.
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        process_is_alive(grandchild_pid),
+        "grandchild must still be alive after leader exit"
+    );
+    let grandchild_pgid = unsafe { libc::getpgid(grandchild_pid) };
+    assert_eq!(
+        grandchild_pgid, child_pid,
+        "grandchild must remain in the leader's process group"
+    );
+
+    (running, manager, child_pid, grandchild_pid, temp_root)
+}
+
+#[cfg(unix)]
+#[test]
+fn emergency_teardown_kills_same_group_grandchild_after_leader_exits() {
+    use std::fs;
+    use std::time::Duration;
+
+    let (running, _manager, child_pid, grandchild_pid, temp_root) =
+        launch_backend_leader_exits_leaving_same_group_grandchild();
+
+    // Leader has already exited; Drop/emergency teardown must still tear down
+    // the owned process group (grandchild) within a bound.
+    drop(running);
+
+    let grandchild_gone = wait_until_process_exits(grandchild_pid, Duration::from_secs(2));
+    if !grandchild_gone {
+        let _ = unsafe { libc::kill(grandchild_pid, libc::SIGKILL) };
+        let _ = unsafe { libc::kill(child_pid, libc::SIGKILL) };
+    }
+    assert!(
+        grandchild_gone,
+        "emergency teardown must kill same-group grandchild pid {grandchild_pid} after leader exit"
+    );
+
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_stop_disarms_drop_fallback() {
+    use std::fs;
+    use std::time::Duration;
+
+    let (mut running, manager, child_pid, grandchild_pid, temp_root) =
+        launch_backend_with_grandchild();
+
+    // Disarm without stopping, then Drop must not kill (proves ordinary stop's
+    // disarm path prevents double-kill / unrelated pgid hazards).
+    running.disarm_emergency_teardown();
+    drop(running);
+
+    assert!(
+        process_is_alive(child_pid),
+        "disarmed Drop must not kill the owned backend"
+    );
+    assert!(
+        process_is_alive(grandchild_pid),
+        "disarmed Drop must not kill the process group"
+    );
+
+    // Cleanup the fixture processes now that disarm behavior is verified.
+    let _ = unsafe { libc::kill(grandchild_pid, libc::SIGKILL) };
+    let _ = unsafe { libc::kill(child_pid, libc::SIGKILL) };
+    // Reap the former child so it does not linger as a zombie that still
+    // answers kill(pid, 0).
+    let mut status = 0;
+    let _ = unsafe { libc::waitpid(child_pid, &mut status, 0) };
+    assert!(
+        wait_until_process_exits(grandchild_pid, Duration::from_secs(2)),
+        "cleanup must terminate grandchild"
+    );
+    let _ = manager;
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_stop_then_drop_is_safe_and_repeated_emergency_teardown_is_idempotent() {
+    use std::fs;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    let (running, manager, child_pid, grandchild_pid, temp_root) = launch_backend_with_grandchild();
+
+    running.stop(&manager);
+    assert!(wait_until_process_exits(child_pid, Duration::from_secs(3)));
+    assert!(wait_until_process_exits(
+        grandchild_pid,
+        Duration::from_secs(3)
+    ));
+
+    // Slot-style exit fallback after ordinary stop must be a no-op.
+    let slot: Mutex<Option<super::RunningBackend>> = Mutex::new(None);
+    super::emergency_teardown_backend_slot(&slot);
+    super::emergency_teardown_backend_slot(&slot);
+
+    let (mut running2, manager2, child_pid2, grandchild_pid2, temp_root2) =
+        launch_backend_with_grandchild();
+    running2.emergency_teardown();
+    running2.emergency_teardown();
+    drop(running2);
+    assert!(wait_until_process_exits(child_pid2, Duration::from_secs(2)));
+    assert!(wait_until_process_exits(
+        grandchild_pid2,
+        Duration::from_secs(2)
+    ));
+    let _ = manager2;
+
+    let _ = fs::remove_dir_all(temp_root);
+    let _ = fs::remove_dir_all(temp_root2);
 }

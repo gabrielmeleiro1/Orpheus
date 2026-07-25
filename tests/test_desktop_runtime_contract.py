@@ -243,6 +243,65 @@ def test_app_config_keeps_defaults_when_desktop_env_absent(
     assert (tmp_path / "temp").is_dir()
 
 
+def test_desktop_server_closes_event_broker_on_signal() -> None:
+    import signal as signal_module
+
+    import uvicorn
+    from fastapi import FastAPI
+
+    from apps.launchers.desktop_backend import _DesktopReadyServer
+    from modules.web.events import STREAM_CLOSE_SENTINEL, EventBroker
+
+    broker = EventBroker()
+    app = FastAPI()
+    app.state.event_broker = broker
+    config = uvicorn.Config(app, host="127.0.0.1", port=0)
+    server = _DesktopReadyServer(
+        config,
+        ready_host="127.0.0.1",
+        token="tok",
+        runtime_profile="base",
+    )
+
+    subscriber = broker.subscribe()
+    assert not server.should_exit
+
+    server.handle_exit(signal_module.SIGTERM, None)
+
+    # The broker is closed the moment uvicorn handles the signal, before any
+    # connection draining, so the active SSE generator terminates immediately.
+    assert subscriber.get_nowait() is STREAM_CLOSE_SENTINEL
+    assert server.should_exit
+
+    # Idempotent: a second delivery neither raises nor re-closes the broker.
+    later_subscriber = broker.subscribe()
+    server.handle_exit(signal_module.SIGTERM, None)
+    assert later_subscriber.get_nowait() is STREAM_CLOSE_SENTINEL
+
+
+def test_desktop_server_configures_short_graceful_timeout() -> None:
+    from fastapi import FastAPI
+
+    from apps.launchers.desktop_backend import (
+        DESKTOP_GRACEFUL_SHUTDOWN_TIMEOUT,
+        _build_desktop_server,
+    )
+    from modules.web.events import EventBroker
+
+    app = FastAPI()
+    app.state.event_broker = EventBroker()
+    server = _build_desktop_server(
+        app,
+        host="127.0.0.1",
+        port=0,
+        token="tok",
+        runtime_profile="base",
+    )
+
+    assert server.config.timeout_graceful_shutdown == DESKTOP_GRACEFUL_SHUTDOWN_TIMEOUT
+    assert 0 < DESKTOP_GRACEFUL_SHUTDOWN_TIMEOUT <= 5
+
+
 def test_app_config_does_not_override_explicit_constructor_paths(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

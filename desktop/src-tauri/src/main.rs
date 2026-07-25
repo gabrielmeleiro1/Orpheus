@@ -10,11 +10,11 @@ mod capability_tests;
 mod setup_tests;
 
 use backend::{
-    launch_dev_backend, launch_sidecar_backend, read_ready_payload_from_file,
-    replace_running_backend, resolve_sidecar_path, BackendEndpoint, BackendLifecycle,
-    BackendManager, BackendStatus, RunningBackend,
+    emergency_teardown_backend_slot, launch_dev_backend, launch_sidecar_backend,
+    read_ready_payload_from_file, replace_running_backend, resolve_sidecar_path, BackendEndpoint,
+    BackendLifecycle, BackendManager, BackendStatus, RunningBackend,
 };
-use paths::DesktopRuntimePaths;
+use paths::resolve_desktop_runtime_paths;
 use setup::SetupRunnerState;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,6 +44,70 @@ struct AppState {
     shutting_down: AtomicBool,
 }
 
+// Phase of the one-shot exit coordinator. Closing the last window prevents the
+// first native exit, hides the UI, and runs cleanup off the event-loop thread;
+// only the final programmatic exit (issued once cleanup finishes) is allowed
+// through.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum ExitPhase {
+    #[default]
+    Running,
+    CleaningUp,
+    Finished,
+}
+
+// What the event-loop thread should do with an `ExitRequested` in a given phase.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExitAction {
+    // First request: prevent the exit, hide windows, start background cleanup.
+    StartCleanup,
+    // Cleanup already running: prevent the exit and keep waiting.
+    Prevent,
+    // Cleanup finished: let the (final, programmatic) exit proceed.
+    Allow,
+}
+
+// Pure state decision for the exit coordinator: map the current phase and an
+// incoming exit request to an action plus the next phase. Kept free of any Tauri
+// types so it can be unit-tested directly.
+fn next_exit_action(phase: ExitPhase) -> (ExitAction, ExitPhase) {
+    match phase {
+        ExitPhase::Running => (ExitAction::StartCleanup, ExitPhase::CleaningUp),
+        ExitPhase::CleaningUp => (ExitAction::Prevent, ExitPhase::CleaningUp),
+        ExitPhase::Finished => (ExitAction::Allow, ExitPhase::Finished),
+    }
+}
+
+// Serializes exit handling so repeated close requests (double close, OS + user)
+// never start cleanup twice or race the final exit.
+#[derive(Default)]
+struct ExitCoordinator {
+    phase: Mutex<ExitPhase>,
+}
+
+impl ExitCoordinator {
+    // Advance the phase for one exit request and report the action to take. On
+    // exit the lock is taken even if poisoned; the decision still has to run.
+    fn on_exit_requested(&self) -> ExitAction {
+        let mut phase = self
+            .phase
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (action, next) = next_exit_action(*phase);
+        *phase = next;
+        action
+    }
+
+    // Mark cleanup complete so the following programmatic exit is allowed.
+    fn mark_finished(&self) {
+        let mut phase = self
+            .phase
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *phase = ExitPhase::Finished;
+    }
+}
+
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .map(|value| value.trim().to_ascii_lowercase())
@@ -71,7 +135,7 @@ impl AppState {
             .path()
             .app_data_dir()
             .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
-        let runtime_paths = DesktopRuntimePaths::from_app_data_dir(app_data_dir);
+        let runtime_paths = resolve_desktop_runtime_paths(app_data_dir)?;
         let ready_file_path = runtime_paths.ready_file_path.clone();
         let _ = std::fs::remove_file(&ready_file_path);
         let manager = Arc::clone(&self.backend_manager);
@@ -462,9 +526,11 @@ fn open_app_data_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
-    std::fs::create_dir_all(&app_data_dir)
+    let runtime_paths = resolve_desktop_runtime_paths(app_data_dir)?;
+    std::fs::create_dir_all(&runtime_paths.app_data_dir)
         .map_err(|error| format!("failed to create app data directory: {error}"))?;
-    let app_data_dir = app_data_dir
+    let app_data_dir = runtime_paths
+        .app_data_dir
         .canonicalize()
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
     open::that(app_data_dir).map_err(|error| format!("failed to open app data folder: {error}"))
@@ -474,6 +540,7 @@ fn main() {
     let app = tauri::Builder::default()
         .manage(AppState::default())
         .manage(SetupRunnerState::default())
+        .manage(ExitCoordinator::default())
         .setup(|app| {
             let state = app.state::<AppState>();
             if let Err(error) = state.start_backend(app.handle()) {
@@ -499,17 +566,161 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
 
-    app.run(|app_handle, event| {
-        if matches!(
-            event,
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-        ) {
-            if let Some(state) = app_handle.try_state::<AppState>() {
-                state.shutdown();
-            }
-            if let Some(state) = app_handle.try_state::<SetupRunnerState>() {
-                state.shutdown();
+    app.run(|app_handle, event| match event {
+        // Make close feel immediate: prevent the first native exit, hide the UI
+        // now, and run the (multi-second) backend + setup-runner cleanup off the
+        // event-loop thread. When cleanup finishes we issue a final programmatic
+        // exit, which comes back through here and is allowed once `Finished`.
+        tauri::RunEvent::ExitRequested { api, code, .. } => {
+            let action = app_handle
+                .try_state::<ExitCoordinator>()
+                .map(|coordinator| coordinator.on_exit_requested())
+                // Without the coordinator we cannot coordinate a bounded exit;
+                // fall back to letting the exit proceed.
+                .unwrap_or(ExitAction::Allow);
+
+            match action {
+                ExitAction::StartCleanup => {
+                    api.prevent_exit();
+                    let exit_code = code.unwrap_or(0);
+                    // Hide every window immediately so the app disappears while
+                    // cleanup runs. Hiding an already-hidden window is a no-op.
+                    for (_, window) in app_handle.webview_windows() {
+                        let _ = window.hide();
+                    }
+
+                    let cleanup_handle = app_handle.clone();
+                    thread::spawn(move || {
+                        if let Some(state) = cleanup_handle.try_state::<AppState>() {
+                            state.shutdown();
+                        }
+                        if let Some(state) = cleanup_handle.try_state::<SetupRunnerState>() {
+                            state.shutdown();
+                        }
+                        if let Some(coordinator) = cleanup_handle.try_state::<ExitCoordinator>() {
+                            coordinator.mark_finished();
+                        }
+                        // Allowed through by the coordinator's `Finished` phase.
+                        cleanup_handle.exit(exit_code);
+                    });
+                }
+                ExitAction::Prevent => {
+                    api.prevent_exit();
+                }
+                ExitAction::Allow => {}
             }
         }
+        // Last-chance backend teardown if ExitRequested cleanup did not drain the
+        // slot (Cmd+Q / abrupt exit). Idempotent when ordinary stop already ran.
+        tauri::RunEvent::Exit => {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                emergency_teardown_backend_slot(&state.backend_process);
+            }
+        }
+        _ => {}
     });
+}
+
+#[cfg(test)]
+mod exit_coordinator_tests {
+    use super::{next_exit_action, ExitAction, ExitCoordinator, ExitPhase};
+
+    #[test]
+    fn first_request_starts_cleanup() {
+        assert_eq!(
+            next_exit_action(ExitPhase::Running),
+            (ExitAction::StartCleanup, ExitPhase::CleaningUp)
+        );
+    }
+
+    #[test]
+    fn request_while_cleaning_up_only_prevents() {
+        assert_eq!(
+            next_exit_action(ExitPhase::CleaningUp),
+            (ExitAction::Prevent, ExitPhase::CleaningUp)
+        );
+    }
+
+    #[test]
+    fn request_after_cleanup_is_allowed() {
+        assert_eq!(
+            next_exit_action(ExitPhase::Finished),
+            (ExitAction::Allow, ExitPhase::Finished)
+        );
+    }
+
+    #[test]
+    fn coordinator_starts_cleanup_once_then_prevents() {
+        let coordinator = ExitCoordinator::default();
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::StartCleanup);
+        // Repeated close requests during cleanup never restart it.
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::Prevent);
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::Prevent);
+    }
+
+    #[test]
+    fn coordinator_allows_exit_after_cleanup_finishes() {
+        let coordinator = ExitCoordinator::default();
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::StartCleanup);
+        coordinator.mark_finished();
+        // The final programmatic exit is allowed through.
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::Allow);
+    }
+}
+
+#[cfg(test)]
+mod qualification_runtime_resolve_tests {
+    use crate::paths::{
+        resolve_desktop_runtime_paths_with_env, DesktopRuntimePaths, QUALIFICATION_SENTINEL_NAME,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(label: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("orpheus-main-paths-{label}-{nanos}"));
+        fs::create_dir_all(&path).expect("temp dir");
+        path
+    }
+
+    #[test]
+    fn start_backend_path_resolution_honors_validated_qualification_root() {
+        let live = unique_temp_dir("live");
+        let runtime = unique_temp_dir("qual");
+        fs::write(runtime.join(QUALIFICATION_SENTINEL_NAME), "1.0.0-final\n").expect("sentinel");
+
+        let resolved = resolve_desktop_runtime_paths_with_env(
+            &live,
+            Some(runtime.as_os_str().to_owned()),
+            Some(std::ffi::OsString::from("1.0.0-final")),
+        )
+        .expect("qualification resolve");
+
+        assert_eq!(
+            resolved.app_data_dir,
+            runtime.canonicalize().expect("canonical")
+        );
+        assert_ne!(resolved, DesktopRuntimePaths::from_app_data_dir(&live));
+
+        let _ = fs::remove_dir_all(live);
+        let _ = fs::remove_dir_all(runtime);
+    }
+
+    #[test]
+    fn incomplete_qualification_override_does_not_fall_back_for_backend_start() {
+        let live = unique_temp_dir("live-incomplete");
+        let err = resolve_desktop_runtime_paths_with_env(
+            &live,
+            Some(std::ffi::OsString::from("/tmp/unused-qual-root")),
+            None,
+        )
+        .expect_err("incomplete pair must fail closed");
+        assert!(err.contains("ORPHEUS_QUALIFICATION_RELEASE_ID"), "{err}");
+        assert!(err.to_ascii_lowercase().contains("refusing"), "{err}");
+        let _ = fs::remove_dir_all(live);
+    }
 }

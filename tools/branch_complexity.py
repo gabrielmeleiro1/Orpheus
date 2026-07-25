@@ -170,6 +170,11 @@ def count_ts_files(paths: list[str]) -> dict[str, int]:
         cwd=REPO_ROOT,
     )
     if proc.returncode != 0:
+        if "Cannot find module 'typescript'" in proc.stderr:
+            raise SystemExit(
+                "the TS branch counter needs the TypeScript compiler from the "
+                "desktop app; run `npm ci` in desktop/ first"
+            )
         raise SystemExit(f"TS branch counter failed:\n{proc.stderr}")
     return json.loads(proc.stdout)
 

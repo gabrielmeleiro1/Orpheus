@@ -227,6 +227,18 @@ The first command is the Python/core gate. The remaining commands cover the
 desktop UI, Tauri shell, sidecar packaging, release bundle, and installed-app
 path.
 
+### Unsigned macOS release install
+
+Published Apple Silicon DMGs are **unsigned** and **unnotarized**. End users
+should follow [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): verify
+`SHA256SUMS` with `shasum -a 256` before first open, then use right-click
+**Open** or System Settings **Open Anyway**.
+
+Maintainers producing a GitHub Release must run the full local gate in
+[RELEASING_MACOS.md](RELEASING_MACOS.md) (`scripts/release_qualification.py`).
+Source CI (`.github/workflows/source-validation.yml`) remains source validation
+only and does not publish release artifacts.
+
 ### Packaged app smoke (manual/ops)
 
 Launch and close the installed packaged app:

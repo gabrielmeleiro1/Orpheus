@@ -27,6 +27,7 @@ venv/
 
 # Local tool state
 .artifacts/
+.artifacts/release-qualification/
 docs/plans/
 .claude/
 scripts/sync_to_desktop.sh

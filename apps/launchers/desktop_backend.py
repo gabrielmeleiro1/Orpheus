@@ -30,6 +30,12 @@ _LIBESPEAK_PATH_HOME_LIMIT = 160
 _SUPPORTED_RUNTIME_PROFILES = frozenset({"base", "mlx", "cuda"})
 _RUNTIME_PROFILE_MARKER = "runtime-profile.json"
 
+# Upper bound on how long Uvicorn will wait for active connections to drain on
+# shutdown. The persistent SSE stream is closed proactively on signal (see
+# `_DesktopReadyServer.handle_exit`), so this is only a backstop that keeps
+# desktop close bounded even if a client connection lingers.
+DESKTOP_GRACEFUL_SHUTDOWN_TIMEOUT = 3.0
+
 
 def _path_filesystem_byte_length(path: Path | str) -> int:
     """Return path length in filesystem-encoded bytes (libespeak buffer units)."""
@@ -201,6 +207,30 @@ class _DesktopReadyServer(uvicorn.Server):
         self._token = token
         self._runtime_profile = runtime_profile
         self.ready_emitted = False
+        self._broker_shutdown_done = False
+
+    def handle_exit(self, sig: int, frame: object) -> None:
+        # Close the event broker the instant Uvicorn handles its exit signal,
+        # before Uvicorn begins draining active connections. The persistent SSE
+        # response would otherwise keep a connection alive until FastAPI lifespan
+        # teardown, so closing here breaks that shutdown cycle and lets desktop
+        # close feel immediate. Runs in the signal handler, so it must stay cheap
+        # and non-blocking (broker shutdown is just bounded queue puts).
+        self._shutdown_event_broker()
+        super().handle_exit(sig, frame)
+
+    def _shutdown_event_broker(self) -> None:
+        # Idempotent: only fan out the close sentinel once even if the signal is
+        # delivered repeatedly. `EventBroker.shutdown` is itself idempotent, but
+        # this also guards apps that expose a non-idempotent broker.
+        if self._broker_shutdown_done:
+            return
+        self._broker_shutdown_done = True
+        app_state = getattr(self.config.app, "state", None)
+        broker = getattr(app_state, "event_broker", None)
+        shutdown = getattr(broker, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
 
     async def startup(self, sockets: list[socket.socket] | None = None) -> None:
         await super().startup(sockets=sockets)
@@ -236,6 +266,30 @@ class _DesktopReadyServer(uvicorn.Server):
             for sig, handler in original_handlers.items():
                 signal.signal(sig, handler)
             self._captured_signals.clear()
+
+
+def _build_desktop_server(
+    app: object,
+    *,
+    host: str,
+    port: int,
+    token: str,
+    runtime_profile: str,
+) -> _DesktopReadyServer:
+    config = uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        access_log=False,
+        log_level="warning",
+        timeout_graceful_shutdown=DESKTOP_GRACEFUL_SHUTDOWN_TIMEOUT,
+    )
+    return _DesktopReadyServer(
+        config,
+        ready_host=host,
+        token=token,
+        runtime_profile=runtime_profile,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -324,16 +378,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"failed to start desktop backend: {exc}", file=sys.stderr)
         return 1
     app = create_app(desktop_mode=True, desktop_api_token=token)
-    config = uvicorn.Config(
+    server = _build_desktop_server(
         app,
         host=args.host,
         port=args.port,
-        access_log=False,
-        log_level="warning",
-    )
-    server = _DesktopReadyServer(
-        config,
-        ready_host=args.host,
         token=token,
         runtime_profile=runtime_profile,
     )

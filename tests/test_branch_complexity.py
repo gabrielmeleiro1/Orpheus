@@ -5,11 +5,14 @@ them, so a miscount either hides real complexity or rewards fake reductions.
 """
 
 import shutil
+import subprocess
 import textwrap
+from pathlib import Path
 
 import pytest
 
 from tools.branch_complexity import (
+    REPO_ROOT,
     bucket_for,
     count_python_source,
     count_rust_source,
@@ -17,6 +20,35 @@ from tools.branch_complexity import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _typescript_toolchain_available() -> bool:
+    """The TS counter shells out to node and needs desktop/node_modules.
+
+    A source-only checkout (fresh clone, or a CI lane that runs pytest before
+    `npm ci`) has neither, which is an environment gap rather than a defect --
+    skip instead of failing the suite.
+    """
+    if shutil.which("node") is None:
+        return False
+    probe = subprocess.run(
+        [
+            "node",
+            "-e",
+            "require('node:module')"
+            ".createRequire(process.argv[1])('typescript')",
+            str(Path(REPO_ROOT) / "desktop" / "package.json"),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return probe.returncode == 0
+
+
+requires_typescript = pytest.mark.skipif(
+    not _typescript_toolchain_available(),
+    reason="node + desktop/node_modules typescript required; run `npm ci` in desktop/",
+)
 
 
 class TestPythonCounter:
@@ -110,6 +142,7 @@ class TestRustCounter:
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node not installed")
+@requires_typescript
 class TestTypeScriptCounter:
     def test_conditionals_loops_and_switch(self, tmp_path):
         source = textwrap.dedent(

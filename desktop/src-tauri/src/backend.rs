@@ -190,14 +190,23 @@ pub struct ProcessLaunchConfig {
 #[derive(Debug)]
 pub struct RunningBackend {
     child: Child,
-    stdout_thread: JoinHandle<()>,
-    stderr_thread: JoinHandle<()>,
+    stdout_thread: Option<JoinHandle<()>>,
+    stderr_thread: Option<JoinHandle<()>>,
     // Set by the stdout reader when the backend prints its shutdown
     // acknowledgement after finishing cleanup; exit is imminent at that point.
     shutdown_ack: Arc<AtomicBool>,
     generation: u64,
     #[cfg(unix)]
     process_group_id: Option<i32>,
+    // True after this Child has been reaped via wait/try_wait. Used with the
+    // process-group ownership guard: on macOS getpgid(zombie) fails even while
+    // unreaped, but an unreaped leader PID cannot be reused and still names the
+    // process_group(0) group for remaining members.
+    #[cfg(unix)]
+    child_reaped: bool,
+    // When true, Drop/Exit fallback force-kills the owned process group. Ordinary
+    // `stop()` disarms this after teardown so Drop cannot signal a reused pgid.
+    emergency_teardown_armed: bool,
     #[cfg(windows)]
     job: Arc<WindowsJob>,
 }
@@ -227,6 +236,7 @@ const BACKEND_SHUTDOWN_ACK_EXTENSION: Duration = Duration::from_millis(1500);
 #[cfg(test)]
 const BACKEND_SHUTDOWN_FORCE_KILL_MAX: Duration = Duration::from_millis(8000);
 const BACKEND_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const BACKEND_EMERGENCY_TEARDOWN_WAIT: Duration = Duration::from_millis(500);
 const BACKEND_READER_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
 const BACKEND_READER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const BACKEND_SIDECAR_NAME: &str = "orpheus-desktop-backend";
@@ -243,8 +253,42 @@ fn terminate_backend_process(
     timeout: Duration,
     shutdown_ack: Option<&AtomicBool>,
     #[cfg(unix)] process_group_id: Option<i32>,
+    #[cfg(unix)] child_reaped: &mut bool,
     #[cfg(windows)] job: Option<&WindowsJob>,
 ) -> ShutdownOutcome {
+    #[cfg(unix)]
+    {
+        let pid = i32::try_from(child.id()).unwrap_or(-1);
+        let current_pgid = if pid > 0 {
+            unsafe { libc::getpgid(pid) }
+        } else {
+            -1
+        };
+        let verified_owned_pgid =
+            verified_owned_process_group_id(child, process_group_id, *child_reaped);
+
+        if let Some(pgid) = verified_owned_pgid {
+            // macOS: getpgid(unreaped zombie) fails even though the PID is still
+            // reserved. Kill the owned group before reap so grandchildren cannot
+            // leak; process_group(0) keeps pgid == leader pid for this guard.
+            if current_pgid != pgid {
+                let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+                if let Ok(Some(_)) = child.try_wait() {
+                    *child_reaped = true;
+                }
+                return ShutdownOutcome::AlreadyExited;
+            }
+        }
+
+        if let Ok(Some(_)) = child.try_wait() {
+            *child_reaped = true;
+            if let Some(pgid) = verified_owned_pgid {
+                let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+            }
+            return ShutdownOutcome::AlreadyExited;
+        }
+    }
+    #[cfg(not(unix))]
     if let Ok(Some(_)) = child.try_wait() {
         return ShutdownOutcome::AlreadyExited;
     }
@@ -274,6 +318,10 @@ fn terminate_backend_process(
 
     if graceful_signal_sent {
         if wait_for_child_exit(child, timeout) {
+            #[cfg(unix)]
+            {
+                *child_reaped = true;
+            }
             return ShutdownOutcome::GracefulTerminated;
         }
         // The backend acknowledged that cleanup finished, so its exit is
@@ -282,6 +330,10 @@ fn terminate_backend_process(
         if shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
             && wait_for_child_exit(child, BACKEND_SHUTDOWN_ACK_EXTENSION)
         {
+            #[cfg(unix)]
+            {
+                *child_reaped = true;
+            }
             return ShutdownOutcome::GracefulTerminated;
         }
     }
@@ -362,6 +414,34 @@ fn send_signal_to_process_group(process_group_id: i32, signal: i32) -> std::io::
     }
 }
 
+/// Strongest portable ownership guard for an owned backend process group.
+///
+/// 1. `getpgid(leader_pid) == stored_pgid` while the leader is live (or on
+///    platforms where zombie getpgid still works), or
+/// 2. the leader is still unreaped and `stored_pgid == leader_pid` — true for
+///    `process_group(0)` spawns. On macOS, getpgid/kill(0) on an unreaped zombie
+///    return ESRCH, but the PID remains reserved until reap, so signaling
+///    `-pgid` still targets only that owned group (or ESRCH if empty).
+///
+/// After reap, PID reuse makes pgid-only signaling unsafe — return None.
+#[cfg(unix)]
+fn verified_owned_process_group_id(
+    child: &Child,
+    process_group_id: Option<i32>,
+    child_reaped: bool,
+) -> Option<i32> {
+    let process_group_id = process_group_id.filter(|pgid| *pgid > 0)?;
+    let pid = i32::try_from(child.id()).ok().filter(|pid| *pid > 0)?;
+    let current_pgid = unsafe { libc::getpgid(pid) };
+    if current_pgid == process_group_id {
+        return Some(process_group_id);
+    }
+    if !child_reaped && pid == process_group_id {
+        return Some(process_group_id);
+    }
+    None
+}
+
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
@@ -400,6 +480,45 @@ fn join_reader_thread(handle: JoinHandle<()>, timeout: Duration) -> bool {
 }
 
 impl RunningBackend {
+    pub fn disarm_emergency_teardown(&mut self) {
+        self.emergency_teardown_armed = false;
+    }
+
+    /// Last-chance, bounded force-kill of the owned backend process group.
+    /// Idempotent: safe to call repeatedly and after the child has already exited.
+    pub fn emergency_teardown(&mut self) {
+        if !self.emergency_teardown_armed {
+            return;
+        }
+        self.force_kill_owned_process_group();
+        self.emergency_teardown_armed = false;
+    }
+
+    fn force_kill_owned_process_group(&mut self) {
+        // Do not return early when the leader has already exited: a same-group
+        // grandchild can outlive the leader. Signal the group only under the
+        // ownership guard (live getpgid match, or unreaped process_group(0)
+        // leader). After reap, skip pgid signaling rather than risk reuse.
+        #[cfg(unix)]
+        {
+            if let Some(process_group_id) = verified_owned_process_group_id(
+                &self.child,
+                self.process_group_id,
+                self.child_reaped,
+            ) {
+                let _ = send_signal_to_process_group(process_group_id, libc::SIGKILL);
+            }
+        }
+
+        let _ = self.child.kill();
+        let _ = wait_for_child_exit(&mut self.child, BACKEND_EMERGENCY_TEARDOWN_WAIT);
+        let _ = self.child.wait();
+        #[cfg(unix)]
+        {
+            self.child_reaped = true;
+        }
+    }
+
     pub fn refresh_exit_status(
         &mut self,
         manager: &Arc<Mutex<BackendManager>>,
@@ -411,6 +530,10 @@ impl RunningBackend {
         let Some(exit_status) = exit_status else {
             return Ok(());
         };
+        #[cfg(unix)]
+        {
+            self.child_reaped = true;
+        }
 
         let mut guard = manager
             .lock()
@@ -434,6 +557,10 @@ impl RunningBackend {
     }
 
     pub fn stop(mut self, manager: &Arc<Mutex<BackendManager>>) {
+        // Tear down first while emergency Drop fallback remains armed. Disarm
+        // only after ownership is released so a panic/error mid-stop cannot
+        // leave same-group grandchildren behind; getpgid ownership checks keep
+        // a late Drop from signaling a reused process group.
         let generation = self.generation;
         let _ = terminate_backend_process(
             &mut self.child,
@@ -441,18 +568,34 @@ impl RunningBackend {
             Some(self.shutdown_ack.as_ref()),
             #[cfg(unix)]
             self.process_group_id,
+            #[cfg(unix)]
+            &mut self.child_reaped,
             #[cfg(windows)]
             Some(self.job.as_ref()),
         );
 
         let _ = self.child.wait();
-        let _stdout_joined = join_reader_thread(self.stdout_thread, BACKEND_READER_JOIN_TIMEOUT);
-        let _stderr_joined = join_reader_thread(self.stderr_thread, BACKEND_READER_JOIN_TIMEOUT);
+        #[cfg(unix)]
+        {
+            self.child_reaped = true;
+        }
+        let _stdout_joined = self
+            .stdout_thread
+            .take()
+            .map(|handle| join_reader_thread(handle, BACKEND_READER_JOIN_TIMEOUT))
+            .unwrap_or(true);
+        let _stderr_joined = self
+            .stderr_thread
+            .take()
+            .map(|handle| join_reader_thread(handle, BACKEND_READER_JOIN_TIMEOUT))
+            .unwrap_or(true);
 
         #[cfg(unix)]
         if (!_stdout_joined || !_stderr_joined) && self.process_group_id.is_some() {
             let _ = send_signal_to_process_group(self.process_group_id.unwrap(), libc::SIGKILL);
         }
+
+        self.disarm_emergency_teardown();
 
         if let Ok(mut guard) = manager.lock() {
             guard.mark_stopped_for_generation(generation);
@@ -460,11 +603,29 @@ impl RunningBackend {
     }
 }
 
+impl Drop for RunningBackend {
+    fn drop(&mut self) {
+        // Last-chance teardown when ordinary stop()/ExitRequested cleanup did not
+        // run (e.g. abrupt RunEvent::Exit). Bounded and idempotent.
+        self.emergency_teardown();
+    }
+}
+
+// Drain a supervised backend slot for last-chance exit teardown. Taking the
+// value drops it, which force-kills when still armed. Empty slots are no-ops.
+pub fn emergency_teardown_backend_slot(slot: &Mutex<Option<RunningBackend>>) {
+    let _taken = match slot.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+}
+
 // Install `next` as the supervised backend, fully stopping any child it
-// displaces. `Child` has no kill-on-drop and `RunningBackend` has no `Drop`, so
-// silently overwriting a live entry would leak a running sidecar (and its bound
-// port). Swapping under a short lock and stopping the displaced child outside
-// the lock guarantees the previous process is always torn down.
+// displaces. `Child` has no kill-on-drop, so silently overwriting a live entry
+// would leak a running sidecar (and its bound port). Swapping under a short lock
+// and stopping the displaced child outside the lock guarantees the previous
+// process is always torn down. `RunningBackend`'s Drop is a last-chance backup
+// only; ordinary displacement still uses graceful `stop()`.
 pub fn replace_running_backend(
     slot: &Mutex<Option<RunningBackend>>,
     manager: &Arc<Mutex<BackendManager>>,
@@ -883,12 +1044,15 @@ fn launch_backend(
 
     Ok(RunningBackend {
         child,
-        stdout_thread,
-        stderr_thread,
+        stdout_thread: Some(stdout_thread),
+        stderr_thread: Some(stderr_thread),
         shutdown_ack,
         generation,
         #[cfg(unix)]
         process_group_id,
+        #[cfg(unix)]
+        child_reaped: false,
+        emergency_teardown_armed: true,
         #[cfg(windows)]
         job,
     })

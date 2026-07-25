@@ -523,6 +523,67 @@ def test_runtime_capability_service_uses_in_process_probe_when_frozen(monkeypatc
     assert isinstance(result["latency_ms"], float)
 
 
+def test_in_process_probe_survives_missing_stdout_rebind_and_concurrency(
+    monkeypatch,
+) -> None:
+    """Frozen/GUI probes must not rely on process-global stdout redirection.
+
+    Packaged windowed backends often have sys.stdout is None, and setup status
+    plus /api/system/capabilities probe concurrently on separate threads.
+    contextlib.redirect_stdout is not thread-safe: racing redirects yield the
+    exact production error ``probe produced no output`` even when imports work.
+    """
+    import threading
+
+    runtime_capability_service = importlib.import_module(
+        "modules.app.services.runtime_capability_service"
+    )
+    RuntimeCapabilityService = runtime_capability_service.RuntimeCapabilityService
+    service = RuntimeCapabilityService(cache_ttl_seconds=0.0, timeout_seconds=4.0)
+
+    monkeypatch.setattr(runtime_capability_service.sys, "stdout", None, raising=False)
+    monkeypatch.setattr(runtime_capability_service.sys, "stderr", None, raising=False)
+
+    rebind_script = """
+import json
+import sys
+sys.stdout = type("Null", (), {"write": lambda self, s: None, "flush": lambda self: None})()
+print(json.dumps({"available": True}))
+"""
+    rebound = service._run_in_process_probe(rebind_script)
+    assert rebound["available"] is True, rebound
+    assert rebound.get("error") in (None, "")
+
+    concurrent_script = """
+import json
+import time
+time.sleep(0.03)
+print(json.dumps({"available": True}))
+"""
+    results: list[dict] = []
+    errors: list[BaseException] = []
+
+    def _worker() -> None:
+        try:
+            results.append(service._run_in_process_probe(concurrent_script))
+        except BaseException as exc:  # noqa: BLE001 - collect for assertion
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_worker) for _ in range(16)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors
+    assert len(results) == 16
+    assert all(result.get("available") is True for result in results), results
+    assert all(
+        "probe produced no output" not in str(result.get("error") or "")
+        for result in results
+    )
+
+
 def test_tts_engine_warmup_model_is_idempotent() -> None:
     tts = engine.TTSEngine.__new__(engine.TTSEngine)
     tts._model_loaded = False

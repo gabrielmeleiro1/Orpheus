@@ -45,6 +45,26 @@ def test_windows_cuda_setup_uses_powershell_safe_syntax() -> None:
     assert "accepted_risk" not in readme
 
 
+def test_tauri_macos_minimum_system_version_is_14() -> None:
+    """Release target is macOS 14+; Tauri defaults to 10.13 unless overridden."""
+    import json
+
+    conf_path = ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
+    payload = json.loads(conf_path.read_text(encoding="utf-8"))
+    mac = payload.get("bundle", {}).get("macOS", {})
+    assert mac.get("minimumSystemVersion") == "14.0"
+
+
+def test_tauri_macos_signing_identity_is_adhoc_dash() -> None:
+    """Outer ad-hoc seal (-) so Gatekeeper sees a complete unsigned bundle seal."""
+    import json
+
+    conf_path = ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
+    payload = json.loads(conf_path.read_text(encoding="utf-8"))
+    mac = payload.get("bundle", {}).get("macOS", {})
+    assert mac.get("signingIdentity") == "-"
+
+
 def test_ci_validates_sources_without_producing_releases() -> None:
     workflow = ROOT / ".github" / "workflows" / "source-validation.yml"
     assert workflow.is_file()

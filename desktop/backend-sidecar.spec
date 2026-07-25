@@ -107,6 +107,11 @@ elif runtime_profile == "cuda":
 binaries = []
 if runtime_profile in {"mlx", "cuda"}:
     binaries += _collect_dynamic_libs("espeakng_loader")
+if runtime_profile == "mlx":
+    # libmlx.dylib references @rpath/libjaccl.dylib. PyInstaller cannot resolve
+    # @rpath deps and only warns; without an explicit collect the frozen MLX
+    # import fails even though mlx.metallib and libmlx.dylib are present.
+    binaries += _collect_dynamic_libs("mlx")
 if runtime_profile == "cuda":
     binaries += _collect_dynamic_libs("bitsandbytes")
 

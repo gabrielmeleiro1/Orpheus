@@ -235,30 +235,45 @@ manual smoke.
 ## Desktop Release Readiness Verification
 
 Use this full matrix before desktop release candidates. The Python/core contract
-is only the first command in the release evidence set:
+is only the first command in the release evidence set.
+
+For a full local release gate on Apple Silicon (unsigned DMG qualification,
+artifact inspection, lifecycle budgets, and Computer Use checklist recording),
+run `scripts/release_qualification.py`. That command composes the automated
+matrix below plus packaging and installed-app evidence. The existing GitHub
+Actions workflow (`.github/workflows/source-validation.yml`) remains source
+validation only and is not a release publisher.
 
 ```bash
-python run_tests.py --contract
-python -m pytest tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py -q -o addopts=
+.venv/bin/python -m ruff check .
+.venv/bin/python run_tests.py --contract
+.venv/bin/python run_tests.py --verify-profile base --verify-profile mlx
+.venv/bin/python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py -q -o addopts=
 cd desktop
+npm ci
 npm run typecheck
 npm test -- --run
 npm run build
 cd src-tauri
-cargo test
-cargo check
+cargo test --locked -- --test-threads=1
+cargo check --locked
 cd ../..
+.venv/bin/python -m orpheus bench quick
 cd desktop
-npm run desktop:build
+ORPHEUS_RUNTIME_PROFILE=mlx npm run desktop:build
 npm run desktop:install
 ```
 
 Release-candidate evidence should include:
-- `python run_tests.py --contract`
-- focused backend/web command above
-- `cd desktop && npm run typecheck && npm test -- --run && npm run build`
-- `cd desktop/src-tauri && cargo test && cargo check`
-- `cd desktop && npm run desktop:build` (Tauri fresh-build hook runs the sidecar and frontend first)
+- `.venv/bin/python -m ruff check .`
+- `.venv/bin/python run_tests.py --contract`
+- `.venv/bin/python run_tests.py --verify-profile base --verify-profile mlx`
+- focused desktop/web pytest command above (with `--no-cov`)
+- `cd desktop && npm ci && npm run typecheck && npm test -- --run && npm run build`
+- `cd desktop/src-tauri && cargo test --locked -- --test-threads=1 && cargo check --locked`
+- `.venv/bin/python -m orpheus bench quick`
+- `cd desktop && ORPHEUS_RUNTIME_PROFILE=mlx npm run desktop:build` (the Tauri
+  fresh-build hook runs the sidecar and frontend first)
 - installed-app launch/quit smoke, plus one real short conversion/playback before
   considering a release candidate reliable
 

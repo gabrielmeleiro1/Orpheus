@@ -206,6 +206,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-local-tts",
+        action="store_true",
+        help=(
+            "Fail the smoke run unless /api/system/capabilities reports an "
+            "explicit local TTS runtime-ready signal (mlx_runtime_available or "
+            "runtime_probe.tts.available). Intended for packaged MLX sidecar "
+            "gates; does not download models."
+        ),
+    )
+    parser.add_argument(
         "--conversion-journey",
         action="store_true",
         help=(
@@ -1012,6 +1022,45 @@ def wait_for_tts_runtime_ready(
     )
 
 
+def enforce_local_tts_runtime_ready(
+    ready: ReadyPayload,
+    *,
+    timeout_seconds: float,
+    probe_wait_seconds: float,
+) -> dict[str, Any]:
+    """Fail closed unless capabilities expose an explicit local TTS ready signal."""
+
+    def fetch_capabilities() -> dict[str, Any]:
+        payload = expect_status(
+            http_request(
+                "GET",
+                f"{ready.base_url}/api/system/capabilities",
+                token=ready.token,
+                timeout_seconds=timeout_seconds,
+            ),
+            200,
+            "require-local-tts capabilities",
+        ).json()
+        if not isinstance(payload, dict):
+            raise SmokeFailure(f"unexpected capabilities payload: {payload!r}")
+        return payload
+
+    probe_wait = wait_for_tts_runtime_ready(
+        fetch_capabilities,
+        probe_wait_seconds=probe_wait_seconds,
+    )
+    if probe_wait.readiness is TtsProbeReadiness.READY:
+        return probe_wait.capabilities
+
+    detail = _tts_unavailable_reason(probe_wait.capabilities)
+    if probe_wait.reason and probe_wait.reason not in detail:
+        detail = f"{probe_wait.reason}; {detail}"
+    raise SmokeFailure(
+        "required local TTS runtime unavailable for packaged sidecar gate: "
+        f"{detail}"
+    )
+
+
 def wait_for_conversion_terminal(
     ready: ReadyPayload,
     *,
@@ -1343,6 +1392,7 @@ def run_iteration(
     conversion_journey: bool = False,
     conversion_timeout_seconds: float = 180.0,
     probe_wait_seconds: float = 25.0,
+    require_local_tts: bool = False,
 ) -> IterationResult:
     start = time.monotonic()
     runtime_paths = RuntimePaths.create()
@@ -1357,7 +1407,7 @@ def run_iteration(
             runtime_paths=runtime_paths,
             timeout_seconds=timeout_seconds,
             reduced_path=reduced_path,
-            conversion_journey=conversion_journey,
+            conversion_journey=conversion_journey or require_local_tts,
         )
         ready_seconds = time.monotonic() - ready_started
         if app_bundle is not None:
@@ -1381,6 +1431,12 @@ def run_iteration(
                 runtime_paths=runtime_paths,
                 timeout_seconds=timeout_seconds,
                 reduced_path=reduced_path,
+            )
+        if require_local_tts:
+            enforce_local_tts_runtime_ready(
+                ready,
+                timeout_seconds=timeout_seconds,
+                probe_wait_seconds=probe_wait_seconds,
             )
         if conversion_journey:
             journey = run_conversion_journey(
@@ -1448,6 +1504,7 @@ def main(argv: list[str] | None = None) -> int:
         f"backend={args.backend} iterations={args.iterations} "
         f"requests={args.requests} timeout={args.timeout_seconds:.1f}s "
         f"ffmpeg_runtime={args.check_ffmpeg_runtime} "
+        f"require_local_tts={args.require_local_tts} "
         f"conversion_journey={args.conversion_journey} "
         f"probe_wait={args.probe_wait_seconds:.1f}s"
     )
@@ -1467,6 +1524,7 @@ def main(argv: list[str] | None = None) -> int:
             conversion_journey=args.conversion_journey,
             conversion_timeout_seconds=args.conversion_timeout_seconds,
             probe_wait_seconds=args.probe_wait_seconds,
+            require_local_tts=args.require_local_tts,
         )
         results.append(result)
         status = "PASS" if result.passed else "FAIL"

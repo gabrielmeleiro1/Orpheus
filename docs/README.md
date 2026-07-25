@@ -10,7 +10,9 @@ Maintained project documentation lives under `docs/`. The root `README.md` is th
 4. [CURRENT_STATE.md](CURRENT_STATE.md)
 5. [RUN_APPLICATION.md](RUN_APPLICATION.md)
 6. [TESTING.md](TESTING.md)
-7. [COMMIT_WORKFLOW.md](COMMIT_WORKFLOW.md)
+7. [RELEASING_MACOS.md](RELEASING_MACOS.md)
+8. [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md)
+9. [COMMIT_WORKFLOW.md](COMMIT_WORKFLOW.md)
 
 ## Active Docs
 
@@ -20,6 +22,8 @@ Maintained project documentation lives under `docs/`. The root `README.md` is th
 - [RUN_APPLICATION.md](RUN_APPLICATION.md): setup, launch, packaging, and install workflow.
 - [RUNTIME_SELECTION.md](RUNTIME_SELECTION.md): how a TTS runtime provider is selected per platform.
 - [TESTING.md](TESTING.md): contract, smoke, lint, and release verification commands.
+- [RELEASING_MACOS.md](RELEASING_MACOS.md): local qualification gate vs source CI, portable checksum staging, and manual GitHub Release draft/review/publish.
+- [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): end-user checksum verification and supported Gatekeeper Open / Open Anyway install.
 - [COMMIT_WORKFLOW.md](COMMIT_WORKFLOW.md): commit order, message style, staging, and verification rules.
 
 ### Architecture inventory

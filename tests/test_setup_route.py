@@ -728,6 +728,34 @@ def test_status_cache_is_app_scoped_without_global_stale_state() -> None:
     assert second.get(("state",), build) == {"generation": 2}
 
 
+def test_setup_status_cache_shares_controller_capability_service() -> None:
+    """Setup readiness and /api/system/capabilities must share one probe cache.
+
+    Separate RuntimeCapabilityService instances let frozen in-process probes
+    race and disagree (setup ready, capabilities TTS false).
+    """
+    from modules.app.controller import AppController
+    from modules.app.services.runtime_capability_service import RuntimeCapabilityService
+    from modules.web.deps import get_controller_from_app
+    from modules.web.routes.setup import RuntimeSetupStatusCache, _get_status_cache
+
+    controller = AppController.__new__(AppController)
+    shared = RuntimeCapabilityService(cache_ttl_seconds=1.0, timeout_seconds=1.0)
+    controller._runtime_capability_service = shared
+
+    app = create_app(controller=controller)
+    request = SimpleNamespace(app=app)
+    cache = _get_status_cache(request)  # type: ignore[arg-type]
+
+    assert isinstance(cache, RuntimeSetupStatusCache)
+    assert cache.probe_service is shared
+    assert get_controller_from_app(app) is controller
+    assert (
+        get_controller_from_app(app).runtime_capability_service
+        is cache.probe_service
+    )
+
+
 def test_outer_ttl_refresh_reuses_app_scoped_integrity_hash(
     monkeypatch,
     tmp_path: Path,

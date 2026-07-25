@@ -81,6 +81,12 @@ def test_packaged_app_bundle_requires_sidecar_backend() -> None:
     with pytest.raises(ValueError, match="sidecar"):
         desktop_runtime_smoke.validate_args(args)
 
+def test_parse_args_accepts_require_local_tts_gate() -> None:
+    args = desktop_runtime_smoke.parse_args(["--require-local-tts"])
+
+    assert args.require_local_tts is True
+    assert desktop_runtime_smoke.parse_args([]).require_local_tts is False
+
 
 def test_parse_args_accepts_opt_in_conversion_journey() -> None:
     args = desktop_runtime_smoke.parse_args(
@@ -521,6 +527,79 @@ def test_run_conversion_journey_skips_when_tts_unavailable(monkeypatch) -> None:
     assert "TTS" in (result.reason or "") or "probe" in (result.reason or "").lower()
     assert not any("POST " in call and "/api/conversions" in call for call in calls)
     assert any(call.startswith("POST ") and call.endswith("/api/uploads/text") for call in calls)
+
+
+def test_require_local_tts_fails_when_capabilities_report_mlx_tts_false(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """Packaged-sidecar gates must fail closed when MLX TTS probe is false."""
+    process = object()
+    ready = desktop_runtime_smoke.ReadyPayload(host="127.0.0.1", port=9, token="t")
+
+    monkeypatch.setattr(
+        desktop_runtime_smoke,
+        "start_backend",
+        lambda **_kwargs: (process, ready, [], []),
+    )
+    monkeypatch.setattr(
+        desktop_runtime_smoke,
+        "run_api_checks",
+        lambda *_args, **_kwargs: desktop_runtime_smoke.ApiCheckMetrics(
+            warm_library_seconds=0.01,
+            authenticated_library_requests=1,
+        ),
+    )
+    monkeypatch.setattr(desktop_runtime_smoke, "stop_backend", lambda _process: None)
+    monkeypatch.setattr(
+        desktop_runtime_smoke.RuntimePaths,
+        "create",
+        classmethod(
+            lambda cls: desktop_runtime_smoke.RuntimePaths(
+                root=tmp_path,
+                data_dir=tmp_path / "data",
+                output_dir=tmp_path / "output",
+                temp_dir=tmp_path / "temp",
+                db_path=tmp_path / "data" / "audiobooks.db",
+                ready_file=tmp_path / "backend-ready.json",
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        desktop_runtime_smoke,
+        "wait_for_tts_runtime_ready",
+        lambda *_args, **_kwargs: desktop_runtime_smoke.TtsProbeWaitResult(
+            capabilities={
+                "mlx_runtime_available": False,
+                "runtime_probe": {
+                    "state": "fresh",
+                    "refresh_in_progress": False,
+                    "tts": {
+                        "available": False,
+                        "error": "probe produced no output",
+                    },
+                },
+            },
+            readiness=desktop_runtime_smoke.TtsProbeReadiness.UNAVAILABLE,
+            reason="TTS runtime probe finished unavailable",
+        ),
+    )
+
+    result = desktop_runtime_smoke.run_iteration(
+        0,
+        backend="sidecar",
+        sidecar_path=tmp_path / "orpheus-desktop-backend",
+        python_executable=sys.executable,
+        request_count=1,
+        timeout_seconds=1.0,
+        reduced_path=True,
+        skip_sse=True,
+        require_local_tts=True,
+        probe_wait_seconds=1.0,
+    )
+
+    assert result.passed is False
+    assert "mlx" in (result.error or "").lower() or "tts" in (result.error or "").lower()
+    assert "probe produced no output" in (result.error or "")
 
 
 def test_run_iteration_runs_conversion_journey_when_requested(monkeypatch, tmp_path: Path) -> None:

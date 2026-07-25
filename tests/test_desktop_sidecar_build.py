@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import shutil
 import stat
 import subprocess
 import sys
@@ -51,6 +53,8 @@ def _write_required_pyinstaller_resources(
     internal_dir = onedir / "_internal"
     (internal_dir / "mlx" / "lib").mkdir(parents=True)
     (internal_dir / "mlx" / "lib" / "mlx.metallib").write_text("metal", encoding="utf-8")
+    (internal_dir / "mlx" / "lib" / "libmlx.dylib").write_bytes(b"libmlx stub")
+    (internal_dir / "mlx" / "lib" / "libjaccl.dylib").write_bytes(b"libjaccl stub")
     (internal_dir / "espeakng_loader" / "espeak-ng-data").mkdir(parents=True)
     (internal_dir / "espeakng_loader" / "espeak-ng-data" / "phontab").write_text(
         "phoneme table",
@@ -84,6 +88,7 @@ def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary
     (internal_dir / "dependency.txt").write_text("dependency", encoding="utf-8")
     (internal_dir / "mlx" / "lib").mkdir(parents=True)
     (internal_dir / "mlx" / "lib" / "mlx.metallib").write_text("metal", encoding="utf-8")
+    (internal_dir / "mlx" / "lib" / "libmlx.dylib").write_bytes(b"libmlx stub")
     (internal_dir / "espeakng_loader" / "espeak-ng-data").mkdir(parents=True)
     (internal_dir / "espeakng_loader" / "espeak-ng-data" / "phontab").write_text(
         "phoneme table",
@@ -157,7 +162,7 @@ def test_copy_sidecar_for_tauri_requires_mlx_metal_library(
         binaries_dir / "orpheus-desktop-backend",
     )
 
-    with pytest.raises(RuntimeError, match="mlx/lib/mlx\\.metallib"):
+    with pytest.raises(RuntimeError, match="mlx/lib/(mlx\\.metallib|libmlx\\.dylib)"):
         build_desktop_backend._copy_sidecar_for_tauri(  # noqa: SLF001
             "aarch64-apple-darwin",
             ffmpeg_binaries={"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
@@ -632,6 +637,16 @@ def test_backend_sidecar_spec_collects_bitsandbytes_for_cuda_packaging() -> None
     assert 'runtime_profile == "cuda"' in spec_text
 
 
+def test_backend_sidecar_spec_collects_mlx_dynamic_libs_for_rpath_closure() -> None:
+    """PyInstaller cannot resolve @rpath/libjaccl.dylib from libmlx; collect explicitly."""
+    spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
+    data_setup = spec_text.split("datas = []", 1)[1].split("\nbinaries = []", 1)[0]
+    binaries_setup = spec_text.split("binaries = []", 1)[1].split("\nprofile_excludes", 1)[0]
+
+    assert '_collect_data_files("mlx", includes=["lib/*.metallib"])' in data_setup
+    assert '_collect_dynamic_libs("mlx")' in binaries_setup
+
+
 def test_backend_sidecar_spec_collects_phonemizer_data_for_base_profile() -> None:
     spec_text = build_desktop_backend.SPEC_FILE.read_text(encoding="utf-8")
     data_setup = spec_text.split("datas = []", 1)[1].split("\nbinaries = []", 1)[0]
@@ -737,6 +752,233 @@ def test_normalize_mlx_dylib_layout_removes_root_duplicate_and_retargets_core(
     assert ["codesign", "--force", "--sign", "-", str(core_extension)] in commands
 
 
+def test_validate_mlx_native_dependency_closure_fails_when_rpath_dylib_missing(
+    tmp_path: Path,
+) -> None:
+    """Missing @rpath siblings (e.g. libjaccl) must fail packaging validation."""
+    sidecar_dir = tmp_path / "sidecar"
+    nested_dylib = sidecar_dir / "_internal" / "mlx" / "lib" / "libmlx.dylib"
+    nested_dylib.parent.mkdir(parents=True)
+    nested_dylib.write_bytes(b"libmlx")
+
+    def read_dependencies(path: Path) -> tuple[str, ...]:
+        if Path(path).resolve() == nested_dylib.resolve():
+            return (
+                "@rpath/libmlx.dylib",
+                "@rpath/libjaccl.dylib",
+                "/usr/lib/libSystem.B.dylib",
+            )
+        return ()
+
+    with pytest.raises(RuntimeError, match="libjaccl\\.dylib"):
+        build_desktop_backend.validate_mlx_native_dependency_closure(
+            sidecar_dir,
+            read_dependencies=read_dependencies,
+            read_rpaths=lambda _path: ["@loader_path"],
+        )
+
+
+def test_validate_mlx_native_dependency_closure_passes_when_rpath_siblings_present(
+    tmp_path: Path,
+) -> None:
+    sidecar_dir = tmp_path / "sidecar"
+    lib_dir = sidecar_dir / "_internal" / "mlx" / "lib"
+    lib_dir.mkdir(parents=True)
+    (lib_dir / "libmlx.dylib").write_bytes(b"libmlx")
+    (lib_dir / "libjaccl.dylib").write_bytes(b"libjaccl")
+
+    def read_dependencies(path: Path) -> tuple[str, ...]:
+        name = Path(path).name
+        if name == "libmlx.dylib":
+            return ("@rpath/libmlx.dylib", "@rpath/libjaccl.dylib", "/usr/lib/libSystem.B.dylib")
+        if name == "libjaccl.dylib":
+            return ("@rpath/libjaccl.dylib", "/usr/lib/libSystem.B.dylib")
+        return ()
+
+    build_desktop_backend.validate_mlx_native_dependency_closure(
+        sidecar_dir,
+        read_dependencies=read_dependencies,
+        read_rpaths=lambda _path: ["@loader_path"],
+    )
+
+
+def test_ensure_mlx_native_dylib_closure_copies_missing_rpath_siblings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Defense in depth: copy unresolved @rpath MLX libs from the build env."""
+    source_root = tmp_path / "site-packages" / "mlx" / "lib"
+    source_root.mkdir(parents=True)
+    (source_root / "libmlx.dylib").write_bytes(b"src-mlx")
+    (source_root / "libjaccl.dylib").write_bytes(b"src-jaccl")
+
+    sidecar_dir = tmp_path / "sidecar"
+    lib_dir = sidecar_dir / "_internal" / "mlx" / "lib"
+    lib_dir.mkdir(parents=True)
+    (lib_dir / "libmlx.dylib").write_bytes(b"packaged-mlx")
+
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "_mlx_site_lib_dir",
+        lambda: source_root,
+    )
+
+    def read_dependencies(path: Path) -> tuple[str, ...]:
+        if Path(path).name == "libmlx.dylib":
+            return ("@rpath/libjaccl.dylib", "/usr/lib/libSystem.B.dylib")
+        return ("/usr/lib/libSystem.B.dylib",)
+
+    build_desktop_backend.ensure_mlx_native_dylib_closure(
+        sidecar_dir,
+        read_dependencies=read_dependencies,
+        read_rpaths=lambda _path: ["@loader_path"],
+    )
+
+    assert (lib_dir / "libjaccl.dylib").read_bytes() == b"src-jaccl"
+
+
+def test_copy_sidecar_for_tauri_rejects_incomplete_mlx_rpath_closure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    binaries_dir = tmp_path / "binaries"
+    onedir = dist_dir / "orpheus-desktop-backend"
+    executable = _write_executable(onedir / "orpheus-desktop-backend", "backend")
+    _write_required_pyinstaller_resources(onedir)
+    # metallib present, but no libmlx/libjaccl — closure must still fail for mlx.
+    ffmpeg_source = _write_executable(tmp_path / "tools" / "ffmpeg")
+    ffprobe_source = _write_executable(tmp_path / "tools" / "ffprobe")
+
+    monkeypatch.setattr(build_desktop_backend, "DIST_DIR", dist_dir)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_BINARIES_DIR", binaries_dir)
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "TAURI_SIDECAR_RESOURCE_DIR",
+        binaries_dir / "orpheus-desktop-backend",
+    )
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "_normalize_mlx_dylib_layout",
+        lambda _sidecar: None,
+    )
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "ensure_mlx_native_dylib_closure",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def fail_closure(sidecar_dir: Path, **_kwargs) -> None:  # noqa: ANN003
+        raise RuntimeError(f"unresolved MLX native dependency libjaccl.dylib in {sidecar_dir}")
+
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "validate_mlx_native_dependency_closure",
+        fail_closure,
+    )
+
+    with pytest.raises(RuntimeError, match="libjaccl\\.dylib"):
+        build_desktop_backend._copy_sidecar_for_tauri(  # noqa: SLF001
+            "aarch64-apple-darwin",
+            ffmpeg_binaries={"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
+            runtime_profile="mlx",
+        )
+
+    assert executable.is_file()
+
+
+def test_validate_mlx_native_dependency_closure_catches_real_missing_libjaccl(
+    tmp_path: Path,
+) -> None:
+    """Regression: real libmlx.dylib @rpath/libjaccl must not pass without the sibling."""
+    if platform.system() != "Darwin":
+        pytest.skip("Mach-O MLX closure validation is Darwin-only")
+
+    venv_lib = (
+        PROJECT_ROOT
+        / ".venv"
+        / "lib"
+        / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        / "site-packages"
+        / "mlx"
+        / "lib"
+    )
+    source_lib = venv_lib
+    if not (source_lib / "libmlx.dylib").is_file():
+        pytest.skip("mlx libmlx.dylib is not installed in the build environment")
+    if not (source_lib / "libjaccl.dylib").is_file():
+        pytest.skip("mlx libjaccl.dylib is not installed in the build environment")
+
+    sidecar_dir = tmp_path / "sidecar"
+    lib_dir = sidecar_dir / "_internal" / "mlx" / "lib"
+    lib_dir.mkdir(parents=True)
+    packaged_mlx = lib_dir / "libmlx.dylib"
+    shutil.copy2(source_lib / "libmlx.dylib", packaged_mlx)
+    # Match packaging: same-directory @rpath resolution for sibling natives.
+    subprocess.run(
+        ["install_name_tool", "-add_rpath", "@loader_path", str(packaged_mlx)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["codesign", "--force", "--sign", "-", str(packaged_mlx)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with pytest.raises(RuntimeError, match="libjaccl\\.dylib"):
+        build_desktop_backend.validate_mlx_native_dependency_closure(sidecar_dir)
+
+    shutil.copy2(source_lib / "libjaccl.dylib", lib_dir / "libjaccl.dylib")
+    build_desktop_backend.validate_mlx_native_dependency_closure(sidecar_dir)
+
+    import ctypes
+
+    ctypes.CDLL(str(packaged_mlx))
+
+
+def test_normalize_mlx_dylib_layout_adds_loader_path_rpath_on_libmlx(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    sidecar_dir = tmp_path / "sidecar"
+    core_extension = sidecar_dir / "_internal" / "mlx" / "core.cpython-312-darwin.so"
+    nested_dylib = sidecar_dir / "_internal" / "mlx" / "lib" / "libmlx.dylib"
+    core_extension.parent.mkdir(parents=True)
+    nested_dylib.parent.mkdir(parents=True)
+    core_extension.write_bytes(b"core")
+    nested_dylib.write_bytes(b"nested")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Darwin")
+
+    def fake_rpaths(path: Path) -> list[str]:
+        if Path(path).name.startswith("core."):
+            return ["@loader_path/lib"]
+        return []
+
+    monkeypatch.setattr(build_desktop_backend, "_macho_rpaths", fake_rpaths)
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        commands.append([str(part) for part in command])
+        return MagicMock(returncode=0)
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", fake_run)
+
+    build_desktop_backend._normalize_mlx_dylib_layout(sidecar_dir)  # noqa: SLF001
+
+    assert [
+        "install_name_tool",
+        "-add_rpath",
+        "@loader_path",
+        str(nested_dylib),
+    ] in commands
+    assert ["codesign", "--force", "--sign", "-", str(nested_dylib)] in commands
+
+
 def test_expose_espeak_data_at_sidecar_root_links_files_and_copies_dirs(tmp_path: Path) -> None:
     sidecar_dir = tmp_path / "sidecar"
     data_dir = sidecar_dir / "_internal" / "espeakng_loader" / "espeak-ng-data"
@@ -788,6 +1030,410 @@ def test_windows_backend_build_prerequisites_use_kokoro_package_not_mlx() -> Non
     assert "mlx" not in modules
     assert "mlx_lm" not in modules
     assert "mlx_audio" not in modules
+
+
+def test_parse_otool_dependencies_skips_header_and_compat_notes() -> None:
+    output = """\
+/opt/homebrew/bin/ffmpeg:
+\t/opt/homebrew/Cellar/ffmpeg/8.1.1/lib/libavcodec.62.dylib (compatibility version 62.0.0, current version 62.28.101)
+\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1356.0.0)
+\t/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 4424.1.255)
+\t@rpath/libfoo.dylib (compatibility version 1.0.0, current version 1.0.0)
+"""
+    deps = build_desktop_backend.parse_otool_dependencies(output)
+    assert deps == (
+        "/opt/homebrew/Cellar/ffmpeg/8.1.1/lib/libavcodec.62.dylib",
+        "/usr/lib/libSystem.B.dylib",
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+        "@rpath/libfoo.dylib",
+    )
+
+
+def test_is_system_macho_dependency_excludes_apple_system_paths() -> None:
+    assert build_desktop_backend.is_system_macho_dependency("/usr/lib/libSystem.B.dylib")
+    assert build_desktop_backend.is_system_macho_dependency(
+        "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation"
+    )
+    assert build_desktop_backend.is_system_macho_dependency("/Library/Apple/usr/lib/libfoo.dylib")
+    assert not build_desktop_backend.is_system_macho_dependency(
+        "/opt/homebrew/opt/ffmpeg/lib/libavcodec.dylib"
+    )
+    assert not build_desktop_backend.is_system_macho_dependency("@loader_path/lib/libavcodec.dylib")
+
+
+def test_collect_non_system_macho_dependencies_is_recursive(tmp_path: Path) -> None:
+    root = tmp_path / "ffmpeg"
+    root.write_bytes(b"ffmpeg")
+    lib_a = tmp_path / "cellar" / "libavcodec.dylib"
+    lib_b = tmp_path / "cellar" / "libavutil.dylib"
+    lib_a.parent.mkdir(parents=True)
+    lib_a.write_bytes(b"avcodec")
+    lib_b.write_bytes(b"avutil")
+
+    graph = {
+        root.resolve(): (str(lib_a), "/usr/lib/libSystem.B.dylib"),
+        lib_a.resolve(): (str(lib_b), "/System/Library/Frameworks/CoreFoundation.framework/C"),
+        lib_b.resolve(): ("/usr/lib/libSystem.B.dylib",),
+    }
+
+    collected = build_desktop_backend.collect_non_system_macho_dependencies(
+        root,
+        read_dependencies=lambda path: graph[Path(path).resolve()],
+    )
+    assert collected.canonical_sources == (lib_a.resolve(), lib_b.resolve())
+    assert collected.install_names_for(lib_a.resolve()) == frozenset({str(lib_a)})
+    assert collected.install_names_for(lib_b.resolve()) == frozenset({str(lib_b)})
+
+
+def test_collect_preserves_symlink_and_opt_alias_install_names(tmp_path: Path) -> None:
+    root = tmp_path / "ffmpeg"
+    root.write_bytes(b"ffmpeg")
+    cellar = tmp_path / "Cellar" / "ffmpeg" / "8.1.1" / "lib"
+    cellar.mkdir(parents=True)
+    real_lib = cellar / "libavdevice.62.3.101.dylib"
+    real_lib.write_bytes(b"avdevice")
+    link_lib = cellar / "libavdevice.62.dylib"
+    link_lib.symlink_to("libavdevice.62.3.101.dylib")
+    opt_lib = tmp_path / "opt" / "ffmpeg" / "lib" / "libavdevice.62.dylib"
+    opt_lib.parent.mkdir(parents=True)
+    opt_lib.symlink_to(real_lib)
+
+    cellar_install = str(link_lib)
+    opt_install = str(opt_lib)
+    dep_graph = {
+        root.resolve(): (cellar_install, opt_install, "/usr/lib/libSystem.B.dylib"),
+        real_lib.resolve(): ("/usr/lib/libSystem.B.dylib",),
+    }
+
+    collected = build_desktop_backend.collect_non_system_macho_dependencies(
+        root,
+        read_dependencies=lambda path: dep_graph[Path(path).resolve()],
+    )
+
+    assert collected.canonical_sources == (real_lib.resolve(),)
+    assert collected.install_names_for(real_lib.resolve()) == frozenset(
+        {cellar_install, opt_install}
+    )
+
+
+def test_plan_private_lib_copies_fails_on_basename_collision(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "libfoo.dylib"
+    second = tmp_path / "two" / "libfoo.dylib"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"aaa")
+    second.write_bytes(b"bbb")
+    lib_dir = tmp_path / "sidecar" / "bin" / "lib"
+
+    differing = build_desktop_backend.MachODependencyGraph(
+        {
+            first.resolve(): frozenset({str(first)}),
+            second.resolve(): frozenset({str(second)}),
+        }
+    )
+    with pytest.raises(RuntimeError, match="basename collision|libfoo"):
+        build_desktop_backend.plan_private_lib_copies(differing, lib_dir=lib_dir)
+
+    identical_bytes = tmp_path / "three" / "libfoo.dylib"
+    identical_bytes.parent.mkdir(parents=True)
+    identical_bytes.write_bytes(b"aaa")
+    same_content_collision = build_desktop_backend.MachODependencyGraph(
+        {
+            first.resolve(): frozenset({str(first)}),
+            identical_bytes.resolve(): frozenset({str(identical_bytes)}),
+        }
+    )
+    with pytest.raises(RuntimeError, match="basename collision|libfoo"):
+        build_desktop_backend.plan_private_lib_copies(
+            same_content_collision,
+            lib_dir=lib_dir,
+        )
+
+
+def test_plan_private_lib_copies_uses_original_install_name_basename(
+    tmp_path: Path,
+) -> None:
+    cellar = tmp_path / "Cellar" / "lib"
+    cellar.mkdir(parents=True)
+    real_lib = cellar / "libavdevice.62.3.101.dylib"
+    real_lib.write_bytes(b"avdevice")
+    link_lib = cellar / "libavdevice.62.dylib"
+    link_lib.symlink_to("libavdevice.62.3.101.dylib")
+    opt_lib = tmp_path / "opt" / "lib" / "libavdevice.62.dylib"
+    opt_lib.parent.mkdir(parents=True)
+    opt_lib.symlink_to(real_lib)
+    lib_dir = tmp_path / "sidecar" / "bin" / "lib"
+
+    graph = build_desktop_backend.MachODependencyGraph(
+        {
+            real_lib.resolve(): frozenset({str(link_lib), str(opt_lib)}),
+        }
+    )
+    planned = build_desktop_backend.plan_private_lib_copies(graph, lib_dir=lib_dir)
+
+    assert planned.copies == {real_lib.resolve(): lib_dir / "libavdevice.62.dylib"}
+    assert planned.root_install_name_changes == {
+        str(link_lib): "@loader_path/lib/libavdevice.62.dylib",
+        str(opt_lib): "@loader_path/lib/libavdevice.62.dylib",
+    }
+    assert planned.lib_install_name_changes == {
+        str(link_lib): "@loader_path/libavdevice.62.dylib",
+        str(opt_lib): "@loader_path/libavdevice.62.dylib",
+    }
+
+
+def test_package_macho_dependencies_relocatable_rewrites_and_codesigns(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bin_dir = tmp_path / "sidecar" / "bin"
+    bin_dir.mkdir(parents=True)
+    ffmpeg = bin_dir / "ffmpeg"
+    ffprobe = bin_dir / "ffprobe"
+    ffmpeg.write_bytes(b"ffmpeg")
+    ffprobe.write_bytes(b"ffprobe")
+    ffmpeg.chmod(0o555)
+    ffprobe.chmod(0o555)
+
+    cellar = tmp_path / "cellar"
+    lib_av = cellar / "libavcodec.62.dylib"
+    lib_util = cellar / "libavutil.60.dylib"
+    cellar.mkdir()
+    lib_av.write_bytes(b"avcodec-bytes")
+    lib_util.write_bytes(b"avutil-bytes")
+
+    dep_graph = {
+        ffmpeg.resolve(): (str(lib_av), "/usr/lib/libSystem.B.dylib"),
+        ffprobe.resolve(): (str(lib_av), "/usr/lib/libSystem.B.dylib"),
+        lib_av.resolve(): (str(lib_util), "/usr/lib/libSystem.B.dylib"),
+        lib_util.resolve(): ("/usr/lib/libSystem.B.dylib",),
+    }
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        commands.append([str(part) for part in command])
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Darwin")
+
+    build_desktop_backend.package_macho_dependencies_relocatable(  # noqa: SLF001
+        (ffmpeg, ffprobe),
+        lib_dir=bin_dir / "lib",
+        host_system="Darwin",
+        read_dependencies=lambda path: dep_graph[Path(path).resolve()],
+        run_tool=fake_run,
+    )
+
+    lib_dir = bin_dir / "lib"
+    assert (lib_dir / "libavcodec.62.dylib").read_bytes() == b"avcodec-bytes"
+    assert (lib_dir / "libavutil.60.dylib").read_bytes() == b"avutil-bytes"
+    assert (lib_dir / "libavcodec.62.dylib").stat().st_mode & stat.S_IWUSR
+    assert (lib_dir / "libavutil.60.dylib").stat().st_mode & stat.S_IWUSR
+
+    assert [
+        "install_name_tool",
+        "-change",
+        str(lib_av),
+        "@loader_path/lib/libavcodec.62.dylib",
+        str(ffmpeg),
+    ] in commands
+    assert [
+        "install_name_tool",
+        "-change",
+        str(lib_util),
+        "@loader_path/libavutil.60.dylib",
+        str(lib_dir / "libavcodec.62.dylib"),
+    ] in commands
+    assert [
+        "install_name_tool",
+        "-id",
+        "@loader_path/libavcodec.62.dylib",
+        str(lib_dir / "libavcodec.62.dylib"),
+    ] in commands
+    assert ["codesign", "--force", "--sign", "-", str(ffmpeg)] in commands
+    assert [
+        "codesign",
+        "--force",
+        "--sign",
+        "-",
+        str(lib_dir / "libavcodec.62.dylib"),
+    ] in commands
+
+
+def test_package_macho_dependencies_rewrites_symlink_install_names_not_resolved(
+    tmp_path: Path,
+) -> None:
+    """Regression: -change must use original otool spelling, not Path.resolve().
+
+    Homebrew ships ABI symlink install names (libavdevice.62.dylib) that resolve to
+    versioned files (libavdevice.62.3.101.dylib). install_name_tool silently no-ops
+    when given the resolved spelling that is not present in the Mach-O load commands.
+    """
+    bin_dir = tmp_path / "sidecar" / "bin"
+    bin_dir.mkdir(parents=True)
+    ffmpeg = bin_dir / "ffmpeg"
+    ffmpeg.write_bytes(b"ffmpeg")
+
+    cellar = tmp_path / "Cellar" / "ffmpeg" / "8.1.1" / "lib"
+    cellar.mkdir(parents=True)
+    real_lib = cellar / "libavdevice.62.3.101.dylib"
+    real_lib.write_bytes(b"avdevice")
+    link_lib = cellar / "libavdevice.62.dylib"
+    link_lib.symlink_to("libavdevice.62.3.101.dylib")
+    opt_lib = tmp_path / "opt" / "ffmpeg" / "lib" / "libavdevice.62.dylib"
+    opt_lib.parent.mkdir(parents=True)
+    opt_lib.symlink_to(real_lib)
+
+    cellar_install = str(link_lib)
+    opt_install = str(opt_lib)
+    dep_graph = {
+        ffmpeg.resolve(): (cellar_install, opt_install, "/usr/lib/libSystem.B.dylib"),
+        real_lib.resolve(): ("/usr/lib/libSystem.B.dylib",),
+    }
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):  # noqa: ANN001, ANN003
+        commands.append([str(part) for part in command])
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    build_desktop_backend.package_macho_dependencies_relocatable(
+        (ffmpeg,),
+        lib_dir=bin_dir / "lib",
+        host_system="Darwin",
+        read_dependencies=lambda path: dep_graph[Path(path).resolve()],
+        run_tool=fake_run,
+    )
+
+    dest = bin_dir / "lib" / "libavdevice.62.dylib"
+    assert dest.is_file()
+    assert dest.read_bytes() == b"avdevice"
+    assert not (bin_dir / "lib" / "libavdevice.62.3.101.dylib").exists()
+
+    change_olds = [
+        command[2] for command in commands if command[:2] == ["install_name_tool", "-change"]
+    ]
+    assert cellar_install in change_olds
+    assert opt_install in change_olds
+    assert str(real_lib.resolve()) not in change_olds
+    assert [
+        "install_name_tool",
+        "-change",
+        cellar_install,
+        "@loader_path/lib/libavdevice.62.dylib",
+        str(ffmpeg),
+    ] in commands
+    assert [
+        "install_name_tool",
+        "-change",
+        opt_install,
+        "@loader_path/lib/libavdevice.62.dylib",
+        str(ffmpeg),
+    ] in commands
+    assert [
+        "install_name_tool",
+        "-id",
+        "@loader_path/libavdevice.62.dylib",
+        str(dest),
+    ] in commands
+
+
+def test_package_macho_dependencies_relocatable_is_noop_off_darwin(tmp_path: Path) -> None:
+    binary = tmp_path / "ffmpeg"
+    binary.write_bytes(b"x")
+    called = {"read": False}
+
+    def boom(_path: Path) -> tuple[str, ...]:
+        called["read"] = True
+        raise AssertionError("should not read dependencies off Darwin")
+
+    build_desktop_backend.package_macho_dependencies_relocatable(
+        (binary,),
+        lib_dir=tmp_path / "lib",
+        host_system="Linux",
+        read_dependencies=boom,
+        run_tool=lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("no tools")),
+    )
+    assert called["read"] is False
+    assert not (tmp_path / "lib").exists()
+
+
+def test_copy_ffmpeg_binaries_packages_relocatable_deps_on_darwin(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ffmpeg_source = _write_executable(tmp_path / "source" / "ffmpeg", "ffmpeg")
+    ffprobe_source = _write_executable(tmp_path / "source" / "ffprobe", "ffprobe")
+    sidecar_dir = tmp_path / "sidecar"
+    seen: dict[str, object] = {}
+
+    def fake_package(binaries, *, lib_dir, **kwargs):  # noqa: ANN001, ANN003
+        seen["binaries"] = tuple(Path(p) for p in binaries)
+        seen["lib_dir"] = Path(lib_dir)
+        seen["kwargs"] = kwargs
+
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "package_macho_dependencies_relocatable",
+        fake_package,
+    )
+
+    build_desktop_backend._copy_ffmpeg_binaries(  # noqa: SLF001
+        sidecar_dir,
+        {"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
+        target_triple="aarch64-apple-darwin",
+    )
+
+    assert seen["lib_dir"] == sidecar_dir / "bin" / "lib"
+    assert {p.name for p in seen["binaries"]} == {"ffmpeg", "ffprobe"}
+
+
+def test_copy_ffmpeg_binaries_skips_relocation_on_windows_target(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    ffmpeg_source = _write_executable(tmp_path / "source" / "ffmpeg.exe", "ffmpeg")
+    ffprobe_source = _write_executable(tmp_path / "source" / "ffprobe.exe", "ffprobe")
+    sidecar_dir = tmp_path / "sidecar"
+
+    def boom(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Windows packaging must not relocate Mach-O deps")
+
+    monkeypatch.setattr(
+        build_desktop_backend,
+        "package_macho_dependencies_relocatable",
+        boom,
+    )
+
+    build_desktop_backend._copy_ffmpeg_binaries(  # noqa: SLF001
+        sidecar_dir,
+        {"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
+        target_triple="x86_64-pc-windows-msvc",
+    )
+    assert (sidecar_dir / "bin" / "ffmpeg.exe").is_file()
+    assert (sidecar_dir / "bin" / "ffprobe.exe").is_file()
+
+
+def test_validate_relocated_macho_rejects_forbidden_absolute_deps(tmp_path: Path) -> None:
+    binary = tmp_path / "ffmpeg"
+    binary.write_bytes(b"x")
+
+    with pytest.raises(RuntimeError, match="forbidden|/opt/homebrew"):
+        build_desktop_backend.validate_macho_has_no_forbidden_absolute_deps(
+            binary,
+            read_dependencies=lambda _p: (
+                "/opt/homebrew/opt/ffmpeg/lib/libavcodec.dylib",
+                "/usr/lib/libSystem.B.dylib",
+            ),
+        )
+
+    build_desktop_backend.validate_macho_has_no_forbidden_absolute_deps(
+        binary,
+        read_dependencies=lambda _p: (
+            "@loader_path/lib/libavcodec.dylib",
+            "/usr/lib/libSystem.B.dylib",
+        ),
+    )
 
 
 def test_build_help_exposes_explicit_runtime_profile_selector() -> None:
