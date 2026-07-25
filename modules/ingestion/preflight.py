@@ -10,6 +10,7 @@ from typing import Any, Optional
 from .text_encoding import read_source_text
 from .markdown_parser import markdown_headings, strip_leading_front_matter
 from .pdf_preflight import analyze_pdf_text_layer
+from modules.errors import CorruptedFileError, EPUBParsingError, validate_epub
 
 from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
 
@@ -140,6 +141,8 @@ def _preflight_epub(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
         warnings.append("Source may be malformed or unreadable: not a valid EPUB archive")
         return payload
     try:
+        # Validate ZIP metadata before ebooklib can decompress any member.
+        validate_epub(source_path)
         from ebooklib import epub
 
         from .epub_sections import build_epub_sections
@@ -158,6 +161,9 @@ def _preflight_epub(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
             if sum(len(chunk) for chunk in samples) >= max_sample_chars:
                 break
             samples.append(section.content)
+    except (CorruptedFileError, EPUBParsingError) as exc:
+        warnings.append(f"Source may be malformed or unreadable: {exc}")
+        return payload
     except Exception as exc:
         warnings.append(f"Source may be malformed or unreadable: {exc}")
         return payload

@@ -11,6 +11,16 @@ from typing import Optional
 from pathlib import Path
 
 
+# EPUB archives are inspected from ZIP metadata before any member is
+# decompressed.  These bounds are deliberately generous for ordinary books,
+# while preventing a small archive from expanding into unbounded memory.
+MAX_EPUB_MEMBER_COUNT = 4096
+MAX_EPUB_TOTAL_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+MAX_EPUB_MEMBER_UNCOMPRESSED_BYTES = 32 * 1024 * 1024
+MAX_EPUB_COMPRESSION_RATIO = 1000
+MIN_EPUB_RATIO_CHECK_BYTES = 1 * 1024 * 1024
+
+
 class ErrorCode(Enum):
     """Error codes for the audiobook creator."""
     # Ingestion errors (E001-E099)
@@ -293,7 +303,62 @@ def validate_epub(file_path: Path) -> bool:
     # Check for required EPUB structure
     try:
         with zipfile.ZipFile(file_path, 'r') as zf:
-            names = zf.namelist()
+            # ZIP metadata contains the uncompressed sizes, so enforce bounds
+            # before reading/decompressing even the first content member.
+            infos = zf.infolist()
+            if len(infos) > MAX_EPUB_MEMBER_COUNT:
+                raise EPUBParsingError(
+                    "EPUB archive contains too many members",
+                    details=(
+                        f"Found {len(infos):,}; maximum allowed: "
+                        f"{MAX_EPUB_MEMBER_COUNT:,}"
+                    ),
+                    file_path=file_path,
+                )
+
+            total_uncompressed = 0
+            for info in infos:
+                member_size = info.file_size
+                if member_size > MAX_EPUB_MEMBER_UNCOMPRESSED_BYTES:
+                    raise EPUBParsingError(
+                        f"EPUB archive member exceeds uncompressed size limit: {info.filename}",
+                        details=(
+                            f"{member_size:,} bytes; maximum allowed: "
+                            f"{MAX_EPUB_MEMBER_UNCOMPRESSED_BYTES:,}"
+                        ),
+                        file_path=file_path,
+                    )
+
+                total_uncompressed += member_size
+                if total_uncompressed > MAX_EPUB_TOTAL_UNCOMPRESSED_BYTES:
+                    raise EPUBParsingError(
+                        "EPUB archive exceeds total uncompressed size limit",
+                        details=(
+                            f"{total_uncompressed:,} bytes; maximum allowed: "
+                            f"{MAX_EPUB_TOTAL_UNCOMPRESSED_BYTES:,}"
+                        ),
+                        file_path=file_path,
+                    )
+
+                # Ignore tiny metadata files where a high ratio is harmless;
+                # large highly-compressible members are the ZIP-bomb signal.
+                if member_size >= MIN_EPUB_RATIO_CHECK_BYTES:
+                    compressed_size = info.compress_size
+                    if (
+                        compressed_size == 0
+                        or member_size > compressed_size * MAX_EPUB_COMPRESSION_RATIO
+                    ):
+                        ratio = "infinite" if compressed_size == 0 else f"{member_size / compressed_size:,.1f}"
+                        raise EPUBParsingError(
+                            f"EPUB archive member has suspicious compression ratio: {info.filename}",
+                            details=(
+                                f"ratio {ratio}; maximum allowed: "
+                                f"{MAX_EPUB_COMPRESSION_RATIO:,}"
+                            ),
+                            file_path=file_path,
+                        )
+
+            names = [info.filename for info in infos]
             
             # Must have mimetype file
             if 'mimetype' not in names:

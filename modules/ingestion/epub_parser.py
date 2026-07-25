@@ -86,7 +86,17 @@ class EPUBParser:
         """Load the EPUB book if not already loaded."""
         if self._book is None:
             try:
+                # Re-check at the decompression boundary so callers cannot
+                # bypass ZIP metadata limits by opting out of constructor
+                # validation.
+                validate_epub(self.file_path)
                 self._book = epub.read_epub(str(self.file_path))
+            except (CorruptedFileError, EPUBParsingError) as e:
+                raise EPUBParsingError(
+                    message=e.message,
+                    details=e.details if hasattr(e, "details") else None,
+                    file_path=self.file_path,
+                )
             except Exception as e:
                 raise EPUBParsingError(
                     message=f"Failed to read EPUB: {str(e)}",
