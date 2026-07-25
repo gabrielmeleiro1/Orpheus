@@ -171,7 +171,9 @@ function drawScene(
 
   context.globalAlpha = 1;
   canvas.dataset.waveformEnergy = energy.toFixed(4);
-  canvas.dataset.rendering = rendering;
+  if (canvas.dataset.rendering !== rendering) {
+    canvas.dataset.rendering = rendering;
+  }
 }
 
 export function NowPlayingCanvas({ visualizer, playing, active, className }: NowPlayingCanvasProps) {
@@ -242,8 +244,12 @@ export function NowPlayingCanvas({ visualizer, playing, active, className }: Now
       }
     };
 
-    const shouldAnimate = active && documentVisible && !reducedMotion;
-    canvas.dataset.analyserStatus = visualizer.status;
+    // Playback drives the loop: animate only while audio is actually playing
+    // and the panel/document are visible with reduced motion off.
+    const shouldAnimate = active && playing && documentVisible && !reducedMotion;
+    if (canvas.dataset.analyserStatus !== visualizer.status) {
+      canvas.dataset.analyserStatus = visualizer.status;
+    }
     canvas.dataset.reducedMotion = reducedMotion ? "true" : "false";
 
     if (!shouldAnimate) {
@@ -322,7 +328,9 @@ export function NowPlayingCanvas({ visualizer, playing, active, className }: Now
 
       frameCountRef.current += 1;
       canvas.dataset.waveformFrame = String(frameCountRef.current);
-      canvas.dataset.analyserStatus = visualizer.status;
+      if (canvas.dataset.analyserStatus !== visualizer.status) {
+        canvas.dataset.analyserStatus = visualizer.status;
+      }
       drawScene(canvas, strings, motes, paletteRef.current, energyTotal / STRING_COUNT, live ? "live" : "idle");
     };
 

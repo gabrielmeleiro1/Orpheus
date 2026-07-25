@@ -189,7 +189,11 @@ export function DashboardPanel({
                 className={`conversion-activity${conversionIsActive ? " is-running" : " is-idle"}`}
                 aria-hidden="true"
               >
-                <ConversionFlowCanvas active={conversionIsActive} className="conversion-activity-canvas" />
+                <ConversionFlowCanvas
+                  active={conversionIsActive}
+                  visible={!hidden}
+                  className="conversion-activity-canvas"
+                />
                 <ProgressBar
                   pct={conversionPercent}
                   tone={conversionIsActive ? "active" : "neutral"}

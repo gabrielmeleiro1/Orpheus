@@ -8,6 +8,11 @@ import { useEffect, useRef, useState } from "react";
  * waveform ribbon flowing along the bottom — the pipeline itself,
  * drawn: text in, audio out. Idle, a few glyphs hang in slow suspension
  * over a still line.
+ *
+ * The animation loop is pure idle CPU when nothing is converting, so it
+ * runs only when the conversion is active, its panel is visible, the
+ * document is visible, and reduced motion is off. Otherwise the canvas
+ * holds a single static frame.
  */
 
 const FRAME_INTERVAL_MS = 1000 / 30;
@@ -18,6 +23,8 @@ const MAX_GLYPHS_IDLE = 3;
 
 interface ConversionFlowCanvasProps {
   active: boolean;
+  /** Whether the owning dashboard panel is visible. */
+  visible?: boolean;
   className?: string;
 }
 
@@ -70,17 +77,21 @@ function spawnGlyph(width: number, now: number, idle: boolean): GlyphParticle {
   };
 }
 
-export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvasProps) {
+export function ConversionFlowCanvas({ active, visible = true, className }: ConversionFlowCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const frameRef = useRef<number | null>(null);
   const lastFrameAtRef = useRef(0);
   const glyphsRef = useRef<GlyphParticle[]>([]);
-  const ribbonEnergyRef = useRef<Float32Array>(new Float32Array(RIBBON_POINTS));
+  // Two reused diffusion buffers, ping-ponged each frame — no per-frame alloc.
+  const energyRef = useRef<Float32Array>(new Float32Array(RIBBON_POINTS));
+  const diffusionBufferRef = useRef<Float32Array>(new Float32Array(RIBBON_POINTS));
   const phaseRef = useRef(0);
   const paletteRef = useRef<Palette>({ accent: "#c9a06c", accentMuted: "#b08d5e", faint: "#5e5a56" });
+  const lastRenderingRef = useRef<string | null>(null);
   const [reducedMotion, setReducedMotion] = useState(() =>
     window.matchMedia("(prefers-reduced-motion: reduce)").matches,
   );
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -88,6 +99,14 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
     media.addEventListener("change", onChange);
     return () => {
       media.removeEventListener("change", onChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const onVisibilityChange = () => setDocumentVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, []);
 
@@ -100,7 +119,16 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
     resizeCanvas(canvas);
     paletteRef.current = resolvePalette(canvas);
 
-    const draw = (timestamp: number) => {
+    const shouldAnimate = active && visible && documentVisible && !reducedMotion;
+
+    const setRendering = (value: string) => {
+      if (lastRenderingRef.current !== value) {
+        lastRenderingRef.current = value;
+        canvas.dataset.rendering = value;
+      }
+    };
+
+    const draw = (timestamp: number, rendering: "active" | "static") => {
       const context = canvas.getContext("2d");
       if (!context) {
         return;
@@ -110,7 +138,7 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
       const height = Math.max(1, canvas.height / ratio);
       const palette = paletteRef.current;
       const glyphs = glyphsRef.current;
-      const energy = ribbonEnergyRef.current;
+      const energy = energyRef.current;
       const membraneY = height * 0.6;
       const ribbonY = height * 0.82;
 
@@ -135,14 +163,16 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
         }
       }
 
-      // Ribbon energy: diffuse to neighbours, then decay.
-      const diffused = new Float32Array(RIBBON_POINTS);
+      // Ribbon energy: diffuse to neighbours, then decay. Write into the spare
+      // buffer, then swap so the arrays alternate roles without allocating.
+      const diffused = diffusionBufferRef.current;
       for (let i = 0; i < RIBBON_POINTS; i += 1) {
         const left = energy[Math.max(0, i - 1)];
         const right = energy[Math.min(RIBBON_POINTS - 1, i + 1)];
         diffused[i] = (energy[i] * 0.72 + (left + right) * 0.14) * 0.94;
       }
-      ribbonEnergyRef.current = diffused;
+      energyRef.current = diffused;
+      diffusionBufferRef.current = energy;
 
       // Paint.
       context.setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -204,22 +234,25 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
       context.stroke();
 
       context.globalAlpha = 1;
-      canvas.dataset.rendering = reducedMotion ? "static" : active ? "active" : "idle";
+      setRendering(rendering);
     };
 
     const observer = new ResizeObserver(() => {
       resizeCanvas(canvas);
       paletteRef.current = resolvePalette(canvas);
       if (frameRef.current === null) {
-        draw(performance.now());
+        draw(performance.now(), "static");
       }
     });
     observer.observe(canvas);
 
-    if (reducedMotion) {
-      // One static composition: suspended glyphs over a still line.
-      glyphsRef.current = [];
-      draw(performance.now());
+    if (!shouldAnimate) {
+      // Suspend: cancel any running loop and hold a single static frame.
+      if (frameRef.current !== null) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+      draw(performance.now(), "static");
       return () => {
         observer.disconnect();
       };
@@ -232,7 +265,7 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
       }
       lastFrameAtRef.current = timestamp;
       resizeCanvas(canvas);
-      draw(timestamp);
+      draw(timestamp, "active");
     };
 
     frameRef.current = window.requestAnimationFrame(step);
@@ -243,7 +276,7 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
       }
       observer.disconnect();
     };
-  }, [active, reducedMotion]);
+  }, [active, visible, documentVisible, reducedMotion]);
 
   const rootClassName = className
     ? `conversion-flow${active ? " is-active" : ""} ${className}`
@@ -251,7 +284,7 @@ export function ConversionFlowCanvas({ active, className }: ConversionFlowCanvas
 
   return (
     <div className={rootClassName} aria-hidden="true">
-      <canvas ref={canvasRef} className="conversion-flow-canvas" data-rendering="idle" />
+      <canvas ref={canvasRef} className="conversion-flow-canvas" data-rendering="static" />
     </div>
   );
 }

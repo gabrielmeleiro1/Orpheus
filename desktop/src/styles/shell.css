@@ -256,7 +256,8 @@ button.control:hover {
 /*
  * One status-dot component everywhere (header + cards). Base is neutral
  * (unknown/offline); modifiers set the state colour — green ok, amber busy,
- * red error. Only `.is-connected` pulses.
+ * red error. Connected is a static paint: an infinite pulse kept the settled
+ * dashboard compositor busy (~4% main-process CPU in qualification).
  */
 .status-dot {
   background: var(--text-tertiary);
@@ -271,26 +272,12 @@ button.control:hover {
   background: var(--positive);
 }
 
-.status-dot.is-connected {
-  animation: status-dot-pulse 2.4s ease-in-out infinite;
-}
-
 .status-dot.is-busy {
   background: var(--warning);
 }
 
 .status-dot.is-error {
   background: var(--negative);
-}
-
-@keyframes status-dot-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 var(--positive-soft);
-  }
-  50% {
-    box-shadow: 0 0 0 4px var(--positive-soft);
-  }
 }
 
 
@@ -439,9 +426,5 @@ button.control:hover {
   .rail-action,
   button.control {
     transition: none;
-  }
-
-  .status-dot.is-connected {
-    animation: none;
   }
 }

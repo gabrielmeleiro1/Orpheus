@@ -10,7 +10,7 @@ const ENDPOINT_WAIT_INTERVAL_MS = 150;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
+    globalThis.setTimeout(resolve, ms);
   });
 }
 
@@ -44,9 +44,11 @@ export async function waitForDesktopEndpoint(): Promise<DesktopBackendEndpoint |
     if (status.lifecycle === "failed" || status.lifecycle === "stopped") {
       throw new Error(describeDesktopBackendStatus(status));
     }
-    const endpoint = await invoke<DesktopBackendEndpoint | null>("backend_endpoint");
-    if (endpoint?.base_url) {
-      return endpoint;
+    if (status.endpoint?.base_url) {
+      const endpoint = await invoke<DesktopBackendEndpoint | null>("backend_endpoint");
+      if (endpoint?.base_url) {
+        return endpoint;
+      }
     }
     await sleep(ENDPOINT_WAIT_INTERVAL_MS);
   }
