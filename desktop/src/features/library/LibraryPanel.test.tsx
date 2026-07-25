@@ -48,11 +48,13 @@ function libraryModel(): UseLibraryResult {
     setModeFilter: vi.fn(),
     items: [selectedSummary],
     indexedCount: 1,
+    hasMore: false,
     selectedBookId: 1,
     selectedBookIndex: 0,
     selectedBookDetail: selectedBook,
     selectedBookPlayable: false,
     loadingList: false,
+    loadingMore: false,
     loadingDetail: false,
     errorMessage: "",
     statusMessage: "",
@@ -65,6 +67,7 @@ function libraryModel(): UseLibraryResult {
     maintenanceMessage: "",
     canOpenAppData: false,
     refreshLibrary: asyncNoop,
+    loadMore: asyncNoop,
     selectBook: vi.fn(async () => selectedBook),
     selectRelative: vi.fn(async () => selectedBook),
     updateSelectedBookMetadata: asyncNoop,
@@ -107,6 +110,20 @@ describe("LibraryPanel", () => {
     const html = renderToString(<LibraryPanel hidden={false} library={libraryModel()} />);
 
     expect(html).not.toContain("library-pager");
+  });
+
+  it("keeps Next available at a loaded-page boundary and labels counts as loaded", () => {
+    const model = libraryModel();
+    model.hasMore = true;
+    model.indexedCount = 500;
+
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<LibraryPanel hidden={false} library={model} />);
+
+    const next = [...container.querySelectorAll("button")].find((button) => button.textContent === "Next");
+    expect(next?.hasAttribute("disabled")).toBe(false);
+    expect(container.textContent).toContain("Load more (1 loaded)");
+    expect(container.textContent).not.toContain("1 of 500");
   });
 
   it("keeps visible details inert while a different selected book is loading", () => {

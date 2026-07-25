@@ -10,47 +10,14 @@ function makeBookSummary(id: number): { id: number; title: string } {
   return { id, title: `Book ${id}` };
 }
 
-describe("libraryRepository listBooks pagination", () => {
-  it("fetches every page until a short page is returned", async () => {
-    const firstPage = Array.from({ length: LIBRARY_PAGE_SIZE }, (_, index) =>
-      makeBookSummary(index),
-    );
-    const secondPage = [makeBookSummary(LIBRARY_PAGE_SIZE)];
-    const getLibrary = vi
-      .fn()
-      .mockResolvedValueOnce({ items: firstPage, count: firstPage.length })
-      .mockResolvedValueOnce({ items: secondPage, count: secondPage.length });
-    const apiClient = { getLibrary } as unknown as ApiClient;
-
-    const repository = createLibraryRepository(apiClient);
-    const response = await repository.listBooks("", "all");
-
-    expect(getLibrary).toHaveBeenCalledTimes(2);
-    expect(getLibrary).toHaveBeenNthCalledWith(
-      1,
-      undefined,
-      LIBRARY_PAGE_SIZE,
-      { conversionMode: "", offset: 0 },
-      undefined,
-    );
-    expect(getLibrary).toHaveBeenNthCalledWith(
-      2,
-      undefined,
-      LIBRARY_PAGE_SIZE,
-      { conversionMode: "", offset: LIBRARY_PAGE_SIZE },
-      undefined,
-    );
-    expect(response.count).toBe(LIBRARY_PAGE_SIZE + 1);
-    expect(response.items).toHaveLength(LIBRARY_PAGE_SIZE + 1);
-  });
-
-  it("stops after one request when the library fits a single page", async () => {
+describe("libraryRepository listPage", () => {
+  it("requests exactly one fixed-size page at the given offset", async () => {
     const items = [makeBookSummary(1), makeBookSummary(2)];
     const getLibrary = vi.fn().mockResolvedValue({ items, count: items.length });
     const apiClient = { getLibrary } as unknown as ApiClient;
 
     const repository = createLibraryRepository(apiClient);
-    const response = await repository.listBooks("dune", "audiobook");
+    const page = await repository.listPage("dune", "audiobook", 0);
 
     expect(getLibrary).toHaveBeenCalledTimes(1);
     expect(getLibrary).toHaveBeenCalledWith(
@@ -59,27 +26,53 @@ describe("libraryRepository listBooks pagination", () => {
       { conversionMode: "audiobook", offset: 0 },
       undefined,
     );
-    expect(response.items).toEqual(items);
-    expect(response.count).toBe(2);
+    expect(page.items).toEqual(items);
+    expect(page.offset).toBe(0);
+    expect(page.hasMore).toBe(false);
   });
 
-  it("counts the unfiltered collection independently of a filtered list", async () => {
+  it("reports hasMore when the page comes back full and pages from an offset", async () => {
+    const fullPage = Array.from({ length: LIBRARY_PAGE_SIZE }, (_, index) =>
+      makeBookSummary(index),
+    );
+    const getLibrary = vi.fn().mockResolvedValue({ items: fullPage, count: fullPage.length });
+    const apiClient = { getLibrary } as unknown as ApiClient;
+
+    const repository = createLibraryRepository(apiClient);
+    const page = await repository.listPage("", "all", LIBRARY_PAGE_SIZE);
+
+    expect(getLibrary).toHaveBeenCalledTimes(1);
+    expect(getLibrary).toHaveBeenCalledWith(
+      undefined,
+      LIBRARY_PAGE_SIZE,
+      { conversionMode: "", offset: LIBRARY_PAGE_SIZE },
+      undefined,
+    );
+    expect(page.items).toHaveLength(LIBRARY_PAGE_SIZE);
+    expect(page.offset).toBe(LIBRARY_PAGE_SIZE);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it("counts the unfiltered collection independently of a filtered page", async () => {
     const filteredItems = [makeBookSummary(1)];
     const getLibrary = vi.fn().mockResolvedValue({ items: filteredItems, count: filteredItems.length });
     const getLibraryCount = vi.fn().mockResolvedValue({ count: 2 });
     const apiClient = { getLibrary, getLibraryCount } as unknown as ApiClient;
 
     const repository = createLibraryRepository(apiClient);
-    const filteredResponse = await repository.listBooks("missing", "all");
+    const filteredPage = await repository.listPage("missing", "all", 0);
     const indexedCount = await repository.countBooks();
 
-    expect(filteredResponse.items).toEqual(filteredItems);
+    expect(filteredPage.items).toEqual(filteredItems);
     expect(indexedCount).toBe(2);
     expect(getLibrary).toHaveBeenCalledTimes(1);
     expect(getLibraryCount).toHaveBeenCalledWith(undefined);
   });
 
-  it("surfaces an explicit error when every safety page is full", async () => {
+  it("never eagerly follows a backend that always returns full pages", async () => {
+    // The old repository looped until a short page arrived, so a backend stuck
+    // returning full pages cost up to 50 requests per list. Paging fetches
+    // exactly one page per call and reports hasMore instead.
     const fullPage = Array.from({ length: LIBRARY_PAGE_SIZE }, (_, index) =>
       makeBookSummary(index),
     );
@@ -91,10 +84,11 @@ describe("libraryRepository listBooks pagination", () => {
 
     const repository = createLibraryRepository(apiClient);
 
-    await expect(repository.listBooks("", "all")).rejects.toThrow(
-      "Library result reached the 25000-book safety limit; narrow your search or filter",
-    );
-    expect(getLibrary).toHaveBeenCalledTimes(50);
+    const page = await repository.listPage("", "all", 0);
+
+    expect(getLibrary).toHaveBeenCalledTimes(1);
+    expect(page.items).toHaveLength(LIBRARY_PAGE_SIZE);
+    expect(page.hasMore).toBe(true);
   });
 });
 

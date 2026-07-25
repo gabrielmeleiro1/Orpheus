@@ -42,7 +42,16 @@ const cleaningPreview: CleaningPreviewResponse = {
   trace_rows: [],
 };
 
-function LibraryProbe({ apiClient, backendDisconnected = false }: { apiClient: ApiClient | null; backendDisconnected?: boolean }): null {
+function LibraryProbe({
+  apiClient,
+  backendDisconnected = false,
+  renderNonce = 0,
+}: {
+  apiClient: ApiClient | null;
+  backendDisconnected?: boolean;
+  renderNonce?: number;
+}): null {
+  void renderNonce;
   const library = useLibrary({ apiClient, backendDisconnected });
   (globalThis as typeof globalThis & { libraryProbe?: UseLibraryResult }).libraryProbe = library;
   return null;
@@ -223,7 +232,10 @@ describe("useLibrary indexed total", () => {
       await oldListRequest.promise;
     });
 
-    expect(newGetLibrary).not.toHaveBeenCalled();
+    // A new client identity loads immediately rather than waiting out the
+    // search debounce, but the superseded client's response must still be
+    // discarded rather than rendered.
+    expect(newGetLibrary).toHaveBeenCalledTimes(1);
     expect(getLibraryProbe().items).toEqual([]);
     expect(getLibraryProbe().selectedBookId).toBeNull();
   });
@@ -257,6 +269,8 @@ describe("useLibrary indexed total", () => {
   );
 
   it("invalidates an in-flight detail immediately when the API client identity changes", async () => {
+    const staleDetail: LibraryBookDetail = { ...detail, title: "Stale book" };
+    const freshDetail: LibraryBookDetail = { ...detail, title: "Fresh book" };
     const oldDetailRequest = deferred<LibraryBookDetail>();
     const oldClient = {
       getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
@@ -264,7 +278,7 @@ describe("useLibrary indexed total", () => {
     } as unknown as ApiClient;
     const newClient = {
       getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
-      getLibraryBook: vi.fn(async () => detail),
+      getLibraryBook: vi.fn(async () => freshDetail),
     } as unknown as ApiClient;
 
     await act(async () => {
@@ -280,12 +294,14 @@ describe("useLibrary indexed total", () => {
       root.render(<LibraryProbe apiClient={newClient} />);
     });
     await act(async () => {
-      oldDetailRequest.resolve(detail);
+      oldDetailRequest.resolve(staleDetail);
       await oldDetailRequest.promise;
     });
 
-    expect(getLibraryProbe().selectedBookDetail).toBeNull();
-    expect(getLibraryProbe().statusMessage).not.toBe("Selected: Indexed book");
+    // The superseded client's detail must never be shown; only the new
+    // client's own response may reach the UI.
+    expect(getLibraryProbe().selectedBookDetail?.title).not.toBe("Stale book");
+    expect(getLibraryProbe().statusMessage).not.toBe("Selected: Stale book");
   });
 
   it.each(queryModeChanges)(
@@ -1582,5 +1598,170 @@ describe("useLibrary indexed total", () => {
       listRequest.resolve({ items: [], count: 0 });
       await listRequest.promise;
     });
+  });
+
+  it("starts the first library page immediately without the search debounce", async () => {
+    const getLibrary = vi.fn(async () => ({ items: [book], count: 1 }));
+    const getLibraryBook = vi.fn(async () => detail);
+    const apiClient = { getLibrary, getLibraryBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+      await Promise.resolve();
+    });
+
+    expect(getLibrary).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the facade identity stable across unrelated parent renders", async () => {
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={null} backendDisconnected renderNonce={0} />);
+    });
+    const first = getLibraryProbe();
+
+    await act(async () => {
+      root.render(<LibraryProbe apiClient={null} backendDisconnected renderNonce={1} />);
+    });
+
+    expect(getLibraryProbe()).toBe(first);
+  });
+
+  it("appends one load-more page without duplicate rows or duplicate requests", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      ...book,
+      id: index + 1,
+      title: `Book ${index + 1}`,
+    }));
+    const moreRequest = deferred<{ items: LibraryBookSummary[]; count: number }>();
+    const getLibrary = vi.fn(
+      (_search?: string, _limit?: number, filters?: { offset?: number }) => (
+        filters?.offset === 100
+          ? moreRequest.promise
+          : Promise.resolve({ items: firstPage, count: firstPage.length })
+      ),
+    );
+    const getLibraryCount = vi.fn(async () => ({ count: 101 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => ({ ...detail, id: bookId }));
+    const apiClient = { getLibrary, getLibraryCount, getLibraryBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+      await Promise.resolve();
+    });
+
+    let firstLoad!: Promise<void>;
+    let duplicateLoad!: Promise<void>;
+    await act(async () => {
+      firstLoad = getLibraryProbe().loadMore();
+      duplicateLoad = getLibraryProbe().loadMore();
+    });
+    expect(getLibrary).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      moreRequest.resolve({ items: [firstPage[99], { ...book, id: 101, title: "Book 101" }], count: 2 });
+      await Promise.all([firstLoad, duplicateLoad]);
+    });
+
+    expect(getLibraryProbe().items).toHaveLength(101);
+    expect(new Set(getLibraryProbe().items.map((item) => item.id)).size).toBe(101);
+    expect(getLibraryProbe().hasMore).toBe(false);
+  });
+
+  it("loads and selects the first book on the next page at the pager boundary", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      ...book,
+      id: index + 1,
+      title: `Book ${index + 1}`,
+    }));
+    const nextBook = { ...book, id: 101, title: "Book 101" };
+    const getLibrary = vi.fn(
+      (_search?: string, _limit?: number, filters?: { offset?: number }) => Promise.resolve(
+        filters?.offset === 100
+          ? { items: [nextBook], count: 1 }
+          : { items: firstPage, count: firstPage.length },
+      ),
+    );
+    const getLibraryCount = vi.fn(async () => ({ count: 101 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => ({
+      ...detail,
+      id: bookId,
+      title: `Book ${bookId}`,
+    }));
+    const apiClient = { getLibrary, getLibraryCount, getLibraryBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      await getLibraryProbe().selectBook(99);
+    });
+    expect(getLibraryProbe().selectedBookIndex).toBe(99);
+
+    await act(async () => {
+      await getLibraryProbe().selectRelative(1);
+    });
+
+    expect(getLibraryProbe().items).toHaveLength(101);
+    expect(getLibraryProbe().selectedBookIndex).toBe(100);
+    expect(getLibraryProbe().selectedBookId).toBe(101);
+    expect(getLibraryProbe().selectedBookDetail?.id).toBe(101);
+  });
+
+  it("invalidates an in-flight load-more page as soon as the query changes", async () => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      ...book,
+      id: index + 1,
+      title: `Book ${index + 1}`,
+    }));
+    const stalePage = deferred<{ items: LibraryBookSummary[]; count: number }>();
+    let staleSignal: AbortSignal | undefined;
+    const getLibrary = vi.fn(
+      (
+        search?: string,
+        _limit?: number,
+        filters?: { offset?: number },
+        options?: { signal?: AbortSignal },
+      ) => {
+        if (filters?.offset === 100) {
+          staleSignal = options?.signal;
+          return stalePage.promise;
+        }
+        if (search === "new") {
+          return Promise.resolve({ items: [{ ...book, id: 999, title: "New result" }], count: 1 });
+        }
+        return Promise.resolve({ items: firstPage, count: firstPage.length });
+      },
+    );
+    const getLibraryCount = vi.fn(async () => ({ count: 100 }));
+    const getLibraryBook = vi.fn(async (bookId: number) => ({ ...detail, id: bookId }));
+    const apiClient = { getLibrary, getLibraryCount, getLibraryBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+      await Promise.resolve();
+    });
+
+    let loadMorePromise!: Promise<void>;
+    await act(async () => {
+      loadMorePromise = getLibraryProbe().loadMore();
+    });
+    await act(async () => {
+      getLibraryProbe().setSearchQuery("new");
+    });
+    expect(staleSignal?.aborted).toBe(true);
+
+    await act(async () => {
+      stalePage.resolve({ items: [{ ...book, id: 101 }], count: 1 });
+      await loadMorePromise;
+      await vi.advanceTimersByTimeAsync(220);
+    });
+
+    expect(getLibraryProbe().items.map((item) => item.id)).toEqual([999]);
   });
 });

@@ -4,8 +4,8 @@ import type {
   ConversionMode,
   DeleteBookResponse,
   LibraryBookDetail,
+  LibraryBookSummary,
   LibraryBookUpdateRequest,
-  LibraryListResponse,
   MaintenanceBackupResponse,
   MaintenanceCleanupResponse,
   MaintenanceDiagnosticsResponse,
@@ -15,13 +15,21 @@ import type {
 
 export type LibraryModeFilter = "all" | ConversionMode;
 
-// Page size for library listing. The backend caps a single request at 1000
-// items; we page in chunks and stop on the first short page so libraries
-// larger than one page are no longer silently truncated.
-export const LIBRARY_PAGE_SIZE = 500;
-// Hard stop so a misbehaving backend that keeps returning full pages cannot
-// loop forever (50 pages = 25k books).
-const LIBRARY_MAX_PAGES = 50;
+// Fixed page size for library listing. The list is fetched one page at a time
+// and the caller pulls more on demand, so we no longer eagerly materialise the
+// whole library (previously up to 25k records) just to render the first screen.
+// The backend caps a single request at 1000 items; this stays well under that
+// while keeping each page cheap to fetch and render.
+export const LIBRARY_PAGE_SIZE = 100;
+
+/** One page of library results plus the metadata needed to page further. */
+export interface LibraryPage {
+  items: LibraryBookSummary[];
+  /** The offset this page was requested at. */
+  offset: number;
+  /** True when the page came back full, so another page may exist. */
+  hasMore: boolean;
+}
 
 /**
  * Thin, React-free wrappers over the API client for every library and
@@ -29,7 +37,12 @@ const LIBRARY_MAX_PAGES = 50;
  * and gives every request a single place to opt into {signal, timeoutMs}.
  */
 export interface LibraryRepository {
-  listBooks(search: string, modeFilter: LibraryModeFilter, options?: ApiRequestOptions): Promise<LibraryListResponse>;
+  listPage(
+    search: string,
+    modeFilter: LibraryModeFilter,
+    offset: number,
+    options?: ApiRequestOptions,
+  ): Promise<LibraryPage>;
   countBooks(options?: ApiRequestOptions): Promise<number>;
   getBook(bookId: number, options?: ApiRequestOptions): Promise<LibraryBookDetail>;
   updateBook(
@@ -51,32 +64,19 @@ export interface LibraryRepository {
 }
 
 export function createLibraryRepository(apiClient: ApiClient): LibraryRepository {
-  async function fetchAllBooks(
-    search: string,
-    modeFilter: LibraryModeFilter,
-    options?: ApiRequestOptions,
-  ): Promise<LibraryListResponse["items"]> {
-    const items: LibraryListResponse["items"] = [];
-    for (let page = 0; page < LIBRARY_MAX_PAGES; page += 1) {
+  return {
+    async listPage(search, modeFilter, offset, options) {
       const response = await apiClient.getLibrary(search || undefined, LIBRARY_PAGE_SIZE, {
         conversionMode: modeFilter === "all" ? "" : modeFilter,
-        offset: page * LIBRARY_PAGE_SIZE,
+        offset,
       }, options);
-      items.push(...response.items);
-      if (response.items.length < LIBRARY_PAGE_SIZE) {
-        return items;
-      }
-    }
-    throw new Error(
-      `Library result reached the ${LIBRARY_PAGE_SIZE * LIBRARY_MAX_PAGES}-book safety limit; `
-      + "narrow your search or filter and try again",
-    );
-  }
-
-  return {
-    async listBooks(search, modeFilter, options) {
-      const items = await fetchAllBooks(search, modeFilter, options);
-      return { items, count: items.length };
+      const items = Array.isArray(response.items) ? response.items : [];
+      return {
+        items,
+        offset,
+        // A full page implies the backend may have more rows past this offset.
+        hasMore: items.length >= LIBRARY_PAGE_SIZE,
+      };
     },
     async countBooks(options) {
       const response = await apiClient.getLibraryCount(options);

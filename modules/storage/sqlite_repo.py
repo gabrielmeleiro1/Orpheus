@@ -280,6 +280,61 @@ class SQLiteRepository(IBookRepository):
             ).fetchone()
             return self._row_to_book(row)
 
+    def create_books(
+        self,
+        books: list[BookCreate],
+        *,
+        batch_size: int = 500,
+    ) -> int:
+        """
+        Insert many books in bounded transactions via the public schema.
+
+        Returns the number of rows inserted.
+        """
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if not books:
+            return 0
+        sql = """
+            INSERT INTO books (
+                title,
+                author,
+                source_path,
+                source_type,
+                conversion_mode,
+                total_chapters,
+                playback_path,
+                playback_status,
+                conversion_runtime_options,
+                tags,
+                favorite
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        inserted = 0
+        for start in range(0, len(books), batch_size):
+            chunk = books[start : start + batch_size]
+            rows = [
+                (
+                    book.title,
+                    book.author,
+                    book.source_path,
+                    book.source_type.value,
+                    book.conversion_mode.value,
+                    book.total_chapters,
+                    book.playback_path,
+                    book.playback_status.value,
+                    book.conversion_runtime_options,
+                    book.tags,
+                    int(bool(book.favorite)),
+                )
+                for book in chunk
+            ]
+            with self._connection() as conn:
+                conn.executemany(sql, rows)
+            inserted += len(rows)
+        return inserted
+
     def create_book_with_chapters(
         self,
         book: BookCreate,

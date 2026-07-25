@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 import type {
   CleaningPreviewResponse,
   ConversionMode,
@@ -23,11 +25,13 @@ export interface UseLibraryResult {
   setModeFilter: (value: "all" | ConversionMode) => void;
   items: LibraryBookSummary[];
   indexedCount: number;
+  hasMore: boolean;
   selectedBookId: number | null;
   selectedBookIndex: number;
   selectedBookDetail: LibraryBookDetail | null;
   selectedBookPlayable: boolean;
   loadingList: boolean;
+  loadingMore: boolean;
   loadingDetail: boolean;
   errorMessage: string;
   statusMessage: string;
@@ -40,6 +44,7 @@ export interface UseLibraryResult {
   maintenanceMessage: string;
   canOpenAppData: boolean;
   refreshLibrary: () => Promise<void>;
+  loadMore: () => Promise<void>;
   selectBook: (index: number) => Promise<LibraryBookDetail | null>;
   selectRelative: (delta: number) => Promise<LibraryBookDetail | null>;
   updateSelectedBookMetadata: (payload: { title: string; author: string; tags: string }) => Promise<void>;
@@ -68,18 +73,20 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     getReloadContextGeneration: list.getReloadContextGeneration,
   });
 
-  return {
+  return useMemo(() => ({
     searchQuery: list.searchQuery,
     setSearchQuery: list.setSearchQuery,
     modeFilter: list.modeFilter,
     setModeFilter: list.setModeFilter,
     items: list.items,
     indexedCount: list.indexedCount,
+    hasMore: list.hasMore,
     selectedBookId: list.selectedBookId,
     selectedBookIndex: list.selectedBookIndex,
     selectedBookDetail: list.selectedBookDetail,
     selectedBookPlayable: list.selectedBookPlayable,
     loadingList: list.loadingList,
+    loadingMore: list.loadingMore,
     loadingDetail: list.loadingDetail,
     errorMessage: list.errorMessage,
     statusMessage: list.statusMessage,
@@ -92,6 +99,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     maintenanceMessage: maintenance.maintenanceMessage,
     canOpenAppData: maintenance.canOpenAppData,
     refreshLibrary: list.refreshLibrary,
+    loadMore: list.loadMore,
     selectBook: list.selectBook,
     selectRelative: list.selectRelative,
     updateSelectedBookMetadata: list.updateSelectedBookMetadata,
@@ -104,5 +112,44 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     openAppDataFolder: maintenance.openAppDataFolder,
     deleteSelectedBook: list.deleteSelectedBook,
     setSelectedPlaybackPosition: list.setSelectedPlaybackPosition,
-  };
+  }), [
+    list.searchQuery,
+    list.setSearchQuery,
+    list.modeFilter,
+    list.setModeFilter,
+    list.items,
+    list.indexedCount,
+    list.hasMore,
+    list.selectedBookId,
+    list.selectedBookIndex,
+    list.selectedBookDetail,
+    list.selectedBookPlayable,
+    list.loadingList,
+    list.loadingMore,
+    list.loadingDetail,
+    list.errorMessage,
+    list.statusMessage,
+    list.bookSummaryTitle,
+    list.bookSummaryMeta,
+    list.bookSummaryExtra,
+    list.bookDetailText,
+    list.refreshLibrary,
+    list.loadMore,
+    list.selectBook,
+    list.selectRelative,
+    list.updateSelectedBookMetadata,
+    list.loadCleaningPreview,
+    list.repairSelectedBook,
+    list.openSelectedBookFolder,
+    list.deleteSelectedBook,
+    list.setSelectedPlaybackPosition,
+    maintenance.maintenanceReport,
+    maintenance.maintenanceLoading,
+    maintenance.maintenanceMessage,
+    maintenance.canOpenAppData,
+    maintenance.loadMaintenanceDiagnostics,
+    maintenance.backupDatabase,
+    maintenance.cleanupStorage,
+    maintenance.openAppDataFolder,
+  ]);
 }

@@ -6,6 +6,7 @@ import { TermSelect } from "../conversion/TermSelect";
 import { chapterPlaybackStatusLabel } from "../player/chapterPlaybackLabel";
 import type { UseLibraryResult } from "./useLibrary";
 import { formatLibraryMeta } from "./useLibrary";
+import { useBookListWindow } from "./useBookListWindow";
 import { useLibraryPanelState } from "./useLibraryPanelState";
 import "./library.css";
 
@@ -71,7 +72,12 @@ export function LibraryPanel({
     setCleanupConfirmationArmed(false);
   }, [library.selectedBookId, selected?.id]);
 
-  const showPager = library.items.length > 1;
+  const showPager = library.items.length > 1 || library.hasMore;
+  const selectedAtLoadedEnd = library.selectedBookIndex >= library.items.length - 1;
+  const { containerRef: listContainerRef, window: listWindow } = useBookListWindow({
+    itemCount: library.items.length,
+    selectedIndex: library.selectedBookIndex,
+  });
   const showCleaningPreview = Boolean(cleaningPreview) || cleaningPreviewLoading;
   // The detail-pane status line stays quiet for the two echoes the form/list
   // already convey: the empty-library note and the "Selected: <title>" message
@@ -144,7 +150,10 @@ export function LibraryPanel({
               <button
                 className="btn btn-ghost btn-compact"
                 type="button"
-                disabled={library.selectedBookIndex < 0 || library.selectedBookIndex >= library.items.length - 1}
+                disabled={
+                  library.selectedBookIndex < 0
+                  || (selectedAtLoadedEnd && (library.loadingMore || !library.hasMore))
+                }
                 onClick={() => void library.selectRelative(1)}
               >
                 Next
@@ -152,7 +161,7 @@ export function LibraryPanel({
             </div>
           ) : null}
 
-          <div id="library-list" className="library-list">
+          <div id="library-list" className="library-list" ref={listContainerRef}>
             {library.loadingList ? <p className="hint">Loading library…</p> : null}
             {showEmpty ? (
               library.indexedCount === 0 ? (
@@ -172,7 +181,11 @@ export function LibraryPanel({
                 </div>
               )
             ) : null}
-            {library.items.map((item, index) => {
+            {listWindow.paddingTop > 0 ? (
+              <div className="library-list-spacer" aria-hidden="true" style={{ height: listWindow.paddingTop }} />
+            ) : null}
+            {library.items.slice(listWindow.startIndex, listWindow.endIndex).map((item, offset) => {
+              const index = listWindow.startIndex + offset;
               const isSelected = item.id === library.selectedBookId;
               return (
                 <button
@@ -187,6 +200,20 @@ export function LibraryPanel({
                 </button>
               );
             })}
+            {listWindow.paddingBottom > 0 ? (
+              <div className="library-list-spacer" aria-hidden="true" style={{ height: listWindow.paddingBottom }} />
+            ) : null}
+            {library.hasMore ? (
+              <button
+                className="btn btn-ghost btn-compact library-load-more"
+                type="button"
+                disabled={library.loadingMore}
+                data-tip="Fetch the next page of books"
+                onClick={() => void library.loadMore()}
+              >
+                {library.loadingMore ? "Loading…" : `Load more (${library.items.length} loaded)`}
+              </button>
+            ) : null}
           </div>
         </aside>
 

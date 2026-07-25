@@ -10,6 +10,26 @@ import type {
 import { buildBookSummary, formatSummaryMeta } from "./libraryDisplayModel";
 import { createLibraryRepository, type LibraryModeFilter } from "./libraryRepository";
 
+/** Merge a freshly fetched page onto the accumulated list, dropping any ids we
+ * already hold so overlapping/duplicate pages never render the same book twice. */
+function appendUniqueBooks(
+  previous: LibraryBookSummary[],
+  incoming: LibraryBookSummary[],
+): LibraryBookSummary[] {
+  if (incoming.length === 0) {
+    return previous;
+  }
+  const seen = new Set(previous.map((item) => item.id));
+  const merged = previous.slice();
+  for (const item of incoming) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      merged.push(item);
+    }
+  }
+  return merged.length === previous.length ? previous : merged;
+}
+
 const SEARCH_DEBOUNCE_MS = 220;
 
 interface UseLibraryListArgs {
@@ -24,11 +44,13 @@ export interface UseLibraryListResult {
   setModeFilter: (value: LibraryModeFilter) => void;
   items: LibraryBookSummary[];
   indexedCount: number;
+  hasMore: boolean;
   selectedBookId: number | null;
   selectedBookIndex: number;
   selectedBookDetail: LibraryBookDetail | null;
   selectedBookPlayable: boolean;
   loadingList: boolean;
+  loadingMore: boolean;
   loadingDetail: boolean;
   errorMessage: string;
   statusMessage: string;
@@ -38,6 +60,7 @@ export interface UseLibraryListResult {
   bookDetailText: string;
   refreshLibrary: () => Promise<void>;
   reloadCurrentQuery: () => Promise<void>;
+  loadMore: () => Promise<void>;
   selectBook: (index: number) => Promise<LibraryBookDetail | null>;
   selectRelative: (delta: number) => Promise<LibraryBookDetail | null>;
   updateSelectedBookMetadata: (payload: { title: string; author: string; tags: string }) => Promise<void>;
@@ -56,11 +79,13 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const [modeFilter, setModeFilter] = useState<LibraryModeFilter>("all");
   const [items, setItems] = useState<LibraryBookSummary[]>([]);
   const [indexedCount, setIndexedCount] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [selectedBookId, setSelectedBookId] = useState<number | null>(null);
   const [selectedBookIndex, setSelectedBookIndex] = useState(-1);
   const [selectedBookDetail, setSelectedBookDetail] = useState<LibraryBookDetail | null>(null);
 
   const [loadingList, setLoadingList] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("Library idle");
@@ -111,6 +136,15 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     [],
   );
   const listAbortRef = useRef<AbortController | null>(null);
+  // Load-more shares the list generation fence (so a new search invalidates an
+  // in-flight page) but keeps its own abort controller and a re-entrancy guard
+  // so rapid clicks never issue duplicate page requests.
+  const loadMoreAbortRef = useRef<AbortController | null>(null);
+  const loadMoreInFlightRef = useRef(false);
+  const listFenceRef = useRef<() => boolean>(() => false);
+  const nextOffsetRef = useRef(0);
+  const hasMoreRef = useRef(false);
+  const loadedRepositoryRef = useRef<typeof repository>(null);
   const detailAbortRef = useRef<AbortController | null>(null);
   const selectedBookIdRef = useRef<number | null>(null);
   const inFlightDeleteTokensRef = useRef(
@@ -123,6 +157,12 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     modeFilter: "all",
   });
   currentListContextRef.current = { query: searchQuery.trim(), modeFilter };
+  // The query/filter a page was actually loaded for. Load-more must continue
+  // the loaded list, not whatever the user has since typed into the box.
+  const loadedListContextRef = useRef<{ query: string; modeFilter: LibraryModeFilter }>({
+    query: "",
+    modeFilter: "all",
+  });
 
   const clearInFlightDeleteRequests = useCallback(() => {
     for (const { controller } of inFlightDeleteTokensRef.current.values()) {
@@ -134,6 +174,9 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const resetLibraryState = useCallback(() => {
     listAbortRef.current?.abort();
     listAbortRef.current = null;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    loadMoreInFlightRef.current = false;
     detailAbortRef.current?.abort();
     detailAbortRef.current = null;
     beginListRequest();
@@ -143,14 +186,18 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     beginEntityActionRequest();
     clearInFlightDeleteRequests();
     preservedStatusRef.current = null;
+    nextOffsetRef.current = 0;
+    hasMoreRef.current = false;
     setItems([]);
     setIndexedCount(0);
+    setHasMore(false);
     selectedBookIdRef.current = null;
     selectionGenerationRef.current += 1;
     setSelectedBookId(null);
     setSelectedBookIndex(-1);
     setSelectedBookDetail(null);
     setLoadingList(false);
+    setLoadingMore(false);
     setLoadingDetail(false);
     setErrorMessage("");
     setStatusMessage(backendDisconnected ? "Backend disconnected" : "Waiting for backend");
@@ -219,32 +266,47 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       }
 
       const requestModeFilter = options.modeFilter ?? modeFilter;
+      loadedListContextRef.current = { query, modeFilter: requestModeFilter };
       reloadContextGenerationRef.current += 1;
       const isCurrent = beginOwnedRequest(beginListRequest);
+      // Load-more inherits the full ownership fence, so a new search, filter,
+      // or api-client swap discards any page still in flight.
+      listFenceRef.current = isCurrent;
       listAbortRef.current?.abort();
       const controller = new AbortController();
       listAbortRef.current = controller;
+      // A fresh list load supersedes any in-flight page append.
+      loadMoreAbortRef.current?.abort();
+      loadMoreAbortRef.current = null;
+      loadMoreInFlightRef.current = false;
+      setLoadingMore(false);
       setLoadingList(true);
       if (!options.preserveMessages) {
         setErrorMessage("");
       }
 
       try {
-        const response = await repository.listBooks(query, requestModeFilter, { signal: controller.signal });
+        const page = await repository.listPage(query, requestModeFilter, 0, { signal: controller.signal });
         if (!isCurrent()) {
           return;
         }
 
-        const nextItems = Array.isArray(response.items) ? response.items : [];
-        const nextIndexedCount = query || requestModeFilter !== "all"
+        const nextItems = page.items;
+        // indexedCount is the total library size, which is only equal to the
+        // first page's length for an unfiltered, single-page library; otherwise
+        // ask the backend for the authoritative count.
+        const nextIndexedCount = query || requestModeFilter !== "all" || page.hasMore
           ? await repository.countBooks({ signal: controller.signal })
-          : response.count;
+          : nextItems.length;
         if (!isCurrent()) {
           return;
         }
 
         setItems(nextItems);
         setIndexedCount(nextIndexedCount);
+        setHasMore(page.hasMore);
+        hasMoreRef.current = page.hasMore;
+        nextOffsetRef.current = nextItems.length;
 
         if (nextItems.length === 0) {
           detailAbortRef.current?.abort();
@@ -318,6 +380,65 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     [beginPreviewRequest, items, loadBookDetail],
   );
 
+  const loadMorePage = useCallback(async (): Promise<LibraryBookSummary[]> => {
+    if (!repository || backendDisconnected || !hasMoreRef.current || loadMoreInFlightRef.current) {
+      return [];
+    }
+
+    // Fence to the list generation captured by the most recent load. A search,
+    // mode change, or api-client swap replaces this fence, so any page that
+    // lands afterwards is discarded instead of being appended onto a different
+    // query's results.
+    const isCurrent = listFenceRef.current;
+    if (!isCurrent()) {
+      return [];
+    }
+
+    loadMoreInFlightRef.current = true;
+    const controller = new AbortController();
+    loadMoreAbortRef.current = controller;
+    const requestOffset = nextOffsetRef.current;
+    const context = loadedListContextRef.current;
+    setLoadingMore(true);
+
+    try {
+      const page = await repository.listPage(context.query, context.modeFilter, requestOffset, {
+        signal: controller.signal,
+      });
+      if (!isCurrent()) {
+        return [];
+      }
+
+      setItems((previous) => appendUniqueBooks(previous, page.items));
+      // Advance by what the backend returned so the next request continues past
+      // this page even if some ids were de-duplicated on the client.
+      nextOffsetRef.current = requestOffset + page.items.length;
+      hasMoreRef.current = page.hasMore;
+      setHasMore(page.hasMore);
+      return page.items;
+    } catch (error: unknown) {
+      if (!isCurrent() || isAbortLikeError(error)) {
+        return [];
+      }
+      const message = error instanceof Error ? error.message : "failed to load more books";
+      setErrorMessage(message);
+      setStatusMessage(message);
+      return [];
+    } finally {
+      loadMoreInFlightRef.current = false;
+      if (loadMoreAbortRef.current === controller) {
+        loadMoreAbortRef.current = null;
+      }
+      if (isCurrent()) {
+        setLoadingMore(false);
+      }
+    }
+  }, [backendDisconnected, repository]);
+
+  const loadMore = useCallback(async (): Promise<void> => {
+    await loadMorePage();
+  }, [loadMorePage]);
+
   const selectRelative = useCallback(
     async (delta: number): Promise<LibraryBookDetail | null> => {
       if (!items.length || delta === 0) {
@@ -326,13 +447,31 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
       const baseIndex = selectedBookIndex >= 0 ? selectedBookIndex : 0;
       const nextIndex = baseIndex + delta;
-      if (nextIndex < 0 || nextIndex >= items.length) {
+      if (nextIndex >= 0 && nextIndex < items.length) {
+        return selectBook(nextIndex);
+      }
+      if (delta !== 1 || nextIndex !== items.length || !hasMoreRef.current) {
         return null;
       }
 
-      return selectBook(nextIndex);
+      // Stepping past the last loaded row pulls the next page so keyboard
+      // navigation is not capped at the current page boundary.
+      const knownIds = new Set(items.map((item) => item.id));
+      const incoming = await loadMorePage();
+      const nextBook = incoming.find((item) => !knownIds.has(item.id));
+      if (!nextBook) {
+        return null;
+      }
+
+      const appendedIndex = items.length;
+      preservedStatusRef.current = null;
+      setSelectedBookIndex(appendedIndex);
+      selectedBookIdRef.current = nextBook.id;
+      setSelectedBookId(nextBook.id);
+      setErrorMessage("");
+      return loadBookDetail(nextBook.id);
     },
-    [items, selectBook, selectedBookIndex],
+    [items, loadBookDetail, loadMorePage, selectBook, selectedBookIndex],
   );
 
   const refreshLibrary = useCallback(async (): Promise<void> => {
@@ -404,6 +543,11 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       queryContextGenerationRef.current === queryContextGenerationAtDeleteStart;
     const isCurrentMutation = beginApiOwnedRequest(beginMutationRequest);
     const isCurrentList = beginApiOwnedRequest(beginListRequest);
+    listFenceRef.current = isCurrentList;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    loadMoreInFlightRef.current = false;
+    setLoadingMore(false);
     listAbortRef.current?.abort();
     listAbortRef.current = null;
     detailAbortRef.current?.abort();
@@ -688,7 +832,30 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
 
   useEffect(() => {
     if (!repository || backendDisconnected) {
+      loadedRepositoryRef.current = null;
       resetLibraryState();
+      return;
+    }
+
+    const loadImmediately = loadedRepositoryRef.current !== repository;
+    loadedRepositoryRef.current = repository;
+
+    // A changed query/filter invalidates list pages immediately, not after the
+    // debounce. Otherwise an in-flight load-more response can land during the
+    // debounce window and mix records from two different queries.
+    listAbortRef.current?.abort();
+    listAbortRef.current = null;
+    loadMoreAbortRef.current?.abort();
+    loadMoreAbortRef.current = null;
+    loadMoreInFlightRef.current = false;
+    listFenceRef.current = beginOwnedRequest(beginListRequest);
+    nextOffsetRef.current = 0;
+    hasMoreRef.current = false;
+    setHasMore(false);
+    setLoadingMore(false);
+
+    if (loadImmediately) {
+      void loadLibrary(searchQuery.trim());
       return;
     }
 
@@ -699,7 +866,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     return () => {
       window.clearTimeout(timer);
     };
-  }, [backendDisconnected, loadLibrary, repository, resetLibraryState, searchQuery]);
+  }, [backendDisconnected, beginListRequest, beginOwnedRequest, loadLibrary, repository, resetLibraryState, searchQuery]);
 
   const summaryValues = useMemo(() => buildBookSummary(selectedBookDetail), [selectedBookDetail]);
   const selectedBookPlayable = Boolean(selectedBookDetail?.playback_url);
@@ -711,11 +878,13 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     setModeFilter,
     items,
     indexedCount,
+    hasMore,
     selectedBookId,
     selectedBookIndex,
     selectedBookDetail,
     selectedBookPlayable,
     loadingList,
+    loadingMore,
     loadingDetail,
     errorMessage,
     statusMessage,
@@ -725,6 +894,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     bookDetailText: summaryValues.raw,
     refreshLibrary,
     reloadCurrentQuery,
+    loadMore,
     selectBook,
     selectRelative,
     updateSelectedBookMetadata,
