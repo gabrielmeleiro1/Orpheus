@@ -1,0 +1,19 @@
+[release]
+product_name = "Orpheus"
+bundle_id = "com.orpheus.desktop"
+minimum_macos = "14.0"
+architecture = "arm64"
+runtime_profiles = ["base", "mlx"]
+
+[budgets]
+cold_launch_seconds = 15.0
+warm_launch_seconds = 5.0
+window_close_seconds = 1.0
+process_exit_seconds = 12.0
+idle_cpu_median_percent = 3.0
+idle_cpu_p95_percent = 8.0
+soak_memory_growth_mib = 100
+soak_memory_growth_percent = 10.0
+library_long_task_ms = 250
+candidate_launch_cycles = 25
+final_launch_cycles = 100
