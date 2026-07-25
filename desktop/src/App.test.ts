@@ -147,4 +147,12 @@ describe("decideBackendRecovery", () => {
       consumeAttempt: false,
     });
   });
+
+  it("stops re-bootstrapping a ready but unhealthy backend after a bounded number of cycles", () => {
+    expect(decideBackendRecovery("ready", 0, 5, 4)).toEqual({
+      action: "wait",
+      consumeAttempt: false,
+    });
+    expect(decideBackendRecovery("ready", 0, 5, 5)).toEqual({ action: "give_up" });
+  });
 });

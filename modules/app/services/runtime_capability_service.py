@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import io
 import json
 import subprocess
@@ -308,11 +307,41 @@ except Exception as exc:
         }
 
     def _run_in_process_probe(self, script: str) -> ProbeResult:
+        """Execute a probe script in-process without process-global stdout.
+
+        Packaged windowed backends often start with ``sys.stdout is None``.
+        Setup status and ``/api/system/capabilities`` also probe concurrently.
+        ``contextlib.redirect_stdout`` is process-global and not thread-safe:
+        overlapping redirects produce empty capture and the exact error
+        ``probe produced no output`` even when the import path succeeds.
+
+        Capture via a namespace-local ``print`` so each concurrent probe has
+        its own buffer and scripts remain portable with the subprocess path.
+        """
         stdout = io.StringIO()
         stderr = io.StringIO()
-        namespace: dict[str, Any] = {"__name__": "__runtime_capability_probe__"}
-        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+
+        def _capture_print(*args: Any, **kwargs: Any) -> None:
+            file_obj = kwargs.get("file", stdout)
+            if file_obj in (None, sys.stdout):
+                file_obj = stdout
+            elif file_obj is sys.stderr:
+                file_obj = stderr
+            sep = str(kwargs.get("sep", " "))
+            end = str(kwargs.get("end", "\n"))
+            file_obj.write(sep.join(str(arg) for arg in args) + end)
+
+        namespace: dict[str, Any] = {
+            "__name__": "__runtime_capability_probe__",
+            "print": _capture_print,
+        }
+        try:
             exec(script, namespace)  # noqa: S102
+        except Exception as exc:
+            return {
+                "available": False,
+                "error": str(exc) or "probe raised before producing output",
+            }
 
         output = stdout.getvalue().strip()
         if not output:

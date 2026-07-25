@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
-import type { StartConversionRequest } from "../../types/api";
+import type { ActiveConversionResponse, StartConversionRequest } from "../../types/api";
 import { useEventStream } from "../events/useEventStream";
 
 interface UseConversionJobArgs {
@@ -34,7 +34,6 @@ function validateStartPayload(payload: StartConversionRequest): string {
 }
 
 export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
-  const eventStream = useEventStream({ apiClient, baseUrl });
   const [isStarting, setIsStarting] = useState(false);
   const [formError, setFormError] = useState("");
   // Title/author of the last started or reconciled job, so status surfaces
@@ -43,6 +42,22 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
     title: string;
     author: string;
   } | null>(null);
+  // The event stream reconciles on mount and on reconnect; take the job meta
+  // from that response instead of issuing a second identical lookup.
+  const applyReconciledJobMeta = useCallback((response: ActiveConversionResponse) => {
+    if (!response.job) {
+      return;
+    }
+    setActiveJobMeta({
+      title: String(response.job.title ?? "").trim(),
+      author: String(response.job.author ?? "").trim(),
+    });
+  }, []);
+  const eventStream = useEventStream({
+    apiClient,
+    baseUrl,
+    onActiveConversionReconciled: applyReconciledJobMeta,
+  });
   const startInFlightRef = useRef(false);
 
   const clearFormError = useCallback(() => {
@@ -108,11 +123,7 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
     [apiClient, eventStream.markConversionStarted],
   );
 
-  useEffect(() => {
-    void refreshActiveConversion();
-  }, [refreshActiveConversion]);
-
-  return {
+  return useMemo(() => ({
     ...eventStream,
     activeJobStatus: eventStream.uiState,
     activeJobTitle: activeJobMeta?.title ?? "",
@@ -122,7 +133,15 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
     clearFormError,
     startConversion,
     refreshActiveConversion,
-  };
+  }), [
+    activeJobMeta,
+    clearFormError,
+    eventStream,
+    formError,
+    isStarting,
+    refreshActiveConversion,
+    startConversion,
+  ]);
 }
 
 export type ConversionJobController = ReturnType<typeof useConversionJob>;

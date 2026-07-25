@@ -1,8 +1,20 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ComponentProps,
+  type KeyboardEvent,
+} from "react";
 
 import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
 import { useRuntimeIdentityLabel } from "./app/usePrimaryRuntime";
+import {
+  readRuntimeSetupReadyHint,
+  writeRuntimeSetupReadyHint,
+} from "./app/runtimeSetupReadiness";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
@@ -22,6 +34,7 @@ import {
 import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKeyboardNavigation";
 import type { DashboardTab, RuntimeSetupStatusResponse } from "./types/api";
 import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
+import { equalWhenHidden, equalWhenInvisible } from "./app/visibilityMemo";
 
 type BackendClientState = ReturnType<typeof useBackendClient>;
 
@@ -45,6 +58,46 @@ export function resolveAutoTabSwitch(input: {
     return PASSIVE_AUTO_SWITCH_TABS.has(input.activeTab) ? "library" : null;
   }
   return null;
+}
+
+const StableDashboardPanel = memo(DashboardPanel, equalWhenHidden);
+const StableConversionPanel = memo(ConversionPanel, equalWhenHidden);
+const StableLibraryPanel = memo(LibraryPanel, equalWhenHidden);
+const StablePlayerPanel = memo(PlayerPanel, equalWhenInvisible);
+
+type VisibilityProgressPanelProps = ComponentProps<typeof ProgressPanel> & { hidden: boolean };
+
+const VisibilityProgressPanel = memo(function VisibilityProgressPanel({
+  hidden: _hidden,
+  ...props
+}: VisibilityProgressPanelProps) {
+  return <ProgressPanel {...props} />;
+}, equalWhenHidden);
+
+type VisibilityLogPanelProps = ComponentProps<typeof LogPanel> & { hidden: boolean };
+
+const VisibilityLogPanel = memo(function VisibilityLogPanel({
+  hidden: _hidden,
+  ...props
+}: VisibilityLogPanelProps) {
+  return <LogPanel {...props} />;
+}, equalWhenHidden);
+
+function RuntimeSetupChecking() {
+  return (
+    <main className="setup-frame" aria-label="Orpheus startup">
+      <section className="setup-shell setup-loading" role="status" aria-live="polite">
+        <div className="setup-brand">
+          <div className="brand">
+            <span className="brand-mark" aria-hidden="true">O</span>
+            <span className="brand-name">Orpheus</span>
+          </div>
+        </div>
+        <BrailleSpinner active />
+        <span>Checking your local runtime…</span>
+      </section>
+    </main>
+  );
 }
 
 function DashboardApp({
@@ -73,6 +126,8 @@ function DashboardApp({
   const runtimeIdentity = useRuntimeIdentityLabel(apiClient);
   const player = useAudioPlayer({ apiClient, library });
   const previousUiStateRef = useRef<string>("idle");
+  const visitedTabsRef = useRef<Set<DashboardTab>>(new Set(["dashboard"]));
+  visitedTabsRef.current.add(activeTab);
 
   const conversionJob = useConversionJob({
     apiClient,
@@ -112,25 +167,35 @@ function DashboardApp({
 
   const isConversionPanelVisible = activeTab === "convert" || activeTab === "document" || activeTab === "settings";
   const conversionPanelTab = conversionPanelTabForDashboardTab(activeTab);
+  const conversionPanelMounted = visitedTabsRef.current.has("convert")
+    || visitedTabsRef.current.has("document")
+    || visitedTabsRef.current.has("settings");
+  const renderedConversionPanelId = conversionPanelMounted
+    ? conversionPanelTab === "config"
+      ? "tab-config"
+      : conversionPanelTab === "document"
+        ? "tab-document"
+        : "tab-convert"
+    : null;
   const activeTabIndex = DASHBOARD_TAB_CONFIGS.findIndex((tab) => tab.id === activeTab);
 
-  const selectTabAtIndex = (index: number) => {
+  const selectTabAtIndex = useCallback((index: number) => {
     const next = DASHBOARD_TAB_CONFIGS[index];
     if (!next) {
       return;
     }
     setActiveTab(next.id);
     tabRefs.current[index]?.focus();
-  };
+  }, []);
 
-  const selectTab = (tab: DashboardTab) => {
+  const selectTab = useCallback((tab: DashboardTab) => {
     const index = DASHBOARD_TAB_CONFIGS.findIndex((candidate) => candidate.id === tab);
     if (index >= 0) {
       selectTabAtIndex(index);
     }
-  };
+  }, [selectTabAtIndex]);
 
-  const onTabListKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+  const onTabListKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
     const nextIndex = nextTabIndexAfterKeyboard({
       key: event.key,
       activeIndex: Math.max(0, activeTabIndex),
@@ -141,7 +206,16 @@ function DashboardApp({
     }
     event.preventDefault();
     selectTabAtIndex(nextIndex);
-  };
+  }, [activeTabIndex, selectTabAtIndex]);
+
+  const openConvert = useCallback(() => setActiveTab("convert"), []);
+  const openSettings = useCallback(() => selectTab("settings"), [selectTab]);
+  const playPrevious = useCallback(() => {
+    void playRelative(-1);
+  }, [playRelative]);
+  const playNext = useCallback(() => {
+    void playRelative(1);
+  }, [playRelative]);
 
   return (
     <main className="app-frame" role="application" aria-label="Orpheus dashboard">
@@ -237,7 +311,7 @@ function DashboardApp({
         </header>
 
         <div className="main-workspace">
-          <DashboardPanel
+          <StableDashboardPanel
             hidden={activeTab !== "dashboard"}
             library={library}
             connectionState={connectionState}
@@ -256,10 +330,10 @@ function DashboardApp({
             audioVisualizer={player.audioVisualizer}
             elapsedSec={player.elapsedSec}
             durationSec={player.durationSec}
-            onStartConvert={() => setActiveTab("convert")}
+            onStartConvert={openConvert}
           />
 
-          <ConversionPanel
+          {conversionPanelMounted ? <StableConversionPanel
             activeTab={conversionPanelTab}
             hidden={!isConversionPanelVisible}
             apiClient={apiClient}
@@ -267,19 +341,25 @@ function DashboardApp({
             health={health}
             statusMessage={statusMessage}
             conversionJob={conversionJob}
-            onOpenSettings={() => selectTab("settings")}
+            onOpenSettings={openSettings}
             onOpenRuntimeSetup={onOpenRuntimeSetup}
             startCommandRef={startCommandRef}
-          />
+          /> : null}
+          {["tab-convert", "tab-document", "tab-config"].map((panelId) => (
+            panelId === renderedConversionPanelId ? null : (
+              <section key={panelId} id={panelId} role="tabpanel" hidden />
+            )
+          ))}
 
-          <section
+          {visitedTabsRef.current.has("progress") ? <section
             id="tab-progress"
             className="panel"
             role="tabpanel"
             aria-label="Conversion progress"
             hidden={activeTab !== "progress"}
           >
-            <ProgressPanel
+            <VisibilityProgressPanel
+              hidden={activeTab !== "progress"}
               uiState={conversionJob.uiState}
               statusText={conversionJob.statusText}
               progressPct={conversionJob.progressPct}
@@ -291,33 +371,31 @@ function DashboardApp({
               activeJobId={conversionJob.activeJobId}
               isCancelling={conversionJob.isCancelling}
               onCancel={conversionJob.cancelActiveConversion}
-              onStartConvert={() => setActiveTab("convert")}
+              onStartConvert={openConvert}
             />
-          </section>
+          </section> : <section id="tab-progress" role="tabpanel" aria-label="Conversion progress" hidden />}
 
-          <section
+          {visitedTabsRef.current.has("logs") ? <section
             id="tab-logs"
             className="panel logs-panel"
             role="tabpanel"
             aria-label="Process logs"
             hidden={activeTab !== "logs"}
           >
-            <LogPanel logs={conversionJob.logs} />
-          </section>
+            <VisibilityLogPanel hidden={activeTab !== "logs"} logs={conversionJob.logs} />
+          </section> : <section id="tab-logs" role="tabpanel" aria-label="Process logs" hidden />}
 
-          <LibraryPanel
+          {visitedTabsRef.current.has("library") ? <StableLibraryPanel
             hidden={activeTab !== "library"}
             library={library}
             currentChapterNumber={player.currentChapter?.number ?? null}
             playing={player.playing}
-            onJumpToChapter={(chapter) => {
-              void player.jumpToChapter(chapter);
-            }}
-            onStartConvert={() => setActiveTab("convert")}
-          />
+            onJumpToChapter={player.jumpToChapter}
+            onStartConvert={openConvert}
+          /> : <section id="tab-library" role="tabpanel" aria-label="Library and playback" hidden />}
         </div>
 
-        <PlayerPanel
+        <StablePlayerPanel
           enabled={player.playerEligible}
           visible={player.playerVisible}
           playing={player.playing}
@@ -331,17 +409,11 @@ function DashboardApp({
           canGoNext={player.canGoNext}
           audioRef={player.audioRef}
           audio={player.audioProps}
-          onTogglePlay={() => {
-            void togglePlay();
-          }}
+          onTogglePlay={togglePlay}
           onSeekBy={seekBy}
           onSeekTo={seekTo}
-          onPrevious={() => {
-            void playRelative(-1);
-          }}
-          onNext={() => {
-            void playRelative(1);
-          }}
+          onPrevious={playPrevious}
+          onNext={playNext}
           onVolumeChange={player.setPlayerVolume}
           onClose={player.closePlayer}
         />
@@ -354,11 +426,14 @@ function App() {
   const backend = useBackendClient();
   const [setupStatus, setSetupStatus] = useState<RuntimeSetupStatusResponse | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
+  const [runtimeReadyHint, setRuntimeReadyHint] = useState(readRuntimeSetupReadyHint);
   const [libraryOnlyOverride, setLibraryOnlyOverride] = useState(false);
   const [forceOpenRuntimeSetup, setForceOpenRuntimeSetup] = useState(false);
 
   const onSetupReady = useCallback((status: RuntimeSetupStatusResponse) => {
     setSetupStatus(status);
+    setRuntimeReadyHint(true);
+    writeRuntimeSetupReadyHint(true);
     if (!forceOpenRuntimeSetup) {
       setLibraryOnlyOverride(false);
     }
@@ -390,7 +465,11 @@ function App() {
     // a subprocess and cached model assets get hashed for the first receipt
     // verification. An 8s timeout guaranteed a spurious first-launch error.
     void backend.apiClient.getRuntimeSetupStatus({ timeoutMs: 30_000 }).then((status) => {
-      if (active) setSetupStatus(status);
+      if (!active) return;
+      const ready = !shouldShowRuntimeSetup(status, false);
+      setRuntimeReadyHint(ready);
+      writeRuntimeSetupReadyHint(ready);
+      setSetupStatus(status);
     }).catch((error: unknown) => {
       if (!active) return;
       const message = error instanceof Error && error.message.trim()
@@ -404,7 +483,20 @@ function App() {
     };
   }, [backend.apiClient, forceOpenRuntimeSetup, libraryOnlyOverride]);
 
-  if (forceOpenRuntimeSetup || shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride)) {
+  if (
+    !forceOpenRuntimeSetup
+    && !libraryOnlyOverride
+    && !runtimeReadyHint
+    && setupStatus === null
+    && setupError === null
+  ) {
+    return <RuntimeSetupChecking />;
+  }
+
+  if (
+    forceOpenRuntimeSetup
+    || (!runtimeReadyHint && shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride))
+  ) {
     return (
       <SetupPage
         apiClient={backend.apiClient}

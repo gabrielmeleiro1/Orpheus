@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { ModelOptionsResponse, SystemCapabilitiesResponse, TermSelectOption } from "../../types/api";
@@ -12,16 +12,16 @@ import {
   type PersistedSettings,
 } from "./conversionOptionsShared";
 import { isAbortLikeError } from "./useLatestRequest";
+import {
+  getRuntimeBootstrap,
+  updateRuntimeBootstrapCapabilities,
+} from "../../app/runtimeBootstrapCache";
+import {
+  shouldPollRuntimeCapabilities,
+  startRuntimeCapabilityPolling,
+} from "./runtimeCapabilityPolling";
 
 const VOICE_FILTER_DEBOUNCE_MS = 180;
-
-// The backend's local-runtime probe finishes a few seconds after startup and
-// reports runtime_probe.state === "pending"/"stale" until it does. We re-fetch
-// capabilities with modest backoff until the probe reports "fresh" so that
-// local backends stop looking unavailable, giving up after a bounded window.
-const CAPABILITIES_PROBE_POLL_BASE_MS = 1500;
-const CAPABILITIES_PROBE_POLL_MAX_MS = 6000;
-const CAPABILITIES_PROBE_MAX_WAIT_MS = 60000;
 
 export interface UseTtsOptionsArgs {
   apiClient: ApiClient | null;
@@ -61,7 +61,6 @@ export function useTtsOptions({
   const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
   const [allVoiceOptions, setAllVoiceOptions] = useState<TermSelectOption[]>([]);
-  const probeStateRef = useRef<string | undefined>(undefined);
 
   const [selectedEngine, setSelectedEngineState] = useState("");
   const [selectedVoice, setSelectedVoiceState] = useState("");
@@ -104,7 +103,6 @@ export function useTtsOptions({
   useEffect(() => {
     if (!apiClient) {
       settingsHydratedRef.current = false;
-      probeStateRef.current = undefined;
       setLoading(false);
       setError("");
       setModelOptions(null);
@@ -119,20 +117,50 @@ export function useTtsOptions({
     setLoading(true);
     setError("");
 
+    // Shared bootstrap can resolve with a cold-start pending/stale snapshot
+    // after a live poll has already observed a fresher probe. Never let that
+    // late cache result clobber Local MLX availability in Settings.
+    const poller = startRuntimeCapabilityPolling({
+      getSystemCapabilities: (signal) => apiClient.getSystemCapabilities({ signal }),
+      onCapabilities: (capabilities) => {
+        if (!cancelled) {
+          setSystemCapabilities(capabilities);
+          updateRuntimeBootstrapCapabilities(apiClient, capabilities);
+        }
+      },
+    });
+
     const load = async () => {
       try {
-        const [models, capabilities] = await Promise.all([
-          apiClient.getModelOptions(),
-          apiClient.getSystemCapabilities(),
-        ]);
+        const { models, capabilities } = await getRuntimeBootstrap(apiClient);
 
         if (cancelled) {
           return;
         }
 
         setModelOptions(models);
-        setSystemCapabilities(capabilities);
-        probeStateRef.current = capabilities.runtime_probe?.state;
+        if (!poller.pollApplied) {
+          setSystemCapabilities(capabilities);
+          poller.noteCapabilities(capabilities);
+          // Dashboard may have pinned a stale mlx=false bootstrap during setup.
+          // Refresh immediately when Settings/Convert mounts so the Cleaner
+          // selector does not wait for the first poll backoff.
+          if (shouldPollRuntimeCapabilities(capabilities.runtime_probe, capabilities)) {
+            void apiClient
+              .getSystemCapabilities()
+              .then((fresh) => {
+                if (cancelled) {
+                  return;
+                }
+                setSystemCapabilities(fresh);
+                updateRuntimeBootstrapCapabilities(apiClient, fresh);
+                poller.noteCapabilities(fresh);
+              })
+              .catch(() => {
+                // Bounded poller continues on the normal backoff schedule.
+              });
+          }
+        }
 
         const persisted = persistedSettingsRef.current;
 
@@ -168,64 +196,9 @@ export function useTtsOptions({
 
     return () => {
       cancelled = true;
+      poller.stop();
     };
   }, [apiClient, persistedSettingsRef, settingsHydratedRef]);
-
-  useEffect(() => {
-    if (!apiClient) {
-      return;
-    }
-
-    let cancelled = false;
-    let timer: number | null = null;
-    const controller = new AbortController();
-    const startedAt = Date.now();
-    let attempt = 0;
-
-    const scheduleNext = () => {
-      if (cancelled || probeStateRef.current === "fresh") {
-        return;
-      }
-      if (Date.now() - startedAt >= CAPABILITIES_PROBE_MAX_WAIT_MS) {
-        return;
-      }
-      const delay = Math.min(
-        CAPABILITIES_PROBE_POLL_BASE_MS * 2 ** attempt,
-        CAPABILITIES_PROBE_POLL_MAX_MS,
-      );
-      attempt += 1;
-      timer = window.setTimeout(() => void poll(), delay);
-    };
-
-    const poll = async () => {
-      if (cancelled || probeStateRef.current === "fresh") {
-        return;
-      }
-      try {
-        const capabilities = await apiClient.getSystemCapabilities({ signal: controller.signal });
-        if (cancelled) {
-          return;
-        }
-        probeStateRef.current = capabilities.runtime_probe?.state;
-        setSystemCapabilities(capabilities);
-      } catch (pollError: unknown) {
-        if (cancelled || isAbortLikeError(pollError)) {
-          return;
-        }
-      }
-      scheduleNext();
-    };
-
-    scheduleNext();
-
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (timer !== null) {
-        window.clearTimeout(timer);
-      }
-    };
-  }, [apiClient]);
 
   useEffect(() => {
     if (!apiClient || !selectedEngine.trim()) {

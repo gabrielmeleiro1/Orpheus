@@ -17,7 +17,15 @@ vi.mock("../features/dashboard/dashboardHelpers", () => ({
 }));
 vi.mock("../platform/tauriRuntime", () => ({ isTauriRuntime: () => true }));
 
-import { useBackendClient } from "./useBackendClient";
+import { retainEquivalentHealth, useBackendClient } from "./useBackendClient";
+
+describe("retainEquivalentHealth", () => {
+  it("keeps object identity when the health status has not changed", () => {
+    const previous = { status: "ok" };
+    expect(retainEquivalentHealth(previous, { status: "ok" })).toBe(previous);
+    expect(retainEquivalentHealth(previous, { status: "degraded" })).toEqual({ status: "degraded" });
+  });
+});
 
 describe("useBackendClient explicit reconnect", () => {
   let container: HTMLDivElement;

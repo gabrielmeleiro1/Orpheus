@@ -7,6 +7,7 @@ import {
   readPersistedSettings,
 } from "../features/conversion/conversionOptionsShared";
 import { buildRuntimeIdentityLabelFromSnapshot } from "./runtimeIdentity";
+import { getRuntimeBootstrap } from "./runtimeBootstrapCache";
 
 export function useRuntimeIdentityLabel(apiClient: ApiClient | null): string {
   const [label, setLabel] = useState("TTS: — · Cleaner: —");
@@ -20,12 +21,12 @@ export function useRuntimeIdentityLabel(apiClient: ApiClient | null): string {
       setLabel("TTS: — · Cleaner: —");
       return undefined;
     }
-    const controller = new AbortController();
-    void Promise.all([
-      apiClient.getSystemCapabilities({ signal: controller.signal }),
-      apiClient.getModelOptions({ signal: controller.signal }),
-    ])
-      .then(([capabilities, modelOptions]) => {
+    let cancelled = false;
+    void getRuntimeBootstrap(apiClient)
+      .then(({ capabilities, models: modelOptions }) => {
+        if (cancelled) {
+          return;
+        }
         capabilitiesRef.current = capabilities;
         modelOptionsRef.current = modelOptions;
         setLabel(
@@ -37,12 +38,12 @@ export function useRuntimeIdentityLabel(apiClient: ApiClient | null): string {
         );
       })
       .catch(() => {
-        if (!controller.signal.aborted) {
+        if (!cancelled) {
           setLabel("TTS: — · Cleaner: —");
         }
       });
     return () => {
-      controller.abort();
+      cancelled = true;
     };
   }, [apiClient]);
 

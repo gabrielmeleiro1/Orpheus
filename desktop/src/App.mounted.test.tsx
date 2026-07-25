@@ -268,6 +268,20 @@ describe("App runtime setup recovery", () => {
     expect(container.querySelector('[data-testid="setup-page"]')).toBeNull();
   });
 
+  it("keeps every lazy tab's aria-controls target in the document", async () => {
+    await act(async () => {
+      root.render(<App />);
+    });
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+
+    for (const label of ["Convert", "Document", "Library", "Progress", "Logs", "Settings"]) {
+      const tab = findButton(container, label);
+      const panelId = tab.getAttribute("aria-controls");
+      expect(panelId).toBeTruthy();
+      expect(container.querySelector(`#${panelId}`)).not.toBeNull();
+    }
+  });
+
   it("refreshes the library when a conversion completes", async () => {
     await act(async () => {
       root.render(<App />);
@@ -288,6 +302,7 @@ describe("App runtime setup recovery", () => {
     });
     await act(async () => findButton(container, "Continue in library-only mode").click());
 
+    await act(async () => findButton(container, "Convert").click());
     await act(async () => findButton(container, "Open Settings").click());
 
     expect(document.activeElement?.id).toBe("tab-btn-settings");

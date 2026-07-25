@@ -206,7 +206,9 @@ def create_app(
     app.state.controller_factory = build_controller
     app.state.owns_controller = owns_controller
     app.state.backend_instance_id = backend_instance_id
-    app.state.runtime_setup_status_cache = setup.RuntimeSetupStatusCache()
+    # Probe cache is wired lazily in setup._get_status_cache so it shares the
+    # controller RuntimeCapabilityService (setup vs capabilities agreement).
+    app.state.runtime_setup_status_cache = None
     _configure_desktop_runtime(
         app,
         desktop_mode=desktop_mode,

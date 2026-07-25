@@ -218,6 +218,11 @@ class AppController:
             shared_worker_pool_manager=self._shared_worker_pool_manager,
         )
 
+    @property
+    def runtime_capability_service(self) -> RuntimeCapabilityService:
+        """Shared probe cache for capabilities and setup readiness."""
+        return self._runtime_capability_service
+
     # ==================== Library ====================
 
     def get_library_books(

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, useEffect as reactUseEffect } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -12,12 +12,26 @@ const { refreshActiveConversionState, markConversionStarted } = vi.hoisted(() =>
 }));
 
 vi.mock("../events/useEventStream", () => ({
-  useEventStream: () => ({
-    activeJobId: "job-1",
-    refreshActiveConversionState,
-    markConversionStarted,
-    uiState: "running",
-  }),
+  useEventStream: ({
+    onActiveConversionReconciled,
+  }: {
+    onActiveConversionReconciled?: (response: unknown) => void;
+  }) => {
+    reactUseEffect(() => {
+      void (async () => {
+        const response = await refreshActiveConversionState();
+        if (response) {
+          onActiveConversionReconciled?.(response);
+        }
+      })();
+    }, [onActiveConversionReconciled]);
+    return {
+      activeJobId: "job-1",
+      refreshActiveConversionState,
+      markConversionStarted,
+      uiState: "running",
+    };
+  },
 }));
 
 function Probe(): null {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type {
@@ -22,6 +22,10 @@ import { useTerminalStateWaiters } from "./useTerminalStateWaiters";
 interface UseEventStreamArgs {
   apiClient: ApiClient | null;
   baseUrl: string;
+  // Notified with every reconciliation response that wins its ownership fence,
+  // so a consumer can derive its own state from the lookup this hook already
+  // performs instead of issuing a second identical request.
+  onActiveConversionReconciled?: (response: ActiveConversionResponse) => void;
 }
 
 interface UseEventStreamResult {
@@ -56,6 +60,7 @@ const CANCEL_RECONCILE_MAX_ATTEMPTS = 30;
 export function useEventStream({
   apiClient,
   baseUrl,
+  onActiveConversionReconciled,
 }: UseEventStreamArgs): UseEventStreamResult {
   const initialModelState = useRef(createInitialEventStreamState());
   const [modelState, setModelState] = useState(initialModelState.current);
@@ -67,6 +72,10 @@ export function useEventStream({
   const reconciliationRequestSequenceRef = useRef(0);
   const cancellationAttemptSequenceRef = useRef(0);
   const mountedRef = useRef(true);
+  const hasOpenedStreamRef = useRef(false);
+  const onReconciledRef = useRef(onActiveConversionReconciled);
+  onReconciledRef.current = onActiveConversionReconciled;
+  const refreshGenerationRef = useRef(0);
 
   const nextLogId = useCallback(() => {
     logSequenceRef.current += 1;
@@ -121,6 +130,9 @@ export function useEventStream({
       if (payload.event_type === "progress" || payload.event_type === "state") {
         runtimeMutationGenerationRef.current += 1;
       }
+      // Any live event is newer than a reconciliation request already in
+      // flight. Fence that request so its snapshot cannot roll state back.
+      refreshGenerationRef.current += 1;
       if (payload.event_type === "progress") {
         applyReducerAction({ type: "progress", payload });
         return;
@@ -160,6 +172,7 @@ export function useEventStream({
   const refreshActiveConversionState = useCallback(async () => {
     const requestId = ++reconciliationRequestSequenceRef.current;
     const reconciliationGeneration = runtimeMutationGenerationRef.current;
+    const generation = ++refreshGenerationRef.current;
     if (!apiClient) {
       if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
         return null;
@@ -173,11 +186,15 @@ export function useEventStream({
       if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
         return null;
       }
+      if (generation !== refreshGenerationRef.current) {
+        return null;
+      }
       // Claim this reconciliation before applying it so a concurrent lookup
       // that captured the same generation cannot land afterward and overwrite
       // the response accepted here.
       runtimeMutationGenerationRef.current += 1;
       lookupFailedRef.current = false;
+      onReconciledRef.current?.(response);
       if (response.job) {
         const terminalStatus = normalizeTerminalStatus(response.job.status);
         if (terminalStatus) {
@@ -204,7 +221,12 @@ export function useEventStream({
       });
       return response;
     } catch {
-      if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+      if (
+        !mountedRef.current ||
+        requestId !== reconciliationRequestSequenceRef.current ||
+        reconciliationGeneration !== runtimeMutationGenerationRef.current ||
+        generation !== refreshGenerationRef.current
+      ) {
         return null;
       }
       // The reconcile fallback polls every couple of seconds while a cancel is
@@ -233,6 +255,10 @@ export function useEventStream({
   );
 
   const handleStreamOpen = useCallback(() => {
+    if (!hasOpenedStreamRef.current) {
+      hasOpenedStreamRef.current = true;
+      return;
+    }
     void refreshActiveConversionState();
   }, [refreshActiveConversionState]);
 
@@ -251,6 +277,16 @@ export function useEventStream({
     };
   }, []);
 
+  // A client or base-URL swap invalidates any reconciliation still in flight
+  // and reopens the stream, so the next open is treated as a first open.
+  useEffect(() => {
+    refreshGenerationRef.current += 1;
+    hasOpenedStreamRef.current = false;
+  }, [apiClient, baseUrl]);
+
+  // This hook owns startup reconciliation. Consumers that need the response
+  // body take it via onActiveConversionReconciled rather than repeating the
+  // lookup, so a mount issues exactly one request.
   useEffect(() => {
     void refreshActiveConversionState();
   }, [refreshActiveConversionState]);
@@ -376,7 +412,7 @@ export function useEventStream({
     }
   }, [apiClient, applyReducerAction, nextLogId, pushLog]);
 
-  return {
+  return useMemo(() => ({
     streamState,
     uiState: modelState.uiState,
     statusText: modelState.statusText,
@@ -395,5 +431,11 @@ export function useEventStream({
     // Stable memoized callback from useTerminalStateWaiters; it normalizes the
     // job id itself, so no per-render wrapper is needed.
     waitForTerminalState,
-  };
+  }), [
+    cancelActiveConversion,
+    modelState,
+    refreshActiveConversionState,
+    streamState,
+    waitForTerminalState,
+  ]);
 }

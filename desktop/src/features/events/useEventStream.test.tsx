@@ -6,15 +6,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
 import type { ActiveConversionResponse, DesktopEventPayload } from "../../types/api";
+import { useConversionJob } from "../conversion/useConversionJob";
 import { useEventStream } from "./useEventStream";
 
-const transportHarness = vi.hoisted(() => ({
-  onPayload: null as ((payload: DesktopEventPayload) => void) | null,
+const transport = vi.hoisted(() => ({
+  onOpen: null as null | (() => void),
+  onPayload: null as null | ((payload: DesktopEventPayload) => void),
 }));
 
 vi.mock("./useEventStreamTransport", () => ({
-  useEventStreamTransport: (args: { onPayload: (payload: DesktopEventPayload) => void }) => {
-    transportHarness.onPayload = args.onPayload;
+  useEventStreamTransport: ({ onOpen, onPayload }: {
+    onOpen: () => void;
+    onPayload: (payload: DesktopEventPayload) => void;
+  }) => {
+    transport.onOpen = onOpen;
+    transport.onPayload = onPayload;
     return "open";
   },
 }));
@@ -51,7 +57,8 @@ describe("useEventStream reconciliation fencing", () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     container = document.createElement("div");
     document.body.append(container);
-    transportHarness.onPayload = null;
+    transport.onOpen = null;
+    transport.onPayload = null;
   });
 
   afterEach(async () => {
@@ -103,7 +110,7 @@ describe("useEventStream reconciliation fencing", () => {
     });
 
     await act(async () => {
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "state",
         job_id: "job-b",
         state: "running",
@@ -203,19 +210,19 @@ describe("useEventStream reconciliation fencing", () => {
     });
     await act(async () => {
       getProbe().markConversionStarted("job-b");
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "state",
         job_id: "job-a",
         state: "completed",
         message: "old job completed",
       });
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "state",
         job_id: "job-a",
         state: "running",
         message: "old job resumed",
       });
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "progress",
         job_id: "job-a",
         progress: 90,
@@ -240,13 +247,13 @@ describe("useEventStream reconciliation fencing", () => {
 
     await act(async () => {
       getProbe().markConversionStarted("job-b");
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "log",
         job_id: "job-a",
         level: "info",
         message: "old job log",
       });
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "log",
         job_id: "job-b",
         level: "info",
@@ -258,12 +265,12 @@ describe("useEventStream reconciliation fencing", () => {
     expect(getProbe().logs.some((entry) => entry.msg === "current job log")).toBe(true);
 
     await act(async () => {
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "state",
         job_id: "job-b",
         state: "completed",
       });
-      transportHarness.onPayload?.({
+      transport.onPayload?.({
         event_type: "log",
         job_id: "job-b",
         level: "info",
@@ -284,13 +291,13 @@ describe("useEventStream reconciliation fencing", () => {
     });
     await act(async () => {
       getProbe().markConversionStarted("job-b");
-      transportHarness.onPayload?.({ event_type: "state", job_id: "job-b", state: "completed" });
-      transportHarness.onPayload?.({ event_type: "state", job_id: "job-c", state: "running" });
+      transport.onPayload?.({ event_type: "state", job_id: "job-b", state: "completed" });
+      transport.onPayload?.({ event_type: "state", job_id: "job-c", state: "running" });
     });
     expect(getProbe().activeJobId).toBe("job-c");
     await act(async () => {
-      transportHarness.onPayload?.({ event_type: "state", job_id: "job-b", state: "running" });
-      transportHarness.onPayload?.({ event_type: "progress", job_id: "job-b", progress: 90 });
+      transport.onPayload?.({ event_type: "state", job_id: "job-b", state: "running" });
+      transport.onPayload?.({ event_type: "progress", job_id: "job-b", progress: 90 });
     });
     expect(getProbe().activeJobId).toBe("job-c");
   });
@@ -400,5 +407,87 @@ describe("useEventStream reconciliation fencing", () => {
     expect(getProbe().logs.some((entry) => entry.msg.includes("superseded"))).toBe(false);
     await act(async () => { resolvers[1]?.(activeResponse("job-b")); await newer; });
     expect(cancelConversion).toHaveBeenCalledWith("job-b");
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((promiseResolve) => { resolve = promiseResolve; });
+  return { promise, resolve };
+}
+
+function ConversionProbe({ client }: { client: ApiClient }): null {
+  useConversionJob({ apiClient: client, baseUrl: "http://desktop.test" });
+  return null;
+}
+
+function StreamProbe({ client }: { client: ApiClient }): null {
+  const stream = useEventStream({ apiClient: client, baseUrl: "http://desktop.test" });
+  (globalThis as typeof globalThis & { streamProbe?: typeof stream }).streamProbe = stream;
+  return null;
+}
+
+describe("useEventStream startup reconciliation", () => {
+  let root: Root;
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    transport.onOpen = null;
+    transport.onPayload = null;
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+    vi.clearAllMocks();
+    delete (globalThis as typeof globalThis & { streamProbe?: unknown }).streamProbe;
+  });
+
+  it("reconciles once at startup, skips the first open, and refreshes on reconnect", async () => {
+    const getActiveConversion = vi.fn(async () => ({ active: false, job: null }));
+    const client = { getActiveConversion } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<ConversionProbe client={client} />);
+    });
+    expect(getActiveConversion).toHaveBeenCalledTimes(1);
+
+    await act(async () => transport.onOpen?.());
+    expect(getActiveConversion).toHaveBeenCalledTimes(1);
+
+    await act(async () => transport.onOpen?.());
+    expect(getActiveConversion).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not let a late reconnect refresh overwrite a newer stream event", async () => {
+    const request = deferred<ActiveConversionResponse>();
+    const client = { getActiveConversion: vi.fn(() => request.promise) } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<StreamProbe client={client} />);
+    });
+    await act(async () => transport.onOpen?.());
+    await act(async () => transport.onOpen?.());
+
+    await act(async () => transport.onPayload?.({
+      event_type: "state",
+      job_id: "new-job",
+      state: "running",
+      message: "new job started",
+    }));
+    request.resolve({
+      active: true,
+      job: { id: "old-job", status: "running" },
+    } as ActiveConversionResponse);
+    await act(async () => { await request.promise; });
+
+    expect((globalThis as typeof globalThis & {
+      streamProbe: { activeJobId: string | null };
+    }).streamProbe.activeJobId).toBe("new-job");
   });
 });

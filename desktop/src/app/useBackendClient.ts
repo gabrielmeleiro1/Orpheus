@@ -67,6 +67,7 @@ export function decideBackendRecovery(
   lifecycle: DesktopBackendStatus["lifecycle"],
   recoveryAttempts: number,
   maxAttempts: number = BACKEND_RECOVERY_MAX_ATTEMPTS,
+  readyRecoveryAttempts = 0,
 ): BackendRecoveryDecision {
   if (lifecycle === "failed" || lifecycle === "stopped") {
     if (recoveryAttempts >= maxAttempts) {
@@ -74,12 +75,22 @@ export function decideBackendRecovery(
     }
     return { action: "restart", consumeAttempt: true };
   }
+  if (lifecycle === "ready" && readyRecoveryAttempts >= maxAttempts) {
+    return { action: "give_up" };
+  }
   return { action: "wait", consumeAttempt: false };
 }
 
 export interface BrowserHealthState {
   failures: number;
   connectionState: BackendConnectionState;
+}
+
+export function retainEquivalentHealth(
+  previous: HealthResponse | null,
+  next: HealthResponse,
+): HealthResponse {
+  return previous?.status === next.status ? previous : next;
 }
 
 export function nextBrowserHealthState(
@@ -165,6 +176,7 @@ export function useBackendClient() {
   const [apiClient, setApiClient] = useState<ApiClient | null>(null);
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [recoveryAttempts, setRecoveryAttempts] = useState(0);
+  const [readyRecoveryAttempts, setReadyRecoveryAttempts] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,15 +247,22 @@ export function useBackendClient() {
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       let decision: BackendRecoveryDecision = { action: "wait", consumeAttempt: false };
+      let lifecycle: DesktopBackendStatus["lifecycle"] | null = null;
       try {
         const status = await readDesktopBackendStatus();
+        lifecycle = status.lifecycle;
         if (cancelled) {
           return;
         }
-        decision = decideBackendRecovery(status.lifecycle, recoveryAttempts);
+        decision = decideBackendRecovery(
+          status.lifecycle,
+          recoveryAttempts,
+          BACKEND_RECOVERY_MAX_ATTEMPTS,
+          readyRecoveryAttempts,
+        );
         if (decision.action === "give_up") {
           setStatusMessage(
-            "backend failed to recover after multiple restart attempts; reload the app to retry",
+            "backend failed to recover after multiple attempts; reload the app to retry",
           );
           return;
         }
@@ -256,6 +275,9 @@ export function useBackendClient() {
       if (!cancelled) {
         if (decision.action === "restart") {
           setRecoveryAttempts((attempt) => attempt + 1);
+          setReadyRecoveryAttempts(0);
+        } else if (lifecycle === "ready") {
+          setReadyRecoveryAttempts((attempt) => attempt + 1);
         }
         setBootstrapAttempt((attempt) => attempt + 1);
       }
@@ -265,7 +287,7 @@ export function useBackendClient() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [apiClient, bootstrapAttempt, connectionState, recoveryAttempts]);
+  }, [apiClient, bootstrapAttempt, connectionState, readyRecoveryAttempts, recoveryAttempts]);
 
   useEffect(() => {
     if (!apiClient || !backendBaseUrl) {
@@ -322,7 +344,8 @@ export function useBackendClient() {
         }
         healthFailures = 0;
         setRecoveryAttempts(0);
-        setHealth(response);
+        setReadyRecoveryAttempts(0);
+        setHealth((previous) => retainEquivalentHealth(previous, response));
         setConnectionState("connected");
         setStatusMessage("Backend connected");
       } catch (error: unknown) {
