@@ -119,14 +119,6 @@ class TtsEngineSession:
     def cleanup(self) -> None:
         self._unload_idle_engine()
 
-    def _cancel_idle_unload(self) -> None:
-        with self._lock:
-            timer = self._idle_timer
-            self._idle_timer = None
-            self._generation += 1
-        if timer is not None:
-            timer.cancel()
-
     def _schedule_idle_unload(
         self,
         timeout_seconds: float,

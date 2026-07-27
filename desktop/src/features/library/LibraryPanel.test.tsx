@@ -60,7 +60,6 @@ function libraryModel(): UseLibraryResult {
     statusMessage: "",
     bookSummaryTitle: "Book",
     bookSummaryMeta: "Author",
-    bookSummaryExtra: "",
     bookDetailText: "",
     maintenanceReport: null,
     maintenanceLoading: false,

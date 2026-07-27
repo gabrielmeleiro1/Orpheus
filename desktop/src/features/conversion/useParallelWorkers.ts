@@ -54,8 +54,16 @@ export function useParallelWorkers({
 }: UseParallelWorkersArgs): UseParallelWorkersResult {
   const [parallelManualMax, setParallelManualMaxState] = useState(String(DEFAULT_PARALLEL_WORKER_LIMIT));
   const [parallelRecommendation, setParallelRecommendation] = useState<ParallelWorkerRecommendation | null>(null);
-  const [parallelWorkerStatus, setParallelWorkerStatus] = useState("Worker recommendation unavailable.");
-  const [parallelWorkerError, setParallelWorkerError] = useState(false);
+
+  const parallelWorkerStatus = useMemo(() => {
+    return parallelRecommendation
+      ? shortWorkerLine(parallelRecommendation)
+      : "Worker recommendation unavailable.";
+  }, [parallelRecommendation]);
+
+  const parallelWorkerError = useMemo(() => {
+    return parallelRecommendation ? !parallelRecommendation.memory_measurement_available : false;
+  }, [parallelRecommendation]);
 
   const manualParallelWorkerUpperBound = useMemo(() => {
     return Math.max(
@@ -74,8 +82,6 @@ export function useParallelWorkers({
     if (!apiClient) {
       setParallelManualMaxState(String(DEFAULT_PARALLEL_WORKER_LIMIT));
       setParallelRecommendation(null);
-      setParallelWorkerStatus("Worker recommendation unavailable.");
-      setParallelWorkerError(false);
       return;
     }
 
@@ -91,11 +97,6 @@ export function useParallelWorkers({
       setParallelManualMaxState(String(persisted.parallel_manual_max));
     } else if (recommendation) {
       setParallelManualMaxState(String(recommendation.requested_parallel_chapters));
-    }
-
-    if (recommendation) {
-      setParallelWorkerStatus(shortWorkerLine(recommendation));
-      setParallelWorkerError(!recommendation.memory_measurement_available);
     }
   }, [apiClient, persistedSettingsRef, systemCapabilities]);
 

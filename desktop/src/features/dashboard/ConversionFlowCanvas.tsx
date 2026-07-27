@@ -1,4 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+
+import { useDocumentVisible } from "../../ui/ascii/useDocumentVisible";
+import { usePrefersReducedMotion } from "../../ui/ascii/usePrefersReducedMotion";
 
 /**
  * Conversion visual: text becoming sound.
@@ -88,27 +91,8 @@ export function ConversionFlowCanvas({ active, visible = true, className }: Conv
   const phaseRef = useRef(0);
   const paletteRef = useRef<Palette>({ accent: "#c9a06c", accentMuted: "#b08d5e", faint: "#5e5a56" });
   const lastRenderingRef = useRef<string | null>(null);
-  const [reducedMotion, setReducedMotion] = useState(() =>
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = () => setReducedMotion(media.matches);
-    media.addEventListener("change", onChange);
-    return () => {
-      media.removeEventListener("change", onChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    const onVisibilityChange = () => setDocumentVisible(document.visibilityState === "visible");
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, []);
+  const reducedMotion = usePrefersReducedMotion();
+  const documentVisible = useDocumentVisible();
 
   useEffect(() => {
     const canvas = canvasRef.current;

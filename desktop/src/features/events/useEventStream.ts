@@ -69,7 +69,6 @@ export function useEventStream({
   const activeJobIdRef = useRef<string | null>(null);
   const lookupFailedRef = useRef(false);
   const runtimeMutationGenerationRef = useRef(0);
-  const reconciliationRequestSequenceRef = useRef(0);
   const cancellationAttemptSequenceRef = useRef(0);
   const mountedRef = useRef(true);
   const hasOpenedStreamRef = useRef(false);
@@ -170,11 +169,10 @@ export function useEventStream({
   }, [resolveTerminalState]);
 
   const refreshActiveConversionState = useCallback(async () => {
-    const requestId = ++reconciliationRequestSequenceRef.current;
     const reconciliationGeneration = runtimeMutationGenerationRef.current;
     const generation = ++refreshGenerationRef.current;
     if (!apiClient) {
-      if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+      if (!mountedRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
         return null;
       }
       applyReducerAction({ type: "refreshNoClient" });
@@ -183,7 +181,7 @@ export function useEventStream({
 
     try {
       const response = await apiClient.getActiveConversion();
-      if (!mountedRef.current || requestId !== reconciliationRequestSequenceRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+      if (!mountedRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
         return null;
       }
       if (generation !== refreshGenerationRef.current) {
@@ -223,7 +221,6 @@ export function useEventStream({
     } catch {
       if (
         !mountedRef.current ||
-        requestId !== reconciliationRequestSequenceRef.current ||
         reconciliationGeneration !== runtimeMutationGenerationRef.current ||
         generation !== refreshGenerationRef.current
       ) {

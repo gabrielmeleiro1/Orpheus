@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
+import { useDocumentVisible } from "../../ui/ascii/useDocumentVisible";
+import { usePrefersReducedMotion } from "../../ui/ascii/usePrefersReducedMotion";
 import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
 
 /**
@@ -186,31 +188,12 @@ export function NowPlayingCanvas({ visualizer, playing, active, className }: Now
   const freqBufferRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const paletteRef = useRef<Palette>({ accent: "#c9a06c", accentMuted: "#b08d5e", faint: "#5e5a56" });
   const idlePhaseRef = useRef(0);
-  const [reducedMotion, setReducedMotion] = useState(() =>
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-  );
-  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState === "visible");
+  const reducedMotion = usePrefersReducedMotion();
+  const documentVisible = useDocumentVisible();
 
   const rootState = playing ? "playback-waveform is-playing" : "playback-waveform is-idle";
   const statusClass = `is-${visualizer.status}`;
   const rootClassName = className ? `${rootState} ${statusClass} ${className}` : `${rootState} ${statusClass}`;
-
-  useEffect(() => {
-    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = () => setReducedMotion(media.matches);
-    media.addEventListener("change", onChange);
-    return () => {
-      media.removeEventListener("change", onChange);
-    };
-  }, []);
-
-  useEffect(() => {
-    const onVisibilityChange = () => setDocumentVisible(document.visibilityState === "visible");
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;

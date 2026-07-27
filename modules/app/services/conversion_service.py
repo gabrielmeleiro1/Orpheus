@@ -94,8 +94,8 @@ class ConversionService:
         self._job_sequence = count()
         self._storage_cleanup_active = False
         self._storage_cleanup_owner: int | None = None
-        self._book_cleanup_ids: set[int] = set()
-        self._book_cleanup_owners: dict[int, int] = {}
+        # book id -> owning thread ident; only the owner may end the reservation.
+        self._book_cleanup_ids: dict[int, int] = {}
         self._tts_session = TtsEngineSession()
 
     def _job_is_active_or_pending(self, job: Any) -> bool:
@@ -203,20 +203,18 @@ class ConversionService:
                 raise RuntimeError(
                     "Cannot delete a book while it is being converted or repaired"
                 )
-            self._book_cleanup_ids.add(normalized_book_id)
-            self._book_cleanup_owners[normalized_book_id] = threading.get_ident()
+            self._book_cleanup_ids[normalized_book_id] = threading.get_ident()
 
     def end_book_cleanup(self, book_id: int) -> None:
         with self._job_lock:
             normalized_book_id = int(book_id)
             if normalized_book_id not in self._book_cleanup_ids:
                 return
-            if self._book_cleanup_owners.get(normalized_book_id) != threading.get_ident():
+            if self._book_cleanup_ids[normalized_book_id] != threading.get_ident():
                 raise RuntimeError(
                     f"Cannot end book cleanup for {normalized_book_id} reserved by another owner"
                 )
-            self._book_cleanup_ids.remove(normalized_book_id)
-            self._book_cleanup_owners.pop(normalized_book_id, None)
+            self._book_cleanup_ids.pop(normalized_book_id)
 
     def start_conversion(
         self,

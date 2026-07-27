@@ -118,7 +118,6 @@ def test_idle_unload_blocks_successor_attach_until_engine_quiesces(tmp_path) -> 
     )
     successor = SimpleNamespace(config=config, _tts_engine=None)
     session.adopt(retained)
-    session._cancel_idle_unload()  # noqa: SLF001
 
     unload_thread = threading.Thread(target=session.cleanup, daemon=True)
     attach_thread = threading.Thread(target=lambda: session.attach(successor), daemon=True)

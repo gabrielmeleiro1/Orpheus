@@ -56,7 +56,6 @@ export interface UseLibraryListResult {
   statusMessage: string;
   bookSummaryTitle: string;
   bookSummaryMeta: string;
-  bookSummaryExtra: string;
   bookDetailText: string;
   refreshLibrary: () => Promise<void>;
   reloadCurrentQuery: () => Promise<void>;
@@ -152,11 +151,6 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   );
   const selectionGenerationRef = useRef(0);
   const preservedStatusRef = useRef<string | null>(null);
-  const currentListContextRef = useRef<{ query: string; modeFilter: LibraryModeFilter }>({
-    query: "",
-    modeFilter: "all",
-  });
-  currentListContextRef.current = { query: searchQuery.trim(), modeFilter };
   // The query/filter a page was actually loaded for. Load-more must continue
   // the loaded list, not whatever the user has since typed into the box.
   const loadedListContextRef = useRef<{ query: string; modeFilter: LibraryModeFilter }>({
@@ -591,7 +585,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       const selectionStillDeleteOwned = () =>
         selectedBookIdRef.current === optimisticSelectedBookId &&
         selectionGenerationRef.current === optimisticSelectionGeneration;
-      const currentListContext = currentListContextRef.current;
+      const currentListContext = reloadContextIdentityRef.current;
       const selectionOwnedBeforeReconcile = selectionStillDeleteOwned();
       const preserveNewerSelectionMessages = !selectionOwnedBeforeReconcile;
       const publishDeletedStatus =
@@ -627,7 +621,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         selectedBookIdRef.current === optimisticSelectedBookId &&
         selectionGenerationRef.current === optimisticSelectionGeneration;
       if (!selectionStillDeleteOwned || !isDeleteQueryCurrent()) {
-        const currentListContext = currentListContextRef.current;
+        const currentListContext = reloadContextIdentityRef.current;
         const preserveNewerSelectionMessages = !selectionStillDeleteOwned;
         await loadLibrary(currentListContext.query, {
           modeFilter: currentListContext.modeFilter,
@@ -890,7 +884,6 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     statusMessage,
     bookSummaryTitle: summaryValues.title,
     bookSummaryMeta: summaryValues.meta,
-    bookSummaryExtra: summaryValues.extra,
     bookDetailText: summaryValues.raw,
     refreshLibrary,
     reloadCurrentQuery,

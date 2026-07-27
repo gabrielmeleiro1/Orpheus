@@ -37,7 +37,6 @@ export interface UseLibraryResult {
   statusMessage: string;
   bookSummaryTitle: string;
   bookSummaryMeta: string;
-  bookSummaryExtra: string;
   bookDetailText: string;
   maintenanceReport: MaintenanceDiagnosticsResponse | null;
   maintenanceLoading: boolean;
@@ -92,7 +91,6 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     statusMessage: list.statusMessage,
     bookSummaryTitle: list.bookSummaryTitle,
     bookSummaryMeta: list.bookSummaryMeta,
-    bookSummaryExtra: list.bookSummaryExtra,
     bookDetailText: list.bookDetailText,
     maintenanceReport: maintenance.maintenanceReport,
     maintenanceLoading: maintenance.maintenanceLoading,
@@ -131,7 +129,6 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     list.statusMessage,
     list.bookSummaryTitle,
     list.bookSummaryMeta,
-    list.bookSummaryExtra,
     list.bookDetailText,
     list.refreshLibrary,
     list.loadMore,

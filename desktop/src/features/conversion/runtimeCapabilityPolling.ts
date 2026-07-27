@@ -65,8 +65,6 @@ export function shouldPollRuntimeCapabilities(
 export interface RuntimeCapabilityPoller {
   /** Record the latest capabilities snapshot (bootstrap or poll). */
   noteCapabilities: (capabilities: SystemCapabilitiesResponse | null | undefined) => void;
-  /** @deprecated Prefer noteCapabilities so MLX availability is visible to the gate. */
-  noteProbe: (probe: RuntimeProbeSnapshot | null | undefined) => void;
   /** True after at least one live poll response was applied. */
   readonly pollApplied: boolean;
   stop: () => void;
@@ -164,14 +162,6 @@ export function startRuntimeCapabilityPolling({
     noteCapabilities: (capabilities) => {
       latest = capabilities;
       probe = capabilities?.runtime_probe;
-      if (!shouldPoll()) {
-        clearTimer();
-      } else if (timer === null) {
-        scheduleNext();
-      }
-    },
-    noteProbe: (nextProbe) => {
-      probe = nextProbe;
       if (!shouldPoll()) {
         clearTimer();
       } else if (timer === null) {
