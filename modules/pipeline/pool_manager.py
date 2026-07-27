@@ -7,44 +7,44 @@ import logging
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, ThreadPoolExecutor, wait
-from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .models import ChapterResult
+from .pool_results import (
+    _chapter_error_result,
+    _normalize_chapter_result,
+    _normalize_startup_status,
+    _result_has_error,
+)
+from .pool_shutdown import (
+    _call_executor_shutdown,
+    _executor_processes,
+    _shutdown_executor_bounded,
+    _terminate_processes,
+)
+from .pool_state import _PoolState
+from .pool_workers import _health_ping, _worker_startup_probe
 from .worker_errors import StartupErrorKind, WorkerStartupError, WorkerStartupStatus
-from .worker_runtime import _init_worker, get_worker_startup_status
+from .worker_runtime import _init_worker
 
 logger = logging.getLogger(__name__)
 
 _WAIT_POLL_TIMEOUT_SECONDS = 0.25
 
-
-def _health_ping() -> bool:
-    """Top-level no-op used for worker liveness checks."""
-    return True
-
-
-def _worker_startup_probe() -> WorkerStartupStatus:
-    """Validate that the worker process completed model initialization."""
-    return get_worker_startup_status()
-
-
-@dataclass
-class _PoolState:
-    executor: Optional[Any] = None
-    config_fingerprint: Any = None
-    max_workers: int = 0
-    available_vram_gb: float = 8.0
-    worker_init_config: Optional[dict[str, Any]] = None
-    use_processes: bool = True
-
-    @property
-    def available_device_memory_gb(self) -> float:
-        return self.available_vram_gb
-
-    @available_device_memory_gb.setter
-    def available_device_memory_gb(self, value: float) -> None:
-        self.available_vram_gb = value
+__all__ = [
+    "SharedWorkerPoolManager",
+    "_PoolState",
+    "_call_executor_shutdown",
+    "_chapter_error_result",
+    "_executor_processes",
+    "_health_ping",
+    "_normalize_chapter_result",
+    "_normalize_startup_status",
+    "_result_has_error",
+    "_shutdown_executor_bounded",
+    "_terminate_processes",
+    "_worker_startup_probe",
+]
 
 
 class SharedWorkerPoolManager:
@@ -106,120 +106,18 @@ class SharedWorkerPoolManager:
         self._stopping_done = threading.Event()
         self._stopping_done.set()
 
-    @staticmethod
-    def _call_executor_shutdown(
-        executor: Any,
-        *,
-        wait: bool,
-        cancel_futures: bool,
-    ) -> None:
-        try:
-            executor.shutdown(wait=wait, cancel_futures=cancel_futures)
-        except TypeError:
-            executor.shutdown(wait=wait)
+    # Executor teardown primitives live in ``pool_shutdown``; they are bound
+    # here so existing ``self._…`` call sites keep resolving unchanged.
+    _call_executor_shutdown = staticmethod(_call_executor_shutdown)
+    _executor_processes = staticmethod(_executor_processes)
+    _terminate_processes = staticmethod(_terminate_processes)
+    _shutdown_executor_bounded = staticmethod(_shutdown_executor_bounded)
 
-    @staticmethod
-    def _executor_processes(executor: Any) -> list[Any]:
-        processes = getattr(executor, "_processes", None)
-        if isinstance(processes, dict):
-            return [process for process in processes.values() if process is not None]
-        if isinstance(processes, (list, tuple, set)):
-            return [process for process in processes if process is not None]
-        return []
-
-    @staticmethod
-    def _terminate_processes(processes: list[Any]) -> None:
-        for process in processes:
-            is_alive = getattr(process, "is_alive", None)
-            if callable(is_alive) and not is_alive():
-                continue
-            terminate = getattr(process, "terminate", None)
-            if callable(terminate):
-                try:
-                    terminate()
-                except Exception:
-                    logger.exception("Failed to terminate shared worker process")
-
-        deadline = time.monotonic() + 0.25
-        for process in processes:
-            join = getattr(process, "join", None)
-            if not callable(join):
-                continue
-            remaining = max(0.0, deadline - time.monotonic())
-            try:
-                join(timeout=remaining)
-            except Exception:
-                logger.exception("Failed while joining terminated shared worker process")
-
-        for process in processes:
-            is_alive = getattr(process, "is_alive", None)
-            if callable(is_alive) and not is_alive():
-                continue
-            kill = getattr(process, "kill", None)
-            if callable(kill):
-                try:
-                    kill()
-                except Exception:
-                    logger.exception("Failed to kill shared worker process")
-
-    @classmethod
-    def _shutdown_executor_bounded(
-        cls,
-        executor: Any,
-        *,
-        timeout_seconds: Optional[float],
-        cancel_futures: bool,
-        on_quiesced: Optional[Callable[[], None]] = None,
-    ) -> bool:
-        """Shut an executor down within ``timeout_seconds``.
-
-        ``on_quiesced`` marks an executor whose workers cannot be force
-        terminated: shutdown always runs with ``wait=True``, the callback fires
-        only once that call confirms quiescence, and exceeding the timeout
-        leaves the worker unwinding instead of killing processes.
-        """
-        worker_processes = cls._executor_processes(executor)
-        if on_quiesced is None and timeout_seconds is not None and timeout_seconds <= 0:
-            cls._call_executor_shutdown(
-                executor,
-                wait=False,
-                cancel_futures=cancel_futures,
-            )
-            cls._terminate_processes(worker_processes)
-            return False
-
-        def _shutdown() -> None:
-            try:
-                cls._call_executor_shutdown(
-                    executor,
-                    wait=True,
-                    cancel_futures=cancel_futures,
-                )
-            except Exception:
-                logger.exception("Shared worker executor shutdown failed")
-                return
-            if on_quiesced is not None:
-                on_quiesced()
-
-        shutdown_thread = threading.Thread(
-            target=_shutdown,
-            name="shared-worker-shutdown",
-            daemon=True,
-        )
-        shutdown_thread.start()
-        shutdown_thread.join(timeout=timeout_seconds)
-        if not shutdown_thread.is_alive():
-            return True
-        if on_quiesced is not None:
-            return False
-
-        logger.warning(
-            "Shared worker executor shutdown exceeded %.2fs; terminating workers",
-            timeout_seconds,
-        )
-        cls._terminate_processes(worker_processes)
-        shutdown_thread.join(timeout=0.25)
-        return not shutdown_thread.is_alive()
+    # Worker-boundary normalizers live in ``pool_results``.
+    _result_has_error = staticmethod(_result_has_error)
+    _normalize_chapter_result = staticmethod(_normalize_chapter_result)
+    _normalize_startup_status = staticmethod(_normalize_startup_status)
+    _chapter_error_result = staticmethod(_chapter_error_result)
 
     def _is_executor_healthy_locked(self, timeout_seconds: float = 1.0) -> bool:
         if self._state.executor is None:
@@ -392,18 +290,6 @@ class SharedWorkerPoolManager:
         )
         return []
 
-    @staticmethod
-    def _result_has_error(result: ChapterResult) -> bool:
-        return bool(result.error)
-
-    @staticmethod
-    def _normalize_chapter_result(result: Any) -> ChapterResult:
-        if isinstance(result, ChapterResult):
-            return result
-        if isinstance(result, dict):
-            return ChapterResult(**result)
-        raise TypeError(f"worker returned unsupported result type: {type(result).__name__}")
-
     def _start_executor_locked(
         self,
         *,
@@ -432,20 +318,6 @@ class SharedWorkerPoolManager:
         self._state.worker_init_config = dict(worker_init_config or {})
         self._state.use_processes = self._use_processes
         self._last_start_ms = round(time.time() * 1000, 2)
-
-    @staticmethod
-    def _normalize_startup_status(result: Any) -> WorkerStartupStatus:
-        if isinstance(result, WorkerStartupStatus):
-            return result
-        if isinstance(result, dict):
-            return WorkerStartupStatus.from_dict(result)
-        return WorkerStartupStatus(
-            success=False,
-            provider="unknown",
-            device=None,
-            error_type=type(result).__name__,
-            message=f"unexpected startup probe result: {result!r}",
-        )
 
     def _run_startup_probes_locked(self) -> None:
         executor = self._state.executor
@@ -768,16 +640,6 @@ class SharedWorkerPoolManager:
                 )
 
         return [result for result in results if result is not None]
-
-    @staticmethod
-    def _chapter_error_result(chapter: Any, idx: int, error: str) -> ChapterResult:
-        chapter_number = getattr(chapter, "number", idx + 1)
-        chapter_title = getattr(chapter, "title", f"Chapter {idx + 1}")
-        return ChapterResult(
-            chapter_number=chapter_number,
-            chapter_title=chapter_title,
-            error=error,
-        )
 
     def healthcheck(self, timeout_seconds: float = 2.0) -> bool:
         """Return whether the current worker pool can execute a trivial task."""
