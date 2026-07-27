@@ -72,12 +72,25 @@ def pytest_unconfigure(config):
     try:
         import psutil
 
+        def _expected_session_child(child):
+            # conhost hosts this process's own hidden console on Windows
+            # (run_tests launches the suite with CREATE_NO_WINDOW).
+            if child.name().lower() == "conhost.exe":
+                return True
+            # multiprocessing's resource tracker is a per-process singleton
+            # that lives until interpreter exit by design; the first
+            # spawn-context test starts it and nothing can stop it
+            # mid-session, so reporting it every run is pure noise.
+            try:
+                cmdline = " ".join(child.cmdline())
+            except Exception:
+                return False
+            return "multiprocessing.resource_tracker" in cmdline
+
         grandchildren = [
             child
             for child in psutil.Process().children(recursive=True)
-            # conhost hosts this process's own hidden console on Windows
-            # (run_tests launches the suite with CREATE_NO_WINDOW).
-            if child.name().lower() != "conhost.exe"
+            if not _expected_session_child(child)
         ]
     except Exception:
         grandchildren = []

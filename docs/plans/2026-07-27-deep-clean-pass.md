@@ -110,9 +110,13 @@ applied. Each is a small, self-contained commit.
    `shutdown()` (~801–856) re-implements `_shutdown_executor_bounded`
    (183–213) including the same thread name; an `on_quiesced` callback on the
    existing helper removes the second implementation. Also: the 4-line
-   barrier-release block appears twice (269–272, 289–292), and
-   `_abort_parallel_run` clears the current job a second time right after
-   `_stop_executor_after_cancellation` already did.
+   barrier-release block appears twice (269–272, 289–292).
+   ~~Also remove `_abort_parallel_run`'s second `_clear_current_job_locked`
+   call.~~ **Premise disproved during execution (2026-07-27):**
+   `_stop_executor_after_cancellation` early-returns when a concurrent
+   `shutdown()` has already replaced the executor, so on that race path the
+   "second" clear is the only one (exercised by
+   `tests/test_pool_manager.py:557`). Keep it.
 8. **Small ones:** `_utc_now_iso` duplicated verbatim in
    `tools/release_qualification/model.py` and `commands.py`;
    `_parse_version_tuple` duplicated between `artifact.py` and `preflight.py`
@@ -136,6 +140,16 @@ applied. Each is a small, self-contained commit.
     deviating call site (`restart_backend`) visibly deliberate. ~9 LOC.
 
 ## Workstream 2: Decisions needed (mechanism removals)
+
+> **Decided 2026-07-27 (execution of this plan):** all three mechanisms are
+> KEPT, per the recommendations below — the taskkill fallback until a
+> Windows-native CI lane exists, `--validate-existing` as the documented
+> manual diagnostic, and the duplicated release-workflow source gate because
+> no branch protection exists yet to make its removal safe. Additionally,
+> the `docs/plans/` convention (Workstream 4 item 3) is resolved as: keep the
+> gitignore; deliberate records are force-added (`git add -f`), scratch plans
+> stay local. Tracked files are unaffected by the ignore, so `git status`
+> still reports changes to committed plans.
 
 Each of these deletes a *working but arguably redundant* defensive mechanism.
 Decide explicitly; don't let an agent decide.
@@ -207,9 +221,13 @@ the same file.
 
 ## Workstream 5: Test hygiene
 
-1. The full Python suite leaves a multiprocessing resource-tracker child
-   alive at session end (conftest reports it every run). Track down which
-   fixture leaks it; the conftest guard hides rather than fixes it.
+1. ~~The full Python suite leaves a multiprocessing resource-tracker child
+   alive at session end (conftest reports it every run).~~ **Resolved
+   2026-07-27:** investigated — the resource tracker is a by-design
+   per-process singleton that lives until interpreter exit once any
+   spawn-context test starts it; it is not a fixture leak and cannot be
+   stopped mid-session. The conftest report now excludes it (like the
+   existing conhost exclusion) so the warning regains signal value.
 2. `pytest -m ui` selects zero tests and exits 5 (recorded in the audit as a
    limitation). Either remove the marker lane from `run_tests.py`/docs or
    add the intended tests; a permanently-empty gate invites "it passed"

@@ -119,11 +119,9 @@ def package_chapters(
     # Output path: cap the sanitized title so the filename (plus the atomic
     # temp-name suffix) stays under filesystem limits, and never emit a bare
     # ".m4b"/".m4a" hidden file when the title sanitizes to nothing.
-    safe_title = sanitize_book_title(title)
-    if not str(title or "").strip():
-        safe_title = "audiobook"
-    else:
-        safe_title = safe_title[:50]
+    safe_title = (
+        sanitize_book_title(title)[:50] if str(title or "").strip() else "audiobook"
+    )
     conversion_mode = getattr(runtime.config, "conversion_mode", "audiobook")
     cancel_requested = getattr(runtime, "check_cancelled", None)
 

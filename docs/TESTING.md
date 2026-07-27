@@ -17,7 +17,7 @@ environment-dependent work stays opt-in.
 | Property | `pytest -m property` | Invariant/fuzz coverage for parsers and cleaners | Runtime performance or UI behavior |
 | Benchmark | `pytest -m benchmark` or `python -m orpheus bench ...` | Performance regressions and pipeline timing evidence | Functional correctness by itself |
 | Slow | `pytest -m slow` | Long-running integration paths that are too heavy for contract | Fast pre-commit feedback |
-| UI | `pytest -m ui` | UI-adjacent Python checks when present | Desktop Vitest/Tauri UI |
+| UI | `cd desktop && npm test -- --run` | Desktop UI behavior via Vitest (the `ui` pytest marker is registered but currently has zero tests; `pytest -m ui` exits 5) | Real browser-engine rendering, manual accessibility |
 | GPU | `pytest -m gpu` | Real CUDA/ANE hardware paths when explicitly run | Default laptop/CI environments without hardware |
 
 Tracked parser fixtures live under `tests/fixtures/` and `tests/samples/`.
@@ -321,7 +321,6 @@ environment-dependent:
 - `property` tests
 - `benchmark` tests
 - `slow` tests
-- `ui` tests
 
 Run them explicitly as needed:
 
@@ -329,8 +328,12 @@ Run them explicitly as needed:
 pytest -m property
 pytest -m benchmark
 pytest -m slow
-pytest -m ui
 ```
+
+The `ui` marker stays registered (and excluded from the contract filter) so a
+Python UI test can be added without config changes, but no such test exists
+today: `pytest -m ui` collects nothing and exits 5. The desktop Vitest suite
+(`cd desktop && npm test -- --run`) is the actual UI gate.
 
 Examples:
 - `tests/test_cleaner_api_trace_multichapter_real.py` requires real API credentials/network.
