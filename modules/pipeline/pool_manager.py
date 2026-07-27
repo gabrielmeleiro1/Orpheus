@@ -169,9 +169,17 @@ class SharedWorkerPoolManager:
         *,
         timeout_seconds: Optional[float],
         cancel_futures: bool,
+        on_quiesced: Optional[Callable[[], None]] = None,
     ) -> bool:
+        """Shut an executor down within ``timeout_seconds``.
+
+        ``on_quiesced`` marks an executor whose workers cannot be force
+        terminated: shutdown always runs with ``wait=True``, the callback fires
+        only once that call confirms quiescence, and exceeding the timeout
+        leaves the worker unwinding instead of killing processes.
+        """
         worker_processes = cls._executor_processes(executor)
-        if timeout_seconds is not None and timeout_seconds <= 0:
+        if on_quiesced is None and timeout_seconds is not None and timeout_seconds <= 0:
             cls._call_executor_shutdown(
                 executor,
                 wait=False,
@@ -179,8 +187,6 @@ class SharedWorkerPoolManager:
             )
             cls._terminate_processes(worker_processes)
             return False
-
-        shutdown_finished = threading.Event()
 
         def _shutdown() -> None:
             try:
@@ -191,8 +197,9 @@ class SharedWorkerPoolManager:
                 )
             except Exception:
                 logger.exception("Shared worker executor shutdown failed")
-            finally:
-                shutdown_finished.set()
+                return
+            if on_quiesced is not None:
+                on_quiesced()
 
         shutdown_thread = threading.Thread(
             target=_shutdown,
@@ -203,6 +210,8 @@ class SharedWorkerPoolManager:
         shutdown_thread.join(timeout=timeout_seconds)
         if not shutdown_thread.is_alive():
             return True
+        if on_quiesced is not None:
+            return False
 
         logger.warning(
             "Shared worker executor shutdown exceeded %.2fs; terminating workers",
@@ -239,36 +248,29 @@ class SharedWorkerPoolManager:
         self._current_failed.clear()
         self._current_chapter_titles.clear()
 
-    def _finish_thread_executor_shutdown(
-        self,
-        executor: Any,
-        completion_event: threading.Event | None = None,
-        failure_holder: list[BaseException] | None = None,
-        cancel_futures: bool = True,
-    ) -> None:
-        """Shutdown a thread executor and release its stopping barrier."""
-        try:
-            self._call_executor_shutdown(
-                executor,
-                wait=True,
-                cancel_futures=cancel_futures,
-            )
-        except Exception as exc:
-            # Keep the barrier set: without confirmation from shutdown(), a
-            # successor must not start while the old worker may still mutate
-            # conversion artifacts.
-            logger.exception("Cancelled thread worker executor failed to shut down")
-            if failure_holder is not None:
-                failure_holder.append(exc)
-            return
-        finally:
-            if completion_event is not None:
-                completion_event.set()
-
+    def _release_stopping_barrier(self, executor: Any) -> None:
+        """Let a successor start now that ``executor`` has confirmed quiescence."""
         with self._lock:
             if self._stopping_executor is executor:
                 self._stopping_executor = None
                 self._stopping_done.set()
+
+    def _finish_thread_executor_shutdown(self, executor: Any) -> None:
+        """Shutdown a cancelled thread executor and release its stopping barrier."""
+        try:
+            self._call_executor_shutdown(
+                executor,
+                wait=True,
+                cancel_futures=True,
+            )
+        except Exception:
+            # Keep the barrier set: without confirmation from shutdown(), a
+            # successor must not start while the old worker may still mutate
+            # conversion artifacts.
+            logger.exception("Cancelled thread worker executor failed to shut down")
+            return
+
+        self._release_stopping_barrier(executor)
 
     def _stop_executor_after_cancellation(self, executor: Any) -> None:
         """Stop a cancelled executor without allowing identity supersession."""
@@ -289,10 +291,7 @@ class SharedWorkerPoolManager:
                 timeout_seconds=self._shutdown_timeout_seconds,
                 cancel_futures=True,
             )
-            with self._lock:
-                if self._stopping_executor is executor:
-                    self._stopping_executor = None
-                    self._stopping_done.set()
+            self._release_stopping_barrier(executor)
             return
 
         threading.Thread(
@@ -841,16 +840,19 @@ class SharedWorkerPoolManager:
             else max(0.0, float(timeout_seconds))
         )
         if not use_processes:
-            completion_event = threading.Event()
-            failures: list[BaseException] = []
-            threading.Thread(
-                target=self._finish_thread_executor_shutdown,
-                args=(executor, completion_event, failures, cancel_futures),
-                name="shared-worker-shutdown",
-                daemon=True,
-            ).start()
-            completed = completion_event.wait(timeout=timeout)
-            return completed and not failures
+            quiesced = threading.Event()
+
+            def _mark_quiesced() -> None:
+                self._release_stopping_barrier(executor)
+                quiesced.set()
+
+            finished = self._shutdown_executor_bounded(
+                executor,
+                timeout_seconds=timeout,
+                cancel_futures=cancel_futures,
+                on_quiesced=_mark_quiesced,
+            )
+            return finished and quiesced.is_set()
 
         return self._shutdown_executor_bounded(
             executor,

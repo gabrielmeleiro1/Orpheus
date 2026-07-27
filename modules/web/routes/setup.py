@@ -536,27 +536,15 @@ def _build_uncached_setup_status_response(
 
 def _get_status_cache(request: Request) -> RuntimeSetupStatusCache:
     cache = getattr(request.app.state, "runtime_setup_status_cache", None)
-    controller = get_controller_from_app(request.app)
-    shared = getattr(controller, "runtime_capability_service", None)
-    if shared is None:
-        shared = getattr(controller, "_runtime_capability_service", None)
-    if not isinstance(shared, RuntimeCapabilityService):
-        if not isinstance(cache, RuntimeSetupStatusCache):
-            cache = RuntimeSetupStatusCache()
-            request.app.state.runtime_setup_status_cache = cache
+    if isinstance(cache, RuntimeSetupStatusCache):
         return cache
-    if not isinstance(cache, RuntimeSetupStatusCache):
-        cache = RuntimeSetupStatusCache(probe_service=shared)
-        request.app.state.runtime_setup_status_cache = cache
-    elif cache.probe_service is not shared:
-        # Preserve receipt verifier, but never keep a divergent probe service.
-        cache = RuntimeSetupStatusCache(
-            ttl_seconds=cache._ttl_seconds,
-            clock=cache._clock,
-            probe_service=shared,
-            receipt_verifier=cache.receipt_verifier,
-        )
-        request.app.state.runtime_setup_status_cache = cache
+    # Setup readiness and /api/system/capabilities must share one probe cache,
+    # so adopt the controller's service whenever it is available.
+    shared = getattr(get_controller_from_app(request.app), "runtime_capability_service", None)
+    cache = RuntimeSetupStatusCache(
+        probe_service=shared if isinstance(shared, RuntimeCapabilityService) else None,
+    )
+    request.app.state.runtime_setup_status_cache = cache
     return cache
 
 

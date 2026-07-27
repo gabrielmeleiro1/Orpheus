@@ -4,7 +4,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ComponentProps,
   type KeyboardEvent,
 } from "react";
 
@@ -34,7 +33,7 @@ import {
 import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKeyboardNavigation";
 import type { DashboardTab, RuntimeSetupStatusResponse } from "./types/api";
 import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
-import { equalWhenHidden, equalWhenInvisible } from "./app/visibilityMemo";
+import { equalWhenHidden, equalWhenInvisible, memoWhenHidden } from "./app/visibilityMemo";
 
 type BackendClientState = ReturnType<typeof useBackendClient>;
 
@@ -65,23 +64,8 @@ const StableConversionPanel = memo(ConversionPanel, equalWhenHidden);
 const StableLibraryPanel = memo(LibraryPanel, equalWhenHidden);
 const StablePlayerPanel = memo(PlayerPanel, equalWhenInvisible);
 
-type VisibilityProgressPanelProps = ComponentProps<typeof ProgressPanel> & { hidden: boolean };
-
-const VisibilityProgressPanel = memo(function VisibilityProgressPanel({
-  hidden: _hidden,
-  ...props
-}: VisibilityProgressPanelProps) {
-  return <ProgressPanel {...props} />;
-}, equalWhenHidden);
-
-type VisibilityLogPanelProps = ComponentProps<typeof LogPanel> & { hidden: boolean };
-
-const VisibilityLogPanel = memo(function VisibilityLogPanel({
-  hidden: _hidden,
-  ...props
-}: VisibilityLogPanelProps) {
-  return <LogPanel {...props} />;
-}, equalWhenHidden);
+const VisibilityProgressPanel = memoWhenHidden(ProgressPanel);
+const VisibilityLogPanel = memoWhenHidden(LogPanel);
 
 function RuntimeSetupChecking() {
   return (

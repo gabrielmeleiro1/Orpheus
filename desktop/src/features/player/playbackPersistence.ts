@@ -56,11 +56,9 @@ export function usePlaybackPersistence({
   const saveSequenceRef = useRef(0);
   const saveTailsRef = useRef<Map<number, Promise<number | null>>>(new Map());
   const consecutiveSaveFailuresRef = useRef<Map<number, number>>(new Map());
-  const playbackClientGenerationRef = useRef(0);
   const playbackClientIdentityRef = useRef(apiClient);
   if (playbackClientIdentityRef.current !== apiClient) {
     playbackClientIdentityRef.current = apiClient;
-    playbackClientGenerationRef.current += 1;
     lastSavedPlaybackRef.current.clear();
     committedPlaybackRef.current.clear();
     consecutiveSaveFailuresRef.current.clear();
@@ -95,10 +93,10 @@ export function usePlaybackPersistence({
       }
 
       const requestApiClient = apiClient;
-      const requestClientGeneration = playbackClientGenerationRef.current;
-      const ownsCurrentClientGeneration = () =>
-        playbackClientGenerationRef.current === requestClientGeneration &&
-        playbackClientIdentityRef.current === requestApiClient;
+      // Client identity is the whole fence: the ref only ever changes together
+      // with the client it tracks, so a live save owns its client exactly while
+      // the mounted hook still points at it.
+      const ownsCurrentClient = () => playbackClientIdentityRef.current === requestApiClient;
       const normalizedPosition = Math.max(0, Math.round((Number(positionSec) || 0) * 10) / 10);
       const force = Boolean(options.force);
       const previousMarker = lastSavedPlaybackRef.current.get(bookId) ?? null;
@@ -115,12 +113,12 @@ export function usePlaybackPersistence({
       lastSavedPlaybackRef.current.set(bookId, { positionSec: normalizedPosition, token });
       const previousTail = saveTailsRef.current.get(bookId) ?? Promise.resolve(null);
       const operation = previousTail.catch(() => null).then(async () => {
-        if (!ownsCurrentClientGeneration()) {
+        if (!ownsCurrentClient()) {
           return null;
         }
         try {
           const response = await requestApiClient.updateBookPlaybackPosition(bookId, normalizedPosition);
-          if (!ownsCurrentClientGeneration()) {
+          if (!ownsCurrentClient()) {
             return null;
           }
           const savedPosition = Number(response.position_sec);
@@ -136,7 +134,7 @@ export function usePlaybackPersistence({
           consecutiveSaveFailuresRef.current.delete(bookId);
           return resolved;
         } catch {
-          if (!ownsCurrentClientGeneration()) {
+          if (!ownsCurrentClient()) {
             return null;
           }
           const currentMarker = lastSavedPlaybackRef.current.get(bookId);

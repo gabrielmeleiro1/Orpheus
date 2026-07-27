@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
-from .model import QualificationConfig
+from .model import QualificationConfig, parse_version_tuple
 
 PINNED_RUST_VERSION = "1.88.0"
 MINIMUM_MACOS = (14, 0)
@@ -79,15 +79,7 @@ class PreflightFacts:
 
 
 def _parse_version_tuple(text: str) -> tuple[int, ...]:
-    parts: list[int] = []
-    for chunk in text.strip().split("."):
-        digits = "".join(ch for ch in chunk if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    if not parts:
-        raise PreflightError(f"unable to parse version: {text!r}")
-    return tuple(parts)
+    return parse_version_tuple(text, error_cls=PreflightError)
 
 
 def _normalize_version_tuple(text: str, *, width: int) -> tuple[int, ...]:

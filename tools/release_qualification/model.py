@@ -67,6 +67,23 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def parse_version_tuple(text: str, *, error_cls: type[Exception]) -> tuple[int, ...]:
+    """Parse the leading numeric components of a dotted version string.
+
+    Callers own the failure type, so a preflight gate and an artifact
+    inspection keep raising their own error classes.
+    """
+    parts: list[int] = []
+    for chunk in str(text).strip().split("."):
+        digits = "".join(ch for ch in chunk if ch.isdigit())
+        if not digits:
+            break
+        parts.append(int(digits))
+    if not parts:
+        raise error_cls(f"unable to parse version: {text!r}")
+    return tuple(parts)
+
+
 @dataclass(frozen=True)
 class PerformanceBudgets:
     cold_launch_seconds: float

@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Callable
 
 from .commands import CommandSpec
-from .model import QualificationConfig
+from .model import QualificationConfig, parse_version_tuple
 
 FORBIDDEN_DYLIB_PREFIXES: tuple[str, ...] = (
     "/Users/",
@@ -168,15 +168,7 @@ def sha256_file(path: Path, *, chunk_size: int = 1024 * 1024) -> str:
 
 
 def _parse_version_tuple(text: str) -> tuple[int, ...]:
-    parts: list[int] = []
-    for chunk in str(text).strip().split("."):
-        digits = "".join(ch for ch in chunk if ch.isdigit())
-        if not digits:
-            break
-        parts.append(int(digits))
-    if not parts:
-        raise ArtifactInspectionError(f"unable to parse version: {text!r}")
-    return tuple(parts)
+    return parse_version_tuple(text, error_cls=ArtifactInspectionError)
 
 
 def default_read_architectures(path: Path) -> tuple[str, ...]:

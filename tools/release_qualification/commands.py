@@ -8,15 +8,11 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Mapping, Sequence
 
 from .evidence import StreamingSecretRedactor, redact_secrets
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+from .model import _utc_now_iso
 
 
 @dataclass(frozen=True)

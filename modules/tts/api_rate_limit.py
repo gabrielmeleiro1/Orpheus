@@ -64,11 +64,10 @@ class GlobalAPILimiter:
 
     def __init__(self, max_concurrency: int):
         self.max_concurrency = max(1, int(max_concurrency))
-        self._manager = None
         self._semaphore = None
-        self._stats_lock: Any = threading.Lock()
-        self._wait_count: Any = 0
-        self._wait_ms_total: Any = 0.0
+        self._stats_lock = threading.Lock()
+        self._wait_count = 0
+        self._wait_ms_total = 0.0
 
         # Keep construction lightweight while preserving process sharing for
         # process-backed chapter workers. Stats remain local to this process.
@@ -91,15 +90,9 @@ class GlobalAPILimiter:
         if wait_ms <= 0:
             return
 
-        if self._manager is None:
-            with self._stats_lock:
-                self._wait_count = int(self._wait_count) + 1
-                self._wait_ms_total = float(self._wait_ms_total) + wait_ms
-            return
-
         with self._stats_lock:
-            self._wait_count.set(int(self._wait_count.get()) + 1)
-            self._wait_ms_total.set(float(self._wait_ms_total.get()) + wait_ms)
+            self._wait_count += 1
+            self._wait_ms_total += wait_ms
 
     def release(self) -> None:
         if self._semaphore is None:
@@ -107,24 +100,15 @@ class GlobalAPILimiter:
         self._semaphore.release()
 
     def snapshot(self) -> dict[str, float | int]:
-        if self._manager is None:
-            with self._stats_lock:
-                return {
-                    "max_concurrency": self.max_concurrency,
-                    "wait_count": int(self._wait_count),
-                    "wait_ms_total": round(float(self._wait_ms_total), 2),
-                }
-
         with self._stats_lock:
             return {
                 "max_concurrency": self.max_concurrency,
-                "wait_count": int(self._wait_count.get()),
-                "wait_ms_total": round(float(self._wait_ms_total.get()), 2),
+                "wait_count": self._wait_count,
+                "wait_ms_total": round(self._wait_ms_total, 2),
             }
 
     def shutdown(self) -> None:
-        if self._manager is not None:
-            self._manager.shutdown()
+        """No-op: the semaphore is process-shared and owns no manager process."""
 
 
 @asynccontextmanager
