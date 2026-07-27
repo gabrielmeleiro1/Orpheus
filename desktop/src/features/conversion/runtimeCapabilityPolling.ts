@@ -74,7 +74,6 @@ export interface StartRuntimeCapabilityPollingArgs {
   getSystemCapabilities: (signal: AbortSignal) => Promise<SystemCapabilitiesResponse>;
   onCapabilities: (capabilities: SystemCapabilitiesResponse) => void;
   initialCapabilities?: SystemCapabilitiesResponse | null;
-  initialProbe?: RuntimeProbeSnapshot | null;
   baseMs?: number;
   maxMs?: number;
   maxWaitMs?: number;
@@ -92,7 +91,6 @@ export function startRuntimeCapabilityPolling({
   getSystemCapabilities,
   onCapabilities,
   initialCapabilities = undefined,
-  initialProbe = undefined,
   baseMs = CAPABILITIES_PROBE_POLL_BASE_MS,
   maxMs = CAPABILITIES_PROBE_POLL_MAX_MS,
   maxWaitMs = CAPABILITIES_PROBE_MAX_WAIT_MS,
@@ -107,8 +105,7 @@ export function startRuntimeCapabilityPolling({
   let attempt = 0;
   let pollApplied = false;
   let latest: RuntimeCapabilityPollSnapshot | null | undefined = initialCapabilities;
-  let probe: RuntimeProbeSnapshot | null | undefined =
-    initialCapabilities?.runtime_probe ?? initialProbe;
+  let probe: RuntimeProbeSnapshot | null | undefined = initialCapabilities?.runtime_probe;
   const controller = new AbortController();
   const startedAt = now();
 
@@ -130,6 +127,9 @@ export function startRuntimeCapabilityPolling({
     }
     const delay = Math.min(baseMs * 2 ** attempt, maxMs);
     attempt += 1;
+    // Never orphan a pending handle: today scheduleNext only runs after the
+    // previous timer fired or was cleared, but overwriting blind would leak one.
+    clearTimer();
     timer = setTimeoutFn(() => {
       void poll();
     }, delay);

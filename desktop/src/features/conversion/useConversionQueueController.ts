@@ -137,11 +137,9 @@ export function useConversionQueueController({
 
       const isCurrentRequest = () => {
         const current = inFlightPreflightsRef.current.get(item.id);
-        return (
-          isCurrentClientGeneration(clientGeneration) &&
-          current?.controller === controller &&
-          current.clientGeneration === clientGeneration
-        );
+        // Controller identity already pins the entry to this call, which
+        // recorded `clientGeneration` when it was registered.
+        return isCurrentClientGeneration(clientGeneration) && current?.controller === controller;
       };
 
       try {

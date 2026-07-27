@@ -84,7 +84,7 @@ describe("startRuntimeCapabilityPolling", () => {
     const poller = startRuntimeCapabilityPolling({
       getSystemCapabilities: (signal) => getSystemCapabilities({ signal }),
       onCapabilities,
-      initialProbe: pending.runtime_probe,
+      initialCapabilities: pending,
       baseMs: 100,
       maxMs: 100,
       maxWaitMs: 10_000,
@@ -118,7 +118,7 @@ describe("startRuntimeCapabilityPolling", () => {
     const poller = startRuntimeCapabilityPolling({
       getSystemCapabilities: (signal) => getSystemCapabilities({ signal }),
       onCapabilities,
-      initialProbe: refreshing.runtime_probe,
+      initialCapabilities: refreshing,
       baseMs: 100,
       maxMs: 100,
     });
@@ -140,7 +140,7 @@ describe("startRuntimeCapabilityPolling", () => {
     const poller = startRuntimeCapabilityPolling({
       getSystemCapabilities: (signal) => getSystemCapabilities({ signal }),
       onCapabilities: vi.fn(),
-      initialProbe: pending.runtime_probe,
+      initialCapabilities: pending,
       baseMs: 100,
       maxMs: 100,
     });
@@ -157,7 +157,7 @@ describe("startRuntimeCapabilityPolling", () => {
     const poller = startRuntimeCapabilityPolling({
       getSystemCapabilities: (signal) => getSystemCapabilities({ signal }),
       onCapabilities: vi.fn(),
-      initialProbe: pending.runtime_probe,
+      initialCapabilities: pending,
       baseMs: 100,
       maxMs: 100,
     });

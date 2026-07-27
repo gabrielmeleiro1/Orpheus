@@ -282,6 +282,16 @@ impl AppState {
         manager.fail_if_startup_timed_out(BACKEND_STARTUP_DEADLINE);
         Ok(())
     }
+
+    /// Bring the backend lifecycle up to date before reading it: adopt a ready
+    /// file the child wrote, reap an exited process, and fail a startup that
+    /// blew its deadline. Call sites that deliberately skip a step (see
+    /// `restart_backend`) spell the individual refreshes out instead.
+    fn refresh_backend_state(&self) -> Result<(), String> {
+        self.refresh_backend_ready_from_file()?;
+        self.refresh_backend_process_exit()?;
+        self.refresh_backend_startup_deadline()
+    }
 }
 
 // Backend lifecycle commands are `async` so Tauri runs them off the main
@@ -290,9 +300,7 @@ impl AppState {
 // sync command. The bodies stay synchronous; only the executor changes.
 #[tauri::command]
 async fn backend_status(state: State<'_, AppState>) -> Result<BackendStatus, String> {
-    state.refresh_backend_ready_from_file()?;
-    state.refresh_backend_process_exit()?;
-    state.refresh_backend_startup_deadline()?;
+    state.refresh_backend_state()?;
     let manager = state
         .backend_manager
         .lock()
@@ -302,9 +310,7 @@ async fn backend_status(state: State<'_, AppState>) -> Result<BackendStatus, Str
 
 #[tauri::command]
 async fn backend_endpoint(state: State<'_, AppState>) -> Result<Option<BackendEndpoint>, String> {
-    state.refresh_backend_ready_from_file()?;
-    state.refresh_backend_process_exit()?;
-    state.refresh_backend_startup_deadline()?;
+    state.refresh_backend_state()?;
     let manager = state
         .backend_manager
         .lock()
@@ -448,9 +454,7 @@ async fn restart_backend_after_setup(
                 return Err("desktop backend is shutting down".to_string());
             }
 
-            app_state.refresh_backend_ready_from_file()?;
-            app_state.refresh_backend_process_exit()?;
-            app_state.refresh_backend_startup_deadline()?;
+            app_state.refresh_backend_state()?;
             let lifecycle = app_state
                 .backend_manager
                 .lock()
@@ -481,9 +485,7 @@ async fn restart_backend_after_setup(
                 BACKEND_STARTUP_DEADLINE,
                 Duration::from_millis(100),
                 || {
-                    app_state.refresh_backend_ready_from_file()?;
-                    app_state.refresh_backend_process_exit()?;
-                    app_state.refresh_backend_startup_deadline()?;
+                    app_state.refresh_backend_state()?;
                     let manager = app_state
                         .backend_manager
                         .lock()

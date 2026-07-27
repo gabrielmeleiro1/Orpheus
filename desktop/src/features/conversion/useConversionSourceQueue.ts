@@ -45,7 +45,6 @@ export function useConversionSourceQueue({
   const browserUploadBatchRef = useRef(0);
   const mountedRef = useRef(false);
   const pasteInFlightRef = useRef(false);
-  const pasteRequestRef = useRef(0);
   const queueControllerRef = useRef(queueController);
   const conversionJobRef = useRef(conversionJob);
   const sourceContextRef = useRef({
@@ -65,16 +64,19 @@ export function useConversionSourceQueue({
       conversionMode,
       generation: sourceContextRef.current.generation + 1,
     };
-    pasteRequestRef.current += 1;
     pasteInFlightRef.current = false;
   }
   const sourceContextGeneration = sourceContextRef.current.generation;
 
+  // The empty dep array is load-bearing: this cleanup clears pasteInFlightRef
+  // without bumping the source-context generation, so re-running the effect
+  // while a paste is in flight would let that stale paste's settle clear a
+  // newer paste's guard. Do not add deps, and do not bump the generation here
+  // (StrictMode's mount replay must keep callbacks live).
   useEffect(() => {
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      pasteRequestRef.current += 1;
       pasteInFlightRef.current = false;
     };
   }, []);
@@ -300,7 +302,6 @@ export function useConversionSourceQueue({
     const pasteTitle = pastedTitle.trim();
     const pasteAuthor = pastedAuthor.trim();
 
-    const pasteRequest = ++pasteRequestRef.current;
     pasteInFlightRef.current = true;
     setPasteBusy(true);
     setPasteStatus("Creating markdown source…");
@@ -309,10 +310,7 @@ export function useConversionSourceQueue({
         text,
         title: pasteTitle || null,
       });
-      if (
-        !isCurrentSourceContext(sourceContextGeneration) ||
-        pasteRequestRef.current !== pasteRequest
-      ) {
+      if (!isCurrentSourceContext(sourceContextGeneration)) {
         return null;
       }
       const item = createQueueItem(
@@ -337,20 +335,18 @@ export function useConversionSourceQueue({
       conversionJobRef.current.clearFormError();
       return item;
     } catch (error: unknown) {
-      if (
-        !isCurrentSourceContext(sourceContextGeneration) ||
-        pasteRequestRef.current !== pasteRequest
-      ) {
+      if (!isCurrentSourceContext(sourceContextGeneration)) {
         return null;
       }
       setPasteStatus(error instanceof Error ? error.message : "Paste upload failed");
       return null;
     } finally {
-      if (pasteRequestRef.current === pasteRequest) {
+      // A context change (or unmount) already released the in-flight guard for
+      // the context that replaced this one, so only the still-current paste
+      // clears it here.
+      if (isCurrentSourceContext(sourceContextGeneration)) {
         pasteInFlightRef.current = false;
-        if (isCurrentSourceContext(sourceContextGeneration)) {
-          setPasteBusy(false);
-        }
+        setPasteBusy(false);
       }
     }
   }, [

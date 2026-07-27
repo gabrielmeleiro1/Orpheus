@@ -692,8 +692,6 @@ pub fn resolve_sidecar_path(
         candidates.push(dir.join("binaries").join(&filename));
         candidates.push(dir.join(sidecar_dir_name).join(&filename));
         candidates.push(dir.join("binaries").join(sidecar_dir_name).join(&filename));
-        candidates.push(dir.join(&filename).join(&filename));
-        candidates.push(dir.join("binaries").join(&filename).join(&filename));
     }
 
     if let Some(current_binary) = current_binary_path {
@@ -707,8 +705,6 @@ pub fn resolve_sidecar_path(
                     .join(sidecar_dir_name)
                     .join(&filename),
             );
-            candidates.push(exe_dir.join(&filename).join(&filename));
-            candidates.push(exe_dir.join("binaries").join(&filename).join(&filename));
             #[cfg(target_os = "macos")]
             {
                 candidates.push(exe_dir.join("../Resources").join(&filename));
@@ -718,12 +714,17 @@ pub fn resolve_sidecar_path(
                         .join("binaries")
                         .join(&filename),
                 );
-                candidates.push(exe_dir.join("../Resources").join(&filename).join(&filename));
+                candidates.push(
+                    exe_dir
+                        .join("../Resources")
+                        .join(sidecar_dir_name)
+                        .join(&filename),
+                );
                 candidates.push(
                     exe_dir
                         .join("../Resources")
                         .join("binaries")
-                        .join(&filename)
+                        .join(sidecar_dir_name)
                         .join(&filename),
                 );
             }

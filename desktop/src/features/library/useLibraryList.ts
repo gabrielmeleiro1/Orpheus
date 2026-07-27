@@ -8,7 +8,7 @@ import type {
   LibraryBookSummary,
 } from "../../types/api";
 import { buildBookSummary, formatSummaryMeta } from "./libraryDisplayModel";
-import { createLibraryRepository, type LibraryModeFilter } from "./libraryRepository";
+import { createLibraryRepository, type LibraryModeFilter, type LibraryRepository } from "./libraryRepository";
 
 /** Merge a freshly fetched page onto the accumulated list, dropping any ids we
  * already hold so overlapping/duplicate pages never render the same book twice. */
@@ -157,6 +157,26 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     query: "",
     modeFilter: "all",
   });
+
+  // Sibling of beginOwnedRequest for selection-scoped work. Targets are passed
+  // in, never read off selectedBookIdRef here: callbacks capture the
+  // selectedBookId state value and the ref can lead it by one render. Both
+  // clauses are load-bearing — selectRelative advances the id ref without
+  // bumping the generation, and re-selecting the same book does the reverse.
+  const beginSelectionOwnedRequest = useCallback(
+    (
+      beginRequest: () => () => boolean,
+      targetBookId: number,
+      targetSelectionGeneration: number,
+    ) => {
+      const isOwned = beginOwnedRequest(beginRequest);
+      return () =>
+        isOwned() &&
+        selectedBookIdRef.current === targetBookId &&
+        selectionGenerationRef.current === targetSelectionGeneration;
+    },
+    [beginOwnedRequest],
+  );
 
   const clearInFlightDeleteRequests = useCallback(() => {
     for (const { controller } of inFlightDeleteTokensRef.current.values()) {
@@ -477,41 +497,55 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     await loadLibrary(searchQuery.trim());
   }, [loadLibrary, searchQuery]);
 
-  const openSelectedBookFolder = useCallback(async (): Promise<void> => {
-    if (!repository || !selectedBookId) {
-      setStatusMessage("No book selected");
-      return;
-    }
-
-    const targetBookId = selectedBookId;
-    const targetSelectionGeneration = selectionGenerationRef.current;
-    const isCurrentAction = beginOwnedRequest(beginEntityActionRequest);
-    setErrorMessage("");
-
-    try {
-      const response = await repository.openBookFolder(targetBookId);
-      if (
-        !isCurrentAction() ||
-        selectedBookIdRef.current !== targetBookId ||
-        selectionGenerationRef.current !== targetSelectionGeneration
-      ) {
+  /** Fire-and-report action against the selected book: identical selection
+   * ownership, status, and error handling for every entity endpoint. */
+  const runEntityAction = useCallback(
+    async <T,>(
+      call: (repo: LibraryRepository, bookId: number) => Promise<T>,
+      describeSuccess: (result: T) => string,
+      fallbackMessage: string,
+    ): Promise<void> => {
+      if (!repository || !selectedBookId) {
+        setStatusMessage("No book selected");
         return;
       }
-      const pathText = response.folder_path?.trim() ? `opened folder: ${response.folder_path}` : "opened folder";
-      setStatusMessage(pathText);
-    } catch (error: unknown) {
-      if (
-        !isCurrentAction() ||
-        selectedBookIdRef.current !== targetBookId ||
-        selectionGenerationRef.current !== targetSelectionGeneration
-      ) {
-        return;
+
+      const targetBookId = selectedBookId;
+      const isCurrentAction = beginSelectionOwnedRequest(
+        beginEntityActionRequest,
+        targetBookId,
+        selectionGenerationRef.current,
+      );
+      setErrorMessage("");
+
+      try {
+        const result = await call(repository, targetBookId);
+        if (!isCurrentAction()) {
+          return;
+        }
+        setStatusMessage(describeSuccess(result));
+      } catch (error: unknown) {
+        if (!isCurrentAction()) {
+          return;
+        }
+        const message = error instanceof Error ? error.message : fallbackMessage;
+        setErrorMessage(message);
+        setStatusMessage(message);
       }
-      const message = error instanceof Error ? error.message : "failed to open book folder";
-      setErrorMessage(message);
-      setStatusMessage(message);
-    }
-  }, [beginEntityActionRequest, beginOwnedRequest, repository, selectedBookId]);
+    },
+    [beginEntityActionRequest, beginSelectionOwnedRequest, repository, selectedBookId],
+  );
+
+  const openSelectedBookFolder = useCallback(
+    (): Promise<void> =>
+      runEntityAction(
+        (repo, bookId) => repo.openBookFolder(bookId),
+        (response) =>
+          response.folder_path?.trim() ? `opened folder: ${response.folder_path}` : "opened folder",
+        "failed to open book folder",
+      ),
+    [runEntityAction],
+  );
 
   const deleteSelectedBook = useCallback(async (): Promise<boolean> => {
     if (!repository || !selectedBookId) {
@@ -661,8 +695,11 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       }
 
       const targetBookId = selectedBookId;
-      const targetSelectionGeneration = selectionGenerationRef.current;
-      const isCurrentMutation = beginOwnedRequest(beginMutationRequest);
+      const isCurrentMutation = beginSelectionOwnedRequest(
+        beginMutationRequest,
+        targetBookId,
+        selectionGenerationRef.current,
+      );
       setErrorMessage("");
 
       try {
@@ -671,11 +708,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
           author: payload.author.trim() || null,
           tags: payload.tags.trim(),
         });
-        if (
-          !isCurrentMutation() ||
-          selectedBookIdRef.current !== targetBookId ||
-          selectionGenerationRef.current !== targetSelectionGeneration
-        ) {
+        if (!isCurrentMutation()) {
           return;
         }
         setSelectedBookDetail((current) => ({
@@ -699,11 +732,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         );
         setStatusMessage("Metadata saved");
       } catch (error: unknown) {
-        if (
-          !isCurrentMutation() ||
-          selectedBookIdRef.current !== targetBookId ||
-          selectionGenerationRef.current !== targetSelectionGeneration
-        ) {
+        if (!isCurrentMutation()) {
           return;
         }
         const message = error instanceof Error ? error.message : "failed to update book";
@@ -711,7 +740,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         setStatusMessage(message);
       }
     },
-    [beginMutationRequest, beginOwnedRequest, repository, selectedBookId],
+    [beginMutationRequest, beginSelectionOwnedRequest, repository, selectedBookId],
   );
 
   const loadCleaningPreview = useCallback(
@@ -722,26 +751,21 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       }
 
       const targetBookId = selectedBookId;
-      const targetSelectionGeneration = selectionGenerationRef.current;
-      const isCurrentPreview = beginOwnedRequest(beginPreviewRequest);
+      const isCurrentPreview = beginSelectionOwnedRequest(
+        beginPreviewRequest,
+        targetBookId,
+        selectionGenerationRef.current,
+      );
       setErrorMessage("");
       try {
         const preview = await repository.getCleaningPreview(targetBookId, chapterNumber);
-        if (
-          !isCurrentPreview() ||
-          selectedBookIdRef.current !== targetBookId ||
-          selectionGenerationRef.current !== targetSelectionGeneration
-        ) {
+        if (!isCurrentPreview()) {
           return null;
         }
         setStatusMessage(preview.available ? `Loaded cleaning preview for chapter ${chapterNumber}` : "Cleaning preview unavailable");
         return preview;
       } catch (error: unknown) {
-        if (
-          !isCurrentPreview() ||
-          selectedBookIdRef.current !== targetBookId ||
-          selectionGenerationRef.current !== targetSelectionGeneration
-        ) {
+        if (!isCurrentPreview()) {
           return null;
         }
         const message = error instanceof Error ? error.message : "failed to load cleaning preview";
@@ -750,42 +774,18 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         return null;
       }
     },
-    [beginOwnedRequest, beginPreviewRequest, repository, selectedBookId],
+    [beginPreviewRequest, beginSelectionOwnedRequest, repository, selectedBookId],
   );
 
-  const repairSelectedBook = useCallback(async (): Promise<void> => {
-    if (!repository || !selectedBookId) {
-      setStatusMessage("No book selected");
-      return;
-    }
-
-    const targetBookId = selectedBookId;
-    const targetSelectionGeneration = selectionGenerationRef.current;
-    const isCurrentAction = beginOwnedRequest(beginEntityActionRequest);
-    setErrorMessage("");
-    try {
-      const response = await repository.repairBook(targetBookId);
-      if (
-        !isCurrentAction() ||
-        selectedBookIdRef.current !== targetBookId ||
-        selectionGenerationRef.current !== targetSelectionGeneration
-      ) {
-        return;
-      }
-      setStatusMessage(`Repair started: ${response.job_id}`);
-    } catch (error: unknown) {
-      if (
-        !isCurrentAction() ||
-        selectedBookIdRef.current !== targetBookId ||
-        selectionGenerationRef.current !== targetSelectionGeneration
-      ) {
-        return;
-      }
-      const message = error instanceof Error ? error.message : "failed to start repair";
-      setErrorMessage(message);
-      setStatusMessage(message);
-    }
-  }, [beginEntityActionRequest, beginOwnedRequest, repository, selectedBookId]);
+  const repairSelectedBook = useCallback(
+    (): Promise<void> =>
+      runEntityAction(
+        (repo, bookId) => repo.repairBook(bookId),
+        (response) => `Repair started: ${response.job_id}`,
+        "failed to start repair",
+      ),
+    [runEntityAction],
+  );
 
   const setSelectedPlaybackPosition = useCallback((positionSec: number) => {
     const normalizedPosition = Number(positionSec);
