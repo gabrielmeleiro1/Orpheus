@@ -252,8 +252,8 @@ def resolve_default_sidecar_path() -> Path:
     return DEFAULT_RESOURCE_SIDECAR
 
 
-def resolve_packaged_app_sidecar(app_bundle: Path) -> Path:
-    """Resolve only the sidecar embedded at the fixed Tauri app resource path."""
+def _resolve_app_bundle_root(app_bundle: Path) -> Path:
+    """Validate a packaged ``.app`` path and return its resolved bundle root."""
     requested = Path(app_bundle).expanduser()
     if requested.suffix != ".app":
         raise ValueError(f"packaged app bundle must have a .app suffix: {requested}")
@@ -262,28 +262,51 @@ def resolve_packaged_app_sidecar(app_bundle: Path) -> Path:
     bundle = requested.resolve()
     if not bundle.is_dir():
         raise ValueError(f"packaged app bundle is not a directory: {requested}")
+    return bundle
+
+
+def _require_inside_bundle(resolved: Path, bundle: Path, *, message: str) -> None:
+    """Reject symlinks that escape the bundle root after resolution."""
+    try:
+        resolved.relative_to(bundle)
+    except ValueError as exc:
+        raise ValueError(message) from exc
+
+
+def _select_sidecar_executable(
+    *,
+    sidecar_path: Path | None,
+    app_bundle: Path | None,
+) -> Path:
+    resolved_sidecar = (
+        resolve_packaged_app_sidecar(app_bundle)
+        if app_bundle is not None
+        else sidecar_path or resolve_default_sidecar_path()
+    )
+    if not resolved_sidecar.is_file():
+        raise FileNotFoundError(f"sidecar executable not found: {resolved_sidecar}")
+    return resolved_sidecar
+
+
+def resolve_packaged_app_sidecar(app_bundle: Path) -> Path:
+    """Resolve only the sidecar embedded at the fixed Tauri app resource path."""
+    bundle = _resolve_app_bundle_root(app_bundle)
 
     sidecar = bundle / "Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend"
     if not sidecar.exists():
         raise FileNotFoundError(f"embedded packaged sidecar not found: {sidecar}")
     resolved_sidecar = sidecar.resolve()
-    try:
-        resolved_sidecar.relative_to(bundle)
-    except ValueError as exc:
-        raise ValueError(f"embedded packaged sidecar must stay inside app bundle: {sidecar}") from exc
+    _require_inside_bundle(
+        resolved_sidecar,
+        bundle,
+        message=f"embedded packaged sidecar must stay inside app bundle: {sidecar}",
+    )
     return _validate_runtime_binary(resolved_sidecar, "packaged sidecar")
 
 
 def resolve_packaged_runtime_profile(app_bundle: Path) -> str:
     """Read the build profile marker from the fixed packaged sidecar resource."""
-    requested = Path(app_bundle).expanduser()
-    if requested.suffix != ".app":
-        raise ValueError(f"packaged app bundle must have a .app suffix: {requested}")
-    if not requested.exists():
-        raise FileNotFoundError(f"packaged app bundle not found: {requested}")
-    bundle = requested.resolve()
-    if not bundle.is_dir():
-        raise ValueError(f"packaged app bundle is not a directory: {requested}")
+    bundle = _resolve_app_bundle_root(app_bundle)
 
     marker = (
         bundle
@@ -292,12 +315,11 @@ def resolve_packaged_runtime_profile(app_bundle: Path) -> str:
     if not marker.is_file():
         raise FileNotFoundError(f"packaged runtime profile marker not found: {marker}")
     resolved_marker = marker.resolve()
-    try:
-        resolved_marker.relative_to(bundle)
-    except ValueError as exc:
-        raise ValueError(
-            f"packaged runtime profile marker must stay inside app bundle: {marker}"
-        ) from exc
+    _require_inside_bundle(
+        resolved_marker,
+        bundle,
+        message=f"packaged runtime profile marker must stay inside app bundle: {marker}",
+    )
 
     try:
         payload = json.loads(resolved_marker.read_text(encoding="utf-8"))
@@ -327,13 +349,10 @@ def build_backend_command(
             "0",
         ]
 
-    resolved_sidecar = (
-        resolve_packaged_app_sidecar(app_bundle)
-        if app_bundle is not None
-        else sidecar_path or resolve_default_sidecar_path()
+    resolved_sidecar = _select_sidecar_executable(
+        sidecar_path=sidecar_path,
+        app_bundle=app_bundle,
     )
-    if not resolved_sidecar.is_file():
-        raise FileNotFoundError(f"sidecar executable not found: {resolved_sidecar}")
     return [str(resolved_sidecar), "--host", "127.0.0.1", "--port", "0"]
 
 
@@ -472,12 +491,11 @@ def _resolve_sidecar_runtime_binary(
         if candidate.is_file():
             resolved = _validate_runtime_binary(candidate.resolve(), binary)
             if allowed_root is not None:
-                try:
-                    resolved.relative_to(allowed_root)
-                except ValueError as exc:
-                    raise ValueError(
-                        f"{binary} runtime binary must stay inside app bundle: {candidate}"
-                    ) from exc
+                _require_inside_bundle(
+                    resolved,
+                    allowed_root,
+                    message=f"{binary} runtime binary must stay inside app bundle: {candidate}",
+                )
             return resolved
     formatted = ", ".join(str(candidate) for candidate in candidates)
     raise SmokeFailure(f"{binary} runtime binary is not executable: {formatted}")
@@ -490,13 +508,10 @@ def resolve_ffmpeg_runtime_binaries(
     app_bundle: Path | None = None,
 ) -> dict[str, Path]:
     if backend == "sidecar":
-        resolved_sidecar = (
-            resolve_packaged_app_sidecar(app_bundle)
-            if app_bundle is not None
-            else sidecar_path or resolve_default_sidecar_path()
+        resolved_sidecar = _select_sidecar_executable(
+            sidecar_path=sidecar_path,
+            app_bundle=app_bundle,
         )
-        if not resolved_sidecar.is_file():
-            raise FileNotFoundError(f"sidecar executable not found: {resolved_sidecar}")
         bin_dir = resolved_sidecar.parent / "bin"
         app_root = app_bundle.expanduser().resolve() if app_bundle is not None else None
         return {
@@ -1022,14 +1037,12 @@ def wait_for_tts_runtime_ready(
     )
 
 
-def enforce_local_tts_runtime_ready(
+def _capabilities_fetcher(
     ready: ReadyPayload,
     *,
     timeout_seconds: float,
-    probe_wait_seconds: float,
-) -> dict[str, Any]:
-    """Fail closed unless capabilities expose an explicit local TTS ready signal."""
-
+    label: str,
+) -> Callable[[], dict[str, Any]]:
     def fetch_capabilities() -> dict[str, Any]:
         payload = expect_status(
             http_request(
@@ -1039,11 +1052,27 @@ def enforce_local_tts_runtime_ready(
                 timeout_seconds=timeout_seconds,
             ),
             200,
-            "require-local-tts capabilities",
+            label,
         ).json()
         if not isinstance(payload, dict):
             raise SmokeFailure(f"unexpected capabilities payload: {payload!r}")
         return payload
+
+    return fetch_capabilities
+
+
+def enforce_local_tts_runtime_ready(
+    ready: ReadyPayload,
+    *,
+    timeout_seconds: float,
+    probe_wait_seconds: float,
+) -> dict[str, Any]:
+    """Fail closed unless capabilities expose an explicit local TTS ready signal."""
+    fetch_capabilities = _capabilities_fetcher(
+        ready,
+        timeout_seconds=timeout_seconds,
+        label="require-local-tts capabilities",
+    )
 
     probe_wait = wait_for_tts_runtime_ready(
         fetch_capabilities,
@@ -1245,20 +1274,11 @@ def run_conversion_journey(
     if int(preflight.get("chapter_count") or 0) < 1:
         raise SmokeFailure(f"preflight returned no chapters: {preflight!r}")
 
-    def fetch_capabilities() -> dict[str, Any]:
-        payload = expect_status(
-            http_request(
-                "GET",
-                f"{ready.base_url}/api/system/capabilities",
-                token=ready.token,
-                timeout_seconds=timeout_seconds,
-            ),
-            200,
-            "conversion journey capabilities",
-        ).json()
-        if not isinstance(payload, dict):
-            raise SmokeFailure(f"unexpected capabilities payload: {payload!r}")
-        return payload
+    fetch_capabilities = _capabilities_fetcher(
+        ready,
+        timeout_seconds=timeout_seconds,
+        label="conversion journey capabilities",
+    )
 
     probe_wait = wait_for_tts_runtime_ready(
         fetch_capabilities,

@@ -7,28 +7,6 @@ use super::{
     sidecar_source_filename, BackendLifecycle, BackendManager,
 };
 
-#[test]
-fn backend_windows_launch_protocol_requires_job_before_resume() {
-    let mut phase = super::BackendLaunchPhase::Built;
-    assert!(phase.mark_resumed().is_err());
-    phase.mark_spawned_suspended().expect("suspended spawn");
-    assert!(phase.mark_resumed().is_err());
-    phase.mark_job_assigned().expect("job assignment");
-    phase.mark_resumed().expect("resume after containment");
-    assert_eq!(phase, super::BackendLaunchPhase::Resumed);
-}
-
-#[test]
-fn backend_windows_launch_flags_include_suspended_process_group() {
-    let flags = super::backend_windows_creation_flags();
-    assert_ne!(flags & 0x0000_0004, 0, "CREATE_SUSPENDED is required");
-    assert_ne!(
-        flags & 0x0000_0200,
-        0,
-        "CREATE_NEW_PROCESS_GROUP is required"
-    );
-}
-
 #[cfg(windows)]
 #[test]
 fn forced_backend_shutdown_terminates_root_and_descendant_in_job() {

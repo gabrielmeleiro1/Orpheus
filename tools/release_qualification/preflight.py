@@ -260,23 +260,18 @@ def default_config_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def compute_toolchain_fingerprint(
-    *,
-    run_version: Callable[[Sequence[str]], str] = default_run_version,
-    which: Callable[[str], str | None] = default_which,
-    python_version_info: Callable[[], tuple[int, int, int]] = default_python_version_info,
-) -> str:
+def compute_toolchain_fingerprint() -> str:
     """Hash allowlisted toolchain facts for resume fingerprinting."""
-    py = python_version_info()
+    py = default_python_version_info()
     try:
-        node_version = run_version(("node", "--version")).strip().lstrip("vV")
+        node_version = default_run_version(("node", "--version")).strip().lstrip("vV")
     except Exception:  # noqa: BLE001 - fingerprint must still be stable enough to compare
         node_version = "unavailable"
     try:
-        rust_version = _parse_rustc_version(run_version(("rustc", "--version")))
+        rust_version = _parse_rustc_version(default_run_version(("rustc", "--version")))
     except Exception:  # noqa: BLE001
         rust_version = "unavailable"
-    tools = {name: which(name) is not None for name in REQUIRED_TOOLS}
+    tools = {name: default_which(name) is not None for name in REQUIRED_TOOLS}
     payload = {
         "python": f"{py[0]}.{py[1]}.{py[2]}",
         "node": node_version,

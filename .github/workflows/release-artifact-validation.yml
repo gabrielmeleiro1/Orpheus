@@ -77,10 +77,6 @@ jobs:
         working-directory: desktop/src-tauri
         run: cargo test --locked -- --test-threads=1
 
-      - name: Check Tauri shell
-        working-directory: desktop/src-tauri
-        run: cargo check --locked
-
       - name: Build release artifact
         working-directory: desktop
         run: npm run desktop:build

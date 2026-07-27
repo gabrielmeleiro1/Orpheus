@@ -7,7 +7,6 @@ Never publishes, tags, pushes, opens GitHub, or modifies workflows.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import shutil
 import subprocess
@@ -282,8 +281,6 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     report_dir = evidence.path
     config_dir = report_dir / "config"
     config_dir.mkdir(parents=True, exist_ok=True)
-    import shutil
-
     shutil.copy2(config_path, config_dir / "release_qualification.toml")
 
     commit = _git_commit()
@@ -292,7 +289,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     _persist_report(
         report_dir,
         report,
-        config_hash=_file_sha256(config_dir / "release_qualification.toml"),
+        config_hash=sha256_file(config_dir / "release_qualification.toml"),
         toolchain_fingerprint="prepare",
         artifact_hash="",
     )
@@ -559,7 +556,7 @@ def write_and_verify_checksums(report_dir: Path) -> PhaseOutcome:
 
     entries: list[tuple[str, str]] = [
         (staged_digest, staged_dmg.name),
-        (_file_sha256(final_md), final_md.name),
+        (sha256_file(final_md), final_md.name),
     ]
     sums_path = report_dir / "SHA256SUMS"
     atomic_write_text(sums_path, "".join(f"{digest}  {name}\n" for digest, name in entries))
@@ -578,19 +575,10 @@ def write_and_verify_checksums(report_dir: Path) -> PhaseOutcome:
     return PhaseOutcome(PhaseState.PASSED, "evidence finalization ok")
 
 
-def execute_evidence_finalization(report_dir: Path) -> PhaseOutcome:
-    """Validate inputs, then write and verify required checksums."""
-    precheck = validate_finalization_inputs(report_dir)
-    if precheck.state is not PhaseState.PASSED:
-        return precheck
-    return write_and_verify_checksums(report_dir)
-
-
 def verify_sha256sums(
     sums_path: Path,
     *,
     report_dir: Path,
-    dmg_path: Path | None = None,  # noqa: ARG001 - kept for call-site compatibility
 ) -> None:
     """Independently re-hash every basename listed in SHA256SUMS under report_dir."""
     if not sums_path.is_file():
@@ -621,7 +609,7 @@ def verify_sha256sums(
             raise ValueError(f"SHA256SUMS path escapes report_dir: {name}")
         if not target.is_file() or target.is_symlink():
             raise ValueError(f"SHA256SUMS target missing: {name}")
-        if _file_sha256(target) != digest:
+        if sha256_file(target) != digest:
             raise ValueError(f"SHA256SUMS mismatch: {name}")
 
     missing = sorted(required_names - seen)
@@ -777,7 +765,7 @@ def _current_fingerprints(report_dir: Path) -> dict[str, str]:
     artifact_hash = _current_artifact_hash(report_dir)
     return {
         "commit": _git_commit(),
-        "config_hash": _file_sha256(config_path),
+        "config_hash": sha256_file(config_path),
         "toolchain_fingerprint": compute_toolchain_fingerprint(),
         "artifact_hash": artifact_hash,
     }
@@ -847,14 +835,6 @@ def _git_commit() -> str:
     if completed.returncode != 0:
         return "unknown"
     return completed.stdout.strip()
-
-
-def _file_sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _repo_relative_posix(path: Path) -> str:

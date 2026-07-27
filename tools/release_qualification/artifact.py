@@ -282,10 +282,6 @@ def parse_codesign_info(text: str, *, returncode: int) -> CodesignInfo:
     )
 
 
-def parse_codesign_output(text: str, *, returncode: int) -> SigningState:
-    return parse_codesign_info(text, returncode=returncode).state
-
-
 def default_read_codesign_info(path: Path) -> CodesignInfo:
     completed = subprocess.run(
         ["codesign", "-dv", "--verbose=4", str(path)],
@@ -296,10 +292,6 @@ def default_read_codesign_info(path: Path) -> CodesignInfo:
     )
     text = f"{completed.stdout}\n{completed.stderr}"
     return parse_codesign_info(text, returncode=completed.returncode)
-
-
-def default_read_signing_state(path: Path) -> SigningState:
-    return default_read_codesign_info(path).state
 
 
 def _is_expected_unsigned_codesign(info: CodesignInfo) -> bool:
@@ -504,7 +496,6 @@ def inspect_app_bundle(
     read_architectures: Callable[[Path], tuple[str, ...]] = default_read_architectures,
     read_dylibs: Callable[[Path], tuple[str, ...]] = default_read_dylibs,
     read_codesign_info: Callable[[Path], CodesignInfo] = default_read_codesign_info,
-    read_signing_state: Callable[[Path], SigningState] | None = None,
     verify_bundle_signature: Callable[
         [Path], bool
     ] = default_verify_bundle_signature,
@@ -589,17 +580,7 @@ def inspect_app_bundle(
             if any(dep.startswith(prefix) for prefix in FORBIDDEN_DYLIB_PREFIXES):
                 errors.append(f"forbidden absolute dylib path {dep} in {binary.name}")
 
-    if read_signing_state is not None:
-        legacy_state = read_signing_state(app)
-        codesign_info = CodesignInfo(
-            state=legacy_state,
-            team_identifier=None,
-            flags="adhoc,linker-signed" if legacy_state is SigningState.ADHOC else "",
-            authorities=(),
-            raw_text=legacy_state.value,
-        )
-    else:
-        codesign_info = read_codesign_info(app)
+    codesign_info = read_codesign_info(app)
     signing_state = codesign_info.state
     signing_detail = "app bundle inspection passed"
     if not _is_expected_unsigned_codesign(codesign_info):

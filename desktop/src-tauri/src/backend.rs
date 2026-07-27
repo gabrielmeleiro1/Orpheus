@@ -211,13 +211,8 @@ pub struct RunningBackend {
     job: Arc<WindowsJob>,
 }
 
-#[cfg(any(test, windows))]
+#[cfg(windows)]
 pub(crate) type BackendLaunchPhase = crate::setup::WindowsLaunchPhase;
-
-#[cfg(any(test, windows))]
-pub(crate) fn backend_windows_creation_flags() -> u32 {
-    crate::setup::windows_setup_creation_flags()
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BackendShutdownPayload {

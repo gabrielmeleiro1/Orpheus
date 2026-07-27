@@ -11,7 +11,6 @@ from typing import Callable, Iterable, Sequence
 
 
 # Numeric fields first; args is the final catch-all so paths with spaces stay intact.
-PS_COLUMNS = ("pid", "ppid", "pcpu", "rss", "args")
 PS_COMMAND: tuple[str, ...] = (
     "ps",
     "-ax",
@@ -48,14 +47,6 @@ class ProcessSample:
             return Path(_executable_path_from_args(text))
         token = text.split(" ", 1)[0]
         return Path(token) if token else None
-
-    def identity(self) -> ProcessIdentity:
-        exe = self.exe_path
-        return ProcessIdentity(
-            pid=self.pid,
-            start_time=self.start_time,
-            exe=str(exe) if exe is not None else None,
-        )
 
 
 def _executable_path_from_args(args: str) -> str:
@@ -191,13 +182,11 @@ def terminate_pid_if_safe(
     runtime_root: Path,
     expected_exe_path: Path | None = None,
     expected_start_time: str | None = None,
-    # Backward-compatible alias used by older callers/tests.
-    exe_path: Path | None = None,
     kill: Callable[[int, int], None] | None = None,
     read_process: Callable[[int], ProcessSample | None] | None = None,
     sig: int = signal.SIGTERM,
 ) -> bool:
-    expected = expected_exe_path if expected_exe_path is not None else exe_path
+    expected = expected_exe_path
     reader = read_process or read_process_by_pid
     current = reader(pid)
     if current is None:

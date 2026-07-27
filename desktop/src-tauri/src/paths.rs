@@ -203,10 +203,11 @@ fn is_strict_ancestor(ancestor: &Path, descendant: &Path) -> bool {
     descendant.starts_with(ancestor) && descendant != ancestor
 }
 
-fn validate_existing_contained_dir(
+fn validate_existing_contained(
     canonical_root: &Path,
     path: &Path,
     label: &str,
+    expect_dir: bool,
 ) -> Result<(), String> {
     let meta = match path.symlink_metadata() {
         Ok(meta) => meta,
@@ -224,52 +225,19 @@ fn validate_existing_contained_dir(
             path.display()
         ));
     }
-    if !meta.is_dir() {
-        return Err(format!(
-            "qualification override unsafe: '{label}' must be a directory ('{}'); refusing to fall back to live app data",
-            path.display()
-        ));
-    }
-    let resolved = path.canonicalize().map_err(|error| {
-        format!(
-            "qualification override unsafe: failed to canonicalize '{label}' ('{}'): {error}; refusing to fall back to live app data",
-            path.display()
-        )
-    })?;
-    if !path_is_within(canonical_root, &resolved) {
-        return Err(format!(
-            "qualification override unsafe: '{label}' escapes runtime root ('{}' -> '{}'); refusing to fall back to live app data",
-            path.display(),
-            resolved.display()
-        ));
-    }
-    Ok(())
-}
-
-fn validate_existing_contained_file(
-    canonical_root: &Path,
-    path: &Path,
-    label: &str,
-) -> Result<(), String> {
-    let meta = match path.symlink_metadata() {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!(
-                "qualification override unsafe: failed to inspect '{label}' ('{}'): {error}; refusing to fall back to live app data",
-                path.display()
-            ))
-        }
+    let kind_ok = if expect_dir {
+        meta.is_dir()
+    } else {
+        meta.is_file()
     };
-    if meta.file_type().is_symlink() {
+    if !kind_ok {
+        let kind = if expect_dir {
+            "a directory"
+        } else {
+            "a regular file"
+        };
         return Err(format!(
-            "qualification override unsafe: '{label}' must not be a symlink ('{}'); refusing to fall back to live app data",
-            path.display()
-        ));
-    }
-    if !meta.is_file() {
-        return Err(format!(
-            "qualification override unsafe: '{label}' must be a regular file ('{}'); refusing to fall back to live app data",
+            "qualification override unsafe: '{label}' must be {kind} ('{}'); refusing to fall back to live app data",
             path.display()
         ));
     }
@@ -290,18 +258,16 @@ fn validate_existing_contained_file(
 }
 
 fn validate_qualification_runtime_tree(canonical_root: &Path) -> Result<(), String> {
-    validate_existing_contained_dir(canonical_root, &canonical_root.join("data"), "data")?;
-    validate_existing_contained_dir(canonical_root, &canonical_root.join("output"), "output")?;
-    validate_existing_contained_dir(canonical_root, &canonical_root.join("temp"), "temp")?;
-    validate_existing_contained_file(
+    let paths = DesktopRuntimePaths::from_app_data_dir(canonical_root);
+    validate_existing_contained(canonical_root, &paths.data_dir, "data", true)?;
+    validate_existing_contained(canonical_root, &paths.output_dir, "output", true)?;
+    validate_existing_contained(canonical_root, &paths.temp_dir, "temp", true)?;
+    validate_existing_contained(canonical_root, &paths.db_path, "audiobooks.db", false)?;
+    validate_existing_contained(
         canonical_root,
-        &canonical_root.join("data").join("audiobooks.db"),
-        "audiobooks.db",
-    )?;
-    validate_existing_contained_file(
-        canonical_root,
-        &canonical_root.join("backend-ready.json"),
+        &paths.ready_file_path,
         "backend-ready.json",
+        false,
     )?;
     Ok(())
 }

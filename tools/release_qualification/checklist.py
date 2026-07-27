@@ -235,11 +235,6 @@ def record_check(
     return record
 
 
-def checklist_blocks_release(payload: Mapping[str, object]) -> tuple[bool, str]:
-    blocked, reason, _code = checklist_finalize_gate(payload, report_dir=None)
-    return blocked, reason
-
-
 def checklist_finalize_gate(
     payload: Mapping[str, object],
     *,

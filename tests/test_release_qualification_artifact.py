@@ -21,7 +21,6 @@ from tools.release_qualification.artifact import (
     inspect_app_bundle,
     inspect_dmg,
     parse_codesign_info,
-    parse_codesign_output,
     sha256_file,
 )
 from tools.release_qualification.commands import CommandSpec
@@ -706,7 +705,6 @@ def test_architecture_tool_failure_raises_clear_error(tmp_path: Path):
 
 def test_parse_codesign_output_classifies_unsigned_adhoc_developer_id_and_other():
     unsigned_text = "code object is not signed at all"
-    assert parse_codesign_output(unsigned_text, returncode=1) is SigningState.UNSIGNED
     unsigned_info = parse_codesign_info(unsigned_text, returncode=1)
     assert unsigned_info.state is SigningState.UNSIGNED
     assert unsigned_info.team_identifier is None
@@ -715,20 +713,22 @@ def test_parse_codesign_output_classifies_unsigned_adhoc_developer_id_and_other(
         "Authority=Unknown\nSignature=adhoc\nflags=0x20002(adhoc,linker-signed)\n"
         "TeamIdentifier=not set\n"
     )
-    assert parse_codesign_output(adhoc_text, returncode=0) is SigningState.ADHOC
     adhoc_info = parse_codesign_info(adhoc_text, returncode=0)
     assert adhoc_info.state is SigningState.ADHOC
     assert adhoc_info.team_identifier is None
     assert "linker-signed" in adhoc_info.flags
 
     developer_text = "Authority=Developer ID Application: Example (TEAMID)\n"
-    assert parse_codesign_output(developer_text, returncode=0) is SigningState.DEVELOPER_ID
+    assert (
+        parse_codesign_info(developer_text, returncode=0).state
+        is SigningState.DEVELOPER_ID
+    )
 
     assert (
-        parse_codesign_output(
+        parse_codesign_info(
             "Authority=Apple Development: Example (TEAMID)\n",
             returncode=0,
-        )
+        ).state
         is SigningState.OTHER
     )
     distribution_info = parse_codesign_info(
