@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-import copy
-from importlib import metadata
 from pathlib import Path
 import re
 import sys
-import threading
-import time
 from typing import Any, Callable, Mapping
-from urllib.parse import unquote, urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from huggingface_hub import scan_cache_dir
 from huggingface_hub.errors import CacheNotFound
-from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name, parse_wheel_filename
-from packaging.version import InvalidVersion, Version
 from pydantic import BaseModel, ConfigDict, Field
 
 from modules.runtime_profiles import (
@@ -31,196 +23,46 @@ from modules.app.services.model_download_service import (
 )
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
 from modules.web.deps import get_controller_from_app
+from modules.web.setup_manifest import (
+    VersionResolver,
+    _check_manifest_packages,
+    _expected_requirement,
+    _manifest_requirements,
+    _safe_installed_version,
+    _version_matches,
+)
+from modules.web.setup_status_cache import RuntimeSetupStatusCache, StatusBuilder
 from scripts import setup_runtime
 from scripts.download_models import MODEL_GROUPS, ModelReceiptVerifier, resolve_model_groups
 
 
 router = APIRouter()
 
-VersionResolver = Callable[[str], str]
-StatusBuilder = Callable[[RuntimeCapabilityService], dict[str, Any]]
-
-
-class RuntimeSetupStatusCache:
-    """Small app-owned single-flight cache for expensive local readiness probes."""
-
-    def __init__(
-        self,
-        *,
-        ttl_seconds: float = 4.0,
-        clock: Callable[[], float] = time.monotonic,
-        probe_service: RuntimeCapabilityService | None = None,
-        receipt_verifier: ModelReceiptVerifier | None = None,
-    ) -> None:
-        self._ttl_seconds = max(0.1, min(float(ttl_seconds), 5.0))
-        self._clock = clock
-        self._probe_service = probe_service or RuntimeCapabilityService(
-            cache_ttl_seconds=self._ttl_seconds,
-            timeout_seconds=15.0,
-        )
-        self.receipt_verifier = receipt_verifier or ModelReceiptVerifier()
-        self._condition = threading.Condition()
-        self._refreshing = False
-        self._key: tuple[Any, ...] | None = None
-        self._expires_at = 0.0
-        self._response: dict[str, Any] | None = None
-
-    @property
-    def probe_service(self) -> RuntimeCapabilityService:
-        """Expose the single-flight probe service for adopt re-validation."""
-        return self._probe_service
-
-    def get(
-        self,
-        key: tuple[Any, ...],
-        builder: StatusBuilder,
-    ) -> dict[str, Any]:
-        while True:
-            with self._condition:
-                now = self._clock()
-                if (
-                    self._response is not None
-                    and self._key == key
-                    and now < self._expires_at
-                ):
-                    return copy.deepcopy(self._response)
-                if not self._refreshing:
-                    self._refreshing = True
-                    break
-                self._condition.wait()
-        try:
-            response = builder(self._probe_service)
-        except Exception:
-            with self._condition:
-                self._refreshing = False
-                self._condition.notify_all()
-            raise
-        with self._condition:
-            self._key = key
-            self._response = copy.deepcopy(response)
-            self._expires_at = self._clock() + self._ttl_seconds
-            self._refreshing = False
-            self._condition.notify_all()
-        return copy.deepcopy(response)
-
-    def invalidate(self) -> None:
-        """Allow the desktop setup runner to force an immediate next refresh."""
-        with self._condition:
-            self._key = None
-            self._response = None
-            self._expires_at = 0.0
-            self.receipt_verifier.invalidate()
-            self._condition.notify_all()
+# Re-exported so existing importers of this module keep resolving unchanged.
+__all__ = [
+    "AdoptRuntimeRequest",
+    "ModelDownloadRequest",
+    "RuntimeSetupStatusCache",
+    "StatusBuilder",
+    "VersionResolver",
+    "_check_manifest_packages",
+    "_expected_requirement",
+    "_manifest_requirements",
+    "_safe_installed_version",
+    "_version_matches",
+    "build_setup_status_response",
+    "delete_setup_runtime",
+    "get_model_download_status",
+    "get_setup_status",
+    "post_model_download",
+    "post_model_download_cancel",
+    "post_setup_adopt",
+    "router",
+]
 
 
 def _setup_state_fingerprint() -> tuple[Any, ...]:
     return setup_runtime.get_setup_state_cache_key()
-
-
-def _manifest_requirements(
-    manifest_path: Path,
-    *,
-    requirements_root: Path | None = None,
-    visited: set[Path] | None = None,
-) -> list[Requirement]:
-    """Resolve applicable PEP 508 requirements from fixed recursive manifests."""
-    path = manifest_path.resolve()
-    root = (requirements_root or path.parent).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("Requirements include escapes the manifest directory.") from exc
-
-    seen = visited if visited is not None else set()
-    if path in seen:
-        return []
-    seen.add(path)
-
-    requirements: list[Requirement] = []
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        line = re.split(r"\s+#", line, maxsplit=1)[0].strip()
-        include_match = re.fullmatch(r"(?:-r|--requirement)\s+(.+)", line)
-        if include_match:
-            include_path = (path.parent / include_match.group(1).strip()).resolve()
-            requirements.extend(
-                _manifest_requirements(
-                    include_path,
-                    requirements_root=root,
-                    visited=seen,
-                )
-            )
-            continue
-        try:
-            requirement = Requirement(line)
-        except InvalidRequirement as exc:
-            raise ValueError("Requirements manifest contains an invalid entry.") from exc
-        if requirement.marker is None or requirement.marker.evaluate():
-            requirements.append(requirement)
-    return requirements
-
-
-def _expected_requirement(requirement: Requirement) -> str:
-    if requirement.specifier:
-        return str(requirement.specifier)
-    if requirement.url:
-        filename = unquote(Path(urlsplit(requirement.url).path).name)
-        try:
-            _, version, _, _ = parse_wheel_filename(filename)
-        except ValueError:
-            return "direct artifact"
-        return f"=={version}"
-    return "installed"
-
-
-def _safe_installed_version(value: str) -> str:
-    normalized = str(value).strip()
-    if len(normalized) <= 80 and re.fullmatch(r"[A-Za-z0-9.!+_-]+", normalized):
-        return normalized
-    return "unknown"
-
-
-def _version_matches(requirement: Requirement, installed: str) -> bool:
-    if requirement.specifier:
-        return requirement.specifier.contains(installed, prereleases=True)
-    if requirement.url:
-        expected = _expected_requirement(requirement)
-        if not expected.startswith("=="):
-            return True
-        try:
-            return Version(installed) == Version(expected[2:])
-        except InvalidVersion:
-            return False
-    return True
-
-
-def _check_manifest_packages(
-    manifest_path: Path,
-    *,
-    version_resolver: VersionResolver = metadata.version,
-) -> dict[str, Any]:
-    missing: list[dict[str, str | None]] = []
-    incompatible: list[dict[str, str | None]] = []
-    for requirement in _manifest_requirements(manifest_path):
-        name = canonicalize_name(requirement.name)
-        expected = _expected_requirement(requirement)
-        try:
-            installed_raw = version_resolver(name)
-        except (metadata.PackageNotFoundError, KeyError):
-            missing.append({"name": name, "expected": expected, "installed": None})
-            continue
-        installed = _safe_installed_version(installed_raw)
-        if not _version_matches(requirement, installed_raw):
-            incompatible.append(
-                {"name": name, "expected": expected, "installed": installed}
-            )
-    return {
-        "ready": not missing and not incompatible,
-        "missing": missing,
-        "incompatible": incompatible,
-    }
 
 
 def _check_selected_profile_packages(profile_id: str | None) -> dict[str, Any]:

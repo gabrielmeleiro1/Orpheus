@@ -8,7 +8,7 @@ from pathlib import Path
 from modules.web.server import create_app
 
 
-# Keep this manifest in sync with desktop/src/api/client.ts. The test is
+# Keep this manifest in sync with desktop/src/api/. The test is
 # intentionally limited to route existence and HTTP methods; endpoint behavior
 # belongs in focused route tests.
 FRONTEND_ROUTE_CONTRACT = {
@@ -80,14 +80,19 @@ def _normalize_route(path: str) -> str:
 
 
 def _client_source() -> str:
-    client_path = (
-        Path(__file__).resolve().parent.parent / "desktop" / "src" / "api" / "client.ts"
+    # The API client is split across desktop/src/api/ (transport, resource
+    # groups, composition); every route string in that tree belongs to the
+    # contract.
+    api_dir = Path(__file__).resolve().parent.parent / "desktop" / "src" / "api"
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(api_dir.rglob("*.ts"))
+        if ".test." not in path.name
     )
-    return client_path.read_text(encoding="utf-8")
 
 
 def test_every_route_the_frontend_client_calls_is_in_the_contract() -> None:
-    """The manifest's "keep in sync with client.ts" comment, enforced.
+    """The manifest's "keep in sync with desktop/src/api" comment, enforced.
 
     Without this, adding a client call and forgetting the manifest entry means
     renaming or deleting that server route leaves every gate green while the
@@ -97,7 +102,7 @@ def test_every_route_the_frontend_client_calls_is_in_the_contract() -> None:
         _normalize_route(match)
         for match in re.findall(r"[\"'`](/(?:api|health)[^\"'`]*)[\"'`]", _client_source())
     }
-    assert called, "no API routes were extracted from client.ts"
+    assert called, "no API routes were extracted from desktop/src/api"
 
     contract = {_normalize_route(path) for path in FRONTEND_ROUTE_CONTRACT}
     undeclared = sorted(called - contract)
