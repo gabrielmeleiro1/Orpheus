@@ -6,12 +6,27 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
 import type { UseLibraryResult } from "../library/useLibrary";
+import { readPlaybackCheckpoint, writePlaybackCheckpoint } from "./playbackCheckpoint";
 import { usePlaybackPersistence } from "./playbackPersistence";
+
+function checkpointIdentity(bookId: number): string {
+  return JSON.stringify([
+    bookId,
+    `created-${bookId}`,
+    `/source/${bookId}.epub`,
+  ]);
+}
 
 function createLibrary(bookId = 1): UseLibraryResult {
   return {
     selectedBookId: bookId,
-    selectedBookDetail: { playback_position_sec: 0 },
+    selectedBookDetail: {
+      id: bookId,
+      created_at: `created-${bookId}`,
+      source_path: `/source/${bookId}.epub`,
+      playback_path: `/library/${bookId}.m4b`,
+      playback_position_sec: 0,
+    },
     setSelectedPlaybackPosition: vi.fn(),
   } as unknown as UseLibraryResult;
 }
@@ -27,22 +42,28 @@ describe("playback persistence serialization", () => {
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    window.localStorage.clear();
     container = document.createElement("div");
     document.body.append(container);
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    window.localStorage.clear();
     container.remove();
     vi.restoreAllMocks();
   });
 
-  async function mount(apiClient: ApiClient, library = createLibrary()): Promise<void> {
+  async function mount(
+    apiClient: ApiClient,
+    library = createLibrary(),
+    audio = createAudio(),
+  ): Promise<void> {
     function Probe() {
       result = usePlaybackPersistence({
         apiClient,
         library,
-        audioRef: { current: createAudio() },
+        audioRef: { current: audio },
         loadedBookId: library.selectedBookId,
         onSaveFailed: vi.fn(),
       });
@@ -110,6 +131,59 @@ describe("playback persistence serialization", () => {
       },
     };
   }
+
+  it("restores a book from its local checkpoint instead of an older server position", async () => {
+    const apiClient = {
+      updateBookPlaybackPosition: vi.fn(),
+    } as unknown as ApiClient;
+    await mount(apiClient);
+    writePlaybackCheckpoint(1, 183.75, checkpointIdentity(1));
+    const audio = createAudio();
+    Object.assign(audio, { duration: 300 });
+
+    result.setPendingResume(1, 120, checkpointIdentity(1));
+    result.restorePendingResumePosition(audio, 1);
+
+    expect(audio.currentTime).toBe(183.75);
+  });
+
+  it("checkpoints the exact loaded position synchronously during app close", async () => {
+    const apiClient = {
+      updateBookPlaybackPosition: vi.fn(
+        () => new Promise<{ position_sec: number }>(() => {}),
+      ),
+    } as unknown as ApiClient;
+    const audio = createAudio();
+    Object.assign(audio, {
+      src: "http://desktop.test/book",
+      currentTime: 183.75,
+    });
+    await mount(apiClient, createLibrary(1), audio);
+    result.setPendingResume(1, 0, checkpointIdentity(1));
+
+    window.dispatchEvent(new Event("beforeunload"));
+
+    expect(readPlaybackCheckpoint(1, checkpointIdentity(1))).toBe(183.75);
+  });
+
+  it("does not erase an unplayed book when selection moves elsewhere", async () => {
+    const updateBookPlaybackPosition = vi.fn();
+    writePlaybackCheckpoint(1, 180, checkpointIdentity(1));
+    await mount(
+      { updateBookPlaybackPosition } as unknown as ApiClient,
+      createLibrary(2),
+      createAudio(),
+    );
+
+    await result.persistLoadedBookPlaybackPosition({
+      bookId: 1,
+      force: true,
+      silent: true,
+    });
+
+    expect(readPlaybackCheckpoint(1, checkpointIdentity(1))).toBe(180);
+    expect(updateBookPlaybackPosition).not.toHaveBeenCalled();
+  });
 
   it("waits for an earlier save before sending a newer position", async () => {
     let resolveFirst!: (value: { position_sec: number }) => void;
@@ -252,6 +326,25 @@ describe("playback persistence serialization", () => {
     resolveHungSave({ position_sec: 61 });
     await expect(hungSave).resolves.toBeNull();
     expect(library.setSelectedPlaybackPosition).toHaveBeenCalledWith(65);
+  });
+
+  it("does not let an old client callback overwrite the current checkpoint", async () => {
+    const oldClient = {
+      updateBookPlaybackPosition: vi.fn().mockResolvedValue({ position_sec: 30 }),
+    } as unknown as ApiClient;
+    const newClient = {
+      updateBookPlaybackPosition: vi.fn().mockResolvedValue({ position_sec: 90 }),
+    } as unknown as ApiClient;
+    const library = createLibrary(1);
+    const mounted = await mountWithClientSwap(oldClient, library);
+    const stalePersist = result.persistBookPlaybackPosition;
+
+    await mounted.swapClient(newClient);
+    await result.persistBookPlaybackPosition(1, 90, { force: true });
+    await stalePersist(1, 30, { force: true });
+
+    expect(readPlaybackCheckpoint(1, checkpointIdentity(1))).toBe(90);
+    expect(oldClient.updateBookPlaybackPosition).not.toHaveBeenCalled();
   });
 
   it("ignores a stale failure from an earlier API client generation", async () => {

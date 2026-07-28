@@ -84,25 +84,25 @@ export function useAudioElementBindings({
       }
       onPlaybackHealthy();
 
-      const nextElapsedSec = Math.floor(audio.currentTime || 0);
+      const nextElapsedSec = Math.max(0, Number(audio.currentTime) || 0);
+      const nextElapsedUiSecond = Math.floor(nextElapsedSec);
+      if (!audio.paused) {
+        void persistLoadedBookPlaybackPosition({ force: false, silent: true });
+      }
       const nowMs = window.performance.now();
       const shouldUpdateUi =
-        nextElapsedSec !== lastPlaybackUiSecondRef.current ||
+        nextElapsedUiSecond !== lastPlaybackUiSecondRef.current ||
         nowMs - lastPlaybackUiUpdateMsRef.current >= PLAYBACK_UI_UPDATE_INTERVAL_MS;
 
       if (!shouldUpdateUi) {
         return;
       }
 
-      lastPlaybackUiSecondRef.current = nextElapsedSec;
+      lastPlaybackUiSecondRef.current = nextElapsedUiSecond;
       lastPlaybackUiUpdateMsRef.current = nowMs;
       setElapsedSec(nextElapsedSec);
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
         setTotalSec(Math.floor(audio.duration));
-      }
-
-      if (!audio.paused) {
-        void persistLoadedBookPlaybackPosition({ force: false, silent: true });
       }
 
       updatePlayerStatus();
@@ -123,6 +123,7 @@ export function useAudioElementBindings({
       },
       onPause: () => {
         setIsPlaying(false);
+        void persistLoadedBookPlaybackPosition({ force: true, silent: true });
         updatePlayerStatus();
       },
       onTimeUpdate: handleTimeUpdate,

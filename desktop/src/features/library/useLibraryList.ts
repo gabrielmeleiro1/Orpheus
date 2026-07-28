@@ -7,6 +7,7 @@ import type {
   LibraryBookDetail,
   LibraryBookSummary,
 } from "../../types/api";
+import { clearPlaybackCheckpoint } from "../player/playbackCheckpoint";
 import { buildBookSummary, formatSummaryMeta } from "./libraryDisplayModel";
 import { createLibraryRepository, type LibraryModeFilter, type LibraryRepository } from "./libraryRepository";
 
@@ -615,6 +616,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
       if (!isCurrentMutation()) {
         return true;
       }
+      clearPlaybackCheckpoint(selectedBookId);
 
       const selectionStillDeleteOwned = () =>
         selectedBookIdRef.current === optimisticSelectedBookId &&

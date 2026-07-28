@@ -201,6 +201,22 @@ Rule: decomposition commits contain **zero** logic edits — reviewers must be
 able to verify them as moves. Apply Workstream 1 shrinkers before splitting
 the same file.
 
+> **Executed 2026-07-27:** `maintenance.py` 1043→468 (+3 siblings; the
+> retention/delete blocks stay because tests monkeypatch them on the module
+> object), `pool_manager.py` 884→746 (+4 siblings; the lock-sharing manager
+> class was not split), `vram_monitor.py` 850→592 (+3 siblings; the MLX
+> module-global writer/reader pair pins the sampling seam), routes
+> `setup.py` 827→669 (+2 siblings under `modules/web/`; all routes stayed
+> in place), `client.ts` 784→150 (+7 resource/transport modules, export
+> surface unchanged), `SetupPage.tsx` 929→675 (+7 sibling files including
+> the extracted download-effects hook with identical dependency arrays).
+> **Deliberately not split:** `conversion_service.py` (94% one class whose
+> 13 methods share five lock-guarded attributes — a reservation-collaborator
+> redesign, not a move; schedule separately if wanted) and
+> `useLibraryList.ts` (every proposed seam mutates the same ownership refs;
+> only cosmetic extractions were available). Both skips are the honest
+> outcome, not unfinished work.
+
 ## Workstream 4: Docs and repo hygiene
 
 1. **`docs/CURRENT_STATE.md` is a month stale** (last commit 2026-06-27,

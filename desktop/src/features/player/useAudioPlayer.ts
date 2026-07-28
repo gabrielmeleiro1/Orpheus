@@ -7,6 +7,7 @@ import type { LibraryBookDetail, LibraryChapterDetail } from "../../types/api";
 import { chapterStartSeconds, currentChapterForPosition } from "./chapterPositionModel";
 import { useAudioAnalyser } from "./useAudioAnalyser";
 import { useAudioElementBindings } from "./useAudioElementBindings";
+import { playbackCheckpointBookIdentity } from "./playbackCheckpoint";
 import { usePlaybackPersistence } from "./playbackPersistence";
 import { resolvePlayerCanSeek, resolvePlayerDurationSec, seekAudioIfReady } from "./playerDurationModel";
 
@@ -33,6 +34,9 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   // rapid next/previous: an older in-flight load must never set src/state late.
   const loadSequenceRef = useRef(0);
   const playbackRecoveryAttemptsRef = useRef<Map<number, symbol>>(new Map());
+  const apiClientLatestRef = useRef(apiClient);
+  apiClientLatestRef.current = apiClient;
+  const previousApiClientRef = useRef(apiClient);
   const selectedBookIdLatestRef = useRef<number | null>(library.selectedBookId);
   selectedBookIdLatestRef.current = library.selectedBookId;
 
@@ -134,7 +138,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
 
       restorePendingResumePosition(audio, expectedBookId);
       setTotalSec(Number.isFinite(audio.duration) && audio.duration > 0 ? Math.floor(audio.duration) : 0);
-      setElapsedSec(Math.floor(audio.currentTime || 0));
+      setElapsedSec(Math.max(0, Number(audio.currentTime) || 0));
       updatePlayerStatus();
     },
     [restorePendingResumePosition, updatePlayerStatus],
@@ -157,11 +161,18 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       }
 
       const requestId = ++loadSequenceRef.current;
+      const requestApiClient = apiClient;
       const isStale = () =>
-        loadSequenceRef.current !== requestId || selectedBookIdLatestRef.current !== bookId;
+        loadSequenceRef.current !== requestId ||
+        apiClientLatestRef.current !== requestApiClient ||
+        selectedBookIdLatestRef.current !== bookId;
 
       if (forceReload || loadedBookId !== bookId || !audio.src) {
-        setPendingResume(bookId, Number(detail.playback_position_sec || 0));
+        setPendingResume(
+          bookId,
+          Number(detail.playback_position_sec || 0),
+          playbackCheckpointBookIdentity(detail),
+        );
 
         // All callers invoke playback actions fire-and-forget (`void ...`), so
         // a rejection here would surface as an unhandled rejection and a dead
@@ -281,12 +292,10 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     }
 
     audio.pause();
-    void persistLoadedBookPlaybackPosition({ force: true, silent: true });
   }, [
     library.selectedBookId,
     loadSelectedBookAudio,
     loadedBookId,
-    persistLoadedBookPlaybackPosition,
     playerDismissedBookId,
     playerEligible,
   ]);
@@ -306,7 +315,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
         return;
       }
 
-      setElapsedSec(Math.floor(audio!.currentTime || 0));
+      setElapsedSec(Math.max(0, Number(audio!.currentTime) || 0));
       updatePlayerStatus();
       void persistLoadedBookPlaybackPosition({ force: true, silent: true });
     },
@@ -332,7 +341,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
         return;
       }
 
-      setElapsedSec(Math.floor(audio!.currentTime || 0));
+      setElapsedSec(Math.max(0, Number(audio!.currentTime) || 0));
       updatePlayerStatus();
       void persistLoadedBookPlaybackPosition({ force: true, silent: true });
     },
@@ -370,7 +379,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
 
       const duration = Number.isFinite(audio.duration) ? audio.duration : target;
       audio.currentTime = Math.max(0, Math.min(duration || target, target));
-      setElapsedSec(Math.floor(audio.currentTime || 0));
+      setElapsedSec(Math.max(0, Number(audio.currentTime) || 0));
       updatePlayerStatus();
       void persistLoadedBookPlaybackPosition({
         bookId: requestedBookId,
@@ -429,7 +438,11 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
 
     const recoveryToken = Symbol("playback-recovery");
     playbackRecoveryAttemptsRef.current.set(bookId, recoveryToken);
-    setPendingResume(bookId, Number(audio.currentTime || detail.playback_position_sec || 0));
+    setPendingResume(
+      bookId,
+      Number(audio.currentTime || detail.playback_position_sec || 0),
+      playbackCheckpointBookIdentity(detail),
+    );
     setPlayerTitle("Reconnecting playback…");
     void loadBookAudio(bookId, detail, isPlaying, true).finally(() => {
       if (playbackRecoveryAttemptsRef.current.get(bookId) === recoveryToken) {
@@ -444,6 +457,16 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       playbackRecoveryAttemptsRef.current.delete(bookId);
     }
   }, []);
+
+  useEffect(() => {
+    if (previousApiClientRef.current === apiClient) {
+      return;
+    }
+    previousApiClientRef.current = apiClient;
+    loadSequenceRef.current += 1;
+    playbackRecoveryAttemptsRef.current.clear();
+    clearAudioSource();
+  }, [apiClient, clearAudioSource]);
 
   useEffect(() => {
     const previousBookId = previousSelectedBookIdRef.current;

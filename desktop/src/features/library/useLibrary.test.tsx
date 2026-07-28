@@ -6,6 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
 import type { CleaningPreviewResponse, LibraryBookDetail, LibraryBookSummary } from "../../types/api";
+import {
+  playbackCheckpointBookIdentity,
+  readPlaybackCheckpoint,
+  writePlaybackCheckpoint,
+} from "../player/playbackCheckpoint";
 import { useLibrary, type UseLibraryResult } from "./useLibrary";
 
 const book: LibraryBookSummary = {
@@ -84,12 +89,14 @@ describe("useLibrary indexed total", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    window.localStorage.clear();
     container = document.createElement("div");
     document.body.append(container);
   });
 
   afterEach(async () => {
     await act(async () => root.unmount());
+    window.localStorage.clear();
     container.remove();
     delete (globalThis as typeof globalThis & { libraryProbe?: UseLibraryResult }).libraryProbe;
     Reflect.deleteProperty(window, "confirm");
@@ -765,6 +772,8 @@ describe("useLibrary indexed total", () => {
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
     const browserConfirm = vi.fn(() => false);
     Object.defineProperty(window, "confirm", { configurable: true, value: browserConfirm });
+    const checkpointIdentity = playbackCheckpointBookIdentity(detail);
+    writePlaybackCheckpoint(book.id, 120, checkpointIdentity);
 
     await act(async () => {
       root = createRoot(container);
@@ -786,6 +795,7 @@ describe("useLibrary indexed total", () => {
     });
     expect(getLibraryProbe().items).toEqual([]);
     expect(getLibraryProbe().indexedCount).toBe(0);
+    expect(readPlaybackCheckpoint(book.id, checkpointIdentity)).toBeNull();
   });
 
   it("resumes the selected status after searching once a delete completes", async () => {
