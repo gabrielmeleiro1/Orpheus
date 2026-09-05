@@ -20,15 +20,20 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
 
   const env = {
     ...process.env,
+    ORPHEUS_DESKTOP_DEV: "1",
+    HF_HUB_OFFLINE: "1",
+    TRANSFORMERS_OFFLINE: "1",
     AUDIOBOOK_DATA_DIR: dataDir,
     AUDIOBOOK_OUTPUT_DIR: outputDir,
     AUDIOBOOK_TEMP_DIR: tempDir,
     AUDIOBOOK_DB_PATH: dbPath,
   };
 
-  log(`spawning backend: python3 -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0 (cwd=${repoRoot})`);
+  const python = path.join(repoRoot, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  if (!fs.existsSync(python)) throw new Error("Checkout .venv Python is missing; follow the repository setup instructions first.");
+  log(`spawning backend: ${python} -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0 (cwd=${repoRoot})`);
   const proc = spawn(
-    "python3",
+    python,
     ["-m", "apps.launchers.desktop_backend", "--host", "127.0.0.1", "--port", "0"],
     { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -120,6 +125,8 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
 
   return {
     proc,
+    stateDir,
+    repoRoot,
     baseUrl,
     host: ready.host,
     port: ready.port,

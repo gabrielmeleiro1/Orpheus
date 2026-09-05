@@ -67,18 +67,28 @@ const StablePlayerPanel = memo(PlayerPanel, equalWhenInvisible);
 const VisibilityProgressPanel = memoWhenHidden(ProgressPanel);
 const VisibilityLogPanel = memoWhenHidden(LogPanel);
 
-function RuntimeSetupChecking() {
+function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetry: () => void }) {
   return (
     <main className="setup-frame" aria-label="Orpheus startup">
-      <section className="setup-shell setup-loading" role="status" aria-live="polite">
+      <section className="setup-shell setup-loading" role={error ? undefined : "status"} aria-live={error ? undefined : "polite"}>
         <div className="setup-brand">
           <div className="brand">
             <span className="brand-mark" aria-hidden="true">O</span>
             <span className="brand-name">Orpheus</span>
           </div>
         </div>
-        <BrailleSpinner active />
-        <span>Checking your local runtime…</span>
+        {error ? (
+          <>
+            <h1>Unable to connect to your local runtime</h1>
+            <p role="alert">{error}</p>
+            <button type="button" className="btn" onClick={onRetry}>Retry connection</button>
+          </>
+        ) : (
+          <>
+            <BrailleSpinner active />
+            <span>Checking your local runtime…</span>
+          </>
+        )}
       </section>
     </main>
   );
@@ -474,7 +484,12 @@ function App() {
     && setupStatus === null
     && setupError === null
   ) {
-    return <RuntimeSetupChecking />;
+    return (
+      <RuntimeSetupChecking
+        error={backend.connectionState === "error" ? backend.statusMessage : null}
+        onRetry={backend.reconnectBackend}
+      />
+    );
   }
 
   if (

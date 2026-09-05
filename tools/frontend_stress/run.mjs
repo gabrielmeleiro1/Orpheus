@@ -9,12 +9,12 @@ import { startBackend } from "./lib/backendProcess.mjs";
 import { resolveFallbackChromiumExecutable } from "./lib/chromiumResolver.mjs";
 import { cleanupAll, registerCleanup } from "./lib/cleanupRegistry.mjs";
 import { startFrontend } from "./lib/frontendProcess.mjs";
-import { formatDuration, nowIso } from "./lib/util.mjs";
+import { formatDuration, nowIso, redactSecrets } from "./lib/util.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
 
 async function launchChromium({ headless }) {
   try {
-    return await chromium.launch({ headless });
+    return await chromium.launch({ headless, args: ["--host-resolver-rules=MAP localhost 127.0.0.1"] });
   } catch (err) {
     if (!/Executable doesn't exist/.test(String(err.message))) {
       throw err;
@@ -24,7 +24,7 @@ async function launchChromium({ headless }) {
       throw err;
     }
     console.warn(`playwright's pinned chromium build is missing; falling back to cached build at ${executablePath}`);
-    return chromium.launch({ headless, executablePath });
+    return chromium.launch({ headless, executablePath, args: ["--host-resolver-rules=MAP localhost 127.0.0.1"] });
   }
 }
 
@@ -33,6 +33,8 @@ const repoRoot = path.resolve(__dirname, "..", "..");
 const desktopDir = path.join(repoRoot, "desktop");
 const fixturesDir = path.join(repoRoot, "tests", "fixtures");
 const artifactsDir = path.join(__dirname, "artifacts");
+const secrets = [];
+const safe = (value) => redactSecrets(value, secrets);
 
 function parseArgs(argv) {
   const args = { only: null, headed: false, keepOpen: false, backendUrl: null, token: null, frontendUrl: null, stateDir: null, frontendPort: 5173 };
@@ -107,7 +109,7 @@ Other options:
 
 function log(scope, message) {
   const ts = new Date().toISOString().split("T")[1].replace("Z", "");
-  console.log(`[${ts}] [${scope}] ${message}`);
+  console.log(safe(`[${ts}] [${scope}] ${message}`));
 }
 
 // Ctrl-C (or a kill) during a long scenario wait would otherwise skip
@@ -129,6 +131,7 @@ async function main() {
   installSignalHandlers();
 
   const args = parseArgs(process.argv.slice(2));
+  if (args.token) secrets.push(args.token);
   fs.mkdirSync(artifactsDir, { recursive: true });
 
   const reuseMode = Boolean(args.backendUrl && args.token && args.frontendUrl);
@@ -163,6 +166,7 @@ async function main() {
       frontendUrl = frontend.baseUrl;
     }
 
+    secrets.push(token);
     const hadFailure = await runWithBrowser({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend });
     process.exitCode = hadFailure ? 1 : 0;
   } finally {
@@ -183,15 +187,16 @@ async function runWithBrowser({ args, backend, frontendUrl, backendBaseUrl, toke
 async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend, browser }) {
   const context = await browser.newContext();
   const page = await context.newPage();
+  page.setDefaultTimeout(10_000);
 
   const consoleEvents = [];
   page.on("console", (msg) => {
     if (msg.type() === "error") {
-      consoleEvents.push({ ts: nowIso(), kind: "console-error", text: msg.text() });
+      consoleEvents.push({ ts: nowIso(), kind: "console-error", text: safe(msg.text()) });
     }
   });
   page.on("pageerror", (err) => {
-    consoleEvents.push({ ts: nowIso(), kind: "pageerror", text: String(err?.stack || err) });
+    consoleEvents.push({ ts: nowIso(), kind: "pageerror", text: safe(err?.stack || err) });
   });
   // Chrome's own "Failed to load resource" console errors don't include the
   // URL/status in msg.text(), which makes them useless for diagnosing what
@@ -204,7 +209,7 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
         ts: nowIso(),
         status: response.status(),
         method: response.request().method(),
-        url: response.url(),
+        url: safe(response.url()),
       });
     }
   });
@@ -221,6 +226,7 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
     frontendUrl,
     backend,
     shared,
+    registerSecret: (value) => secrets.push(value),
     getConsoleErrorCount: () => consoleEvents.length,
   };
 
@@ -248,10 +254,10 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
     } catch (err) {
       if (err && err.isSkip) {
         status = "skip";
-        error = err.message;
+        error = safe(err.message);
       } else {
         status = "fail";
-        error = err && err.stack ? err.stack : String(err);
+        error = safe(err && err.stack ? err.stack : String(err));
       }
     }
 
@@ -333,6 +339,6 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
 }
 
 main().catch((err) => {
-  console.error("harness crashed:", err);
+  console.error("harness crashed:", safe(err?.stack || err));
   process.exitCode = 1;
 });

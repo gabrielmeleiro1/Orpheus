@@ -17,9 +17,9 @@ const mocks = vi.hoisted(() => {
     conversionUiState: "idle" as "idle" | "completed",
     setupPageStatuses: [] as Array<RuntimeSetupStatusResponse | null>,
     backend: {
-      apiClient,
+      apiClient: apiClient as typeof apiClient | null,
       backendBaseUrl: "http://127.0.0.1:48123",
-      connectionState: "connected" as const,
+      connectionState: "connected" as "connected" | "checking" | "error",
       health: null,
       statusMessage: "ready",
       reconnectBackend: vi.fn(),
@@ -169,6 +169,10 @@ describe("App runtime setup recovery", () => {
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    window.localStorage.clear();
+    mocks.backend.apiClient = mocks.apiClient;
+    mocks.backend.connectionState = "connected";
+    mocks.backend.statusMessage = "ready";
     mocks.apiClient.getRuntimeSetupStatus.mockResolvedValue(setupStatus);
     mocks.libraryRefresh.mockClear();
     mocks.conversionUiState = "idle";
@@ -182,6 +186,41 @@ describe("App runtime setup recovery", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it.each([
+    "Desktop backend startup timed out after 60s",
+    "backend failed to recover after multiple attempts; select Retry connection to try again",
+  ])("shows first-launch backend failure and an explicit retry: %s", async (message) => {
+    mocks.backend.apiClient = null;
+    mocks.backend.connectionState = "error";
+    mocks.backend.statusMessage = message;
+    await act(async () => root.render(<App />));
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(message);
+    expect(container.textContent).not.toContain("Checking your local runtime");
+    await act(async () => findButton(container, "Retry connection").click());
+    expect(mocks.backend.reconnectBackend).toHaveBeenCalledOnce();
+
+    mocks.backend.connectionState = "checking";
+    await act(async () => root.render(<App />));
+    expect(container.textContent).toContain("Checking your local runtime");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+
+    mocks.backend.apiClient = mocks.apiClient;
+    mocks.backend.connectionState = "connected";
+    await act(async () => root.render(<App />));
+    expect(container.querySelector('[data-testid="setup-page"]')).not.toBeNull();
+    expect(mocks.apiClient.getRuntimeSetupStatus).toHaveBeenCalledOnce();
+  });
+
+  it("preserves the ready-hint dashboard when the backend is unavailable", async () => {
+    window.localStorage.setItem("orpheus.runtime-setup-ready", JSON.stringify({ version: 1, ready: true }));
+    mocks.backend.apiClient = null;
+    mocks.backend.connectionState = "error";
+    await act(async () => root.render(<App />));
+    expect(container.querySelector('[aria-label="Orpheus startup"]')).toBeNull();
+    expect(findButton(container, "Settings")).toBeDefined();
   });
 
   it("reopens the full-page setup from Settings without resetting persisted data", async () => {

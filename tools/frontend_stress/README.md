@@ -1,173 +1,66 @@
 # Orpheus frontend stress harness
 
-A plain Node script (no `@playwright/test`, just the `playwright` library API)
-that drives the Orpheus desktop React frontend in a real Chromium browser the
-way a user would: typing into fields, clicking buttons, uploading files,
-driving the audio player, etc. It is meant to catch integration regressions
-that unit tests miss (race conditions, stuck UI states, console errors) by
-exercising the whole app end-to-end against a real (but isolated) backend.
+This Playwright harness drives the real React app and an isolated Python backend. It complements unit tests with actual conversion, cancellation, queue, listening, library, and reconnect checks. It does not qualify the packaged Tauri application or subjective audio quality.
 
-## Install
+## Setup and verification
+
+Use Node 20 or newer. Follow the repository setup instructions to create the checkout `.venv`, install the desktop dependencies, and cache the local models required by your machine. Then:
 
 ```sh
-cd tools/frontend_stress
-npm install
+npm --prefix tools/frontend_stress ci
+npm --prefix tools/frontend_stress test
+npm --prefix tools/frontend_stress start
 ```
 
-This installs `playwright` only (no browsers are downloaded automatically —
-see "Chromium build" below).
+The unit gate includes listener ownership (an unrelated service must never satisfy readiness), fail-closed conversion outcomes, and credential redaction. Run it whenever changing this harness. The browser gate needs local model assets; it runs offline and will never silently download weights.
 
-## Running
+If the pinned Playwright Chromium is absent, the harness searches the local Playwright browser cache. Install a matching browser with `npx playwright install chromium` from this directory if necessary.
 
-### Self-starting mode (default)
+## Self-starting mode
 
-The harness spawns its own backend and Vite dev server, each pointed at
-scratch state, and tears them down when it's done:
+The default run launches the checkout `.venv/bin/python` (`.venv/Scripts/python.exe` on Windows) and starts `apps.launchers.desktop_backend` on a random loopback port. Backend data, output, temporary files, and SQLite state live under the gitignored `.state/<timestamp>` directory. `ORPHEUS_DESKTOP_DEV=1` enables the documented local development origin; Hugging Face and Transformers run offline.
 
-```sh
-node run.mjs
-```
+Vite listens strictly on IPv4 port 5173. The parent waits for a listening event over the child process's IPC channel, verifies the child PID and port, then probes that IPv4 listener. Chromium resolves `localhost` to IPv4 while retaining the CORS-required `http://localhost:5173` origin. An unrelated IPv4 listener causes an immediate failure; an unrelated IPv6 listener is left untouched.
 
-- Backend: `python3 -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0`,
-  spawned from the repo root, with `AUDIOBOOK_DATA_DIR` / `AUDIOBOOK_OUTPUT_DIR`
-  / `AUDIOBOOK_TEMP_DIR` / `AUDIOBOOK_DB_PATH` pointed at
-  `tools/frontend_stress/.state/<timestamp>/` (gitignored). The harness parses
-  the single-line `{"event":"ready",...}` JSON the launcher prints to stdout.
-- Frontend: the desktop app's local `vite` binary
-  (`desktop/node_modules/.bin/vite`), started with `--port 5173 --strictPort`
-  and addressed as `http://localhost:5173` (not `127.0.0.1`). This exact
-  origin is load-bearing: the desktop backend's CORS allowlist
-  (`modules/web/server.py`, `DESKTOP_DEV_ORIGIN`) only accepts
-  `http://localhost:5173`, so if you already have your own `npm run dev`
-  bound to 5173 the harness will fail fast (`--strictPort`) instead of
-  silently picking a different port that the backend would then reject via
-  CORS. Stop your own dev server first, or use reuse mode against it. The
-  harness polls the URL until it responds.
-- Both processes are killed (SIGTERM, then SIGKILL after 5s) when the run
-  finishes, unless `--keep-open` is passed.
+Spawned processes are registered for cleanup immediately and stopped on completion, errors, or interruption. `--keep-open` intentionally retains them for investigation.
 
-### Reuse mode
+## Options
 
-Point the harness at services you already have running (e.g. your own
-`npm run dev` plus a manually-launched desktop backend):
+- `--only=a,b,d`: scenario IDs or names; include prerequisite scenarios when selecting a subset. Missing prerequisites fail explicitly.
+- `--headed`: visible browser.
+- `--state-dir=<path>`: retain/reuse a particular isolated backend state directory.
+- `--keep-open`: retain spawned processes after the run.
+- `--frontend-port=<n>`: normally keep 5173 because the backend permits that exact development origin.
+
+Reuse mode requires all three flags:
 
 ```sh
-node run.mjs \
+node tools/frontend_stress/run.mjs \
   --backend-url=http://127.0.0.1:54231 \
   --token=<desktop-api-token> \
-  --frontend-url=http://127.0.0.1:5173
+  --frontend-url=http://localhost:5173
 ```
 
-All three flags must be supplied together to enable reuse mode.
+Credentials are omitted/redacted from harness diagnostics and reports. Avoid sharing shell history containing a reuse token. Self-start mode requires no token argument.
 
-### Other flags
+## Scenarios
 
-- `--only=a,b,d` — run a subset of scenarios, by id (`a`..`k`) or name
-  (`connect`, `add-book-paste`, ...). Useful while iterating.
-- `--headed` — show the browser window instead of running headless.
-- `--keep-open` — leave the browser and any self-started backend/frontend
-  processes running after the run (for manual poking / debugging). The
-  process itself exits, so use this together with `--backend-url`/etc. on a
-  subsequent invocation, or just inspect state on disk.
-- `--frontend-port=<n>` — change the self-started Vite port (default 5173;
-  changing this will break API calls due to the backend's CORS allowlist
-  unless you also relax `DESKTOP_DEV_ORIGIN` server-side).
-- `--state-dir=<path>` — override the isolated backend state directory.
+| ID | Scenario | Checks |
+| --- | --- | --- |
+| a | connect | Runtime probe, asynchronous setup continuation, backend connection and model options |
+| b | add-book-paste | Explicit pasted title survives content preflight; chapter information appears |
+| c | add-book-files | File upload and preflight for EPUB, PDF, Markdown and TXT; malformed/empty fixture handling |
+| d | options-sweep | Engine, voice, voice filter, speed and cleaner selections |
+| e | convert-single | Isolated single source starts, completes and appears in the library |
+| f | convert-cancel | Multi-section conversion cancels, stop control clears and start becomes usable |
+| g | queue-run | Two sources convert sequentially and both queue rows reach Done |
+| h | rapid-fire | Duplicate start suppression, tab switching, source inspection and title-edit races |
+| j | player-smoke | Playback, pause, seek, volume, reload/resume and rapid book/chapter navigation |
+| i | library-crud | Title/author persistence across reload and explicit confirmed deletion |
+| k | reconnect | Backend loss becomes an error, replacement endpoint reconnects, library survives |
 
-### Chromium build
+The PDF and EPUB repository fixtures are deliberately empty/malformed, so they are preflight cases, not successful conversion fixtures. Cancellation uses generated multi-section text with enough work to exercise interruption reliably.
 
-The harness uses the `chromium` browser type from the `playwright` package.
-If the exact revision `playwright-core` wants isn't cached under
-`~/Library/Caches/ms-playwright` (common when the npm dependency is newer
-than whatever `npx playwright install` last downloaded), it automatically
-falls back to the newest compatible `chromium`/`chromium_headless_shell`
-build already on disk (see `lib/chromiumResolver.mjs`) instead of requiring
-a network-dependent reinstall.
+Failed starts, failed/cancelled conversion terminals when success is required, missing prerequisites, and timeouts **fail**. None implies that a runtime is unavailable. Reconnect is explicitly skipped in reuse mode because the harness does not own those processes. Browser console/page errors fail scenarios; the deliberate backend-disconnection scenario permits a bounded number of connection errors.
 
-## What each scenario covers
-
-Scenarios run in one shared browser tab/context, in this order (letters match
-the original spec; `i`/`j` are intentionally swapped — see below):
-
-| id | name | covers |
-| -- | ---- | ------ |
-| a | connect | App loads with `?backend&token`, reaches "connected", capabilities/health load |
-| b | add-book-paste | Paste markdown text on the Document tab, preflight resolves with chapter/word info |
-| c | add-book-files | Browser file-input upload of `.epub`, `.pdf`, and `.md`; queue shows all three, preflight settles for each |
-| d | options-sweep | Cycle TTS engine/voice/speed, voice search filter, and cleaner backend through the UI; no console errors, voice list stays consistent with engine |
-| e | convert-single | Convert the pasted markdown end-to-end; progress panel advances through stages; book appears in library. **This is also the "is TTS actually available here" probe** — see below |
-| f | convert-cancel | Start converting a multi-chapter source, cancel mid-run via the rail "Stop job" control, verify the UI returns to a startable state with no stuck job. Uses the multi-chapter markdown from scenario c rather than the epub fixture — see note below |
-| g | queue-run | Enqueue 2 fresh small markdown sources, run the whole queue, both complete |
-| h | rapid-fire | Spam the start control (dispatched synchronously to race the disabled-state guard) and assert exactly one `POST /api/conversions`; rapid tab switching mid-conversion; rapid queue add/reselect while preflights race; edit a queue item mid-preflight — all with zero console errors |
-| j | player-smoke | Select a converted book, mute via the volume slider, play/pause/seek, hammer next/prev and (if available) chapter jumps — regression check for stale-load races |
-| i | library-crud | Edit a book's title/author, verify the edit persists after a full page reload with the same query params, then delete it and verify the list updates |
-| k | reconnect | Kill the backend process mid-session (self-start mode only), verify the UI surfaces a disconnected state without an unbounded console-error flood |
-
-**Why `j` runs before `i`:** `library-crud` (i) ends by deleting a book.
-Running it before `player-smoke` (j) would risk leaving no book left for the
-player test if only one conversion succeeded. `player-smoke` only touches
-playback state, so it's safe to run first; the report still labels each
-result with its original scenario letter.
-
-**Why `f` doesn't actually use the epub fixture:** `tests/fixtures/sample.epub`
-is a 4-byte stub (just a bare zip magic number — not a real archive), and
-`sample.pdf` has zero pages. Both are fine for scenario `c` (uploading and
-preflighting a corrupt/empty source should — and does — surface a warning
-instead of crashing), but a conversion attempt on either fails almost
-instantly, leaving no realistic window to cancel "mid-run". Scenario `f`
-instead cancels the multi-chapter `policy_headings.md` upload from scenario
-`c`, which takes long enough to clean+synthesize to reliably catch mid-flight.
-
-**Local cleaner backend vs. Cloud API default:** the backend lists "Cloud
-API" first among `cleaner_backend_options`, and the frontend's default
-cleaner-backend selection (`useCleanerOptions.ts`) just takes the first
-*available* option in that server-declared order — it has no preference for
-local backends. So even when a local MLX cleaner runtime is available, a
-fresh session with no persisted settings can default to "Cloud API", which
-requires an API key we don't have and leaves the start button disabled
-indefinitely. Scenario `e` (the first scenario that needs to actually start a
-conversion) switches the cleaner backend to "Local MLX" via the Settings tab
-before proceeding — see `ensureLocalCleanerBackendSelected` in
-`scenarios.mjs`. This is filed as a finding, not worked around silently — see
-the harness's final report for details.
-
-**TTS availability probe:** scenarios `e` through `j` need a real TTS
-synthesis to succeed (kokoro's first model load can take a couple of minutes,
-and depends on model weights being downloadable/cached). Scenario `e` is
-where this is actually tested: if the conversion it starts doesn't reach
-"running" within 20s, or doesn't reach a terminal state within 10 minutes, or
-terminates as anything other than `completed`, the scenario reports
-`skip: tts-unavailable` and every scenario that depends on a completed
-conversion (`g`, `j`, `i`) skips too rather than hanging or failing. `f`
-(cancel) and `h` (rapid-fire) only need a job to *start*, not finish, so they
-still attempt to run independently and skip only if starting a job itself
-fails.
-
-## Artifacts
-
-- `artifacts/report.json` — machine-readable results: per-scenario status
-  (`pass`/`fail`/`skip`), duration, console-error count, and (for
-  fails/skips) the captured error message.
-- `artifacts/<id>-<name>.png` — full-page screenshot taken automatically the
-  moment a scenario is marked `fail`.
-- A human-readable summary table is also printed to stdout at the end of
-  every run.
-
-The harness exits non-zero if any scenario ends in `fail` (skips do not
-affect the exit code).
-
-## Design notes
-
-- Selectors are pinned to stable `id`s and class names already present in the
-  desktop app's DOM (e.g. `#start-btn`, `#tts-engine-select`,
-  `.queue-row`, `#audio-player`), not text content that a refactor could
-  reword, since another agent may be actively refactoring the view
-  components this harness drives against.
-- The custom `<TermSelect>` combobox (not a native `<select>`) is driven via
-  `lib/termSelect.mjs`, which opens its listbox and clicks the rendered
-  `.term-select-option` rows.
-- Console errors are captured globally (`page.on('console'/'pageerror')`) and
-  attributed to whichever scenario was running when they fired. Any
-  unexpected console error fails that scenario, except `reconnect`, which
-  intentionally triggers connection-error logging and instead asserts the
-  error *rate* stays bounded.
+Reports are written to `artifacts/report.json`; failed scenarios also capture `artifacts/<id>-<name>.png`. Any failure produces a nonzero exit status. These outputs and isolated runtime state are gitignored.

@@ -262,7 +262,7 @@ export function useBackendClient() {
         );
         if (decision.action === "give_up") {
           setStatusMessage(
-            "backend failed to recover after multiple attempts; reload the app to retry",
+            "backend failed to recover after multiple attempts; retry the connection or reload the app",
           );
           return;
         }
@@ -395,6 +395,8 @@ export function useBackendClient() {
   }, [apiClient, backendBaseUrl]);
 
   const reconnectBackend = useCallback(() => {
+    setRecoveryAttempts(0);
+    setReadyRecoveryAttempts(0);
     setApiClient(null);
     setBackendBaseUrl("");
     setHealth(null);

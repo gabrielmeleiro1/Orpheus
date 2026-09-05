@@ -15,7 +15,8 @@
 
   --text: #e8e6e3;
   --text-secondary: #9a9590;
-  --text-tertiary: #5e5a56;
+  /* Small supporting copy remains readable even on the active surface. */
+  --text-tertiary: var(--text-secondary);
 
   --accent: #c9a06c;
   --accent-soft: rgba(201, 160, 108, 0.1);

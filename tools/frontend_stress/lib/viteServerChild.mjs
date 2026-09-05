@@ -39,7 +39,7 @@ async function main() {
   });
 
   await server.listen();
-  console.log(`vite-server-child listening on port ${port}`);
+  process.send?.({ event: "listening", port, pid: process.pid });
 
   const shutdown = async () => {
     try {

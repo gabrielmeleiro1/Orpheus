@@ -78,6 +78,12 @@ jobs:
         working-directory: desktop
         run: npm test -- --run
 
+      - name: Test browser harness contracts
+        working-directory: tools/frontend_stress
+        run: |
+          npm ci
+          npm test
+
       - name: Test Tauri shell
         working-directory: desktop/src-tauri
         run: cargo test --locked -- --test-threads=1

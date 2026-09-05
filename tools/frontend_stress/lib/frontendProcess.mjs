@@ -25,7 +25,7 @@ export async function startFrontend({ desktopDir, port, log, readyTimeoutMs = 30
   const proc = spawn(process.execPath, [VITE_SERVER_CHILD, desktopDir, String(port)], {
     cwd: desktopDir,
     env: { ...process.env },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
   });
 
   // Defined and registered immediately (before the readiness poll below) so
@@ -44,28 +44,28 @@ export async function startFrontend({ desktopDir, port, log, readyTimeoutMs = 30
   // — not "http://127.0.0.1:5173" and not any other port — so the frontend
   // must be reachable at that precise origin for API calls to succeed.
   const baseUrl = `http://localhost:${port}`;
-  const deadline = Date.now() + readyTimeoutMs;
-  let lastError = null;
-  while (Date.now() < deadline) {
-    if (proc.exitCode !== null) {
-      throw new Error(`vite exited early (code=${proc.exitCode}):\n${outputChunks.join("")}`);
-    }
-    try {
-      const response = await fetch(baseUrl, { method: "GET" });
-      if (response.ok || response.status === 304) {
-        log(`frontend ready at ${baseUrl}`);
-        return { proc, baseUrl, stop, getOutput: () => outputChunks.join("") };
-      }
-    } catch (err) {
-      lastError = err;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`frontend did not become ready within ${readyTimeoutMs}ms`)), readyTimeoutMs);
+      const finish = (error) => {
+        clearTimeout(timer);
+        error ? reject(error) : resolve();
+      };
+      proc.once("error", finish);
+      proc.once("exit", (code) => finish(new Error(`vite exited early (code=${code}): ${outputChunks.join("")}`)));
+      proc.on("message", (message) => {
+        if (message?.event === "listening" && message.port === port && message.pid === proc.pid) finish();
+      });
+    });
+    // Probe the same IPv4 listener the authenticated child just opened.
+    const response = await fetch(`http://127.0.0.1:${port}`, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) throw new Error(`frontend readiness probe returned HTTP ${response.status}`);
+    log(`frontend ready at ${baseUrl}`);
+    return { proc, baseUrl, stop, getOutput: () => outputChunks.join("") };
+  } catch (error) {
+    await stop();
+    throw error;
   }
-
-  await stop().catch(() => {});
-  throw new Error(
-    `frontend did not become ready within ${readyTimeoutMs}ms (last error: ${lastError}). output:\n${outputChunks.join("")}`,
-  );
 }
 
 function makeStopFn(proc) {

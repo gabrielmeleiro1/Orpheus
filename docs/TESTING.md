@@ -103,6 +103,17 @@ python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/t
 cd desktop && npm run typecheck && npm test -- --run
 ```
 
+Browser harness changes (also checked by source CI):
+
+```bash
+npm --prefix tools/frontend_stress ci
+npm --prefix tools/frontend_stress test
+```
+
+Run the real Chromium journeys using the prerequisites and commands in
+[the harness README](../tools/frontend_stress/README.md). Unit contracts do not
+replace the model-backed browser run.
+
 Storage or path changes:
 
 ```bash

@@ -52,3 +52,19 @@ export function formatDuration(ms) {
   const remainderSec = Math.round(seconds - minutes * 60);
   return `${minutes}m ${remainderSec}s`;
 }
+
+export function requireSuccessfulConversion(status) {
+  assert(status === "completed", `Conversion did not complete: ${status ?? "no terminal state"}`);
+}
+
+export function redactSecrets(text, secrets) {
+  let safe = String(text);
+  for (const secret of secrets.filter(Boolean)) {
+    for (const value of [secret, encodeURIComponent(secret)]) safe = safe.split(value).join("[redacted]");
+  }
+  return safe;
+}
+
+export function hasRestoredPlaybackOffset({ currentTime, playingFor }) {
+  return currentTime - playingFor >= 3.5;
+}

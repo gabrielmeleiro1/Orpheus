@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
+import { startBackend } from "./lib/backendProcess.mjs";
 
-import { assert, sleep, Skip, waitFor } from "./lib/util.mjs";
+import { assert, sleep, Skip, waitFor, requireSuccessfulConversion, hasRestoredPlaybackOffset } from "./lib/util.mjs";
 import {
   chooseTermSelectByIndex,
   chooseTermSelectByLabel,
@@ -10,9 +11,6 @@ import {
   termSelectOptions,
 } from "./lib/termSelect.mjs";
 
-// ---------------------------------------------------------------------------
-// Generic page helpers
-// ---------------------------------------------------------------------------
 
 function panelIdForTab(tabId) {
   return tabId === "settings" ? "tab-config" : `tab-${tabId}`;
@@ -31,9 +29,8 @@ async function waitTabVisible(page, tabId, timeoutMs = 8000) {
 }
 
 async function readProgressMeta(page) {
-  const text = (await page.locator("#tab-progress .panel-header-meta").textContent()) ?? "";
-  const [state, pctRaw] = text.split("·").map((part) => part?.trim());
-  return { uiState: state ?? "", pctText: pctRaw ?? "" };
+  const classes = await page.locator("#tab-progress .progress-hero").getAttribute("class").catch(() => "");
+  return { uiState: classes?.match(/is-(running|completed|failed|cancelled)/)?.[1] ?? "idle" };
 }
 
 async function waitForUiState(page, states, { timeoutMs = 600_000, intervalMs = 1000 } = {}) {
@@ -47,14 +44,6 @@ async function waitForUiState(page, states, { timeoutMs = 600_000, intervalMs = 
   );
 }
 
-// NOTE: shortly after cancelling a running job (see scenario f), the app can
-// briefly auto-navigate back to the Progress tab — App.tsx switches tabs
-// whenever conversionJob.uiState transitions into "running", and a
-// late/duplicate progress event for the just-cancelled job occasionally
-// re-triggers that transition after the UI already reported "cancelled".
-// That's flagged as a finding in the final report rather than papered over,
-// but clearQueue still needs to tolerate it instead of hanging on a click
-// against a now-hidden row, so it re-asserts the expected tab each iteration.
 async function clearQueue(page, tabId) {
   for (let i = 0; i < 25; i++) {
     if (tabId) {
@@ -70,25 +59,19 @@ async function clearQueue(page, tabId) {
     if (count === 0) {
       return;
     }
-    const removeBtn = rows.first().locator("button", { hasText: "remove" });
+    const removeBtn = rows.first().getByRole("button", { name: /remove/i });
     if ((await removeBtn.count()) === 0 || (await removeBtn.isDisabled())) {
       return;
     }
     try {
       await removeBtn.click({ timeout: 5_000 });
     } catch {
-      // Likely mid-drift to another tab; loop back around to re-check tabId.
       continue;
     }
     await sleep(150);
   }
 }
 
-// Note: `title` here only names the synthetic pasted source file server-side
-// (becomes original_name); the queue row that appears afterward displays a
-// *content*-derived title from preflight (e.g. the markdown's first H1), so
-// callers must not assume the row's text matches `title` — wait for row
-// count instead and locate the new row by its actual rendered title.
 async function pasteSource(page, { title, text }) {
   const rowsBefore = await page.locator(".queue-row").count();
   await page.locator("#paste-title-input").fill(title);
@@ -104,21 +87,12 @@ function readFixture(fixturesDir, ...segments) {
   return fs.readFileSync(path.join(fixturesDir, ...segments), "utf8");
 }
 
-// The backend's local-runtime probe (mlx TTS / mlx cleaner availability) runs
-// asynchronously in the background after startup and can take ~15-20s to go
-// from "pending" (everything reported unavailable) to "fresh". The frontend
-// only fetches /api/system/capabilities once, right when it connects, and
-// never re-fetches — so if we navigate before the probe settles, the app
-// permanently filters out the local MLX cleaner backend for the rest of the
-// session (leaving only the API-key-requiring "Cloud API" backend selectable,
-// which blocks the start button entirely). Wait for the probe to settle
-// server-side first so the frontend's first capabilities fetch sees accurate
-// data.
 async function waitForRuntimeProbeSettled(backendBaseUrl, token, { timeoutMs = 60_000 } = {}) {
   return waitFor(
     async () => {
       const response = await fetch(`${backendBaseUrl}/api/system/capabilities`, {
         headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
       });
       if (!response.ok) {
         return false;
@@ -130,26 +104,25 @@ async function waitForRuntimeProbeSettled(backendBaseUrl, token, { timeoutMs = 6
   );
 }
 
-// ---------------------------------------------------------------------------
-// Scenarios
-// ---------------------------------------------------------------------------
 
 async function scenarioConnect(ctx) {
   const { page, backendBaseUrl, token, frontendUrl, log } = ctx;
 
-  log("waiting for the backend's local-runtime probe to settle before connecting (see comment on waitForRuntimeProbeSettled)");
-  try {
-    await waitForRuntimeProbeSettled(backendBaseUrl, token);
-  } catch (err) {
-    log(`runtime probe never reached "fresh" (continuing anyway): ${err.message}`);
-  }
+  log("waiting for the backend runtime probe before opening the frontend");
+  await waitForRuntimeProbeSettled(backendBaseUrl, token);
 
   const url = `${frontendUrl}/?backend=${encodeURIComponent(backendBaseUrl)}&token=${encodeURIComponent(token)}`;
-  ctx.log(`navigating to ${url}`);
+  ctx.log("navigating to the isolated frontend (credentials omitted)");
   await page.goto(url, { waitUntil: "domcontentloaded" });
+  await waitFor(async () => {
+    if (await page.locator("#tab-btn-document").count()) return true;
+    const proceed = page.getByRole("button", { name: "Continue", exact: true });
+    if (await proceed.count() && await proceed.isEnabled()) await proceed.click();
+    return false;
+  }, { timeoutMs: 45_000, message: "setup resolves and dashboard opens" });
 
   await waitFor(
-    async () => (await page.locator('.sr-only[role="status"]').first().textContent())?.trim() === "backend connected",
+    async () => (await page.locator('.sr-only[role="status"]').first().textContent())?.trim().toLowerCase() === "backend connected",
     { timeoutMs: 20_000, message: 'header status reaches "backend connected"' },
   );
   assert((await page.locator(".status-dot.is-connected").count()) > 0, "expected a connected status dot in the header");
@@ -161,8 +134,7 @@ async function scenarioConnect(ctx) {
     message: "tts engine options loaded from /api/options/models",
   });
 
-  const health = await page.locator("#desktop-health-result").textContent();
-  assert(health && health.includes("status="), `expected health status text on the convert tab, got "${health}"`);
+  assert((await page.locator(".status-dot.is-connected").count()) > 0, "connection remains healthy after options load");
 }
 
 async function scenarioAddBookPaste(ctx) {
@@ -170,13 +142,8 @@ async function scenarioAddBookPaste(ctx) {
   await gotoTab(page, "document");
   await waitTabVisible(page, "document");
 
-  // Note: the queue row's displayed title is the *content*-derived title
-  // from preflight (e.g. the markdown's first H1), not the "title" field we
-  // pass to the paste endpoint — the server only uses our title to name the
-  // synthetic source file. short_chapter.md's first heading is "Chapter One",
-  // so that's what actually shows up in the UI and library.
   const pasteLabel = "Stress Short Chapter";
-  const expectedTitle = "Chapter One";
+  const expectedTitle = pasteLabel;
   const text = readFixture(fixturesDir, "benchmark_suite", "short_chapter.md");
   await pasteSource(page, { title: pasteLabel, text });
 
@@ -189,7 +156,7 @@ async function scenarioAddBookPaste(ctx) {
   await waitFor(
     async () => {
       const statusText = await row.locator(".queue-item-status").textContent();
-      return Boolean(statusText && !statusText.includes("preflighting"));
+      return Boolean(statusText && !statusText.includes("Inspecting"));
     },
     { timeoutMs: 15_000, message: `pasted source preflight settled (expected title "${expectedTitle}")` },
   );
@@ -216,20 +183,18 @@ async function scenarioAddBookFiles(ctx) {
     path.join(fixturesDir, "sample.pdf"),
     path.join(fixturesDir, "benchmark_suite", "policy_headings.md"),
   ];
-  await page.locator('input[type="file"]').setInputFiles(files);
+  await page.locator('input[type="file"]').setInputFiles([
+    ...files.map((file) => ({ name: path.basename(file), mimeType: "application/octet-stream", buffer: fs.readFileSync(file) })),
+    { name: "Plain document.txt", mimeType: "text/plain", buffer: Buffer.from("A quiet morning by the lake. We returned home before sunset.") },
+  ]);
 
-  await waitFor(async () => (await page.locator(".queue-row").count()) >= rowsBefore + 3, {
+  await waitFor(async () => (await page.locator(".queue-row").count()) >= rowsBefore + 4, {
     timeoutMs: 30_000,
     message: "queue rows appear for uploaded files",
   });
 
-  // sample.epub/sample.pdf are minimal stub fixtures with no real content, so
-  // preflight can't derive a title from them and falls back to a generated,
-  // non-deterministic id (e.g. "1783260287_21e3fb73") — we can't match on
-  // that text ahead of time, so capture whatever each row settles on by
-  // *position* instead (upload order is preserved: epub, pdf, then md).
-  const newRows = [0, 1, 2].map((offset) => page.locator(".queue-row").nth(rowsBefore + offset));
-  const labels = ["sample.epub", "sample.pdf", "policy_headings.md"];
+  const newRows = [0, 1, 2, 3].map((offset) => page.locator(".queue-row").nth(rowsBefore + offset));
+  const labels = ["sample.epub", "sample.pdf", "policy_headings.md", "Plain document.txt"];
   const capturedTitles = {};
 
   for (let i = 0; i < newRows.length; i++) {
@@ -237,13 +202,14 @@ async function scenarioAddBookFiles(ctx) {
     await waitFor(
       async () => {
         const statusText = await row.locator(".queue-item-status").textContent();
-        return Boolean(statusText && !statusText.includes("preflighting"));
+        return Boolean(statusText && !statusText.includes("Inspecting"));
       },
       { timeoutMs: 20_000, message: `preflight settles for uploaded file #${i} (${labels[i]})` },
     );
     capturedTitles[labels[i]] = (await row.locator(".queue-item-title").textContent())?.trim() ?? "";
   }
 
+  assert(capturedTitles["Plain document.txt"] === "Plain document", "TXT fallback title must use its original filename");
   shared.epubQueueTitle = capturedTitles["sample.epub"];
   shared.pdfQueueTitle = capturedTitles["sample.pdf"];
   shared.uploadedMdTitle = capturedTitles["policy_headings.md"];
@@ -261,7 +227,6 @@ async function scenarioOptionsSweep(ctx) {
   await gotoTab(page, "convert");
   await waitTabVisible(page, "convert");
 
-  // --- TTS engine ---
   const initialEngineLabel = await currentTermSelectLabel(page, "tts-engine-select");
   const engineLabels = await termSelectOptions(page, "tts-engine-select");
   assert(engineLabels.length > 0, "expected at least one tts engine option from the backend");
@@ -295,7 +260,6 @@ async function scenarioOptionsSweep(ctx) {
     { timeoutMs: 10_000, message: "voice re-settles after engine restore" },
   );
 
-  // --- voice + filter ---
   const voiceLabels = await termSelectOptions(page, "voice-select");
   assert(voiceLabels.length > 0, "expected at least one voice option for the default engine");
 
@@ -319,7 +283,6 @@ async function scenarioOptionsSweep(ctx) {
     await sleep(400);
   }
 
-  // --- speed (lives inside a collapsed <details>, must expand it first) ---
   const advancedDetails = page.locator("#advanced-audio-settings");
   const isOpen = await advancedDetails.evaluate((el) => el.open);
   if (!isOpen) {
@@ -336,7 +299,6 @@ async function scenarioOptionsSweep(ctx) {
   await page.locator("#speed-input").fill("1.0");
   await page.locator("#speed-input").press("Tab");
 
-  // --- cleaner backend (config tab) ---
   await gotoTab(page, "settings");
   await waitTabVisible(page, "settings");
   const initialCleanerLabel = await currentTermSelectLabel(page, "cleaner-backend-select");
@@ -362,14 +324,6 @@ async function scenarioOptionsSweep(ctx) {
   await gotoTab(page, "convert");
 }
 
-// The backend lists "Cloud API" first among cleaner_backend_options, and the
-// frontend's default-selection logic (useCleanerOptions.ts) just takes the
-// first *available* option in server order — it has no preference for local
-// backends. So even when a local MLX/CUDA cleaner runtime is available, a
-// fresh session (no persisted settings) can default to the API backend,
-// which requires a key we don't have and leaves the start button disabled
-// forever. Prefer a local backend via the UI, the way a real user hitting
-// this would (Settings -> cleaner backend dropdown).
 async function ensureLocalCleanerBackendSelected(page, log) {
   await gotoTab(page, "settings");
   await waitTabVisible(page, "settings");
@@ -403,9 +357,11 @@ async function scenarioConvertSingle(ctx) {
   await gotoTab(page, "document");
   await waitTabVisible(page, "document");
 
-  const title = shared.pastedBookTitle || "Stress Short Chapter";
+  await clearQueue(page, "document");
+  const title = "Stress Short Chapter";
+  await pasteSource(page, { title, text: "# Narration\n\nThe little boat crossed the quiet lake. We walked home before sunset." });
   const row = page.locator(".queue-row", { hasText: title });
-  assert((await row.count()) > 0, "expected the pasted markdown queue item from scenario b to still be present");
+  assert((await row.count()) > 0, "expected the isolated single-source queue item");
   await row.locator(".queue-item-main").click();
   await waitFor(async () => !(await page.locator("#start-btn").isDisabled()), {
     timeoutMs: 10_000,
@@ -414,9 +370,10 @@ async function scenarioConvertSingle(ctx) {
 
   const errorBefore = (await page.locator("#form-error").textContent()) ?? "";
   await page.locator("#start-btn").click();
+  await gotoTab(page, "progress");
 
   const reachedRunning = await waitFor(
-    async () => (await readProgressMeta(page)).uiState === "running",
+    async () => ["running", "completed"].includes((await readProgressMeta(page)).uiState),
     { timeoutMs: 20_000, message: "job reaches running state" },
   )
     .then(() => true)
@@ -425,15 +382,15 @@ async function scenarioConvertSingle(ctx) {
   if (!reachedRunning) {
     const errorAfter = (await page.locator("#form-error").textContent()) ?? "";
     shared.ttsAvailable = false;
-    throw new Skip(
-      `conversion never reached "running" (tts-unavailable). form error: "${errorAfter || errorBefore}"`,
+    throw new Error(
+      `conversion never reached running or completed. form error: "${errorAfter || errorBefore}"`,
     );
   }
 
-  log("conversion is running; waiting up to 10 minutes for a terminal state (first kokoro model load can be slow)");
+  log("conversion accepted; waiting for successful completion");
   let terminal;
   try {
-    terminal = await waitForUiState(page, ["completed", "error", "cancelled"], {
+    terminal = await waitForUiState(page, ["completed", "failed", "cancelled"], {
       timeoutMs: 10 * 60_000,
       intervalMs: 2000,
     });
@@ -443,19 +400,16 @@ async function scenarioConvertSingle(ctx) {
       .locator(".rail-action.stop")
       .click()
       .catch(() => {});
-    throw new Skip(`conversion never reached a terminal state within 10 minutes (tts-unavailable): ${err.message}`);
+    throw new Error(`conversion never reached a terminal state within 10 minutes: ${err.message}`);
   }
 
-  if (terminal !== "completed") {
-    shared.ttsAvailable = false;
-    const message = (await page.locator("#status-text").textContent().catch(() => "")) || "";
-    throw new Skip(`conversion ended in "${terminal}" (tts-unavailable): ${message}`);
-  }
+  requireSuccessfulConversion(terminal);
 
   shared.ttsAvailable = true;
+  await gotoTab(page, "library");
   await waitFor(async () => !(await page.locator("#tab-library").isHidden()), {
     timeoutMs: 10_000,
-    message: "library tab auto-opens after completion",
+    message: "library tab opens after completion",
   });
   await waitFor(async () => (await page.locator(".book-row", { hasText: title }).count()) > 0, {
     timeoutMs: 10_000,
@@ -469,18 +423,10 @@ async function scenarioConvertCancel(ctx) {
   await gotoTab(page, "convert");
   await waitTabVisible(page, "convert");
 
-  // The task's "epub" fixture (tests/fixtures/sample.epub) is a 4-byte stub
-  // (just a bare zip magic number, no real archive) — preflight flags it
-  // "may be malformed" and any conversion attempt fails almost instantly, so
-  // there's no realistic "mid-run" window to cancel into. We still upload and
-  // preflight it in scenario c (confirming the app handles a corrupt upload
-  // gracefully with a warning instead of crashing), but for the actual
-  // cancel-while-running exercise we use the multi-chapter markdown uploaded
-  // in the same scenario (policy_headings.md, 4 chapters), which takes long
-  // enough to clean+synthesize that we can reliably cancel it mid-flight.
-  assert(shared.uploadedMdTitle, "expected scenario c to have captured the uploaded md's queue title");
-  const row = page.locator(".queue-row", { hasText: shared.uploadedMdTitle });
-  assert((await row.count()) > 0, "expected the uploaded multi-chapter md queue item from scenario c to still be present");
+  await gotoTab(page, "document");
+  await clearQueue(page, "document");
+  await pasteSource(page, { title: "Cancel source", text: Array.from({length: 30}, (_, i) => `# Section ${i}\n\nThe river flowed through the valley. Birds sang in the trees. We walked home together.\n\n`).join("") });
+  const row = page.locator(".queue-row", { hasText: "Cancel source" });
   await row.locator(".queue-item-main").click();
   await waitFor(async () => !(await page.locator("#start-btn").isDisabled()), {
     timeoutMs: 10_000,
@@ -488,6 +434,7 @@ async function scenarioConvertCancel(ctx) {
   });
 
   await page.locator("#start-btn").click();
+  await gotoTab(page, "progress");
   const reachedRunning = await waitFor(
     async () => (await readProgressMeta(page)).uiState === "running",
     { timeoutMs: 20_000, message: "conversion reaches running state" },
@@ -497,7 +444,7 @@ async function scenarioConvertCancel(ctx) {
 
   if (!reachedRunning) {
     const err = await page.locator("#form-error").textContent();
-    throw new Skip(`conversion did not start, cannot exercise cancellation: ${err}`);
+    throw new Error(`conversion did not start, cannot exercise cancellation: ${err}`);
   }
 
   log("conversion running; cancelling mid-flight");
@@ -505,11 +452,12 @@ async function scenarioConvertCancel(ctx) {
   assert(!(await page.locator(".rail-action.stop").isDisabled()), "expected the stop control to be enabled while running");
   await page.locator(".rail-action.stop").click();
 
-  await waitForUiState(page, ["cancelled"], { timeoutMs: 30_000, intervalMs: 500 });
-  await waitFor(async () => await page.locator(".rail-action.stop").isDisabled(), {
+  await waitForUiState(page, ["cancelled"], { timeoutMs: 60_000, intervalMs: 500 });
+  await waitFor(async () => (await page.locator(".rail-action.stop").count()) === 0 || await page.locator(".rail-action.stop").isDisabled(), {
     timeoutMs: 10_000,
-    message: "stop control disables again after cancel",
+    message: "stop control disappears or disables after cancel",
   });
+  await gotoTab(page, "document");
   await waitFor(async () => !(await page.locator("#start-btn").isDisabled()), {
     timeoutMs: 10_000,
     message: "start control is usable again after cancel (no stuck job)",
@@ -519,18 +467,16 @@ async function scenarioConvertCancel(ctx) {
 async function scenarioQueueRun(ctx) {
   const { page, fixturesDir, shared } = ctx;
   if (shared.ttsAvailable !== true) {
-    throw new Skip("tts-unavailable (see convert-single result)");
+    throw new Error("prerequisite convert-single did not pass");
   }
 
   await gotoTab(page, "document");
   await waitTabVisible(page, "document");
   await clearQueue(page, "document");
 
-  // Queue row / library titles are content-derived (see scenario b's note),
-  // not the paste label, so match on each fixture's actual first-heading text.
   const sources = [
-    { file: "footnotes_stub.md", pasteLabel: "Queue Run A", title: "Notes and References" },
-    { file: "policy_cleaner_noise.md", pasteLabel: "Queue Run B", title: "Cleaner Policy Fixture" },
+    { file: "footnotes_stub.md", pasteLabel: "Queue Run A", title: "Queue Run A" },
+    { file: "policy_cleaner_noise.md", pasteLabel: "Queue Run B", title: "Queue Run B" },
   ];
   for (const source of sources) {
     await pasteSource(page, { title: source.pasteLabel, text: readFixture(fixturesDir, "benchmark_suite", source.file) });
@@ -542,14 +488,15 @@ async function scenarioQueueRun(ctx) {
   });
   await page.locator("#run-queue-btn").click();
 
-  await waitFor(
+  const outcome = await waitFor(
     async () => {
       for (const source of sources) {
         const statusText = await page
           .locator(".queue-row", { hasText: source.title })
           .locator(".queue-item-status")
           .textContent();
-        if (!statusText || !statusText.includes("done")) {
+        if (statusText?.toLowerCase().startsWith("failed")) return "failed";
+        if (!statusText || !statusText.toLowerCase().includes("done")) {
           return false;
         }
       }
@@ -558,6 +505,7 @@ async function scenarioQueueRun(ctx) {
     { timeoutMs: 8 * 60_000, intervalMs: 3000, message: "all queued items reach done status" },
   );
 
+  assert(outcome === true, "queued conversion failed");
   for (const source of sources) {
     shared.bookTitles.push(source.title);
   }
@@ -569,13 +517,11 @@ async function scenarioRapidFire(ctx) {
   await waitTabVisible(page, "document");
   await clearQueue(page, "document");
 
-  // Content-derived title (see scenario b) — short_chapter.md's first heading
-  // is "Chapter One" regardless of the paste label we send.
   await pasteSource(page, {
     title: "Rapid Fire Source",
-    text: readFixture(fixturesDir, "benchmark_suite", "short_chapter.md"),
+    text: Array.from({ length: 30 }, (_, i) => `# Section ${i}\n\nThe river flowed through the valley. Birds sang in the trees. We walked home together.\n\n`).join(""),
   });
-  await page.locator(".queue-row", { hasText: "Chapter One" }).locator(".queue-item-main").click();
+  await page.locator(".queue-row", { hasText: "Rapid Fire Source" }).locator(".queue-item-main").click();
   await waitFor(async () => !(await page.locator("#start-btn").isDisabled()), {
     timeoutMs: 10_000,
     message: "start button enabled for rapid-fire source",
@@ -589,9 +535,6 @@ async function scenarioRapidFire(ctx) {
   };
   page.on("request", onRequest);
 
-  // 1) Spam the start control with clicks dispatched synchronously in one JS
-  // tick so we race the disabled-state guard the way a real double click
-  // would, rather than letting Playwright's actionability waits serialize us.
   await page.evaluate(() => {
     const btn = document.querySelector("#start-btn");
     for (let i = 0; i < 6; i++) {
@@ -599,6 +542,7 @@ async function scenarioRapidFire(ctx) {
     }
   });
 
+  await gotoTab(page, "progress");
   const reachedRunning = await waitFor(async () => (await readProgressMeta(page)).uiState === "running", {
     timeoutMs: 20_000,
     message: "rapid-fire job reaches running state",
@@ -608,7 +552,7 @@ async function scenarioRapidFire(ctx) {
   page.off("request", onRequest);
 
   if (!reachedRunning) {
-    throw new Skip("rapid-fire source did not start a job (tts likely unavailable)");
+    throw new Error("rapid-fire source did not start a job");
   }
 
   assert(
@@ -616,7 +560,6 @@ async function scenarioRapidFire(ctx) {
     `expected exactly 1 POST /api/conversions from rapid start-btn spam, observed ${conversionRequests.length}`,
   );
 
-  // 2) Rapidly switch tabs while a conversion is running.
   for (let i = 0; i < 2; i++) {
     for (const tab of ["dashboard", "library", "logs", "progress", "convert", "document"]) {
       await page.locator(`#tab-btn-${tab}`).click();
@@ -625,8 +568,7 @@ async function scenarioRapidFire(ctx) {
   await gotoTab(page, "document");
   assert((await readProgressMeta(page)).uiState === "running", "job should still be running after rapid tab switching");
 
-  // 3) Rapidly add sources via the typed-path preflight route (async/in-flight)
-  // and reselect queue rows while those preflights race.
+  if (!(await page.locator(".manual-path").evaluate((el) => el.open))) await page.locator(".manual-path summary").click();
   for (const fixture of ["footnotes_stub.md", "policy_headings.md"]) {
     await page.locator("#source-path").fill(path.join(fixturesDir, "benchmark_suite", fixture));
     await page.locator("#preflight-source-btn").click();
@@ -637,23 +579,24 @@ async function scenarioRapidFire(ctx) {
     await rows.nth(i).locator(".queue-item-main").click();
   }
 
-  // 4) Edit a queue item's title while its preflight may still be in flight.
   await page.locator("#title-input").fill("Edited mid-preflight");
   await sleep(2000);
+  assert((await page.locator("#title-input").inputValue()) === "Edited mid-preflight", "late preflight overwrote the user title");
 
   log("cleaning up: cancelling the still-running rapid-fire job");
   await page
     .locator(".rail-action.stop")
     .click()
     .catch(() => {});
-  await waitForUiState(page, ["cancelled", "completed", "error"], { timeoutMs: 30_000, intervalMs: 500 }).catch(() => {});
+  await gotoTab(page, "progress");
+  await waitForUiState(page, ["cancelled", "completed"], { timeoutMs: 60_000, intervalMs: 500 });
   await clearQueue(page, "document");
 }
 
 async function scenarioPlayerSmoke(ctx) {
   const { page, shared } = ctx;
   if (shared.ttsAvailable !== true || shared.bookTitles.length === 0) {
-    throw new Skip("no converted book available (tts-unavailable)");
+    throw new Error("required converted book is missing");
   }
 
   const title = shared.bookTitles[shared.bookTitles.length - 1];
@@ -664,7 +607,7 @@ async function scenarioPlayerSmoke(ctx) {
   const row = page.locator(".book-row", { hasText: title });
   await waitFor(async () => (await row.count()) > 0, { timeoutMs: 15_000, message: `library row for "${title}"` });
   await row.first().click();
-  await waitFor(async () => (await page.locator("#book-summary-title").textContent())?.includes(title), {
+  await waitFor(async () => (await page.locator("#book-title-edit").inputValue())?.includes(title), {
     timeoutMs: 10_000,
     message: "book detail pane loaded",
   });
@@ -674,7 +617,6 @@ async function scenarioPlayerSmoke(ctx) {
     message: "player controls enabled (playback output ready)",
   });
 
-  // Mute before playing anything audible.
   await page.locator("#player-volume").focus();
   await page.keyboard.press("Home");
   await waitFor(async () => (await page.locator("#player-volume").inputValue()) === "0", {
@@ -702,7 +644,6 @@ async function scenarioPlayerSmoke(ctx) {
   });
   await page.locator("#seek-back-btn").click();
 
-  // Regression check for stale-load races: hammer next/prev audiobook quickly.
   for (let i = 0; i < 3; i++) {
     if (!(await page.locator("#next-btn").isDisabled())) {
       await page.locator("#next-btn").click();
@@ -713,10 +654,8 @@ async function scenarioPlayerSmoke(ctx) {
   }
   await sleep(1000);
 
-  // Re-select our book (next/prev may have moved us) and, if it has more
-  // than one chapter, hammer chapter jumps too.
   await row.first().click();
-  await waitFor(async () => (await page.locator("#book-summary-title").textContent())?.includes(title), {
+  await waitFor(async () => (await page.locator("#book-title-edit").inputValue())?.includes(title), {
     timeoutMs: 10_000,
     message: "re-selected book detail loaded",
   });
@@ -733,12 +672,33 @@ async function scenarioPlayerSmoke(ctx) {
     !(await page.locator("#audio-player").evaluate((el) => Boolean(el.error))),
     "audio element reported a media error after rapid navigation",
   );
+  if (!(await page.locator("#audio-player").evaluate((el) => el.paused))) await page.locator("#play-btn").click();
+  await page.locator("#player-seek").fill("4");
+  await page.locator("#player-seek").dispatchEvent("change");
+  await waitFor(async () => Math.abs(await page.locator("#audio-player").evaluate((el) => el.currentTime) - 4) < 0.5, { message: "seek reaches four seconds" });
+  await sleep(700);
+  await page.reload();
+  await page.locator("#tab-btn-library").waitFor({ timeout: 35_000 });
+  await gotoTab(page, "library");
+  await page.locator(".book-row", { hasText: title }).first().click();
+  await page.locator("#audio-player").evaluate((el) => {
+    el.addEventListener("play", () => { el.dataset.resumeStarted = String(performance.now()); }, { once: true });
+  });
+  await page.locator("#play-btn").click();
+  await waitFor(async () => {
+    const snapshot = await page.locator("#audio-player").evaluate((el) => ({
+      currentTime: el.currentTime,
+      playingFor: Math.max(0, (performance.now() - Number(el.dataset.resumeStarted)) / 1000),
+    }));
+    return hasRestoredPlaybackOffset(snapshot);
+  }, { timeoutMs: 1_500, intervalMs: 50, message: "saved four-second offset is restored, excluding naturally elapsed playback" });
+  await page.locator("#play-btn").click();
 }
 
 async function scenarioLibraryCrud(ctx) {
   const { page, shared, frontendUrl, backendBaseUrl, token } = ctx;
   if (shared.ttsAvailable !== true || shared.bookTitles.length === 0) {
-    throw new Skip("no converted book available (tts-unavailable)");
+    throw new Error("required converted book is missing");
   }
 
   const candidates = shared.bookTitles.filter((candidate) => candidate !== shared.playerBookTitle);
@@ -764,11 +724,16 @@ async function scenarioLibraryCrud(ctx) {
     message: "library list reflects the saved title",
   });
 
-  // Reload with the same query params and confirm the edit persisted server-side.
   const url = `${frontendUrl}/?backend=${encodeURIComponent(backendBaseUrl)}&token=${encodeURIComponent(token)}`;
   await page.goto(url, { waitUntil: "domcontentloaded" });
+  await waitFor(async () => {
+    if (await page.locator("#tab-btn-document").count()) return true;
+    const proceed = page.getByRole("button", { name: "Continue", exact: true });
+    if (await proceed.count() && await proceed.isEnabled()) await proceed.click();
+    return false;
+  }, { timeoutMs: 45_000, message: "setup resolves and dashboard opens" });
   await waitFor(
-    async () => (await page.locator('.sr-only[role="status"]').first().textContent())?.trim() === "backend connected",
+    async () => (await page.locator('.sr-only[role="status"]').first().textContent())?.trim().toLowerCase() === "backend connected",
     { timeoutMs: 20_000, message: "reconnected after reload" },
   );
   await gotoTab(page, "library");
@@ -786,6 +751,7 @@ async function scenarioLibraryCrud(ctx) {
 
   const countBefore = await page.locator(".book-row").count();
   await page.locator("#library-delete-btn").click();
+  await page.locator("#library-delete-confirm-btn").click();
   await waitFor(async () => (await page.locator(".book-row", { hasText: newTitle }).count()) === 0, {
     timeoutMs: 10_000,
     message: "deleted book removed from the list",
@@ -809,39 +775,25 @@ async function scenarioReconnect(ctx) {
   log("killing the backend process to simulate a crash mid-session");
   await backend.stop();
 
-  // NOTE: in browser/dev mode (as opposed to the Tauri desktop build),
-  // useBackendClient's health-poll failure handler (resolveBackendMonitorFailure
-  // in desktop/src/app/useBackendClient.ts) only sets connectionState to
-  // "error" when the desktop lifecycle status is "failed"/"stopped" — but the
-  // non-Tauri code path hardcodes that status to {lifecycle: "ready", ...}
-  // (see the `isTauriRuntime() ? ... : { lifecycle: "ready", ... }` branch in
-  // useBackendClient.ts), so that branch can never fire here. The UI instead
-  // gets stuck cycling connectionState="checking" forever, never surfacing a
-  // clear disconnected state to the user. So we assert on "no longer
-  // connected" rather than a specific "error" string — see the final report
-  // for this as a flagged finding rather than a harness bug.
-  await waitFor(
-    async () => (await page.locator('.sr-only[role="status"]').first().textContent())?.trim() !== "backend connected",
-    { timeoutMs: 30_000, message: 'UI leaves the "backend connected" state after the backend disappears' },
-  );
-
-  // Let the health-poll loop run for a while and make sure it doesn't flood
-  // the console with an unbounded number of errors.
-  await sleep(8_000);
+  await waitFor(async () => (await page.locator('.status-dot[title="error"]').count()) > 0, {
+    timeoutMs: 30_000, message: "backend failure becomes an explicit error state",
+  });
   const delta = ctx.getConsoleErrorCount() - errorsBefore;
-  log(`console errors observed during ~8s of disconnected polling: ${delta}`);
-  assert(delta < 50, `expected a bounded console error rate while disconnected, saw ${delta} errors in ~8s`);
+  assert(delta < 50, `expected bounded disconnected polling, saw ${delta} console errors`);
+  const replacement = await startBackend({ repoRoot: backend.repoRoot, stateDir: backend.stateDir, log });
+  ctx.registerSecret(replacement.token);
+  ctx.backend = replacement;
+  ctx.backendBaseUrl = replacement.baseUrl;
+  ctx.token = replacement.token;
+  await page.goto(`${ctx.frontendUrl}/?backend=${encodeURIComponent(replacement.baseUrl)}&token=${encodeURIComponent(replacement.token)}`);
+  await waitFor(async () => (await page.locator(".status-dot.is-connected").count()) > 0, {
+    timeoutMs: 45_000, message: "restarted backend reconnects with its rotated endpoint",
+  });
+  await gotoTab(page, "library");
+  await waitFor(async () => (await page.locator(".book-row").count()) > 0, { timeoutMs: 15_000, message: "library survives backend restart" });
+
 }
 
-// ---------------------------------------------------------------------------
-// Registry
-// ---------------------------------------------------------------------------
-//
-// Scenarios i (library-crud) and j (player-smoke) are executed in swapped
-// order relative to the spec lettering: player-smoke is read-only (aside from
-// playback-position writes) while library-crud ends by deleting a book, so
-// running player-smoke first avoids the two scenarios fighting over which
-// converted book is still around to use.
 
 export const SCENARIOS = [
   { id: "a", name: "connect", run: scenarioConnect, allowConsoleErrors: false },
