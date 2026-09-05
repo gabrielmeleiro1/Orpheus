@@ -114,6 +114,8 @@ def audit_storage_state(
 
         playable_book_ids: set[int] = set()
         for row in books:
+            # Interrupted conversions can own only their durable source/inventory.
+            add_output_reference(row["source_path"])
             playback_path = add_output_reference(row["playback_path"])
             if playback_path and playback_path.exists() and playback_path.is_file():
                 playable_book_ids.add(int(row["id"]))

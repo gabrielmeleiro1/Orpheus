@@ -141,6 +141,7 @@ def classify_worker_startup_error(
     if isinstance(
         exc,
         (
+            MemoryError,
             WorkerRuntimeMemoryError,
             TTSRuntimeMemoryError,
             CleanerRuntimeMemoryError,

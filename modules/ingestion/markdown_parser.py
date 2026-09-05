@@ -4,6 +4,7 @@ Markdown parser module.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 import re
 
@@ -17,58 +18,62 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
+_LINE_RE = re.compile(r"[^\n\r\v\f\x1c-\x1e\x85\u2028\u2029]*(?:\r\n|[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]|$)")
+
+
+def _line_matches(text: str) -> Iterator[re.Match[str]]:
+    # Match str.splitlines(keepends=True), without retaining all lines.
+    for match in _LINE_RE.finditer(text):
+        if match.start() != match.end():
+            yield match
+
+
 def strip_leading_front_matter(raw_text: str) -> str:
-    """Remove a closed YAML front-matter block at the start of a document.
-
-    Only a delimiter on the first line can open the block, and an unclosed
-    block is left untouched so malformed documents are not silently truncated.
-    Later thematic ``---`` separators remain ordinary Markdown content.
-    """
-    lines = raw_text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
+    """Remove only a closed YAML front-matter block on the first line."""
+    lines = _line_matches(raw_text)
+    first = next(lines, None)
+    if first is None or first.group().strip() != "---":
         return raw_text
-
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() in {"---", "..."}:
-            return "".join(lines[index + 1 :])
+    for match in lines:
+        if match.group().strip() in {"---", "..."}:
+            return raw_text[match.end():]
     return raw_text
 
 
-def markdown_headings(raw_text: str) -> list[tuple[int, str]]:
-    """Return heading lines outside fenced code blocks.
-
-    Both backtick and tilde fences are recognized. A closing fence must use
-    the same marker character and be at least as long as its opener.
-    """
-    headings: list[tuple[int, str]] = []
+def iter_markdown_lines(raw_text: str) -> Iterator[tuple[str, str | None]]:
+    """Yield each line and its heading, recognizing backtick and tilde fences."""
     fence_char: str | None = None
     fence_length = 0
-
-    for line_number, line in enumerate(raw_text.splitlines()):
+    for line_match in _line_matches(raw_text):
+        line = line_match.group().rstrip("\n\r\v\f\x1c\x1d\x1e\x85\u2028\u2029")
+        title = None
         fence_match = _FENCE_RE.match(line)
         if fence_match:
             marker = fence_match.group(1)
-            marker_char = marker[0]
-            marker_length = len(marker)
-            suffix = fence_match.group(2)
             if fence_char is None:
-                fence_char = marker_char
-                fence_length = marker_length
+                fence_char = marker[0]
+                fence_length = len(marker)
             elif (
-                marker_char == fence_char
-                and marker_length >= fence_length
-                and not suffix.strip()
+                marker[0] == fence_char
+                and len(marker) >= fence_length
+                and not fence_match.group(2).strip()
             ):
                 fence_char = None
                 fence_length = 0
-            continue
-
-        if fence_char is None:
+        elif fence_char is None:
             match = HEADING_RE.match(line)
             if match:
-                headings.append((line_number, match.group(2).strip()))
+                title = match.group(2).strip()
+        yield line, title
 
-    return headings
+
+def markdown_headings(raw_text: str) -> list[tuple[int, str]]:
+    """Return heading lines outside fenced code blocks."""
+    return [
+        (number, title)
+        for number, (_, title) in enumerate(iter_markdown_lines(raw_text))
+        if title is not None
+    ]
 
 
 class MarkdownParser:

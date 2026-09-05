@@ -45,7 +45,7 @@ SESSION_MARKER_NAME = ".orpheus-profile-verify-owner.json"
 SESSION_PREFIX = ".orpheus-profile-verify-"
 METADATA_VIEW_MAX_FILES = 20_000
 METADATA_VIEW_MAX_BYTES = 128 * 1024 * 1024
-TOOLING_PINS = ("pip==26.1.2", "setuptools==83.0.0", "wheel==0.47.0")
+TOOLING_PINS = ("pip==26.2", "setuptools==83.0.0", "wheel==0.47.0")
 PROHIBITED_PACKAGES = {
     "base": {
         "accelerate",

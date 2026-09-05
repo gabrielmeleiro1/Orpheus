@@ -66,6 +66,76 @@ describe("useConversionSourceQueue", () => {
     vi.clearAllMocks();
   });
 
+  it("bounds uploads across batches and keeps input order after out-of-order completion", async () => {
+    type Response = { source_handle: string; original_name: string; preflight: null };
+    const resolvers = new Map<string, (value: Response) => void>();
+    const uploadSourceFile = vi.fn((file: File) => new Promise<Response>((resolve) => {
+      resolvers.set(file.name, resolve);
+    }));
+    const addQueueItems = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe apiClient={{ uploadSourceFile }} queueController={{
+        sourcePath: "", selectedQueueId: null, addQueueItems, setPreflightStatus: vi.fn(),
+      }} />);
+    });
+    const getProbe = () => (globalThis as typeof globalThis & {
+      sourceQueueProbe: ReturnType<typeof useConversionSourceQueue>;
+    }).sourceQueueProbe;
+    const event = (names: string[]) => ({ target: {
+      files: names.map((name) => new File([name], name)), value: "selected",
+    } }) as never;
+    const first = getProbe().onBrowserFilesSelected(event(["a.md", "b.md", "c.md"]));
+    const second = getProbe().onBrowserFilesSelected(event(["d.md"]));
+    await act(async () => {});
+    expect(uploadSourceFile).toHaveBeenCalledTimes(2);
+    const finish = async (name: string) => act(async () => {
+      resolvers.get(name)!({ source_handle: `upload:${name}`, original_name: name, preflight: null });
+    });
+    await finish("b.md");
+    expect(uploadSourceFile).toHaveBeenCalledTimes(3);
+    await finish("c.md");
+    expect(uploadSourceFile).toHaveBeenCalledTimes(4);
+    await finish("d.md");
+    await finish("a.md");
+    await act(async () => { await Promise.all([first, second]); });
+    expect(addQueueItems).toHaveBeenLastCalledWith([
+      expect.objectContaining({ label: "a.md" }),
+      expect.objectContaining({ label: "b.md" }),
+      expect.objectContaining({ label: "c.md" }),
+    ], { selectFirst: false });
+  });
+
+  it("does not start waiting uploads after their source context changes", async () => {
+    const releases: Array<() => void> = [];
+    const uploadSourceFile = vi.fn((file: File) => new Promise((resolve) => {
+      releases.push(() => resolve({ source_handle: `upload:${file.name}`, original_name: file.name, preflight: null }));
+    }));
+    const apiClient = { uploadSourceFile };
+    const addQueueItems = vi.fn();
+    const queueController = { sourcePath: "", selectedQueueId: null, addQueueItems, setPreflightStatus: vi.fn() };
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe apiClient={apiClient} queueController={queueController} />);
+    });
+    const probe = (globalThis as typeof globalThis & {
+      sourceQueueProbe: ReturnType<typeof useConversionSourceQueue>;
+    }).sourceQueueProbe;
+    const batch = probe.onBrowserFilesSelected({ target: {
+      files: ["a.md", "b.md", "c.md"].map((name) => new File([name], name)), value: "selected",
+    } } as never);
+    expect(uploadSourceFile).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      root.render(<Probe apiClient={apiClient} queueController={queueController} conversionMode="document_audio" />);
+    });
+    await act(async () => {
+      releases.forEach((release) => release());
+      await batch;
+    });
+    expect(uploadSourceFile).toHaveBeenCalledTimes(2);
+    expect(addQueueItems).not.toHaveBeenCalled();
+  });
+
   it("surfaces a native file-picker failure", async () => {
     const setPreflightStatus = vi.fn();
     invokeMock.mockRejectedValueOnce(new Error("dialog unavailable"));
@@ -265,6 +335,8 @@ describe("useConversionSourceQueue", () => {
       target: { files: [new File(["new"], "new.md")], value: "newer" },
     } as never);
 
+    // Let the failed older upload release its slot to the newer batch.
+    await act(async () => {});
     uploadResolvers.get("new.md")?.({
       source_handle: "upload:new",
       original_name: "new.md",

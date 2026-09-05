@@ -17,6 +17,8 @@ import { createQueueItem, type ConversionQueueItem } from "./conversionPanelMode
 import type { ConversionJobController } from "./useConversionJob";
 import type { useConversionQueueController } from "./useConversionQueueController";
 
+const MAX_CONCURRENT_UPLOADS = 2;
+
 type ConversionQueueController = ReturnType<typeof useConversionQueueController>;
 
 interface UseConversionSourceQueueArgs {
@@ -43,6 +45,7 @@ export function useConversionSourceQueue({
   const hasSelectedSourceRef = useRef(false);
   const browserFileInputRef = useRef<HTMLInputElement>(null);
   const browserUploadBatchRef = useRef(0);
+  const uploadSlotsRef = useRef({ active: 0, waiting: [] as Array<() => void> });
   const mountedRef = useRef(false);
   const pasteInFlightRef = useRef(false);
   const queueControllerRef = useRef(queueController);
@@ -221,7 +224,29 @@ export function useConversionSourceQueue({
 
       const batchId = ++browserUploadBatchRef.current;
       queueControllerRef.current.setPreflightStatus(`Uploading ${files.length === 1 ? files[0].name : `${files.length} sources`}...`);
-      const results = await Promise.allSettled(files.map(async (file) => apiClient.uploadSourceFile(file)));
+      // Share slots across overlapping selections so a second batch cannot
+      // multiply backend preflight memory. Results retain the selected order.
+      const results = await Promise.allSettled(files.map(async (file) => {
+        const slots = uploadSlotsRef.current;
+        if (slots.active >= MAX_CONCURRENT_UPLOADS) {
+          await new Promise<void>((resolve) => slots.waiting.push(resolve));
+        } else {
+          slots.active += 1;
+        }
+        try {
+          if (!isCurrentSourceContext(sourceContextGeneration)) {
+            throw new Error("Source context changed before upload started.");
+          }
+          return await apiClient.uploadSourceFile(file);
+        } finally {
+          const next = slots.waiting.shift();
+          if (next) {
+            next();
+          } else {
+            slots.active -= 1;
+          }
+        }
+      }));
       if (!isCurrentSourceContext(sourceContextGeneration)) {
         return;
       }

@@ -1956,3 +1956,48 @@ def test_library_service_reports_source_unavailable_for_empty_source_path(tmp_pa
 
     assert service._source_path_exists("") is False  # noqa: SLF001
     assert service._source_path_exists(None) is False  # noqa: SLF001
+
+
+@pytest.mark.parametrize("suffix,content,expected", [
+    (".txt", b"A quiet lake.", "Original Book"),
+    (".md", b"A quiet lake.", "Original Book"),
+    (".md", b"# Embedded title\nA quiet lake.", "Embedded title"),
+])
+def test_uploaded_source_preserves_filename_fallback(tmp_path, suffix, content, expected):
+    from io import BytesIO
+
+    service = LibraryService(_RepositoryStub(), temp_dir=tmp_path)
+    result = service.upload_source(filename=f"Original Book{suffix}", file_obj=BytesIO(content))
+    assert result["preflight"]["title"] == expected
+
+
+@pytest.mark.parametrize("suffix", [".pdf", ".epub"])
+@pytest.mark.parametrize("embedded_title", [None, "Embedded title"])
+def test_uploaded_document_prefers_embedded_title_then_original_filename(tmp_path, suffix, embedded_title):
+    from io import BytesIO
+
+    path = tmp_path / f"fixture{suffix}"
+    if suffix == ".pdf":
+        import fitz
+        with fitz.open() as document:
+            page = document.new_page()
+            page.insert_text((72, 72), "A quiet lake.")
+            if embedded_title:
+                document.set_metadata({"title": embedded_title})
+            document.save(path)
+    else:
+        from ebooklib import epub
+        book = epub.EpubBook()
+        book.set_identifier("upload-title-test")
+        book.set_title(embedded_title or "")
+        book.set_language("en")
+        chapter = epub.EpubHtml(title="Chapter", file_name="chapter.xhtml", lang="en")
+        chapter.content = "<h1>Chapter</h1><p>A quiet lake.</p>"
+        book.add_item(chapter)
+        book.toc = (chapter,)
+        book.spine = [chapter]
+        book.add_item(epub.EpubNcx())
+        epub.write_epub(str(path), book)
+    service = LibraryService(_RepositoryStub(), temp_dir=tmp_path / "uploads")
+    result = service.upload_source(filename=f"Original Book{suffix}", file_obj=BytesIO(path.read_bytes()))
+    assert result["preflight"]["title"] == (embedded_title or "Original Book")

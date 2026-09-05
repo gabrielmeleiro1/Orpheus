@@ -17,6 +17,7 @@ from modules.errors import TTSModelError, SynthesisError, VRAMOverflowError
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.voices import kokoro_voice_lookup
 from .engine_config import TTSConfig
+from .cleaner_errors import is_memory_pressure_error
 from . import engine_output, engine_runtime
 from . import mlx_compat as mlx_compat_backend
 from . import model_cache as model_cache_backend
@@ -359,7 +360,7 @@ class TTSEngine:
     @staticmethod
     def _is_memory_pressure_error(error_str: str) -> bool:
         """Return True for VRAM/oom style failures."""
-        return any(token in error_str for token in ["memory", "vram", "oom"])
+        return is_memory_pressure_error(error_str)
 
     @staticmethod
     def _clamp_speed(speed: float) -> float:

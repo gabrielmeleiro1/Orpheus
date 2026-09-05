@@ -54,7 +54,8 @@ def test_source_upload_accepts_payloads_at_limit(tmp_path, monkeypatch):
 
 
 def test_source_upload_fallback_preflight_matches_frontend_contract(tmp_path, monkeypatch):
-    def fail_preflight(_path):  # noqa: ANN001, ANN202
+    def fail_preflight(_path, *, fallback_title=None):  # noqa: ANN001, ANN202
+        assert fallback_title == "malformed"
         raise ValueError("malformed source")
 
     monkeypatch.setattr(library_service, "inspect_source", fail_preflight)

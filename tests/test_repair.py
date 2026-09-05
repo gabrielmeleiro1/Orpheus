@@ -88,7 +88,7 @@ def test_execute_repair_plan_handles_kept_aac_chapters_and_persists_updates(
     ]
 
     kept_audio = tmp_path / "chapter_01.m4a"
-    kept_audio.write_bytes(b"aac")
+    _write_playable_audio(kept_audio)
     repaired_audio = tmp_path / "chapters" / "02_Two.m4a"
     repaired_audio.parent.mkdir(parents=True, exist_ok=True)
     repaired_audio.write_bytes(b"aac")
@@ -173,7 +173,7 @@ def test_execute_repair_plan_persists_durable_path_from_background_aac_future(
     ]
 
     kept_audio = tmp_path / "chapter_01.m4a"
-    kept_audio.write_bytes(b"aac")
+    _write_playable_audio(kept_audio)
 
     chapters_dir = tmp_path / "output" / "chapters"
     chapters_dir.mkdir(parents=True, exist_ok=True)
@@ -269,7 +269,7 @@ def test_execute_repair_plan_is_idempotent_after_background_aac_repair(
         SimpleNamespace(number=2, title="Two", content="text two"),
     ]
     kept_audio = tmp_path / "chapter_01.m4a"
-    kept_audio.write_bytes(b"aac")
+    _write_playable_audio(kept_audio)
     chapters_dir = tmp_path / "output" / "chapters"
     chapters_dir.mkdir(parents=True, exist_ok=True)
     chapter_wav = chapters_dir / "chapter_02.wav"
@@ -280,10 +280,12 @@ def test_execute_repair_plan_is_idempotent_after_background_aac_repair(
     # apply_repair_result-equivalent writes flow back here after each pass.
     persisted_paths: dict[int, str | None] = {11: str(kept_audio), 12: None}
 
+    persisted_durations: dict[int, int] = {}
+
     def make_stored_chapters() -> list[Chapter]:
         return [
             Chapter(11, 77, 1, "One", 1000, persisted_paths[11]),
-            Chapter(12, 77, 2, "Two", None, persisted_paths[12]),
+            Chapter(12, 77, 2, "Two", persisted_durations.get(12), persisted_paths[12]),
         ]
 
     def resolve_chapter_audio(chapter):  # noqa: ANN001
@@ -301,7 +303,7 @@ def test_execute_repair_plan_is_idempotent_after_background_aac_repair(
         results: list[ChapterResult] = []
         for chapter in chapters:
             future: Future = Future()
-            durable_audio.write_bytes(b"aac")
+            _write_playable_audio(durable_audio)
             future.set_result(str(durable_audio))
             results.append(
                 ChapterResult(
@@ -349,6 +351,7 @@ def test_execute_repair_plan_is_idempotent_after_background_aac_repair(
         # Mirror sqlite_repo.apply_repair_result: persist each update's mp3_path.
         for update in result.repaired_chapter_updates:
             persisted_paths[update.chapter_id] = update.mp3_path
+            persisted_durations[update.chapter_id] = update.duration_ms
         return result
 
     first = run_once()
@@ -395,3 +398,97 @@ def test_execute_repair_plan_uses_shared_chapter_set_validation(tmp_path: Path) 
     )
     assert result.success is False
     assert "duplicate source chapter rows: 1" in str(result.error)
+
+
+def test_repair_regenerates_corrupt_audio_and_reuses_valid_audio(tmp_path):
+    from dataclasses import replace
+    from modules.pipeline.models import ChapterResult
+
+    valid = tmp_path / 'one.m4a'
+    _write_playable_audio(valid)
+    corrupt = tmp_path / 'two.m4a'
+    corrupt.write_bytes(b'corrupt retained artifact')
+    missing_duration_corrupt = tmp_path / 'three.m4a'
+    missing_duration_corrupt.write_bytes(b'corrupt checkpoint')
+    stored = [
+        Chapter(11, 77, 1, 'One', 1000, str(valid)),
+        Chapter(12, 77, 2, 'Two', 1000, str(corrupt)),
+        Chapter(13, 77, 3, 'Three', 0, str(missing_duration_corrupt)),
+    ]
+    document = [SimpleNamespace(number=row.chapter_number, title=row.title, content='text') for row in stored]
+    runtime, _ = _make_runtime(document_chapters=document)
+    regenerated = []
+
+    def process_missing(chapters, output_dir, total):
+        regenerated.extend(chapter.number for chapter in chapters)
+        results = []
+        for chapter in chapters:
+            path = output_dir / f'{chapter.number}.m4a'
+            _write_playable_audio(path)
+            results.append(ChapterResult(chapter.number, chapter.title, mp3_path=path, aac_path=path, duration_ms=1000))
+        return results
+
+    def package(results, title, author, output_dir):
+        path = output_dir / 'book.m4b'
+        _write_playable_audio(path)
+        return path
+
+    runtime = replace(runtime, process_missing_chapters=process_missing, package_results=package)
+    result = execute_repair_plan(runtime, RepairPlan(
+        source_path=tmp_path / 'source.md', stored_chapters=stored,
+        title='Repair', author=None, output_dir=tmp_path / 'out',
+        chapters_dir=tmp_path / 'out' / 'chapters',
+        resolve_chapter_audio=lambda chapter: Path(chapter.mp3_path),
+    ))
+    assert result.success, result.error
+    assert regenerated == [2, 3]
+    assert result.chapters[0].aac_path == valid
+    assert {update.chapter_id for update in result.repaired_chapter_updates} == {12, 13}
+
+
+def _write_playable_audio(path):
+    import wave
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), 'wb') as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(8000)
+        output.writeframes(b'\x00\x00' * 8000)
+
+
+def test_repair_cancellation_stops_probing_retained_inventory(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from modules.audio.encoder import AudioEncoder
+
+    paths = [tmp_path / 'one.m4a', tmp_path / 'two.m4a']
+    for path in paths:
+        _write_playable_audio(path)
+    chapters = [SimpleNamespace(number=number, title=title, content='text') for number, title in [(1, 'One'), (2, 'Two')]]
+    stored = [Chapter(number, 77, number, chapter.title, 1000, str(paths[number - 1])) for number, chapter in enumerate(chapters, 1)]
+    cancelled = False
+    probed = []
+
+    def probe(encoder, path):
+        nonlocal cancelled
+        probed.append(path)
+        cancelled = True
+        return 1.0
+
+    monkeypatch.setattr(AudioEncoder, 'get_duration', probe)
+    runtime, observed = _make_runtime(document_chapters=chapters)
+
+    def unexpected_package(*args):
+        raise AssertionError('Cancelled repair must not package retained audio')
+
+    runtime = replace(runtime, package_results=unexpected_package)
+    result = execute_repair_plan(runtime, RepairPlan(
+        source_path=tmp_path / 'source.md', stored_chapters=stored,
+        title='Repair', author=None, output_dir=tmp_path / 'out',
+        chapters_dir=tmp_path / 'out' / 'chapters',
+        resolve_chapter_audio=lambda chapter: Path(chapter.mp3_path),
+        cancel_requested=lambda: cancelled,
+    ))
+    assert probed == [paths[0]]
+    assert result.success is False
+    assert result.error == 'Cancelled'
+    assert observed['stages'][-1] == 'cancelled'

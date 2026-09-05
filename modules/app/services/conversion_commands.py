@@ -117,10 +117,10 @@ class RepairContext:
     book_output_dir: Path
     chapters_dir: Path
     resolve_chapter_audio: Callable[[Any], Path | None]
-    # True when the chapters kept from the original conversion are MP3 files.
-    # Repaired chapters must then also emit MP3 so packaging receives a
-    # homogeneous chapter set instead of a mixed MP3/AAC one it rejects.
+    # Pin the inventoried format (or retained legacy audio) so repair keeps
+    # stable filenames and packaging receives homogeneous MP3/AAC chapters.
     requires_mp3_artifacts: bool = False
+    requires_aac_artifacts: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -131,11 +131,13 @@ class RepairRunCommand(PipelineJobCommand):
     repair_context: RepairContext
 
     def adjust_pipeline_config(self, pipeline_config: PipelineConfig) -> None:
-        if not self.repair_context.requires_mp3_artifacts:
-            return
-        pipeline_config.emit_chapter_mp3_artifacts = True
-        # Chapter AAC artifacts would be ignored by MP3 packaging; skip them.
-        pipeline_config.enable_chapter_aac_packaging = False
+        if self.repair_context.requires_mp3_artifacts:
+            pipeline_config.emit_chapter_mp3_artifacts = True
+            # Chapter AAC artifacts would be ignored by MP3 packaging; skip them.
+            pipeline_config.enable_chapter_aac_packaging = False
+        elif self.repair_context.requires_aac_artifacts:
+            pipeline_config.emit_chapter_mp3_artifacts = False
+            pipeline_config.enable_chapter_aac_packaging = True
 
     def run(
         self,
@@ -226,17 +228,34 @@ def resolve_repair_context(
     if source_path is None or not source_path.exists():
         raise ValueError("Original source file is missing; repair cannot rerun chapters")
 
-    book_output_dir, chapters_dir = service._repair_output_dirs(book, chapters)
+    from modules.pipeline.recovery import recovery_audio_paths
+
+    recovery_paths = recovery_audio_paths(source_path)
+    if recovery_paths:
+        book_output_dir = source_path.parent.parent
+        chapters_dir = book_output_dir / "chapters"
+    else:
+        book_output_dir, chapters_dir = service._repair_output_dirs(book, chapters)
 
     def resolve_chapter_audio(chapter: Any) -> Path | None:
-        return resolve_stored(getattr(chapter, "mp3_path", None))
+        stored = resolve_stored(getattr(chapter, "mp3_path", None))
+        if stored is not None and stored.is_file():
+            return stored
+        candidate = recovery_paths.get((int(chapter.chapter_number), str(chapter.title)))
+        if candidate is not None and candidate.is_file() and candidate.stat().st_size > 0:
+            return candidate
+        return None
 
-    requires_mp3_artifacts = any(
-        (resolved := resolve_chapter_audio(chapter)) is not None
-        and resolved.suffix.lower() == ".mp3"
-        and resolved.is_file()
-        for chapter in chapters
-    )
+    # The durable inventory pins the format even when interruption preceded
+    # the first encoded chapter. Otherwise infer it from retained legacy audio.
+    # Current app defaults must not change repair output filenames or produce
+    # mixed MP3/AAC packaging after a restart.
+    audio_paths = list(recovery_paths.values()) if recovery_paths else [
+        path for chapter in chapters
+        if (path := resolve_chapter_audio(chapter)) is not None
+    ]
+    requires_mp3_artifacts = any(path.suffix.lower() == ".mp3" for path in audio_paths)
+    requires_aac_artifacts = any(path.suffix.lower() == ".m4a" for path in audio_paths)
     return RepairContext(
         book=book,
         chapters=list(chapters),
@@ -245,4 +264,5 @@ def resolve_repair_context(
         chapters_dir=chapters_dir,
         resolve_chapter_audio=resolve_chapter_audio,
         requires_mp3_artifacts=requires_mp3_artifacts,
+        requires_aac_artifacts=requires_aac_artifacts,
     )

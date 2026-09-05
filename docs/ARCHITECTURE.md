@@ -62,6 +62,24 @@ Python continues to own conversion orchestration and local storage, including SQ
 Tauri/Rust owns desktop shell duties: window lifecycle, process lifecycle, app paths,
 and packaging.
 
+## Interrupted conversion recovery
+
+Application-owned conversions register an incomplete library book before synthesis.
+`modules/pipeline/recovery.py` keeps the original source under the reserved output
+directory's `.orpheus-source/` and writes `.orpheus-recovery.json` with ordered
+chapter identities and intended audio filenames. The application service persists
+the conversion options and reserves the book under the job lock.
+
+Missing chapter paths remain NULL in SQLite. An atomically published chapter file
+is also a recovery checkpoint if the process exits before updating SQLite. Repair
+uses the inventory, validates retained audio, restores missing durations, and
+regenerates missing or unreadable chapters. Successful publication updates the
+same book. Library deletion and storage maintenance use the durable source to
+identify the exact reserved directory, including duplicate titles.
+
+Keep these contracts covered in `tests/test_conversion_recovery.py` and
+`tests/test_repair.py` when changing synthesis, naming, cleanup, or persistence.
+
 ## Desktop Runtime Topology (Tauri Release)
 
 Desktop runtime modes:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from modules.tts.cleaner_errors import is_memory_pressure_error
+
 
 INFRASTRUCTURE_ERROR_MARKERS = (
     "fds_to_keep",
@@ -14,15 +16,6 @@ INFRASTRUCTURE_ERROR_MARKERS = (
     "resource_tracker",
     "process pool",
 )
-
-MEMORY_PRESSURE_ERROR_MARKERS = (
-    "memory",
-    "vram",
-    "oom",
-    "metal",
-    "out of memory",
-)
-
 
 def should_retry_sequential_from_parallel_errors(results: list[Any]) -> bool:
     """
@@ -36,12 +29,6 @@ def should_retry_sequential_from_parallel_errors(results: list[Any]) -> bool:
 
     sample_errors = " ".join((getattr(result, "error", "") or "").lower() for result in results[:5])
     return any(marker in sample_errors for marker in INFRASTRUCTURE_ERROR_MARKERS)
-
-
-def is_memory_pressure_error(error: str) -> bool:
-    """Return True when an error indicates memory pressure or device OOM."""
-    lowered = str(error or "").lower()
-    return any(marker in lowered for marker in MEMORY_PRESSURE_ERROR_MARKERS)
 
 
 def should_degrade_sequential_from_memory_errors(results: list[Any]) -> bool:

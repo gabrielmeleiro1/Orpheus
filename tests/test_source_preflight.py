@@ -262,3 +262,48 @@ def test_preflight_rejects_unsupported_source_type(tmp_path: Path) -> None:
         assert "Unsupported source type" in str(exc)
     else:
         raise AssertionError("expected unsupported source to fail")
+
+
+def test_heading_heavy_preflight_does_not_materialize_all_lines(tmp_path):
+    import tracemalloc
+
+    source = tmp_path / "large.md"
+    block = "# Chapter\n\nA short sentence about a quiet lake and a small boat.\n\n"
+    count = (1024 * 1024) // len(block)
+    source.write_text(block * count)
+    tracemalloc.start()
+    try:
+        result = preflight_source(source)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert result["chapter_count"] == count
+    assert len(result["sample"]) <= 900
+    # The source must be decoded, but metadata sampling should not create
+    # multiple full lists/sets of every heading and body line (formerly >14 MiB).
+    assert peak < source.stat().st_size * 5
+
+
+def test_markdown_sample_matches_full_normalization_for_line_and_fence_edges(tmp_path):
+    import re
+    from modules.ingestion.markdown_parser import markdown_headings, strip_leading_front_matter
+
+    cases = [
+        "---\r\ntitle: ignored\r\n...\r\n# First\r\n  First\t word  \r\n\r\n Second word\n## Next\nTail",
+        "```md\n# Inside fence\n```\n# Outside\n   Body\n~~~\n## Code\n~~~\nTail",
+        "# One\vbody\f# Two\x1cbody\x1d# Three\x1ebody\x85tail\u2028# Four\u2029tail",
+        "---\nUnclosed front matter\n# Heading\nBody",
+        "# Heading only\n",
+        "word " * 2000,
+    ]
+    source = tmp_path / "sample.md"
+    for text in cases:
+        source.write_text(text)
+        body = strip_leading_front_matter(text)
+        headings = dict(markdown_headings(body))
+        expected = re.sub(r"\s+", " ", "\n".join(
+            line for number, line in enumerate(body.splitlines()) if number not in headings
+        )).strip()
+        for limit in [-1, 0, 1, 4, 9, 20, 900]:
+            result = preflight_source(source, max_sample_chars=limit)
+            assert result["sample"] == expected[:limit].strip(), (text, limit)

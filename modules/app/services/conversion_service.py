@@ -672,6 +672,43 @@ class ConversionService:
         )
         return book.id
 
+    def _checkpoint_conversion(self, command: ConversionRunCommand, source_path: Path, result: PipelineConversionResult) -> None:
+        # Registration and reservation share the job lock: deletion must never
+        # see the new book before it has become owned by the active job.
+        with self._job_lock:
+            book_id = getattr(command.job, "book_id", None)
+            if book_id is None:
+                book_id = self._persist_conversion_library_records(
+                    source_path, result, conversion_mode=command.conversion_mode,
+                    runtime_options=command.runtime_options,
+                )
+                command.job.book_id = book_id
+                return
+        self._update_conversion_library_records(book_id, result)
+
+    def _update_conversion_library_records(self, book_id: int, result: PipelineConversionResult) -> None:
+        detail = self._repository.get_book_with_chapters(book_id)
+        if detail is None:
+            raise LookupError("Conversion recovery book disappeared")
+        _book, stored_chapters = detail
+        by_number = {chapter.chapter_number: chapter for chapter in result.chapters}
+        playback_path, playback_status = playback_metadata_for_pipeline_result(result)
+        self._repository.apply_repair_result(
+            book_id,
+            repaired_chapter_updates=[
+                {
+                    "chapter_id": stored.id,
+                    "duration_ms": by_number[stored.chapter_number].duration_ms,
+                    "mp3_path": str(by_number[stored.chapter_number].mp3_path)
+                    if by_number[stored.chapter_number].mp3_path else None,
+                }
+                for stored in stored_chapters if stored.chapter_number in by_number
+            ],
+            playback_path=playback_path,
+            playback_status=playback_status,
+            total_chapters=len(stored_chapters),
+        )
+
     def _handle_conversion_success(
         self,
         *,
@@ -682,12 +719,16 @@ class ConversionService:
         conversion_mode: ConversionMode | str = ConversionMode.AUDIOBOOK,
         runtime_options: Optional[ConversionRuntimeOptions] = None,
     ) -> None:
-        book_id = self._persist_conversion_library_records(
-            source_path,
-            pipeline_result,
-            conversion_mode=conversion_mode,
-            runtime_options=runtime_options,
-        )
+        book_id = getattr(job, "book_id", None)
+        if book_id is None:
+            book_id = self._persist_conversion_library_records(
+                source_path,
+                pipeline_result,
+                conversion_mode=conversion_mode,
+                runtime_options=runtime_options,
+            )
+        else:
+            self._update_conversion_library_records(book_id, pipeline_result)
         complete = getattr(job, "complete", None)
         if callable(complete):
             complete(book_id)
@@ -809,6 +850,10 @@ class ConversionService:
                 progress_callback=on_progress,
                 verbose_callback=on_verbose,
             )
+            if isinstance(command, ConversionRunCommand):
+                register_recovery = getattr(pipeline, "set_recovery_callback", None)
+                if callable(register_recovery):
+                    register_recovery(lambda source, result: self._checkpoint_conversion(command, source, result))
             self._tts_session.attach(pipeline)
             cancel_requested = self._attach_pipeline_to_job(job, pipeline)
             if cancel_requested:

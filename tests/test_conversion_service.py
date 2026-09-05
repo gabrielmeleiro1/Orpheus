@@ -711,7 +711,7 @@ def test_conversion_service_worker_crash_failure_does_not_persist_library_record
     assert repo.created_chapters is None
 
 
-def test_conversion_service_broken_parallel_worker_results_fallback_failure_does_not_persist_library_records(
+def test_conversion_service_broken_parallel_worker_results_fallback_failure_persists_incomplete_recovery_records(
     tmp_path,
 ):
     source_path = tmp_path / "broken-pool-source.txt"
@@ -826,7 +826,7 @@ def test_conversion_service_broken_parallel_worker_results_fallback_failure_does
         assert _BrokenPoolFallbackPipeline.package_calls == 0
         assert not any(config.output_dir.rglob("*.m4b"))
         assert job.status == JobStatus.FAILED
-        assert job.book_id is None
+        assert job.book_id is not None
         assert job.result is not None
         assert job.result.success is False
         error_text = str(job.error).lower()
@@ -841,8 +841,8 @@ def test_conversion_service_broken_parallel_worker_results_fallback_failure_does
             ).fetchone()[0]
             chapter_count = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()[0]
 
-        assert book_count == 0
-        assert chapter_count == 0
+        assert book_count == 1
+        assert chapter_count == 2
         assert state_events[-1] == JobState.FAILED
         assert JobState.COMPLETED not in state_events
         assert JobState.CANCELLED not in state_events
@@ -3875,7 +3875,8 @@ def test_pipeline_repair_dispatches_missing_chapters_through_worker_plan(tmp_pat
     chapters_dir = output_dir / "chapters"
     existing_audio = chapters_dir / "01_one.mp3"
     existing_audio.parent.mkdir(parents=True, exist_ok=True)
-    existing_audio.write_bytes(b"one")
+    from tests.test_repair import _write_playable_audio
+    _write_playable_audio(existing_audio)
 
     stored_chapters = [
         Chapter(1, 77, 1, "One", 1000, str(existing_audio)),
@@ -4013,7 +4014,8 @@ def test_conversion_pipeline_repair_entrypoint_uses_explicit_runtime_plan(tmp_pa
     chapters_dir = output_dir / "chapters"
     existing_audio = chapters_dir / "01_one.mp3"
     existing_audio.parent.mkdir(parents=True, exist_ok=True)
-    existing_audio.write_bytes(b"one")
+    from tests.test_repair import _write_playable_audio
+    _write_playable_audio(existing_audio)
     stored_chapters = [
         Chapter(1, 77, 1, "One", 1000, str(existing_audio)),
         Chapter(2, 77, 2, "Two", None, None),
@@ -4178,7 +4180,8 @@ def test_conversion_service_repair_processes_only_missing_chapters_and_repackage
     chapters_dir = output_dir / "chapters"
     chapters_dir.mkdir(parents=True, exist_ok=True)
     existing_audio = chapters_dir / "01_one.mp3"
-    existing_audio.write_bytes(b"mp3")
+    from tests.test_repair import _write_playable_audio
+    _write_playable_audio(existing_audio)
 
     class _RepairRepository:
         def __init__(self) -> None:

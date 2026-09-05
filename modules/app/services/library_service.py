@@ -226,7 +226,7 @@ class LibraryService:
         owner_only(stored_path)
 
         try:
-            preflight = self.preflight_source(stored_path)
+            preflight = inspect_source(stored_path, fallback_title=Path(original_name).stem)
         except Exception as exc:
             preflight = self._fallback_preflight(original_name, suffix, size_bytes, exc)
 
@@ -426,7 +426,21 @@ class LibraryService:
             except OSError as exc:
                 raise RuntimeError(f"failed to delete staged audiobook artifact: {staged_path}") from exc
 
+    def _recovery_output_dir(self, book) -> Optional[Path]:
+        from modules.pipeline.recovery import recovery_audio_paths
+
+        source = self._resolve_stored_path(getattr(book, "source_path", None))
+        if source is None or not recovery_audio_paths(source):
+            return None
+        directory = source.parent.parent
+        if self._is_within_output_root(directory) and not self._is_output_root(directory):
+            return directory
+        return None
+
     def _book_output_dir(self, book, chapters) -> Optional[Path]:
+        recovery_directory = self._recovery_output_dir(book)
+        if recovery_directory is not None:
+            return recovery_directory
         candidate_paths = []
         playback_path = self._resolve_stored_path(getattr(book, "playback_path", None))
         if playback_path is not None:
@@ -472,6 +486,9 @@ class LibraryService:
                 output_dirs.add(candidate_dir)
             return path
 
+        recovery_directory = self._recovery_output_dir(book)
+        if recovery_directory is not None:
+            output_dirs.add(recovery_directory)
         add_output_path(getattr(book, "playback_path", None))
 
         for chapter in chapters:

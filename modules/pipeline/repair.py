@@ -56,10 +56,20 @@ def _existing_repair_result(
         audio_field = "aac_path"
     elif suffix == ".wav":
         audio_field = "wav_path"
+    from modules.audio.encoder import AudioEncoder
+
+    # A DB duration records the original encode, not the current file's health.
+    # Probe retained files even after a checkpoint persisted their duration.
+    probed_duration_ms = round(AudioEncoder().get_duration(chapter_audio) * 1000)
+    if probed_duration_ms <= 0:
+        raise ValueError(f"Chapter audio has no playable duration: {chapter_audio.name}")
+    duration_ms = int(getattr(stored_chapter, "duration_ms", 0) or 0)
+    if duration_ms <= 0:
+        duration_ms = probed_duration_ms
     return ChapterResult(
         chapter_number=_chapter_number(stored_chapter, 0),
         chapter_title=str(getattr(stored_chapter, "title", "")),
-        duration_ms=int(getattr(stored_chapter, "duration_ms", 0) or 0),
+        duration_ms=duration_ms,
         **{audio_field: chapter_audio},
     )
 
@@ -287,16 +297,27 @@ def execute_repair_plan(
         missing_chapters: list[Any] = []
 
         for stored_chapter in stored_chapters:
-            chapter_number = _chapter_number(stored_chapter, 0)
-            chapter_audio = plan.resolve_chapter_audio(stored_chapter)
-            if chapter_audio is not None and chapter_audio.exists() and chapter_audio.is_file():
-                results_by_number[chapter_number] = _existing_repair_result(stored_chapter, chapter_audio)
-                continue
-
             if plan.cancel_requested is not None and plan.cancel_requested():
                 runtime.cancel()
                 runtime.set_stage(PipelineStage.CANCELLED)
                 return _cancelled_result(plan)
+
+            chapter_number = _chapter_number(stored_chapter, 0)
+            chapter_audio = plan.resolve_chapter_audio(stored_chapter)
+            if chapter_audio is not None and chapter_audio.exists() and chapter_audio.is_file():
+                try:
+                    kept = _existing_repair_result(stored_chapter, chapter_audio)
+                except (OSError, RuntimeError, ValueError, KeyError):
+                    # Unreadable/empty audio is a missing chapter for repair.
+                    # Keep it on disk until the encoder atomically replaces it.
+                    pass
+                else:
+                    results_by_number[chapter_number] = kept
+                    if not getattr(stored_chapter, "duration_ms", None) or not getattr(stored_chapter, "mp3_path", None):
+                        # Recovered atomic artifacts may predate their DB checkpoint.
+                        kept.mp3_path = chapter_audio
+                        repaired_records.append((stored_chapter, kept))
+                    continue
 
             source_chapter = source_by_number.get(chapter_number)
             if source_chapter is None:

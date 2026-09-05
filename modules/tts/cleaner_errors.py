@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
-MEMORY_PRESSURE_ERROR_MARKERS = (
-    "memory",
-    "vram",
-    "oom",
-    "metal",
-    "out of memory",
+import re
+
+# Recognize allocation failures, not generic device or model-path words.
+# In particular, "bloom", "/memory/", and an unsupported Metal device are
+# not evidence that retrying with a smaller memory budget can help.
+_MEMORY_FAILURE = re.compile(
+    r"out[ -]of[ -]memory|"
+    r"(?:cannot|can't|failed to|unable to) allocate (?:\w+ )?memory|"
+    r"(?:insufficient|exhausted) (?:device )?(?:memory|vram)|"
+    r"(?:memory|vram) (?:exhausted|pressure)|\bvram overflow\b|"
+    r"std::bad_alloc|cudaErrorMemoryAllocation|CUBLAS_STATUS_ALLOC_FAILED|"
+    r"(?<![\w/\\.-])oom(?![\w/\\.-])",
+    re.IGNORECASE,
 )
 
 
 def is_memory_pressure_error(message: str) -> bool:
-    """Return True when an error indicates memory pressure or device OOM."""
-    lowered = str(message or "").lower()
-    return any(marker in lowered for marker in MEMORY_PRESSURE_ERROR_MARKERS)
+    """Recognize known provider allocation failures in third-party messages."""
+    return bool(_MEMORY_FAILURE.search(str(message or "")))
 
 
 class CleanerRuntimeUnavailable(RuntimeError):

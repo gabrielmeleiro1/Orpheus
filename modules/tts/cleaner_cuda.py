@@ -83,7 +83,9 @@ def _is_cuda_oom_error(exc: BaseException, torch_module: Any) -> bool:
 def _reraise_cuda_runtime_error(exc: BaseException, *, torch_module: Any | None = None) -> None:
     if isinstance(exc, (CleanerRuntimeUnavailable, CleanerRuntimeMemoryError)):
         raise exc
-    if torch_module is not None and _is_cuda_oom_error(exc, torch_module):
+    if isinstance(exc, MemoryError) or (
+        torch_module is not None and _is_cuda_oom_error(exc, torch_module)
+    ):
         raise CleanerRuntimeMemoryError(str(exc)) from exc
     if isinstance(exc, ImportError):
         raise CleanerRuntimeUnavailable(cuda_runtime_error_message(exc)) from exc

@@ -8,7 +8,7 @@ import zipfile
 from typing import Any, Optional
 
 from .text_encoding import read_source_text
-from .markdown_parser import markdown_headings, strip_leading_front_matter
+from .markdown_parser import iter_markdown_lines, strip_leading_front_matter
 from .pdf_preflight import analyze_pdf_text_layer
 from modules.errors import validate_epub
 
@@ -18,12 +18,32 @@ SUPPORTED_PREFLIGHT_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
 DEFAULT_SAMPLE_CHARS = 900
 TINY_SOURCE_BYTES = 64
 
+
 def _collapse_sample(text: str, max_chars: int) -> str:
-    collapsed = re.sub(r"\s+", " ", text).strip()
-    return collapsed[:max_chars].strip()
+    # Short lines are already bounded; the C regex substitution is cheaper
+    # than constructing one Python match per word for these common inputs.
+    if max_chars < 0 or len(text) <= 4096:
+        return re.sub(r"\s+", " ", text).strip()[:max_chars].strip()
+    parts: list[str] = []
+    remaining = max_chars
+    for match in re.finditer(r"\S+", text):
+        if remaining <= 0:
+            break
+        if parts:
+            parts.append(" ")
+            remaining -= 1
+        end = min(match.end(), match.start() + remaining)
+        parts.append(text[match.start():end])
+        remaining -= end - match.start()
+    return "".join(parts).strip()
 
 
-def _base_payload(source_path: Path, source_type: str, warnings: list[str]) -> dict[str, Any]:
+def _base_payload(
+    source_path: Path,
+    source_type: str,
+    warnings: list[str],
+    fallback_title: str | None = None,
+) -> dict[str, Any]:
     try:
         size_bytes = source_path.stat().st_size
     except OSError:
@@ -33,7 +53,7 @@ def _base_payload(source_path: Path, source_type: str, warnings: list[str]) -> d
         warnings.append("Source is very small; conversion may produce little or no audio.")
 
     return {
-        "title": source_path.stem,
+        "title": fallback_title if fallback_title is not None else source_path.stem,
         "author": None,
         "chapter_count": 0,
         "source_type": source_type,
@@ -45,9 +65,14 @@ def _base_payload(source_path: Path, source_type: str, warnings: list[str]) -> d
     }
 
 
-def _preflight_text(source_path: Path, source_type: str, max_sample_chars: int) -> dict[str, Any]:
+def _preflight_text(
+    source_path: Path,
+    source_type: str,
+    max_sample_chars: int,
+    fallback_title: str | None = None,
+) -> dict[str, Any]:
     warnings: list[str] = []
-    payload = _base_payload(source_path, source_type, warnings)
+    payload = _base_payload(source_path, source_type, warnings, fallback_title)
     text = read_source_text(source_path)
 
     sample = _collapse_sample(text, max_sample_chars)
@@ -63,34 +88,57 @@ def _preflight_text(source_path: Path, source_type: str, max_sample_chars: int) 
     return payload
 
 
-def _preflight_markdown(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
+def _preflight_markdown(
+    source_path: Path,
+    max_sample_chars: int,
+    fallback_title: str | None = None,
+) -> dict[str, Any]:
     warnings: list[str] = []
-    payload = _base_payload(source_path, "md", warnings)
+    payload = _base_payload(source_path, "md", warnings, fallback_title)
     text = strip_leading_front_matter(read_source_text(source_path))
-    heading_matches = markdown_headings(text)
-    headings = [title for _, title in heading_matches]
-    heading_lines = {line_number for line_number, _ in heading_matches}
-    body = "\n".join(
-        line for line_number, line in enumerate(text.splitlines())
-        if line_number not in heading_lines
+    first_heading = None
+    chapter_count = 0
+    sample_parts: list[str] = []
+    sample_length = 0
+    # Preserve Python slice semantics for callers explicitly requesting a negative limit.
+    unbounded_body: list[str] | None = [] if max_sample_chars < 0 else None
+    for line, heading in iter_markdown_lines(text):
+        if heading is not None:
+            chapter_count += 1
+            if first_heading is None:
+                first_heading = heading
+        elif unbounded_body is not None:
+            unbounded_body.append(line)
+        elif sample_length < max_sample_chars:
+            chunk = _collapse_sample(line, max_sample_chars - sample_length)
+            if chunk:
+                sample_parts.append(chunk)
+                sample_length += len(chunk) + 1
+    sample = (
+        _collapse_sample("\n".join(unbounded_body), max_sample_chars)
+        if unbounded_body is not None
+        else " ".join(sample_parts)[:max_sample_chars].strip()
     )
-    sample = _collapse_sample(body, max_sample_chars)
     if not sample:
         warnings.append("No readable text was found in this source.")
 
     payload.update(
         {
-            "title": headings[0] if headings else source_path.stem,
-            "chapter_count": len(headings) if headings else (1 if sample else 0),
+            "title": first_heading if first_heading is not None else payload["title"],
+            "chapter_count": chapter_count if chapter_count else (1 if sample else 0),
             "sample": sample,
         }
     )
     return payload
 
 
-def _preflight_pdf(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
+def _preflight_pdf(
+    source_path: Path,
+    max_sample_chars: int,
+    fallback_title: str | None = None,
+) -> dict[str, Any]:
     warnings: list[str] = []
-    payload = _base_payload(source_path, "pdf", warnings)
+    payload = _base_payload(source_path, "pdf", warnings, fallback_title)
     text_layer = None
     try:
         import fitz
@@ -107,7 +155,7 @@ def _preflight_pdf(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
 
         with fitz.open(source_path) as document:
             metadata = document.metadata or {}
-            title = str(metadata.get("title") or "").strip() or source_path.stem
+            title = str(metadata.get("title") or "").strip() or payload["title"]
             author: Optional[str] = str(metadata.get("author") or "").strip() or None
             toc = document.get_toc(simple=True)
             page_samples: list[str] = []
@@ -134,9 +182,13 @@ def _preflight_pdf(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
     return payload
 
 
-def _preflight_epub(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
+def _preflight_epub(
+    source_path: Path,
+    max_sample_chars: int,
+    fallback_title: str | None = None,
+) -> dict[str, Any]:
     warnings: list[str] = []
-    payload = _base_payload(source_path, "epub", warnings)
+    payload = _base_payload(source_path, "epub", warnings, fallback_title)
     if not zipfile.is_zipfile(source_path):
         warnings.append("Source may be malformed or unreadable: not a valid EPUB archive")
         return payload
@@ -152,7 +204,7 @@ def _preflight_epub(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
         author_values = book.get_metadata("DC", "creator")
         # An empty <dc:title/> yields [(None, {})]; guard the None before strip.
         title = (title_values[0][0] or "").strip() if title_values else ""
-        title = title or source_path.stem
+        title = title or payload["title"]
         author = (author_values[0][0] or "").strip() if author_values else ""
         author = author or None
         sections = build_epub_sections(book)
@@ -170,7 +222,7 @@ def _preflight_epub(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
         warnings.append("No readable text was found in this EPUB.")
     payload.update(
         {
-            "title": title or source_path.stem,
+            "title": title or payload["title"],
             "author": author or None,
             "chapter_count": len(sections),
             "sample": sample,
@@ -179,7 +231,12 @@ def _preflight_epub(source_path: Path, max_sample_chars: int) -> dict[str, Any]:
     return payload
 
 
-def preflight_source(source_path: Path | str, max_sample_chars: int = DEFAULT_SAMPLE_CHARS) -> dict[str, Any]:
+def preflight_source(
+    source_path: Path | str,
+    max_sample_chars: int = DEFAULT_SAMPLE_CHARS,
+    *,
+    fallback_title: str | None = None,
+) -> dict[str, Any]:
     """Return quick source metadata and conversion warnings."""
     path = Path(source_path).expanduser()
     if not path.exists():
@@ -190,9 +247,9 @@ def preflight_source(source_path: Path | str, max_sample_chars: int = DEFAULT_SA
         raise ValueError("Unsupported source type. Choose .pdf, .epub, .txt, or .md")
 
     if suffix == ".txt":
-        return _preflight_text(path, "txt", max_sample_chars)
+        return _preflight_text(path, "txt", max_sample_chars, fallback_title)
     if suffix == ".md":
-        return _preflight_markdown(path, max_sample_chars)
+        return _preflight_markdown(path, max_sample_chars, fallback_title)
     if suffix == ".pdf":
-        return _preflight_pdf(path, max_sample_chars)
-    return _preflight_epub(path, max_sample_chars)
+        return _preflight_pdf(path, max_sample_chars, fallback_title)
+    return _preflight_epub(path, max_sample_chars, fallback_title)

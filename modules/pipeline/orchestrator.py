@@ -251,6 +251,10 @@ class ConversionPipeline:
         """Check if parallel processing is enabled and available."""
         return self._runtime.is_parallel
 
+    def set_recovery_callback(self, callback: Callable[[Path, ConversionResult], None]) -> None:
+        """Register durable library checkpoints for application-owned conversions."""
+        self._recovery_callback = callback
+
     def cancel(self):
         """Request pipeline cancellation."""
         self._run_state.cancelled = True
@@ -345,6 +349,11 @@ class ConversionPipeline:
         pipeline_start = time.time()
         source_path = Path(source_path)
         self._begin_conversion_run()
+        recovery_source = None
+        recovery_registered = False
+        chapter_results = []
+        book_title, book_author = title or "", author
+        recovery_callback = getattr(self, "_recovery_callback", None)
         try:
             if self._check_cancelled():
                 return self._cancelled_result()
@@ -370,6 +379,18 @@ class ConversionPipeline:
             book_output_dir = workspace.output_dir
             chapters_dir = workspace.chapters_dir
 
+            if recovery_callback is not None:
+                from .recovery import prepare_recovery_source, recovery_snapshot
+
+                recovery_source = prepare_recovery_source(
+                    source_path, workspace, document.chapters,
+                    emit_mp3=self.config.emit_chapter_mp3_artifacts,
+                )
+                recovery_callback(recovery_source, recovery_snapshot(
+                    recovery_source, title=book_title, author=book_author, results=[],
+                ))
+                recovery_registered = True
+
             total_chapters = len(document.chapters)
             chapter_results = dispatch_chapters(
                 self.dispatch_context,
@@ -378,7 +399,11 @@ class ConversionPipeline:
             )
 
             if self._check_cancelled():
-                return self._cancelled_result(title=book_title, author=book_author)
+                return ConversionResult(
+                    success=False, title=book_title, author=book_author,
+                    chapters=chapter_results, error="Cancelled",
+                    total_duration_ms=sum(result.duration_ms for result in chapter_results),
+                )
 
             chapter_results, structural_mismatch_notes = (
                 validate_chapter_result_structure(
@@ -491,12 +516,24 @@ class ConversionPipeline:
             logger.exception("Pipeline conversion failed")
             return ConversionResult(
                 success=False,
-                title=title or "",
-                author=author,
+                title=book_title,
+                author=book_author,
+                chapters=chapter_results,
                 error=str(e),
             )
         finally:
             self._finish_conversion_run()
+            if recovery_registered:
+                try:
+                    recovery_callback(recovery_source, recovery_snapshot(
+                        recovery_source, title=book_title, author=book_author,
+                        results=chapter_results,
+                    ))
+                except Exception:
+                    # The committed inventory still permits repair after restart.
+                    # Keep the original failure/cancellation; successful runs must
+                    # still pass the service's atomic final publication below.
+                    logger.warning("Could not refresh recovery checkpoint", exc_info=True)
 
     def repair(
         self,
