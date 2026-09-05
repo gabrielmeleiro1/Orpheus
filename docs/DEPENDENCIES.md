@@ -116,9 +116,9 @@ script, model path, or shell command from the frontend.
 Packaged releases and browser sessions report dynamic setup as unavailable.
 During `npm run desktop:build`, Tauri freshly builds the sidecar with the
 profile selected by `ORPHEUS_RUNTIME_PROFILE=base|mlx|cuda`; no separate
-sidecar prebuild is required. A packaged `base` build still supports document
-ingestion, conversion workflows that do not require local models, library
-management, and playback. To change a packaged runtime profile, build a new
+sidecar prebuild is required. A packaged `base` build supports source inspection,
+library management, and playback of existing audio. Both conversion modes
+require TTS in an `mlx` or `cuda` runtime build. To change a packaged runtime profile, build a new
 artifact from a trusted source checkout; the packaged app does not reach back
 to a build-machine checkout path.
 

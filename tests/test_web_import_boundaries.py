@@ -2,7 +2,7 @@
 
 `modules.web` is a thin interface layer: it may import `modules.app` and
 `modules.contracts` but must never reach into `modules.pipeline` or
-`modules.tts` (see docs/architecture/python-boundaries.md).
+`modules.tts` (see docs/ARCHITECTURE.md).
 """
 
 from __future__ import annotations

@@ -2,15 +2,6 @@
 
 This document describes the current runtime architecture, backend surface, and local verification expectations for Orpheus.
 
-## Architecture Inventory
-
-Deeper package and boundary maps from the codebase cleanup inventory live under
-`docs/architecture/`:
-
-- [python-boundaries.md](architecture/python-boundaries.md) — Python layer map (`web` → `app` → `pipeline` → `ingestion`/`tts`/`audio`, `storage`), public entry points, import rules, and decomposition targets.
-- [desktop-boundaries.md](architecture/desktop-boundaries.md) — Tauri vs React vs API split, conversion form ownership, and frontend/backend drift risks.
-- [tooling-boundaries.md](architecture/tooling-boundaries.md) — `scripts/`, `tools/`, `orpheus bench`, sidecar build, pre-push hook, and benchmark artifact conventions.
-
 ## Where to Change X
 
 Use this table before editing. When a change crosses layers, update the matching

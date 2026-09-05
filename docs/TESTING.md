@@ -1,8 +1,7 @@
 # Testing Guide
 
-Architecture reference: [docs/ARCHITECTURE.md](ARCHITECTURE.md) (including
-[where to change X](ARCHITECTURE.md#where-to-change-x) and the
-[architecture inventory](architecture/python-boundaries.md)).
+See [Architecture](ARCHITECTURE.md) for system boundaries and
+[where to change X](ARCHITECTURE.md#where-to-change-x).
 
 ## Test Tiers
 

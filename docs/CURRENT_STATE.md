@@ -50,8 +50,6 @@ it injects app-data paths for those directories and for `audiobooks.db`.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md#where-to-change-x) for where to edit parsers,
 cleaners, TTS runtime, the conversion form, API payloads, and storage schema.
-Package-level maps: [architecture/python-boundaries.md](architecture/python-boundaries.md),
-[architecture/desktop-boundaries.md](architecture/desktop-boundaries.md).
 
 - Desktop UI:
   - `desktop/src/App.tsx`

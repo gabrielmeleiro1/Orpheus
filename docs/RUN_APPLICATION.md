@@ -20,8 +20,9 @@ python scripts/setup_runtime.py --profile base
 python -m pip install -r requirements-dev.txt
 ```
 
-The `base` profile supports document conversion, playback, and cloud cleaning,
-but does not install local TTS or local cleaning models. `requirements-dev.txt`
+The `base` profile supports source inspection, library management, and playback
+of existing audio. Both conversion modes require a local TTS runtime; cloud
+cleaning is not a replacement for TTS. Base does not install local models. `requirements-dev.txt`
 adds contributor and PyInstaller tooling on top of those base dependencies.
 Use `requirements.txt` instead when you do not plan to run tests, static
 analysis, or desktop sidecar packaging.

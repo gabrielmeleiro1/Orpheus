@@ -26,14 +26,6 @@ Maintained project documentation lives under `docs/`. The root `README.md` is th
 - [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): end-user checksum verification and supported Gatekeeper Open / Open Anyway install.
 - [COMMIT_WORKFLOW.md](COMMIT_WORKFLOW.md): commit order, message style, staging, and verification rules.
 
-### Architecture inventory
-
-Package-level boundary maps:
-
-- [architecture/python-boundaries.md](architecture/python-boundaries.md)
-- [architecture/desktop-boundaries.md](architecture/desktop-boundaries.md)
-- [architecture/tooling-boundaries.md](architecture/tooling-boundaries.md)
-
 ## Local Runtime State
 
 - `data/`, `output/`, and `temp/` are local-only runtime state.

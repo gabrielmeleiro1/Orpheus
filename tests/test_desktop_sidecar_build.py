@@ -375,7 +375,6 @@ def test_release_docs_describe_fresh_profiled_tauri_sidecar_build() -> None:
             "docs/TESTING.md",
             "docs/ARCHITECTURE.md",
             "docs/DEPENDENCIES.md",
-            "docs/architecture/tooling-boundaries.md",
         )
     }
 

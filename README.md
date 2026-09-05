@@ -46,10 +46,11 @@ npm ci
 npm run desktop:dev
 ```
 
-This quick start selects the `base` profile: document conversion, playback, and
-cloud cleaning work, while local TTS and local model cleaning remain disabled.
-Choose an optional local runtime before downloading models or building its
-sidecar:
+This quick start selects the `base` profile for library management, existing-audio
+playback, and source inspection. Both Document and Audiobook conversion produce
+audio and require a local TTS runtime. Cloud cleaning does not provide TTS.
+From the repository root, install the appropriate local runtime below before
+converting or building its sidecar:
 
 ```bash
 # macOS 14+ on arm64 Apple Silicon; no PyTorch
@@ -70,8 +71,8 @@ desktop build from this source checkout. It uses the checkout's fixed
 `.venv` interpreter and `scripts/setup_runtime.py`; browser sessions and
 packaged releases cannot run a dynamic installer. Release artifacts must be
 built with the intended `base`, `mlx`, or `cuda` profile already baked into
-their sidecar. A packaged base build remains fully usable for documents,
-library management, and playback.
+their sidecar. A packaged base build supports source inspection, library
+management, and playback of existing audio; conversion requires a build with TTS.
 
 `requirements.txt` installs the base runtime. The profile manifests live under
 `requirements/`, and `requirements-dev.txt` adds test, lint, and desktop
