@@ -13,13 +13,13 @@ types and tests listed in [TESTING.md](TESTING.md#focused-checks).
 | Cleaner policy and backends | `modules/tts/cleaner.py`, `cleaner_config.py`, `cleaner_backends/` (`mlx`, `cuda`, `api`) | `modules/pipeline/stages/cleaning.py`; env `CLEANER_BACKEND`; tests `tests/test_cleaner*.py` |
 | TTS runtime options | `modules/tts/runtime_spec.py`, `runtime_options.py`, `factory.py`, `strategies/`, `runtimes/` | `modules/pipeline/models.py` (`PipelineConfig`); `modules/app/services/runtime_capability_service.py`; tests `tests/test_tts*.py` |
 | Frontend conversion form | `desktop/src/features/conversion/` (`ConversionPanel.tsx`, `ConversionPanelView.tsx`, `conversionPanelModel.ts`, `conversionPanelStateTypes.ts`, `useConversionOptions.ts`, `useConversionSubmitPayload.ts`, `useTtsOptions.ts`, `useCleanerOptions.ts`, `useParallelWorkers.ts`) | Types are split under `desktop/src/types/` and re-exported by `desktop/src/types/api.ts`; capabilities from `GET /api/system/capabilities` |
-| API request/response payloads | `modules/web/routes/conversions.py`, `options.py`, `uploads.py`, `library.py`; `modules/web/serializers.py` | `modules/contracts/conversion_runtime_options.py` (`ConversionRuntimeOptions`); `desktop/src/types/api.ts` and `api/client.ts` |
+| API request/response payloads | `modules/web/routes/conversions.py`, `options.py`, `uploads.py`, `library.py`; `modules/web/serializers.py` | `modules/contracts/conversion_runtime_options.py` (`ConversionRuntimeOptions`); `modules/web/schemas/conversions.py` (HTTP validation); `desktop/src/types/api.ts` and `api/client.ts` |
 | Storage schema and library paths | `modules/storage/migrations.py`, `models.py`, `sqlite_repo.py`, `maintenance.py` | `modules/app/services/library_service.py`, `conversion_paths.py`; tests `tests/test_storage_*.py`, `tests/test_library_service.py` |
 
 Known cross-layer drift risks (keep these aligned when editing the rows above):
 
 - Source suffix lists: derived from `modules/contracts/source_extensions.py`; the Tauri file picker and conversion UI copy must match it.
-- Conversion runtime options: `types/api.ts` ↔ FastAPI Pydantic models ↔ `ConversionRuntimeOptions` (`modules/contracts/conversion_runtime_options.py`) ↔ `PipelineConfig`.
+- Conversion runtime options: `types/api.ts` ↔ explicit FastAPI request schemas ↔ `ConversionRuntimeOptions` (`modules/contracts/conversion_runtime_options.py`) ↔ `PipelineConfig`.
 - Progress stage names: backend pipeline events emit `PipelineStage` values from `modules/pipeline/models.py` (`ingesting`, `synthesizing`, etc.); `desktop/src/features/events/progressStageModel.ts` maps them to frontend `ProgressStageName` values (`ingestion`, `synthesis`, etc.) from the `desktop/src/types/api.ts` barrel.
 
 ## Repository Shape
@@ -32,6 +32,13 @@ Known cross-layer drift risks (keep these aligned when editing the rows above):
 - Persistence layer: `modules/storage/*`
 - Documentation: `docs/*`
 - Local runtime state: `data/`, `output/`, `temp/`
+
+Shared values live in `modules/contracts/`: conversion options are ordinary frozen
+dataclasses, source types are re-exported by storage for compatibility, and book
+identity owns output-directory naming. HTTP validation belongs in
+`modules/web/schemas/`. Cleaner memory estimates belong to `modules/tts/`.
+`tests/test_core_import_boundaries.py` prevents these shared contracts from loading
+storage or processing code, and prevents storage from loading the pipeline.
 
 ## System Overview
 

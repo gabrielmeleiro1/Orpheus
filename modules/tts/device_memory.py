@@ -478,7 +478,7 @@ class CombinedDeviceMemoryPolicy:
         self._cleaner_policy.clear_cache()
 
     def estimated_worker_bytes(self, runtime_spec: TTSRuntimeSpec) -> int | None:
-        from modules.pipeline.cleaner_memory import estimate_cleaner_cuda_bytes
+        from modules.tts.cleaner_memory import estimate_cleaner_cuda_bytes
 
         total_estimate = 0
         tts_estimate = self._tts_policy.estimated_worker_bytes(runtime_spec)

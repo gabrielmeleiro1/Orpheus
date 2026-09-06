@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from modules.pipeline.cleaner_memory import (
+from modules.tts.cleaner_memory import (
     CLEANER_CUDA_LOAD_HEADROOM_BYTES,
     estimate_cleaner_cuda_bytes,
 )

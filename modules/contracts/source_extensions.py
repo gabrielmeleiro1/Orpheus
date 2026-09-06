@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from modules.storage.models import SourceType
+from modules.contracts.source_types import SourceType
 
 
 def source_type_to_suffix(source_type: SourceType) -> str:

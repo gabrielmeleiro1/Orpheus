@@ -2,73 +2,19 @@
 
 from __future__ import annotations
 
-from typing import Literal, Optional
-
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from modules.app import ConversionCallbacks, ConversionRuntimeOptions
-from modules.contracts.conversion_runtime_options import (
-    CONVERSION_RUNTIME_OPTION_SPECS,
-    build_runtime_option_pydantic_fields,
-    conversion_runtime_option_field_names,
-)
+from modules.app import ConversionCallbacks
 from modules.app.services.repair_runtime import repair_runtime_fields_set
-from modules.contracts.conversion_runtime import merge_runtime_options
-from modules.contracts.limits import MAX_BOOK_TITLE_LENGTH
 from modules.web.deps import ControllerDep, EventBrokerDep, TempDirDep, call_with_http_errors
+from modules.web.schemas.conversions import (
+    RepairConversionRequest,
+    StartConversionRequest,
+)
 from modules.web.serializers import job_payload, job_status_value
 from modules.web.source_handles import resolve_source_reference
 
 router = APIRouter()
-
-
-class _InfNanSafeModel(BaseModel):
-    # Reject NaN/±Infinity on float fields (e.g. speed): they otherwise 500
-    # the handler instead of returning a clean 422.
-    model_config = ConfigDict(allow_inf_nan=False)
-
-
-class _ConversionRuntimeOptionsRequestMixin:
-    def to_app_options(self) -> ConversionRuntimeOptions:
-        return ConversionRuntimeOptions(
-            **{
-                name: getattr(self, name)
-                for name in conversion_runtime_option_field_names()
-            }
-        )
-
-
-ConversionRuntimeOptionsRequest = create_model(
-    "ConversionRuntimeOptionsRequest",
-    __base__=(_InfNanSafeModel, _ConversionRuntimeOptionsRequestMixin),
-    **build_runtime_option_pydantic_fields(CONVERSION_RUNTIME_OPTION_SPECS),
-)
-
-
-class _RuntimeOptionsRequest(ConversionRuntimeOptionsRequest):
-    runtime_options: Optional[ConversionRuntimeOptionsRequest] = None
-
-    def to_runtime_options(self) -> ConversionRuntimeOptions:
-        if self.runtime_options is None:
-            return self.to_app_options()
-
-        return merge_runtime_options(
-            self.to_app_options(),
-            self.runtime_options.to_app_options(),
-            nested_fields_set=set(self.runtime_options.model_fields_set),
-        )
-
-
-class StartConversionRequest(_RuntimeOptionsRequest):
-    source_path: str = Field(..., min_length=1)
-    conversion_mode: Literal["audiobook", "document_audio"] = "audiobook"
-    title: Optional[str] = Field(default=None, max_length=MAX_BOOK_TITLE_LENGTH)
-    author: Optional[str] = None
-
-
-class RepairConversionRequest(_RuntimeOptionsRequest):
-    pass
 
 
 @router.post("/api/conversions")

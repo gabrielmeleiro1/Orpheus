@@ -10,12 +10,7 @@ from typing import Optional
 from enum import Enum
 
 
-class SourceType(str, Enum):
-    """Book source file types."""
-    PDF = "pdf"
-    EPUB = "epub"
-    TXT = "txt"
-    MD = "md"
+from modules.contracts.source_types import SourceType
 
 
 class ConversionMode(str, Enum):

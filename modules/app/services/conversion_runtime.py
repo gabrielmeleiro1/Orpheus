@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -105,7 +106,7 @@ class RuntimeOptionsResolver:
         runtime_options: Optional[ConversionRuntimeOptions] = None,
         tts_engine: Optional[str] = None,
         tts_quantization: Optional[str] = None,
-        tts_options: Optional[dict[str, Any]] = None,
+        tts_options: Mapping[str, object] | None = None,
     ) -> tuple[TTSRuntimeSpec, TTSRuntimeOptions]:
         if runtime_options is None:
             runtime_options = ConversionRuntimeOptions(
@@ -131,7 +132,7 @@ class RuntimeOptionsResolver:
         runtime_options: Optional[ConversionRuntimeOptions] = None,
         tts_engine: Optional[str] = None,
         tts_quantization: Optional[str] = None,
-        tts_options: Optional[dict[str, Any]] = None,
+        tts_options: Mapping[str, object] | None = None,
     ) -> TTSRuntimeSpec:
         spec, _options = self._resolve_tts_runtime_pair(
             runtime_options=runtime_options,

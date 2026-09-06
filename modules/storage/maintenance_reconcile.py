@@ -13,7 +13,7 @@ from shutil import copy2
 import sqlite3
 from typing import Any, Optional
 
-from modules.pipeline.book_workspace import sanitize_book_title
+from modules.contracts.book_identity import sanitize_book_title
 from modules.storage.maintenance_paths import (
     RESERVED_OUTPUT_DIR_NAMES,
     _connect,

@@ -8,7 +8,7 @@ GIB = 1024**3
 
 
 def test_estimate_cleaner_cuda_bytes_returns_table_values_for_curated_models():
-    from modules.pipeline.cleaner_memory import estimate_cleaner_cuda_bytes
+    from modules.tts.cleaner_memory import estimate_cleaner_cuda_bytes
 
     expected = {
         ("meta-llama/Llama-3.2-3B-Instruct", "4bit"): 3 * GIB,
@@ -30,7 +30,7 @@ def test_estimate_cleaner_cuda_bytes_returns_table_values_for_curated_models():
 
 
 def test_estimate_cleaner_cuda_bytes_unknown_model_returns_conservative_default():
-    from modules.pipeline.cleaner_memory import (
+    from modules.tts.cleaner_memory import (
         DEFAULT_UNKNOWN_CLEANER_CUDA_BYTES,
         estimate_cleaner_cuda_bytes,
     )
@@ -43,7 +43,7 @@ def test_estimate_cleaner_cuda_bytes_unknown_model_returns_conservative_default(
 
 
 def test_estimate_cleaner_cuda_bytes_normalizes_quantization_case():
-    from modules.pipeline.cleaner_memory import estimate_cleaner_cuda_bytes
+    from modules.tts.cleaner_memory import estimate_cleaner_cuda_bytes
 
     assert estimate_cleaner_cuda_bytes(
         "meta-llama/Llama-3.2-3B-Instruct",

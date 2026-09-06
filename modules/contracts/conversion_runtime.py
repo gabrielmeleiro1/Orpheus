@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Mapping, MutableMapping
 from typing import Any
 
 from modules.contracts.conversion_runtime_options import (
-    CONVERSION_RUNTIME_OPTION_SPECS,
     ConversionRuntimeOptions,
-    conversion_runtime_option_field_names,
 )
 
-_RUNTIME_OPTION_FIELD_NAMES = tuple(conversion_runtime_option_field_names())
+_DEFAULT_RUNTIME_OPTIONS = ConversionRuntimeOptions()
+_RUNTIME_OPTION_FIELD_NAMES = tuple(
+    field.name for field in dataclasses.fields(ConversionRuntimeOptions)
+)
 _DEFAULT_RUNTIME_OPTION_VALUES: dict[str, Any] = {
-    spec.name: spec.default for spec in CONVERSION_RUNTIME_OPTION_SPECS
+    name: getattr(_DEFAULT_RUNTIME_OPTIONS, name)
+    for name in _RUNTIME_OPTION_FIELD_NAMES
 }
 _REQUEST_ONLY_FIELDS = frozenset(
     {

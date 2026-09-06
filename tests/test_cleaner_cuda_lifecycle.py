@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from modules.pipeline.cleaner_memory import CLEANER_CUDA_LOAD_HEADROOM_BYTES
+from modules.tts.cleaner_memory import CLEANER_CUDA_LOAD_HEADROOM_BYTES
 from modules.tts.cleaner_errors import CleanerRuntimeMemoryError
 from modules.tts.device_memory import DeviceMemorySnapshot
 

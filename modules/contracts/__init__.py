@@ -7,7 +7,7 @@ from modules.contracts.conversion_runtime import (
     values_from_request_model,
 )
 from modules.contracts.conversion_runtime_options import (
-    CONVERSION_RUNTIME_OPTION_SPECS,
+    ConversionRuntimeOptions,
     conversion_runtime_option_field_names,
 )
 from modules.contracts.limits import (
@@ -22,7 +22,7 @@ from modules.contracts.source_extensions import (
 from modules.contracts.upload_errors import UploadTooLargeError
 
 __all__ = [
-    "CONVERSION_RUNTIME_OPTION_SPECS",
+    "ConversionRuntimeOptions",
     "FEEDBACK_LOOP_SOURCE_SUFFIXES",
     "MAX_BOOK_TITLE_LENGTH",
     "MAX_UPLOAD_BYTES",
