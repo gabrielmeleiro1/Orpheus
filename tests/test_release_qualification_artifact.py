@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import plistlib
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -173,6 +174,10 @@ def test_sidecar_runtime_smoke_requires_local_tts_without_downloads():
     assert "http" not in joined.lower()
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_info_plist_product_identifier_version_and_min_os(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path)
@@ -196,6 +201,10 @@ def test_info_plist_product_identifier_version_and_min_os(tmp_path: Path):
     "missing",
     ["executable", "sidecar", "ffmpeg", "ffprobe", "icon", "frontend"],
 )
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_missing_required_bundle_contents_fail(tmp_path: Path, missing: str):
     config = load_qualification_config(DEFAULT_CONFIG)
     kwargs = {
@@ -211,6 +220,10 @@ def test_missing_required_bundle_contents_fail(tmp_path: Path, missing: str):
         inspect_app_bundle(app, config=config, release_version="1.0.0")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_ffmpeg_ffprobe_must_live_under_sidecar_bin(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path, include_ffmpeg=False, include_ffprobe=False)
@@ -222,6 +235,10 @@ def test_ffmpeg_ffprobe_must_live_under_sidecar_bin(tmp_path: Path):
         inspect_app_bundle(app, config=config, release_version="1.0.0")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_icon_uses_configured_icns_from_plist(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path, include_icon=False)
@@ -240,6 +257,10 @@ def test_icon_uses_configured_icns_from_plist(tmp_path: Path):
         inspect_app_bundle(stray_only, config=config, release_version="1.0.0")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_frontend_requires_embedded_tauri_assets_not_loose_html(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path, include_embedded_frontend=False)
@@ -254,6 +275,10 @@ def test_frontend_requires_embedded_tauri_assets_not_loose_html(tmp_path: Path):
         inspect_app_bundle(app, config=config, release_version="1.0.0")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_macho_executables_must_contain_arm64(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     # CPU_TYPE_X86_64
@@ -275,6 +300,10 @@ def test_macho_executables_must_contain_arm64(tmp_path: Path):
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_forbidden_absolute_build_machine_dylib_paths_fail(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path)
@@ -293,6 +322,10 @@ def test_forbidden_absolute_build_machine_dylib_paths_fail(tmp_path: Path):
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_codesign_unsigned_and_no_team_adhoc_pass_distribution_identities_fail(
     tmp_path: Path,
 ):
@@ -397,6 +430,10 @@ def test_codesign_unsigned_and_no_team_adhoc_pass_distribution_identities_fail(
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_adhoc_invalid_seal_fails_valid_no_team_seal_passes(tmp_path: Path):
     """ADHOC with TeamIdentifier not set still requires a valid outer bundle seal."""
     config = load_qualification_config(DEFAULT_CONFIG)
@@ -577,6 +614,10 @@ def test_sha256_streaming_changes_when_bytes_change(tmp_path: Path):
     assert first != second
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_stray_icns_or_html_does_not_satisfy_required_layout(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(
@@ -594,6 +635,10 @@ def test_stray_icns_or_html_does_not_satisfy_required_layout(tmp_path: Path):
         inspect_app_bundle(app, config=config, release_version="1.0.0")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_symlink_executable_inside_bundle_is_inspected(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path)
@@ -624,6 +669,10 @@ def test_symlink_executable_inside_bundle_is_inspected(tmp_path: Path):
     assert any(path.resolve() == real.resolve() for path in inspected)
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_escaped_symlink_executable_is_rejected(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path)
@@ -637,6 +686,10 @@ def test_escaped_symlink_executable_is_rejected(tmp_path: Path):
         inspect_app_bundle(app, config=config, release_version="1.0.0")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_plus_x_script_is_skipped_not_reported_as_missing_arm64(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path)
@@ -663,6 +716,10 @@ def test_plus_x_script_is_skipped_not_reported_as_missing_arm64(tmp_path: Path):
     assert result.ok is True
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_bundle_directory_symlink_escape_is_not_followed(tmp_path: Path):
     config = load_qualification_config(DEFAULT_CONFIG)
     app = _make_app(tmp_path)
@@ -694,6 +751,10 @@ def test_bundle_directory_symlink_escape_is_not_followed(tmp_path: Path):
     assert not any("evil-macho" in item for item in inspected)
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS bundle inspection tools and executable semantics",
+)
 def test_architecture_tool_failure_raises_clear_error(tmp_path: Path):
     from tools.release_qualification.artifact import default_read_architectures
 

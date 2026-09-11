@@ -150,6 +150,7 @@ def test_startup_probe_timeouts_share_one_deadline_and_are_infrastructure_failur
         "kokoro",
         "bf16",
         model="mlx-community/Kokoro-82M",
+        provider="mlx",
     )
 
     with patch(

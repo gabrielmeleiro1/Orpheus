@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_BASE = REPO_ROOT / DEFAULT_EVIDENCE_ROOT
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
 def test_run_command_streams_without_communicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     def _forbid_communicate(self, *args, **kwargs):  # noqa: ANN001
         raise AssertionError("communicate must not buffer unbounded stdout/stderr")
@@ -41,6 +42,7 @@ def test_run_command_streams_without_communicate(tmp_path: Path, monkeypatch: py
     assert "e" in log_text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
 def test_command_result_argv_elements_are_sanitized(tmp_path: Path):
     log_dir = tmp_path / "commands"
     secret = "super-secret-token"
@@ -110,6 +112,7 @@ def test_command_spec_requires_argv_array_not_shell_string():
     assert spec.shell is False
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
 def test_run_command_uses_explicit_cwd_and_sanitized_env(tmp_path: Path):
     log_dir = tmp_path / "commands"
     marker = tmp_path / "workdir"
@@ -140,6 +143,7 @@ def test_run_command_uses_explicit_cwd_and_sanitized_env(tmp_path: Path):
     assert "should-not-appear" not in log_text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
 def test_stdout_and_stderr_stream_to_bounded_log_files(tmp_path: Path):
     log_dir = tmp_path / "commands"
     # Emit more than the bound; runner must truncate rather than grow without limit.
@@ -160,6 +164,7 @@ def test_stdout_and_stderr_stream_to_bounded_log_files(tmp_path: Path):
     assert "truncated" in content.lower()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
 def test_timeout_terminates_process_group_and_records_failure(tmp_path: Path):
     log_dir = tmp_path / "commands"
     script = "import time; time.sleep(30)"
@@ -183,6 +188,7 @@ def test_timeout_terminates_process_group_and_records_failure(tmp_path: Path):
     assert result.duration_seconds >= 0
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
 def test_post_exit_drain_collects_late_pipe_data(tmp_path: Path):
     """After the child exits, keep draining briefly so delayed pipe bytes are not dropped.
 
@@ -213,6 +219,7 @@ if os.fork() == 0:
     assert marker in log_text
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
 def test_timeout_kills_grandchild_in_same_process_group(tmp_path: Path):
     log_dir = tmp_path / "commands"
     pid_file = tmp_path / "grandchild.pid"
@@ -421,9 +428,10 @@ def test_resume_rejects_changed_fingerprint(tmp_path: Path):
     evidence.cleanup()
 
 
-def test_secrets_are_redacted_before_persistence(tmp_path: Path):
+def test_secrets_are_redacted_before_persistence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     evidence = EvidenceRoot.create(release_id="1.0.0-redact", base=EVIDENCE_BASE)
-    username = os.environ.get("USER") or "testuser"
+    username = "testuser"
+    monkeypatch.setenv("USER", username)
 
     def handler(phase_name: str, report_dir: Path) -> None:
         if phase_name == "preflight":

@@ -305,6 +305,10 @@ def test_status_reports_incomplete_exit_code(cleanup_evidence: list[Path]) -> No
     assert "incomplete" in result.stdout.lower() or "INCOMPLETE" in result.stdout
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS release inspection or POSIX fixture permissions",
+)
 def test_finalize_succeeds_after_checklist_and_writes_validated_checksums(
     cleanup_evidence: list[Path],
     tmp_path: Path,
@@ -449,6 +453,10 @@ def test_status_fails_integrity_when_passed_without_finalization_marker(
     assert "integrity" in (status.stdout + status.stderr).lower()
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS release inspection or POSIX fixture permissions",
+)
 def test_finalize_retry_removes_stale_sums_and_marker(
     cleanup_evidence: list[Path],
     tmp_path: Path,
@@ -751,6 +759,10 @@ def test_record_check_hashes_metrics_rejects_symlink_and_path_escape(
         )
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS release inspection or POSIX fixture permissions",
+)
 def test_real_handlers_use_injected_runners_and_explicit_prep_details(
     cleanup_evidence: list[Path],
     tmp_path: Path,

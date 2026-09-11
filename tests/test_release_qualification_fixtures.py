@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import stat
+import sys
 import time
 import wave
 from pathlib import Path
@@ -22,6 +23,12 @@ from tools.release_qualification.fixtures import (
     generate_large_library,
     generate_playable_audio_fixture,
     runtime_env,
+)
+
+# These fixtures exercise the macOS qualification sandbox, including POSIX
+# permission restoration during teardown and Application Support paths.
+pytestmark = pytest.mark.skipif(
+    sys.platform != "darwin", reason="Requires macOS qualification fixture permissions and paths"
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

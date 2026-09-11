@@ -298,7 +298,7 @@ def test_markdown_sample_matches_full_normalization_for_line_and_fence_edges(tmp
     ]
     source = tmp_path / "sample.md"
     for text in cases:
-        source.write_text(text)
+        source.write_text(text, encoding="utf-8")
         body = strip_leading_front_matter(text)
         headings = dict(markdown_headings(body))
         expected = re.sub(r"\s+", " ", "\n".join(

@@ -67,6 +67,10 @@ def _write_required_pyinstaller_resources(
     )
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
+)
 def test_copy_sidecar_for_tauri_copies_onedir_resource_and_removes_legacy_binary(
     tmp_path: Path,
     monkeypatch,
@@ -212,6 +216,10 @@ def test_copy_sidecar_for_tauri_windows_does_not_require_mlx_resources(
     ) == "ffprobe exe"
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
+)
 def test_copy_sidecar_for_tauri_copies_resolved_ffmpeg_binaries_under_bin(
     tmp_path: Path,
     monkeypatch,
@@ -692,6 +700,7 @@ def test_mlx_profile_rejects_non_apple_silicon_target() -> None:
 
 
 def test_mlx_build_rejects_macos_older_than_14(monkeypatch) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(
         build_desktop_backend.platform, "mac_ver", lambda: ("13.6.9", ("", "", ""), "")
@@ -836,6 +845,10 @@ def test_ensure_mlx_native_dylib_closure_copies_missing_rpath_siblings(
     assert (lib_dir / "libjaccl.dylib").read_bytes() == b"src-jaccl"
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
+)
 def test_copy_sidecar_for_tauri_rejects_incomplete_mlx_rpath_closure(
     tmp_path: Path,
     monkeypatch,
@@ -1060,6 +1073,10 @@ def test_is_system_macho_dependency_excludes_apple_system_paths() -> None:
     assert not build_desktop_backend.is_system_macho_dependency("@loader_path/lib/libavcodec.dylib")
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
+)
 def test_collect_non_system_macho_dependencies_is_recursive(tmp_path: Path) -> None:
     root = tmp_path / "ffmpeg"
     root.write_bytes(b"ffmpeg")
@@ -1084,6 +1101,10 @@ def test_collect_non_system_macho_dependencies_is_recursive(tmp_path: Path) -> N
     assert collected.install_names_for(lib_b.resolve()) == frozenset({str(lib_b)})
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
+)
 def test_collect_preserves_symlink_and_opt_alias_install_names(tmp_path: Path) -> None:
     root = tmp_path / "ffmpeg"
     root.write_bytes(b"ffmpeg")
@@ -1181,6 +1202,10 @@ def test_plan_private_lib_copies_uses_original_install_name_basename(
     }
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
+)
 def test_package_macho_dependencies_relocatable_rewrites_and_codesigns(
     tmp_path: Path,
     monkeypatch,
@@ -1259,6 +1284,10 @@ def test_package_macho_dependencies_relocatable_rewrites_and_codesigns(
     ] in commands
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
+)
 def test_package_macho_dependencies_rewrites_symlink_install_names_not_resolved(
     tmp_path: Path,
 ) -> None:
