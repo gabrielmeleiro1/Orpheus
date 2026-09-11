@@ -37,8 +37,8 @@ scripts/sync_to_desktop.sh
 .coverage.*
 coverage.xml
 htmlcov/
+node_modules/
 desktop/dist/
-desktop/node_modules/
 desktop/src-tauri/binaries/*
 !desktop/src-tauri/binaries/.gitkeep
 desktop/src-tauri/target/
@@ -56,6 +56,7 @@ data/*.db-wal
 data/sources/
 output/
 temp/
+tmp/
 desktop/release/
 
 # Generated media and local source corpora

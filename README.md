@@ -1,6 +1,14 @@
 # Orpheus
 
-Orpheus is a local-first desktop app that converts PDF, EPUB, Markdown, and text sources into audiobook outputs. The primary UI is the Tauri + React desktop shell, backed by a Python/FastAPI conversion engine and a local SQLite library.
+Orpheus is a local-first desktop audiobook converter for macOS and Windows. It turns PDF, EPUB, Markdown, and text sources into spoken audio using a Tauri + React interface, a Python/FastAPI conversion engine, and a local SQLite library.
+
+## Platform Support
+
+| Platform | Support |
+| --- | --- |
+| macOS 14+ on Apple Silicon | Primary release platform. Unsigned DMG builds use the local MLX runtime. |
+| Windows 10/11 | Source development is supported and checked in CI, with base and NVIDIA CUDA runtime options. |
+| Linux | Core development and NVIDIA CUDA runtimes are supported; no packaged desktop release is currently published. |
 
 ## Start Here
 
@@ -17,16 +25,16 @@ Orpheus is a local-first desktop app that converts PDF, EPUB, Markdown, and text
 
 ## Repository Layout
 
-- `desktop/`: Tauri, React, Vite, and TypeScript desktop app.
-- `apps/launchers/`: desktop backend launcher.
-- `modules/app/`: controller, app events, and app-level services.
-- `modules/web/`: FastAPI server, API routes, desktop auth, upload/source handling, and SSE plumbing.
-- `modules/pipeline/`: conversion orchestration and stage helpers.
-- `modules/tts/`, `modules/audio/`, `modules/ingestion/`: domain processing code.
-- `modules/storage/`: persistence models, migrations, repository implementation.
-- `tests/`: Python/core regression tests plus optional extended suites.
-- `docs/`: maintained project documentation.
-- `data/`: local runtime state. See `data/README.md` if present in your checkout.
+| Area | Paths | Purpose |
+| --- | --- | --- |
+| Desktop app | `desktop/` | Tauri shell, React UI, TypeScript, Rust, and desktop packaging. |
+| Backend entry points | `apps/`, `orpheus/` | Desktop backend launcher and command-line tools. |
+| Application and domain code | `modules/` | API, orchestration, ingestion, TTS, audio, storage, and shared contracts. |
+| Tests and benchmarks | `tests/`, `benchmarks/` | Regression, integration, performance, and stress coverage. |
+| Developer tooling | `scripts/`, `tools/` | Setup, builds, release qualification, diagnostics, and maintenance utilities. |
+| Configuration | `config/`, `requirements/`, `security/` | Release settings, runtime profiles, and reviewed audit exceptions. |
+| Documentation | `docs/` | Architecture, setup, testing, runtime, and release guides. |
+| Local runtime data | `data/`, `output/`, `temp/` | Local database, generated audio, and temporary work; generated contents are ignored. |
 
 ## Quick Start
 
