@@ -23,6 +23,7 @@ from modules.tts.strategies.base import (
 logger = logging.getLogger(__name__)
 
 _TORCH_COMPILE_ENV_VAR = "AUDIOBOOK_TTS_TORCH_COMPILE"
+_BLANK_TEXT_SILENCE_MS = 50
 
 
 def _torch_compile_requested(runtime_options: dict[str, object] | None) -> bool:
@@ -233,6 +234,18 @@ class PackageKokoroRuntime:
             raise RuntimeError("Model not loaded. Call load() first.")
 
         started_at = time.perf_counter()
+        if not text.strip():
+            # Keep blank chunks structurally valid for the pipeline. The MLX
+            # adapter gets this behavior from TTSEngine; package-backed
+            # runtimes need to provide the same short scene-break silence.
+            frames = max(1, int(self.sample_rate * _BLANK_TEXT_SILENCE_MS / 1000))
+            audio = np.zeros(frames, dtype=np.float32)
+            if output_path is not None:
+                self._write_output_audio(output_path, audio)
+            self._chunks_processed += 1
+            self._total_chunk_time_ms += (time.perf_counter() - started_at) * 1000
+            return audio
+
         # The pipeline is shared with every other runtime holding the same cache
         # key (e.g. a voice preview raised during a conversion). KPipeline keeps
         # mutable per-call state, so calls into it must not interleave.

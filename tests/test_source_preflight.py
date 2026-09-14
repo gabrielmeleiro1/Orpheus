@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from modules.ingestion.preflight import preflight_source
-from modules.ingestion.pdf_preflight import analyze_pdf_text_layer
+from modules.ingestion.pdf_preflight import (
+    analyze_extracted_pdf_text_layer,
+    analyze_pdf_text_layer,
+)
 
 
 def _create_pdf_with_text(output_path: Path, text: str, *, pages: int = 2) -> None:
@@ -189,6 +192,45 @@ def test_pdf_text_layer_preflight_classifies_native_text_pdf(tmp_path: Path) -> 
     assert payload["pdf_text_layer"]["classification"] == "native_text"
     assert payload["pdf_text_layer"]["confidence"] >= 0.8
     assert not any("OCR required" in warning for warning in payload["warnings"])
+
+
+def test_pdf_text_layer_preflight_accepts_short_complete_native_text(tmp_path: Path) -> None:
+    source = tmp_path / "short-native.pdf"
+    import fitz
+
+    document = fitz.open()
+    page = document.new_page()
+    page.insert_textbox(
+        fitz.Rect(72, 72, 540, 180),
+        "The lighthouse keeper opened the window. A calm sea stretched toward "
+        "the horizon. This short passage is fully extractable, and distant gulls "
+        "circled above the quiet harbor.",
+    )
+    document.save(source)
+    document.close()
+
+    analysis = analyze_pdf_text_layer(source)
+    payload = preflight_source(source)
+
+    assert analysis.classification == "native_text"
+    assert analysis.requires_ocr is False
+    assert payload["pdf_text_layer"]["classification"] == "native_text"
+    assert not any("weak text layer" in warning for warning in payload["warnings"])
+
+
+def test_short_native_exception_keeps_sparse_multi_page_text_weak() -> None:
+    page_text = (
+        "The lighthouse keeper opened the window. A calm sea stretched toward "
+        "the horizon. This short passage is fully extractable."
+    )
+
+    analysis = analyze_extracted_pdf_text_layer(
+        [{"text": page_text}] * 3,
+        total_pages=3,
+    )
+
+    assert analysis.classification == "low_text_layer"
+    assert analysis.warning_message is not None
 
 
 def test_pdf_preflight_warns_when_pdf_requires_ocr(tmp_path: Path) -> None:

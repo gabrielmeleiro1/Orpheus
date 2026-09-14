@@ -253,34 +253,51 @@ fn terminate_backend_process(
 ) -> ShutdownOutcome {
     #[cfg(unix)]
     {
-        let pid = i32::try_from(child.id()).unwrap_or(-1);
-        let current_pgid = if pid > 0 {
-            unsafe { libc::getpgid(pid) }
-        } else {
-            -1
-        };
-        let verified_owned_pgid =
-            verified_owned_process_group_id(child, process_group_id, *child_reaped);
-
-        if let Some(pgid) = verified_owned_pgid {
-            // macOS: getpgid(unreaped zombie) fails even though the PID is still
-            // reserved. Kill the owned group before reap so grandchildren cannot
-            // leak; process_group(0) keeps pgid == leader pid for this guard.
-            if current_pgid != pgid {
-                let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
-                if let Ok(Some(_)) = child.try_wait() {
-                    *child_reaped = true;
-                }
-                return ShutdownOutcome::AlreadyExited;
-            }
+        if *child_reaped {
+            return ShutdownOutcome::AlreadyExited;
         }
 
-        if let Ok(Some(_)) = child.try_wait() {
-            *child_reaped = true;
+        // Observe an exited child without reaping it where the platform offers
+        // waitid(WNOWAIT). That leaves the leader PID reserved while the owned
+        // process group is verified and killed, closing the leader-exit race.
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if child_exited_without_reap(child).unwrap_or(false) {
+            let verified_owned_pgid =
+                verified_owned_process_group_id(child, process_group_id, *child_reaped);
             if let Some(pgid) = verified_owned_pgid {
                 let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
             }
+            if let Ok(Some(_)) = child.try_wait() {
+                *child_reaped = true;
+            }
             return ShutdownOutcome::AlreadyExited;
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let pid = i32::try_from(child.id()).unwrap_or(-1);
+            let current_pgid = if pid > 0 {
+                unsafe { libc::getpgid(pid) }
+            } else {
+                -1
+            };
+            let verified_owned_pgid =
+                verified_owned_process_group_id(child, process_group_id, *child_reaped);
+
+            if let Some(pgid) = verified_owned_pgid {
+                if current_pgid != pgid {
+                    let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+                    if let Ok(Some(_)) = child.try_wait() {
+                        *child_reaped = true;
+                    }
+                    return ShutdownOutcome::AlreadyExited;
+                }
+            }
+
+            if let Ok(Some(_)) = child.try_wait() {
+                *child_reaped = true;
+                return ShutdownOutcome::AlreadyExited;
+            }
         }
     }
     #[cfg(not(unix))]
@@ -312,8 +329,27 @@ fn terminate_backend_process(
     }
 
     if graceful_signal_sent {
-        if wait_for_child_exit(child, timeout) {
-            #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let graceful_exit = wait_for_child_exit_without_reap(child, timeout).unwrap_or(false);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let graceful_exit = wait_for_child_exit(child, timeout);
+
+        if graceful_exit {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                // The waitid probe above leaves the leader unreaped. Kill the
+                // verified group before reaping it so inherited descendants do
+                // not survive a clean leader exit.
+                if let Some(pgid) =
+                    verified_owned_process_group_id(child, process_group_id, *child_reaped)
+                {
+                    let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+                }
+                if let Ok(Some(_)) = child.try_wait() {
+                    *child_reaped = true;
+                }
+            }
+            #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
             {
                 *child_reaped = true;
             }
@@ -322,10 +358,27 @@ fn terminate_backend_process(
         // The backend acknowledged that cleanup finished, so its exit is
         // imminent; grant a short extension instead of force-killing a clean
         // shutdown at the deadline.
-        if shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
-            && wait_for_child_exit(child, BACKEND_SHUTDOWN_ACK_EXTENSION)
-        {
-            #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let ack_exit = shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
+            && wait_for_child_exit_without_reap(child, BACKEND_SHUTDOWN_ACK_EXTENSION)
+                .unwrap_or(false);
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let ack_exit = shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
+            && wait_for_child_exit(child, BACKEND_SHUTDOWN_ACK_EXTENSION);
+
+        if ack_exit {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                if let Some(pgid) =
+                    verified_owned_process_group_id(child, process_group_id, *child_reaped)
+                {
+                    let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+                }
+                if let Ok(Some(_)) = child.try_wait() {
+                    *child_reaped = true;
+                }
+            }
+            #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
             {
                 *child_reaped = true;
             }
@@ -425,6 +478,11 @@ fn verified_owned_process_group_id(
     process_group_id: Option<i32>,
     child_reaped: bool,
 ) -> Option<i32> {
+    // Once Child::wait/try_wait has reaped the leader, its PID may be reused;
+    // a matching PGID is no longer proof that the group belongs to us.
+    if child_reaped {
+        return None;
+    }
     let process_group_id = process_group_id.filter(|pgid| *pgid > 0)?;
     let pid = i32::try_from(child.id()).ok().filter(|pid| *pid > 0)?;
     let current_pgid = unsafe { libc::getpgid(pid) };
@@ -435,6 +493,42 @@ fn verified_owned_process_group_id(
         return Some(process_group_id);
     }
     None
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn child_exited_without_reap(child: &Child) -> std::io::Result<bool> {
+    let pid = i32::try_from(child.id())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid child pid"))?;
+    let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+    let result = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(unsafe { info.si_pid() } == pid)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn wait_for_child_exit_without_reap(child: &Child, timeout: Duration) -> std::io::Result<bool> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if child_exited_without_reap(child)? {
+            return Ok(true);
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(false);
+        }
+        let remaining = deadline.saturating_duration_since(now);
+        thread::sleep(remaining.min(BACKEND_SHUTDOWN_POLL_INTERVAL));
+    }
 }
 
 fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
@@ -518,6 +612,32 @@ impl RunningBackend {
         &mut self,
         manager: &Arc<Mutex<BackendManager>>,
     ) -> Result<(), String> {
+        #[cfg(unix)]
+        if self.child_reaped {
+            // Polling can continue after the first exit observation (for
+            // example while the supervisor prepares a restart). Child::waitid
+            // reports ECHILD once the leader has been reaped, so make refresh
+            // idempotent instead of turning an already handled exit into an
+            // error.
+            return Ok(());
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let exit_observed_without_reap = child_exited_without_reap(&self.child)
+            .map_err(|error| format!("failed to inspect desktop backend process: {error}"))?;
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if !exit_observed_without_reap {
+            return Ok(());
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if let Some(pgid) =
+            verified_owned_process_group_id(&self.child, self.process_group_id, self.child_reaped)
+        {
+            // Keep the leader unreaped until the owned group has been killed.
+            let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+        }
+
         let exit_status = self
             .child
             .try_wait()
@@ -584,11 +704,6 @@ impl RunningBackend {
             .take()
             .map(|handle| join_reader_thread(handle, BACKEND_READER_JOIN_TIMEOUT))
             .unwrap_or(true);
-
-        #[cfg(unix)]
-        if (!_stdout_joined || !_stderr_joined) && self.process_group_id.is_some() {
-            let _ = send_signal_to_process_group(self.process_group_id.unwrap(), libc::SIGKILL);
-        }
 
         self.disarm_emergency_teardown();
 

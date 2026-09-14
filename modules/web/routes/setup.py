@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import sys
+import threading
 from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, HTTPException, Request
@@ -37,6 +38,8 @@ from scripts.download_models import MODEL_GROUPS, ModelReceiptVerifier, resolve_
 
 
 router = APIRouter()
+
+_RUNTIME_SETUP_STATE_FALLBACK_LOCK = threading.RLock()
 
 # Re-exported so existing importers of this module keep resolving unchanged.
 __all__ = [
@@ -380,14 +383,27 @@ def _get_status_cache(request: Request) -> RuntimeSetupStatusCache:
     cache = getattr(request.app.state, "runtime_setup_status_cache", None)
     if isinstance(cache, RuntimeSetupStatusCache):
         return cache
-    # Setup readiness and /api/system/capabilities must share one probe cache,
-    # so adopt the controller's service whenever it is available.
-    shared = getattr(get_controller_from_app(request.app), "runtime_capability_service", None)
-    cache = RuntimeSetupStatusCache(
-        probe_service=shared if isinstance(shared, RuntimeCapabilityService) else None,
-    )
-    request.app.state.runtime_setup_status_cache = cache
-    return cache
+
+    # Setup routes are synchronous dependencies executed in worker threads.
+    # Guard lazy initialization so concurrent status/adopt/download requests
+    # share one cache and one probe service instead of racing two instances.
+    lock = getattr(request.app.state, "runtime_setup_state_lock", None)
+    if lock is None:
+        lock = _RUNTIME_SETUP_STATE_FALLBACK_LOCK
+    with lock:
+        cache = getattr(request.app.state, "runtime_setup_status_cache", None)
+        if isinstance(cache, RuntimeSetupStatusCache):
+            return cache
+        # Setup readiness and /api/system/capabilities must share one probe cache,
+        # so adopt the controller's service whenever it is available.
+        shared = getattr(
+            get_controller_from_app(request.app), "runtime_capability_service", None
+        )
+        cache = RuntimeSetupStatusCache(
+            probe_service=shared if isinstance(shared, RuntimeCapabilityService) else None,
+        )
+        request.app.state.runtime_setup_status_cache = cache
+        return cache
 
 
 def build_setup_status_response(request: Request) -> dict[str, Any]:
@@ -530,9 +546,15 @@ class ModelDownloadRequest(BaseModel):
 def _get_download_service(request: Request) -> ModelDownloadService:
     service = getattr(request.app.state, "model_download_service", None)
     if not isinstance(service, ModelDownloadService):
-        cache = _get_status_cache(request)
-        service = ModelDownloadService(on_terminal=cache.invalidate)
-        request.app.state.model_download_service = service
+        lock = getattr(request.app.state, "runtime_setup_state_lock", None)
+        if lock is None:
+            lock = _RUNTIME_SETUP_STATE_FALLBACK_LOCK
+        with lock:
+            service = getattr(request.app.state, "model_download_service", None)
+            if not isinstance(service, ModelDownloadService):
+                cache = _get_status_cache(request)
+                service = ModelDownloadService(on_terminal=cache.invalidate)
+                request.app.state.model_download_service = service
     return service
 
 

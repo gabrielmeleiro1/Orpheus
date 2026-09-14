@@ -106,7 +106,9 @@ def validate_desktop_query_token(candidate: str | None, secret: str, required_sc
     except ValueError:
         return False
 
-    if expires_at < int(time.time()):
+    # ``expires_at`` is an exclusive deadline: once the current second reaches
+    # it, the short-lived query credential must no longer authorize a request.
+    if expires_at <= int(time.time()):
         return False
 
     try:

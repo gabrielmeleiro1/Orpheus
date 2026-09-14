@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 from contextlib import asynccontextmanager
 from typing import Any, Callable, Optional
 import uuid
@@ -204,6 +205,10 @@ def create_app(
     app.state.event_broker = event_broker
     app.state.controller = controller
     app.state.controller_factory = build_controller
+    app.state.controller_init_lock = threading.Lock()
+    # Setup status and model-download services are both lazy and share their
+    # cache initialization path, so this must be re-entrant.
+    app.state.runtime_setup_state_lock = threading.RLock()
     app.state.owns_controller = owns_controller
     app.state.backend_instance_id = backend_instance_id
     # Probe cache is wired lazily in setup._get_status_cache so it shares the

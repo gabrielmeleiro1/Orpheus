@@ -1483,6 +1483,68 @@ fn emergency_teardown_kills_same_group_grandchild_after_leader_exits() {
 
 #[cfg(unix)]
 #[test]
+fn refresh_exit_status_kills_same_group_grandchild_before_reap() {
+    use std::fs;
+    use std::time::Duration;
+
+    let (mut running, manager, child_pid, grandchild_pid, temp_root) =
+        launch_backend_leader_exits_leaving_same_group_grandchild();
+
+    running
+        .refresh_exit_status(&manager)
+        .expect("polling should observe the crashed backend");
+    running
+        .refresh_exit_status(&manager)
+        .expect("polling an already reaped backend should be idempotent");
+
+    assert!(wait_until_process_exits(
+        grandchild_pid,
+        Duration::from_secs(2)
+    ));
+    assert!(running.child_reaped);
+    assert!(!process_is_alive(child_pid));
+    assert_eq!(
+        manager.lock().expect("manager lock").lifecycle,
+        super::BackendLifecycle::Failed
+    );
+
+    // The subsequent ordinary stop must not signal the stored PGID after the
+    // leader was reaped, where PID reuse could target an unrelated process.
+    running.stop(&manager);
+    let _ = fs::remove_dir_all(temp_root);
+}
+
+#[cfg(unix)]
+#[test]
+fn verified_owned_process_group_rejects_reaped_leader() {
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::Duration;
+
+    let mut child = Command::new(super::python_program())
+        .arg("-c")
+        .arg("import time; time.sleep(60)")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("expected ownership fixture to launch");
+    let pid = i32::try_from(child.id()).expect("child pid");
+    thread::sleep(Duration::from_millis(50));
+
+    // A stale RunningBackend can retain the old numeric PID after reap. Even
+    // if that PID now has a matching PGID, it must never authorize a group kill.
+    assert_eq!(
+        super::verified_owned_process_group_id(&child, Some(pid), true),
+        None
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+#[test]
 fn ordinary_stop_disarms_drop_fallback() {
     use std::fs;
     use std::time::Duration;

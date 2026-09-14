@@ -334,6 +334,21 @@ def test_update_book_playback_position_round_trips(tmp_path):
     assert raw_value == 42.5
 
 
+@pytest.mark.parametrize("position", [float("inf"), float("-inf"), float("nan")])
+def test_update_book_playback_position_rejects_non_finite_values(tmp_path, position):
+    repo = SQLiteRepository(tmp_path / "repository.db")
+    created = repo.create_book(
+        BookCreate(
+            title="Finite Position",
+            source_path="/tmp/finite.pdf",
+            source_type=SourceType.PDF,
+        )
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        repo.update_book_playback_position(created.id, position)
+
+
 def test_get_book_with_chapters_returns_playback_metadata_and_sorted_chapters(tmp_path):
     repo = SQLiteRepository(tmp_path / "repository.db")
     created, _ = repo.create_book_with_chapters(

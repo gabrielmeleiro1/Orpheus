@@ -241,6 +241,18 @@ class TTSEngine:
         frames = max(1, int(self.config.sample_rate * BLANK_TEXT_SILENCE_MS / 1000))
         return np.zeros(frames, dtype=np.float32)
 
+    def _write_blank_text_silence(self, output_path: Path | str) -> Path:
+        """Write the blank-chunk silence when a caller requested an output path."""
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        silence = self._blank_text_silence()
+        with wave.open(str(output_path), "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(self.config.sample_rate)
+            writer.writeframes((silence * 32767).astype(np.int16).tobytes())
+        return output_path
+
     @property
     def average_chunk_time_ms(self) -> float:
         """Get average time per chunk in milliseconds."""
@@ -503,7 +515,10 @@ class TTSEngine:
         start_time = time.time()
 
         if not text.strip():
-            return self._blank_text_silence()
+            silence = self._blank_text_silence()
+            if output_path is not None:
+                self._write_blank_text_silence(output_path)
+            return silence
 
         voice = voice or self.config.default_voice
 
@@ -541,14 +556,7 @@ class TTSEngine:
         output_path = Path(output_path)
 
         if not text.strip():
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            silence = self._blank_text_silence()
-            with wave.open(str(output_path), "wb") as writer:
-                writer.setnchannels(1)
-                writer.setsampwidth(2)
-                writer.setframerate(self.config.sample_rate)
-                writer.writeframes((silence * 32767).astype(np.int16).tobytes())
-            return output_path
+            return self._write_blank_text_silence(output_path)
 
         voice = voice or self.config.default_voice
         speed = self._clamp_speed(speed)

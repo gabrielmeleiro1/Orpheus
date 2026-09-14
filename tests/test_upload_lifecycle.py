@@ -8,6 +8,7 @@ import time
 from modules.app.services.library_service import LibraryService, WEB_UPLOAD_TTL_SECONDS
 from modules.storage.models import BookCreate, SourceType
 from modules.storage.sqlite_repo import SQLiteRepository
+from modules.web.source_handles import resolve_source_reference
 
 
 def _library_service(tmp_path) -> LibraryService:
@@ -89,3 +90,38 @@ def test_sweep_preserves_expired_upload_referenced_by_library(tmp_path) -> None:
 def test_sweep_handles_missing_upload_root(tmp_path) -> None:
     service = _library_service(tmp_path)
     assert service.sweep_stale_uploads() == 0
+
+
+def test_upload_handles_reject_links_and_directories(tmp_path) -> None:
+    root = tmp_path / "temp" / "web_uploads"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private", encoding="utf-8")
+    link = root / "linked.txt"
+    link.symlink_to(outside)
+    directory = root / "directory.txt"
+    directory.mkdir()
+
+    for name in (link.name, directory.name):
+        try:
+            resolve_source_reference(f"upload:{name}", tmp_path / "temp")
+        except ValueError as exc:
+            assert "invalid" in str(exc)
+        else:
+            raise AssertionError("non-file upload handle was accepted")
+
+
+def test_upload_sweep_does_not_follow_symlink_targets(tmp_path) -> None:
+    service = _library_service(tmp_path)
+    root = tmp_path / "temp" / "web_uploads"
+    root.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("private", encoding="utf-8")
+    link = root / "old-link.txt"
+    link.symlink_to(outside)
+    expired_mtime = time.time() - WEB_UPLOAD_TTL_SECONDS - 60
+    os.utime(link, (expired_mtime, expired_mtime), follow_symlinks=False)
+
+    assert service.sweep_stale_uploads() == 0
+    assert link.is_symlink()
+    assert outside.read_text(encoding="utf-8") == "private"

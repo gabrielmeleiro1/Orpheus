@@ -133,7 +133,11 @@ class LibraryService:
 
         for entry in entries:
             try:
-                if not entry.is_file():
+                # A symlink is not an uploaded file. Calling is_file/stat on it
+                # would follow the link (and owner_only could chmod its target),
+                # so leave links for the maintenance pass, which unlinks them
+                # without dereferencing.
+                if entry.is_symlink() or not entry.is_file():
                     continue
                 owner_only(entry)
                 if entry.stat().st_mtime >= cutoff:

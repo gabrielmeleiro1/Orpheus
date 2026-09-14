@@ -97,7 +97,9 @@ def _normalize_audio_array(audio: np.ndarray, *, target_dBFS: float) -> np.ndarr
     if samples.size == 0:
         return samples
 
-    rms = float(np.sqrt(np.mean(np.square(samples.astype(np.float64)))))
+    # Promote inside the ufunc: preserve float64 arithmetic without allocating
+    # both a converted chapter and its squared copy at the same time.
+    rms = float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
     if rms <= 0.0:
         return samples
 
@@ -131,8 +133,7 @@ def _measure_pcm16_wav_rms(wav_path: Path, *, chunk_frames: int = _WAV_RMS_CHUNK
             samples = np.frombuffer(raw, dtype=np.int16)
             if samples.size == 0:
                 continue
-            float_samples = samples.astype(np.float64)
-            total_square += float(np.sum(np.square(float_samples)))
+            total_square += float(np.sum(np.square(samples, dtype=np.float64)))
             total_samples += int(samples.size)
 
     if total_samples == 0:

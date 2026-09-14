@@ -18,8 +18,10 @@ import pytest
 from modules.pipeline.stages.encoding import _measure_pcm16_wav_rms
 from modules.pipeline.stages.synthesis import (
     ChapterAudioAccumulator,
+    _WAV_COPY_FRAMES,
     _consume_batch_result_audio,
 )
+from modules.pipeline.stages import synthesis as synthesis_stage
 from modules.tts import model_cache
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtimes import KokoroRuntimeConfig
@@ -209,6 +211,18 @@ def test_file_batch_results_only_for_mlx_provider() -> None:
     assert _strategy_with_provider(None).supports_file_batch_results is True
 
 
+def test_estimate_duration_clamps_speed_to_synthesis_range() -> None:
+    strategy = _strategy_with_provider("cpu")
+    text = "x" * 120
+
+    assert strategy.estimate_duration(text, speed=0.0) == pytest.approx(
+        strategy.estimate_duration(text, speed=0.5)
+    )
+    assert strategy.estimate_duration(text, speed=3.0) == pytest.approx(
+        strategy.estimate_duration(text, speed=2.0)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Streamed chapter RMS precompute
 # ---------------------------------------------------------------------------
@@ -256,6 +270,45 @@ def test_streamed_accumulator_rms_includes_file_segments(tmp_path: Path) -> None
     assert accumulator.pcm16_rms() == pytest.approx(
         _measure_pcm16_wav_rms(chapter_wav), abs=0.0
     )
+
+
+def test_streamed_file_segment_reads_bounded_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """File-backed synthesis must retain bounded memory while copying a chunk."""
+    chunk_wav = tmp_path / "large-chunk.wav"
+    samples = np.arange(_WAV_COPY_FRAMES * 2 + 17, dtype=np.int16)
+    with wave.open(str(chunk_wav), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(24000)
+        writer.writeframes(samples.tobytes())
+
+    read_sizes: list[int] = []
+    original_readframes = synthesis_stage.wave.Wave_read.readframes
+
+    def tracking_readframes(reader: wave.Wave_read, frame_count: int) -> bytes:
+        read_sizes.append(frame_count)
+        return original_readframes(reader, frame_count)
+
+    monkeypatch.setattr(
+        synthesis_stage.wave.Wave_read, "readframes", tracking_readframes
+    )
+
+    chapter_wav = tmp_path / "chapter.wav"
+    accumulator = ChapterAudioAccumulator(
+        output_path=chapter_wav,
+        sample_rate=24000,
+        max_in_memory_samples=1,
+    )
+    accumulator.add_file(chunk_wav)
+    accumulator.finalize()
+    accumulator.close()
+
+    assert len(read_sizes) >= 3
+    assert max(read_sizes) <= _WAV_COPY_FRAMES
+    with wave.open(str(chapter_wav), "rb") as reader:
+        assert np.frombuffer(reader.readframes(reader.getnframes()), dtype=np.int16).tolist() == samples.tolist()
 
 
 def test_in_memory_accumulator_reports_no_rms(tmp_path: Path) -> None:

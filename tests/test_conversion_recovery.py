@@ -30,7 +30,7 @@ def test_new_conversion_keeps_durable_inventory_and_publishes_only_real_audio(tm
     service._active_job = job
     captured = {}
 
-    def dispatch(context, source_chapters, output_dir):
+    def dispatch(context, _source_chapters, output_dir):
         # Inventory must be committed before the first audio is synthesized.
         books = repo.list_books(BookFilters())
         assert len(books) == 1

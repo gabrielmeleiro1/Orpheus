@@ -31,6 +31,9 @@ def resolve_source_reference(source_ref: str, temp_dir: Path) -> Path:
         raise ValueError("uploaded source handle is invalid")
 
     resolved = upload_root(temp_dir) / stored_name
-    if not resolved.exists():
+    # Handles are issued only for regular files created by the upload service.
+    # Reject links and directories so a stale/pre-planted entry cannot turn an
+    # opaque upload reference into an arbitrary filesystem read.
+    if resolved.is_symlink() or not resolved.is_file():
         raise ValueError("uploaded source handle is invalid or expired")
     return resolved

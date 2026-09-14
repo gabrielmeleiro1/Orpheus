@@ -326,6 +326,7 @@ class KokoroTTSStrategy(TTSStrategy):
         if not text:
             return 0.0
 
+        speed = self._clamp_speed(speed)
         chars_per_second = 15.0 * speed
         estimated = len(text) / chars_per_second
 

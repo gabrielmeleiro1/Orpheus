@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
 from typing import Annotated, Callable, TypeVar
 
 from fastapi import Depends, HTTPException, Request
@@ -12,16 +13,33 @@ from modules.web.events import EventBroker
 
 T = TypeVar("T")
 
+# ``create_app`` installs a per-app lock. Keep a fallback for callers that
+# construct a FastAPI app by hand and use these dependencies directly.
+_CONTROLLER_INIT_FALLBACK_LOCK = threading.Lock()
+
 
 def get_controller_from_app(app: FastAPI) -> AppController:
     """Return the app controller, creating it lazily when needed."""
     service = getattr(app.state, "controller", None)
-    if service is None:
-        factory = getattr(app.state, "controller_factory", None)
-        if factory is None:
-            raise RuntimeError("Controller factory is not configured")
-        service = factory()
-        app.state.controller = service
+    if service is not None:
+        return service
+
+    factory = getattr(app.state, "controller_factory", None)
+    if factory is None:
+        raise RuntimeError("Controller factory is not configured")
+
+    # Synchronous FastAPI dependencies run in a thread pool. Without a
+    # single-flight guard, concurrent first requests can construct multiple
+    # controllers (and therefore multiple SQLite connections/event services)
+    # before any of them stores its instance in app.state.
+    lock = getattr(app.state, "controller_init_lock", None)
+    if lock is None:
+        lock = _CONTROLLER_INIT_FALLBACK_LOCK
+    with lock:
+        service = getattr(app.state, "controller", None)
+        if service is None:
+            service = factory()
+            app.state.controller = service
     return service
 
 

@@ -284,7 +284,7 @@ class ConversionService:
         ensure_owner_only_directory(sources_dir)
         try:
             for existing in sources_dir.iterdir():
-                if existing.is_file():
+                if not existing.is_symlink() and existing.is_file():
                     owner_only(existing)
         except OSError:
             pass

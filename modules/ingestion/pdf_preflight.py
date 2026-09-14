@@ -22,6 +22,10 @@ NATIVE_TEXT_MIN_NON_EMPTY_RATIO = 0.5
 # gate for genuinely scant text (roughly a label, caption, or a few residues).
 LOW_TEXT_MAX_CHARS = 120
 LOW_TEXT_MAX_WORDS = 20
+SHORT_NATIVE_MIN_CHARS = 100
+SHORT_NATIVE_MIN_WORDS = 20
+SHORT_NATIVE_MIN_NON_EMPTY_RATIO = 0.8
+SHORT_NATIVE_MAX_PAGES = 2
 
 _WORD_RE = re.compile(r"\b\w+\b")
 _MARKDOWN_RULE_RE = re.compile(r"(?:[-*_]\s*){3,}")
@@ -114,6 +118,8 @@ def _classify(
     image_pages: int,
     image_count: int,
     image_aware: bool,
+    min_page_chars: int = 0,
+    min_page_words: int = 0,
 ) -> PDFTextLayerAnalysis:
     if sampled_pages <= 0:
         return PDFTextLayerAnalysis(
@@ -142,6 +148,41 @@ def _classify(
             0.75
             + min(0.15, text_chars / 20000)
             + min(0.10, non_empty_ratio * 0.10),
+        )
+        return PDFTextLayerAnalysis(
+            classification="native_text",
+            confidence=round(confidence, 2),
+            total_pages=total_pages,
+            sampled_pages=sampled_pages,
+            non_empty_pages=non_empty_pages,
+            text_chars=text_chars,
+            word_count=word_count,
+            image_pages=image_pages,
+            image_count=image_count,
+        )
+
+    # Short, image-free documents (for example a one-page note) can have a
+    # complete native text layer without meeting the long-document density
+    # thresholds above. Require strong page coverage so this does not hide a
+    # partially extracted multi-page document; image-aware scans remain in the
+    # low/ OCR paths below.
+    short_native_text = (
+        text_chars >= SHORT_NATIVE_MIN_CHARS
+        and word_count >= SHORT_NATIVE_MIN_WORDS
+        and non_empty_ratio >= SHORT_NATIVE_MIN_NON_EMPTY_RATIO
+        and total_pages <= SHORT_NATIVE_MAX_PAGES
+        and sampled_pages == total_pages
+        and image_aware
+        and image_pages == 0
+        and min_page_chars >= SHORT_NATIVE_MIN_CHARS
+        and min_page_words >= SHORT_NATIVE_MIN_WORDS
+    )
+    if short_native_text:
+        confidence = min(
+            0.84,
+            0.70
+            + min(0.08, text_chars / 5000)
+            + min(0.06, non_empty_ratio * 0.06),
         )
         return PDFTextLayerAnalysis(
             classification="native_text",
@@ -212,6 +253,8 @@ def analyze_pdf_text_layer(
         non_empty_pages = 0
         image_pages = 0
         image_count = 0
+        page_char_counts: list[int] = []
+        page_word_counts: list[int] = []
 
         for page_index in page_indexes:
             page = document.load_page(page_index)
@@ -219,7 +262,10 @@ def analyze_pdf_text_layer(
             if page_text:
                 non_empty_pages += 1
                 text_chars += len(page_text)
-                word_count += _count_words(page_text)
+                page_words = _count_words(page_text)
+                word_count += page_words
+                page_char_counts.append(len(page_text))
+                page_word_counts.append(page_words)
 
             try:
                 images = page.get_images(full=True)
@@ -238,6 +284,8 @@ def analyze_pdf_text_layer(
         image_pages=image_pages,
         image_count=image_count,
         image_aware=True,
+        min_page_chars=min(page_char_counts, default=0),
+        min_page_words=min(page_word_counts, default=0),
     )
 
 
@@ -250,6 +298,8 @@ def analyze_extracted_pdf_text_layer(
     text_chars = 0
     word_count = 0
     non_empty_pages = 0
+    page_char_counts: list[int] = []
+    page_word_counts: list[int] = []
 
     for page in pages_data:
         page_text = _normalized_text(page.get("text", "") if isinstance(page, dict) else "")
@@ -257,7 +307,10 @@ def analyze_extracted_pdf_text_layer(
             continue
         non_empty_pages += 1
         text_chars += len(page_text)
-        word_count += _count_words(page_text)
+        page_words = _count_words(page_text)
+        word_count += page_words
+        page_char_counts.append(len(page_text))
+        page_word_counts.append(page_words)
 
     sampled_pages = len(pages_data)
     return _classify(
@@ -269,4 +322,6 @@ def analyze_extracted_pdf_text_layer(
         image_pages=0,
         image_count=0,
         image_aware=False,
+        min_page_chars=min(page_char_counts, default=0),
+        min_page_words=min(page_word_counts, default=0),
     )

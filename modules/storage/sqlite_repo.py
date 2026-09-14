@@ -7,6 +7,7 @@ Concrete implementation of IBookRepository using SQLite.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -622,6 +623,9 @@ class SQLiteRepository(IBookRepository):
         self, book_id: int, position_sec: float
     ) -> Optional[Book]:
         """Persist playback position for a book."""
+        normalized_position = float(position_sec)
+        if not math.isfinite(normalized_position):
+            raise ValueError("position_sec must be finite")
         with self._connection() as conn:
             cursor = conn.execute(
                 """
@@ -629,7 +633,7 @@ class SQLiteRepository(IBookRepository):
                 SET playback_position_sec = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
-                (max(0.0, float(position_sec)), book_id),
+                (max(0.0, normalized_position), book_id),
             )
             if cursor.rowcount == 0:
                 return None

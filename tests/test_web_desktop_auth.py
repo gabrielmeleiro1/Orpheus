@@ -472,3 +472,16 @@ def test_desktop_mode_non_ascii_scope_query_token_returns_401(tmp_path: Path) ->
         response = client.get(f"/api/events/stream?token={_forged_query_token('évents')}")
 
     assert response.status_code == 401
+
+
+def test_query_token_expires_at_is_an_exclusive_deadline() -> None:
+    from modules.web.desktop_auth import mint_desktop_query_token, validate_desktop_query_token
+
+    with patch("modules.web.desktop_auth.time.time", return_value=1_700_000_000):
+        token, expires_at = mint_desktop_query_token(TOKEN, "events", ttl_seconds=60)
+    assert expires_at == 1_700_000_060
+
+    with patch("modules.web.desktop_auth.time.time", return_value=1_700_000_059):
+        assert validate_desktop_query_token(token, TOKEN, "events") is True
+    with patch("modules.web.desktop_auth.time.time", return_value=1_700_000_060):
+        assert validate_desktop_query_token(token, TOKEN, "events") is False

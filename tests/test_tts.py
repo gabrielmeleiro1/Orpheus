@@ -379,6 +379,17 @@ class TestBlankChunkSynthesis:
         assert audio.size > 0
         assert float(np.abs(audio).max()) == 0.0
 
+    def test_synthesize_writes_blank_silence_when_output_path_is_requested(self, tmp_path):
+        engine = TTSEngine()
+        output_path = tmp_path / "blank.wav"
+
+        audio = engine.synthesize("   ", output_path=output_path)
+
+        assert audio.size > 0
+        with wave.open(str(output_path), "rb") as wav_file:
+            assert wav_file.getnframes() == audio.size
+            assert wav_file.getframerate() == engine.config.sample_rate
+
     def test_synthesize_to_output_file_writes_non_empty_wav_for_blank_text(self, tmp_path):
         engine = TTSEngine()
         output_path = tmp_path / "blank.wav"

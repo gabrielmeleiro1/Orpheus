@@ -6,7 +6,7 @@ import inspect
 import wave
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Optional, Protocol
+from typing import Any, Iterator, Optional, Protocol
 
 import numpy as np
 
@@ -14,6 +14,7 @@ from modules.pipeline.models import PipelineStage
 from modules.pipeline.runtime import PipelineRuntimeProtocol
 
 _DEFAULT_MAX_IN_MEMORY_CHAPTER_SAMPLES = 30_000_000  # ~120MB float32 audio buffer
+_WAV_COPY_FRAMES = 65_536
 
 
 class SynthesisStageHooks(Protocol):
@@ -73,7 +74,7 @@ class ChapterAudioAccumulator:
     def _track_pcm16(self, pcm16: np.ndarray) -> None:
         if pcm16.size == 0:
             return
-        self._pcm16_square_sum += float(np.sum(np.square(pcm16.astype(np.float64))))
+        self._pcm16_square_sum += float(np.sum(np.square(pcm16, dtype=np.float64)))
         self._pcm16_sample_count += int(pcm16.size)
 
     def add_segment(self, audio: np.ndarray) -> None:
@@ -94,9 +95,8 @@ class ChapterAudioAccumulator:
     def add_file(self, audio_path: Path) -> None:
         if not self.is_streaming:
             self.spill_to_disk()
-        self._track_pcm16(
-            _write_wav_file_segment(self._writer, audio_path, self.sample_rate)
-        )
+        for pcm16 in _write_wav_file_segment(self._writer, audio_path, self.sample_rate):
+            self._track_pcm16(pcm16)
 
     def spill_to_disk(self) -> None:
         if self.is_streaming:
@@ -159,8 +159,10 @@ def _write_audio_segment(writer: Any, audio: np.ndarray) -> np.ndarray:
     return pcm16
 
 
-def _write_wav_file_segment(writer: Any, audio_path: Path, sample_rate: int) -> np.ndarray:
-    """Append one mono PCM WAV file to an already-open chapter writer."""
+def _write_wav_file_segment(
+    writer: Any, audio_path: Path, sample_rate: int
+) -> Iterator[np.ndarray]:
+    """Append one mono PCM WAV file to an already-open chapter writer in bounded blocks."""
     with wave.open(str(audio_path), "rb") as reader:
         if reader.getnchannels() != 1:
             raise ValueError(f"Expected mono WAV chunk, got {reader.getnchannels()} channels")
@@ -172,9 +174,12 @@ def _write_wav_file_segment(writer: Any, audio_path: Path, sample_rate: int) -> 
             raise ValueError(
                 f"Expected 16-bit PCM WAV chunk, got {reader.getsampwidth() * 8}-bit"
             )
-        raw = reader.readframes(reader.getnframes())
-    writer.writeframes(raw)
-    return np.frombuffer(raw, dtype=np.int16)
+        while True:
+            raw = reader.readframes(_WAV_COPY_FRAMES)
+            if not raw:
+                break
+            writer.writeframes(raw)
+            yield np.frombuffer(raw, dtype=np.int16)
 
 
 def _wav_file_sample_count(audio_path: Path) -> int:

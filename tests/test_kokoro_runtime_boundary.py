@@ -6,6 +6,7 @@ import builtins
 import importlib
 import sys
 import time
+import wave
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -325,6 +326,20 @@ def test_package_kokoro_runtime_delegates_to_kpipeline(monkeypatch, tmp_path: Pa
     assert _FakePipeline.instances[0].calls == [
         {"text": "Hello", "voice": "am_adam", "speed": 1.25}
     ]
+
+
+def test_package_kokoro_runtime_writes_silence_for_blank_text(tmp_path: Path) -> None:
+    runtime = _package_runtime()
+    runtime._pipeline = object()  # noqa: SLF001 - bypass model loading for the edge case
+    output_path = tmp_path / "blank.wav"
+
+    audio = runtime.synthesize(" \t", voice="am_adam", output_path=output_path)
+
+    assert audio.size > 0
+    assert np.all(audio == 0)
+    with wave.open(str(output_path), "rb") as wav_file:
+        assert wav_file.getnframes() == audio.size
+        assert wav_file.getframerate() == runtime.sample_rate
 
 
 def test_package_kokoro_runtime_warns_when_retry_drops_repo_and_device(

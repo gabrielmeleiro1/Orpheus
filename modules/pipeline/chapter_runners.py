@@ -162,7 +162,7 @@ class SequentialChapterRunner:
             return self._process_chapters_sequential_strict(chapters, output_dir)
 
         chapter_results: list[ChapterResult] = []
-        pending_encoding: Optional[tuple[Future[ChapterResult], ChapterResult]] = None
+        pending_encoding: Optional[tuple[Future[ChapterResult], ChapterResult, int]] = None
 
         try:
             with ThreadPoolExecutor(max_workers=1) as encode_executor:
@@ -170,6 +170,11 @@ class SequentialChapterRunner:
                     if self.runtime.check_cancelled():
                         break
 
+                    # The overlap path calls prepare/finalize directly instead of
+                    # ChapterProcessor.process_chapter, so account for the active
+                    # chapter lifecycle here as well. Keep the chapter active while
+                    # its encode future runs alongside the next preparation.
+                    self.runtime.begin_active_chapter(idx, str(chapter.title))
                     prepared_result, chapter_wav, was_cancelled = (
                         self._prepare_chapter_audio(
                             chapter=chapter,
@@ -180,21 +185,28 @@ class SequentialChapterRunner:
                     )
 
                     if pending_encoding is not None:
-                        encode_future, fallback_result = pending_encoding
+                        encode_future, fallback_result, pending_idx = pending_encoding
                         try:
-                            chapter_results.append(encode_future.result())
+                            encoded_result = encode_future.result()
                         except Exception as exc:
                             fallback_result.error = str(exc)
-                            chapter_results.append(fallback_result)
+                            encoded_result = fallback_result
+                        chapter_results.append(encoded_result)
+                        self.runtime.finish_active_chapter(
+                            pending_idx,
+                            failed=bool(encoded_result.error),
+                        )
                         pending_encoding = None
 
                     if was_cancelled:
                         prepared_result.error = prepared_result.error or "Cancelled"
                         chapter_results.append(prepared_result)
+                        self.runtime.finish_active_chapter(idx, failed=True)
                         break
 
                     if prepared_result.error or chapter_wav is None:
                         chapter_results.append(prepared_result)
+                        self.runtime.finish_active_chapter(idx, failed=True)
                         continue
 
                     future = encode_executor.submit(
@@ -206,15 +218,20 @@ class SequentialChapterRunner:
                         total_chapters=total_chapters,
                         output_dir=output_dir,
                     )
-                    pending_encoding = (future, prepared_result)
+                    pending_encoding = (future, prepared_result, idx)
 
                 if pending_encoding is not None:
-                    encode_future, fallback_result = pending_encoding
+                    encode_future, fallback_result, pending_idx = pending_encoding
                     try:
-                        chapter_results.append(encode_future.result())
+                        encoded_result = encode_future.result()
                     except Exception as exc:
                         fallback_result.error = str(exc)
-                        chapter_results.append(fallback_result)
+                        encoded_result = fallback_result
+                    chapter_results.append(encoded_result)
+                    self.runtime.finish_active_chapter(
+                        pending_idx,
+                        failed=bool(encoded_result.error),
+                    )
 
             return chapter_results
         except Exception as exc:
@@ -222,6 +239,13 @@ class SequentialChapterRunner:
                 f"[SEQUENTIAL] Pipelined encode overlap failed ({exc}); falling back to strict mode",
                 "warning",
             )
+            active_chapters = getattr(
+                getattr(self.runtime, "state", None),
+                "performance_active_chapters",
+                None,
+            )
+            if isinstance(active_chapters, dict):
+                active_chapters.clear()
             return self._process_chapters_sequential_strict(chapters, output_dir)
 
     def _process_chapters_sequential_strict(

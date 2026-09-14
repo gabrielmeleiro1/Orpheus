@@ -185,23 +185,12 @@ impl SetupProgressEvent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct SetupRunnerInner {
     status: SetupStatus,
     active_process: Option<ActiveProcess>,
     terminal_emitted: bool,
     restart_in_progress: bool,
-}
-
-impl Default for SetupRunnerInner {
-    fn default() -> Self {
-        Self {
-            status: SetupStatus::default(),
-            active_process: None,
-            terminal_emitted: false,
-            restart_in_progress: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -905,9 +894,7 @@ pub fn sanitize_progress_line(line: &str) -> Option<SetupProgressEvent> {
             restart_required: None,
         });
     };
-    let Some(object) = value.as_object() else {
-        return None;
-    };
+    let object = value.as_object()?;
     let source_event = object.get("event").and_then(Value::as_str).unwrap_or("");
     let event = match source_event {
         "plan" | "stage_started" | "stage_complete" => source_event.to_string(),
@@ -1366,7 +1353,6 @@ fn terminate_process(process: &ActiveProcess) {
         }
         let _ = child.kill();
         let _ = child.wait();
-        return;
     }
     #[cfg(windows)]
     {
