@@ -137,6 +137,7 @@ class ChapterProcessor:
     ) -> list[str]:
         """Run chapter chunking stage and return text chunks."""
         from modules.tts.chunker import TextChunker, ChunkConfig
+        from .chapter_narration import chapter_body
 
         self.runtime.set_stage(PipelineStage.CHUNKING)
         self.runtime.notify_progress(
@@ -147,7 +148,7 @@ class ChapterProcessor:
 
         chunk_config = ChunkConfig(max_tokens=self.runtime.config.chunk_size)
         chunker = TextChunker(config=chunk_config)
-        chunks = chunker.chunk(chapter.content)
+        chunks = chunker.chunk(chapter_body(chapter))
         self.runtime.log_verbose(f"[CHUNKER] Split into {len(chunks)} chunks", "info")
         return chunks
 
@@ -595,7 +596,12 @@ class ChapterProcessor:
                     result.error = "No audio generated"
                     return result, None, False
                 self._record_tts_throughput(chunks, tts_seconds)
-                return result, chapter_wav, False
+                from .chapter_narration import add_chapter_narration
+
+                narrated = add_chapter_narration(self.runtime, chapter, chapter_wav, result)
+                if narrated is None:
+                    result.error = "Cancelled"
+                return result, narrated, narrated is None
 
             chunks, was_cancelled = self.clean_chapter_content(
                 chapter=chapter,
@@ -621,7 +627,12 @@ class ChapterProcessor:
                 result.error = "No audio generated"
                 return result, None, False
             self._record_tts_throughput(chunks, tts_seconds)
-            return result, chapter_wav, False
+            from .chapter_narration import add_chapter_narration
+
+            narrated = add_chapter_narration(self.runtime, chapter, chapter_wav, result)
+            if narrated is None:
+                result.error = "Cancelled"
+            return result, narrated, narrated is None
         except Exception as exc:
             result.error = str(exc)
             self.runtime.log_verbose(

@@ -699,7 +699,8 @@ class TestConversionPipeline:
         mp3_path = tmp_path / "chapter.mp3"
 
         processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(processor, "ensure_chapter_tts_engine"), \
+        with patch.object(type(processor.runtime), "synthesize_speech", return_value=np.ones(3, dtype=np.float32)), \
+             patch.object(processor, "ensure_chapter_tts_engine"), \
              patch.object(processor, "chunk_chapter_content", return_value=["chunk1", "chunk2"]), \
              patch.object(processor, "clean_chapter_content", return_value=(["clean1", "clean2"], False)), \
              patch.object(processor, "synthesize_chapter_chunks", return_value=wav_path), \
@@ -747,7 +748,8 @@ class TestConversionPipeline:
         in_memory_audio = np.array([0.1, 0.2, 0.3], dtype=np.float32)
 
         processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(processor, "ensure_chapter_tts_engine"), \
+        with patch.object(type(processor.runtime), "synthesize_speech", return_value=np.ones(3, dtype=np.float32)), \
+             patch.object(processor, "ensure_chapter_tts_engine"), \
              patch.object(processor, "chunk_chapter_content", return_value=["chunk1"]), \
              patch.object(processor, "clean_chapter_content", return_value=(["clean1"], False)), \
              patch.object(processor, "synthesize_chapter_chunks", return_value=in_memory_audio), \
@@ -764,9 +766,9 @@ class TestConversionPipeline:
             )
 
         assert result.error is None
-        assert result.wav_path == config.temp_dir / "chapter_masters" / "chapter_01.wav"
+        assert result.wav_path == config.temp_dir / "chapter_01_narrated.wav"
         assert result.wav_path.exists()
-        assert result.duration_ms == 0
+        assert result.duration_ms == 6000
         assert result.mp3_path is None
 
     def test_process_chapter_can_still_emit_mp3_artifacts_when_enabled(
@@ -786,7 +788,8 @@ class TestConversionPipeline:
         mp3_path = tmp_path / "chapter.mp3"
 
         processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(processor, "ensure_chapter_tts_engine"), \
+        with patch.object(type(processor.runtime), "synthesize_speech", return_value=np.ones(3, dtype=np.float32)), \
+             patch.object(processor, "ensure_chapter_tts_engine"), \
              patch.object(processor, "chunk_chapter_content", return_value=["chunk1"]), \
              patch.object(processor, "clean_chapter_content", return_value=(["clean1"], False)), \
              patch.object(processor, "synthesize_chapter_chunks", return_value=in_memory_audio), \
@@ -799,7 +802,7 @@ class TestConversionPipeline:
             )
 
         assert result.error is None
-        assert result.wav_path == config.temp_dir / "chapter_masters" / "chapter_01.wav"
+        assert result.wav_path == config.temp_dir / "chapter_01_narrated.wav"
         assert result.mp3_path == mp3_path
         assert result.duration_ms == 1000
 

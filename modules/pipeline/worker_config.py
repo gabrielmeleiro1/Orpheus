@@ -53,6 +53,7 @@ def _serialize_pipeline_config_dict(config: PipelineConfig) -> dict[str, Any]:
     """Serialize the nested pipeline_config block for worker-local execution."""
     return {
         **_serialize_worker_model_fields(config),
+        "conversion_mode": config.conversion_mode,
         "save_cleaning_debug": config.save_cleaning_debug,
         "speed": config.speed,
         "output_dir": config.output_dir,
@@ -114,6 +115,7 @@ def build_worker_pipeline_config(
         serialized_config.get("device_memory_policy")
     )
     return PipelineConfig(
+        conversion_mode=serialized_config.get("conversion_mode", "audiobook"),
         tts_engine=serialized_config["tts_engine"],
         tts_model_name=serialized_config["tts_model_name"],
         tts_quantization=serialized_config["tts_quantization"],

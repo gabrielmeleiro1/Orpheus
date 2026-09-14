@@ -954,6 +954,9 @@ class TestPipelineIntegration:
         assert len(results) == 3
         assert timings["encode_start_0"] < timings["prepare_end_1"]
         assert timings["encode_start_1"] < timings["prepare_end_2"]
+        assert pipeline._run_state.performance_completed_chapters == 3  # noqa: SLF001
+        assert pipeline._run_state.performance_failed_chapters == 0  # noqa: SLF001
+        assert pipeline._run_state.performance_active_chapters == {}  # noqa: SLF001
 
 
 class TestParallelOrchestratorFacade:
@@ -2266,7 +2269,7 @@ class TestWorkerProgressTotals:
                 chapter_idx=0,
                 output_dir=tmp_path,
                 total_chapters=1,
-                tts_engine=object(),
+                tts_engine=MagicMock(sample_rate=24000, synthesize=MagicMock(return_value=np.zeros(128, dtype=np.float32))),
                 text_cleaner=object(),
             )
 

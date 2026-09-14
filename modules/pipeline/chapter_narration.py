@@ -1,0 +1,104 @@
+"""Spoken navigation and real audio pauses at chapter boundaries."""
+
+from __future__ import annotations
+
+import re
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+
+from .stages.synthesis import ChapterAudioAccumulator
+
+CHAPTER_PAUSE_SECONDS = 3
+_LABEL = re.compile(r"^(chapter|section|part|book)\b\s*[:.\-–—]?\s*", re.I)
+_NUMBER = re.compile(
+    r"^(?:number\s+)?(\d+(?:\.\d+)*|[ivxlcdm]+|"
+    r"(?:twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)"
+    r"(?:[ -]+(?:one|two|three|four|five|six|seven|eight|nine))?|"
+    r"one|two|three|four|five|six|seven|eight|nine|ten|"
+    r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)"
+    r"\b[\s:.\-–—]*", re.I,
+)
+
+
+def _plain_title(title: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[#*_`]", "", str(title or ""))).strip()
+
+
+def chapter_announcement(chapter: Any, conversion_mode: str = "audiobook") -> str:
+    """Keep explicit source labels/numbers; otherwise use the parsed sequence."""
+    title = _plain_title(chapter.title)
+    kind = "Section" if conversion_mode == "document_audio" else "Chapter"
+    number = str(chapter.number)
+    label = _LABEL.match(title)
+    if label:
+        kind = label.group(1).capitalize()
+        title = title[label.end():]
+        numbered = _NUMBER.match(title)
+        if numbered:
+            number = numbered.group(1)
+            title = title[numbered.end():]
+            if re.fullmatch(r"[ivxlcdm]+", number, re.I):
+                values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+                digits = [values[c] for c in number.lower()]
+                number = str(sum(-v if i + 1 < len(digits) and v < digits[i + 1] else v
+                                 for i, v in enumerate(digits)))
+    elif title == number:
+        title = ""
+    suffix = f" {title.rstrip('.!?')}." if title else ""
+    return f"{kind} number {number}.{suffix}"
+
+
+def chapter_body(chapter: Any) -> str:
+    """Remove only a matching opening heading, never title words inside prose."""
+    def key(value: str) -> str:
+        return re.sub(r"\W+", " ", unicodedata.normalize("NFKC", _plain_title(value))).strip().casefold()
+
+    content = str(chapter.content or "").lstrip()
+    title = key(_plain_title(chapter.title))
+    lines = content.splitlines(keepends=True)
+    # EPUBs may split the label and title across two heading lines.
+    for count in (1, 2, 3):
+        if title and len(lines) >= count and key(" ".join(lines[:count])) == title:
+            return "".join(lines[count:]).lstrip()
+    return content
+
+
+def add_chapter_narration(runtime: Any, chapter: Any, body: Path | np.ndarray, result: Any):
+    """Wrap synthesized body before encoding, including file-backed/overlap paths."""
+    if runtime.check_cancelled():
+        return None
+    announcement = chapter_announcement(chapter, runtime.config.conversion_mode)
+    intro = np.asarray(runtime.synthesize_speech(
+        text=announcement, voice=runtime.config.voice, speed=runtime.config.speed,
+    ), dtype=np.float32)
+    if runtime.check_cancelled():
+        return None
+    if intro.ndim != 1 or not intro.size or not np.isfinite(intro).all():
+        raise ValueError("No valid audio generated for the chapter introduction")
+    sample_rate = runtime.tts_sample_rate()
+    output = runtime.config.temp_dir / f"chapter_{chapter.number:02d}_narrated.wav"
+    runtime.track_temp_cleanup_path(output)
+    accumulator = ChapterAudioAccumulator(
+        output_path=output, sample_rate=sample_rate,
+        max_in_memory_samples=1,
+    )
+    # Stream the composition: the original chapter may be hours long.
+    accumulator.spill_to_disk()
+    try:
+        accumulator.add_segment(intro)
+        silence = np.zeros(CHAPTER_PAUSE_SECONDS * sample_rate, dtype=np.float32)
+        accumulator.add_segment(silence)
+        if isinstance(body, Path):
+            runtime.track_temp_cleanup_path(body)
+            accumulator.add_file(body)
+        else:
+            accumulator.add_segment(body)
+        accumulator.add_segment(silence)
+        audio = accumulator.finalize()
+        result.pcm_rms = accumulator.pcm16_rms()
+        return audio
+    finally:
+        accumulator.close()
