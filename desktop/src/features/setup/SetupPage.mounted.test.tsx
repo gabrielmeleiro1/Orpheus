@@ -371,7 +371,8 @@ describe("mounted SetupPage", () => {
     const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "browser", reason: "Desktop source checkout required." })) });
     const continueLibrary = vi.fn();
     await renderPage(runtimeBridge, { onContinueLibraryOnly: continueLibrary });
-    expect(container.textContent).toContain("Desktop source checkout required.");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Why installation is unavailable"]')!.click());
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain("Desktop source checkout required.");
     expect(container.textContent).toContain(".venv/bin/python scripts/setup_runtime.py --profile base");
     expect(runtimeBridge.listen).not.toHaveBeenCalled();
     expect(runtimeBridge.status).not.toHaveBeenCalled();

@@ -547,11 +547,6 @@ export function SetupPage({
   return (
     <main className="setup-frame" aria-label="Orpheus runtime setup">
       <div className="setup-shell">
-        <header className="setup-brand">
-          <div className="brand"><span className="brand-mark" aria-hidden="true">O</span><span className="brand-name">Orpheus</span></div>
-          <span className={`status-dot${apiClient ? " is-connected" : ""}`} aria-hidden="true" />
-        </header>
-
         <section className="setup-panel" aria-labelledby="setup-heading">
           <div className="setup-intro">
             <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>Welcome to Orpheus</h1>
