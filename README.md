@@ -2,6 +2,11 @@
 
 Orpheus is a local-first desktop audiobook converter for macOS and Windows. It turns PDF, EPUB, Markdown, and text sources into spoken audio using a Tauri + React interface, a Python/FastAPI conversion engine, and a local SQLite library.
 
+New conversions announce each chapter or section number and title, pause for
+three seconds, then read the body. A three-second closing pause marks the end of
+each chapter. These cues are embedded in the exported audio; existing audio must
+be converted again to include them.
+
 ## Platform Support
 
 | Platform | Support |
@@ -74,13 +79,14 @@ CUDA is opt-in and requires a supported NVIDIA GPU and driver. Use trusted
 model artifacts only. Run either command with `--dry-run` first to inspect its
 fixed install and download commands.
 
-The in-app downloader is intentionally available only while running a debug
-desktop build from this source checkout. It uses the checkout's fixed
-`.venv` interpreter and `scripts/setup_runtime.py`; browser sessions and
-packaged releases cannot run a dynamic installer. Release artifacts must be
-built with the intended `base`, `mlx`, or `cuda` profile already baked into
-their sidecar. A packaged base build supports source inspection, library
-management, and playback of existing audio; conversion requires a build with TTS.
+The Setup screen can download missing managed model assets in packaged builds.
+Installing Python runtime dependencies from the app is available only in a
+debug desktop build from this source checkout, using the checkout's fixed
+`.venv` interpreter and `scripts/setup_runtime.py`. Browser sessions and
+packaged releases cannot run that dependency installer. Release artifacts must
+include their intended `base`, `mlx`, or `cuda` runtime in the sidecar. A packaged
+base build supports source inspection, library management, and playback of
+existing audio; conversion requires a build with TTS.
 
 `requirements.txt` installs the base runtime. The profile manifests live under
 `requirements/`, and `requirements-dev.txt` adds test, lint, and desktop
