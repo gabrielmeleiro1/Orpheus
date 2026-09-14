@@ -29,30 +29,33 @@ export function ConversionPanelView({
   return (
     <section
       id={shell.isDocumentMode ? "tab-document" : "tab-convert"}
-      className="panel"
+      className="panel conversion-panel"
       role="tabpanel"
       aria-label={shell.isDocumentMode ? "Document conversion setup" : "Audiobook conversion setup"}
+      aria-labelledby={`tab-btn-${shell.isDocumentMode ? "document" : "convert"}`}
       hidden={shell.hidden}
     >
       <div className="panel-header">
         <span>{shell.isDocumentMode ? "Document → M4A" : "Audiobook → M4B"}</span>
       </div>
 
-      <SourceQueueView
-        sourceQueue={sourceQueue}
-        capabilities={capabilities}
-        actions={actions}
-        hidden={shell.hidden}
-      />
-      <TtsOptionsView
-        ttsOptions={ttsOptions}
-        capabilities={capabilities}
-        actions={actions}
-      />
-      <AdvancedOptionsView
-        advancedOptions={advancedOptions}
-        actions={actions}
-      />
+      <div className="conversion-form">
+        <SourceQueueView
+          sourceQueue={sourceQueue}
+          capabilities={capabilities}
+          actions={actions}
+          hidden={shell.hidden}
+        />
+        <TtsOptionsView
+          ttsOptions={ttsOptions}
+          capabilities={capabilities}
+          actions={actions}
+        />
+        <AdvancedOptionsView
+          advancedOptions={advancedOptions}
+          actions={actions}
+        />
+      </div>
       <ConversionActionsView
         conversionActions={conversionActions}
         capabilities={capabilities}

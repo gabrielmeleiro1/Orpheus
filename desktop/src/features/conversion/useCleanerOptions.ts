@@ -26,6 +26,7 @@ export interface UseCleanerOptionsArgs {
 }
 
 export interface UseCleanerOptionsResult {
+  cleanerOptionsHydrated: boolean;
   cleanerBackend: string;
   setCleanerBackend: (value: string) => void;
   cleanerBackendOptions: TermSelectOption[];
@@ -73,7 +74,11 @@ function resolveInitialBackendSelection(
   );
 
   const hasConfiguredCleanerBackend = Boolean(persisted.cleaner_backend_configured);
-  const persistedBackend = hasConfiguredCleanerBackend ? String(persisted.cleaner_backend ?? "").trim() : "";
+  const persistedBackend = hasConfiguredCleanerBackend
+    ? String(
+        persisted.preferred_cleaner_backend ?? persisted.cleaner_backend ?? "",
+      ).trim()
+    : "";
 
   return resolveInitialCleanerBackendId(availableOptions, persistedBackend);
 }
@@ -108,6 +113,8 @@ export function useCleanerOptions({
   persistedSettingsRef,
 }: UseCleanerOptionsArgs): UseCleanerOptionsResult {
   const cleanerOptionsHydratedRef = useRef(false);
+  const [cleanerOptionsHydrated, setCleanerOptionsHydrated] = useState(false);
+  const preferredCleanerBackendRef = useRef("");
   const [cleanerBackend, setCleanerBackendState] = useState("");
   const [cleanerBackendConfigured, setCleanerBackendConfigured] = useState(false);
   const [cleanerModel, setCleanerModelState] = useState("");
@@ -172,6 +179,7 @@ export function useCleanerOptions({
   useEffect(() => {
     if (!apiClient) {
       cleanerOptionsHydratedRef.current = false;
+      setCleanerOptionsHydrated(false);
       setCleanerBackendState("");
       setCleanerBackendConfigured(false);
       setCleanerModelState("");
@@ -201,6 +209,37 @@ export function useCleanerOptions({
 
     const persisted = persistedSettingsRef.current;
     const hasConfiguredCleanerBackend = Boolean(persisted.cleaner_backend_configured);
+    const legacyPersistedBackend = String(persisted.cleaner_backend ?? "").trim();
+    const legacyPersistedModel = String(persisted.cleaner_model ?? "").trim();
+    const persistedPreference = hasConfiguredCleanerBackend
+      ? String(persisted.preferred_cleaner_backend ?? legacyPersistedBackend).trim()
+      : "";
+    const persistedModelPreference = hasConfiguredCleanerBackend
+      ? String(persisted.preferred_cleaner_model ?? legacyPersistedModel).trim()
+      : "";
+    if (
+      hasConfiguredCleanerBackend &&
+      persistedPreference &&
+      !String(persisted.preferred_cleaner_backend ?? "").trim()
+    ) {
+      // Migrate v1 settings in memory before the parent persistence effect
+      // serializes the effective fallback backend over the legacy choice.
+      persistedSettingsRef.current = {
+        ...persisted,
+        preferred_cleaner_backend: persistedPreference,
+      };
+    }
+    if (
+      hasConfiguredCleanerBackend &&
+      persistedModelPreference &&
+      !String(persisted.preferred_cleaner_model ?? "").trim()
+    ) {
+      persistedSettingsRef.current = {
+        ...persistedSettingsRef.current,
+        preferred_cleaner_model: persistedModelPreference,
+      };
+    }
+    preferredCleanerBackendRef.current = persistedPreference;
     setCleanerBackendConfigured(hasConfiguredCleanerBackend);
 
     const initialSelection = resolveInitialBackendSelection(modelOptions, systemCapabilities, persisted);
@@ -213,6 +252,7 @@ export function useCleanerOptions({
       : undefined;
     selectCleanerBackend(initialSelection.backendId, persistedCudaDefaults);
     cleanerOptionsHydratedRef.current = true;
+    setCleanerOptionsHydrated(true);
   }, [apiClient, beginOpenAiModelFetch, modelOptions, persistedSettingsRef, selectCleanerBackend, systemCapabilities]);
 
   useEffect(() => {
@@ -221,6 +261,17 @@ export function useCleanerOptions({
     }
 
     const isAvailable = availableCleanerBackendOptions.some((option) => option.id === cleanerBackend);
+    const preferredBackend = preferredCleanerBackendRef.current;
+    if (preferredBackend && availableCleanerBackendOptions.some((option) => option.id === preferredBackend)) {
+      if (preferredBackend !== cleanerBackend) {
+        const preferredOption = selectedCleanerBackendOption(modelOptions, preferredBackend);
+        selectCleanerBackend(preferredBackend, {
+          device: resolveInitialCudaDevice(preferredOption, persistedSettingsRef.current),
+          quantization: resolveInitialCudaQuantization(preferredOption, persistedSettingsRef.current),
+        });
+      }
+      return;
+    }
     // When the user has explicitly configured a backend we only intervene if it
     // drops out of availability. When the selection is still an auto-default we
     // keep tracking the preferred (local-first) option as the runtime probe
@@ -250,7 +301,11 @@ export function useCleanerOptions({
         return previous;
       }
 
-      const persisted = String(persistedSettingsRef.current.cleaner_model ?? "").trim();
+      const persisted = String(
+        persistedSettingsRef.current.preferred_cleaner_model ??
+          persistedSettingsRef.current.cleaner_model ??
+          "",
+      ).trim();
       if (persisted && cleanerModelOptions.some((option) => option.value === persisted)) {
         return persisted;
       }
@@ -266,23 +321,38 @@ export function useCleanerOptions({
       return;
     }
 
-    const runtimeStatus = deriveCleanerRuntimeStatus(systemCapabilities, selectedCleanerBackend);
+    const runtimeStatus = deriveCleanerRuntimeStatus(
+      systemCapabilities,
+      selectedCleanerBackend,
+      Boolean(cleanerApiKey.trim()),
+    );
     setCleanerRuntimeStatus(runtimeStatus.message);
     setCleanerRuntimeError(runtimeStatus.isError);
-  }, [selectedCleanerBackend, systemCapabilities]);
+  }, [cleanerApiKey, selectedCleanerBackend, systemCapabilities]);
 
   const setCleanerBackend = useCallback(
     (value: string) => {
+      const normalizedValue = String(value ?? "").trim();
+      preferredCleanerBackendRef.current = normalizedValue;
+      persistedSettingsRef.current = {
+        ...persistedSettingsRef.current,
+        preferred_cleaner_backend: normalizedValue || undefined,
+      };
       setCleanerBackendConfigured(true);
-      selectCleanerBackend(value);
+      selectCleanerBackend(normalizedValue);
     },
-    [selectCleanerBackend],
+    [persistedSettingsRef, selectCleanerBackend],
   );
 
   const setCleanerModel = useCallback((value: string) => {
+    const normalizedValue = String(value ?? "").trim();
+    persistedSettingsRef.current = {
+      ...persistedSettingsRef.current,
+      preferred_cleaner_model: normalizedValue || undefined,
+    };
     setCleanerBackendConfigured(true);
     setCleanerModelState(value);
-  }, []);
+  }, [persistedSettingsRef]);
 
   const setCleanerCudaDevice = useCallback((value: string) => {
     setCleanerBackendConfigured(true);
@@ -402,6 +472,7 @@ export function useCleanerOptions({
   }, [apiClient, cleanerApiKey, fetchOpenAiModelIds, selectedCleanerBackend]);
 
   return {
+    cleanerOptionsHydrated,
     cleanerBackend,
     setCleanerBackend,
     cleanerBackendOptions,

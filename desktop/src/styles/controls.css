@@ -5,7 +5,7 @@
  *
  *   Labels & text
  *     .field-label / .form-row-label  sentence-case field label (normal weight)
- *     .section-label                  the one tracked-caps card header (shell.css)
+ *     .section-label                  sentence-case section header (shell.css)
  *     .hint / .field-hint             one-line helper text (12px, secondary)
  *     .tabular-nums                   font-variant-numeric for live numbers
  *
@@ -104,15 +104,15 @@
 /* Primary: accent CTA. Colour/weight only — no baked-in layout, so it works
    inline in a row or full-width via a `.btn-block` wrapper/utility. */
 .btn-primary {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--accent);
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--bg);
   font-weight: 600;
 }
 
 .btn-primary:hover {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 85%, white);
+  border-color: color-mix(in srgb, var(--accent) 85%, white);
 }
 
 /* Ghost: text / row action. No border, quiet until hovered. Kept a step
@@ -201,8 +201,8 @@
 .book-detail-section {
   display: grid;
   gap: var(--density-panel-gap);
-  margin-bottom: 12px;
-  padding: var(--density-panel-pad);
+  margin-bottom: 24px;
+  padding: 0;
 }
 
 .form-row {
@@ -212,7 +212,7 @@
   gap: 8px;
   grid-template-columns: minmax(0, 1fr);
   min-height: 0;
-  padding: 8px var(--density-panel-pad);
+  padding: 0;
 }
 
 .form-row-label {
@@ -408,28 +408,24 @@
   color: var(--text);
 }
 
-/*
- * Card disclosure (rule 5 variant): `.disclosure.disclosure-card` renders the
- * summary as a full-width tracked-caps card header (matches .section-title),
- * so a collapsed section reads as a clickable panel rather than loose text.
- * `.disclosure-card-meta` is an optional sentence-case value preview shown on
- * the right while collapsed.
- */
+/* A disclosure is a continuous section boundary with a value preview. */
 .disclosure-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
 }
 
 .disclosure-card > summary {
   color: var(--text-tertiary);
-  font-size: 11px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   justify-content: space-between;
-  letter-spacing: 0.08em;
-  min-height: 34px;
-  padding: 8px var(--density-panel-pad);
-  text-transform: uppercase;
+  letter-spacing: 0;
+  min-height: 44px;
+  padding: 10px 0;
+  text-transform: none;
   transition: background 120ms ease, color 120ms ease;
 }
 

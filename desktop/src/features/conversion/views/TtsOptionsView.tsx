@@ -17,7 +17,8 @@ export function TtsOptionsView({
   actions,
 }: TtsOptionsViewProps) {
   return (
-    <div className="panel-section form-section">
+    <div className="panel-section form-section voice-options">
+      <h2 className="conversion-group-heading">Voice</h2>
       <div className="form-row">
         <span className="form-row-label" data-tip="Speech engine used to narrate the book" data-tip-pos="right">Engine</span>
         <div className="form-row-field">
@@ -36,24 +37,26 @@ export function TtsOptionsView({
       <div className="form-row">
         <span className="form-row-label">Voice</span>
         <div className="form-row-stack">
-          <input
-            id="voice-search"
-            aria-label="Search voices"
-            className="field-input"
-            type="text"
-            placeholder="Search voices…"
-            value={ttsOptions.voiceFilter}
-            onChange={(event) => actions.setVoiceFilter(event.target.value)}
-          />
-          <TermSelect
-            id="voice-select"
-            label="Voice"
-            value={ttsOptions.selectedVoice}
-            options={ttsOptions.filteredVoiceOptions}
-            placeholder="-"
-            disabled={ttsOptions.voiceSelectDisabled}
-            onChange={actions.setSelectedVoice}
-          />
+          <div className="voice-selection">
+            <input
+              id="voice-search"
+              aria-label="Search voices"
+              className="field-input"
+              type="text"
+              placeholder="Search voices…"
+              value={ttsOptions.voiceFilter}
+              onChange={(event) => actions.setVoiceFilter(event.target.value)}
+            />
+            <TermSelect
+              id="voice-select"
+              label="Voice"
+              value={ttsOptions.selectedVoice}
+              options={ttsOptions.filteredVoiceOptions}
+              placeholder="-"
+              disabled={ttsOptions.voiceSelectDisabled}
+              onChange={actions.setSelectedVoice}
+            />
+          </div>
           <div className="voice-suggest-actions">
             <button
               id="voice-suggest-btn"

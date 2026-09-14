@@ -133,9 +133,15 @@ function DashboardApp({
     const previous = previousUiStateRef.current;
     previousUiStateRef.current = conversionJob.uiState;
 
-    // Refresh the library on completion regardless of the active tab — that is a
-    // data refresh, not a focus change.
-    if (previous !== "completed" && conversionJob.uiState === "completed") {
+    // Refresh the library after every terminal outcome. Failed and cancelled
+    // jobs can still leave a recoverable partial book behind, so limiting this
+    // to successful completion hides useful output until the user clicks
+    // Refresh manually.
+    const reachedTerminalState =
+      conversionJob.uiState === "completed" ||
+      conversionJob.uiState === "failed" ||
+      conversionJob.uiState === "cancelled";
+    if (previous !== conversionJob.uiState && reachedTerminalState) {
       void refreshLibrary();
     }
 
@@ -350,6 +356,7 @@ function DashboardApp({
             className="panel"
             role="tabpanel"
             aria-label="Conversion progress"
+            aria-labelledby="tab-btn-progress"
             hidden={activeTab !== "progress"}
           >
             <VisibilityProgressPanel
@@ -367,13 +374,14 @@ function DashboardApp({
               onCancel={conversionJob.cancelActiveConversion}
               onStartConvert={openConvert}
             />
-          </section> : <section id="tab-progress" role="tabpanel" aria-label="Conversion progress" hidden />}
+          </section> : <section id="tab-progress" role="tabpanel" aria-label="Conversion progress" aria-labelledby="tab-btn-progress" hidden />}
 
           {visitedTabsRef.current.has("logs") ? <section
             id="tab-logs"
             className="panel logs-panel"
             role="tabpanel"
             aria-label="Process logs"
+            aria-labelledby="tab-btn-logs"
             hidden={activeTab !== "logs"}
           >
             <VisibilityLogPanel hidden={activeTab !== "logs"} logs={conversionJob.logs} />
@@ -386,7 +394,7 @@ function DashboardApp({
             playing={player.playing}
             onJumpToChapter={player.jumpToChapter}
             onStartConvert={openConvert}
-          /> : <section id="tab-library" role="tabpanel" aria-label="Library and playback" hidden />}
+          /> : <section id="tab-library" role="tabpanel" aria-label="Library and playback" aria-labelledby="tab-btn-library" hidden />}
         </div>
 
         <StablePlayerPanel

@@ -26,18 +26,20 @@ function capabilities(
     probeState?: SystemCapabilitiesResponse["runtime_probe"]["state"];
     refreshInProgress?: boolean;
     mlxAvailable?: boolean;
+    cudaAvailable?: boolean;
   } = {},
 ): SystemCapabilitiesResponse {
   const {
     probeState = "pending",
     refreshInProgress = true,
     mlxAvailable = false,
+    cudaAvailable = false,
     ...rest
   } = overrides;
   return {
     default_tts_engine: "kokoro-mlx",
     default_tts_quantization: "bf16",
-    cleaner_runtime_availability: { api: true, cuda: false, mlx: mlxAvailable },
+    cleaner_runtime_availability: { api: true, cuda: cudaAvailable, mlx: mlxAvailable },
     mlx_runtime_available: mlxAvailable,
     runtime_probe: {
       state: probeState,
@@ -339,5 +341,112 @@ describe("useConversionOptions cleaner selector capability polling", () => {
     expect(getConversionProbe().cleanerBackendOptions.some((option) => option.value === "mlx")).toBe(
       true,
     );
+  });
+
+  it("preserves a legacy Local MLX preference through an unavailable startup probe", async () => {
+    const legacySettings: PersistedSettings = {
+      cleaner_backend: "mlx",
+      cleaner_model: "mlx-community/Llama-3.2-3B-Instruct-4bit",
+      cleaner_backend_configured: true,
+    };
+    savePersistedSettings(legacySettings);
+
+    const unavailable = capabilities({
+      probeState: "stale",
+      refreshInProgress: true,
+      mlxAvailable: false,
+    });
+    const available = capabilities({
+      probeState: "fresh",
+      refreshInProgress: false,
+      mlxAvailable: true,
+    });
+    getRuntimeBootstrap.mockResolvedValue({ models: modelOptions, capabilities: unavailable });
+    const availableCapabilities = deferred<SystemCapabilitiesResponse>();
+    const getSystemCapabilities = vi.fn().mockReturnValue(availableCapabilities.promise);
+    const getVoiceOptions = vi.fn(async () => ({ engine: "kokoro-mlx", voices: [] }));
+    const apiClient = { getSystemCapabilities, getVoiceOptions } as unknown as ApiClient;
+
+    await act(async () => {
+      root.render(<ConversionProbe apiClient={apiClient} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getConversionProbe().cleanerBackend).toBe("api");
+    const persistedDuringFallback = readPersistedSettings();
+    expect(persistedDuringFallback.preferred_cleaner_backend).toBe("mlx");
+    expect(persistedDuringFallback.preferred_cleaner_model).toBe("mlx-community/Llama-3.2-3B-Instruct-4bit");
+
+    await act(async () => {
+      availableCapabilities.resolve(available);
+      await availableCapabilities.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const persisted = readPersistedSettings();
+    expect(persisted.preferred_cleaner_backend).toBe("mlx");
+    expect(persisted.preferred_cleaner_model).toBe("mlx-community/Llama-3.2-3B-Instruct-4bit");
+    expect(getConversionProbe().cleanerBackend).toBe("mlx");
+    expect(getConversionProbe().cleanerModel).toBe("mlx-community/Llama-3.2-3B-Instruct-4bit");
+  });
+
+  it("preserves CUDA tuning through an unavailable startup fallback", async () => {
+    const legacySettings: PersistedSettings = {
+      cleaner_backend: "cuda",
+      cleaner_model: "Qwen/Qwen2.5-1.5B-Instruct",
+      cleaner_backend_configured: true,
+      cleaner_cuda_device: "cuda:1",
+      cleaner_cuda_quantization: "4bit",
+    };
+    savePersistedSettings(legacySettings);
+
+    const unavailable = capabilities({
+      probeState: "stale",
+      refreshInProgress: true,
+      mlxAvailable: false,
+      cudaAvailable: false,
+    });
+    const available = capabilities({
+      probeState: "fresh",
+      refreshInProgress: false,
+      mlxAvailable: false,
+      cudaAvailable: true,
+    });
+    getRuntimeBootstrap.mockResolvedValue({ models: modelOptions, capabilities: unavailable });
+    const availableCapabilities = deferred<SystemCapabilitiesResponse>();
+    const getSystemCapabilities = vi.fn().mockReturnValue(availableCapabilities.promise);
+    const getVoiceOptions = vi.fn(async () => ({ engine: "kokoro-mlx", voices: [] }));
+    const apiClient = { getSystemCapabilities, getVoiceOptions } as unknown as ApiClient;
+
+    await act(async () => {
+      root.render(<ConversionProbe apiClient={apiClient} />);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getConversionProbe().cleanerBackend).toBe("api");
+    expect(getConversionProbe().cleanerCudaDevice).toBe("");
+    expect(getConversionProbe().cleanerCudaQuantization).toBe("");
+    const persistedDuringFallback = readPersistedSettings();
+    expect(persistedDuringFallback.cleaner_cuda_device).toBe("cuda:1");
+    expect(persistedDuringFallback.cleaner_cuda_quantization).toBe("4bit");
+
+    await act(async () => {
+      availableCapabilities.resolve(available);
+      await availableCapabilities.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getConversionProbe().cleanerBackend).toBe("cuda");
+    expect(getConversionProbe().cleanerCudaDevice).toBe("cuda:1");
+    expect(getConversionProbe().cleanerCudaQuantization).toBe("4bit");
+    const persisted = readPersistedSettings();
+    expect(persisted.cleaner_cuda_device).toBe("cuda:1");
+    expect(persisted.cleaner_cuda_quantization).toBe("4bit");
   });
 });

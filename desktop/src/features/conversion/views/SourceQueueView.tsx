@@ -41,6 +41,7 @@ export function SourceQueueView({
 
   return (
     <>
+      <h2 className="conversion-group-heading">Source</h2>
       <input
         ref={sourceQueue.browserFileInputRef}
         type="file"
@@ -234,6 +235,7 @@ export function SourceQueueView({
       </div>
 
       <div ref={reviewAnchorRef} id="conversion-review-anchor" className="panel-section form-section">
+        <h2 className="conversion-group-heading">Details</h2>
         {sourceQueue.preflightCard ? (
           <div className="panel-section preflight-card">
             <div className="preflight-title">
@@ -254,9 +256,11 @@ export function SourceQueueView({
             ) : null}
             <p className="preflight-sample">{sourceQueue.preflightCard.sample}</p>
             <p className="field-hint">
-              {capabilities.showStartConversion
-                ? "Source ready — use Start conversion below."
-                : "Source ready — use Run queue above."}
+              {!sourceQueue.preflightCard.canConvert
+                ? `Source cannot be converted — ${sourceQueue.preflightCard.blockingReason}`
+                : capabilities.showStartConversion
+                  ? "Source ready — use Start conversion below."
+                  : "Source ready — use Run queue above."}
             </p>
           </div>
         ) : sourceQueue.preflightStatus ? (

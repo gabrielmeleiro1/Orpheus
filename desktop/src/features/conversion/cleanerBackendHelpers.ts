@@ -218,6 +218,7 @@ function localCleanerRuntimeDisplayName(displayName: string, localPrefix: "Local
 export function deriveCleanerRuntimeStatus(
   capabilities: SystemCapabilitiesResponse | null,
   selectedBackend: CleanerBackendOption | null,
+  hasApiKey = false,
 ): {
   message: string;
   isError: boolean;
@@ -229,6 +230,12 @@ export function deriveCleanerRuntimeStatus(
   const displayName = selectedBackend.display_name;
 
   if (!selectedBackend.is_local) {
+    if (selectedBackend.requires_api_key && !hasApiKey) {
+      return {
+        message: `${displayName} selected. Paste an API key to load models.`,
+        isError: false,
+      };
+    }
     return { message: `${displayName} cleaner ready.`, isError: false };
   }
 

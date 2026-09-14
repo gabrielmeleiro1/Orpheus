@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act, useRef } from "react";
+import { act, useRef, type MutableRefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -51,12 +51,15 @@ function CleanerProbe({
   apiClient,
   systemCapabilities,
   persisted = {},
+  persistedRef,
 }: {
   apiClient: ApiClient;
   systemCapabilities: SystemCapabilitiesResponse | null;
   persisted?: PersistedSettings;
+  persistedRef?: MutableRefObject<PersistedSettings>;
 }): null {
-  const persistedSettingsRef = useRef(persisted);
+  const ownedPersistedSettingsRef = useRef(persisted);
+  const persistedSettingsRef = persistedRef ?? ownedPersistedSettingsRef;
   const result = useCleanerOptions({
     apiClient,
     modelOptions,
@@ -150,5 +153,70 @@ describe("useCleanerOptions capability transitions", () => {
     expect(getCleanerProbe().cleanerBackend).toBe("openai");
     expect(getCleanerProbe().cleanerBackendConfigured).toBe(true);
     expect(getCleanerProbe().cleanerBackendOptions.some((option) => option.value === "mlx")).toBe(true);
+  });
+
+  it("migrates a legacy Local MLX preference and restores it after startup probing", async () => {
+    const apiClient = {} as ApiClient;
+    const persistedRef: MutableRefObject<PersistedSettings> = {
+      current: {
+        cleaner_backend: "mlx",
+        cleaner_backend_configured: true,
+        cleaner_model: "local-model",
+      },
+    };
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <CleanerProbe
+          apiClient={apiClient}
+          systemCapabilities={capabilities(false, "pending")}
+          persistedRef={persistedRef}
+        />,
+      );
+    });
+
+    expect(getCleanerProbe().cleanerBackend).toBe("openai");
+    expect(persistedRef.current.preferred_cleaner_backend).toBe("mlx");
+    expect(persistedRef.current.preferred_cleaner_model).toBe("local-model");
+
+    await act(async () => {
+      root.render(
+        <CleanerProbe
+          apiClient={apiClient}
+          systemCapabilities={capabilities(true, "fresh")}
+          persistedRef={persistedRef}
+        />,
+      );
+    });
+
+    expect(getCleanerProbe().cleanerBackend).toBe("mlx");
+    expect(getCleanerProbe().cleanerModel).toBe("local-model");
+  });
+
+  it("updates the persisted backend preference on an explicit user switch", async () => {
+    const apiClient = {} as ApiClient;
+    const persistedRef: MutableRefObject<PersistedSettings> = {
+      current: {
+        cleaner_backend: "mlx",
+        preferred_cleaner_backend: "mlx",
+        cleaner_backend_configured: true,
+      },
+    };
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <CleanerProbe
+          apiClient={apiClient}
+          systemCapabilities={capabilities(true, "fresh")}
+          persistedRef={persistedRef}
+        />,
+      );
+    });
+
+    await act(async () => getCleanerProbe().setCleanerBackend("openai"));
+
+    expect(persistedRef.current.preferred_cleaner_backend).toBe("openai");
   });
 });

@@ -46,7 +46,10 @@ export function LibraryPanel({
   onStartConvert,
 }: LibraryPanelProps) {
   const showEmpty = !library.loadingList && !library.errorMessage && library.items.length === 0;
-  const selected = library.selectedBookDetail;
+  // A search/filter may hide the currently playing book. Keep its detail in
+  // the library model for the global player, but do not show stale edit fields
+  // while the book is outside the visible result set.
+  const selected = library.selectedBookIndex >= 0 ? library.selectedBookDetail : null;
   const chapters = useMemo(() => selected?.chapters ?? [], [selected?.chapters]);
   const detailTransitionPending = Boolean(
     selected && (library.loadingDetail || selected.id !== library.selectedBookId),
@@ -93,11 +96,12 @@ export function LibraryPanel({
       className="panel"
       role="tabpanel"
       aria-label="Library and playback"
+      aria-labelledby="tab-btn-library"
       hidden={hidden}
     >
       <div className="panel-header">
         <span>Library</span>
-        <span className="panel-header-meta">{library.items.length} {library.items.length === 1 ? "book" : "books"}</span>
+        <span className="panel-header-meta">{library.items.length}{library.hasMore ? "+" : ""} {library.items.length === 1 ? "book" : "books"}</span>
       </div>
 
       <div className="library-workspace">
@@ -222,10 +226,10 @@ export function LibraryPanel({
           aria-busy={detailTransitionPending}
         >
           {library.errorMessage ? (
-            <p className="field-hint is-error status-sentence">{library.errorMessage}</p>
+            <p className="field-hint is-error status-sentence" role="alert">{library.errorMessage}</p>
           ) : null}
           {showDetailStatus ? (
-            <p className="field-hint status-sentence">
+            <p className="field-hint status-sentence" role="status" aria-live="polite">
               {library.loadingDetail ? "Loading selected book…" : library.statusMessage}
             </p>
           ) : null}
@@ -505,7 +509,7 @@ export function LibraryPanel({
                 </button>
               </div>
               {library.maintenanceMessage ? (
-                <p className="field-hint status-sentence">{library.maintenanceMessage}</p>
+                <p className="field-hint status-sentence" role="status" aria-live="polite">{library.maintenanceMessage}</p>
               ) : null}
               {library.maintenanceReport ? (
                 <div className="maintenance-grid">

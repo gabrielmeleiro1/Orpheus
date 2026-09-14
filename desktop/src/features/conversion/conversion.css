@@ -1,15 +1,35 @@
+.conversion-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.conversion-panel > .panel-header {
+  flex-shrink: 0;
+}
+
+.conversion-form {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  padding-bottom: 16px;
+}
+
 .drop-zone {
   align-items: center;
-  background: var(--bg-elevated);
+  background: transparent;
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius);
   cursor: pointer;
   display: grid;
-  gap: var(--density-panel-gap);
-  grid-template-columns: 40px minmax(0, 1fr);
+  gap: 4px 16px;
+  grid-template-columns: 24px minmax(0, 1fr);
   margin: 0 0 12px;
-  min-height: 104px;
-  padding: 14px 16px;
+  min-height: 88px;
+  padding: 16px;
   transition: border-color 120ms ease, background 120ms ease;
 }
 
@@ -21,14 +41,14 @@
 
 .drop-zone-icon {
   align-items: center;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   display: grid;
-  height: 40px;
+  height: 24px;
   justify-items: center;
   transition: border-color 120ms ease, color 120ms ease;
-  width: 40px;
+  width: 24px;
 }
 
 .drop-zone-icon svg {
@@ -134,23 +154,23 @@
 .queue-panel,
 .preflight-card,
 .config-panel-section {
-  margin-bottom: 12px;
-  padding: var(--density-panel-pad);
+  margin-bottom: 24px;
+  padding: 0;
 }
 
 .paste-header,
 .queue-header,
 .preflight-title {
   align-items: center;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   display: flex;
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
   gap: 10px;
   justify-content: space-between;
-  letter-spacing: 0.08em;
+  letter-spacing: normal;
   margin-bottom: 10px;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 /* The label must never wrap under the full-width Run queue button. */
@@ -186,15 +206,16 @@
 
 .queue-row {
   align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   display: grid;
   gap: var(--density-panel-gap);
   grid-template-columns: minmax(0, 1fr) max-content;
   min-height: 38px;
   padding: 7px 10px;
   transition: border-color 120ms ease, background 120ms ease;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .queue-row:hover {
@@ -203,6 +224,7 @@
 
 .queue-row.is-selected {
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-soft);
 }
 
 .queue-item-main,
@@ -279,16 +301,66 @@
 
 .preflight-sample {
   background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-sm);
   color: var(--text-secondary);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   margin: 8px 0 10px;
   overflow-wrap: anywhere;
-  padding: var(--density-panel-pad);
+  padding: 12px 16px;
   white-space: pre-wrap;
+}
+
+.conversion-group-heading {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.form-section > .conversion-group-heading {
+  margin: 0;
+}
+
+.voice-options {
+  max-width: var(--field-text-width);
+}
+
+.voice-options .form-row {
+  grid-template-columns: 64px minmax(0, 1fr);
+  align-items: start;
+}
+
+.voice-options .form-row-label {
+  padding-top: 9px;
+}
+
+.voice-selection {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.voice-options .voice-suggest-actions {
+  margin: 0;
+}
+
+.voice-options .compact-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.voice-options .compact-row > .field-input {
+  width: 100%;
+}
+
+.conversion-actions {
+  background: var(--bg);
+  border-top: 1px solid var(--border-light);
+  padding: 12px 0;
+  flex-shrink: 0;
 }
 
 .voice-preview-audio {
@@ -298,8 +370,8 @@
 /* Advanced settings use the shared `.disclosure-card` primitive (controls.css)
    for its card summary + rotating ▸ affordance; only spacing lives here. */
 .advanced-settings {
-  margin-bottom: 12px;
-  margin-top: 12px;
+  margin-bottom: 24px;
+  margin-top: 24px;
 }
 
 .advanced-settings-body {
@@ -310,14 +382,41 @@
   margin-bottom: 12px;
 }
 
+.config-panel-section {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.config-panel-section > .section-title {
+  margin-bottom: 0;
+}
+
+.config-grid > :only-child {
+  grid-column: 1 / -1;
+  max-width: var(--field-text-width);
+}
+
 .config-grid {
   display: grid;
-  gap: 12px;
+  gap: 24px;
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 @media (max-width: 800px) {
+  .voice-selection {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .config-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drop-zone,
+  .drop-zone-icon,
+  .queue-row {
+    transition: none;
   }
 }

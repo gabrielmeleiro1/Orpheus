@@ -64,11 +64,18 @@ export function useComboboxState({
   const { open, highlightIndex } = state;
 
   useEffect(() => {
+    if ((disabled || optionCount === 0) && open) {
+      dispatch({ type: "close" });
+      return;
+    }
     if (!open) {
       return;
     }
-    dispatch({ type: "setHighlight", index: selectedIndex >= 0 ? selectedIndex : 0 });
-  }, [open, selectedIndex]);
+    const nextHighlight = optionCount > 0
+      ? Math.min(optionCount - 1, Math.max(0, selectedIndex >= 0 ? selectedIndex : 0))
+      : -1;
+    dispatch({ type: "setHighlight", index: nextHighlight });
+  }, [disabled, open, optionCount, selectedIndex]);
 
   useEffect(() => {
     if (!open) {

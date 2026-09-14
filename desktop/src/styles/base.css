@@ -14,7 +14,7 @@
   --surface-active: #2e2e33;
 
   --text: #e8e6e3;
-  --text-secondary: #9a9590;
+  --text-secondary: #aaa49d;
   /* Small supporting copy remains readable even on the active surface. */
   --text-tertiary: var(--text-secondary);
 
@@ -34,19 +34,21 @@
 
   --overlay: #000000;
 
-  --density-rail-width: 216px;
-  --density-status-height: 70px;
-  --density-page-x: 20px;
-  --density-page-y: 12px;
-  --density-panel-gap: 12px;
-  --density-panel-pad: 12px;
-  --density-control-height: 30px;
+  --density-rail-width: 196px;
+  --density-status-height: 88px;
+  --density-page-x: 28px;
+  --density-page-y: 16px;
+  --density-panel-gap: 16px;
+  --density-panel-pad: 16px;
+  --density-control-height: 34px;
 
   /* Vertical rhythm — the only spacing steps forms and cards should use. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
 
   /* Text inputs stay readable instead of stretching the full column. */
   --field-text-width: 34rem;

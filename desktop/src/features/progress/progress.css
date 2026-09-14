@@ -3,8 +3,8 @@
   display: grid;
   gap: 18px;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  margin-bottom: 12px;
-  padding: 16px;
+  margin-bottom: 24px;
+  padding: 0;
 }
 
 /* Ring */
@@ -107,16 +107,16 @@
 }
 
 .progress-chip {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 0;
   border-radius: 999px;
   color: var(--text-secondary);
   flex-shrink: 0;
   font-family: var(--font-mono);
-  font-size: 10px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.03em;
-  padding: 3px 10px;
+  padding: 0;
   white-space: nowrap;
 }
 
@@ -138,8 +138,8 @@
 .subtask-section {
   display: grid;
   gap: 8px;
-  margin-bottom: 12px;
-  padding: var(--density-panel-pad);
+  margin-bottom: 24px;
+  padding: 0;
 }
 
 .subtask-row {
@@ -169,8 +169,8 @@
 /* Stage timeline */
 
 .stage-flow {
-  margin-bottom: 12px;
-  padding: 6px var(--density-panel-pad);
+  margin-bottom: 24px;
+  padding: 0;
 }
 
 .stage-row {
@@ -277,22 +277,22 @@
 /* Performance snapshot */
 
 .performance-section {
-  margin-bottom: 12px;
-  padding: var(--density-panel-pad);
+  margin-bottom: 24px;
+  padding: 0;
 }
 
 .performance-grid {
   display: grid;
-  gap: var(--density-panel-gap);
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px 24px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
 }
 
 .performance-item {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   min-width: 0;
-  padding: 10px 12px;
+  padding: 0;
 }
 
 /* Word values ("Measuring…", "None", "manual / parallel") read as body text;
@@ -316,7 +316,7 @@
 .performance-item > span:last-child {
   color: var(--text-tertiary);
   display: block;
-  font-size: 11px;
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 

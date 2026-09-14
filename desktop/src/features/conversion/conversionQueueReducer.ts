@@ -1,6 +1,9 @@
 import type { SourcePreflight } from "../../types/api";
 import { compactSample, splitPath } from "./conversionPanelHelpers";
-import type { ConversionQueueItem } from "./conversionPanelModel";
+import {
+  preflightBlockingReason,
+  type ConversionQueueItem,
+} from "./conversionPanelModel";
 import type { QueueEditPatch } from "./conversionPanelStateTypes";
 
 export interface PreflightStamp {
@@ -281,6 +284,7 @@ export function conversionQueueReducer(
     case "preflightSucceeded": {
       let applied = false;
       let nextPreviewText = state.previewText;
+      const preflightError = preflightBlockingReason(action.preflight);
       const queueItems = state.queueItems.map((item) => {
         if (item.id !== action.stamp.itemId || !hasFreshStamp(state, item, action.stamp)) {
           return item;
@@ -300,10 +304,16 @@ export function conversionQueueReducer(
           preflight: action.preflight,
           status: preserveActiveStatus
             ? item.status
-            : action.preflight.warnings.length
-              ? "warning"
-              : "ready",
-          error: preserveActiveStatus ? item.error : "",
+            : preflightError
+              ? "failed"
+              : action.preflight.warnings.length
+                ? "warning"
+                : "ready",
+          error: preserveActiveStatus
+            ? item.error
+            : preflightError
+              ? preflightError
+              : "",
         };
       });
       if (!applied) {
@@ -321,9 +331,11 @@ export function conversionQueueReducer(
           ? state.authorOverride || action.preflight.author?.trim() || ""
           : state.authorOverride,
         previewText: nextPreviewText,
-        preflightStatus: action.preflight.warnings.length
-          ? "Preflight completed with warnings."
-          : "Preflight completed.",
+        preflightStatus: preflightError
+          ? preflightError
+          : action.preflight.warnings.length
+            ? "Preflight completed with warnings."
+            : "Preflight completed.",
       };
     }
     case "preflightFailed": {

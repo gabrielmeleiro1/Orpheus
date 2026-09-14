@@ -107,6 +107,8 @@ interface PreflightCardViewModel {
   sourceType: string;
   warnings: string[];
   sample: string;
+  canConvert: boolean;
+  blockingReason: string | null;
 }
 
 interface QueueItemViewModel {

@@ -1,18 +1,19 @@
 .library-workspace {
   display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 24px;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
   min-height: 0;
 }
 
 .library-sidebar {
   min-width: 0;
-  padding: var(--density-panel-pad);
+  padding: 0 24px 0 0;
+  border-right: 1px solid var(--border-light);
 }
 
 .library-detail-pane {
   display: grid;
-  gap: 12px;
+  gap: 24px;
   min-width: 0;
   overflow: visible;
   transition: opacity 120ms ease;
@@ -77,31 +78,22 @@
 
 .book-row {
   align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 0;
   color: var(--text-secondary);
   cursor: pointer;
   display: grid;
   font-size: 13px;
   gap: 3px 10px;
-  grid-template-columns: 8px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   min-height: 50px;
   padding: 7px 10px;
   position: relative;
   text-align: left;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
   width: 100%;
-}
-
-.book-row::before {
-  background: var(--text-tertiary);
-  border-radius: 50%;
-  content: "";
-  display: block;
-  grid-row: 1 / span 2;
-  height: 7px;
-  width: 7px;
+  border-bottom-color: var(--border-light);
 }
 
 .book-row:hover,
@@ -120,19 +112,15 @@
 }
 
 .book-row.is-selected {
-  background: var(--surface-active);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-
-.book-row.is-selected::before {
-  background: var(--accent);
+  background: var(--accent-soft);
+  border-color: transparent;
 }
 
 .book-title {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  grid-column: 2;
+  grid-column: 1;
   overflow: hidden;
   overflow-wrap: normal;
   text-overflow: ellipsis;
@@ -145,7 +133,7 @@
   color: var(--text-tertiary);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
-  grid-column: 2;
+  grid-column: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -160,13 +148,13 @@
 
 .library-detail-actions {
   align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: var(--density-panel-pad);
+  padding: 0;
 }
 
 /* Destructive actions sit apart, pushed to the trailing edge. */
@@ -190,8 +178,8 @@
   background: transparent;
   border: 0;
   display: grid;
-  gap: 7px;
-  padding: var(--density-panel-pad);
+  gap: 0;
+  padding: 0;
 }
 
 .chapter-empty {
@@ -200,15 +188,16 @@
 
 .chapter-row {
   align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   display: grid;
   gap: var(--density-panel-gap);
   grid-template-columns: minmax(0, 1fr) max-content;
-  min-height: 38px;
-  padding: 7px 10px;
+  min-height: 44px;
+  padding: 10px 8px;
   transition: background 120ms ease, border-color 120ms ease;
+  border-bottom: 1px solid var(--border-light);
 }
 
 .chapter-row:hover {
@@ -217,6 +206,7 @@
 
 .chapter-row.is-current {
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: var(--accent-soft);
 }
 
 /* Chapter row internals — library-scoped so the panel is self-contained. */
@@ -243,7 +233,8 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .library-detail-pane .chapter-row.is-current .chapter-title {
@@ -324,7 +315,7 @@
 
 .maintenance-grid div {
   min-width: 0;
-  padding: 7px;
+  padding: 7px 0;
 }
 
 .maintenance-grid span {
@@ -343,14 +334,15 @@
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 800px) {
   .library-workspace {
     grid-template-columns: 1fr;
   }
 
   .library-sidebar {
-    border: 1px solid var(--border);
-    padding: 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-light);
+    padding: 0 0 24px;
   }
 }
 
@@ -366,6 +358,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .library-detail-pane,
+  .book-row,
+  .chapter-row,
   .chapter-cleaned-btn {
     transition: none;
   }

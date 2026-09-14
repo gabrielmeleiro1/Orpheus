@@ -33,7 +33,7 @@ export function shouldKeepPollingForMlxCleaner(
   if (capabilities.mlx_runtime_available === true) {
     return true;
   }
-  return String(capabilities.primary_runtime ?? "").trim() === "mlx";
+  return String(capabilities.primary_runtime ?? "").trim().toLowerCase() === "mlx";
 }
 
 /**

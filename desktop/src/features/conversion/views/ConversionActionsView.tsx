@@ -16,7 +16,7 @@ export function ConversionActionsView({
   actions,
 }: ConversionActionsViewProps) {
   return (
-    <>
+    <div className="conversion-actions">
       {conversionActions.blockingReason ? (
         <div id="conversion-blocking-reason" className="action-row">
           <span className="hint" role="status" aria-live="polite">
@@ -69,6 +69,6 @@ export function ConversionActionsView({
           </button>
         </div>
       ) : null}
-    </>
+    </div>
   );
 }

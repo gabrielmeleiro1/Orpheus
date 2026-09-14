@@ -221,6 +221,31 @@ describe("ConversionPanelView", () => {
     expect(html).toContain("Speed 1.2 · 3 chapters at once");
   });
 
+  it("does not call a zero-chapter preflight ready", () => {
+    const html = renderToString(
+      <ConversionPanelView
+        {...viewModel({
+          sourceQueue: {
+            ...viewModel().sourceQueue,
+            preflightCard: {
+              title: "Invalid PDF",
+              meta: "pdf / 0 chapters / 1 KB",
+              author: "",
+              sourceType: "pdf",
+              warnings: ["Source may be malformed or unreadable"],
+              sample: "No readable sample found.",
+              canConvert: false,
+              blockingReason: "No readable chapters found in this source.",
+            },
+          },
+        })}
+      />,
+    );
+
+    expect(html).toContain("Source cannot be converted — No readable chapters found in this source.");
+    expect(html).not.toContain("Source ready — use Start conversion below.");
+  });
+
   it("gives every editable conversion control a programmatic label", () => {
     const html = renderToString(<ConversionPanelView {...viewModel()} />);
 

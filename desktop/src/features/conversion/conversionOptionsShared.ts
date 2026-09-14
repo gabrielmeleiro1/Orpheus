@@ -17,6 +17,11 @@ export interface PersistedSettings {
   speed?: number;
   tts_quantization?: string;
   cleaner_backend?: string;
+  // The user-selected backend may be temporarily unavailable while the
+  // runtime probe warms up. Keep that preference separate from the effective
+  // fallback backend currently shown in the selector.
+  preferred_cleaner_backend?: string;
+  preferred_cleaner_model?: string;
   cleaner_model?: string;
   cleaner_backend_configured?: boolean;
   cleaner_cuda_device?: string;

@@ -6,7 +6,7 @@
   "description": "Playwright-based stress-test harness that simulates real users driving the Orpheus desktop React frontend.",
   "scripts": {
     "start": "node run.mjs",
-    "test": "node --test tests"
+    "test": "node --test"
   },
   "dependencies": {
     "playwright": "^1.61.1"

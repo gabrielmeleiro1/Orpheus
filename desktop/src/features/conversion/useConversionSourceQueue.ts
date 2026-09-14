@@ -441,7 +441,10 @@ export function useConversionSourceQueue({
     item.title = queueController.titleOverride.trim();
     item.author = queueController.authorOverride.trim();
     queueController.addQueueItems([item], {
-      selectFirst: !hasSelectedSourceRef.current,
+      // This explicitly inspects the path currently in the form, so the new
+      // row must own the selection even when an older queue row exists.
+      // Otherwise its preflight result cannot gate the Start action.
+      selectFirst: true,
     });
   }, [conversionMode, queueController]);
 

@@ -135,6 +135,79 @@ describe("useLibrary indexed total", () => {
     libraryProbe = getLibraryProbe();
     expect(libraryProbe.items).toHaveLength(0);
     expect((libraryProbe as UseLibraryResult & { indexedCount?: number }).indexedCount).toBe(1);
+    expect(libraryProbe.selectedBookId).toBe(book.id);
+    expect(libraryProbe.selectedBookDetail).toEqual(detail);
+    expect(libraryProbe.selectedBookIndex).toBe(-1);
+
+    await act(async () => {
+      libraryProbe.setSearchQuery("");
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    libraryProbe = getLibraryProbe();
+    expect(libraryProbe.selectedBookIndex).toBe(0);
+    expect(getLibraryBook).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears a stale selection when an unfiltered refresh finds an empty library", async () => {
+    const getLibrary = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [book], count: 1 })
+      .mockResolvedValueOnce({ items: [], count: 0 });
+    const getLibraryBook = vi.fn(async () => detail);
+    const apiClient = { getLibrary, getLibraryBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(getLibraryProbe().selectedBookId).toBe(book.id);
+
+    await act(async () => {
+      await getLibraryProbe().refreshLibrary();
+    });
+
+    expect(getLibraryProbe().items).toEqual([]);
+    expect(getLibraryProbe().selectedBookId).toBeNull();
+    expect(getLibraryProbe().selectedBookDetail).toBeNull();
+    expect(getLibraryProbe().selectedBookIndex).toBe(-1);
+  });
+
+  it("refreshes same-id detail data after an explicit library refresh", async () => {
+    const refreshedDetail: LibraryBookDetail = {
+      ...detail,
+      title: "Updated indexed book",
+      chapters: [{ id: 9, number: 1, title: "New chapter", duration_ms: 1200, mp3_path: null }],
+    };
+    const getLibrary = vi
+      .fn()
+      .mockResolvedValueOnce({ items: [book], count: 1 })
+      .mockResolvedValueOnce({ items: [book], count: 1 });
+    const getLibraryBook = vi
+      .fn()
+      .mockResolvedValueOnce(detail)
+      .mockResolvedValueOnce(refreshedDetail);
+    const apiClient = { getLibrary, getLibraryBook } as unknown as ApiClient;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(220);
+    });
+    expect(getLibraryProbe().selectedBookDetail?.title).toBe(detail.title);
+
+    await act(async () => {
+      await getLibraryProbe().refreshLibrary();
+    });
+
+    expect(getLibraryBook).toHaveBeenCalledTimes(2);
+    expect(getLibraryProbe().selectedBookDetail).toEqual(refreshedDetail);
   });
 
   it("does not repopulate cleared state from an in-flight list after disconnect", async () => {

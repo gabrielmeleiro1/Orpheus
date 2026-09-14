@@ -4,6 +4,10 @@ import type { ConversionMode } from "../../types/api";
 import { resolveConversionPrimaryAction } from "./conversionPrimaryAction";
 import { cleanerBackendUsesCudaFields } from "./cleanerBackendHelpers";
 import { compactSample, describeSourceDisplay, splitPath } from "./conversionPanelHelpers";
+import {
+  isPreflightConvertible,
+  preflightBlockingReason,
+} from "./conversionPanelModel";
 import { useConversionOptions } from "./useConversionOptions";
 import { useConversionPreview } from "./useConversionPreview";
 import { useConversionQueueController } from "./useConversionQueueController";
@@ -210,10 +214,13 @@ export function useConversionPanelState({
     cleanerModelOptionsCount: optionState.cleanerModelOptions.length,
     cleanerModel: optionState.cleanerModel,
   });
+  const selectedPreflightBlocker =
+    selectedPreflight ? preflightBlockingReason(selectedPreflight) : null;
+  const startBlockingReason = selectedPreflightBlocker ?? conversionBlocker.blockingReason;
 
   const sourcelessPasteReady = hasPastedText && !queueController.sourcePath.trim();
   const startDisabled = resolveStartDisabled({
-    blockingReason: conversionBlocker.blockingReason,
+    blockingReason: startBlockingReason,
     queueRunning: queueRunner.queueRunning,
     isStarting: conversionJob.isStarting,
     hasActiveJob: Boolean(conversionJob.activeJobId),
@@ -291,12 +298,14 @@ export function useConversionPanelState({
     })) ?? [];
   const selectedPreflightCard = selectedPreflight
     ? {
-        title: selectedPreflight.title || splitPath(queueController.sourcePath) || "Untitled source",
+      title: selectedPreflight.title || splitPath(queueController.sourcePath) || "Untitled source",
         meta: preflightMeta(selectedPreflight),
         author: selectedPreflight.author?.trim() || "",
         sourceType: selectedPreflight.source_type?.trim() || "",
-        warnings: selectedPreflight.warnings,
-        sample: selectedPreflight.sample ? compactSample(selectedPreflight.sample, 360) : "No readable sample found.",
+      warnings: selectedPreflight.warnings,
+      sample: selectedPreflight.sample ? compactSample(selectedPreflight.sample, 360) : "No readable sample found.",
+      canConvert: isPreflightConvertible(selectedPreflight),
+      blockingReason: preflightBlockingReason(selectedPreflight),
       }
     : null;
   const sourceDisplay = describeSourceDisplay(
@@ -419,7 +428,10 @@ export function useConversionPanelState({
     },
     conversionActions: {
       hasActiveJob: Boolean(conversionJob.activeJobId),
-      blockingReason: conversionBlocker.blockingReason,
+      blockingReason:
+        primaryAction.primary === "run_queue"
+          ? conversionBlocker.blockingReason
+          : startBlockingReason,
       showSettingsShortcut: conversionBlocker.showSettingsShortcut,
       startLabel: conversionJob.isStarting
         ? "Starting…"

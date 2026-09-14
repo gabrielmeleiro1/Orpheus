@@ -236,4 +236,51 @@ describe("conversionQueueReducer", () => {
     expect(state.previewText).toBe("This is a long enough sample to become preview text.");
     expect(state.preflightStatus).toBe("Preflight completed.");
   });
+
+  it("marks a completed zero-chapter preflight as non-runnable", () => {
+    const item = createQueueItem("/tmp/invalid.pdf", "audiobook");
+    let state = conversionQueueReducer(createConversionQueueInitialState(), {
+      type: "itemsAdded",
+      items: [item],
+      selectFirst: true,
+    });
+
+    state = conversionQueueReducer(state, {
+      type: "preflightSucceeded",
+      stamp: stamp(item.id, item.sourcePath, 0),
+      preflight: preflight({
+        chapter_count: 0,
+        warnings: ["Source may be malformed or unreadable"],
+      }),
+      updateSelected: true,
+    });
+
+    expect(state.queueItems[0]).toMatchObject({
+      status: "failed",
+      error: "No readable chapters found in this source.",
+    });
+    expect(state.preflightStatus).toBe("No readable chapters found in this source.");
+  });
+
+  it("blocks an OCR-required PDF with an actionable preflight error", () => {
+    const item = createQueueItem("/tmp/scanned.pdf", "audiobook");
+    let state = conversionQueueReducer(createConversionQueueInitialState(), {
+      type: "itemsAdded",
+      items: [item],
+      selectFirst: true,
+    });
+
+    state = conversionQueueReducer(state, {
+      type: "preflightSucceeded",
+      stamp: stamp(item.id, item.sourcePath, 0),
+      preflight: preflight({ chapter_count: 0, requires_ocr: true }),
+      updateSelected: true,
+    });
+
+    expect(state.queueItems[0]).toMatchObject({
+      status: "failed",
+      error: "This PDF requires OCR before conversion.",
+    });
+    expect(state.preflightStatus).toBe("This PDF requires OCR before conversion.");
+  });
 });

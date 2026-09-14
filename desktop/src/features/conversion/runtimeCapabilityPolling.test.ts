@@ -61,6 +61,15 @@ describe("shouldPollRuntimeCapabilities", () => {
       ),
     ).toBe(true);
   });
+
+  it("treats runtime identity case-insensitively", () => {
+    expect(
+      shouldPollRuntimeCapabilities(
+        { state: "fresh", refresh_in_progress: false },
+        capabilities({ probeState: "fresh", mlxAvailable: false, primary_runtime: "MLX" }),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("startRuntimeCapabilityPolling", () => {

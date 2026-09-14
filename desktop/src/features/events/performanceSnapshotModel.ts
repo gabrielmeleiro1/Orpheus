@@ -1,5 +1,7 @@
 import type { PerformanceSnapshot } from "../../types/api";
 
+const MONOTONIC_COUNTERS = ["completed_chapters", "failed_chapters"] as const;
+
 function normalizeString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -63,4 +65,32 @@ export function normalizePerformanceSnapshot(value: unknown): PerformanceSnapsho
   }
 
   return Object.keys(snapshot).length > 0 ? snapshot : null;
+}
+
+/**
+ * Merge live snapshots without allowing a later idle/cleanup snapshot to
+ * erase chapter counts already reported for the active job. The backend can
+ * emit a final packaging update from the parent process after a worker-pool
+ * update; that parent snapshot has zero local worker counters.
+ */
+export function mergePerformanceSnapshots(
+  previous: PerformanceSnapshot | null,
+  next: PerformanceSnapshot | undefined,
+): PerformanceSnapshot | null {
+  if (!next) {
+    return previous;
+  }
+  if (!previous) {
+    return next;
+  }
+
+  const merged: PerformanceSnapshot = { ...previous, ...next };
+  for (const key of MONOTONIC_COUNTERS) {
+    const previousValue = previous[key];
+    const nextValue = next[key];
+    if (typeof previousValue === "number" && typeof nextValue === "number") {
+      merged[key] = Math.max(previousValue, nextValue);
+    }
+  }
+  return merged;
 }

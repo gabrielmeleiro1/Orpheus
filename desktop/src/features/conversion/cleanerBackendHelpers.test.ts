@@ -198,6 +198,20 @@ describe("cleaner runtime status", () => {
           models: [],
         }),
       ),
+    ).toEqual({ message: "Remote API selected. Paste an API key to load models.", isError: false });
+    expect(
+      deriveCleanerRuntimeStatus(
+        capabilities({ api: false }),
+        cleanerBackendOption({
+          id: "api",
+          display_name: "Remote API",
+          is_local: false,
+          requires_model: false,
+          requires_api_key: true,
+          models: [],
+        }),
+        true,
+      ),
     ).toEqual({ message: "Remote API cleaner ready.", isError: false });
   });
 

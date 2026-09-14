@@ -9,10 +9,10 @@
 .setup-shell {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: 24px;
   margin: 0 auto;
   max-width: 820px;
-  padding: 44px 28px 60px;
+  padding: 32px 24px 48px;
   width: 100%;
 }
 
@@ -28,9 +28,9 @@
 }
 
 .setup-panel {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-lg);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   display: flex;
   flex-direction: column;
   /* Tooltips overhang section edges; clipping them made hovers useless. */
@@ -38,14 +38,14 @@
 }
 
 .setup-intro {
-  border-bottom: 1px solid var(--border-light);
-  padding: 32px 32px 26px;
+  border-bottom: 0;
+  padding: 0 0 8px;
 }
 
 .setup-intro h1 {
   color: var(--text);
   font-family: var(--font-display);
-  font-size: 31px;
+  font-size: 26px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.15;
@@ -64,10 +64,10 @@
   border: 0;
   margin-top: 24px;
   min-width: 0;
-  padding: 0 32px;
+  padding: 0;
 }
 
-/* Section headers adopt the app-wide tracked-caps `.section-label` (shell.css);
+/* Section headers adopt the app-wide `.section-label` (shell.css);
    these rules only carry setup-specific spacing/focus. */
 .setup-section legend {
   margin-bottom: 12px;
@@ -175,7 +175,7 @@
 .setup-empty-models,
 .setup-recovery p {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
 }
 
@@ -226,14 +226,14 @@
 
 .setup-plan {
   align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
   display: flex;
   gap: 16px;
   justify-content: space-between;
-  margin: 22px 32px 0;
-  padding: 15px 17px;
+  margin: 24px 0 0;
+  padding: 0;
 }
 
 .setup-plan-summary {
@@ -257,7 +257,7 @@
 
 .setup-plan-detail {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .setup-customize-toggle {
@@ -305,7 +305,7 @@
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
   color: var(--text-secondary);
   display: none;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 400;
   left: 50%;
   line-height: 1.5;
@@ -349,7 +349,7 @@
 
 .setup-tip-models strong {
   color: var(--text);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -362,15 +362,15 @@
 
 .setup-loading {
   align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
+  background: transparent;
+  border: 0;
   border-radius: var(--radius);
   color: var(--text-secondary);
   display: flex;
   font-size: 12px;
   gap: 10px;
-  margin: 22px 32px 0;
-  padding: 15px 17px;
+  margin: 24px 0 0;
+  padding: 0;
 }
 
 .setup-loading-spinner {
@@ -399,7 +399,7 @@
   background: color-mix(in srgb, var(--warning) 7%, var(--bg-elevated));
   border: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border));
   border-radius: var(--radius);
-  margin: 18px 32px 0;
+  margin: 24px 0 0;
   padding: 13px 15px;
 }
 
@@ -443,7 +443,7 @@
 
 .setup-risk p {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   margin: 4px 0 10px;
 }
 
@@ -452,7 +452,7 @@
   color: var(--text);
   cursor: pointer;
   display: flex;
-  font-size: 11px;
+  font-size: 12px;
   gap: 8px;
 }
 
@@ -465,13 +465,13 @@
 
 .setup-installed {
   align-items: center;
-  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elevated));
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  background: transparent;
+  border: 0;
   border-radius: var(--radius);
   display: flex;
   gap: 9px;
-  margin: 18px 32px 0;
-  padding: 14px 16px;
+  margin: 24px 0 0;
+  padding: 0;
 }
 
 .setup-installed > strong {
@@ -485,7 +485,7 @@
   display: grid;
   gap: 12px;
   margin-top: 24px;
-  padding: 22px 32px 0;
+  padding: 24px 0 0;
 }
 
 .setup-danger-box {
@@ -502,7 +502,7 @@
 
 .setup-danger-box > p {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   margin: 0;
   min-width: 0;
@@ -517,7 +517,7 @@
 
 .setup-danger-note {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .setup-progress {
@@ -525,7 +525,7 @@
   display: grid;
   gap: 12px;
   margin-top: 24px;
-  padding: 22px 32px 0;
+  padding: 24px 0 0;
 }
 
 .setup-progress-message {
@@ -569,7 +569,7 @@
   background: color-mix(in srgb, var(--negative) 7%, var(--bg-elevated));
   border: 1px solid color-mix(in srgb, var(--negative) 32%, var(--border));
   border-radius: var(--radius);
-  margin: 16px 32px 0;
+  margin: 24px 0 0;
   outline: none;
   overflow-wrap: anywhere;
   padding: 12px 15px;
@@ -584,7 +584,7 @@
 
 .setup-error p {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.5;
   margin-top: 4px;
 }
@@ -595,8 +595,8 @@
   display: flex;
   gap: 12px;
   justify-content: space-between;
-  margin-top: 26px;
-  padding: 18px 32px;
+  margin-top: 24px;
+  padding: 24px 0 0;
 }
 
 .setup-footer-left {
@@ -636,7 +636,7 @@
   }
 
   .setup-intro {
-    padding: 26px 20px 22px;
+    padding: 0 0 8px;
   }
 
   .setup-intro h1 {
@@ -644,7 +644,7 @@
   }
 
   .setup-section {
-    padding: 22px 20px 0;
+    padding: 0;
   }
 
   .setup-risk,
@@ -652,8 +652,8 @@
   .setup-installed,
   .setup-plan,
   .setup-error {
-    margin-left: 20px;
-    margin-right: 20px;
+    margin-left: 0;
+    margin-right: 0;
   }
 
   .setup-plan {
@@ -663,8 +663,8 @@
 
   .setup-progress,
   .setup-danger {
-    padding-left: 20px;
-    padding-right: 20px;
+    padding-left: 0;
+    padding-right: 0;
   }
 
   .setup-recovery {
@@ -684,7 +684,7 @@
   .setup-footer {
     align-items: stretch;
     flex-direction: column;
-    padding: 16px 20px;
+    padding: 24px 0 0;
   }
 
   .setup-footer-left {

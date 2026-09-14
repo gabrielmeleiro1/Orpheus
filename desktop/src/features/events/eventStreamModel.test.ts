@@ -143,6 +143,31 @@ describe("event stream reducer progress stages", () => {
       ],
     });
   });
+
+  it("retains completed chapter counts across a later zeroed packaging snapshot", () => {
+    const withWorkerResult = eventStreamReducer(createInitialEventStreamState(), {
+      type: "progress",
+      payload: {
+        event_type: "progress",
+        job_id: "job-1",
+        stage: "synthesis",
+        progress: 0.9,
+        performance: { completed_chapters: 1, failed_chapters: 0 },
+      },
+    });
+    const packaging = eventStreamReducer(withWorkerResult.state, {
+      type: "progress",
+      payload: {
+        event_type: "progress",
+        job_id: "job-1",
+        stage: "packaging",
+        progress: 0.95,
+        performance: { completed_chapters: 0, failed_chapters: 0 },
+      },
+    });
+
+    expect(packaging.state.performanceSnapshot?.completed_chapters).toBe(1);
+  });
 });
 
 describe("event stream reducer actions", () => {
@@ -285,6 +310,30 @@ describe("event stream reducer actions", () => {
     expect(eventStreamReducer(running, { type: "setActiveJobId", jobId: "job-3" }).state.activeJobId).toBe(
       "job-3",
     );
+  });
+
+  it("does not relatch a job that failed before the start response resolved", () => {
+    const failed = eventStreamReducer(createInitialEventStreamState(), {
+      type: "state",
+      payload: {
+        event_type: "state",
+        job_id: "job-fast-fail",
+        state: "failed",
+        message: "conversion failed",
+      },
+    }).state;
+
+    const started = eventStreamReducer(failed, {
+      type: "conversionStarted",
+      jobId: "job-fast-fail",
+    });
+
+    expect(started.ignored).toBe(true);
+    expect(started.state).toMatchObject({
+      activeJobId: null,
+      uiState: "failed",
+      isCancelling: false,
+    });
   });
 
   it("clears conversion telemetry when the backend client disappears", () => {

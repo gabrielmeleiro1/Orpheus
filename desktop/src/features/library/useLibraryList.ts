@@ -147,6 +147,8 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const loadedRepositoryRef = useRef<typeof repository>(null);
   const detailAbortRef = useRef<AbortController | null>(null);
   const selectedBookIdRef = useRef<number | null>(null);
+  const selectedBookDetailRef = useRef<LibraryBookDetail | null>(null);
+  selectedBookDetailRef.current = selectedBookDetail;
   const inFlightDeleteTokensRef = useRef(
     new Map<number, { token: symbol; controller: AbortController }>(),
   );
@@ -324,24 +326,42 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         nextOffsetRef.current = nextItems.length;
 
         if (nextItems.length === 0) {
+          const preserveSelectionForPlayback =
+            (query.trim() !== "" || requestModeFilter !== "all") &&
+            selectedBookIdRef.current !== null &&
+            selectedBookDetailRef.current !== null;
           detailAbortRef.current?.abort();
           detailAbortRef.current = null;
           beginDetailRequest();
-          selectedBookIdRef.current = null;
           selectionGenerationRef.current += 1;
           beginPreviewRequest();
-          setSelectedBookId(null);
           setSelectedBookIndex(-1);
-          setSelectedBookDetail(null);
+          if (!preserveSelectionForPlayback) {
+            selectedBookIdRef.current = null;
+            setSelectedBookId(null);
+            setSelectedBookDetail(null);
+          }
           setLoadingDetail(false);
           if (!options.preserveMessages) {
-            setStatusMessage("Library empty");
+            setStatusMessage(query || requestModeFilter !== "all" ? "No books match" : "Library empty");
           }
           return;
         }
 
         let nextIndex = nextItems.findIndex((item) => item.id === selectedBookIdRef.current);
         if (nextIndex < 0) {
+          if (
+            (query.trim() !== "" || requestModeFilter !== "all") &&
+            selectedBookIdRef.current !== null &&
+            selectedBookDetailRef.current !== null
+          ) {
+            // Keep the current selection alive for the player while a search or
+            // filter temporarily hides it. The detail pane hides selections
+            // with index -1, while playback remains independent of the result
+            // set and is restored when the book becomes visible again.
+            setSelectedBookIndex(-1);
+            return;
+          }
           nextIndex = 0;
         }
 
@@ -809,6 +829,9 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   useEffect(() => {
     return () => {
       listAbortRef.current?.abort();
+      loadMoreAbortRef.current?.abort();
+      loadMoreAbortRef.current = null;
+      loadMoreInFlightRef.current = false;
       detailAbortRef.current?.abort();
       clearInFlightDeleteRequests();
       beginListRequest();

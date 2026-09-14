@@ -190,7 +190,15 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
           return;
         }
 
-        const nextAudioUrl = new URL(audioUrl);
+        let nextAudioUrl: URL;
+        try {
+          nextAudioUrl = new URL(audioUrl);
+        } catch {
+          if (!isStale()) {
+            setPlayerTitle("Playback failed");
+          }
+          return;
+        }
         nextAudioUrl.searchParams.set("v", String(Date.now()));
 
         audio.crossOrigin = "anonymous";

@@ -643,6 +643,33 @@ describe("useConversionSourceQueue", () => {
     expect(getProbe().pastedAuthor).toBe("");
   });
 
+  it("selects a manually inspected source so its preflight can gate Start", async () => {
+    const addQueueItems = vi.fn();
+    const queueController = {
+      sourcePath: "/tmp/invalid.pdf",
+      selectedQueueId: null,
+      selectedQueueItem: null,
+      titleOverride: "",
+      authorOverride: "",
+      addQueueItems,
+      setPreflightStatus: vi.fn(),
+    };
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe apiClient={{}} queueController={queueController} />);
+    });
+
+    const getProbe = () =>
+      (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> })
+        .sourceQueueProbe;
+    await act(async () => getProbe().onInspectCurrentSource());
+
+    expect(addQueueItems).toHaveBeenCalledWith(
+      [expect.objectContaining({ sourcePath: "/tmp/invalid.pdf", status: "preflighting" })],
+      { selectFirst: true },
+    );
+  });
+
   it.each(["api client", "conversion mode"] as const)(
     "ignores a pasted-source completion after the %s changes",
     async (changedContext) => {

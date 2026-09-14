@@ -90,6 +90,36 @@ afterEach(() => {
 });
 
 describe("useAudioPlayer audio load failures", () => {
+  it("fails softly when the backend returns a malformed audio URL", async () => {
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn(async () => "not a URL"),
+      updateBookPlaybackPosition: vi.fn(async (_id: number, position: number) => ({
+        position_sec: position,
+      })),
+    } as unknown as ApiClient;
+    const detail = createBookDetail();
+    const library = createLibraryMock(detail);
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() {
+      current = useAudioPlayer({ apiClient, library });
+      return null;
+    }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<Probe />);
+    });
+    current.audioRef.current = createFakeAudio();
+
+    await act(async () => {
+      await current.togglePlay();
+    });
+
+    expect(current.title).toBe("Playback failed");
+    expect(current.audioRef.current?.load).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
+
   it("restores a book checkpoint only when Play loads the audio", async () => {
     const apiClient = {
       getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book"),

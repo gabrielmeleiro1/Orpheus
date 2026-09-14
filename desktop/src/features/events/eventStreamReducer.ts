@@ -12,6 +12,7 @@ import {
   terminalEventFromStatePayload,
 } from "./eventPayloadNormalizer";
 import { addLog, type LogActionFields } from "./eventLogModel";
+import { mergePerformanceSnapshots } from "./performanceSnapshotModel";
 import {
   buildStageDetail,
   createProgressStages,
@@ -132,7 +133,7 @@ function reduceProgressEvent(
     progressPct: overallPct,
     etaText: formatEtaLabel(payload.eta),
     statusText: message || (stage ? `Stage: ${stage}` : "Conversion running"),
-    performanceSnapshot: payload.performance ?? null,
+    performanceSnapshot: mergePerformanceSnapshots(state.performanceSnapshot, payload.performance),
     currentStage: stage || state.currentStage,
     currentMessage: message || state.currentMessage,
   };
@@ -314,7 +315,13 @@ export function eventStreamReducer(
       // overwrite them.
       const withPerformance =
         action.payload.performance && state.uiState === "running"
-          ? { ...state, performanceSnapshot: action.payload.performance }
+          ? {
+              ...state,
+              performanceSnapshot: mergePerformanceSnapshots(
+                state.performanceSnapshot,
+                action.payload.performance,
+              ),
+            }
           : state;
       return {
         state: addLog(
@@ -425,6 +432,12 @@ export function eventStreamReducer(
         ),
       };
     case "conversionStarted":
+      if (state.terminalJobIds.includes(normalizeString(action.jobId))) {
+        // A very fast failure can arrive on SSE before the start request
+        // resolves. Do not re-latch the terminal job when that response
+        // eventually calls markConversionStarted.
+        return { state, ignored: true };
+      }
       return {
         state: {
           ...state,

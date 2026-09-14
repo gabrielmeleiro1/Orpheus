@@ -11,28 +11,26 @@
   background: var(--bg-elevated);
   border-right: 1px solid var(--border);
   display: grid;
-  grid-template-rows: 58px minmax(0, 1fr) auto;
+  grid-template-rows: 80px minmax(0, 1fr) auto;
   min-width: 0;
 }
 
 .brand {
   align-items: center;
-  border-bottom: 1px solid var(--border-light);
   display: flex;
   gap: 10px;
-  padding: 0 16px;
+  padding: 0 20px;
 }
 
 .brand-mark {
   align-items: center;
-  background: var(--accent-soft);
-  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
   color: var(--accent);
   display: grid;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: 26px;
+  font-weight: 400;
   height: 24px;
   justify-items: center;
   line-height: 1;
@@ -53,7 +51,7 @@
   align-content: start;
   display: grid;
   gap: 2px;
-  padding: 10px 8px;
+  padding: 12px;
 }
 
 .rail-tab,
@@ -75,13 +73,13 @@
 }
 
 .rail-tab {
-  height: 32px;
+  height: 38px;
   padding: 0 8px;
   width: 100%;
 }
 
 .rail-tab.active {
-  background: var(--surface-active);
+  background: var(--accent-soft);
   color: var(--text);
 }
 
@@ -137,7 +135,7 @@
   border-top: 1px solid var(--border-light);
   display: grid;
   gap: 2px;
-  padding: 10px 8px;
+  padding: 12px;
 }
 
 .rail-action {
@@ -179,23 +177,22 @@
 
 .studio-status {
   align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  background: transparent;
+  border-bottom: 1px solid var(--border);
   display: flex;
   flex-shrink: 0;
   justify-content: space-between;
-  margin: 16px var(--density-page-x) 0;
+  margin: 0 var(--density-page-x);
   min-height: var(--density-status-height);
-  padding: 12px 16px;
+  padding: 20px 0;
 }
 
 .studio-status h1 {
   font-family: var(--font-display);
-  font-size: 19px;
+  font-size: 27px;
   font-weight: 600;
-  letter-spacing: 0.005em;
-  line-height: 1;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
   margin-bottom: 6px;
 }
 
@@ -215,9 +212,8 @@
 
 .control {
   align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 0;
   color: var(--text-secondary);
   display: flex;
   font-size: 11px;
@@ -290,7 +286,8 @@ button.control:hover {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--density-page-y) var(--density-page-x) 16px;
+  padding: var(--density-page-y) var(--density-page-x) 32px;
+  scrollbar-gutter: stable;
 }
 
 .dashboard-panel,
@@ -302,34 +299,32 @@ button.control:hover {
 .panel,
 .panel-section,
 .chapter-list,
-#book-detail,
-#cleaning-preview,
 .maintenance-grid div {
-  background: var(--surface);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+#book-detail,
+#cleaning-preview {
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
 }
 
 .v-section,
 .panel {
-  margin-bottom: 12px;
+  margin-bottom: 24px;
 }
 
-/*
- * The one tracked-caps label style, app-wide. Use `.section-label` for a
- * card's single top-level section header (e.g. "Audiobook → M4B"). Do NOT
- * all-caps field labels — those are sentence case (`.field-label` in
- * controls.css). `.section-title` and `.panel-header` are structural
- * wrappers that inherit this exact type treatment.
- */
+/* Section headings organize content without enclosing it in another card. */
 .section-label,
 .section-title,
 .panel-header {
-  color: var(--text-tertiary);
-  font-size: 11px;
+  color: var(--text);
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .section-title {
@@ -339,7 +334,8 @@ button.control:hover {
   gap: 12px;
   justify-content: space-between;
   min-height: 30px;
-  padding: 6px var(--density-panel-pad);
+  padding: 0 0 12px;
+  margin-bottom: 16px;
 }
 
 .section-title span {
@@ -348,6 +344,9 @@ button.control:hover {
 
 /* Value metas inside a tracked-caps section header stay sentence case. */
 .section-title .section-title-meta {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
 }
@@ -360,7 +359,7 @@ button.control:hover {
   justify-content: space-between;
   margin-bottom: 12px;
   min-height: 34px;
-  padding: 8px var(--density-panel-pad);
+  padding: 0 0 12px;
 }
 
 .panel-header-meta {
@@ -378,9 +377,9 @@ button.control:hover {
   white-space: nowrap;
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 760px) {
   .app-frame {
-    grid-template-columns: 78px minmax(0, 1fr);
+    grid-template-columns: 64px minmax(0, 1fr);
   }
 
   .brand {
@@ -396,6 +395,7 @@ button.control:hover {
 
   .rail-tab,
   .rail-action {
+    grid-template-columns: 18px;
     justify-content: center;
     padding-left: 0;
     padding-right: 0;
@@ -409,10 +409,8 @@ button.control:hover {
 
 @media (max-width: 800px) {
   .studio-status {
-    align-items: flex-start;
-    flex-direction: column;
     gap: 16px;
-    margin: 16px 16px 0;
+    margin: 0 20px;
   }
 
   .main-workspace {

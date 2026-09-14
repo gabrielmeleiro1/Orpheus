@@ -19,7 +19,7 @@ export function CleanerOptionsView({
   hidden,
 }: CleanerOptionsViewProps) {
   return (
-    <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" hidden={hidden}>
+    <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" aria-labelledby="tab-btn-settings" hidden={hidden}>
       <div className="config-grid">
         <div className="panel-section config-panel-section">
           <div className="section-title">

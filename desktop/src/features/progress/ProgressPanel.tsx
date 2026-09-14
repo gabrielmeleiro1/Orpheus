@@ -163,7 +163,7 @@ export function ProgressPanel({
           {showStatusLine || (running && etaText) ? (
             <div className="progress-hero-meta">
               {showStatusLine ? (
-                <span id="status-text" className="progress-status-text">{statusText || uiState}</span>
+                <span id="status-text" className="progress-status-text" role="status" aria-live="polite">{statusText || uiState}</span>
               ) : null}
               {running && etaText ? (
                 <span

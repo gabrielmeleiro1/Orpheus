@@ -8,7 +8,9 @@ import type {
 
 import type { PersistedSettings } from "./conversionOptionsShared";
 
-const DEFAULT_PARALLEL_WORKER_LIMIT = 4;
+// Keep the first render safe before the backend has returned its memory
+// recommendation. A measured recommendation may raise this value later.
+const DEFAULT_PARALLEL_WORKER_LIMIT = 1;
 
 export interface UseParallelWorkersArgs {
   apiClient: ApiClient | null;
@@ -96,7 +98,7 @@ export function useParallelWorkers({
     if (Number.isFinite(persisted.parallel_manual_max) && (persisted.parallel_manual_max ?? 0) > 0) {
       setParallelManualMaxState(String(persisted.parallel_manual_max));
     } else if (recommendation) {
-      setParallelManualMaxState(String(recommendation.requested_parallel_chapters));
+      setParallelManualMaxState(String(recommendation.recommended_parallel_chapters));
     }
   }, [apiClient, persistedSettingsRef, systemCapabilities]);
 

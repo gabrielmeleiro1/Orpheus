@@ -175,7 +175,7 @@ export function buildProgressTerminalPresentation(input: {
     showLiveWorkers: false,
     showLiveActiveTask: false,
     workerSummary: isFiniteNumber(performance?.max_workers)
-      ? `${performance?.max_workers} workers`
+      ? `${performance?.max_workers} ${performance?.max_workers === 1 ? "worker" : "workers"}`
       : "Not available",
     modeSummary: performance?.pipeline_mode || "Not recorded",
     throughputSummary: throughputSummary(performance, "Not available"),

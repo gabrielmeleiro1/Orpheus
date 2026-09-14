@@ -14,7 +14,7 @@ const mocks = vi.hoisted(() => {
   return {
     apiClient,
     libraryRefresh: vi.fn(async () => undefined),
-    conversionUiState: "idle" as "idle" | "completed",
+    conversionUiState: "idle" as "idle" | "completed" | "failed" | "cancelled",
     setupPageStatuses: [] as Array<RuntimeSetupStatusResponse | null>,
     backend: {
       apiClient: apiClient as typeof apiClient | null,
@@ -334,6 +334,23 @@ describe("App runtime setup recovery", () => {
 
     expect(mocks.libraryRefresh).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["failed", "cancelled"] as const)(
+    "refreshes the library when a conversion is %s so partial output appears",
+    async (terminalState) => {
+      await act(async () => {
+        root.render(<App />);
+      });
+      await act(async () => findButton(container, "Continue in library-only mode").click());
+
+      mocks.conversionUiState = terminalState;
+      await act(async () => {
+        root.render(<App />);
+      });
+
+      expect(mocks.libraryRefresh).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("moves focus to the Settings tab when a conversion shortcut opens Settings", async () => {
     await act(async () => {

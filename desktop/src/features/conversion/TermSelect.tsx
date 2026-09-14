@@ -2,6 +2,7 @@ import { useCallback } from "react";
 
 import type { TermSelectOption } from "../../types/api";
 import { useComboboxState } from "./useComboboxState";
+import { useTermSelectPlacement } from "./useTermSelectPlacement";
 import "./term-select.css";
 
 interface TermSelectProps {
@@ -37,6 +38,7 @@ export function TermSelect({ id, className, label, value, options, placeholder, 
     onChoose,
   });
 
+  const menuStyle = useTermSelectPlacement(open, rootRef);
   const activeDescendantId = open && highlightIndex >= 0 ? `${menuId}-option-${highlightIndex}` : undefined;
 
   return (
@@ -51,7 +53,12 @@ export function TermSelect({ id, className, label, value, options, placeholder, 
         aria-controls={menuId}
         aria-activedescendant={activeDescendantId}
         disabled={disabled || options.length === 0}
-        onClick={toggle}
+        onClick={(event) => {
+          // WebKit does not focus buttons on pointer clicks by default. Keep
+          // arrow-key and Enter handling on the trigger after opening the menu.
+          event.currentTarget.focus();
+          toggle();
+        }}
         onKeyDown={handleKeyDown}
       >
         <span>{selectedOption?.label ?? placeholder}</span>
@@ -62,7 +69,7 @@ export function TermSelect({ id, className, label, value, options, placeholder, 
         </span>
       </button>
       {open ? (
-        <div id={menuId} className="term-select-menu" role="listbox">
+        <div id={menuId} className="term-select-menu" role="listbox" style={menuStyle}>
           {options.map((option, index) => {
             const isSelected = option.value === selectedOption?.value;
             const isActive = index === highlightIndex;

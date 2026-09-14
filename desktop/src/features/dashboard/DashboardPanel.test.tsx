@@ -28,7 +28,10 @@ describe("DashboardPanel library count", () => {
 
   it("uses indexedCount when visible library items are filtered", async () => {
     const library = {
-      items: [{ id: 1, title: "Visible match" }],
+      items: [
+        { id: 1, title: "Visible match", total_chapters: 4, completed_chapters: 4 },
+        { id: 2, title: "Still converting", total_chapters: 4, completed_chapters: 2 },
+      ],
       indexedCount: 4,
       selectedBookDetail: null,
     } as unknown as UseLibraryResult;
@@ -57,11 +60,9 @@ describe("DashboardPanel library count", () => {
       );
     });
 
-    const libraryCard = [...container.querySelectorAll(".status-card")].find(
-      (card) => card.querySelector(".status-label")?.textContent === "Library",
-    );
-    expect(libraryCard?.querySelector(".status-number")?.textContent).toBe("4");
-    expect(libraryCard?.querySelector(".status-detail")?.textContent).toBe("Books indexed");
+    expect(container.querySelector(".recent-section .section-title")?.textContent).toContain("4 books");
+    expect(container.querySelector('[aria-label="Visible match completion"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Still converting completion"]')?.getAttribute("aria-valuenow")).toBe("50");
   });
 
   it("shows a single Status tile and no ETA placeholder when ETA is empty", async () => {
@@ -99,6 +100,42 @@ describe("DashboardPanel library count", () => {
     expect(metricRow?.querySelectorAll(".metric").length).toBe(1);
     expect(container.textContent).not.toContain("ETA");
     expect(metricRow?.querySelector(".metric-label")?.textContent).toBe("Status");
+  });
+
+  it("keeps conversion progress exposed to assistive technology", async () => {
+    const library = {
+      items: [],
+      indexedCount: 0,
+      selectedBookDetail: null,
+    } as unknown as UseLibraryResult;
+
+    await act(async () => {
+      root = createRoot(container);
+      root.render(
+        <DashboardPanel
+          hidden={false}
+          library={library}
+          connectionState="connected"
+          health={null}
+          statusMessage="running"
+          uiState="running"
+          progressPct={50}
+          etaText=""
+          stages={[]}
+          performance={null}
+          currentChapterLabel=""
+          playerTitle=""
+          playing={false}
+          audioVisualizer={{} as AudioAnalyserHandle}
+          elapsedSec={0}
+          durationSec={0}
+        />,
+      );
+    });
+
+    const progress = container.querySelector('[aria-label="Conversion progress"]');
+    expect(progress).not.toBeNull();
+    expect(progress?.closest('[aria-hidden="true"]')).toBeNull();
   });
 
   it("renders exactly one primary action on the idle dashboard", async () => {

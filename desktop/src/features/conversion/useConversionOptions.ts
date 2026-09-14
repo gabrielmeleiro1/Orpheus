@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ApiClient } from "../../api/client";
 import type { CleanerBackendOption, ParallelWorkerRecommendation, TermSelectOption } from "../../types/api";
 
+import { cleanerBackendUsesCudaFields } from "./cleanerBackendHelpers";
 import { readPersistedSettings, savePersistedSettings } from "./conversionOptionsShared";
 import { useCleanerOptions } from "./useCleanerOptions";
 import { useParallelWorkers } from "./useParallelWorkers";
@@ -80,9 +81,29 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
   });
 
   useEffect(() => {
-    if (!settingsHydratedRef.current) {
+    if (!settingsHydratedRef.current || !cleanerOptions.cleanerOptionsHydrated) {
       return;
     }
+
+    // A persisted local backend can be temporarily unavailable while the
+    // capability probe warms up. Keep the last CUDA tuning instead of
+    // replacing it with the effective backend's empty/default values, so a
+    // later backend switch can restore the user's device and quantization.
+    const persistedPreferredBackend = String(
+      persistedSettingsRef.current.preferred_cleaner_backend ?? "",
+    ).trim();
+    const preservePersistedCuda = Boolean(
+      (cleanerOptions.cleanerBackendConfigured &&
+        persistedPreferredBackend &&
+        persistedPreferredBackend !== cleanerOptions.cleanerBackend) ||
+        !cleanerBackendUsesCudaFields(cleanerOptions.selectedCleanerBackend),
+    );
+    const persistedCleanerCudaDevice = preservePersistedCuda
+      ? String(persistedSettingsRef.current.cleaner_cuda_device ?? "").trim()
+      : "";
+    const persistedCleanerCudaQuantization = preservePersistedCuda
+      ? String(persistedSettingsRef.current.cleaner_cuda_quantization ?? "").trim()
+      : "";
 
     const nextSettings = {
       tts_engine: ttsOptions.selectedEngine || undefined,
@@ -90,10 +111,24 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
       speed: ttsOptions.speed,
       tts_quantization: ttsOptions.selectedQuantization || undefined,
       cleaner_backend: cleanerOptions.cleanerBackend || undefined,
+      preferred_cleaner_backend: cleanerOptions.cleanerBackendConfigured
+        ? String(
+            persistedSettingsRef.current.preferred_cleaner_backend ??
+              cleanerOptions.cleanerBackend,
+          ).trim() || undefined
+        : undefined,
+      preferred_cleaner_model: cleanerOptions.cleanerBackendConfigured
+        ? String(
+            persistedSettingsRef.current.preferred_cleaner_model ??
+              cleanerOptions.cleanerModel,
+          ).trim() || undefined
+        : undefined,
       cleaner_model: cleanerOptions.cleanerModel || undefined,
       cleaner_backend_configured: cleanerOptions.cleanerBackendConfigured,
-      cleaner_cuda_device: cleanerOptions.cleanerCudaDevice || undefined,
-      cleaner_cuda_quantization: cleanerOptions.cleanerCudaQuantization || undefined,
+      cleaner_cuda_device:
+        persistedCleanerCudaDevice || cleanerOptions.cleanerCudaDevice || undefined,
+      cleaner_cuda_quantization:
+        persistedCleanerCudaQuantization || cleanerOptions.cleanerCudaQuantization || undefined,
       parallel_worker_mode: "manual" as const,
       parallel_manual_max: parallelWorkers.selectedParallelWorkerLimit,
     };
@@ -103,6 +138,7 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
   }, [
     cleanerOptions.cleanerBackend,
     cleanerOptions.cleanerBackendConfigured,
+    cleanerOptions.cleanerOptionsHydrated,
     cleanerOptions.cleanerCudaDevice,
     cleanerOptions.cleanerCudaQuantization,
     cleanerOptions.cleanerModel,
