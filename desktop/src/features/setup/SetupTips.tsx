@@ -7,8 +7,21 @@ export function InfoTip({ children, label }: { children: ReactNode; label: strin
   const id = useId();
   const trigger = useRef<HTMLButtonElement>(null);
   const bubble = useRef<HTMLDivElement>(null);
+  const closeTimer = useRef<number>();
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  const keepOpen = () => {
+    window.clearTimeout(closeTimer.current);
+    setOpen(true);
+  };
+  const closeSoon = () => {
+    window.clearTimeout(closeTimer.current);
+    // Allow the pointer to cross the gap between the icon and its panel.
+    closeTimer.current = window.setTimeout(() => setOpen(false), 200);
+  };
+
+  useLayoutEffect(() => () => window.clearTimeout(closeTimer.current), []);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -34,8 +47,8 @@ export function InfoTip({ children, label }: { children: ReactNode; label: strin
     };
     const escape = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        window.clearTimeout(closeTimer.current);
         setOpen(false);
-        trigger.current?.focus();
       }
     };
     place();
@@ -61,11 +74,14 @@ export function InfoTip({ children, label }: { children: ReactNode; label: strin
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         aria-describedby={open ? id : undefined}
+        onMouseEnter={keepOpen}
+        onMouseLeave={closeSoon}
+        onFocus={keepOpen}
+        onBlur={closeSoon}
         onClickCapture={(event) => {
           event.preventDefault();
           event.stopPropagation();
-          setPosition(null);
-          setOpen(!open);
+          keepOpen();
         }}
       >
         <span className="setup-tip-icon" aria-hidden="true">i</span>
@@ -76,6 +92,8 @@ export function InfoTip({ children, label }: { children: ReactNode; label: strin
           id={id}
           className="setup-tip-bubble"
           role="tooltip"
+          onMouseEnter={keepOpen}
+          onMouseLeave={closeSoon}
           style={{ ...position, visibility: position ? "visible" : "hidden" }}
         >{children}</div>,
         document.body,

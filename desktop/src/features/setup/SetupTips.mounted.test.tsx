@@ -19,6 +19,7 @@ describe("setup information panels", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.useRealTimers();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
@@ -32,7 +33,7 @@ describe("setup information panels", () => {
       </label>,
     ));
     const trigger = container.querySelector("button")!;
-    await act(async () => trigger.click());
+    await act(async () => { trigger.focus(); trigger.click(); });
     const panel = document.querySelector('[role="tooltip"]')!;
     expect(panel.parentElement).toBe(document.body);
     expect(panel.textContent).toBe("Complete model information");
@@ -48,6 +49,27 @@ describe("setup information panels", () => {
     expect(document.activeElement).toBe(trigger);
     await act(async () => trigger.click());
     await act(async () => document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+  });
+
+  it("opens on hover without a click and stays readable while the pointer enters the panel", async () => {
+    vi.useFakeTimers();
+    await act(async () => root.render(<InfoTip label="Details">Model information</InfoTip>));
+    const trigger = container.querySelector("button")!;
+    await act(async () => trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
+    const panel = document.querySelector('[role="tooltip"]')!;
+    expect(panel.textContent).toBe("Model information");
+    await act(async () => {
+      trigger.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+      vi.advanceTimersByTime(100);
+      panel.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: document.body }));
+      vi.advanceTimersByTime(250);
+    });
+    expect(document.querySelector('[role="tooltip"]')).toBe(panel);
+    await act(async () => {
+      panel.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+      vi.advanceTimersByTime(250);
+    });
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
   });
 

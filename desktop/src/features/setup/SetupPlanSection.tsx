@@ -57,6 +57,9 @@ export function SetupPlanSection({
               ? "No downloads"
               : `${selection.modelGroups.map((group) => MODEL_GROUP_DETAILS[group]?.label).filter(Boolean).join(" + ")} · ${selectedEstimate}`}
           </span>
+          {selection.modelGroups.length > 0 && selection.profile !== "base" ? (
+            <span className="setup-plan-detail">Models download from Hugging Face and run locally on your device.</span>
+          ) : null}
         </div>
         <button className="btn btn-compact setup-customize-toggle" type="button" aria-expanded={showAdvanced} onClick={() => setShowAdvanced((open) => !open)}>
           {showAdvanced ? "Hide options" : "Customize"}
