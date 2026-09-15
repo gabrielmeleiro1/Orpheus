@@ -70,13 +70,7 @@ const VisibilityLogPanel = memoWhenHidden(LogPanel);
 function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetry: () => void }) {
   return (
     <main className="setup-frame" aria-label="Orpheus startup">
-      <section className="setup-shell setup-loading" role={error ? undefined : "status"} aria-live={error ? undefined : "polite"}>
-        <div className="setup-brand">
-          <div className="brand">
-            <span className="brand-mark" aria-hidden="true">O</span>
-            <span className="brand-name">Orpheus</span>
-          </div>
-        </div>
+      <section className="setup-shell setup-startup" role={error ? undefined : "status"} aria-live={error ? undefined : "polite"}>
         {error ? (
           <>
             <h1>Unable to connect to your local runtime</h1>
@@ -85,8 +79,11 @@ function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetr
           </>
         ) : (
           <>
-            <BrailleSpinner active />
-            <span>Checking your local runtime…</span>
+            <h1>Orpheus</h1>
+            <div className="setup-startup-status">
+              <BrailleSpinner active />
+              <span>Checking your local runtime…</span>
+            </div>
           </>
         )}
       </section>

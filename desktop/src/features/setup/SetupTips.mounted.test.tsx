@@ -39,6 +39,8 @@ describe("setup information panels", () => {
     expect(trigger.getAttribute("aria-expanded")).toBe("true");
     expect(container.querySelector("input")!.checked).toBe(true);
     expect(change).not.toHaveBeenCalled();
+    await act(async () => trigger.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })));
+    expect(document.querySelector('[role="tooltip"]')).toBe(panel);
     await act(async () => panel.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
     expect(document.querySelector('[role="tooltip"]')).toBe(panel);
     await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })));
