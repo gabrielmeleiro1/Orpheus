@@ -170,7 +170,10 @@ def _snapshot_manifest(snapshot_path: Path) -> list[dict[str, object]]:
         )
     if not manifest:
         raise ValueError("Model snapshot contains no completed files.")
-    return manifest
+    # Path ordering is case-insensitive on Windows; receipt parsing sorts POSIX
+    # strings. Use the same canonical order on every platform, including when
+    # validating receipts written by older Windows builds.
+    return sorted(manifest, key=lambda entry: str(entry["path"]))
 
 
 def _revision_identity(snapshot_path: Path, manifest: list[dict[str, object]]) -> str:

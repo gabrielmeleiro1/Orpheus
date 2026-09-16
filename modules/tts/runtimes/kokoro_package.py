@@ -12,6 +12,7 @@ from typing import Iterator
 import numpy as np
 
 from modules.tts import model_cache
+from modules.tts.model_snapshots import installed_model_path
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 from modules.tts.runtimes.kokoro_base import KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.strategies.base import (
@@ -99,7 +100,7 @@ class PackageKokoroRuntime:
                     repo_id="hexgrad/Kokoro-82M",
                     config=str(config_path),
                     model=str(model_path),
-                )
+                ).to(self._config.runtime_spec.device or self.provider).eval()
                 kwargs.pop("repo_id", None)
             self._pipeline = KPipeline(**kwargs)
         except TypeError:
@@ -158,7 +159,7 @@ class PackageKokoroRuntime:
         model_name = self._config.runtime_spec.resolved_model()
         if model_name is None:
             return None
-        candidate = Path(model_name)
+        candidate = Path(installed_model_path(model_name))
         if candidate.is_dir():
             return candidate
         return None

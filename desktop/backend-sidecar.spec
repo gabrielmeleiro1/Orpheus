@@ -102,7 +102,8 @@ datas += _collect_data_files("language_tags", includes=["data/json/*.json"])
 if runtime_profile == "mlx":
     datas += _collect_data_files("mlx", includes=["lib/*.metallib"])
 elif runtime_profile == "cuda":
-    datas += _collect_data_files("kokoro") + _copy_metadata("kokoro")
+    # PyTorch inspects Kokoro module source while loading its scripted layers.
+    datas += _collect_data_files("kokoro", include_py_files=True) + _copy_metadata("kokoro")
 
 binaries = []
 if runtime_profile in {"mlx", "cuda"}:

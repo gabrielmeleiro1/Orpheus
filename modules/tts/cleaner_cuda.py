@@ -8,6 +8,8 @@ import logging
 import threading
 from typing import Any, Optional
 
+from modules.tts.model_snapshots import installed_model_path
+
 from modules.tts.cleaner_config import (
     CUDA_CLEANER_QUANTIZATIONS,
     list_cuda_cleaner_models,
@@ -137,7 +139,7 @@ def _resolve_device_map(device: str) -> str | dict[str, str]:
 def _load_cuda_model(cleaner: Any, torch_module: Any) -> tuple[Any, Any]:
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    model_name = cleaner.config.model_name
+    model_name = installed_model_path(cleaner.config.model_name)
     device = normalize_cuda_device(cleaner.config.cuda_device)
     quantization = normalize_cuda_quantization(cleaner.config.cuda_quantization)
     device_map = _resolve_device_map(device)

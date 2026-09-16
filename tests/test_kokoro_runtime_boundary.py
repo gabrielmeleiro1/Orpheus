@@ -24,6 +24,13 @@ from modules.tts.runtimes.kokoro_mlx import MLXKokoroRuntime
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 from modules.tts.strategies.kokoro import KokoroConfig, KokoroTTSStrategy
 
+@pytest.fixture(autouse=True)
+def _isolate_installed_models(monkeypatch):
+    monkeypatch.setattr(
+        importlib.import_module("modules.tts.runtimes.kokoro_package"),
+        "installed_model_path", lambda name: name,
+    )
+
 def test_runtime_boundary_registry_registers_mlx_kokoro() -> None:
     assert ("mlx", "kokoro") in KokoroRuntimeFactory.registered_keys()
 
@@ -63,9 +70,13 @@ def test_runtime_boundary_registry_registers_package_kokoro_providers() -> None:
     assert ("cuda", "kokoro") in KokoroRuntimeFactory.registered_keys()
 
 
+@pytest.mark.parametrize("provider", ["cpu", "cuda"])
+@pytest.mark.parametrize("use_repository", [False, True])
 def test_package_kokoro_runtime_loads_local_model_dir_without_repo_id(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    provider: str,
+    use_repository: bool,
 ) -> None:
     model_dir = tmp_path / "kokoro"
     voices_dir = model_dir / "voices"
@@ -80,6 +91,14 @@ def test_package_kokoro_runtime_loads_local_model_dir_without_repo_id(
         def __init__(self, **kwargs: object) -> None:
             calls["model"] = kwargs
 
+        def to(self, device):
+            calls["device"] = device
+            return self
+
+        def eval(self):
+            calls["eval"] = True
+            return self
+
     class FakeKPipeline:
         def __init__(self, **kwargs: object) -> None:
             calls["pipeline"] = kwargs
@@ -90,13 +109,20 @@ def test_package_kokoro_runtime_loads_local_model_dir_without_repo_id(
 
     fake_kokoro = SimpleNamespace(KModel=FakeKModel, KPipeline=FakeKPipeline)
     monkeypatch.setitem(sys.modules, "kokoro", fake_kokoro)
+    model_name = "hexgrad/Kokoro-82M" if use_repository else str(model_dir)
+    monkeypatch.setattr(
+        importlib.import_module("modules.tts.runtimes.kokoro_package"),
+        "installed_model_path", lambda name: str(model_dir),
+    )
+    from modules.tts import model_cache
+    model_cache.clear_model_cache()
 
     runtime = PackageKokoroRuntime(
         KokoroRuntimeConfig(
             runtime_spec=TTSRuntimeSpec(
-                provider="cpu",
+                provider=provider,
                 engine="kokoro",
-                model=str(model_dir),
+                model=model_name,
                 quantization="bf16",
             ),
             model_name=str(model_dir),
@@ -115,7 +141,10 @@ def test_package_kokoro_runtime_loads_local_model_dir_without_repo_id(
         "model": str(model_dir / "kokoro-v1_0.pth"),
     }
     assert "repo_id" not in calls["pipeline"]
+    assert calls["device"] == provider
+    assert calls["eval"] is True
     assert calls["synthesis"]["voice"] == str(voices_dir / "am_adam.pt")
+    model_cache.clear_model_cache()
 
 
 def test_runtimes_package_import_does_not_load_engine(monkeypatch) -> None:

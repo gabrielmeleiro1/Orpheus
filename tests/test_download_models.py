@@ -605,6 +605,25 @@ def _verified_snapshot(tmp_path: Path, *, model_id: str, revision: str) -> tuple
     return snapshot, model_file
 
 
+def test_receipt_verification_accepts_windows_case_insensitive_file_order(tmp_path: Path) -> None:
+    model_id, revision = "owner/model", "a" * 40
+    snapshot = tmp_path / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    for name in ("config.json", "LICENSE", "README.md", "weights.bin"):
+        (snapshot / name).write_bytes(name.encode())
+    receipt = download_models.write_download_receipt(snapshot, model_id=model_id, revision=revision)
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    # Simulate an existing receipt written with Windows Path ordering. It must
+    # validate on Windows and Unix without rewriting or trusting corrupt files.
+    payload["files"].sort(key=lambda entry: entry["path"].lower())
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    assert download_models.validate_download_receipt(snapshot, model_id=model_id, revision=revision)
+    verifier = download_models.ModelReceiptVerifier()
+    assert verifier.verify(snapshot, model_id=model_id, revision=revision)
+    (snapshot / "weights.bin").write_bytes(b"corrupted!!")
+    assert not verifier.verify(snapshot, model_id=model_id, revision=revision)
+
+
 def test_integrity_verifier_reuses_hash_when_metadata_is_unchanged(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
