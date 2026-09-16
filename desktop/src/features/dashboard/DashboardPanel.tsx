@@ -34,6 +34,12 @@ interface DashboardPanelProps {
   elapsedSec: number;
   durationSec: number;
   onStartConvert?: () => void;
+  onOpenLibrary?: () => void;
+  onOpenProgress?: () => void;
+  onOpenSettings?: () => void;
+  onOpenLogs?: () => void;
+  cleanerLabel?: string;
+  ttsReady?: boolean | null;
 }
 
 function clampPercent(value: number): number {
@@ -65,6 +71,137 @@ function conversionStateLabel(uiState: ConversionJobStatus): string {
   }
 }
 
+type DashboardIconName = "book" | "pulse" | "cube" | "server";
+
+function DashboardIcon({ name, className = "" }: { name: DashboardIconName; className?: string }) {
+  const iconClass = className ? `dashboard-icon ${className}` : "dashboard-icon";
+  if (name === "book") {
+    return (
+      <svg className={iconClass} viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M4 5.5c2.5-.8 5-.4 8 1.2v12.8c-3-1.6-5.5-2-8-1.2z" />
+        <path d="M20 5.5c-2.5-.8-5-.4-8 1.2v12.8c3-1.6 5.5-2 8-1.2z" />
+        <path d="M12 6.7v12.8" />
+      </svg>
+    );
+  }
+  if (name === "pulse") {
+    return (
+      <svg className={iconClass} viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M2.5 12h4l2.2-6 4.2 12 2.2-6h6.4" />
+      </svg>
+    );
+  }
+  if (name === "cube") {
+    return (
+      <svg className={iconClass} viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z" />
+        <path d="m4 7.5 8 4.7 8-4.7M12 12.2V21" />
+      </svg>
+    );
+  }
+  return (
+    <svg className={iconClass} viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+      <rect x="4" y="5" width="16" height="6" rx="1.5" />
+      <rect x="4" y="14" width="16" height="5" rx="1.5" />
+      <path d="M8 8h.01M8 16.5h.01" />
+    </svg>
+  );
+}
+
+function ChevronIcon() {
+  return (
+    <svg className="dashboard-chevron" viewBox="0 0 12 20" focusable="false" aria-hidden="true">
+      <path d="m3 2 6 8-6 8" />
+    </svg>
+  );
+}
+
+function ArrowIcon() {
+  return (
+    <svg className="dashboard-arrow" viewBox="0 0 18 18" focusable="false" aria-hidden="true">
+      <path d="M2.5 9h12" />
+      <path d="m10 4.5 4.5 4.5-4.5 4.5" />
+    </svg>
+  );
+}
+
+function DashboardStatCard({
+  icon,
+  value,
+  label,
+  ariaLabel,
+  onClick,
+  statusClass,
+}: {
+  icon: DashboardIconName;
+  value: string | number;
+  label: string;
+  ariaLabel: string;
+  onClick?: () => void;
+  statusClass?: string;
+}) {
+  const className = `dashboard-stat${onClick ? " is-clickable" : ""}`;
+  const accessibleName = `${label}: ${value}. ${ariaLabel}`;
+  const content = (
+    <>
+      <DashboardIcon name={icon} className="dashboard-stat-icon" />
+      <span className="dashboard-stat-copy">
+        <strong className={statusClass ? `dashboard-stat-value ${statusClass}` : "dashboard-stat-value"}>{value}</strong>
+        <span className="dashboard-stat-label">{label}</span>
+      </span>
+      <ChevronIcon />
+    </>
+  );
+
+  return onClick ? (
+    <button className={className} type="button" aria-label={accessibleName} onClick={onClick}>
+      {content}
+    </button>
+  ) : (
+    <div className={className} aria-label={accessibleName}>
+      {content}
+    </div>
+  );
+}
+
+function ServiceRow({
+  icon,
+  name,
+  meta,
+  status,
+  tone,
+  onClick,
+}: {
+  icon: DashboardIconName;
+  name: string;
+  meta: string;
+  status: string;
+  tone: "ok" | "neutral" | "busy" | "error";
+  onClick?: () => void;
+}) {
+  const content = (
+    <>
+      <DashboardIcon name={icon} className="service-icon" />
+      <span className="service-copy">
+        <span className="service-name">{name}</span>
+        <span className="service-meta">{meta}</span>
+      </span>
+      <span className="service-state">
+        <span className={`status-dot is-${tone}`} aria-hidden="true" />
+        <span className="service-status">{status}</span>
+        <ChevronIcon />
+      </span>
+    </>
+  );
+  return onClick ? (
+    <button className="service-row is-clickable" type="button" onClick={onClick} aria-label={`${name}: ${status}`}>
+      {content}
+    </button>
+  ) : (
+    <div className="service-row">{content}</div>
+  );
+}
+
 export function DashboardPanel({
   hidden,
   library,
@@ -84,6 +221,12 @@ export function DashboardPanel({
   elapsedSec,
   durationSec,
   onStartConvert,
+  onOpenLibrary,
+  onOpenProgress,
+  onOpenSettings,
+  onOpenLogs,
+  cleanerLabel,
+  ttsReady,
 }: DashboardPanelProps) {
   const selected = library.selectedBookDetail;
   const recentBooks = library.items.slice(0, 3);
@@ -107,8 +250,51 @@ export function DashboardPanel({
   // Avoid the "Complete Complete" echo when the stage label restates the state.
   const readoutStage = nowLabel.toLowerCase() === stateLabel.toLowerCase() ? "" : nowLabel;
   const etaValue = etaText ? etaText.replace(/^eta\s*/i, "").trim() : "";
+  const ttsStatus =
+    connectionState === "error"
+      ? "Offline"
+      : connectionState === "checking"
+        ? "Checking"
+        : ttsReady === true
+          ? "Ready"
+          : ttsReady === false
+            ? "Unavailable"
+            : "Checking";
+  const ttsStatusClass = ttsStatus === "Ready" ? "is-positive" : ttsStatus === "Unavailable" || ttsStatus === "Offline" ? "is-negative" : "is-pending";
+  const cleanerValue = cleanerLabel?.trim() || "—";
+  const backendStatus = normalizedStatus(connectionState, health);
+  const backendStatusLabel = backendStatus.toLowerCase() === "ok" ? "OK" : backendStatus;
+  const backendTone = connectionState === "error" ? "error" : connectionState === "checking" ? "busy" : "ok";
+  const libraryReady = !library.loadingList && !library.loadingDetail && !library.errorMessage;
+  const libraryStatus = library.loadingList || library.loadingDetail ? "Loading" : library.errorMessage ? "Error" : "Ready";
+  const libraryTone = library.errorMessage ? "error" : libraryReady ? "neutral" : "busy";
   return (
     <section id="tab-dashboard" className="dashboard-panel" role="tabpanel" aria-label="Dashboard" aria-labelledby="tab-btn-dashboard" hidden={hidden}>
+      <section className="dashboard-stats" aria-label="Dashboard overview">
+        <DashboardStatCard
+          icon="book"
+          value={library.indexedCount}
+          label="Books"
+          ariaLabel="Open library"
+          onClick={onOpenLibrary}
+        />
+        <DashboardStatCard
+          icon="pulse"
+          value={ttsStatus}
+          label="TTS Engine"
+          ariaLabel="Open TTS settings"
+          onClick={onOpenSettings}
+          statusClass={ttsStatusClass}
+        />
+        <DashboardStatCard
+          icon="cube"
+          value={cleanerValue}
+          label="Cleaner"
+          ariaLabel="Open cleaner settings"
+          onClick={onOpenSettings}
+        />
+      </section>
+
       <section className={`v-section now-playing-panel${hasPlayback ? "" : " is-empty"}`} aria-label="Audiobook overview">
         {hasPlayback ? (
           <>
@@ -152,12 +338,11 @@ export function DashboardPanel({
         ) : (
           <div className="empty-state">
             <span className="empty-state-title">Nothing playing</span>
-            <span className="empty-state-hint">Open a book from your library to start listening.</span>
-            {onStartConvert ? (
-              <button className="btn btn-primary" type="button" onClick={onStartConvert}>
-                Convert a source
-              </button>
-            ) : null}
+            <span className="empty-state-hint">Convert a source or open a book from your library.</span>
+            <div className="empty-state-actions">
+              {onStartConvert ? <button className="btn btn-primary" type="button" onClick={onStartConvert}>Convert a source</button> : null}
+              {onOpenLibrary ? <button className="btn dashboard-secondary-action" type="button" onClick={onOpenLibrary}>Open library</button> : null}
+            </div>
           </div>
         )}
       </section>
@@ -166,7 +351,11 @@ export function DashboardPanel({
         <section className="panel-section v-section">
           <div className="section-title">
             <span>Conversion</span>
-            <span className="section-title-meta tabular-nums">{`${stateLabel} · ${conversionPercent}%`}</span>
+            {onOpenProgress ? (
+              <button className="section-title-action tabular-nums" type="button" onClick={onOpenProgress}>
+                {`${stateLabel} · ${conversionPercent}%`}<ChevronIcon />
+              </button>
+            ) : <span className="section-title-meta tabular-nums">{`${stateLabel} · ${conversionPercent}%`}</span>}
           </div>
           <div className="library-strip">
             <div className="panel-section v-panel book-panel">
@@ -220,15 +409,22 @@ export function DashboardPanel({
         <section className="panel-section v-section recent-section">
           <div className="section-title">
             <span>Recent</span>
-            <span className="section-title-meta tabular-nums">{library.indexedCount} {library.indexedCount === 1 ? "book" : "books"}</span>
+            {onOpenLibrary ? (
+              <button className="section-title-action tabular-nums" type="button" onClick={onOpenLibrary}>
+                {library.indexedCount} {library.indexedCount === 1 ? "book" : "books"}<ChevronIcon />
+              </button>
+            ) : (
+              <span className="section-title-meta tabular-nums">{library.indexedCount} {library.indexedCount === 1 ? "book" : "books"}</span>
+            )}
           </div>
           {recentBooks.length === 0 ? (
-            <div className="empty-state">
+            <div className="empty-state recent-empty-card">
+              <span className="empty-state-icon" aria-hidden="true"><DashboardIcon name="book" /></span>
               <span className="empty-state-title">No converted books yet</span>
               <span className="empty-state-hint">Convert a source to build your library.</span>
               {onStartConvert ? (
-                <button className="btn btn-ghost" type="button" onClick={onStartConvert}>
-                  Convert a source
+                <button className="btn btn-ghost dashboard-link-action" type="button" onClick={onStartConvert}>
+                  Convert a source<ArrowIcon />
                 </button>
               ) : null}
             </div>
@@ -265,19 +461,23 @@ export function DashboardPanel({
           <div className="section-title">
             <span>Services</span>
           </div>
-          <div className="service-row">
-            <div>
-              <span className="service-name">Desktop API</span>
-              <span className="service-meta">{statusMessage}</span>
-            </div>
-            <span className="service-status">{normalizedStatus(connectionState, health)}</span>
-          </div>
-          <div className="service-row">
-            <div>
-              <span className="service-name">Library</span>
-              <span className="service-meta">{library.statusMessage || "Ready"}</span>
-            </div>
-            <span className="service-status">{library.loadingList || library.loadingDetail ? "loading" : "ready"}</span>
+          <div className="service-list">
+            <ServiceRow
+              icon="server"
+              name="Desktop API"
+              meta={statusMessage || `Backend ${connectionState}`}
+              status={backendStatusLabel}
+              tone={backendTone}
+              onClick={onOpenLogs}
+            />
+            <ServiceRow
+              icon="book"
+              name="Library"
+              meta={library.statusMessage || (libraryReady ? (library.indexedCount > 0 ? `${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}` : "Library empty") : "Library unavailable")}
+              status={libraryStatus}
+              tone={libraryTone}
+              onClick={onOpenLibrary}
+            />
           </div>
         </section>
       </div>

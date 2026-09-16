@@ -36,11 +36,11 @@ export function formatRuntimeIdentity(identity: RuntimeIdentity): string {
   return `TTS: ${identity.ttsLabel} · Cleaner: ${identity.cleanerLabel}`;
 }
 
-export function buildRuntimeIdentityLabelFromSnapshot(input: {
+export function buildRuntimeIdentityFromSnapshot(input: {
   capabilities: SystemCapabilitiesResponse | null;
   modelOptions: ModelOptionsResponse | null;
   settings: PersistedSettings;
-}): string {
+}): RuntimeIdentity {
   // Mirror the conversion views' selection policy exactly: a persisted backend
   // only counts when the user explicitly configured it AND it is still
   // available; otherwise the app auto-picks the preferred (local-first)
@@ -58,12 +58,14 @@ export function buildRuntimeIdentityLabelFromSnapshot(input: {
     typeof input.capabilities?.primary_runtime === "string"
       ? input.capabilities.primary_runtime.trim()
       : "";
-  return formatRuntimeIdentity(
-    resolveRuntimeIdentity({
-      primaryRuntime: primaryRuntime || null,
-      cleanerBackendId: cleanerId,
-      cleanerBackendLabel: cleaner?.display_name ?? null,
-      ttsEngineLabel: null,
-    }),
-  );
+  return resolveRuntimeIdentity({
+    primaryRuntime: primaryRuntime || null,
+    cleanerBackendId: cleanerId,
+    cleanerBackendLabel: cleaner?.display_name ?? null,
+    ttsEngineLabel: null,
+  });
+}
+
+export function buildRuntimeIdentityLabelFromSnapshot(input: Parameters<typeof buildRuntimeIdentityFromSnapshot>[0]): string {
+  return formatRuntimeIdentity(buildRuntimeIdentityFromSnapshot(input));
 }

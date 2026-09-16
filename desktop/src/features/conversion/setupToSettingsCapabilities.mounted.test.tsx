@@ -119,7 +119,7 @@ describe("setup → dashboard → Settings capability propagation", () => {
     vi.useRealTimers();
   });
 
-  it("eagerly refreshes a dashboard-pinned stale bootstrap when Settings opens", async () => {
+  it("eagerly refreshes a stale bootstrap when Settings opens before the dashboard poll", async () => {
     const staleUnavailable = capabilities({
       probeState: "stale",
       refreshInProgress: true,
@@ -135,7 +135,7 @@ describe("setup → dashboard → Settings capability propagation", () => {
     const getSystemCapabilities = vi.fn(async () => {
       capabilityCalls += 1;
       // First call is the dashboard identity bootstrap (pinned in WeakMap).
-      // Later calls are Settings eager/poll refreshes against the live backend.
+      // Later calls refresh against the live backend.
       return capabilityCalls === 1 ? staleUnavailable : liveAvailable;
     });
     const getModelOptions = vi.fn(async () => modelOptions);
@@ -158,9 +158,9 @@ describe("setup → dashboard → Settings capability propagation", () => {
     expect(pinned.capabilities.cleaner_runtime_availability.mlx).toBe(false);
     expect(getSystemCapabilities).toHaveBeenCalledTimes(1);
 
-    // Dwell on dashboard while the live backend flips (no ConversionPanel yet).
+    // Open Settings before the dashboard's first 1.5s capability refresh.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(65_000);
+      await vi.advanceTimersByTimeAsync(1_000);
     });
     expect(getSystemCapabilities).toHaveBeenCalledTimes(1);
 

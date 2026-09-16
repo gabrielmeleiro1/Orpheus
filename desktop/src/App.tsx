@@ -1,4 +1,5 @@
 import {
+  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -9,7 +10,8 @@ import {
 
 import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
-import { useRuntimeIdentityLabel } from "./app/usePrimaryRuntime";
+import { useRuntimeIdentity } from "./app/usePrimaryRuntime";
+import { formatRuntimeIdentity } from "./app/runtimeIdentity";
 import {
   readRuntimeSetupReadyHint,
   writeRuntimeSetupReadyHint,
@@ -114,7 +116,7 @@ function DashboardApp({
     backendDisconnected: connectionState === "error",
   });
 
-  const runtimeIdentity = useRuntimeIdentityLabel(apiClient);
+  const runtimeIdentity = useRuntimeIdentity(apiClient);
   const player = useAudioPlayer({ apiClient, library });
   const previousUiStateRef = useRef<string>("idle");
   const visitedTabsRef = useRef<Set<DashboardTab>>(new Set(["dashboard"]));
@@ -207,6 +209,9 @@ function DashboardApp({
 
   const openConvert = useCallback(() => setActiveTab("convert"), []);
   const openSettings = useCallback(() => selectTab("settings"), [selectTab]);
+  const openLibrary = useCallback(() => selectTab("library"), [selectTab]);
+  const openProgress = useCallback(() => selectTab("progress"), [selectTab]);
+  const openLogs = useCallback(() => selectTab("logs"), [selectTab]);
   const playPrevious = useCallback(() => {
     void playRelative(-1);
   }, [playRelative]);
@@ -231,24 +236,27 @@ function DashboardApp({
           {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId }, index) => {
             const isActive = activeTab === id;
             return (
-              <button
-                id={`tab-btn-${id}`}
-                key={id}
-                ref={(node) => {
-                  tabRefs.current[index] = node;
-                }}
-                className={`rail-tab${isActive ? " active" : ""}`}
-                type="button"
-                role="tab"
-                tabIndex={tabButtonTabIndex(activeTabIndex, index)}
-                aria-controls={panelId}
-                aria-label={label}
-                aria-selected={isActive}
-                onClick={() => setActiveTab(id)}
-              >
-                <span className="rail-icon" aria-hidden="true"><DashboardTabIcon tab={id} /></span>
-                <span className="rail-label">{label}</span>
-              </button>
+              <Fragment key={id}>
+                {index === 0 ? <span className="rail-group-label" role="presentation">Main</span> : null}
+                {id === "settings" ? <span className="rail-group-label rail-system-label" role="presentation">System</span> : null}
+                <button
+                  id={`tab-btn-${id}`}
+                  ref={(node) => {
+                    tabRefs.current[index] = node;
+                  }}
+                  className={`rail-tab${isActive ? " active" : ""}`}
+                  type="button"
+                  role="tab"
+                  tabIndex={tabButtonTabIndex(activeTabIndex, index)}
+                  aria-controls={panelId}
+                  aria-label={label}
+                  aria-selected={isActive}
+                  onClick={() => setActiveTab(id)}
+                >
+                  <span className="rail-icon" aria-hidden="true"><DashboardTabIcon tab={id} /></span>
+                  <span className="rail-label">{label}</span>
+                </button>
+              </Fragment>
             );
           })}
         </nav>
@@ -292,7 +300,7 @@ function DashboardApp({
           <div>
             <h1>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
             {activeTab === "dashboard" ? (
-              <p>{`${runtimeIdentity} · ${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`}</p>
+              <p>{`${formatRuntimeIdentity(runtimeIdentity)} · ${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`}</p>
             ) : null}
           </div>
           <div className="studio-controls">
@@ -302,8 +310,10 @@ function DashboardApp({
                 <span>Converting</span>
               </span>
             ) : null}
-            <span className={`status-dot${connectionState === "connected" ? " is-connected" : ""}`} title={connectionState} aria-hidden="true" />
-            <span className="sr-only" role="status">{`Backend ${connectionState}`}</span>
+            <span className={`connection-badge is-${connectionState}`} role="status" aria-label={`Backend ${connectionState}`}>
+              <span className={`status-dot${connectionState === "connected" ? " is-connected" : connectionState === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
+              {connectionState === "connected" ? "Connected" : connectionState === "error" ? "Disconnected" : "Connecting"}
+            </span>
           </div>
         </header>
 
@@ -328,6 +338,12 @@ function DashboardApp({
             elapsedSec={player.elapsedSec}
             durationSec={player.durationSec}
             onStartConvert={openConvert}
+            onOpenLibrary={openLibrary}
+            onOpenProgress={openProgress}
+            onOpenSettings={openSettings}
+            onOpenLogs={openLogs}
+            cleanerLabel={runtimeIdentity.cleanerLabel}
+            ttsReady={runtimeIdentity.ttsReady}
           />
 
           {conversionPanelMounted ? <StableConversionPanel

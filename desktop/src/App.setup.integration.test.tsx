@@ -37,7 +37,7 @@ vi.mock("./app/useBackendClient", () => ({
   useBackendClient: () => mocks.backend,
 }));
 vi.mock("./app/usePrimaryRuntime", () => ({
-  useRuntimeIdentityLabel: () => "TTS: Library only",
+  useRuntimeIdentity: () => ({ ttsLabel: "Library only", cleanerLabel: "—", ttsReady: false }),
 }));
 vi.mock("./app/useGlobalShortcuts", () => ({
   useGlobalShortcuts: vi.fn(),

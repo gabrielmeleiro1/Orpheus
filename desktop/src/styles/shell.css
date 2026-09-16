@@ -1,4 +1,12 @@
 .app-frame {
+  --bg: #151618;
+  --bg-elevated: #1a1b1d;
+  --accent: #d4aa72;
+  --positive: #85ca93;
+  --density-rail-width: clamp(210px, 20.4vw, 324px);
+  --density-page-x: 28px;
+  --density-page-y: 4px;
+  --density-status-height: 80px;
   background: var(--bg);
   color: var(--text);
   display: grid;
@@ -11,15 +19,15 @@
   background: var(--bg-elevated);
   border-right: 1px solid var(--border);
   display: grid;
-  grid-template-rows: 80px minmax(0, 1fr) auto;
+  grid-template-rows: 82px minmax(0, 1fr) auto;
   min-width: 0;
 }
 
 .brand {
   align-items: center;
   display: flex;
-  gap: 10px;
-  padding: 0 20px;
+  gap: 12px;
+  padding: 0 24px;
 }
 
 .brand-mark {
@@ -29,16 +37,17 @@
   color: var(--accent);
   display: grid;
   font-family: var(--font-display);
-  font-size: 26px;
+  font-size: 36px;
   font-weight: 400;
-  height: 24px;
+  height: 32px;
   justify-items: center;
   line-height: 1;
-  width: 24px;
+  width: 28px;
 }
 
 .brand-name {
-  font-size: 15px;
+  font-family: var(--font-display);
+  font-size: 21px;
   font-weight: 600;
   letter-spacing: -0.02em;
   min-width: 0;
@@ -50,8 +59,23 @@
 .rail-nav {
   align-content: start;
   display: grid;
-  gap: 2px;
-  padding: 12px;
+  gap: 4px;
+  overflow-y: auto;
+  padding: 0 15px 16px;
+}
+
+.rail-group-label {
+  color: var(--text-secondary);
+  font-size: 10px;
+  letter-spacing: .04em;
+  padding: 0 12px 6px;
+  text-transform: uppercase;
+}
+
+.rail-system-label {
+  border-top: 1px solid var(--border);
+  margin: 14px 6px 0;
+  padding: 15px 6px 6px;
 }
 
 .rail-tab,
@@ -63,24 +87,36 @@
   color: var(--text-secondary);
   cursor: pointer;
   display: grid;
-  font-size: 13px;
-  font-weight: 500;
-  gap: 10px;
-  grid-template-columns: 18px minmax(0, 1fr);
+  font-size: 14px;
+  font-weight: 400;
+  gap: 16px;
+  grid-template-columns: 20px minmax(0, 1fr);
   min-width: 0;
   text-align: left;
   transition: background 100ms ease, color 100ms ease;
 }
 
 .rail-tab {
-  height: 38px;
-  padding: 0 8px;
+  height: 40px;
+  padding: 0 18px;
+  position: relative;
   width: 100%;
 }
 
 .rail-tab.active {
   background: var(--accent-soft);
   color: var(--text);
+}
+
+.rail-tab.active::before {
+  background: var(--accent);
+  border-radius: 2px;
+  bottom: 5px;
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 5px;
+  width: 3px;
 }
 
 .rail-tab.active .rail-icon {
@@ -107,22 +143,22 @@
 .rail-action-icon {
   align-items: center;
   display: grid;
-  height: 18px;
+  height: 20px;
   justify-items: center;
   text-align: center;
-  width: 18px;
+  width: 20px;
 }
 
 .rail-icon svg,
 .rail-action-icon svg {
   display: block;
   fill: none;
-  height: 16px;
+  height: 20px;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 1.7;
-  width: 16px;
+  width: 20px;
 }
 
 .rail-label {
@@ -135,13 +171,14 @@
   border-top: 1px solid var(--border-light);
   display: grid;
   gap: 2px;
-  padding: 12px;
+  margin: 0 21px;
+  padding: 12px 0;
 }
 
 .rail-action {
-  font-size: 12px;
-  min-height: 28px;
-  padding: 0 8px;
+  font-size: 14px;
+  min-height: 38px;
+  padding: 0 12px;
 }
 
 .rail-action:disabled {
@@ -178,18 +215,18 @@
 .studio-status {
   align-items: center;
   background: transparent;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 0;
   display: flex;
   flex-shrink: 0;
   justify-content: space-between;
   margin: 0 var(--density-page-x);
   min-height: var(--density-status-height);
-  padding: 20px 0;
+  padding: 12px 0;
 }
 
 .studio-status h1 {
   font-family: var(--font-display);
-  font-size: 27px;
+  font-size: 30px;
   font-weight: 600;
   letter-spacing: -0.025em;
   line-height: 1.15;
@@ -198,7 +235,7 @@
 
 .studio-status p {
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: 13px;
   line-height: 1.4;
 }
 
@@ -208,6 +245,29 @@
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.connection-badge {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  display: inline-flex;
+  font-size: 12px;
+  gap: 10px;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+
+.connection-badge.is-connected {
+  background: var(--positive-soft);
+  border-color: color-mix(in srgb, var(--positive) 35%, transparent);
+  color: var(--positive);
+}
+
+.connection-badge.is-error {
+  color: var(--negative);
 }
 
 .control {
@@ -379,6 +439,10 @@ button.control:hover {
 
 @media (max-width: 760px) {
   .app-frame {
+  --density-rail-width: clamp(210px, 20.4vw, 280px);
+  --density-page-x: 28px;
+  --density-page-y: 4px;
+  --density-status-height: 80px;
     grid-template-columns: 64px minmax(0, 1fr);
   }
 
@@ -387,6 +451,7 @@ button.control:hover {
     padding: 0;
   }
 
+  .rail-group-label,
   .brand-name,
   .rail-label,
   .rail-bottom .rail-action span:last-child {
@@ -395,13 +460,18 @@ button.control:hover {
 
   .rail-tab,
   .rail-action {
-    grid-template-columns: 18px;
+    grid-template-columns: 20px;
     justify-content: center;
     padding-left: 0;
     padding-right: 0;
   }
 
+  .rail-nav {
+    padding: 0 8px;
+  }
+
   .rail-bottom {
+    margin: 0;
     padding-left: 8px;
     padding-right: 8px;
   }

@@ -1,17 +1,150 @@
-.now-playing-panel {
-  display: grid;
-  grid-template-rows: auto minmax(124px, 1fr) auto;
-  min-height: 264px;
-  padding: 8px 0 24px;
-  border-bottom: 1px solid var(--border);
+/* The dashboard uses a small set of quiet, bordered surfaces.  The shell
+   owns page rhythm; this file owns the dashboard's card rhythm. */
+
+.dashboard-panel {
+  min-width: 0;
 }
 
-/* Idle: no canvas or zero-tiles, just a quiet centered empty state (rule 2). */
+.dashboard-stats {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 24px;
+}
+
+.dashboard-stat {
+  align-items: center;
+  appearance: none;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-elevated) 98%, white), var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 34px minmax(0, 1fr) 9px;
+  min-height: 76px;
+  min-width: 0;
+  padding: 14px 22px;
+  text-align: left;
+  width: 100%;
+}
+
+button.dashboard-stat,
+button.service-row,
+.section-title-action {
+  cursor: pointer;
+  font: inherit;
+}
+
+.dashboard-stat.is-clickable {
+  transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+.dashboard-stat.is-clickable:hover {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--surface-hover) 98%, white), var(--surface-hover));
+  border-color: var(--border-strong);
+}
+
+.dashboard-stat.is-clickable:active {
+  transform: translateY(1px);
+}
+
+.dashboard-stat:focus-visible,
+.service-row:focus-visible,
+.section-title-action:focus-visible,
+.dashboard-secondary-action:focus-visible,
+.dashboard-link-action:focus-visible {
+  outline: 1px solid var(--accent-muted);
+  outline-offset: -1px;
+}
+
+.dashboard-icon {
+  display: block;
+  fill: none;
+  height: 25px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.55;
+  width: 25px;
+}
+
+.dashboard-stat-icon {
+  color: var(--accent);
+  height: 26px;
+  width: 26px;
+}
+
+.dashboard-stat-copy {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.dashboard-stat-value {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-stat-value.is-positive {
+  color: var(--text);
+}
+
+.dashboard-stat-value.is-negative {
+  color: var(--negative);
+}
+
+.dashboard-stat-value.is-pending {
+  color: var(--text-secondary);
+}
+
+.dashboard-stat-label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.dashboard-chevron {
+  display: block;
+  fill: none;
+  height: 14px;
+  stroke: var(--text-secondary);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.35;
+  width: 9px;
+}
+
+.dashboard-stat > .dashboard-chevron {
+  justify-self: end;
+}
+
+/* Playback overview */
+
+.now-playing-panel {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-elevated) 98%, white), var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: grid;
+  grid-template-rows: auto minmax(104px, 1fr) auto;
+  min-height: 212px;
+  overflow: hidden;
+  padding: 24px 28px 20px;
+}
+
 .now-playing-panel.is-empty {
   align-items: center;
   grid-template-rows: 1fr;
   justify-items: center;
-  min-height: 180px;
+  min-height: 156px;
+  padding: 20px;
 }
 
 .panel-title-row,
@@ -57,19 +190,14 @@
   text-align: center;
 }
 
-/* Now Playing lyre card */
-
 .wave-card {
   align-self: stretch;
-  min-height: 126px;
+  min-height: 104px;
   position: relative;
 }
 
-/* Absolutely positioned so the canvas backing store can never feed back
-   into layout and inflate the card. */
 .playback-waveform {
-  background:
-    radial-gradient(120% 90% at 50% 100%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 70%);
+  background: radial-gradient(120% 90% at 50% 100%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 70%);
   border-radius: var(--radius-sm);
   inset: 6px 4px 0;
   overflow: hidden;
@@ -94,8 +222,6 @@
   margin-top: 12px;
 }
 
-/* Conversion card shows one Status tile plus an optional ETA — let them size
-   to how many are present instead of leaving fixed empty columns (finding 8). */
 .metric-row-flow {
   grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
 }
@@ -105,7 +231,6 @@
   padding: 0;
 }
 
-/* Supporting labels stay quiet; only actual timecodes use monospace. */
 .metric-label,
 .performance-label,
 .progress-kicker {
@@ -132,12 +257,62 @@
   text-transform: capitalize;
 }
 
-/* Word-valued metrics ("No chapters", stage names, state) read as body text;
-   only genuine timecodes/counts stay mono (rule 6). */
 .metric strong.metric-word {
   font-family: var(--font-body);
   font-variant-numeric: normal;
 }
+
+.dashboard-panel .empty-state {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  justify-content: center;
+  padding: 20px;
+  text-align: center;
+  width: 100%;
+}
+
+.now-playing-panel .empty-state {
+  padding: 0;
+  max-width: 560px;
+}
+
+.dashboard-panel .empty-state-title {
+  color: var(--text);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.dashboard-panel .empty-state-hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+  max-width: var(--field-text-width);
+}
+
+.dashboard-panel .empty-state-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.dashboard-secondary-action {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  min-width: 132px;
+}
+
+.dashboard-secondary-action:hover {
+  border-color: var(--accent-muted);
+}
+
+/* Active conversion */
 
 .library-strip {
   display: grid;
@@ -147,14 +322,14 @@
 }
 
 .book-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   display: grid;
   gap: var(--density-panel-gap);
   grid-template-columns: 128px minmax(0, 1fr);
   min-height: 176px;
   padding: 0;
 }
-
-/* Conversion flow card */
 
 .conversion-activity {
   align-self: stretch;
@@ -207,22 +382,116 @@
 }
 
 .book-main {
-  display: grid;
   align-content: center;
+  display: grid;
   gap: 16px;
   grid-template-rows: auto auto;
   min-width: 0;
+  padding: 16px 20px 16px 0;
 }
+
+.section-title-action {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+  display: inline-flex;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  gap: 12px;
+  justify-content: flex-end;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.section-title-action:hover {
+  color: var(--text);
+}
+
+/* Recent and services deliberately sit in their own bordered surfaces so
+   the empty states retain structure when the library has no books. */
 
 .lower-grid {
   display: grid;
   gap: 24px;
   grid-template-columns: minmax(0, 1fr);
-  margin-top: 24px;
+  margin-top: 0;
+}
+
+.lower-grid > .v-section {
+  margin-bottom: 0;
+}
+
+.recent-section > .section-title,
+.services-section > .section-title {
+  border-bottom: 0;
+  margin-bottom: 10px;
+  padding-bottom: 0;
+}
+
+.recent-section > .section-title > .section-title-meta {
+  align-items: center;
+  display: inline-flex;
+  gap: 12px;
+}
+
+.recent-empty-card {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-elevated) 98%, white), var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 140px;
+  padding: 16px;
+}
+
+.recent-empty-card .empty-state-title {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.empty-state-icon {
+  color: var(--text-secondary);
+  display: block;
+  margin-bottom: 3px;
+}
+
+.empty-state-icon .dashboard-icon {
+  height: 26px;
+  width: 26px;
+}
+
+.dashboard-link-action {
+  min-height: 24px;
+  padding: 0;
+  align-items: center;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 13px;
+  gap: 8px;
+  margin-top: 3px;
+}
+
+.dashboard-link-action:hover {
+  color: color-mix(in srgb, var(--accent) 78%, white);
+}
+
+.dashboard-arrow {
+  display: block;
+  fill: none;
+  height: 16px;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.45;
+  width: 16px;
 }
 
 .recent-list {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   overflow: hidden;
+  padding: 0 16px;
 }
 
 .recent-row {
@@ -258,10 +527,6 @@
   white-space: nowrap;
 }
 
-.service-name {
-  font-size: 14px;
-}
-
 .recent-meta,
 .recent-state,
 .service-meta {
@@ -273,44 +538,124 @@
   white-space: nowrap;
 }
 
-.services-section {
-  display: grid;
-  column-gap: 32px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
+/* Services */
 
-.services-section .section-title {
-  grid-column: 1 / -1;
+.service-list {
+  display: grid;
+  gap: 8px;
 }
 
 .service-row {
+  align-items: center;
+  appearance: none;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-elevated) 98%, white), var(--bg-elevated));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
   display: grid;
-  gap: var(--density-panel-gap);
-  grid-template-columns: minmax(0, 1fr) auto;
-  min-height: 50px;
-  padding: 0;
+  gap: 14px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  min-height: 54px;
+  min-width: 0;
+  padding: 8px 18px;
+  text-align: left;
+  width: 100%;
 }
 
-.service-row:first-of-type {
-  border-top: 0;
+.service-row.is-clickable {
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.service-row.is-clickable:hover {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--surface-hover) 98%, white), var(--surface-hover));
+  border-color: var(--border-strong);
+}
+
+.service-icon {
+  color: var(--text-secondary);
+  height: 24px;
+  width: 24px;
+}
+
+.service-copy {
+  min-width: 0;
+}
+
+.service-name {
+  font-size: 14px;
+}
+
+.service-state {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  gap: 11px;
+  justify-content: flex-end;
+  min-width: 86px;
+}
+
+.service-state .status-dot {
+  flex: 0 0 auto;
 }
 
 .service-status {
-  align-self: center;
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: 12px;
+  min-width: 34px;
   text-align: right;
   text-transform: capitalize;
 }
 
+.service-state .dashboard-chevron {
+  margin-left: 15px;
+}
+
+@media (max-width: 760px) {
+  .dashboard-stats {
+    gap: 10px;
+  }
+
+  .dashboard-stat {
+    gap: 10px;
+    grid-template-columns: 28px minmax(0, 1fr) 8px;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+
+  .dashboard-stat-icon {
+    height: 23px;
+    width: 23px;
+  }
+
+  .dashboard-stat-value {
+    font-size: 17px;
+  }
+}
+
 @media (max-width: 600px) {
-  .book-panel,
-  .services-section {
+  .dashboard-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-stat {
+    min-height: 60px;
+  }
+
+  .now-playing-panel {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .book-panel {
     grid-template-columns: 1fr;
   }
 
   .conversion-activity {
     min-height: 140px;
+  }
+
+  .book-main {
+    padding: 0 16px 16px;
   }
 
   .metric-row {
@@ -320,11 +665,28 @@
   .metric strong {
     font-size: 13px;
   }
+
+  .service-row {
+    gap: 10px;
+    grid-template-columns: 26px minmax(0, 1fr) auto;
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .service-state {
+    gap: 7px;
+    min-width: 70px;
+  }
+
+  .service-state .dashboard-chevron {
+    margin-left: 5px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .dashboard-stat.is-clickable,
   .recent-row,
-  .conversion-activity {
+  .service-row.is-clickable {
     transition: none;
   }
 }
