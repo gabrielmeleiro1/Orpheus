@@ -20,6 +20,12 @@ describe("tabKeyboardNavigation", () => {
     expect(nextTabIndexAfterKeyboard({ key: "ArrowLeft", activeIndex: 0, tabCount })).toBe(tabCount - 1);
   });
 
+  it("supports vertical sidebar navigation and wraps at both ends", () => {
+    expect(nextTabIndexAfterKeyboard({ key: "ArrowDown", activeIndex: 0, tabCount })).toBe(1);
+    expect(nextTabIndexAfterKeyboard({ key: "ArrowDown", activeIndex: tabCount - 1, tabCount })).toBe(0);
+    expect(nextTabIndexAfterKeyboard({ key: "ArrowUp", activeIndex: 0, tabCount })).toBe(tabCount - 1);
+  });
+
   it("maps Home and End to first and last", () => {
     expect(nextTabIndexAfterKeyboard({ key: "Home", activeIndex: 3, tabCount })).toBe(0);
     expect(nextTabIndexAfterKeyboard({ key: "End", activeIndex: 1, tabCount })).toBe(tabCount - 1);

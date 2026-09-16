@@ -5,7 +5,6 @@ import { formatClock } from "../../format/time";
 import type { UseLibraryResult } from "../library/useLibrary";
 import type { LibraryBookDetail, LibraryChapterDetail } from "../../types/api";
 import { chapterStartSeconds, currentChapterForPosition } from "./chapterPositionModel";
-import { useAudioAnalyser } from "./useAudioAnalyser";
 import { useAudioElementBindings } from "./useAudioElementBindings";
 import { playbackCheckpointBookIdentity } from "./playbackCheckpoint";
 import { usePlaybackPersistence } from "./playbackPersistence";
@@ -27,7 +26,6 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   const [totalSec, setTotalSec] = useState(0);
   const [volume, setVolume] = useState(80);
   const [playerTitle, setPlayerTitle] = useState("No audio loaded");
-  const audioVisualizer = useAudioAnalyser(audioRef, isPlaying);
 
   const previousSelectedBookIdRef = useRef<number | null>(null);
   // Monotonic load id + latest-selection mirror guard loadBookAudio against
@@ -532,7 +530,6 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   return {
     audioRef,
     audioProps,
-    audioVisualizer,
     playerEligible,
     playerVisible,
     playing: isPlaying,

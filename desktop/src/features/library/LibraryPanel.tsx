@@ -100,7 +100,7 @@ export function LibraryPanel({
       hidden={hidden}
     >
       <div className="panel-header">
-        <span>Library</span>
+        <span>Collection</span>
         <span className="panel-header-meta">{library.items.length}{library.hasMore ? "+" : ""} {library.items.length === 1 ? "book" : "books"}</span>
       </div>
 

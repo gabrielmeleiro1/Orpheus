@@ -1,10 +1,22 @@
+.progress-empty {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  min-height: 240px;
+  display: grid;
+  align-items: center;
+}
+
 .progress-hero {
   align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   display: grid;
   gap: 18px;
   grid-template-columns: auto minmax(0, 1fr) auto;
   margin-bottom: 24px;
-  padding: 0;
+  padding: 18px;
 }
 
 /* Ring */
@@ -30,7 +42,7 @@
 }
 
 .progress-ring-track {
-  stroke: var(--surface-active);
+  stroke: var(--border-strong);
 }
 
 .progress-ring-fill {
@@ -39,13 +51,8 @@
   transition: stroke-dashoffset 500ms cubic-bezier(0.25, 1, 0.35, 1);
 }
 
-.progress-ring.is-running .progress-ring-fill {
-  filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 55%, transparent));
-}
-
 .progress-ring.is-cancelled .progress-ring-fill,
 .progress-ring.is-failed .progress-ring-fill {
-  filter: none;
   stroke: var(--negative);
 }
 
@@ -68,7 +75,8 @@
 
 .progress-title {
   color: var(--text);
-  font-size: 19px;
+  font-family: var(--font-display);
+  font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.2;
@@ -136,10 +144,13 @@
 /* Active stage subtasks */
 
 .subtask-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   display: grid;
   gap: 8px;
   margin-bottom: 24px;
-  padding: 0;
+  padding: 14px 16px;
 }
 
 .subtask-row {
@@ -169,8 +180,11 @@
 /* Stage timeline */
 
 .stage-flow {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   margin-bottom: 24px;
-  padding: 0;
+  padding: 10px 16px;
 }
 
 .stage-row {
@@ -237,11 +251,10 @@
 
 .stage-active .stage-node {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .stage-active .stage-node-index {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .stage-done .stage-node {
@@ -253,6 +266,7 @@
 }
 
 .stage-name {
+  font-size: 12px;
   min-width: 0;
   overflow-wrap: anywhere;
   text-transform: capitalize;
@@ -271,14 +285,17 @@
 }
 
 .stage-done .stage-status {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Performance snapshot */
 
 .performance-section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   margin-bottom: 24px;
-  padding: 0;
+  padding: 16px;
 }
 
 .performance-grid {
@@ -306,6 +323,15 @@
   font-weight: 600;
   margin-bottom: 4px;
   overflow-wrap: anywhere;
+}
+
+.performance-label {
+  color: var(--text-secondary);
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  margin-bottom: 6px;
+  text-transform: uppercase;
 }
 
 /* Backend-reported values arrive lowercase ("parallel"). */

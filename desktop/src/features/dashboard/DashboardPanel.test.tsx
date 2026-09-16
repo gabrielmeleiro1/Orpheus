@@ -2,14 +2,10 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { UseLibraryResult } from "../library/useLibrary";
-import type { AudioAnalyserHandle } from "../player/useAudioAnalyser";
 import { DashboardPanel } from "./DashboardPanel";
-
-vi.mock("./NowPlayingCanvas", () => ({ NowPlayingCanvas: () => null }));
-vi.mock("./ConversionFlowCanvas", () => ({ ConversionFlowCanvas: () => null }));
 
 describe("DashboardPanel library count", () => {
   let root: Root;
@@ -49,11 +45,9 @@ describe("DashboardPanel library count", () => {
           progressPct={0}
           etaText=""
           stages={[]}
-          performance={null}
           currentChapterLabel=""
           playerTitle=""
           playing={false}
-          audioVisualizer={{} as AudioAnalyserHandle}
           elapsedSec={0}
           durationSec={0}
         />,
@@ -85,11 +79,9 @@ describe("DashboardPanel library count", () => {
           progressPct={50}
           etaText=""
           stages={[]}
-          performance={null}
           currentChapterLabel=""
           playerTitle=""
           playing={false}
-          audioVisualizer={{} as AudioAnalyserHandle}
           elapsedSec={0}
           durationSec={0}
         />,
@@ -122,11 +114,9 @@ describe("DashboardPanel library count", () => {
           progressPct={50}
           etaText=""
           stages={[]}
-          performance={null}
           currentChapterLabel=""
           playerTitle=""
           playing={false}
-          audioVisualizer={{} as AudioAnalyserHandle}
           elapsedSec={0}
           durationSec={0}
         />,
@@ -158,11 +148,9 @@ describe("DashboardPanel library count", () => {
           progressPct={0}
           etaText=""
           stages={[]}
-          performance={null}
           currentChapterLabel=""
           playerTitle=""
           playing={false}
-          audioVisualizer={{} as AudioAnalyserHandle}
           elapsedSec={0}
           durationSec={0}
           onStartConvert={() => undefined}

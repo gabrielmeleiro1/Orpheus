@@ -98,21 +98,21 @@
 .btn-player:disabled,
 .term-select-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.35;
+  opacity: 0.5;
 }
 
 /* Primary: accent CTA. Colour/weight only — no baked-in layout, so it works
    inline in a row or full-width via a `.btn-block` wrapper/utility. */
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--bg);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
 .btn-primary:hover {
-  background: color-mix(in srgb, var(--accent) 85%, white);
-  border-color: color-mix(in srgb, var(--accent) 85%, white);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 /* Ghost: text / row action. No border, quiet until hovered. Kept a step
@@ -308,17 +308,14 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* The one segmented-control style (`.seg-control` is the canonical name;
-   `.segmented-control`/`.segment-btn` are kept as compatibility aliases). */
-.seg-control,
-.segmented-control {
+/* Shared segmented control. */
+.seg-control {
   display: inline-flex;
   gap: 0;
   min-width: 0;
 }
 
-.seg-control-btn,
-.segment-btn {
+.seg-control-btn {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   color: var(--text-secondary);
@@ -331,35 +328,34 @@
   transition: background 120ms ease, color 120ms ease;
 }
 
-.seg-control-btn:first-child,
-.segment-btn:first-child {
+.seg-control-btn:first-child {
   border-radius: var(--radius-sm) 0 0 var(--radius-sm);
 }
 
-.seg-control-btn:last-child,
-.segment-btn:last-child {
+.seg-control-btn:last-child {
   border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
-.seg-control-btn + .seg-control-btn,
-.segment-btn + .segment-btn {
+.seg-control-btn + .seg-control-btn {
   border-left: 0;
 }
 
-.seg-control-btn:hover:not(.is-active),
-.segment-btn:hover:not(.is-active) {
+.seg-control-btn:hover:not(.is-active) {
   background: var(--surface-hover);
   color: var(--text);
 }
 
-.seg-control-btn.is-active,
-.segment-btn.is-active {
+.seg-control-btn.is-active {
   background: var(--surface-active);
   color: var(--text);
 }
 
 .short-input {
   max-width: 140px;
+}
+
+.form-error:empty {
+  display: none;
 }
 
 .form-error {
@@ -408,13 +404,11 @@
   color: var(--text);
 }
 
-/* A disclosure is a continuous section boundary with a value preview. */
+/* Disclosure panels share the same flat surface as other sections. */
 .disclosure-card {
-  background: transparent;
-  border: 0;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-  border-radius: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
 .disclosure-card > summary {
@@ -424,7 +418,7 @@
   justify-content: space-between;
   letter-spacing: 0;
   min-height: 44px;
-  padding: 10px 0;
+  padding: 10px 16px;
   text-transform: none;
   transition: background 120ms ease, color 120ms ease;
 }
@@ -468,9 +462,7 @@
 }
 
 /*
- * The one focus indicator: an accent outline on every interactive element.
- * Zero-specificity :where() so components can still override placement, and
- * the explicit lists in shell.css win where they set a tighter offset.
+ * Shared focus ring with low specificity so controls can adjust placement.
  */
 :where(
   button,
@@ -483,8 +475,8 @@
   summary,
   [tabindex]
 ):focus-visible {
-  outline: 1px solid var(--accent-muted);
-  outline-offset: -1px;
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 
 @media (max-width: 800px) {
@@ -507,7 +499,7 @@
   .term-select-btn,
   .btn,
   .btn-player,
-  .segment-btn {
+  .seg-control-btn {
     transition: none;
   }
 

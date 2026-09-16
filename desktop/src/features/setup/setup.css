@@ -10,8 +10,8 @@
 .setup-shell {
   flex: 0 0 auto;
   margin: auto;
-  max-width: 780px;
-  padding: 40px 28px;
+  max-width: 860px;
+  padding: 40px 28px 48px;
   width: 100%;
 }
 
@@ -57,7 +57,7 @@
 .setup-intro {
   border-bottom: 0;
   padding: 0 0 20px;
-  text-align: center;
+  text-align: left;
 }
 
 .setup-intro h1 {
@@ -74,7 +74,7 @@
   color: var(--text-secondary);
   font-size: 13px;
   line-height: 1.6;
-  margin: 11px auto 0;
+  margin: 11px 0 0;
   max-width: 56ch;
 }
 
@@ -103,14 +103,14 @@
 }
 
 .setup-profile-card {
-  background: var(--bg-elevated);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   cursor: pointer;
   display: grid;
   gap: 10px;
   grid-template-columns: 16px minmax(0, 1fr);
-  padding: 13px 15px;
+  padding: 16px;
   transition: background 120ms ease, border-color 120ms ease;
 }
 
@@ -182,7 +182,7 @@
 .setup-chip {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-radius: 99px;
-  color: var(--accent);
+  color: var(--accent-text);
   flex: none;
   font-size: 9px;
   font-weight: 600;
@@ -214,7 +214,7 @@
 }
 
 .setup-model-list {
-  background: var(--bg-elevated);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   overflow: hidden;
@@ -226,7 +226,7 @@
   display: grid;
   gap: 12px;
   grid-template-columns: 16px minmax(0, 1fr) minmax(180px, auto);
-  padding: 13px 15px;
+  padding: 14px 16px;
 }
 
 .setup-model-row + .setup-model-row {
@@ -262,7 +262,7 @@
   display: flex;
   gap: 16px;
   justify-content: space-between;
-  margin: 24px 0 0;
+  margin: 20px 0 0;
   padding: 0;
 }
 
@@ -328,7 +328,7 @@
 .setup-tip:hover .setup-tip-icon,
 .setup-tip[aria-expanded="true"] .setup-tip-icon {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .setup-tip:focus-visible {
@@ -338,10 +338,9 @@
 
 /* Portaled to the body so cards and scrolling setup sections cannot clip it. */
 .setup-tip-bubble {
-  background: var(--bg-elevated);
+  background: var(--surface);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
   color: var(--text-secondary);
   font-size: 13px;
   font-weight: 400;
@@ -357,7 +356,7 @@
 }
 
 .setup-tip-bubble code {
-  color: var(--accent);
+  color: var(--accent-text);
   display: block;
   font-family: var(--font-mono);
   font-size: 10px;
@@ -386,7 +385,7 @@
 }
 
 .setup-empty-models {
-  background: var(--bg-elevated);
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px;
@@ -428,7 +427,7 @@
 
 .setup-risk,
 .setup-recovery {
-  background: color-mix(in srgb, var(--warning) 7%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--warning) 7%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--warning) 28%, var(--border));
   border-radius: var(--radius);
   margin: 24px 0 0;
@@ -443,7 +442,7 @@
 }
 
 .setup-environment code {
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--font-mono);
   font-size: 10px;
   overflow-wrap: anywhere;
@@ -507,7 +506,7 @@
 }
 
 .setup-installed > strong {
-  color: var(--accent);
+  color: var(--accent-text);
   font-size: 12px;
   font-weight: 600;
 }
@@ -521,7 +520,7 @@
 }
 
 .setup-danger-box {
-  background: color-mix(in srgb, var(--negative) 6%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--negative) 6%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--negative) 30%, var(--border));
   border-radius: var(--radius);
   display: flex;
@@ -553,11 +552,13 @@
 }
 
 .setup-progress {
-  border-top: 1px solid var(--border-light);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   display: grid;
   gap: 12px;
   margin-top: 24px;
-  padding: 24px 0 0;
+  padding: 16px;
 }
 
 .setup-progress-message {
@@ -594,11 +595,11 @@
 
 .setup-stage.is-active,
 .setup-stage.is-complete {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .setup-error {
-  background: color-mix(in srgb, var(--negative) 7%, var(--bg-elevated));
+  background: color-mix(in srgb, var(--negative) 7%, var(--surface));
   border: 1px solid color-mix(in srgb, var(--negative) 32%, var(--border));
   border-radius: var(--radius);
   margin: 24px 0 0;
@@ -692,7 +693,6 @@
     flex-direction: column;
   }
 
-  .setup-progress,
   .setup-danger {
     padding-left: 0;
     padding-right: 0;

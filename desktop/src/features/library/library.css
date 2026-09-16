@@ -1,21 +1,27 @@
 .library-workspace {
   display: grid;
-  gap: 24px;
-  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: var(--space-4);
+  grid-template-columns: minmax(240px, 0.72fr) minmax(0, 1.28fr);
   min-height: 0;
 }
 
 .library-sidebar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   min-width: 0;
-  padding: 0 24px 0 0;
-  border-right: 1px solid var(--border-light);
+  padding: var(--space-4);
 }
 
 .library-detail-pane {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   display: grid;
-  gap: 24px;
+  gap: var(--space-4);
   min-width: 0;
   overflow: visible;
+  padding: 18px;
   transition: opacity 120ms ease;
 }
 
@@ -27,14 +33,22 @@
 .library-search-row {
   display: grid;
   gap: 6px;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
+}
+
+.library-sidebar .field-label {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
 }
 
 .library-filter-row {
   align-items: center;
   display: flex;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: var(--space-3);
 }
 
 .library-filter-row > * {
@@ -48,8 +62,8 @@
 
 .library-pager {
   display: flex;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
 }
 
 .library-pager .btn {
@@ -57,9 +71,10 @@
 }
 
 .library-list {
+  align-content: start;
   display: grid;
-  gap: 7px;
-  margin-bottom: 12px;
+  gap: 0;
+  margin-bottom: var(--space-3);
   max-height: min(58vh, 640px);
   min-height: 120px;
   -ms-overflow-style: none;
@@ -80,15 +95,15 @@
   align-items: center;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
   cursor: pointer;
   display: grid;
   font-size: 13px;
   gap: 3px 10px;
   grid-template-columns: minmax(0, 1fr);
-  min-height: 50px;
-  padding: 7px 10px;
+  min-height: 52px;
+  padding: 8px 10px;
   position: relative;
   text-align: left;
   transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
@@ -112,8 +127,9 @@
 }
 
 .book-row.is-selected {
-  background: var(--accent-soft);
-  border-color: transparent;
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 .book-title {
@@ -154,7 +170,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 0;
+  border-top: 1px solid var(--border-light);
+  padding-top: var(--space-3);
 }
 
 /* Destructive actions sit apart, pushed to the trailing edge. */
@@ -171,7 +188,9 @@
 }
 
 .chapter-section {
+  border-top: 1px solid var(--border-light);
   margin: 0;
+  padding-top: var(--space-4);
 }
 
 .chapter-list {
@@ -205,8 +224,8 @@
 }
 
 .chapter-row.is-current {
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  background: var(--accent-soft);
+  border-color: var(--border-light);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 /* Chapter row internals — library-scoped so the panel is self-contained. */
@@ -238,7 +257,7 @@
 }
 
 .library-detail-pane .chapter-row.is-current .chapter-title {
-  color: var(--accent);
+  color: var(--accent-text, var(--accent));
 }
 
 /* Counts and timecodes keep the mono/tabular treatment (rule 6). */
@@ -339,11 +358,6 @@
     grid-template-columns: 1fr;
   }
 
-  .library-sidebar {
-    border-right: 0;
-    border-bottom: 1px solid var(--border-light);
-    padding: 0 0 24px;
-  }
 }
 
 @media (max-width: 800px) {

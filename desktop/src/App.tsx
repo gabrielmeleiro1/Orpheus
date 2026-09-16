@@ -29,7 +29,6 @@ import { SetupPage } from "./features/setup/SetupPage";
 import { shouldShowRuntimeSetup } from "./features/setup/setupModel";
 import {
   DASHBOARD_TAB_CONFIGS,
-  DashboardTabIcon,
   conversionPanelTabForDashboardTab,
 } from "./navigation/tabs";
 import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKeyboardNavigation";
@@ -100,6 +99,7 @@ function DashboardApp({
   backend: BackendClientState;
   onOpenRuntimeSetup: () => void;
 }) {
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 760);
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
   const {
     apiClient,
@@ -220,25 +220,28 @@ function DashboardApp({
   }, [playRelative]);
 
   return (
-    <main className="app-frame" role="application" aria-label="Orpheus dashboard">
-      <aside className="rail" aria-label="Orpheus navigation">
+    <main className={`app-frame${sidebarCollapsed ? " sidebar-collapsed" : ""}`} role="application" aria-label="Orpheus dashboard">
+      <aside className="rail" aria-label="Orpheus navigation" hidden={sidebarCollapsed}>
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">O</span>
           <span className="brand-name">Orpheus</span>
+          <button type="button" className="sidebar-toggle" aria-label="Hide sidebar" onClick={() => setSidebarCollapsed(true)}>‹</button>
         </div>
 
         <nav
           className="rail-nav"
           role="tablist"
           aria-label="Dashboard sections"
+          aria-orientation="vertical"
           onKeyDown={onTabListKeyDown}
         >
           {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId }, index) => {
             const isActive = activeTab === id;
             return (
               <Fragment key={id}>
-                {index === 0 ? <span className="rail-group-label" role="presentation">Main</span> : null}
-                {id === "settings" ? <span className="rail-group-label rail-system-label" role="presentation">System</span> : null}
+                {index === 0 ? <span className={`rail-group-label${["dashboard", "convert", "document"].includes(activeTab) ? " is-active" : ""}`} role="presentation">Audiobooks</span> : null}
+                {id === "library" ? <span className={`rail-group-label rail-section-label${activeTab === "library" ? " is-active" : ""}`} role="presentation">Library</span> : null}
+                {id === "progress" ? <span className={`rail-group-label rail-section-label${["progress", "logs"].includes(activeTab) ? " is-active" : ""}`} role="presentation">Activity</span> : null}
+                {id === "settings" ? <span className={`rail-group-label rail-section-label${activeTab === "settings" ? " is-active" : ""}`} role="presentation">System</span> : null}
                 <button
                   id={`tab-btn-${id}`}
                   ref={(node) => {
@@ -253,7 +256,6 @@ function DashboardApp({
                   aria-selected={isActive}
                   onClick={() => setActiveTab(id)}
                 >
-                  <span className="rail-icon" aria-hidden="true"><DashboardTabIcon tab={id} /></span>
                   <span className="rail-label">{label}</span>
                 </button>
               </Fragment>
@@ -295,9 +297,11 @@ function DashboardApp({
         </div>
       </aside>
 
-      <div className="workspace-shell">
+      <div className={`workspace-shell page-${activeTab === "library" || activeTab === "logs" ? "data" : activeTab === "dashboard" || activeTab === "progress" ? "working" : "focused"}`}>
         <header className="studio-status">
-          <div>
+          <div className="page-heading">
+            {sidebarCollapsed ? <button type="button" className="btn sidebar-expand" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar">☰ <span>Sidebar</span></button> : null}
+            <span className="page-eyebrow">Audiobook studio</span>
             <h1>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
             {activeTab === "dashboard" ? (
               <p>{`${formatRuntimeIdentity(runtimeIdentity)} · ${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`}</p>
@@ -328,13 +332,11 @@ function DashboardApp({
             progressPct={conversionJob.progressPct}
             etaText={conversionJob.etaText}
             stages={conversionJob.stages}
-            performance={conversionJob.performanceSnapshot}
             jobTitle={conversionJob.activeJobTitle}
             jobAuthor={conversionJob.activeJobAuthor}
             currentChapterLabel={player.currentChapterLabel}
             playerTitle={player.title}
             playing={player.playing}
-            audioVisualizer={player.audioVisualizer}
             elapsedSec={player.elapsedSec}
             durationSec={player.durationSec}
             onStartConvert={openConvert}

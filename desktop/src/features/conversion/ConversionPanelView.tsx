@@ -35,9 +35,14 @@ export function ConversionPanelView({
       aria-labelledby={`tab-btn-${shell.isDocumentMode ? "document" : "convert"}`}
       hidden={shell.hidden}
     >
-      <div className="panel-header">
-        <span>{shell.isDocumentMode ? "Document → M4A" : "Audiobook → M4B"}</span>
-      </div>
+      <header className="conversion-context">
+        <p className="conversion-lede">
+          {shell.isDocumentMode
+            ? "Turn a document or pasted text into a focused listening copy."
+            : "Prepare a source, choose a voice, and export a chaptered audiobook."}
+        </p>
+        <span className="conversion-header-meta">{shell.isDocumentMode ? "M4A" : "M4B"}</span>
+      </header>
 
       <div className="conversion-form">
         <SourceQueueView

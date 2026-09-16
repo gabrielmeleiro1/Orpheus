@@ -1,9 +1,13 @@
 .log-toolbar {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   align-items: center;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   margin-bottom: 16px;
+  padding: 10px;
 }
 
 .log-toolbar .term-select {
@@ -68,13 +72,13 @@
 }
 
 .log-box {
-  background: transparent;
-  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   max-height: 500px;
   min-height: 280px;
   overflow-y: auto;
-  padding: 8px 0;
-  border-top: 1px solid var(--border-light);
+  padding: 10px 8px;
 }
 
 .log-line {
@@ -93,7 +97,7 @@
   display: grid;
   gap: 10px;
   grid-template-columns: 3px 64px minmax(0, 1fr);
-  padding: 1px 6px;
+  padding: 3px 6px;
 }
 
 .log-box .log-line:hover {
@@ -135,7 +139,7 @@
 
 /* Fill and vertically centre the canonical .empty-state inside the tall log box. */
 .log-empty {
-  min-height: 240px;
+  min-height: 260px;
 }
 
 .log-empty-icon {
@@ -156,9 +160,8 @@
   align-items: center;
   background: color-mix(in srgb, var(--bg) 88%, black);
   border: 1px solid var(--border-strong);
-  border-radius: 999px;
+  border-radius: var(--radius-sm);
   bottom: 14px;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
   color: var(--text-secondary);
   cursor: pointer;
   display: inline-flex;

@@ -11,10 +11,10 @@ export function nextTabIndexAfterKeyboard(input: {
   if (tabCount <= 0) {
     return null;
   }
-  if (key === "ArrowRight") {
+  if (key === "ArrowRight" || key === "ArrowDown") {
     return (activeIndex + 1) % tabCount;
   }
-  if (key === "ArrowLeft") {
+  if (key === "ArrowLeft" || key === "ArrowUp") {
     return (activeIndex - 1 + tabCount) % tabCount;
   }
   if (key === "Home") {

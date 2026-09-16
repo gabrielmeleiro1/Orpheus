@@ -34,9 +34,7 @@ export function ProgressBar({ pct, label, tone = "neutral", size = "regular", cl
       aria-valuemax={100}
       aria-valuenow={bounded}
     >
-      <span className="pbar-fill" style={{ width: `${bounded}%` }}>
-        <span className="pbar-sheen" />
-      </span>
+      <span className="pbar-fill" style={{ width: `${bounded}%` }} />
     </div>
   );
 }

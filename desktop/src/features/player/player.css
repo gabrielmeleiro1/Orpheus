@@ -1,16 +1,15 @@
 .player-bar {
-  background: var(--bg-elevated);
+  background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
-  height: auto;
-  min-height: 80px;
-  padding: 12px var(--density-page-x);
+  min-height: 76px;
+  padding: 12px 24px;
 }
 
 .player-main {
   align-items: center;
   display: grid;
-  gap: 24px;
+  gap: 16px;
   grid-template-columns: auto minmax(0, 1fr) minmax(80px, 110px);
   min-height: 0;
 }
@@ -22,9 +21,9 @@
 }
 
 .player-bar .btn-player {
-  background: transparent;
-  border: 0;
-  border-radius: 50%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
   color: var(--text-secondary);
   min-height: 32px;
   padding: 0;
@@ -34,19 +33,22 @@
 
 .player-bar .btn-player:hover:not(:disabled) {
   background: var(--surface-hover);
+  border-color: var(--accent-muted);
   color: var(--text);
 }
 
 .player-bar .btn-play {
-  background: var(--accent);
-  color: var(--bg);
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius-sm);
+  color: var(--accent-text);
   min-height: 38px;
   width: 38px;
 }
 
 .player-bar .btn-play:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 85%, white);
-  color: var(--bg);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent-text);
 }
 
 .player-close-btn {
@@ -68,7 +70,9 @@
 
 .player-track-title {
   color: var(--text);
-  font-size: 12px;
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -95,9 +99,9 @@
   appearance: none;
   background: var(--surface-active);
   border: 0;
-  border-radius: 3px;
+  border-radius: 999px;
   cursor: pointer;
-  height: 5px;
+  height: 6px;
   outline: none;
   width: 100%;
 }
@@ -150,8 +154,8 @@
 
 @media (max-width: 800px) {
   .player-bar {
-    padding-left: 16px;
-    padding-right: 16px;
+    padding-left: var(--space-4);
+    padding-right: var(--space-4);
   }
 
   .player-main {

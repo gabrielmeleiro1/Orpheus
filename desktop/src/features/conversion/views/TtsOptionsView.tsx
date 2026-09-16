@@ -17,8 +17,9 @@ export function TtsOptionsView({
   actions,
 }: TtsOptionsViewProps) {
   return (
-    <div className="panel-section form-section voice-options">
+    <section className="conversion-section form-section voice-options">
       <h2 className="conversion-group-heading">Voice</h2>
+      <p className="conversion-section-copy">Choose the narrator and preview a short sample before converting.</p>
       <div className="form-row">
         <span className="form-row-label" data-tip="Speech engine used to narrate the book" data-tip-pos="right">Engine</span>
         <div className="form-row-field">
@@ -107,6 +108,6 @@ export function TtsOptionsView({
           <audio id="voice-preview-audio" ref={ttsOptions.previewAudioRef} className="voice-preview-audio" preload="none" />
         </div>
       </div>
-    </div>
+    </section>
   );
 }

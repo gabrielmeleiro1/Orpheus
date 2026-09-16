@@ -321,6 +321,18 @@ describe("App runtime setup recovery", () => {
     }
   });
 
+  it("keeps the selected section when the sidebar is collapsed and restored", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+    await act(async () => findButton(container, "Library").click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Hide sidebar"]')!.click());
+    expect(container.querySelector<HTMLElement>(".rail")?.hidden).toBe(true);
+    expect(container.querySelector("#tab-btn-library")?.getAttribute("aria-selected")).toBe("true");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show sidebar"]')!.click());
+    expect(container.querySelector<HTMLElement>(".rail")?.hidden).toBe(false);
+    expect(container.querySelector("#tab-btn-library")?.getAttribute("aria-selected")).toBe("true");
+  });
+
   it("refreshes the library when a conversion completes", async () => {
     await act(async () => {
       root.render(<App />);

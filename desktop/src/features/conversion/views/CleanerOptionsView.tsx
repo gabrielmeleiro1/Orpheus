@@ -20,6 +20,10 @@ export function CleanerOptionsView({
 }: CleanerOptionsViewProps) {
   return (
     <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" aria-labelledby="tab-btn-settings" hidden={hidden}>
+      <header className="conversion-context">
+        <p className="conversion-lede">Choose how Orpheus prepares text before narration.</p>
+        <span className="conversion-header-meta">Runtime</span>
+      </header>
       <div className="config-grid">
         <div className="panel-section config-panel-section">
           <div className="section-title">

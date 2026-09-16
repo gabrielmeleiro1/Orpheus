@@ -1,30 +1,35 @@
 :root {
   --font-body: -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
-  --font-display: ui-serif, "New York", "Iowan Old Style", Georgia, serif;
-  --font-mono: "JetBrains Mono", "SF Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-display: ui-serif, "New York", Georgia, "Times New Roman", serif;
+  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
 
+  --radius-xs: 4px;
   --radius-sm: 5px;
   --radius: 8px;
   --radius-lg: 12px;
 
-  --bg: #161618;
-  --bg-elevated: #1c1c1f;
-  --surface: #222225;
-  --surface-hover: #28282c;
-  --surface-active: #2e2e33;
+  --bg: #171716;
+  --bg-elevated: #1d1d1b;
+  --surface: #232321;
+  --surface-hover: #292927;
+  --surface-active: #2f2f2c;
 
   --text: #e8e6e3;
-  --text-secondary: #aaa49d;
-  /* Small supporting copy remains readable even on the active surface. */
-  --text-tertiary: var(--text-secondary);
+  --text-secondary: #9a9590;
+  --text-tertiary: #918c87;
 
-  --accent: #c9a06c;
-  --accent-soft: rgba(201, 160, 108, 0.1);
-  --accent-muted: #b08d5e;
+  --accent: #d97757;
+  --accent-soft: rgba(217, 119, 87, 0.12);
+  --accent-muted: #c6613f;
+  --accent-text: #dd8467;
+  --tag-bg: rgba(217, 119, 87, 0.14);
+  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  --dur-fast: 120ms;
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
 
-  --border: #2a2a2e;
-  --border-light: #242428;
-  --border-strong: #3a3a40;
+  --border: #2b2b28;
+  --border-light: #252522;
+  --border-strong: #3b3b37;
 
   --positive: #7cb87c;
   --positive-soft: rgba(124, 184, 124, 0.1);
@@ -34,27 +39,25 @@
 
   --overlay: #000000;
 
-  --density-rail-width: 196px;
-  --density-status-height: 88px;
-  --density-page-x: 28px;
-  --density-page-y: 16px;
+  --density-rail-width: 220px;
+  --density-page-x: 48px;
   --density-panel-gap: 16px;
   --density-panel-pad: 16px;
-  --density-control-height: 34px;
+  --density-control-height: 32px;
 
   /* Vertical rhythm — the only spacing steps forms and cards should use. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
-  --space-5: 24px;
-  --space-6: 32px;
+  --space-5: 20px;
+  --space-6: 24px;
 
   /* Text inputs stay readable instead of stretching the full column. */
   --field-text-width: 34rem;
 
-  --scroll-thumb: #2e2e33;
-  --scroll-thumb-hover: #3a3a40;
+  --scroll-thumb: #2f2f2c;
+  --scroll-thumb-hover: #3b3b37;
 }
 
 * {
