@@ -290,6 +290,17 @@ def build_install_plan(
         "-r",
         str(_fixed_requirements_path(profile)),
     )
+    if profile.id == "cuda":
+        # A plain torch==X pin also accepts X+cpu, which pip keeps installed.
+        # Require the CUDA wheel explicitly, using the manifest's pinned version.
+        manifest = _fixed_requirements_path(profile).read_text(encoding="utf-8")
+        torch_pin = re.search(r"^torch==([0-9.]+)\s*$", manifest, re.MULTILINE)
+        if torch_pin is None:
+            raise SetupValidationError("CUDA manifest is missing its fixed PyTorch version.")
+        pip_command += (
+            "--extra-index-url", "https://download.pytorch.org/whl/cu126",
+            f"torch=={torch_pin.group(1)}+cu126",
+        )
     model_command: tuple[str, ...] | None = None
     if groups:
         downloader = (REPO_ROOT / "scripts" / "download_models.py").resolve()
@@ -831,6 +842,7 @@ def run_setup(
     lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
     pip_timeout_seconds: float = DEFAULT_PIP_TIMEOUT_SECONDS,
     model_timeout_seconds: float = DEFAULT_MODEL_TIMEOUT_SECONDS,
+    probe_service: _ProbeService | None = None,
 ) -> dict[str, Any]:
     """Validate, install dependencies/models, then atomically record state."""
     plan = build_install_plan(
@@ -879,10 +891,20 @@ def run_setup(
             {
                 "event": "stage_started",
                 "stage": "Verification",
-                "message": "Verifying setup and saving state.",
+                "message": "Checking the installed runtime before saving setup.",
                 "percent": SETUP_STATE_START_PERCENT,
             }
         )
+        probe = _probe_profile(
+            plan.model_groups,
+            probe_service or RuntimeCapabilityService(cache_ttl_seconds=0, timeout_seconds=30),
+        )
+        if not probe["available"]:
+            details = "; ".join(
+                f"{check['id']}: {check['error'] or 'runtime unavailable'}"
+                for check in probe["checks"] if not check["available"]
+            )
+            raise SetupExecutionError(f"Runtime verification failed: {details}")
         write_setup_state(
             setup_state_path,
             profile_id=plan.profile.id,

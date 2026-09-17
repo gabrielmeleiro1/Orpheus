@@ -188,6 +188,39 @@ def test_cuda_install_no_longer_requires_resolved_pytorch_risk_acceptance(
     assert plan.accepted_risks == ()
 
 
+def test_cuda_plan_requires_cuda_wheel_even_when_cpu_torch_is_installed(monkeypatch):
+    from packaging.requirements import Requirement
+    from scripts import setup_runtime
+
+    _compatible(monkeypatch, "cuda")
+    plan = setup_runtime.build_install_plan("cuda", ("tts-cpu-cuda", "cleaner-cuda"))
+    assert plan.pip_command[-3:-1] == (
+        "--extra-index-url", "https://download.pytorch.org/whl/cu126",
+    )
+    requirement = Requirement(plan.pip_command[-1])
+    assert requirement.specifier.contains("2.13.0+cu126")
+    assert not requirement.specifier.contains("2.13.0+cpu")
+
+
+def test_failed_runtime_verification_does_not_claim_success_or_replace_state(monkeypatch, tmp_path):
+    from scripts import setup_runtime
+
+    _compatible(monkeypatch, "cuda")
+    state_path = tmp_path / "runtime-setup.json"
+    state_path.write_text("previous state", encoding="utf-8")
+    events = []
+    probe = _ProbeService(cuda_available=False)
+    with pytest.raises(setup_runtime.SetupExecutionError, match="Runtime verification failed.*missing cuda"):
+        setup_runtime.run_setup(
+            profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"),
+            state_path=state_path, emit=events.append, probe_service=probe,
+            command_runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 0),
+        )
+    assert probe.calls == ["package-tts", "cleaner-cuda"]
+    assert state_path.read_text(encoding="utf-8") == "previous state"
+    assert not any(event["event"] == "stage_complete" and event["stage"] == "Verification" for event in events)
+
+
 def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -208,6 +241,7 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
         accept_pytorch_risk=True,
         state_path=state_path,
         command_runner=runner,
+        probe_service=_ProbeService(),
     )
 
     assert result["restart_required"] is True
@@ -285,6 +319,7 @@ def test_setup_progress_uses_monotonic_milestones_for_base_and_model_paths(
         state_path=tmp_path / f"{profile_id}.json",
         command_runner=runner,
         emit=events.append,
+        probe_service=_ProbeService(),
     )
 
     assert [
