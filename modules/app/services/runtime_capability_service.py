@@ -10,6 +10,8 @@ import threading
 import time
 from typing import Any
 
+from modules.subprocess_utils import background_process_kwargs
+
 from modules.tts.cleaner_backends.registry import (
     available_cleaner_backends,
     get_cleaner_backend,
@@ -258,6 +260,7 @@ except Exception as exc:
         try:
             completed = subprocess.run(
                 [sys.executable, "-c", script],
+                **background_process_kwargs(),
                 capture_output=True,
                 text=True,
                 timeout=timeout_seconds,

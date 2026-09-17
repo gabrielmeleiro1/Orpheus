@@ -33,6 +33,7 @@ from modules.runtime_profiles import (  # noqa: E402
     get_runtime_profile,
     runtime_profiles,
 )
+from modules.subprocess_utils import background_process_kwargs  # noqa: E402
 
 
 STATE_SCHEMA_VERSION = 3
@@ -748,6 +749,7 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         try:
             subprocess.run(
                 ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                **background_process_kwargs(),
                 shell=False,
                 check=False,
                 capture_output=True,
@@ -821,11 +823,11 @@ def _stage_process_group_kwargs(
     """Keep Tauri-launched stages in its OS-owned containment boundary."""
     env = os.environ if environ is None else environ
     if str(env.get(TAURI_SUPERVISED_ENV, "")).strip() == "1":
-        return {}
+        return background_process_kwargs()
     if os.name == "posix":
         return {"start_new_session": True}
     if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
     return {}
 
 

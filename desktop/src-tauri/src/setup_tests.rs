@@ -33,8 +33,9 @@ fn request(profile: &str, groups: &[&str], accept_pytorch_risk: bool) -> SetupRe
 }
 
 #[test]
-fn windows_setup_is_constructed_suspended_and_in_its_own_process_group() {
+fn windows_setup_is_hidden_suspended_and_in_its_own_process_group() {
     let flags = windows_setup_creation_flags();
+    assert_ne!(flags & 0x0800_0000, 0, "CREATE_NO_WINDOW is required");
     assert_ne!(flags & 0x0000_0004, 0, "CREATE_SUSPENDED is required");
     assert_ne!(
         flags & 0x0000_0200,

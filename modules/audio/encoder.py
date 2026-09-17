@@ -15,6 +15,8 @@ from typing import Callable, Optional
 import json
 import numpy as np
 
+from ..subprocess_utils import background_process_kwargs
+
 from .ffmpeg import (
     atomic_output_path,
     ffmpeg_timeout_seconds,
@@ -183,6 +185,7 @@ class AudioEncoder:
 
             process = subprocess.Popen(
                 cmd,
+                **background_process_kwargs(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,

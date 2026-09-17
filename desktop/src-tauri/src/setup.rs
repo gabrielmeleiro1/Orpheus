@@ -29,10 +29,12 @@ const READER_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
 const WINDOWS_CREATE_SUSPENDED: u32 = 0x0000_0004;
 #[cfg(any(test, windows))]
 const WINDOWS_CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+#[cfg(any(test, windows))]
+const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 #[cfg(any(test, windows))]
 pub(crate) fn windows_setup_creation_flags() -> u32 {
-    WINDOWS_CREATE_SUSPENDED | WINDOWS_CREATE_NEW_PROCESS_GROUP
+    WINDOWS_CREATE_SUSPENDED | WINDOWS_CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_NO_WINDOW
 }
 
 #[cfg(any(test, windows))]
@@ -1357,7 +1359,9 @@ fn terminate_process(process: &ActiveProcess) {
     #[cfg(windows)]
     {
         if let Ok(taskkill) = windows_taskkill_path() {
+            use std::os::windows::process::CommandExt;
             let _ = Command::new(taskkill)
+                .creation_flags(WINDOWS_CREATE_NO_WINDOW)
                 .args(["/PID", &child.id().to_string(), "/T", "/F"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

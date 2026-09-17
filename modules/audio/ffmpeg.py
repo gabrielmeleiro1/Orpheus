@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
 from ..errors import FFmpegNotFoundError
+from ..subprocess_utils import background_process_kwargs
 
 _SUPPORTED_BINARIES = {"ffmpeg", "ffprobe"}
 _COMMON_BINARY_DIRS = (
@@ -145,6 +146,7 @@ def run_ffmpeg_command(
     if cancel_requested is not None:
         process = subprocess.Popen(
             list(cmd),
+            **background_process_kwargs(),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf-8",
@@ -183,6 +185,7 @@ def run_ffmpeg_command(
     try:
         result = subprocess.run(
             list(cmd),
+            **background_process_kwargs(),
             capture_output=True,
             encoding="utf-8",
             errors="replace",

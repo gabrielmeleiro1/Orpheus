@@ -36,7 +36,8 @@ fn forced_backend_shutdown_terminates_root_and_descendant_in_job() {
         .expect("expected system time after unix epoch")
         .as_nanos();
     let marker = std::env::temp_dir().join(format!("orpheus-backend-descendant-{unique}.txt"));
-    let script = r#"import json, os, pathlib, signal, subprocess, sys, time
+    let script = r#"import ctypes, json, os, pathlib, signal, subprocess, sys, time
+assert ctypes.windll.kernel32.GetConsoleWindow() == 0, "backend opened a console"
 marker = pathlib.Path(sys.argv[1])
 # Keep the root alive when terminate_backend_process sends CTRL_BREAK, so this
 # test must exercise the forced Job Object termination path. Put the descendant
@@ -45,7 +46,7 @@ if hasattr(signal, "SIGBREAK"):
     signal.signal(signal.SIGBREAK, lambda _signum, _frame: None)
 descendant = subprocess.Popen(
     [sys.executable, "-c", "import time; time.sleep(60)"],
-    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
 )
 marker.write_text(f"{os.getpid()} {descendant.pid}", encoding="ascii")
 print(json.dumps({"event":"ready","host":"127.0.0.1","port":1,"token":"test"}), flush=True)

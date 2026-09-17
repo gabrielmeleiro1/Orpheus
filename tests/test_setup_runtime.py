@@ -81,7 +81,7 @@ def test_tauri_supervised_stages_inherit_existing_process_containment():
 
     assert setup_runtime._stage_process_group_kwargs(
         environ={setup_runtime.TAURI_SUPERVISED_ENV: "1"}
-    ) == {}
+    ) == ({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {})
 
 
 def test_direct_cli_stages_keep_independent_process_tree_supervision():
@@ -91,7 +91,7 @@ def test_direct_cli_stages_keep_independent_process_tree_supervision():
     if os.name == "posix":
         assert kwargs == {"start_new_session": True}
     elif hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-        assert kwargs == {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        assert kwargs == {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
     else:
         assert kwargs == {}
 
@@ -958,7 +958,7 @@ def test_windows_timeout_uses_bounded_taskkill_tree_command(monkeypatch: pytest.
     assert calls == [
         (
             ["taskkill", "/PID", "4321", "/T", "/F"],
-            {"shell": False, "check": False, "capture_output": True, "timeout": 5},
+            {"shell": False, "check": False, "capture_output": True, "timeout": 5, **setup_runtime.background_process_kwargs()},
         )
     ]
 

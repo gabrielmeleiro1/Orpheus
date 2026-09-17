@@ -18,6 +18,7 @@ import tempfile
 import threading
 import time
 
+from ..subprocess_utils import background_process_kwargs
 from .ffmpeg import (
     atomic_output_path,
     ffmpeg_timeout_seconds,
@@ -454,6 +455,7 @@ class M4BPackager:
                 str(concat_path),
             ],
             stdout=subprocess.PIPE,
+            **background_process_kwargs(),
             stderr=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
