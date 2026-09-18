@@ -19,28 +19,27 @@ import {
   acquireSetupStart,
   backendInstallProfileId,
   canStartSetup,
-  createSelection,
   diagnosticsSnapshot,
   modelDownloadProgressEvent,
   profileChoices,
   selectionEstimate,
   type SetupProgressEvent,
   type SetupProgressState,
-  type SetupSelection,
 } from "./setupModel";
 import { restartAndReconnectSetup } from "./setupLifecycle";
 import {
   EMPTY_PROGRESS,
-  formatFreedBytes,
   INSTALLED_PROFILE_LABEL,
   safeError,
 } from "./setupPageHelpers";
 import { SetupDangerZone } from "./SetupDangerZone";
 import { SetupPlanSection } from "./SetupPlanSection";
 import { SetupProgressSection } from "./SetupProgressSection";
+import { SetupRecoveryNotice } from "./SetupRecoveryNotice";
 import { SetupRiskNotice } from "./SetupRiskNotice";
-import { InfoTip, ModelListTip } from "./SetupTips";
-import { useSetupModelDownload } from "./useSetupModelDownload";
+import { ModelListTip } from "./SetupTips";
+import { useSetupModelDownload, type SetupDownloadPhase } from "./useSetupModelDownload";
+import { useSetupStatus } from "./useSetupStatus";
 
 export interface SetupPageBridge {
   start: (request: RuntimeSetupRequest) => Promise<RuntimeSetupRunnerStatus>;
@@ -83,10 +82,14 @@ export function SetupPage({
   onReconnectBackend,
   bridge = defaultBridge,
 }: SetupPageProps) {
-  const [status, setStatus] = useState(initialStatus);
-  const [selection, setSelection] = useState<SetupSelection>(() => initialStatus ? createSelection(initialStatus) : { profile: "base", modelGroups: [], acceptPytorchRisk: false });
   const [progress, setProgress] = useState<SetupProgressState>(EMPTY_PROGRESS);
-  const [error, setError] = useState(initialError);
+  const handleReady = useCallback((next: RuntimeSetupStatusResponse) => {
+    setProgress((previous) => ({ ...previous, restartRequired: false }));
+    onReady(next);
+  }, [onReady]);
+  const { status, setStatus, selection, setSelection, error, setError, refreshStatus } = useSetupStatus({
+    apiClient, initialStatus, initialError, onReady: handleReady,
+  });
   const [busy, setBusy] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy diagnostics");
   const [environment, setEnvironment] = useState<RuntimeSetupEnvironment | null>(null);
@@ -98,66 +101,47 @@ export function SetupPage({
   const [awaitingReconnect, setAwaitingReconnect] = useState(false);
   const [adopting, setAdopting] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
-  const [downloadPhase, setDownloadPhase] = useState<"idle" | "downloading" | "adopting">("idle");
-  const [deleteArmed, setDeleteArmed] = useState(false);
-  const [deletePending, setDeletePending] = useState(false);
-  const [deleteResult, setDeleteResult] = useState<string | null>(null);
+  const [downloadPhase, setDownloadPhase] = useState<SetupDownloadPhase>("idle");
   const [statusRefreshing, setStatusRefreshing] = useState(false);
   const startLocked = useRef(false);
   const restartLocked = useRef(false);
   const lastAttempt = useRef<"backend" | "bridge" | null>(null);
   const statusRefreshLock = useRef(false);
-  const statusRef = useRef(status);
-  const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const preRestartClient = useRef<ApiClient | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const setupHeadingRef = useRef<HTMLHeadingElement>(null);
   const progressHeadingRef = useRef<HTMLDivElement>(null);
 
-  const refreshStatus = useCallback(async () => {
-    if (!apiClient) {
-      setError("Runtime setup status is temporarily unavailable.");
-      return null;
-    }
-    try {
-      // Matches the app-level fetch: cold probe + first asset hashing can
-      // exceed 8s, and a Retry that times out again traps the user.
-      const next = await apiClient.getRuntimeSetupStatus({ timeoutMs: 30_000 });
-      // Recovering from a failed initial load must also derive the selection,
-      // or the recommended profile stays stuck on the base fallback.
-      if (!statusRef.current) {
-        setSelection(createSelection(next));
-      }
-      setStatus(next);
-      setError(null);
-      if (next.ready && next.state === "ready" && !next.restart_required) {
-        onReady(next);
-      }
-      return next;
-    } catch (reason: unknown) {
-      setError(safeError(reason, "Runtime setup status is temporarily unavailable."));
-      return null;
-    }
-  }, [apiClient, onReady]);
+  const applyRunnerSnapshot = useCallback((runner: RuntimeSetupRunnerStatus) => {
+    setProgress((previous) => applyRunnerStatus(previous, runner));
+    const running = runner.lifecycle === "running" || runner.lifecycle === "cancelling";
+    setBusy(running);
+    startLocked.current = running;
+    return running;
+  }, []);
 
   const refreshRunner = useCallback(async () => {
+    if (restartLocked.current) return null;
     try {
       const runner = await bridge.status();
-      setProgress((previous) => applyRunnerStatus(previous, runner));
-      const running = runner.lifecycle === "running" || runner.lifecycle === "cancelling";
-      setBusy(running);
-      startLocked.current = running;
-      if (!running && runner.lifecycle !== "idle") {
+      // A poll may have started before restart. Reconnection owns busy state
+      // and readiness until the replacement backend has been checked.
+      if (restartLocked.current) return runner;
+      const running = applyRunnerSnapshot(runner);
+      // The installer has verified the new runtime. The old backend cannot
+      // report its readiness until restart loads the installed packages.
+      if (!running && runner.lifecycle !== "idle" && !runner.restartRequired) {
         await refreshStatus();
       }
       return runner;
     } catch {
       return null;
     }
-  }, [bridge, refreshStatus]);
+  }, [applyRunnerSnapshot, bridge, refreshStatus]);
 
   const reconcileRunner = useCallback(async () => {
     const runner = await refreshRunner();
+    if (restartLocked.current) return runner;
     if (runner) {
       setRunnerReconciled(true);
       setRunnerError(null);
@@ -168,17 +152,8 @@ export function SetupPage({
     return runner;
   }, [refreshRunner]);
 
-  useEffect(() => {
-    setStatus(initialStatus);
-    setError(initialError);
-    if (initialStatus) {
-      setSelection(createSelection(initialStatus));
-    }
-  }, [initialError, initialStatus]);
-
-  useEffect(() => {
-    statusRef.current = status;
-  }, [status]);
+  const reconcileRunnerRef = useRef(reconcileRunner);
+  useEffect(() => { reconcileRunnerRef.current = reconcileRunner; }, [reconcileRunner]);
 
   useEffect(() => {
     let mounted = true;
@@ -208,7 +183,7 @@ export function SetupPage({
       if (!mounted) return;
       setProgress((previous) => applyProgressEvent(previous, event));
       if (event.terminal) {
-        void reconcileRunner();
+        void reconcileRunnerRef.current();
       }
     }).then((unlisten) => {
       if (!mounted) {
@@ -217,7 +192,7 @@ export function SetupPage({
       }
       release = unlisten;
       setListenerReady(true);
-      void reconcileRunner();
+      void reconcileRunnerRef.current();
     }).catch((reason: unknown) => {
       if (mounted) {
         setListenerReady(false);
@@ -228,7 +203,7 @@ export function SetupPage({
       mounted = false;
       release?.();
     };
-  }, [bridge, environment?.available, listenerAttempt, reconcileRunner]);
+  }, [bridge, environment?.available, listenerAttempt]);
 
   useSetupModelDownload({
     apiClient,
@@ -266,17 +241,35 @@ export function SetupPage({
   }, [progress.lifecycle, settingsEntry, status]);
 
   useEffect(() => {
-    if (!busy || awaitingReconnect) return undefined;
-    const timer = window.setInterval(() => void refreshRunner(), 1_000);
-    return () => window.clearInterval(timer);
-  }, [awaitingReconnect, busy, refreshRunner]);
+    if (!environment?.available || !busy || awaitingReconnect) return undefined;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      await refreshRunner();
+      if (active) timer = setTimeout(() => void poll(), 1_000);
+    };
+    timer = setTimeout(() => void poll(), 1_000);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [awaitingReconnect, busy, environment?.available, refreshRunner]);
 
   useEffect(() => {
     if (!awaitingReconnect || !apiClient || apiClient === preRestartClient.current) {
       return undefined;
     }
     let active = true;
-    void refreshStatus().finally(() => {
+    void refreshStatus().then((next) => {
+      if (!active) return;
+      if (next && !next.restart_required && !next.ready) {
+        const message = "Orpheus restarted, but the selected runtime is not ready. Install again to repair it.";
+        lastAttempt.current = "bridge";
+        setError(message);
+        setProgress((previous) => ({ ...previous, lifecycle: "failed", restartRequired: false,
+          completedStages: previous.completedStages.filter((stage) => stage !== "verify"), message }));
+      }
+    }).finally(() => {
       if (!active) return;
       preRestartClient.current = null;
       restartLocked.current = false;
@@ -293,6 +286,7 @@ export function SetupPage({
   const mutationsAvailable = environment?.available === true;
   const installedRuntime = status?.installed_runtime ?? null;
   const installedReady = installedRuntime?.ready === true;
+  const configuredReady = status?.configured === true && status.ready && status.state === "ready" && !status.restart_required;
   const installedProfile = installedReady
     ? status?.profiles.find((profile) => profile.id === installedRuntime?.profile) ?? null
     : null;
@@ -317,11 +311,11 @@ export function SetupPage({
     && !adopting
     && !startLocked.current,
   );
-  const showRestart = status?.restart_required || progress.restartRequired;
+  const showRestart = awaitingReconnect || Boolean(status?.restart_required) || progress.restartRequired;
   const progressValue = progress.percent === null ? undefined : progress.percent;
 
   const selectedEstimate = selectionEstimate(selection.modelGroups);
-  const progressMessage = showRestart && progress.lifecycle === "idle"
+  const progressMessage = showRestart && (progress.lifecycle === "idle" || progress.lifecycle === "complete") && !awaitingReconnect
     ? "Installation complete. Restart Orpheus to load the selected runtime."
     : progress.message;
 
@@ -337,11 +331,8 @@ export function SetupPage({
         modelGroups: [...selection.modelGroups],
         acceptPytorchRisk: selection.acceptPytorchRisk,
       });
-      setProgress((previous) => applyRunnerStatus(previous, runner));
-      const running = runner.lifecycle === "running" || runner.lifecycle === "cancelling";
-      setBusy(running);
-      startLocked.current = running;
-      if (!running) await refreshStatus();
+      const running = applyRunnerSnapshot(runner);
+      if (!running && !runner.restartRequired) await refreshStatus();
     } catch (reason: unknown) {
       startLocked.current = false;
       setBusy(false);
@@ -374,9 +365,7 @@ export function SetupPage({
     return true;
   };
 
-  // A failed attempt must actually re-run on Retry. Resetting to the plan view
-  // both skips the retry and collapses the layout mid-click, letting a second
-  // click land on whichever button shifts under the cursor.
+  // Keep the progress layout in place while retrying so controls do not shift mid-click.
   const retryFailedAttempt = async () => {
     // A second click while the first retry is in flight must not clobber the
     // freshly-started progress state.
@@ -425,10 +414,7 @@ export function SetupPage({
     if (!mutationsAvailable) return;
     try {
       const runner = await bridge.cancel();
-      setProgress((previous) => applyRunnerStatus(previous, runner));
-      const running = runner.lifecycle === "running" || runner.lifecycle === "cancelling";
-      setBusy(running);
-      startLocked.current = running;
+      applyRunnerSnapshot(runner);
     } catch (reason: unknown) {
       setError(safeError(reason, "Setup could not be cancelled."));
     }
@@ -443,7 +429,10 @@ export function SetupPage({
     setError(null);
     try {
       await restartAndReconnectSetup(bridge.restart, onReconnectBackend);
-      setProgress((previous) => ({ ...previous, message: "Orpheus restarted. Checking the runtime…" }));
+      // Restart authorization is consumed even if runtime verification fails.
+      // Never offer the consumed restart again while checking the new backend.
+      setStatus((previous) => previous ? { ...previous, restart_required: false } : previous);
+      setProgress((previous) => ({ ...previous, restartRequired: false, message: "Orpheus restarted. Checking the runtime…" }));
     } catch (reason: unknown) {
       preRestartClient.current = null;
       restartLocked.current = false;
@@ -505,53 +494,53 @@ export function SetupPage({
     onContinueLibraryOnly();
   };
 
-  const disarmDelete = useCallback(() => {
-    if (deleteTimer.current) {
-      clearTimeout(deleteTimer.current);
-      deleteTimer.current = null;
+  const resolvePrimaryAction = () => {
+    if (configuredReady && status) {
+      return { label: "Done", disabled: false, run: () => onExitSettings ? onExitSettings() : onReady(status) };
     }
-    setDeleteArmed(false);
-  }, []);
-
-  const runDelete = async () => {
-    if (!apiClient) return;
-    setDeletePending(true);
-    setError(null);
-    setDeleteResult(null);
-    try {
-      const result = await apiClient.deleteRuntimeSetupData({ timeoutMs: 20_000 });
-      setDeleteResult(`Freed ${formatFreedBytes(result.freed_bytes)}.`);
-      await refreshStatus();
-    } catch (reason: unknown) {
-      setError(safeError(reason, "Local runtime data could not be deleted."));
-    } finally {
-      setDeletePending(false);
+    if (showRestart) {
+      return { label: "Restart Orpheus", disabled: busy || !mutationsAvailable, run: restart };
     }
+    if (installedReady) {
+      return { label: "Continue", disabled: adoptDisabled, run: adoptInstalled };
+    }
+    if (packagedMode && selection.profile === "base") {
+      return { label: "Use library only", disabled: busy || adopting, run: continueLibraryOnly };
+    }
+    if (packagedMode && backendInstallProfile !== null && selection.profile === backendInstallProfile) {
+      return { label: "Install", disabled: !backendReadyToStart, run: installFromBackend };
+    }
+    return { label: selection.profile === "base" ? "Use library only" : "Install", disabled: !readyToStart, run: start };
   };
-
-  const onDeleteClick = () => {
-    if (deletePending) return;
-    if (!deleteArmed) {
-      setDeleteArmed(true);
-      deleteTimer.current = setTimeout(() => setDeleteArmed(false), 5_000);
-      return;
-    }
-    disarmDelete();
-    void runDelete();
-  };
-
-  useEffect(() => () => {
-    if (deleteTimer.current) clearTimeout(deleteTimer.current);
-  }, []);
+  const action = resolvePrimaryAction();
+  const showEnvironmentNotice = Boolean(
+    status && environment && !mutationsAvailable && !installedReady && !configuredReady
+    && !backendInstallProfile && !showRestart && !busy,
+  );
+  const configuredRuntimeLabel = status?.selected_profile === "base"
+    ? "Library-only mode is ready"
+    : `${status?.profiles.find((profile) => profile.id === status.selected_profile)?.label ?? "Local"} runtime is ready`;
 
   return (
     <main className="setup-frame" aria-label="Orpheus runtime setup">
       <div className="setup-shell">
         <section className="setup-panel" aria-labelledby="setup-heading">
           <div className="setup-intro">
-            <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>Welcome to Orpheus</h1>
-            <p className="setup-lede">Private, on-device audiobooks. You can change everything later in Settings.</p>
+            {settingsEntry && onExitSettings ? (
+              <button id="setup-back-btn" className="btn btn-ghost btn-compact setup-back" type="button" onClick={onExitSettings}>
+                Back to dashboard
+              </button>
+            ) : null}
+            <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>{settingsEntry ? "Runtime setup" : "Welcome to Orpheus"}</h1>
+            <p className="setup-lede">{settingsEntry ? "Manage the runtime and models on this device." : "Choose how Orpheus creates audiobooks on this device."}</p>
           </div>
+
+          {configuredReady && status ? (
+            <div className="setup-installed" role="status">
+              <strong>{configuredRuntimeLabel}</strong>
+              <ModelListTip modelGroups={status.selected_model_groups.filter((group) => group.ready).map((group) => group.id)} label="Configured runtime details" />
+            </div>
+          ) : null}
 
           {installedReady && installedRuntime ? (
             <div className="setup-installed" role="note">
@@ -568,38 +557,61 @@ export function SetupPage({
           ) : null}
 
           {!status && error ? (
-            <div className="setup-recovery" role="alert">
-              <div><strong>Setup status unavailable</strong><p>{error}</p></div>
-              <div className="setup-actions"><button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>{statusRefreshing ? "Checking…" : "Retry"}</button><button className="btn" type="button" disabled={statusRefreshing} onClick={() => void continueLibraryOnly()}>Use library only</button></div>
-            </div>
+            <SetupRecoveryNotice title="Setup status unavailable" message={error}>
+              <div className="setup-actions">
+                <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>
+                  {statusRefreshing ? "Checking…" : "Retry"}
+                </button>
+                <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void continueLibraryOnly()}>
+                  Use library only
+                </button>
+              </div>
+            </SetupRecoveryNotice>
           ) : null}
 
-          {status && environment && !environment.available && !installedReady && !backendInstallProfile ? (
-            <div className="setup-recovery setup-environment" role="note">
-              <div>
-                <strong>Local runtime needs a source checkout <InfoTip label="Why installation is unavailable"><span>{environment.reason}</span></InfoTip></strong>
-                <p>Install it from your project checkout by running this command in the project root:</p>
-                <div className="setup-command"><code>.venv/bin/python scripts/setup_runtime.py --profile base</code></div>
-                <p className="setup-command-note">On Windows, run <code>.venv\Scripts\python.exe</code> instead.</p>
+          {showEnvironmentNotice ? (
+            <SetupRecoveryNotice
+              environment
+              title={environment?.mode === "packaged" ? "Audio creation is unavailable" : "Open the desktop app to set up audio creation"}
+              message={environment?.mode === "packaged"
+                ? "Orpheus could not verify the installed runtime. Check again, or reinstall Orpheus if the problem continues. You can still use your library."
+                : "Runtime installation is available in the Orpheus desktop app. You can still use your library here."}
+            >
+              <div className="setup-actions">
+                <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>
+                  {statusRefreshing ? "Checking…" : "Check again"}
+                </button>
+                <button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button>
               </div>
-            </div>
+            </SetupRecoveryNotice>
           ) : null}
 
           {listenerError ? (
-            <div className="setup-recovery" role="alert">
-              <div><strong>Progress connection unavailable</strong><p>{listenerError}</p></div>
-              <div className="setup-actions"><button className="btn" type="button" onClick={() => { setListenerError(null); setListenerAttempt((attempt) => attempt + 1); }}>Retry progress connection</button><button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Continue in library-only mode</button></div>
-            </div>
+            <SetupRecoveryNotice title="Progress connection unavailable" message={listenerError}>
+              <div className="setup-actions">
+                <button className="btn" type="button" onClick={() => {
+                  setListenerError(null);
+                  setListenerAttempt((attempt) => attempt + 1);
+                }}>
+                  Retry progress connection
+                </button>
+                <button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Continue in library-only mode</button>
+              </div>
+            </SetupRecoveryNotice>
           ) : null}
 
           {runnerError && !listenerError ? (
-            <div className="setup-recovery" role="alert">
-              <div><strong>Runner status unavailable</strong><p>{runnerError}</p></div>
-              <button className="btn" type="button" onClick={() => { setRunnerError(null); void reconcileRunner(); }}>Retry runner status</button>
-            </div>
+            <SetupRecoveryNotice title="Runner status unavailable" message={runnerError}>
+              <button className="btn" type="button" onClick={() => {
+                setRunnerError(null);
+                void reconcileRunner();
+              }}>
+                Retry runner status
+              </button>
+            </SetupRecoveryNotice>
           ) : null}
 
-          {status && !installedReady ? (
+          {status && !installedReady && !configuredReady ? (
             <SetupPlanSection
               status={status}
               selection={selection}
@@ -639,28 +651,28 @@ export function SetupPage({
             <div className="setup-error" role="alert" ref={errorRef} tabIndex={-1}>
               <strong>Something went wrong</strong>
               <p>{error}</p>
+              {!busy && progress.lifecycle !== "failed" && !showRestart ? <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>{statusRefreshing ? "Checking…" : "Retry status check"}</button> : null}
             </div>
           ) : null}
 
           {settingsEntry && !busy ? (
             <SetupDangerZone
-              deletePending={deletePending}
-              deleteArmed={deleteArmed}
-              deleteResult={deleteResult}
-              onDeleteClick={onDeleteClick}
-              disarmDelete={disarmDelete}
+              apiClient={apiClient}
+              onDeleted={refreshStatus}
+              onError={setError}
             />
           ) : null}
 
           <footer className="setup-footer">
             <div className="setup-footer-left">
-              {settingsEntry && onExitSettings ? <button id="setup-back-btn" className="btn btn-compact" type="button" onClick={onExitSettings}>Back to dashboard</button> : null}
-              <button className="btn btn-ghost btn-compact" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button>
+              {(error || listenerError || runnerError || progress.lifecycle === "failed") ? <button className="btn btn-ghost btn-compact" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button> : null}
             </div>
             <div className="setup-actions">
               {busy && (mutationsAvailable || (packagedMode && downloadPhase === "downloading")) ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
               {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
-              {showRestart ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || !mutationsAvailable} onClick={() => void restart()}>Restart Orpheus</button> : installedReady ? <button className="btn btn-primary setup-primary" type="button" disabled={adoptDisabled} onClick={() => void adoptInstalled()}>Continue</button> : packagedMode && selection.profile === "base" ? <button className="btn btn-primary setup-primary" type="button" disabled={busy || adopting} onClick={() => void continueLibraryOnly()}>Use library only</button> : packagedMode && backendInstallProfile !== null && selection.profile === backendInstallProfile ? <button className="btn btn-primary setup-primary" type="button" disabled={!backendReadyToStart} onClick={() => void installFromBackend()}>Install</button> : <button className="btn btn-primary setup-primary" type="button" disabled={!readyToStart} onClick={() => void start()}>{selection.profile === "base" ? "Use library only" : "Install"}</button>}
+              <button className="btn btn-primary setup-primary" type="button" disabled={action.disabled} onClick={() => void action.run()}>
+                {action.label}
+              </button>
             </div>
           </footer>
         </section>

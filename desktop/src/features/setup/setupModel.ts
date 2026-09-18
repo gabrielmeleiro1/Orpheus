@@ -319,14 +319,14 @@ export function applyRunnerStatus(
     percent: status.percent ?? undefined,
     restart_required: status.restartRequired,
   };
-  const prior = previous ?? {
+  const prior = { ...(previous ?? {
     lifecycle: "idle" as const,
     stage: null,
     message: "Ready to configure Orpheus.",
     percent: null,
     completedStages: [],
     restartRequired: false,
-  };
+  }), restartRequired: status.restartRequired };
 
   if (status.lifecycle === "running" || status.lifecycle === "cancelling") {
     const next = applyProgressEvent(prior, snapshot);

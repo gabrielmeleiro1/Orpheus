@@ -161,6 +161,18 @@ describe("App runtime setup integration", () => {
     await act(async () => root.unmount());
     container.remove();
     vi.clearAllMocks();
+    window.localStorage.clear();
+  });
+
+  it("checks the current runtime before trusting a previous ready installation", async () => {
+    window.localStorage.setItem("orpheus.runtime-setup-ready", JSON.stringify({ version: 1, ready: true }));
+    let resolveStatus!: (status: RuntimeSetupStatusResponse) => void;
+    mocks.apiClient.getRuntimeSetupStatus.mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve; }));
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".setup-startup")).not.toBeNull();
+    expect(container.querySelector("#setup-heading")).toBeNull();
+    await act(async () => resolveStatus({ ...readyStatus, configured: false, ready: false, state: "unconfigured" }));
+    expect(container.querySelector("#setup-heading")?.textContent).toBe("Welcome to Orpheus");
   });
 
   it("requests fresh status and keeps real Settings-entry setup open until Back", async () => {
@@ -188,5 +200,19 @@ describe("App runtime setup integration", () => {
 
     await act(async () => findButton(container, "Back to dashboard").click());
     expect(container.querySelector(".setup-frame")).toBeNull();
+  });
+
+  it("can leave Settings when the runtime check fails without changing the installed profile", async () => {
+    mocks.apiClient.getRuntimeSetupStatus
+      .mockResolvedValueOnce(readyStatus)
+      .mockRejectedValueOnce(new Error("Runtime check unavailable"));
+    await act(async () => root.render(<App />));
+    await act(async () => findButton(container, "Settings").click());
+    await act(async () => findButton(container, "Runtime setup").click());
+    expect(container.textContent).toContain("Runtime check unavailable");
+    expect(container.querySelector(".setup-intro #setup-back-btn")).not.toBeNull();
+    await act(async () => findButton(container, "Back to dashboard").click());
+    expect(container.querySelector(".setup-frame")).toBeNull();
+    expect(mocks.setupBridge.start).not.toHaveBeenCalled();
   });
 });

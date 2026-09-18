@@ -12,10 +12,6 @@ import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
 import { useRuntimeIdentity } from "./app/usePrimaryRuntime";
 import { formatRuntimeIdentity } from "./app/runtimeIdentity";
-import {
-  readRuntimeSetupReadyHint,
-  writeRuntimeSetupReadyHint,
-} from "./app/runtimeSetupReadiness";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
@@ -443,14 +439,11 @@ function App() {
   const backend = useBackendClient();
   const [setupStatus, setSetupStatus] = useState<RuntimeSetupStatusResponse | null>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
-  const [runtimeReadyHint, setRuntimeReadyHint] = useState(readRuntimeSetupReadyHint);
   const [libraryOnlyOverride, setLibraryOnlyOverride] = useState(false);
   const [forceOpenRuntimeSetup, setForceOpenRuntimeSetup] = useState(false);
 
   const onSetupReady = useCallback((status: RuntimeSetupStatusResponse) => {
     setSetupStatus(status);
-    setRuntimeReadyHint(true);
-    writeRuntimeSetupReadyHint(true);
     if (!forceOpenRuntimeSetup) {
       setLibraryOnlyOverride(false);
     }
@@ -481,11 +474,8 @@ function App() {
     // Cold-start status can legitimately take ~20s: the capability probe boots
     // a subprocess and cached model assets get hashed for the first receipt
     // verification. An 8s timeout guaranteed a spurious first-launch error.
-    void backend.apiClient.getRuntimeSetupStatus({ timeoutMs: 30_000 }).then((status) => {
+    void backend.apiClient.getRuntimeSetupStatus({ timeoutMs: 120_000 }).then((status) => {
       if (!active) return;
-      const ready = !shouldShowRuntimeSetup(status, false);
-      setRuntimeReadyHint(ready);
-      writeRuntimeSetupReadyHint(ready);
       setSetupStatus(status);
     }).catch((error: unknown) => {
       if (!active) return;
@@ -503,7 +493,6 @@ function App() {
   if (
     !forceOpenRuntimeSetup
     && !libraryOnlyOverride
-    && !runtimeReadyHint
     && setupStatus === null
     && setupError === null
   ) {
@@ -517,7 +506,7 @@ function App() {
 
   if (
     forceOpenRuntimeSetup
-    || (!runtimeReadyHint && shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride))
+    || shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride)
   ) {
     return (
       <SetupPage

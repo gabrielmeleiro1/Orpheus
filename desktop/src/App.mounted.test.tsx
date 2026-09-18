@@ -214,13 +214,15 @@ describe("App runtime setup recovery", () => {
     expect(mocks.apiClient.getRuntimeSetupStatus).toHaveBeenCalledOnce();
   });
 
-  it("preserves the ready-hint dashboard when the backend is unavailable", async () => {
+  it("requires live runtime verification even with an obsolete stored ready hint", async () => {
     window.localStorage.setItem("orpheus.runtime-setup-ready", JSON.stringify({ version: 1, ready: true }));
     mocks.backend.apiClient = null;
     mocks.backend.connectionState = "error";
     await act(async () => root.render(<App />));
-    expect(container.querySelector('[aria-label="Orpheus startup"]')).toBeNull();
-    expect(findButton(container, "Settings")).toBeDefined();
+    expect(container.querySelector('[aria-label="Orpheus startup"]')).not.toBeNull();
+    await act(async () => findButton(container, "Retry connection").click());
+    expect(mocks.backend.reconnectBackend).toHaveBeenCalledOnce();
+    expect(window.localStorage.getItem("orpheus.runtime-setup-ready")).not.toBeNull();
   });
 
   it("reopens the full-page setup from Settings without resetting persisted data", async () => {

@@ -10,7 +10,7 @@
 .setup-shell {
   flex: 0 0 auto;
   margin: auto;
-  max-width: 860px;
+  max-width: 816px;
   padding: 40px 28px 48px;
   width: 100%;
 }
@@ -75,7 +75,24 @@
   font-size: 13px;
   line-height: 1.6;
   margin: 11px 0 0;
-  max-width: 56ch;
+  max-width: 100%;
+  text-wrap: pretty;
+}
+
+.setup-back {
+  margin-bottom: 18px;
+}
+
+.setup-recovery.setup-environment {
+  background: var(--surface);
+  border-color: var(--border);
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.setup-recovery.setup-environment strong {
+  color: var(--text);
 }
 
 .setup-section {
@@ -87,11 +104,13 @@
 
 /* Section headers adopt the app-wide `.section-label` (shell.css);
    these rules only carry setup-specific spacing/focus. */
+
 .setup-section legend {
   margin-bottom: 12px;
 }
 
 /* Programmatically focused (tabIndex -1) heading — suppress the focus ring. */
+
 #setup-progress-heading {
   outline: none;
 }
@@ -201,7 +220,6 @@
 .setup-card-copy span,
 .setup-card-copy small,
 .setup-model-row small,
-.setup-estimate-note,
 .setup-empty-models,
 .setup-recovery p {
   color: var(--text-secondary);
@@ -337,6 +355,7 @@
 }
 
 /* Portaled to the body so cards and scrolling setup sections cannot clip it. */
+
 .setup-tip-bubble {
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -414,14 +433,9 @@
 }
 
 @keyframes setup-spin {
+
   to {
     transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .setup-loading-spinner {
-    animation: none;
   }
 }
 
@@ -432,38 +446,6 @@
   border-radius: var(--radius);
   margin: 24px 0 0;
   padding: 13px 15px;
-}
-
-/* Beats the later `.setup-recovery { align-items: center }` row rule. */
-.setup-recovery.setup-environment {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.setup-environment code {
-  color: var(--accent-text);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  overflow-wrap: anywhere;
-}
-
-/* Rule 3: the install command sits in a calm mono block, framed by a plain
-   sentence; the Windows alternative renders on its own line, not inline. */
-.setup-command {
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  margin-top: 8px;
-  padding: 8px 10px;
-}
-
-.setup-command-note {
-  margin-top: 6px;
-}
-
-.setup-environment > button {
-  align-self: flex-start;
 }
 
 .setup-risk > strong,
@@ -513,10 +495,8 @@
 
 .setup-danger {
   border-top: 1px solid var(--border-light);
-  display: grid;
-  gap: 12px;
   margin-top: 24px;
-  padding: 24px 0 0;
+  padding: 12px 0 0;
 }
 
 .setup-danger-box {
@@ -652,7 +632,19 @@
   width: auto;
 }
 
+@media (prefers-reduced-motion: reduce) {
+
+  .setup-loading-spinner {
+    animation: none;
+  }
+
+  .setup-profile-card {
+    transition: none;
+  }
+}
+
 @media (max-width: 720px) {
+
   .setup-profile-grid {
     grid-template-columns: 1fr;
   }
@@ -663,6 +655,7 @@
 }
 
 @media (max-width: 560px) {
+
   .setup-shell {
     padding: 28px 16px 44px;
   }
@@ -725,11 +718,5 @@
   .setup-actions,
   .setup-primary {
     width: 100%;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .setup-profile-card {
-    transition: none;
   }
 }

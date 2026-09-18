@@ -1,4 +1,4 @@
-import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
@@ -28,8 +28,7 @@ interface UseSetupModelDownloadArgs {
   lastAttempt: MutableRefObject<"backend" | "bridge" | null>;
 }
 
-/** Packaged-mode install flow: resume an in-flight download, poll it to a
- * terminal state, then adopt the runtime. Split out of SetupPage verbatim. */
+/** Resume and monitor packaged model downloads, then verify the runtime. */
 export function useSetupModelDownload({
   apiClient,
   environment,
@@ -44,6 +43,9 @@ export function useSetupModelDownload({
   startLocked,
   lastAttempt,
 }: UseSetupModelDownloadArgs): void {
+  const latest = useRef({ selection, onReady });
+  latest.current = { selection, onReady };
+  const completedPlan = useRef<SetupSelection | null>(null);
   // A download that survived a page remount (Settings re-entry, reload) must
   // resume driving the progress UI instead of allowing a second start.
   useEffect(() => {
@@ -98,6 +100,12 @@ export function useSetupModelDownload({
       pollFailures = 0;
       setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
       if (snapshot.lifecycle === "complete") {
+        const selected = latest.current.selection;
+        completedPlan.current = {
+          profile: snapshot.profile === "mlx" || snapshot.profile === "cuda" ? snapshot.profile : selected.profile,
+          modelGroups: [...snapshot.model_groups],
+          acceptPytorchRisk: snapshot.profile === selected.profile && selected.acceptPytorchRisk,
+        };
         setDownloadPhase("adopting");
       } else if (snapshot.lifecycle === "cancelled") {
         setDownloadPhase("idle");
@@ -117,11 +125,15 @@ export function useSetupModelDownload({
         }
       }
     };
-    void tick();
-    const timer = window.setInterval(() => void tick(), 1_000);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await tick();
+      if (active) timer = setTimeout(() => void poll(), 1_000);
+    };
+    void poll();
     return () => {
       active = false;
-      window.clearInterval(timer);
+      clearTimeout(timer);
     };
   }, [apiClient, downloadPhase]);
 
@@ -130,6 +142,8 @@ export function useSetupModelDownload({
       return undefined;
     }
     let active = true;
+    // Freeze the completed download plan; parent renders must not submit adoption again.
+    const plan = completedPlan.current ?? latest.current.selection;
     setProgress((previous) => applyProgressEvent(previous, {
       event: "status",
       stage: "verify",
@@ -137,9 +151,9 @@ export function useSetupModelDownload({
     }));
     void apiClient.adoptRuntimeSetup(
       {
-        profile: selection.profile,
-        model_groups: [...selection.modelGroups],
-        accept_pytorch_risk: selection.acceptPytorchRisk,
+        profile: plan.profile,
+        model_groups: [...plan.modelGroups],
+        accept_pytorch_risk: plan.acceptPytorchRisk,
       },
       { timeoutMs: 30_000 },
     ).then((next) => {
@@ -154,7 +168,7 @@ export function useSetupModelDownload({
           terminal: true,
           message: "Local runtime ready.",
         }));
-        onReady(next);
+        latest.current.onReady(next);
       } else {
         setError("The runtime did not become ready after download. Retry, or continue in library-only mode.");
       }
@@ -168,5 +182,5 @@ export function useSetupModelDownload({
     return () => {
       active = false;
     };
-  }, [apiClient, downloadPhase, onReady, selection]);
+  }, [apiClient, downloadPhase]);
 }

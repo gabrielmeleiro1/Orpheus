@@ -1,19 +1,57 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import type { ApiClient } from "../../api/client";
+import { formatFreedBytes, safeError } from "./setupPageHelpers";
+
 export function SetupDangerZone({
-  deletePending,
-  deleteArmed,
-  deleteResult,
-  onDeleteClick,
-  disarmDelete,
+  apiClient,
+  onDeleted,
+  onError,
 }: {
-  deletePending: boolean;
-  deleteArmed: boolean;
-  deleteResult: string | null;
-  onDeleteClick: () => void;
-  disarmDelete: () => void;
+  apiClient: ApiClient | null;
+  onDeleted: () => Promise<unknown>;
+  onError: (message: string | null) => void;
 }) {
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteResult, setDeleteResult] = useState<string | null>(null);
+  const deleteTimer = useRef<ReturnType<typeof setTimeout>>();
+  const deleteLocked = useRef(false);
+
+  const disarmDelete = useCallback(() => {
+    clearTimeout(deleteTimer.current);
+    setDeleteArmed(false);
+  }, []);
+
+  useEffect(() => () => clearTimeout(deleteTimer.current), []);
+
+  const onDeleteClick = async () => {
+    if (!apiClient || deleteLocked.current) return;
+    if (!deleteArmed) {
+      setDeleteArmed(true);
+      deleteTimer.current = setTimeout(disarmDelete, 5_000);
+      return;
+    }
+    disarmDelete();
+    deleteLocked.current = true;
+    setDeletePending(true);
+    setDeleteResult(null);
+    onError(null);
+    try {
+      const result = await apiClient.deleteRuntimeSetupData({ timeoutMs: 20_000 });
+      setDeleteResult(`Freed ${formatFreedBytes(result.freed_bytes)}.`);
+      await onDeleted();
+    } catch (reason: unknown) {
+      onError(safeError(reason, "Local runtime data could not be deleted."));
+    } finally {
+      deleteLocked.current = false;
+      setDeletePending(false);
+    }
+  };
+
   return (
-    <section className="setup-danger" aria-labelledby="setup-danger-heading">
-      <p className="section-label" id="setup-danger-heading">Local data</p>
+    <details className="setup-danger disclosure" onToggle={(event) => { if (!event.currentTarget.open) disarmDelete(); }}>
+      <summary>Local data <span className="setup-danger-note">Manage downloaded models and runtime setup</span></summary>
       <div className="setup-danger-box">
         <p>Delete downloaded models and reset runtime setup.</p>
         <div className="setup-danger-actions">
@@ -21,7 +59,7 @@ export function SetupDangerZone({
             className="btn btn-danger"
             type="button"
             disabled={deletePending}
-            onClick={onDeleteClick}
+            onClick={() => void onDeleteClick()}
             onBlur={disarmDelete}
             onKeyDown={(event) => { if (event.key === "Escape") disarmDelete(); }}
           >
@@ -30,6 +68,6 @@ export function SetupDangerZone({
           {deleteResult ? <span className="setup-danger-note">{deleteResult}</span> : null}
         </div>
       </div>
-    </section>
+    </details>
   );
 }

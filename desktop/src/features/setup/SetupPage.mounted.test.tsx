@@ -173,6 +173,7 @@ describe("mounted SetupPage", () => {
     await act(async () => undefined);
 
     expect(container.textContent).toContain("Progress connection unavailable");
+    expect(findButton(container, "Copy diagnostics")).toBeTruthy();
     const retry = findButton(container, "Retry progress connection");
     expect(findButton(container, "Use library only").disabled).toBe(true);
 
@@ -329,6 +330,107 @@ describe("mounted SetupPage", () => {
     }
   });
 
+  it.each(["disconnected", "stale"])("waits for restart after installation with a %s backend", async (backend) => {
+    const complete: RuntimeSetupRunnerStatus = {
+      lifecycle: "complete", profile: "cuda", modelGroups: ["tts-cpu-cuda"],
+      stage: "verify", message: "Setup state saved.", percent: 100,
+      restartRequired: true, error: null,
+    };
+    const runtimeBridge = bridge({ status: vi.fn(async () => complete) });
+    const getStatus = vi.fn().mockRejectedValue(new Error("Old backend is unavailable"));
+    const api = { getRuntimeSetupStatus: getStatus } as unknown as ApiClient;
+    const onReady = vi.fn();
+    await renderPage(runtimeBridge, { apiClient: backend === "disconnected" ? null : api, onReady });
+
+    expect(getStatus).not.toHaveBeenCalled();
+    expect(onReady).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector("progress")?.getAttribute("value")).toBe("100");
+    expect(container.textContent).toContain("Installation complete. Restart Orpheus to load the selected runtime.");
+    expect(findButton(container, "Restart Orpheus").disabled).toBe(false);
+  });
+
+  it("does not query the old backend when start returns a completed installation", async () => {
+    const runtimeBridge = bridge({ start: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({
+      lifecycle: "complete", profile: "base", modelGroups: [], stage: "verify",
+      message: "Setup state saved.", percent: 100, restartRequired: true, error: null,
+    })) });
+    const api = await renderPage(runtimeBridge);
+    await act(async () => findButton(container, "Use library only").click());
+    expect(api.getRuntimeSetupStatus).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(findButton(container, "Restart Orpheus").disabled).toBe(false);
+  });
+
+  it("keeps restart locked across a disconnected client until fresh readiness resolves", async () => {
+    const complete: RuntimeSetupRunnerStatus = {
+      lifecycle: "complete", profile: "base", modelGroups: [], stage: "verify",
+      message: "Setup state saved.", percent: 100, restartRequired: true, error: null,
+    };
+    const runtimeBridge = bridge({ status: vi.fn(async () => complete) });
+    const staleApi = { getRuntimeSetupStatus: vi.fn() } as unknown as ApiClient;
+    let resolveReady!: (status: RuntimeSetupStatusResponse) => void;
+    const readyApi = { getRuntimeSetupStatus: vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveReady = resolve; })) } as unknown as ApiClient;
+    const onReady = vi.fn();
+    let connect!: () => void;
+
+    function Harness() {
+      const [api, setApi] = useState<ApiClient | null>(staleApi);
+      connect = () => setApi(readyApi);
+      return <SetupPage apiClient={api} initialStatus={setupStatus} initialError={null}
+        onReady={onReady} onContinueLibraryOnly={vi.fn()}
+        onReconnectBackend={() => setApi(null)} bridge={runtimeBridge} />;
+    }
+
+    await act(async () => root.render(<Harness />));
+    await act(async () => findButton(container, "Restart Orpheus").click());
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(findButton(container, "Restart Orpheus").disabled).toBe(true);
+    await act(async () => connect());
+    expect(findButton(container, "Restart Orpheus").disabled).toBe(true);
+    expect(staleApi.getRuntimeSetupStatus).not.toHaveBeenCalled();
+    expect(readyApi.getRuntimeSetupStatus).toHaveBeenCalledOnce();
+    const readyStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus, configured: true, state: "ready", ready: true, restart_required: false,
+      backend: { instance_id: "two", status: "running" },
+    };
+    await act(async () => resolveReady(readyStatus));
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(readyStatus);
+    expect(container.textContent).not.toContain("Restart Orpheus");
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it("offers repair after one successful restart when the runtime remains unavailable", async () => {
+    const complete: RuntimeSetupRunnerStatus = {
+      lifecycle: "complete", profile: "base", modelGroups: [], stage: "verify",
+      message: "Setup state saved.", percent: 100, restartRequired: true, error: null,
+    };
+    const runtimeBridge = bridge({ status: vi.fn(async () => complete) });
+    const staleApi = { getRuntimeSetupStatus: vi.fn() } as unknown as ApiClient;
+    const unavailable: RuntimeSetupStatusResponse = {
+      ...setupStatus, configured: true, state: "unavailable", restart_required: false,
+    };
+    const readyApi = { getRuntimeSetupStatus: vi.fn(async () => unavailable) } as unknown as ApiClient;
+    const onReady = vi.fn();
+    function Harness() {
+      const [api, setApi] = useState(staleApi);
+      return <SetupPage apiClient={api} initialStatus={setupStatus} initialError={null}
+        onReady={onReady} onContinueLibraryOnly={vi.fn()}
+        onReconnectBackend={() => setApi(readyApi)} bridge={runtimeBridge} />;
+    }
+    await act(async () => root.render(<Harness />));
+    await act(async () => findButton(container, "Restart Orpheus").click());
+    expect(runtimeBridge.restart).toHaveBeenCalledOnce();
+    expect(onReady).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Restart Orpheus");
+    expect(container.textContent).toContain("Orpheus restarted, but the selected runtime is not ready.");
+    expect(runtimeBridge.listen).toHaveBeenCalledOnce();
+    expect(findButton(container, "Use library only").disabled).toBe(false);
+    await act(async () => findButton(container, "Retry").click());
+    expect(runtimeBridge.start).toHaveBeenCalledOnce();
+    expect(runtimeBridge.restart).toHaveBeenCalledOnce();
+  });
+
   it("refreshes setup status and reports ready when the runner is complete", async () => {
     const readyStatus = {
       ...setupStatus,
@@ -365,15 +467,16 @@ describe("mounted SetupPage", () => {
   it("focuses the setup heading when the page mounts", async () => {
     await renderPage(bridge());
     expect(document.activeElement?.id).toBe("setup-heading");
+    expect(container.textContent).not.toContain("Copy diagnostics");
   });
 
   it("never registers Tauri mutations when unavailable and keeps library-only recovery", async () => {
     const runtimeBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "browser", reason: "Desktop source checkout required." })) });
     const continueLibrary = vi.fn();
     await renderPage(runtimeBridge, { onContinueLibraryOnly: continueLibrary });
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Why installation is unavailable"]')!.click());
-    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain("Desktop source checkout required.");
-    expect(container.textContent).toContain(".venv/bin/python scripts/setup_runtime.py --profile base");
+    expect(container.textContent).toContain("Open the desktop app to set up audio creation");
+    expect(container.textContent).not.toContain("source checkout");
+    expect(container.textContent).not.toContain(".venv");
     expect(runtimeBridge.listen).not.toHaveBeenCalled();
     expect(runtimeBridge.status).not.toHaveBeenCalled();
     // The primary action must stay usable without the Tauri installer: it
@@ -511,15 +614,44 @@ describe("mounted SetupPage", () => {
     expect(continueLibrary).toHaveBeenCalledOnce();
   });
 
+  it("shows a configured packaged runtime as ready and exits settings without reinstalling", async () => {
+    const ready = { ...setupStatus, configured: true, ready: true, state: "ready" as const, selected_profile: "cuda" as const, installed_runtime: null };
+    const exit = vi.fn();
+    const packagedBridge = bridge({ environment: vi.fn(async () => ({ available: false, mode: "packaged" as const, reason: "Packaged runtime" })) });
+    await renderPage(packagedBridge, { initialStatus: ready, settingsEntry: true, onExitSettings: exit });
+    expect(container.textContent).toContain("NVIDIA CUDA runtime is ready");
+    expect(container.textContent).not.toContain("Audio creation is unavailable");
+    expect(container.querySelector(".setup-environment")).toBeNull();
+    expect(container.querySelector(".setup-intro #setup-back-btn")).not.toBeNull();
+    await act(async () => findButton(container, "Done").click());
+    expect(exit).toHaveBeenCalledOnce();
+    expect(packagedBridge.start).not.toHaveBeenCalled();
+  });
+
   it("arms then confirms deletion of local runtime data and reports freed space", async () => {
     const del = vi.fn(async () => ({ deleted_model_groups: ["tts-mlx"], freed_bytes: 734003200, state_deleted: true }));
     const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus), deleteRuntimeSetupData: del } as unknown as ApiClient;
     await renderPage(bridge(), { apiClient: api, settingsEntry: true });
 
+    expect(container.querySelector("h1")?.textContent).toBe("Runtime setup");
+    const disclosure = container.querySelector<HTMLDetailsElement>(".setup-danger")!;
+    expect(disclosure.open).toBe(false);
+    await act(async () => { disclosure.open = true; });
     await act(async () => findButton(container, "Delete local runtime data").click());
     expect(del).not.toHaveBeenCalled();
+    await act(async () => {
+      disclosure.open = false;
+      disclosure.dispatchEvent(new Event("toggle"));
+    });
+    expect(findButton(container, "Delete local runtime data")).toBeTruthy();
+    await act(async () => { disclosure.open = true; });
+    await act(async () => findButton(container, "Delete local runtime data").click());
     expect(findButton(container, "Confirm delete")).toBeTruthy();
-    await act(async () => findButton(container, "Confirm delete").click());
+    await act(async () => {
+      const confirm = findButton(container, "Confirm delete");
+      confirm.click();
+      confirm.click();
+    });
     expect(del).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Freed 700 MB.");
   });
@@ -545,7 +677,7 @@ describe("mounted SetupPage", () => {
       installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
     };
     const readyStatus = { ...bakedStatus, configured: true, state: "ready" as const, ready: true, installed_runtime: null };
-    const downloadSnapshot = { lifecycle: "complete" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 1, current_model_group: null, error: null };
+    const downloadSnapshot = { lifecycle: "complete" as const, profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], total_models: 1, completed_models: 1, current_model_group: null, error: null };
     const start = vi.fn(async () => ({ ...downloadSnapshot, lifecycle: "running" as const, completed_models: 0, current_model_group: "tts-mlx" }));
     const adopt = vi.fn(async () => readyStatus);
     const onReady = vi.fn();
@@ -575,6 +707,29 @@ describe("mounted SetupPage", () => {
     expect(onReady).toHaveBeenCalledWith(readyStatus);
   });
 
+  it("adopts the resumed download plan once even if the parent rerenders during verification", async () => {
+    const packagedBridge = bridge({ environment: vi.fn(async () => ({ available: false, mode: "packaged" as const, reason: "Baked runtime." })) });
+    const snapshot = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
+    let resolveAdopt!: (value: RuntimeSetupStatusResponse) => void;
+    const adopt = vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveAdopt = resolve; }));
+    const api = {
+      getRuntimeSetupStatus: vi.fn(async () => setupStatus),
+      getRuntimeModelDownloadStatus: vi.fn().mockResolvedValueOnce(snapshot).mockResolvedValue({ ...snapshot, lifecycle: "complete", completed_models: 1 }),
+      adoptRuntimeSetup: adopt,
+    } as unknown as ApiClient;
+    await renderPage(packagedBridge, { apiClient: api });
+    expect(adopt).toHaveBeenCalledWith(
+      { profile: "mlx", model_groups: ["tts-mlx"], accept_pytorch_risk: false },
+      { timeoutMs: 30_000 },
+    );
+    const onReady = vi.fn();
+    await renderPage(packagedBridge, { apiClient: api, onReady });
+    expect(adopt).toHaveBeenCalledOnce();
+    const ready = { ...setupStatus, configured: true, ready: true, state: "ready" as const, selected_profile: "mlx" as const };
+    await act(async () => resolveAdopt(ready));
+    expect(onReady).toHaveBeenCalledWith(ready);
+  });
+
   it("offers cancellation while packaged model downloads are running", async () => {
     const packagedBridge = bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Profile-baked runtime." })) });
     const bakedStatus: RuntimeSetupStatusResponse = {
@@ -599,6 +754,33 @@ describe("mounted SetupPage", () => {
 
     expect(cancelDownload).toHaveBeenCalledWith({ timeoutMs: 8_000 });
     expect(container.textContent).toContain("Cancellation requested");
+  });
+
+  it("keeps a slow packaged download cancellable without overlapping polls or consulting the bridge", async () => {
+    vi.useFakeTimers();
+    try {
+      const packagedBridge = bridge({ environment: vi.fn(async () => ({ available: false, mode: "packaged" as const, reason: "Baked runtime." })) });
+      const running = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
+      let resolvePoll!: (value: typeof running) => void;
+      const poll = vi.fn().mockResolvedValueOnce(running).mockImplementation(() => new Promise<typeof running>((resolve) => { resolvePoll = resolve; }));
+      const cancelDownload = vi.fn(async () => ({ ...running, lifecycle: "cancelled" as const }));
+      const api = {
+        getRuntimeSetupStatus: vi.fn(async () => setupStatus),
+        getRuntimeModelDownloadStatus: poll,
+        cancelRuntimeModelDownload: cancelDownload,
+      } as unknown as ApiClient;
+      await renderPage(packagedBridge, { apiClient: api });
+      await act(async () => { await vi.advanceTimersByTimeAsync(4_000); });
+      expect(poll).toHaveBeenCalledTimes(2); // Resume check and one unresolved poll.
+      expect(packagedBridge.status).not.toHaveBeenCalled();
+      await act(async () => findButton(container, "Cancel").click());
+      expect(cancelDownload).toHaveBeenCalledOnce();
+      await act(async () => { resolvePoll(running); });
+      expect(container.querySelector("#setup-progress-heading")).toBeNull();
+      expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Cancel")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("re-runs the failed backend download when Retry is clicked", async () => {
@@ -648,11 +830,13 @@ describe("mounted SetupPage", () => {
 
     await act(async () => findButton(container, "Use library only").click());
     expect(container.textContent).toContain("installer crashed");
+    expect(findButton(container, "Copy diagnostics")).toBeTruthy();
 
     await act(async () => findButton(container, "Retry").click());
     expect(start).toHaveBeenCalledTimes(2);
     expect(start).toHaveBeenLastCalledWith({ profile: "base", modelGroups: [], acceptPytorchRisk: false });
     expect(container.textContent).not.toContain("installer crashed");
+    expect(container.textContent).not.toContain("Copy diagnostics");
   });
 
   it("guards the status Retry against duplicate clicks while a refresh is in flight", async () => {
@@ -668,6 +852,21 @@ describe("mounted SetupPage", () => {
 
     await act(async () => { resolveStatus(setupStatus); });
     expect(container.textContent).toContain("Library only");
+  });
+
+  it("ignores status replies from a replaced backend", async () => {
+    let resolveOld!: (value: RuntimeSetupStatusResponse) => void;
+    const oldClient = { getRuntimeSetupStatus: vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveOld = resolve; })) } as unknown as ApiClient;
+    const newClient = { getRuntimeSetupStatus: vi.fn(async () => setupStatus) } as unknown as ApiClient;
+    const runtimeBridge = bridge();
+    const onReady = vi.fn();
+    await renderPage(runtimeBridge, { apiClient: oldClient, initialStatus: null, initialError: "Disconnected", onReady });
+    await act(async () => findButton(container, "Retry").click());
+    await renderPage(runtimeBridge, { apiClient: newClient, onReady });
+    await act(async () => resolveOld({ ...setupStatus, configured: true, ready: true, state: "ready", selected_profile: "base" }));
+    expect(onReady).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Library-only mode is ready");
+    expect(findButton(container, "Customize")).toBeTruthy();
   });
 
   it("marks progress failed when the download poll loses the backend", async () => {
@@ -718,6 +917,7 @@ describe("mounted SetupPage", () => {
     await act(async () => undefined);
     await act(async () => undefined);
     expect(container.textContent).toContain("disk full");
+    expect(findButton(container, "Copy diagnostics")).toBeTruthy();
     expect(adopt).not.toHaveBeenCalled();
     expect(findButton(container, "Install").disabled).toBe(false);
   });

@@ -100,6 +100,15 @@ describe("runtime setup selection", () => {
 });
 
 describe("runtime setup gate and progress", () => {
+  it("clears consumed restart authorization from an authoritative runner snapshot", () => {
+    const before = applyProgressEvent(undefined, { event: "complete", terminal: true, restart_required: true });
+    const after = applyRunnerStatus(before, {
+      lifecycle: "complete", profile: "cuda", modelGroups: [], stage: "verify",
+      message: "Setup state saved.", percent: 100, restartRequired: false, error: null,
+    });
+    expect(after.restartRequired).toBe(false);
+  });
+
   it("hydrates progress immediately from an authoritative runner snapshot", () => {
     const running = applyRunnerStatus(undefined, {
       lifecycle: "running",
