@@ -11,6 +11,11 @@ import { getRuntimeBootstrap, updateRuntimeBootstrapCapabilities } from "./runti
 import { startRuntimeCapabilityPolling } from "../features/conversion/runtimeCapabilityPolling";
 
 function runtimeReadiness(capabilities: SystemCapabilitiesResponse | null): boolean | null {
+  // runtime_probe.tts checks MLX imports only. CUDA availability is reported
+  // by the engine registry; a missing MLX module must not disable CUDA.
+  if (capabilities?.primary_runtime === "cuda") {
+    return capabilities.available_tts_engines?.includes(capabilities.default_tts_engine) ?? null;
+  }
   const probe = capabilities?.runtime_probe;
   if (!probe || probe.refresh_in_progress || probe.state === "pending" || probe.state === "stale") return null;
   return probe.tts?.available ?? null;

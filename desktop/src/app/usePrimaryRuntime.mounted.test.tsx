@@ -120,6 +120,24 @@ describe("useRuntimeIdentity capability polling", () => {
     vi.useRealTimers();
   });
 
+  it.each([
+    [["kokoro"], true],
+    [[], false],
+    [undefined, null],
+  ] as const)("uses CUDA engine availability instead of the MLX probe: %j", async (engines, expected) => {
+    const snapshot = {
+      ...capabilities({ probeState: "fresh", refreshInProgress: false, mlxAvailable: false, ttsAvailable: false }),
+      primary_runtime: "cuda",
+      default_tts_engine: "kokoro",
+      available_tts_engines: engines ? [...engines] : undefined,
+    };
+    getRuntimeBootstrap.mockResolvedValue({ models: modelOptions, capabilities: snapshot });
+    const apiClient = { getSystemCapabilities: vi.fn().mockResolvedValue(snapshot) } as unknown as ApiClient;
+    await act(async () => root.render(<IdentityProbe apiClient={apiClient} />));
+    await flushBootstrap();
+    expect(getIdentityProbe()).toMatchObject({ ttsLabel: "CUDA", ttsReady: expected });
+  });
+
   it("updates pending bootstrap identity from a fresh live snapshot and stops polling", async () => {
     const pending = capabilities({
       probeState: "pending",
