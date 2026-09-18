@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { CleaningPreviewResponse, LibraryChapterDetail } from "../../types/api";
 import { formatDurationClock } from "../../format/time";
@@ -6,6 +6,7 @@ import { TermSelect } from "../conversion/TermSelect";
 import { chapterPlaybackStatusLabel } from "../player/chapterPlaybackLabel";
 import type { UseLibraryResult } from "./useLibrary";
 import { formatLibraryMeta } from "./useLibrary";
+import { LibraryMaintenanceSection } from "./LibraryMaintenanceSection";
 import { useBookListWindow } from "./useBookListWindow";
 import { useLibraryPanelState } from "./useLibraryPanelState";
 import "./library.css";
@@ -55,8 +56,6 @@ export function LibraryPanel({
     selected && (library.loadingDetail || selected.id !== library.selectedBookId),
   );
   const [deleteConfirmationBookId, setDeleteConfirmationBookId] = useState<number | null>(null);
-  const [cleanupConfirmationArmed, setCleanupConfirmationArmed] = useState(false);
-  const cleanupConfirmationRef = useRef(false);
   const {
     editTitle,
     editAuthor,
@@ -71,8 +70,6 @@ export function LibraryPanel({
 
   useEffect(() => {
     setDeleteConfirmationBookId(null);
-    cleanupConfirmationRef.current = false;
-    setCleanupConfirmationArmed(false);
   }, [library.selectedBookId, selected?.id]);
 
   const showPager = library.items.length > 1 || library.hasMore;
@@ -82,9 +79,7 @@ export function LibraryPanel({
     selectedIndex: library.selectedBookIndex,
   });
   const showCleaningPreview = Boolean(cleaningPreview) || cleaningPreviewLoading;
-  // The detail-pane status line stays quiet for the two echoes the form/list
-  // already convey: the empty-library note and the "Selected: <title>" message
-  // (findings 11 & 14). Real messages (saved, repaired, errors) still show.
+  // Hide selection/empty-state echoes, but retain save, repair, and error messages.
   const isRedundantStatus =
     showEmpty || (!library.loadingDetail && library.statusMessage.startsWith("Selected:"));
   const showDetailStatus =
@@ -99,15 +94,14 @@ export function LibraryPanel({
       aria-labelledby="tab-btn-library"
       hidden={hidden}
     >
-      <div className="panel-header">
-        <span>Collection</span>
+      <div className="library-count">
         <span className="panel-header-meta">{library.items.length}{library.hasMore ? "+" : ""} {library.items.length === 1 ? "book" : "books"}</span>
       </div>
 
-      <div className="library-workspace">
+      <div className={`library-workspace${showEmpty ? " is-empty" : ""}`}>
         <aside className="panel-section library-sidebar" aria-label="Library navigation">
           <div className="library-search-row">
-            <label className="field-label" htmlFor="library-search">
+            <label className="sr-only" htmlFor="library-search">
               Search
             </label>
             <input
@@ -428,108 +422,8 @@ export function LibraryPanel({
             </div>
           )}
 
-          <details className="library-disclosure maintenance-toggle">
-            <summary>Maintenance</summary>
-            <div className="maintenance-body">
-              <div className="maintenance-actions">
-                <button
-                  className="btn btn-compact"
-                  type="button"
-                  disabled={library.maintenanceLoading}
-                  data-tip="Audit storage for orphaned files and missing chapters"
-                  onClick={() => void library.loadMaintenanceDiagnostics()}
-                >
-                  Diagnostics
-                </button>
-                <button
-                  className="btn btn-compact"
-                  type="button"
-                  disabled={library.maintenanceLoading}
-                  data-tip="Copy the library database to a timestamped backup"
-                  onClick={() => void library.backupDatabase()}
-                >
-                  Back up database
-                </button>
-                {cleanupConfirmationArmed ? (
-                  <>
-                    <span className="field-hint library-cleanup-confirmation" role="status">
-                      Clean stale storage records and orphan files? A database backup will be created first.
-                    </span>
-                    <button
-                      id="library-cleanup-cancel-btn"
-                      className="btn btn-ghost btn-compact"
-                      type="button"
-                      onClick={() => {
-                        cleanupConfirmationRef.current = false;
-                        setCleanupConfirmationArmed(false);
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      id="library-cleanup-confirm-btn"
-                      className="btn btn-danger btn-compact"
-                      type="button"
-                      disabled={library.maintenanceLoading}
-                      onClick={() => {
-                        if (!cleanupConfirmationRef.current) {
-                          return;
-                        }
-                        cleanupConfirmationRef.current = false;
-                        setCleanupConfirmationArmed(false);
-                        void library.cleanupStorage();
-                      }}
-                    >
-                      Clean up storage
-                    </button>
-                  </>
-                ) : (
-                  <button
-                    id="library-cleanup-btn"
-                    className="btn btn-compact"
-                    type="button"
-                    disabled={library.maintenanceLoading}
-                    data-tip="Remove orphaned temp files. Finished audio is never touched."
-                    onClick={() => {
-                      cleanupConfirmationRef.current = true;
-                      setCleanupConfirmationArmed(true);
-                    }}
-                  >
-                    Clean up storage
-                  </button>
-                )}
-                <button
-                  className="btn btn-compact"
-                  type="button"
-                  disabled={!library.canOpenAppData}
-                  data-tip="Open the application data folder"
-                  onClick={() => void library.openAppDataFolder()}
-                >
-                  App data
-                </button>
-              </div>
-              {library.maintenanceMessage ? (
-                <p className="field-hint status-sentence" role="status" aria-live="polite">{library.maintenanceMessage}</p>
-              ) : null}
-              {library.maintenanceReport ? (
-                <div className="maintenance-grid">
-                  <div><span>Database</span><strong>{library.maintenanceReport.database_path}</strong></div>
-                  <div><span>Output</span><strong>{library.maintenanceReport.output_path}</strong></div>
-                  <div><span>Temp uploads</span><strong className="tabular-nums">{library.maintenanceReport.audit.stale_temp_uploads?.length ?? 0}</strong></div>
-                  <div><span>Orphan folders</span><strong className="tabular-nums">{library.maintenanceReport.audit.orphan_output_dirs?.length ?? 0}</strong></div>
-                  <div><span>Stale sources</span><strong className="tabular-nums">{library.maintenanceReport.audit.stale_book_sources?.length ?? 0}</strong></div>
-                  <div><span>Missing chapters</span><strong className="tabular-nums">{library.maintenanceReport.audit.stale_chapter_rows?.length ?? 0}</strong></div>
-                </div>
-              ) : null}
-              {selected ? (
-                <details className="library-disclosure raw-metadata-toggle">
-                  <summary>Raw metadata</summary>
-                  <pre id="book-detail">{library.bookDetailText}</pre>
-                </details>
-              ) : null}
-            </div>
-          </details>
         </div>
+        <LibraryMaintenanceSection library={library} selectedDetailId={selected?.id ?? null} />
       </div>
     </section>
   );

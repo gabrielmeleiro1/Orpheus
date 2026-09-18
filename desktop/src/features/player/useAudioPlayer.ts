@@ -534,9 +534,6 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     playerVisible,
     playing: isPlaying,
     title: playerTitle,
-    statusText: library.selectedBookDetail?.title
-      ? `${library.selectedBookDetail.title} · ${currentChapterLabel}`
-      : playerTitle,
     elapsedSec,
     durationSec,
     canSeek,

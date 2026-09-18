@@ -11,7 +11,6 @@ import {
 import { useBackendClient } from "./app/useBackendClient";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
 import { useRuntimeIdentity } from "./app/usePrimaryRuntime";
-import { formatRuntimeIdentity } from "./app/runtimeIdentity";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import { useConversionJob } from "./features/conversion/useConversionJob";
 import { DashboardPanel } from "./features/dashboard/DashboardPanel";
@@ -297,13 +296,10 @@ function DashboardApp({
         <header className="studio-status">
           <div className="page-heading">
             {sidebarCollapsed ? <button type="button" className="btn sidebar-expand" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar">☰ <span>Sidebar</span></button> : null}
-            <span className="page-eyebrow">Audiobook studio</span>
             <h1>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
-            {activeTab === "dashboard" ? (
-              <p>{`${formatRuntimeIdentity(runtimeIdentity)} · ${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`}</p>
-            ) : null}
           </div>
           <div className="studio-controls">
+            {activeTab === "dashboard" ? <button className="btn btn-primary" type="button" onClick={openConvert}>Convert a source</button> : null}
             {conversionJob.uiState === "running" ? (
               <span className="control converting-control">
                 <BrailleSpinner active />
@@ -335,7 +331,6 @@ function DashboardApp({
             playing={player.playing}
             elapsedSec={player.elapsedSec}
             durationSec={player.durationSec}
-            onStartConvert={openConvert}
             onOpenLibrary={openLibrary}
             onOpenProgress={openProgress}
             onOpenSettings={openSettings}
@@ -413,7 +408,8 @@ function DashboardApp({
           visible={player.playerVisible}
           playing={player.playing}
           title={player.title}
-          statusText={player.statusText}
+          bookTitle={library.selectedBookDetail?.title}
+          chapterTitle={player.currentChapterLabel}
           elapsedSec={player.elapsedSec}
           durationSec={player.durationSec}
           canSeek={player.canSeek}

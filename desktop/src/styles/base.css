@@ -4,13 +4,13 @@
   --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
 
   --radius-xs: 4px;
-  --radius-sm: 5px;
+  --radius-sm: 6px;
   --radius: 8px;
   --radius-lg: 12px;
 
   --bg: #171716;
   --bg-elevated: #1d1d1b;
-  --surface: #232321;
+  --surface: #20201e;
   --surface-hover: #292927;
   --surface-active: #2f2f2c;
 

@@ -19,7 +19,7 @@
   display: flex;
   gap: 16px;
   justify-content: space-between;
-  margin-bottom: 24px;
+  margin-bottom: 12px;
 }
 
 .conversion-lede {
@@ -36,7 +36,7 @@
   font-size: 10px;
   letter-spacing: .06em;
   padding-top: 4px;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .conversion-source-sections {
@@ -60,10 +60,10 @@
   cursor: pointer;
   display: grid;
   gap: 4px 16px;
-  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr) auto;
   margin: 0;
-  min-height: 96px;
-  padding: 18px;
+  min-height: 80px;
+  padding: 16px;
   transition: border-color 120ms ease, background 120ms ease;
 }
 
@@ -111,8 +111,9 @@
   font-size: 11px;
 }
 
-.drop-zone-hint {
-  grid-column: 2;
+.drop-zone-browse {
+  pointer-events: none;
+  white-space: nowrap;
 }
 
 .drop-zone:hover .drop-zone-icon,
@@ -134,6 +135,7 @@
 
 /* Friendly basename (body font) plus, for real paths, its directory (mono,
    quieter) — the full path/handle lives in the data-tip tooltip (finding 1). */
+
 .source-chosen-file {
   align-items: baseline;
   display: flex;
@@ -165,6 +167,7 @@
 
 /* Manual path entry: a quiet disclosure that keeps the capability without
    competing with the drop zone as the primary picker. */
+
 .manual-path > summary {
   color: var(--text-tertiary);
   cursor: pointer;
@@ -219,6 +222,7 @@
 }
 
 /* The label must never wrap under the full-width Run queue button. */
+
 .queue-header > span {
   white-space: nowrap;
 }
@@ -231,12 +235,13 @@
 
 .paste-textarea {
   line-height: 1.5;
-  min-height: 118px;
+  min-height: 76px;
   resize: vertical;
 }
 
 /* One line under the paste card: either the guiding hint or the status, never
    both jammed together (finding 2). */
+
 .paste-panel > .hint,
 .paste-panel > .field-hint {
   display: block;
@@ -308,6 +313,7 @@
 
 /* Queue status is a word ("Ready", "Converting…") so it reads in the body
    font (rule 6), not the mono/tabular treatment reserved for counts. */
+
 .queue-item-status {
   color: var(--text-secondary);
   font-size: 11px;
@@ -360,11 +366,11 @@
 
 .conversion-group-heading {
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: .08em;
+  letter-spacing: 0;
   margin: 0;
-  text-transform: uppercase;
+  text-transform: none;
 }
 
 .form-section > .conversion-group-heading {
@@ -373,7 +379,8 @@
 
 .voice-options {
   margin-bottom: 0;
-  max-width: 680px;
+  max-width: 100%;
+  gap: 8px;
 }
 
 .conversion-section-copy {
@@ -389,7 +396,7 @@
 }
 
 .voice-options .form-row-label {
-  padding-top: 9px;
+  padding-top: 6px;
 }
 
 .voice-selection {
@@ -400,6 +407,7 @@
 
 .voice-options .voice-suggest-actions {
   margin: 0;
+  min-height: 32px;
 }
 
 .voice-options .compact-row {
@@ -442,6 +450,7 @@
 
 /* Advanced settings use the shared `.disclosure-card` primitive (controls.css)
    for its card summary + rotating ▸ affordance; only spacing lives here. */
+
 .advanced-settings {
   margin: 0;
 }
@@ -473,11 +482,11 @@
 .config-panel-section > .section-title {
   border-bottom: 1px solid var(--border-light);
   color: var(--text-tertiary);
-  font-size: 11px;
-  letter-spacing: .08em;
   margin: 0 0 2px;
   padding-bottom: 12px;
-  text-transform: uppercase;
+  text-transform: none;
+  font-size: 13px;
+  letter-spacing: 0;
 }
 
 .config-panel-section > .section-title .btn {
@@ -487,10 +496,79 @@
 
 .config-grid > :only-child {
   grid-column: 1 / -1;
-  max-width: var(--field-text-width);
+  max-width: 100%;
+}
+
+.conversion-panel .form-grid {
+  max-width: 100%;
+}
+
+.metadata-overrides > summary {
+  gap: 12px;
+}
+
+.metadata-overrides[open] > summary {
+  margin-bottom: 12px;
+}
+
+.metadata-overrides > summary .field-hint {
+  font-weight: 400;
+}
+
+.config-panel-section .form-row {
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: center;
+}
+
+.config-panel-section .form-row-field {
+  max-width: 100%;
+}
+
+.conversion-source-sections > .form-error:empty {
+  display: none;
+}
+
+#tab-document .details-section {
+  padding-top: 4px;
+}
+
+#tab-document .paste-panel {
+  padding: 12px 16px;
+}
+
+#tab-document .conversion-form {
+  gap: 12px;
+}
+
+#tab-document .conversion-source-sections {
+  gap: 12px;
+}
+
+#tab-document .conversion-actions {
+  margin-top: 12px;
+}
+
+.voice-options .form-row-stack:has(.voice-selection) {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  max-width: 680px;
+  align-items: start;
+}
+
+#tab-document .conversion-source-section {
+  gap: 8px;
+}
+
+#tab-document .drop-zone {
+  min-height: 72px;
+}
+
+#tab-document .paste-textarea {
+  min-height: 64px;
 }
 
 @media (max-width: 800px) {
+
   .voice-selection {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -498,13 +576,36 @@
   .config-panel .config-grid {
     grid-template-columns: 1fr;
   }
-
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   .drop-zone,
   .drop-zone-icon,
   .queue-row {
     transition: none;
+  }
+}
+
+@media (max-width: 560px) {
+
+  .drop-zone {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+
+  .drop-zone-browse {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .config-panel-section .form-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+
+  .voice-options .form-row-stack:has(.voice-selection) {
+    grid-template-columns: minmax(0, 1fr);
   }
 }

@@ -128,7 +128,7 @@ describe("DashboardPanel library count", () => {
     expect(progress?.closest('[aria-hidden="true"]')).toBeNull();
   });
 
-  it("renders exactly one primary action on the idle dashboard", async () => {
+  it("offers the library without duplicating the shell conversion action", async () => {
     const library = {
       items: [],
       indexedCount: 0,
@@ -153,11 +153,12 @@ describe("DashboardPanel library count", () => {
           playing={false}
           elapsedSec={0}
           durationSec={0}
-          onStartConvert={() => undefined}
+          onOpenLibrary={() => undefined}
         />,
       );
     });
 
-    expect(container.querySelectorAll(".btn-primary").length).toBe(1);
+    expect(container.textContent).toContain("Open library");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Convert a source")).toBe(false);
   });
 });

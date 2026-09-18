@@ -53,7 +53,8 @@
   font-size: 13px;
   min-width: 0;
   outline: none;
-  padding: 8px 10px;
+  padding: 5px 10px;
+  min-height: var(--density-control-height);
   transition: border-color 120ms ease;
   width: 100%;
 }
@@ -103,6 +104,7 @@
 
 /* Primary: accent CTA. Colour/weight only — no baked-in layout, so it works
    inline in a row or full-width via a `.btn-block` wrapper/utility. */
+
 .btn-primary {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
@@ -117,6 +119,7 @@
 
 /* Ghost: text / row action. No border, quiet until hovered. Kept a step
    brighter than plain secondary text so it never reads as disabled. */
+
 .btn-ghost {
   background: transparent;
   border-color: transparent;
@@ -130,6 +133,7 @@
 }
 
 /* Full-width utility for a stacked CTA (opt-in, not baked into .btn-primary). */
+
 .btn-block {
   width: 100%;
 }
@@ -163,8 +167,8 @@
 
 /* The one helper-text style: a single-line hint under a field. Max one per
    field. Backend value/status echoes stay a touch quieter (tertiary). */
+
 .hint,
-.drop-zone-hint,
 .field-hint {
   color: var(--text-secondary);
   font-size: 12px;
@@ -181,6 +185,7 @@
 }
 
 /* Status lines that echo backend-authored messages arrive lowercase. */
+
 .status-sentence::first-letter {
   text-transform: uppercase;
 }
@@ -227,11 +232,6 @@
   gap: 8px;
   min-width: 0;
   padding: 0;
-}
-
-/* Rule 10: controls stay readable instead of stretching the full column. */
-.form-row-field,
-.form-row-stack {
   max-width: var(--field-text-width);
 }
 
@@ -256,6 +256,7 @@
  * label+control pair; `.field-row` puts two `.field`s side by side (Title +
  * Author, Speed + Quantization) and collapses on narrow widths.
  */
+
 .form-grid {
   display: grid;
   gap: var(--space-3);
@@ -280,6 +281,7 @@
  * Use instead of rendering disabled forms / placeholder stat tiles when there
  * is no data.
  */
+
 .empty-state {
   align-items: center;
   color: var(--text-secondary);
@@ -304,11 +306,13 @@
 }
 
 /* Live-updating numbers (timecodes, %, counts) stay aligned. */
+
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
 
 /* Shared segmented control. */
+
 .seg-control {
   display: inline-flex;
   gap: 0;
@@ -369,6 +373,7 @@
  * for collapsed sections ("Advanced", "Maintenance"). Feature CSS consumes
  * `.disclosure`; `.library-disclosure` is a compatibility alias.
  */
+
 .disclosure > summary,
 .library-disclosure > summary {
   align-items: center;
@@ -405,6 +410,7 @@
 }
 
 /* Disclosure panels share the same flat surface as other sections. */
+
 .disclosure-card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -464,6 +470,7 @@
 /*
  * Shared focus ring with low specificity so controls can adjust placement.
  */
+
 :where(
   button,
   [role="button"],
@@ -480,6 +487,7 @@
 }
 
 @media (max-width: 800px) {
+
   .form-row {
     grid-template-columns: 1fr;
   }
@@ -494,6 +502,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+
   .field-input,
   .paste-textarea,
   .term-select-btn,

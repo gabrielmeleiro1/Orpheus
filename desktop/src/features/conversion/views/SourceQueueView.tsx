@@ -39,6 +39,57 @@ export function SourceQueueView({
     }
   }, [hidden, sourceQueue.preflightCard, sourceQueue.queueCount, sourceQueue.sourcePath]);
 
+  const metadataFields = (
+    <div className="form-grid">
+      <div className="field-row">
+        <div className="field">
+          <label
+            className="field-label"
+            htmlFor="title-input"
+            data-tip="Overrides the title detected from the source"
+            data-tip-pos="right"
+          >
+            Title
+          </label>
+          <input
+            id="title-input"
+            aria-label="Title override"
+            className="field-input"
+            type="text"
+            placeholder="Optional"
+            value={sourceQueue.titleOverride}
+            onChange={(event) => {
+              actions.setTitleOverride(event.target.value);
+              actions.syncSelectedQueueEdits({ title: event.target.value });
+            }}
+          />
+        </div>
+        <div className="field">
+          <label
+            className="field-label"
+            htmlFor="author-input"
+            data-tip="Overrides the author detected from the source"
+            data-tip-pos="right"
+          >
+            Author
+          </label>
+          <input
+            id="author-input"
+            aria-label="Author override"
+            className="field-input"
+            type="text"
+            placeholder="Optional"
+            value={sourceQueue.authorOverride}
+            onChange={(event) => {
+              actions.setAuthorOverride(event.target.value);
+              actions.syncSelectedQueueEdits({ author: event.target.value });
+            }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className="conversion-source-sections">
       <section className="conversion-section conversion-source-section">
@@ -86,7 +137,7 @@ export function SourceQueueView({
             <strong>{sourceQueue.isDocumentMode ? "Drop document here" : "Drop source here"}</strong>
             <span>.pdf, .epub, .txt, or .md</span>
           </span>
-          <span className="drop-zone-hint">Click to browse or drag and drop</span>
+          <span className="btn drop-zone-browse" aria-hidden="true">Browse files</span>
         </div>
 
         {sourceQueue.sourcePath ? (
@@ -237,7 +288,7 @@ export function SourceQueueView({
       </div>
 
       <section ref={reviewAnchorRef} id="conversion-review-anchor" className="conversion-section details-section form-section">
-        <h2 className="conversion-group-heading">Details</h2>
+        {!sourceQueue.isDocumentMode ? <h2 className="conversion-group-heading">Details</h2> : null}
         {sourceQueue.preflightCard ? (
           <div className="panel-section preflight-card">
             <div className="preflight-title">
@@ -269,54 +320,12 @@ export function SourceQueueView({
           <div className="field-hint preflight-status">{sourceQueue.preflightStatus}</div>
         ) : null}
 
-        <div className="form-grid">
-          <div className="field-row">
-            <div className="field">
-              <label
-                className="field-label"
-                htmlFor="title-input"
-                data-tip="Overrides the title detected from the source"
-                data-tip-pos="right"
-              >
-                Title
-              </label>
-              <input
-                id="title-input"
-                aria-label="Title override"
-                className="field-input"
-                type="text"
-                placeholder="Optional"
-                value={sourceQueue.titleOverride}
-                onChange={(event) => {
-                  actions.setTitleOverride(event.target.value);
-                  actions.syncSelectedQueueEdits({ title: event.target.value });
-                }}
-              />
-            </div>
-            <div className="field">
-              <label
-                className="field-label"
-                htmlFor="author-input"
-                data-tip="Overrides the author detected from the source"
-                data-tip-pos="right"
-              >
-                Author
-              </label>
-              <input
-                id="author-input"
-                aria-label="Author override"
-                className="field-input"
-                type="text"
-                placeholder="Optional"
-                value={sourceQueue.authorOverride}
-                onChange={(event) => {
-                  actions.setAuthorOverride(event.target.value);
-                  actions.syncSelectedQueueEdits({ author: event.target.value });
-                }}
-              />
-            </div>
-          </div>
-        </div>
+        {sourceQueue.isDocumentMode ? (
+          <details className="metadata-overrides disclosure">
+            <summary>Details <span className="field-hint">Optional metadata overrides</span></summary>
+            {metadataFields}
+          </details>
+        ) : metadataFields}
       </section>
     </div>
   );

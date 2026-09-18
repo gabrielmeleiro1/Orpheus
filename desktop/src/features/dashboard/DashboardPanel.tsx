@@ -27,7 +27,6 @@ interface DashboardPanelProps {
   playing: boolean;
   elapsedSec: number;
   durationSec: number;
-  onStartConvert?: () => void;
   onOpenLibrary?: () => void;
   onOpenProgress?: () => void;
   onOpenSettings?: () => void;
@@ -81,7 +80,6 @@ export function DashboardPanel({
   playing,
   elapsedSec,
   durationSec,
-  onStartConvert,
   onOpenLibrary,
   onOpenProgress,
   onOpenSettings,
@@ -171,7 +169,6 @@ export function DashboardPanel({
           </>
         ) : (
           <div className="empty-state-actions">
-            {onStartConvert ? <button className="btn btn-primary" type="button" onClick={onStartConvert}>Convert a source</button> : null}
             {onOpenLibrary ? <button className="btn btn-ghost" type="button" onClick={onOpenLibrary}>Open library</button> : null}
           </div>
         )}
@@ -195,7 +192,7 @@ export function DashboardPanel({
         <section className="dashboard-card recent-section" aria-label="Recent books">
           <div className="section-title"><span>Recent</span>{onOpenLibrary ? <button className="section-title-action tabular-nums" type="button" onClick={onOpenLibrary}>{library.indexedCount} {library.indexedCount === 1 ? "book" : "books"} <Chevron /></button> : <span className="section-title-meta tabular-nums">{library.indexedCount} books</span>}</div>
           {recentBooks.length === 0 ? (
-            <div className="empty-state"><span className="empty-state-title">No converted books yet</span><span className="empty-state-hint">Convert a source to build your library.</span>{onStartConvert ? <button className="btn btn-ghost" type="button" onClick={onStartConvert}>Convert a source</button> : null}</div>
+            <div className="empty-state"><span className="empty-state-title">No converted books yet</span><span className="empty-state-hint">Convert a source to build your library.</span></div>
           ) : (
             <div className="recent-list">
               {recentBooks.map((book) => {

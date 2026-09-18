@@ -116,8 +116,7 @@ export function LogPanel({ logs }: LogPanelProps) {
 
   return (
     <>
-      <div className="panel-header">
-        <span>Process log</span>
+      <div className="log-count">
         <span className="panel-header-meta">
           {visibleLogs.length === logs.length
             ? `${logs.length} ${logs.length === 1 ? "entry" : "entries"}`
@@ -137,6 +136,7 @@ export function LogPanel({ logs }: LogPanelProps) {
                 className={`seg-control-btn${level === value ? " is-active" : ""}`}
                 data-tip={tip}
                 data-tip-pos="bottom"
+                aria-pressed={level === value}
                 onClick={() => setLevel(value)}
               >
                 {label}
@@ -195,11 +195,6 @@ export function LogPanel({ logs }: LogPanelProps) {
         >
           {visibleLogs.length === 0 ? (
             <div className="empty-state log-empty">
-              <span className="log-empty-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <path d="M4 6h16M4 11h16M4 16h9" />
-                </svg>
-              </span>
               <span className="empty-state-title">{logs.length === 0 ? "No events yet" : "No matches"}</span>
               <span className="empty-state-hint">
                 {logs.length === 0

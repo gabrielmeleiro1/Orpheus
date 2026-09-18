@@ -29,7 +29,8 @@ interface PlayerPanelProps {
   visible: boolean;
   playing: boolean;
   title: string;
-  statusText?: string;
+  bookTitle?: string;
+  chapterTitle?: string;
   elapsedSec: number;
   durationSec: number;
   /** Explicit seek readiness; do not infer from duration alone (seeded duration may precede audio load). */
@@ -54,7 +55,8 @@ export function PlayerPanel({
   visible,
   playing,
   title,
-  statusText,
+  bookTitle,
+  chapterTitle,
   elapsedSec,
   durationSec,
   canSeek,
@@ -90,7 +92,7 @@ export function PlayerPanel({
   const prevDisabled = !enabled || !canGoPrevious;
   const nextDisabled = !enabled || !canGoNext;
   const playDisabled = !enabled;
-  const resolvedStatusText = statusText?.trim() || title.trim() || "Ready";
+  const resolvedStatusText = title.trim() || "Ready";
   const rootClassName = className ? `player-bar ${className}` : "player-bar";
 
   const handleSeekChange: ChangeEventHandler<HTMLInputElement> = (event) => {
@@ -193,7 +195,7 @@ export function PlayerPanel({
         <div className="player-track-info">
           <div className="player-status-row">
             <span id="player-status" className="player-track-title">
-              {resolvedStatusText}
+              {bookTitle || resolvedStatusText}
             </span>
             <button
               id="player-close-btn"
@@ -206,6 +208,7 @@ export function PlayerPanel({
               ×
             </button>
           </div>
+          {bookTitle && chapterTitle ? <span className="player-track-chapter">{chapterTitle}</span> : null}
           <div className="player-timeline">
             <span id="player-elapsed" className="player-time">
               {formatClock(normalizedElapsedSec)}
