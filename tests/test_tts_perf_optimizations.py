@@ -24,7 +24,7 @@ from modules.pipeline.stages.synthesis import (
 from modules.pipeline.stages import synthesis as synthesis_stage
 from modules.tts import model_cache
 from modules.tts.runtime_spec import TTSRuntimeSpec
-from modules.tts.runtimes import KokoroRuntimeConfig
+from modules.tts.runtimes import KokoroRuntimeConfig, kokoro_package
 from modules.tts.runtimes.kokoro_package import (
     PackageKokoroRuntime,
     _torch_compile_requested,
@@ -35,7 +35,14 @@ TORCH_COMPILE_ENV = "AUDIOBOOK_TTS_TORCH_COMPILE"
 
 
 @pytest.fixture(autouse=True)
-def _clean_model_cache():
+def _clean_model_cache(monkeypatch: pytest.MonkeyPatch):
+    # Fake pipelines must not discover the developer's installed model snapshots.
+    # Local snapshot resolution is exercised in test_model_snapshots.py.
+    monkeypatch.setattr(
+        kokoro_package,
+        "installed_model_path",
+        lambda model_name: model_name,
+    )
     model_cache.clear_model_cache()
     yield
     model_cache.clear_model_cache()
