@@ -175,3 +175,19 @@ class TestBuckets:
         assert bucket_for("desktop/src-tauri/src/main.rs") == "desktop/src-tauri"
         assert bucket_for("modules/audio/encoder.py") == "modules"
         assert bucket_for("run_tests.py") == "(root)"
+
+
+def test_scan_includes_new_sources_and_omits_deleted_and_ignored_files(tmp_path, monkeypatch):
+    from tools import branch_complexity
+
+    subprocess.run(["git", "init", str(tmp_path)], check=True, capture_output=True)
+    removed = tmp_path / "removed.py"
+    removed.write_text("if True: pass\n", encoding="utf-8")
+    subprocess.run(["git", "add", "removed.py"], cwd=tmp_path, check=True, capture_output=True)
+    removed.unlink()
+    (tmp_path / ".gitignore").write_text("ignored.py\n", encoding="utf-8")
+    (tmp_path / "ignored.py").write_text("if True: pass\n", encoding="utf-8")
+    (tmp_path / "new.py").write_text("if True: pass\n", encoding="utf-8")
+    monkeypatch.setattr(branch_complexity, "REPO_ROOT", tmp_path)
+
+    assert branch_complexity.scan() == {"new.py": {"branches": 1, "lines": 1}}

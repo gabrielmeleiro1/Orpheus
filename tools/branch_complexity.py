@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Branch-count complexity benchmark for the whole repo.
 
-Counts *branch points* per tracked source file — the decision points that make code
+Counts *branch points* per working-tree source file — the decision points that make code
 hard to hold in your head. The goal is a stable number that simplification passes can
 drive down without being gameable by formatting, renaming, or comment stripping.
 
@@ -183,16 +183,16 @@ def count_ts_files(paths: list[str]) -> dict[str, int]:
 # Scanning
 
 
-def tracked_source_files() -> list[str]:
+def source_files() -> list[str]:
     patterns = sorted("*" + s for s in PYTHON_SUFFIXES | TS_SUFFIXES | RUST_SUFFIXES)
     out = subprocess.run(
-        ["git", "ls-files", "-z", *patterns],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z", *patterns],
         capture_output=True,
         text=True,
         check=True,
         cwd=REPO_ROOT,
     ).stdout
-    return [p for p in out.split("\0") if p]
+    return sorted({p for p in out.split("\0") if p and (REPO_ROOT / p).is_file()})
 
 
 def bucket_for(path: str) -> str:
@@ -204,10 +204,10 @@ def bucket_for(path: str) -> str:
 
 
 def scan() -> dict[str, dict[str, int]]:
-    """Return {path: {"branches": n, "lines": n}} for every tracked source file."""
+    """Include new source files and omit unstaged deletions and ignored artifacts."""
     files: dict[str, dict[str, int]] = {}
     ts_paths: list[str] = []
-    for rel in tracked_source_files():
+    for rel in source_files():
         suffix = Path(rel).suffix
         text = (REPO_ROOT / rel).read_text(encoding="utf-8")
         lines = len(text.splitlines())
