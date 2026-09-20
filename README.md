@@ -15,6 +15,17 @@ be converted again to include them.
 | Windows 10/11 | Source development is supported and checked in CI, with base and NVIDIA CUDA runtime options. |
 | Linux | Core development and NVIDIA CUDA runtimes are supported; no packaged desktop release is currently published. |
 
+### Windows 11: Smart App Control
+
+> [!WARNING]
+> Orpheus is unsigned, so Windows may block it with **Smart App Control**.
+> If blocked, open **Windows Security → App & browser control → Smart App
+> Control settings → Off**, then launch Orpheus again.
+>
+> This turns off Smart App Control **for all apps**. Only do this for a build
+> you trust, and read Windows' warning before confirming.
+> [Microsoft's guidance](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions).
+
 ## Start Here
 
 1. Read [docs/README.md](docs/README.md).
