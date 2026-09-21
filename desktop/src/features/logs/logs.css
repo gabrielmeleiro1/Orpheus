@@ -55,9 +55,9 @@
   min-height: 0;
   padding-bottom: 0;
   padding-top: 0;
-   flex: 1 1 160px;
-   max-width: none;
-   width: auto;
+  flex: 1 1 160px;
+  max-width: none;
+  width: auto;
 }
 
 .log-toolbar-spacer {
@@ -139,7 +139,6 @@
   color: var(--negative);
 }
 
-/* Fill and vertically centre the canonical .empty-state inside the tall log box. */
 .log-empty {
   min-height: 340px;
 }

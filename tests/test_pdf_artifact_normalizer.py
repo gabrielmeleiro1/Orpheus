@@ -95,7 +95,7 @@ def test_known_corpus_policies_opt_in_strips_inline_footnote_blocks() -> None:
 
 
 def test_repair_line_break_hyphenation_is_fast_on_pathological_page() -> None:
-    # Finding 3: a hyphen-dense page must not trigger quadratic backtracking.
+    # A hyphen-dense page must not trigger quadratic backtracking.
     import time
 
     from modules.ingestion.pdf_artifact_normalizer import repair_line_break_hyphenation

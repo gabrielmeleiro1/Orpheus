@@ -467,9 +467,7 @@ function App() {
     }
     let active = true;
     setSetupError(null);
-    // Cold-start status can legitimately take ~20s: the capability probe boots
-    // a subprocess and cached model assets get hashed for the first receipt
-    // verification. An 8s timeout guaranteed a spurious first-launch error.
+    // Allow time for the cold-start subprocess probe and first-time model hashing.
     void backend.apiClient.getRuntimeSetupStatus({ timeoutMs: 120_000 }).then((status) => {
       if (!active) return;
       setSetupStatus(status);

@@ -133,9 +133,7 @@
   min-width: 0;
 }
 
-/* Friendly basename (body font) plus, for real paths, its directory (mono,
-   quieter) — the full path/handle lives in the data-tip tooltip (finding 1). */
-
+/* Truncate the displayed path; the tooltip contains the full value. */
 .source-chosen-file {
   align-items: baseline;
   display: flex;
@@ -164,9 +162,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* Manual path entry: a quiet disclosure that keeps the capability without
-   competing with the drop zone as the primary picker. */
 
 .manual-path > summary {
   color: var(--text-tertiary);
@@ -222,7 +217,6 @@
 }
 
 /* The label must never wrap under the full-width Run queue button. */
-
 .queue-header > span {
   white-space: nowrap;
 }
@@ -238,9 +232,6 @@
   min-height: 76px;
   resize: vertical;
 }
-
-/* One line under the paste card: either the guiding hint or the status, never
-   both jammed together (finding 2). */
 
 .paste-panel > .hint,
 .paste-panel > .field-hint {
@@ -310,9 +301,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* Queue status is a word ("Ready", "Converting…") so it reads in the body
-   font (rule 6), not the mono/tabular treatment reserved for counts. */
 
 .queue-item-status {
   color: var(--text-secondary);
@@ -448,9 +436,7 @@
   display: none;
 }
 
-/* Advanced settings use the shared `.disclosure-card` primitive (controls.css)
-   for its card summary + rotating ▸ affordance; only spacing lives here. */
-
+/* Shared disclosure styles are defined in controls.css. */
 .advanced-settings {
   margin: 0;
 }
@@ -568,7 +554,6 @@
 }
 
 @media (max-width: 800px) {
-
   .voice-selection {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -579,7 +564,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-
   .drop-zone,
   .drop-zone-icon,
   .queue-row {
@@ -588,7 +572,6 @@
 }
 
 @media (max-width: 560px) {
-
   .drop-zone {
     grid-template-columns: 24px minmax(0, 1fr);
   }
@@ -604,7 +587,6 @@
 }
 
 @media (max-width: 680px) {
-
   .voice-options .form-row-stack:has(.voice-selection) {
     grid-template-columns: minmax(0, 1fr);
   }

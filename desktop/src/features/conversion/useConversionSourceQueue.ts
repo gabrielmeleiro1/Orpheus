@@ -71,11 +71,9 @@ export function useConversionSourceQueue({
   }
   const sourceContextGeneration = sourceContextRef.current.generation;
 
-  // The empty dep array is load-bearing: this cleanup clears pasteInFlightRef
-  // without bumping the source-context generation, so re-running the effect
-  // while a paste is in flight would let that stale paste's settle clear a
-  // newer paste's guard. Do not add deps, and do not bump the generation here
-  // (StrictMode's mount replay must keep callbacks live).
+  // Run only on mount/unmount: rerunning during a paste could let its completion
+  // clear a newer paste's guard. Leave the generation unchanged so StrictMode's
+  // effect replay keeps existing callbacks valid.
   useEffect(() => {
     mountedRef.current = true;
     return () => {

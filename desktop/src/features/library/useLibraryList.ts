@@ -161,11 +161,9 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     modeFilter: "all",
   });
 
-  // Sibling of beginOwnedRequest for selection-scoped work. Targets are passed
-  // in, never read off selectedBookIdRef here: callbacks capture the
-  // selectedBookId state value and the ref can lead it by one render. Both
-  // clauses are load-bearing — selectRelative advances the id ref without
-  // bumping the generation, and re-selecting the same book does the reverse.
+  // Use the caller's selection: the ref can be one render ahead of state.
+  // Check both ID and generation because relative navigation changes only the
+  // ID, while selecting the same book again changes only the generation.
   const beginSelectionOwnedRequest = useCallback(
     (
       beginRequest: () => () => boolean,

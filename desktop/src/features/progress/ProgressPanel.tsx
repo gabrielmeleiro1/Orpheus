@@ -131,8 +131,7 @@ export function ProgressPanel({
     ? `Chapters synthesized concurrently. Requested ${performance?.requested_parallel_chapters ?? "—"}, effective ${performance?.effective_parallel_chapters ?? "—"} after warm-up and memory limits.`
     : "Worker pool from the finished job.";
   const live = presentation.showLiveWorkers;
-  // Terminal snapshots often carry placeholder values; hide those tiles rather
-  // than print "Not available"/"—" (rule 2 / finding 9).
+  // Finished jobs may have no performance data; omit their placeholder tiles.
   const hasValue = (value: string) => !PLACEHOLDER_VALUES.has(value.trim());
   const showStatusLine = uiState !== "completed";
   const terminalTiles = live

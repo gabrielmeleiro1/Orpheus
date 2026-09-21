@@ -102,15 +102,12 @@
   padding: 0;
 }
 
-/* Section headers adopt the app-wide `.section-label` (shell.css);
-   these rules only carry setup-specific spacing/focus. */
-
+/* Section typography is shared with .section-label in shell.css. */
 .setup-section legend {
   margin-bottom: 12px;
 }
 
-/* Programmatically focused (tabIndex -1) heading — suppress the focus ring. */
-
+/* This heading receives focus only through code (tabIndex -1). */
 #setup-progress-heading {
   outline: none;
 }
@@ -355,7 +352,6 @@
 }
 
 /* Portaled to the body so cards and scrolling setup sections cannot clip it. */
-
 .setup-tip-bubble {
   background: var(--surface);
   border: 1px solid var(--border-strong);
@@ -433,7 +429,6 @@
 }
 
 @keyframes setup-spin {
-
   to {
     transform: rotate(360deg);
   }
@@ -633,7 +628,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-
   .setup-loading-spinner {
     animation: none;
   }
@@ -644,7 +638,6 @@
 }
 
 @media (max-width: 720px) {
-
   .setup-profile-grid {
     grid-template-columns: 1fr;
   }
@@ -655,7 +648,6 @@
 }
 
 @media (max-width: 560px) {
-
   .setup-shell {
     padding: 28px 16px 44px;
   }

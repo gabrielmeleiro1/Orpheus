@@ -31,7 +31,6 @@
 }
 
 /* Sidebar controls: search, type filter + refresh, and the optional pager. */
-
 .library-search-row {
   display: grid;
   gap: 6px;
@@ -79,8 +78,6 @@
 .library-list::-webkit-scrollbar {
   display: none;
 }
-
-/* Quiet empty state inside the narrow sidebar column. */
 
 .library-empty {
   padding: 24px 8px;
@@ -138,9 +135,6 @@
   white-space: nowrap;
 }
 
-/* Row meta mixes words and counts, so it stays in the body font (rule 6) with
-   tabular figures for the chapter tallies. */
-
 .book-meta {
   color: var(--text-tertiary);
   font-size: 11px;
@@ -150,9 +144,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
-/* Metadata form: Title + Author share a row via the shared .form-grid/.field-row
-   primitives; width is capped by .form-grid so inputs never stretch the pane. */
 
 .library-detail-form {
   margin: 0;
@@ -170,8 +161,6 @@
   border-top: 1px solid var(--border-light);
   padding-top: var(--space-3);
 }
-
-/* Destructive actions sit apart, pushed to the trailing edge. */
 
 .library-detail-actions-danger {
   align-items: center;
@@ -226,8 +215,6 @@
   background: color-mix(in srgb, var(--text) 7%, transparent);
 }
 
-/* Chapter row internals — library-scoped so the panel is self-contained. */
-
 .library-detail-pane .chapter-main {
   align-items: center;
   background: transparent;
@@ -259,8 +246,6 @@
   color: var(--accent-text, var(--accent));
 }
 
-/* Counts and timecodes keep the mono/tabular treatment (rule 6). */
-
 .library-detail-pane .chapter-number,
 .library-detail-pane .chapter-duration {
   color: var(--text-tertiary);
@@ -273,9 +258,7 @@
   text-align: right;
 }
 
-/* The per-chapter cleaning-preview trigger is a power action: revealed on
-   row hover/focus so casual scanning stays uncluttered, but always reachable. */
-
+/* Show the preview button on hover or keyboard focus. */
 .chapter-cleaned-btn {
   opacity: 0;
   transition: opacity 120ms ease;
@@ -287,9 +270,7 @@
   opacity: 1;
 }
 
-/* On-demand and maintenance sections use the shared `.disclosure` primitive
-   (controls.css) via the `.library-disclosure` alias; only spacing is local. */
-
+/* Disclosure appearance is shared with controls.css. */
 .library-disclosure {
   margin-top: 4px;
 }
@@ -408,7 +389,6 @@
 }
 
 @media (max-width: 800px) {
-
   .library-workspace {
     grid-template-columns: 1fr;
   }
@@ -423,7 +403,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-
   .library-detail-pane,
   .book-row,
   .chapter-row,
@@ -433,7 +412,6 @@
 }
 
 @media (max-width: 560px) {
-
   .library-workspace.is-empty .library-sidebar {
     grid-template-columns: minmax(0, 1fr);
   }

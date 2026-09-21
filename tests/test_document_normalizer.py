@@ -336,9 +336,7 @@ def test_normalizer_keeps_document_when_filtering_would_remove_all_chapters(capl
 
 
 def test_normalizer_keeps_single_verse_chapter_instead_of_deleting_it(caplog):
-    # Finding 1: a single free-verse poem (one chapter) is low_prose_density and
-    # would filter to nothing, aborting the conversion. A lone readable chapter
-    # that is merely verse/list-shaped must be kept, not deleted.
+    # Low prose density must not cause a one-chapter poem to be discarded.
     document = Document(title="Lone Poem", chapters=[_verse_chapter(1, "Aubade")])
 
     with caplog.at_level(logging.WARNING):
@@ -366,8 +364,7 @@ def test_normalizer_still_filters_lone_copyright_page_to_nothing():
 
 
 def test_normalizer_keeps_minority_poem_chapter_in_prose_book(caplog):
-    # Finding 2: a lone embedded poem chapter inside a multi-chapter prose novel
-    # must survive; deleting it silently loses audio content.
+    # A poem embedded in a prose novel must survive filtering.
     prose = "The room was quiet and the evening settled over the town. " * 8
     chapters = [
         _verse_chapter(10, "Interlude")
@@ -387,7 +384,7 @@ def test_normalizer_keeps_minority_poem_chapter_in_prose_book(caplog):
 
 
 def test_normalizer_splits_overlong_single_paragraph_at_sentence_boundaries():
-    # Finding 4: a hard-wrapped single paragraph above the word cap must fall
+    # A hard-wrapped single paragraph above the word cap must fall
     # back to sentence splitting instead of raising ChapterTooLongError.
     cap = 40
     sentences = [

@@ -1,38 +1,4 @@
-/*
- * ============================================================================
- * Shared UI primitives — the single source of truth for controls app-wide.
- * Feature CSS should CONSUME these class names, not reinvent them.
- *
- *   Labels & text
- *     .field-label / .form-row-label  sentence-case field label (normal weight)
- *     .section-label                  sentence-case section header (shell.css)
- *     .hint / .field-hint             one-line helper text (12px, secondary)
- *     .tabular-nums                   font-variant-numeric for live numbers
- *
- *   Inputs
- *     .field-input                    the one text-input / textarea style
- *     .term-select-btn                the one select (combobox) trigger style
- *
- *   Buttons (three variants only)
- *     .btn                            secondary / bordered (default)
- *     .btn.btn-primary                accent CTA, max one per view
- *     .btn.btn-ghost                  text / row action, no border
- *     .btn.btn-danger                 destructive MODIFIER (pairs with any)
- *
- *   Segmented control
- *     .seg-control > .seg-control-btn  (Auto/Manual, All/Info/Warn/Error)
- *
- *   Layout
- *     .form-grid                      vertical stack of fields (≤ 34rem)
- *     .field                          one label+control pair
- *     .field-row                      two fields side by side (Title + Author)
- *     .empty-state                    quiet no-data message + one action
- *
- * Every interactive element gets the standard accent focus-visible outline
- * (see the :where() rule near the bottom of this file).
- * ============================================================================
- */
-
+/* Shared form controls, buttons, and layout classes. */
 .field-label,
 .form-row-label {
   color: var(--text-secondary);
@@ -102,9 +68,7 @@
   opacity: 0.5;
 }
 
-/* Primary: accent CTA. Colour/weight only — no baked-in layout, so it works
-   inline in a row or full-width via a `.btn-block` wrapper/utility. */
-
+/* Button variants leave width to the surrounding layout. */
 .btn-primary {
   background: var(--accent-soft);
   border-color: color-mix(in srgb, var(--accent) 35%, transparent);
@@ -117,9 +81,6 @@
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
-/* Ghost: text / row action. No border, quiet until hovered. Kept a step
-   brighter than plain secondary text so it never reads as disabled. */
-
 .btn-ghost {
   background: transparent;
   border-color: transparent;
@@ -131,8 +92,6 @@
   border-color: transparent;
   color: var(--text);
 }
-
-/* Full-width utility for a stacked CTA (opt-in, not baked into .btn-primary). */
 
 .btn-block {
   width: 100%;
@@ -165,9 +124,6 @@
   width: 15px;
 }
 
-/* The one helper-text style: a single-line hint under a field. Max one per
-   field. Backend value/status echoes stay a touch quieter (tertiary). */
-
 .hint,
 .field-hint {
   color: var(--text-secondary);
@@ -185,7 +141,6 @@
 }
 
 /* Status lines that echo backend-authored messages arrive lowercase. */
-
 .status-sentence::first-letter {
   text-transform: uppercase;
 }
@@ -250,13 +205,7 @@
   padding: 0;
 }
 
-/*
- * Form layout primitives. `.form-grid` stacks fields with consistent rhythm
- * and caps text width so inputs never stretch the full column. `.field` is one
- * label+control pair; `.field-row` puts two `.field`s side by side (Title +
- * Author, Speed + Quantization) and collapses on narrow widths.
- */
-
+/* .form-grid caps field width; .field-row pairs fields on wider screens. */
 .form-grid {
   display: grid;
   gap: var(--space-3);
@@ -275,12 +224,6 @@
   grid-template-columns: 1fr 1fr;
   min-width: 0;
 }
-
-/*
- * Quiet empty state: a short message and (optionally) one primary action.
- * Use instead of rendering disabled forms / placeholder stat tiles when there
- * is no data.
- */
 
 .empty-state {
   align-items: center;
@@ -306,13 +249,11 @@
 }
 
 /* Live-updating numbers (timecodes, %, counts) stay aligned. */
-
 .tabular-nums {
   font-variant-numeric: tabular-nums;
 }
 
 /* Shared segmented control. */
-
 .seg-control {
   display: inline-flex;
   gap: 0;
@@ -368,12 +309,7 @@
   margin-bottom: 8px;
 }
 
-/*
- * The one disclosure style (rule 5): a summary with a rotating ▸ affordance
- * for collapsed sections ("Advanced", "Maintenance"). Feature CSS consumes
- * `.disclosure`; `.library-disclosure` is a compatibility alias.
- */
-
+/* .library-disclosure shares the common disclosure styles. */
 .disclosure > summary,
 .library-disclosure > summary {
   align-items: center;
@@ -408,8 +344,6 @@
 .disclosure > summary:hover {
   color: var(--text);
 }
-
-/* Disclosure panels share the same flat surface as other sections. */
 
 .disclosure-card {
   background: var(--surface);
@@ -470,7 +404,6 @@
 /*
  * Shared focus ring with low specificity so controls can adjust placement.
  */
-
 :where(
   button,
   [role="button"],
@@ -487,7 +420,6 @@
 }
 
 @media (max-width: 800px) {
-
   .form-row {
     grid-template-columns: 1fr;
   }
@@ -502,7 +434,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-
   .field-input,
   .paste-textarea,
   .term-select-btn,

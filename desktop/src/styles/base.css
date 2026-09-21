@@ -45,7 +45,7 @@
   --density-panel-pad: 16px;
   --density-control-height: 32px;
 
-  /* Vertical rhythm — the only spacing steps forms and cards should use. */
+  /* Shared spacing for forms and cards. */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;

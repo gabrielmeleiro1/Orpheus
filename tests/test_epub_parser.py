@@ -930,7 +930,7 @@ def test_epub_extract_chapters_reapplies_options_after_cached_parse(tmp_path, mo
 
 
 def test_build_epub_sections_handles_bare_link_toc() -> None:
-    # Finding 5: ebooklib can hand back a bare, non-iterable Link for a nav-only
+    # ebooklib can hand back a bare, non-iterable Link for a nav-only
     # spine EPUB. build_epub_sections must not let a raw TypeError escape.
     from ebooklib import epub
 
