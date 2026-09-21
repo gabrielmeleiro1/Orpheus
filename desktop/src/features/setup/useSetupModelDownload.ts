@@ -11,7 +11,7 @@ import {
 } from "./setupModel";
 import { EMPTY_PROGRESS, safeError } from "./setupPageHelpers";
 
-export type SetupDownloadPhase = "idle" | "downloading" | "adopting";
+export type SetupDownloadPhase = "idle" | "starting" | "downloading" | "adopting";
 
 interface UseSetupModelDownloadArgs {
   apiClient: ApiClient | null;
@@ -19,6 +19,8 @@ interface UseSetupModelDownloadArgs {
   downloadPhase: SetupDownloadPhase;
   selection: SetupSelection;
   onReady: (status: RuntimeSetupStatusResponse) => void;
+  onModelDownloadReady?: (status: RuntimeSetupStatusResponse) => void;
+  onDownloadingModel?: (groupId: string | null) => void;
   setDownloadPhase: Dispatch<SetStateAction<SetupDownloadPhase>>;
   setBusy: Dispatch<SetStateAction<boolean>>;
   setError: Dispatch<SetStateAction<string | null>>;
@@ -35,6 +37,8 @@ export function useSetupModelDownload({
   downloadPhase,
   selection,
   onReady,
+  onModelDownloadReady,
+  onDownloadingModel,
   setDownloadPhase,
   setBusy,
   setError,
@@ -43,13 +47,14 @@ export function useSetupModelDownload({
   startLocked,
   lastAttempt,
 }: UseSetupModelDownloadArgs): void {
-  const latest = useRef({ selection, onReady });
-  latest.current = { selection, onReady };
+  const latest = useRef({ selection, onReady, onModelDownloadReady, onDownloadingModel });
+  latest.current = { selection, onReady, onModelDownloadReady, onDownloadingModel };
+  const configureRuntime = useRef(true);
   const completedPlan = useRef<SetupSelection | null>(null);
   // A download that survived a page remount (Settings re-entry, reload) must
   // resume driving the progress UI instead of allowing a second start.
   useEffect(() => {
-    if (environment === null || environment.available || !apiClient) {
+    if (environment === null || !apiClient) {
       return undefined;
     }
     if (typeof apiClient.getRuntimeModelDownloadStatus !== "function") {
@@ -98,12 +103,15 @@ export function useSetupModelDownload({
       }
       if (!active) return;
       pollFailures = 0;
+      latest.current.onDownloadingModel?.(snapshot.current_model_group ?? snapshot.model_groups[0] ?? null);
       setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
       if (snapshot.lifecycle === "complete") {
+        configureRuntime.current = snapshot.configure_runtime !== false;
         const selected = latest.current.selection;
         completedPlan.current = {
           profile: snapshot.profile === "mlx" || snapshot.profile === "cuda" ? snapshot.profile : selected.profile,
           modelGroups: [...snapshot.model_groups],
+          cleanerCudaQuantization: snapshot.cleaner_cuda_quantization ?? selected.cleanerCudaQuantization ?? "4bit",
           acceptPytorchRisk: snapshot.profile === selected.profile && selected.acceptPytorchRisk,
         };
         setDownloadPhase("adopting");
@@ -147,21 +155,35 @@ export function useSetupModelDownload({
     setProgress((previous) => applyProgressEvent(previous, {
       event: "status",
       stage: "verify",
-      message: "Verifying and adopting the runtime…",
+      message: configureRuntime.current ? "Verifying and adopting the runtime…" : "Checking the downloaded model…",
     }));
-    void apiClient.adoptRuntimeSetup(
+    const request = configureRuntime.current ? apiClient.adoptRuntimeSetup(
       {
         profile: plan.profile,
         model_groups: [...plan.modelGroups],
         accept_pytorch_risk: plan.acceptPytorchRisk,
+        cleaner_cuda_quantization: plan.cleanerCudaQuantization ?? "4bit",
       },
-      { timeoutMs: 30_000 },
-    ).then((next) => {
+      { timeoutMs: 120_000 },
+    ) : apiClient.getRuntimeSetupStatus({ timeoutMs: 120_000 });
+    void request.then((next) => {
       if (!active) return;
       setDownloadPhase("idle");
       startLocked.current = false;
       setBusy(false);
       setStatus(next);
+      if (!configureRuntime.current) {
+        const groups = next.installed_runtime?.profile === plan.profile ? next.installed_runtime.model_groups : next.selected_model_groups;
+        if (!plan.modelGroups.every((id) => groups.some((group) => group.id === id && group.assets_ready))) {
+          setError("The download finished, but the model could not be verified. Check runtime and try again.");
+          setProgress((previous) => ({ ...previous, lifecycle: "failed", message: "Model verification failed." }));
+          latest.current.onModelDownloadReady?.(next);
+          return;
+        }
+        setProgress((previous) => applyProgressEvent(previous, { event: "complete", terminal: true, message: "Model installed. Choose the models you want to use, then save." }));
+        latest.current.onModelDownloadReady?.(next);
+        return;
+      }
       if (next.ready && next.state === "ready" && !next.restart_required) {
         setProgress((previous) => applyProgressEvent(previous, {
           event: "complete",
@@ -177,7 +199,7 @@ export function useSetupModelDownload({
       setDownloadPhase("idle");
       startLocked.current = false;
       setBusy(false);
-      setError(safeError(reason, "The runtime could not be adopted after download."));
+      setError(safeError(reason, configureRuntime.current ? "The runtime could not be adopted after download." : "The downloaded model could not be verified. Check runtime to retry."));
     });
     return () => {
       active = false;

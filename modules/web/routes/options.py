@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from pydantic import BaseModel, ConfigDict, Field
 from modules.web.deps import ControllerDep, call_with_http_errors
 
@@ -32,14 +32,37 @@ class ParallelWarmupRequest(BaseModel):
 
 
 @router.get("/api/options/models")
-def get_model_options(controller: ControllerDep) -> dict:
-    return {
+def get_model_options(controller: ControllerDep, request: Request) -> dict:
+    result = {
         "tts_engines": controller.get_available_tts_engines(),
         "cleaner_models": controller.get_available_cleaner_models(),
         "api_cleaner_models": controller.get_available_api_cleaner_models(),
         "cuda_cleaner_models": controller.get_cuda_cleaner_models(),
         "cleaner_backend_options": controller.get_cleaner_backend_options(),
     }
+    # Once setup is configured, conversion offers downloaded local models only.
+    # Installation and removal belong to Settings, not an implicit model load.
+    from modules.web.routes.setup import _get_status_cache, _check_model_group_assets
+    from scripts import setup_runtime
+    from scripts.download_models import MODEL_GROUPS
+
+    state, _ = setup_runtime._read_setup_state(setup_runtime.default_state_path())
+    if state is not None:
+        groups = [group for group in MODEL_GROUPS if group.startswith("cleaner-")]
+        assets = _check_model_group_assets(groups, receipt_verifier=_get_status_cache(request).receipt_verifier)
+        installed = {MODEL_GROUPS[group][0] for group in groups if assets[group]["ready"]}
+        for key in ("cleaner_models", "cuda_cleaner_models"):
+            result[key] = [model for model in result[key] if model in installed]
+        options = []
+        for option in result["cleaner_backend_options"]:
+            option = dict(option)
+            if option.get("is_local"):
+                option["models"] = [model for model in option.get("models", []) if model in installed]
+                if not option["models"]:
+                    continue
+            options.append(option)
+        result["cleaner_backend_options"] = options
+    return result
 
 
 @router.get("/api/options/voices")

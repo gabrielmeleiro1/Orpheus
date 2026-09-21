@@ -768,6 +768,11 @@ fn python_program() -> String {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+        .or_else(|| {
+            resolve_setup_python(&project_root_dir())
+                .ok()
+                .map(|path| path.to_string_lossy().into_owned())
+        })
         .unwrap_or_else(|| "python".to_string())
 }
 

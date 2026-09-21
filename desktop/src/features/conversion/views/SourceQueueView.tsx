@@ -7,6 +7,7 @@ import type {
 } from "../conversionPanelStateTypes";
 import { scrollConversionReviewAnchor, nextConversionReviewScrollState } from "../scrollConversionReviewAnchor";
 import { BrailleSpinner } from "../../../ui/ascii/BrailleSpinner";
+import { Icon } from "../../../ui/icons";
 
 interface SourceQueueViewProps {
   sourceQueue: SourceQueueViewModel;
@@ -40,7 +41,7 @@ export function SourceQueueView({
   }, [hidden, sourceQueue.preflightCard, sourceQueue.queueCount, sourceQueue.sourcePath]);
 
   const metadataFields = (
-    <div className="form-grid">
+    <div className="form-grid conversion-form-grid">
       <div className="field-row">
         <div className="field">
           <label
@@ -92,8 +93,16 @@ export function SourceQueueView({
 
   return (
     <div className="conversion-source-sections">
+      <span className="sr-only" role="status" aria-atomic="true">{[sourceQueue.preflightStatus, sourceQueue.pasteStatus === "Idle" ? "" : sourceQueue.pasteStatus].filter(Boolean).join(". ")}</span>
       <section className="conversion-section conversion-source-section">
-        <h2 className="conversion-group-heading">Source</h2>
+        <div className="conversion-section-header">
+          <h2 className="conversion-group-heading">Source</h2>
+          <p className="conversion-section-hint">
+            {sourceQueue.isDocumentMode
+              ? "Choose a file, or paste text below."
+              : "Add a book file to convert into an audiobook."}
+          </p>
+        </div>
         <input
           ref={sourceQueue.browserFileInputRef}
           type="file"
@@ -103,41 +112,60 @@ export function SourceQueueView({
           tabIndex={-1}
           onChange={actions.onBrowserFilesSelected}
         />
-        <div
-          id="drop-zone"
-          className={`drop-zone${sourceQueue.dragging ? " drag-over" : ""}`}
-          role="button"
-          tabIndex={0}
-          aria-label="Drop file here"
-          onClick={() => void actions.onBrowse()}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
+        <div className="drop-zone-stack">
+          <div
+            id="drop-zone"
+            className={`drop-zone${sourceQueue.dragging ? " drag-over" : ""}`}
+            role="button"
+            tabIndex={0}
+            aria-label="Drop file here"
+            onClick={() => void actions.onBrowse()}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                void actions.onBrowse();
+              }
+            }}
+            onDragOver={(event) => {
               event.preventDefault();
-              void actions.onBrowse();
-            }
-          }}
-          onDragOver={(event) => {
-            event.preventDefault();
-            actions.setDragging(true);
-          }}
-          onDragLeave={(event) => {
-            event.preventDefault();
-            actions.setDragging(false);
-          }}
-          onDrop={actions.onDropZoneDrop}
-        >
-          <span className="drop-zone-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M12 4v11" />
-              <path d="M8 11l4 4 4-4" />
-              <path d="M5 19h14" />
-            </svg>
-          </span>
-          <span className="drop-zone-copy">
-            <strong>{sourceQueue.isDocumentMode ? "Drop document here" : "Drop source here"}</strong>
-            <span>.pdf, .epub, .txt, or .md</span>
-          </span>
-          <span className="btn drop-zone-browse" aria-hidden="true">Browse files</span>
+              actions.setDragging(true);
+            }}
+            onDragLeave={(event) => {
+              event.preventDefault();
+              actions.setDragging(false);
+            }}
+            onDrop={actions.onDropZoneDrop}
+          >
+            <span className="drop-zone-icon" aria-hidden="true">
+              <Icon name="upload" size={22} />
+            </span>
+            <span className="drop-zone-copy">
+              <strong>Drop a file or browse</strong>
+              <span className="drop-zone-formats">.pdf, .epub, .txt, or .md</span>
+            </span>
+            <span className="btn drop-zone-browse" aria-hidden="true">Browse</span>
+          </div>
+
+          <details
+            className="manual-path"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <summary className="btn btn-ghost btn-sm manual-path-toggle">Enter path manually</summary>
+            <input
+              id="source-path"
+              aria-label="Source path"
+              className="field-input"
+              type="text"
+              placeholder={sourceQueue.sourcePathPlaceholder}
+              value={sourceQueue.sourcePath}
+              onChange={(event) => {
+                const nextValue = event.target.value;
+                actions.setSourcePath(nextValue);
+                actions.syncSelectedQueueEdits({ sourcePath: nextValue });
+                actions.clearFormError();
+              }}
+            />
+          </details>
         </div>
 
         {sourceQueue.sourcePath ? (
@@ -150,7 +178,7 @@ export function SourceQueueView({
             </span>
             <button
               id="preflight-source-btn"
-              className="btn btn-ghost btn-compact"
+              className="btn btn-ghost"
               type="button"
               disabled={!capabilities.canInspectSource}
               data-tip="Analyze the source — chapters, length, warnings — without converting"
@@ -161,31 +189,22 @@ export function SourceQueueView({
           </div>
         ) : null}
 
-        <details className="manual-path">
-          <summary>Enter path manually</summary>
-          <input
-            id="source-path"
-            aria-label="Source path"
-            className="field-input"
-            type="text"
-            placeholder={sourceQueue.sourcePathPlaceholder}
-            value={sourceQueue.sourcePath}
-            onChange={(event) => {
-              const nextValue = event.target.value;
-              actions.setSourcePath(nextValue);
-              actions.syncSelectedQueueEdits({ sourcePath: nextValue });
-              actions.clearFormError();
-            }}
-          />
-        </details>
+        {sourceQueue.isDocumentMode ? (
+          <div className="source-or-divider" aria-hidden="true">
+            <span>or</span>
+          </div>
+        ) : null}
 
         {sourceQueue.isDocumentMode ? (
           <div className="panel-section paste-panel" aria-label="Paste markdown source">
             <div className="paste-header">
-              <span>Paste text</span>
+              <div className="paste-header-copy">
+                <span className="paste-title">Paste text</span>
+                <span className="field-hint">Skip the file picker and narrate pasted Markdown or plain text.</span>
+              </div>
               <button
                 id="add-pasted-text-btn"
-                className="btn btn-compact"
+                className="btn"
                 type="button"
                 disabled={!capabilities.canAddPastedText}
                 data-tip="Queue the pasted text as a document source"
@@ -205,7 +224,7 @@ export function SourceQueueView({
               />
               <div className="field-row">
                 <div className="field">
-                  <label className="field-label" htmlFor="paste-title-input">Title</label>
+                  <label className="field-label" htmlFor="paste-title-input">Title for this paste</label>
                   <input
                     id="paste-title-input"
                     aria-label="Paste title"
@@ -217,7 +236,7 @@ export function SourceQueueView({
                   />
                 </div>
                 <div className="field">
-                  <label className="field-label" htmlFor="paste-author-input">Author</label>
+                  <label className="field-label" htmlFor="paste-author-input">Author for this paste</label>
                   <input
                     id="paste-author-input"
                     aria-label="Paste author"
@@ -233,7 +252,7 @@ export function SourceQueueView({
             {sourceQueue.pasteStatus && sourceQueue.pasteStatus !== "Idle" ? (
               <p id="paste-source-status" className="field-hint">{sourceQueue.pasteStatus}</p>
             ) : (
-              <p className="hint">Optional metadata applies only to this paste.</p>
+              <p className="hint">These fields apply only when you add pasted text — not to a chosen file.</p>
             )}
           </div>
         ) : null}
@@ -243,22 +262,11 @@ export function SourceQueueView({
         <section className="conversion-section queue-panel" aria-label="Conversion queue">
           <div className="queue-header">
             <span>{`Queue · ${sourceQueue.queueCount}`}</span>
-            {capabilities.showRunQueue ? (
-              <button
-                id="run-queue-btn"
-                className="btn btn-primary btn-block"
-                type="button"
-                disabled={!capabilities.canRunQueue}
-                onClick={() => void actions.onRunQueue()}
-              >
-                {sourceQueue.queueRunning ? "Running…" : "Run queue"}
-              </button>
-            ) : null}
           </div>
           <div className="queue-list">
             {sourceQueue.queueItems.map((item) => (
               <div key={item.id} className={`queue-row${item.selected ? " is-selected" : ""}`}>
-                <button className="queue-item-main" type="button" onClick={() => actions.selectQueueItem(item.id)}>
+                <button className="queue-item-main" type="button" aria-pressed={item.selected} onClick={() => actions.selectQueueItem(item.id)}>
                   <span className="queue-item-title">{item.title}</span>
                   <span className={item.statusClassName}>
                     {item.converting ? <BrailleSpinner active className="queue-spinner" /> : null}
@@ -266,20 +274,19 @@ export function SourceQueueView({
                   </span>
                 </button>
                 <div className="queue-item-actions">
-                  <button className="btn btn-compact" type="button" disabled={!item.canMoveUp} onClick={() => actions.moveQueueItem(item.id, -1)}>
+                  <button className="btn btn-sm" type="button" disabled={!item.canMoveUp} onClick={() => actions.moveQueueItem(item.id, -1)}>
                     Up
                   </button>
-                  <button className="btn btn-compact" type="button" disabled={!item.canMoveDown} onClick={() => actions.moveQueueItem(item.id, 1)}>
+                  <button className="btn btn-sm" type="button" disabled={!item.canMoveDown} onClick={() => actions.moveQueueItem(item.id, 1)}>
                     Down
                   </button>
-                  <button className="btn btn-compact" type="button" disabled={!item.canRemove} onClick={() => actions.removeQueueItem(item.id)}>
+                  <button className="btn btn-sm" type="button" disabled={!item.canRemove} onClick={() => actions.removeQueueItem(item.id)}>
                     Remove
                   </button>
                 </div>
               </div>
             ))}
           </div>
-          <span className="field-hint">{sourceQueue.queueStatus}</span>
         </section>
       ) : null}
 
@@ -287,8 +294,15 @@ export function SourceQueueView({
         {sourceQueue.formError}
       </div>
 
-      <section ref={reviewAnchorRef} id="conversion-review-anchor" className="conversion-section details-section form-section">
-        {!sourceQueue.isDocumentMode ? <h2 className="conversion-group-heading">Details</h2> : null}
+      <section ref={reviewAnchorRef} id="conversion-review-anchor" className="conversion-section details-section">
+        <div className="conversion-section-header">
+          <h2 className="conversion-group-heading">Details</h2>
+          <p className="conversion-section-hint">
+            {sourceQueue.isDocumentMode
+              ? "Optional title and author for a chosen file. Pasted text uses its own fields above."
+              : "Optional metadata overrides for the selected source."}
+          </p>
+        </div>
         {sourceQueue.preflightCard ? (
           <div className="panel-section preflight-card">
             <div className="preflight-title">
@@ -313,7 +327,7 @@ export function SourceQueueView({
                 ? `Source cannot be converted — ${sourceQueue.preflightCard.blockingReason}`
                 : capabilities.showStartConversion
                   ? "Source ready — use Start conversion below."
-                  : "Source ready — use Run queue above."}
+                  : "Source ready — use Run queue below."}
             </p>
           </div>
         ) : sourceQueue.preflightStatus ? (
@@ -321,9 +335,13 @@ export function SourceQueueView({
         ) : null}
 
         {sourceQueue.isDocumentMode ? (
-          <details className="metadata-overrides disclosure">
-            <summary>Details <span className="field-hint">Optional metadata overrides</span></summary>
-            {metadataFields}
+          <details className="metadata-overrides disclosure disclosure-card">
+            <summary>
+              <span>Edit title &amp; author</span>
+            </summary>
+            <div className="metadata-overrides-body">
+              {metadataFields}
+            </div>
           </details>
         ) : metadataFields}
       </section>

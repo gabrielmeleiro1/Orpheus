@@ -150,6 +150,23 @@ class PDFParser:
         try:
             pages_data = self._extract_pages()
         except Exception as e:
+            # PyMuPDF can retain a native file stream in its constructor's
+            # traceback after rejecting a corrupt PDF. Release frame locals
+            # across the cause chain so even a retained UI/test exception does
+            # not keep the source locked on Windows. Stack locations survive.
+            import traceback
+
+            pending = [e]
+            seen = set()
+            while pending:
+                error = pending.pop()
+                if id(error) in seen:
+                    continue
+                seen.add(id(error))
+                traceback.clear_frames(error.__traceback__)
+                pending.extend(
+                    cause for cause in (error.__cause__, error.__context__) if cause is not None
+                )
             raise PDFParsingError(
                 message=f"Failed to extract markdown: {str(e)}",
                 file_path=self.file_path
@@ -297,7 +314,13 @@ class PDFParser:
 
     def _extract_pymupdf4llm_pages(self) -> list[dict[str, str]]:
         """Extract markdown page chunks through the legacy PyMuPDF4LLM path."""
-        pages_data = pymupdf4llm.to_markdown(str(self.file_path), page_chunks=True)
+        import fitz
+
+        # Own the document lifetime: PyMuPDF4LLM can retain an opened file in
+        # an exception traceback when malformed input fails during extraction.
+        # On Windows that prevents upload cleanup and keeps the source locked.
+        with fitz.open(self.file_path) as doc:
+            pages_data = pymupdf4llm.to_markdown(doc, page_chunks=True)
         return [
             dict(page) if isinstance(page, dict) else {"text": str(page)}
             for page in pages_data

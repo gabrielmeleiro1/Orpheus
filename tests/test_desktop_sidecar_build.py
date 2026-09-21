@@ -447,6 +447,68 @@ def test_explicit_runtime_profile_wins_over_environment(monkeypatch) -> None:
     )
 
 
+@pytest.mark.parametrize("previous", ["base", "cuda"])
+def test_rebuild_keeps_previous_runtime_without_override(tmp_path, monkeypatch, previous) -> None:
+    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
+    (tmp_path / "runtime-profile.json").write_text(json.dumps({"profile": previous}))
+
+    assert build_desktop_backend._resolve_build_runtime_profile(
+        "x86_64-pc-windows-msvc", None
+    ) == previous
+
+
+@pytest.mark.parametrize("override", ["cli", "environment"])
+def test_rebuild_allows_explicit_downgrade_to_base(tmp_path, monkeypatch, override) -> None:
+    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
+    (tmp_path / "runtime-profile.json").write_text('{"profile":"cuda"}')
+    if override == "environment":
+        monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "base")
+
+    assert build_desktop_backend._resolve_build_runtime_profile(
+        "x86_64-pc-windows-msvc", "base" if override == "cli" else None
+    ) == "base"
+
+
+def test_first_build_uses_platform_default(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
+    assert build_desktop_backend._resolve_build_runtime_profile(
+        "x86_64-pc-windows-msvc", None
+    ) == "base"
+
+
+def test_main_rebuild_passes_preserved_cuda_profile_to_every_build_step(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
+    (tmp_path / "runtime-profile.json").write_text('{"profile":"cuda"}')
+    monkeypatch.setattr(build_desktop_backend, "_parse_args", lambda: SimpleNamespace(
+        target_triple="x86_64-pc-windows-msvc", runtime_profile=None,
+        python="python", no_clean=False, validate_existing=False,
+    ))
+    monkeypatch.setattr(build_desktop_backend, "_validate_pyinstaller_target_matches_host", lambda _: None)
+    validate = MagicMock(return_value={})
+    build = MagicMock()
+    stage = MagicMock(return_value=tmp_path / "backend.exe")
+    monkeypatch.setattr(build_desktop_backend, "_validate_runtime_dependencies", validate)
+    monkeypatch.setattr(build_desktop_backend, "_run_pyinstaller", build)
+    monkeypatch.setattr(build_desktop_backend, "_copy_sidecar_for_tauri", stage)
+
+    assert build_desktop_backend.main() == 0
+    for step in (validate, build, stage):
+        assert step.call_args.kwargs["runtime_profile"] == "cuda"
+
+
+@pytest.mark.parametrize("marker", ['{"profile":"mlx"}', '{"profile":"unknown"}', '{}', '[]', 'bad json'])
+def test_rebuild_requires_override_for_invalid_or_incompatible_marker(tmp_path, monkeypatch, marker) -> None:
+    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
+    (tmp_path / "runtime-profile.json").write_text(marker)
+    with pytest.raises(RuntimeError, match="ORPHEUS_RUNTIME_PROFILE"):
+        build_desktop_backend._resolve_build_runtime_profile("x86_64-pc-windows-msvc", None)
+
+
 def test_invalid_environment_runtime_profile_fails_before_dependency_probes(monkeypatch) -> None:
     monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "bogus")
     monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")

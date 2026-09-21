@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import type { CleaningPreviewResponse, LibraryChapterDetail } from "../../types/api";
 import { formatDurationClock } from "../../format/time";
+import { Icon } from "../../ui/icons";
 import { TermSelect } from "../conversion/TermSelect";
 import { chapterPlaybackStatusLabel } from "../player/chapterPlaybackLabel";
 import type { UseLibraryResult } from "./useLibrary";
@@ -84,6 +85,7 @@ export function LibraryPanel({
     showEmpty || (!library.loadingDetail && library.statusMessage.startsWith("Selected:"));
   const showDetailStatus =
     !library.errorMessage && !isRedundantStatus && (Boolean(library.statusMessage) || library.loadingDetail);
+  const bookCountLabel = `${library.items.length}${library.hasMore ? "+" : ""} ${library.items.length === 1 ? "book" : "books"}`;
 
   return (
     <section
@@ -94,51 +96,57 @@ export function LibraryPanel({
       aria-labelledby="tab-btn-library"
       hidden={hidden}
     >
-      <div className="library-count">
-        <span className="panel-header-meta">{library.items.length}{library.hasMore ? "+" : ""} {library.items.length === 1 ? "book" : "books"}</span>
+      <div className="page-toolbar library-toolbar" aria-label="Library filters">
+        <div className="library-search-wrap">
+          <Icon name="search" className="library-search-icon" />
+          <label className="sr-only" htmlFor="library-search">
+            Search
+          </label>
+          <input
+            id="library-search"
+            className="field-input library-search-field"
+            type="search"
+            placeholder="Title or author…"
+            value={library.searchQuery}
+            onChange={(event) => library.setSearchQuery(event.target.value)}
+          />
+        </div>
+
+        <TermSelect
+          id="library-mode-filter"
+          className="library-mode-filter"
+          label="Library type filter"
+          value={library.modeFilter}
+          options={LIBRARY_MODE_OPTIONS}
+          placeholder="All types"
+          onChange={(value) => library.setModeFilter(value as typeof library.modeFilter)}
+        />
+
+        <button
+          className="icon-btn is-bordered library-refresh-btn"
+          type="button"
+          disabled={library.loadingList}
+          aria-label="Refresh library"
+          data-tip="Reload the library index"
+          data-tip-pos="bottom"
+          onClick={() => void library.refreshLibrary()}
+        >
+          <Icon name="refresh" />
+        </button>
+
+        <span className="page-toolbar-spacer" />
+
+        <span className="library-count tabular-nums" aria-live="polite">
+          {bookCountLabel}
+        </span>
       </div>
 
       <div className={`library-workspace${showEmpty ? " is-empty" : ""}`}>
         <aside className="panel-section library-sidebar" aria-label="Library navigation">
-          <div className="library-search-row">
-            <label className="sr-only" htmlFor="library-search">
-              Search
-            </label>
-            <input
-              id="library-search"
-              className="field-input library-search-field"
-              type="text"
-              placeholder="Title or author…"
-              value={library.searchQuery}
-              onChange={(event) => library.setSearchQuery(event.target.value)}
-            />
-          </div>
-
-          <div className="library-filter-row">
-            <TermSelect
-              id="library-mode-filter"
-              label="Library type filter"
-              value={library.modeFilter}
-              options={LIBRARY_MODE_OPTIONS}
-              placeholder="All types"
-              onChange={(value) => library.setModeFilter(value as typeof library.modeFilter)}
-            />
-            <button
-              className="btn btn-ghost btn-compact library-refresh-btn"
-              type="button"
-              disabled={library.loadingList}
-              data-tip="Reload the library index"
-              data-tip-pos="bottom"
-              onClick={() => void library.refreshLibrary()}
-            >
-              Refresh
-            </button>
-          </div>
-
           {showPager ? (
             <div className="library-pager">
               <button
-                className="btn btn-ghost btn-compact"
+                className="btn btn-ghost"
                 type="button"
                 disabled={library.selectedBookIndex <= 0}
                 onClick={() => void library.selectRelative(-1)}
@@ -146,7 +154,7 @@ export function LibraryPanel({
                 Previous
               </button>
               <button
-                className="btn btn-ghost btn-compact"
+                className="btn btn-ghost"
                 type="button"
                 disabled={
                   library.selectedBookIndex < 0
@@ -164,16 +172,18 @@ export function LibraryPanel({
             {showEmpty ? (
               library.indexedCount === 0 ? (
                 <div className="empty-state library-empty">
+                  <span className="empty-state-icon" aria-hidden="true"><Icon name="library" /></span>
                   <p className="empty-state-title">No audiobooks yet</p>
                   <p className="empty-state-hint">Convert a book or document to build your library.</p>
                   {onStartConvert ? (
-                    <button className="btn btn-primary btn-compact" type="button" onClick={onStartConvert}>
+                    <button className="btn btn-primary" type="button" onClick={onStartConvert}>
                       Convert a source
                     </button>
                   ) : null}
                 </div>
               ) : (
                 <div className="empty-state library-empty">
+                  <span className="empty-state-icon" aria-hidden="true"><Icon name="search" /></span>
                   <p className="empty-state-title">No matches</p>
                   <p className="empty-state-hint">Try a different search or filter.</p>
                 </div>
@@ -203,7 +213,7 @@ export function LibraryPanel({
             ) : null}
             {library.hasMore ? (
               <button
-                className="btn btn-ghost btn-compact library-load-more"
+                className="btn btn-ghost library-load-more"
                 type="button"
                 disabled={library.loadingMore}
                 data-tip="Fetch the next page of books"
@@ -282,10 +292,10 @@ export function LibraryPanel({
               <div className="library-detail-actions">
                 <button
                   id="library-save-metadata-btn"
-                  className="btn btn-primary btn-compact"
+                  className="btn btn-primary"
                   type="button"
                   disabled={detailTransitionPending}
-                  data-tip="Write title, author, and tags into the audio files"
+                  data-tip="Save title, author, and tags in your library"
                   onClick={() =>
                     void library.updateSelectedBookMetadata({
                       title: editTitle,
@@ -298,7 +308,7 @@ export function LibraryPanel({
                 </button>
                 <button
                   id="library-open-folder-btn"
-                  className="btn btn-ghost btn-compact"
+                  className="btn"
                   type="button"
                   disabled={detailTransitionPending || !library.selectedBookId}
                   data-tip="Reveal the exported audio in the file manager"
@@ -309,7 +319,7 @@ export function LibraryPanel({
                 <div className="library-detail-actions-danger">
                   <button
                     id="library-repair-btn"
-                    className="btn btn-ghost btn-compact"
+                    className="btn btn-ghost"
                     type="button"
                     disabled={detailTransitionPending || !library.selectedBookId}
                     data-tip="Re-synthesize chapters whose audio files are missing. Needs the original source."
@@ -324,7 +334,7 @@ export function LibraryPanel({
                       </span>
                       <button
                         id="library-delete-cancel-btn"
-                        className="btn btn-ghost btn-compact"
+                        className="btn btn-ghost"
                         type="button"
                         onClick={() => setDeleteConfirmationBookId(null)}
                       >
@@ -332,7 +342,7 @@ export function LibraryPanel({
                       </button>
                       <button
                         id="library-delete-confirm-btn"
-                        className="btn btn-danger btn-compact"
+                        className="btn btn-danger"
                         type="button"
                         disabled={detailTransitionPending}
                         onClick={() => {
@@ -346,7 +356,7 @@ export function LibraryPanel({
                   ) : (
                     <button
                       id="library-delete-btn"
-                      className="btn btn-danger btn-compact"
+                      className="btn btn-danger"
                       type="button"
                       disabled={detailTransitionPending || !library.selectedBookId}
                       data-tip="Remove this book and its audio from the library"
@@ -368,7 +378,7 @@ export function LibraryPanel({
                       const isCurrent = chapter.number === currentChapterNumber;
                       const playbackLabel = chapterPlaybackStatusLabel({ isCurrent, playing });
                       return (
-                        <div key={chapter.id} className={`chapter-row${isCurrent ? " is-current" : ""}`}>
+                        <div key={chapter.id} className={`chapter-row${isCurrent ? " is-current" : ""}${isCurrent && playing ? " is-playing" : ""}`}>
                           <button
                             type="button"
                             className="chapter-main"
@@ -382,6 +392,9 @@ export function LibraryPanel({
                             onClick={() => onJumpToChapter?.(chapter)}
                             disabled={detailTransitionPending || !onJumpToChapter}
                           >
+                            <span className="chapter-play-affordance" aria-hidden="true">
+                              <Icon name="play" size={14} />
+                            </span>
                             <span className="chapter-number tabular-nums">{String(chapter.number).padStart(2, "0")}</span>
                             <span className="chapter-title">
                               {chapter.title || `Chapter ${chapter.number}`}
@@ -389,7 +402,7 @@ export function LibraryPanel({
                             <span className="chapter-duration tabular-nums">{formatDurationClock(chapter.duration_ms)}</span>
                           </button>
                           <button
-                            className="btn btn-ghost btn-compact chapter-cleaned-btn"
+                            className="btn btn-ghost btn-sm chapter-cleaned-btn"
                             type="button"
                             disabled={detailTransitionPending || cleaningPreviewLoading}
                             data-tip="Compare this chapter's text before and after cleaning"
@@ -414,7 +427,7 @@ export function LibraryPanel({
               ) : null}
             </>
           ) : showEmpty ? null : (
-            <div className="empty-state">
+            <div className="empty-state library-detail-empty">
               <p className="empty-state-title">No book selected</p>
               <p className="empty-state-hint">
                 Choose a book from the list to see its chapters, edit its details, and play it.

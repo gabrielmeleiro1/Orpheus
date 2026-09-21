@@ -759,6 +759,10 @@ def clean_environment(source: Mapping[str, str] | None = None) -> dict[str, str]
     allowed = (
         "PATH",
         "HOME",
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "PROGRAMFILES",
         "TMPDIR",
         "TEMP",
         "TMP",
@@ -1028,6 +1032,13 @@ def _run_profile(
         ),
     ]
     venv_python = _venv_python(environment)
+    install_arguments = ["-m", "pip", "install", "-r", str(runtime.requirements_file)]
+    if profile == "cuda":
+        from scripts.setup_runtime import build_install_plan
+
+        # Verify the same CUDA wheel selection used by the desktop installer.
+        # Installing just cuda.txt can silently choose PyPI's CPU-only torch.
+        install_arguments = list(build_install_plan(profile).pip_command[1:])
     commands.extend(
         [
             (
@@ -1040,12 +1051,8 @@ def _run_profile(
                 "install",
                 [
                     str(venv_python),
-                    "-m",
-                    "pip",
-                    "install",
+                    *install_arguments,
                     "--no-compile",
-                    "-r",
-                    str(runtime.requirements_file),
                 ],
                 install_timeout,
                 "profile manifest installed",

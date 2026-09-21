@@ -161,7 +161,8 @@ def test_default_cuda_quantization_dependency_is_declared():
     assert "accelerate" in requirements
 
 
-def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch):
+@pytest.mark.parametrize("use_chat_template", [False, True])
+def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch, use_chat_template):
     import modules.tts.cleaner_cuda as cleaner_cuda_module
 
     fake_torch = make_fake_torch_module(cuda_available=True)
@@ -201,8 +202,21 @@ def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch):
     class _FakeTokenizer:
         pad_token_id = 0
         eos_token_id = 2
+        chat_template = "model chat template" if use_chat_template else None
+
+        def apply_chat_template(self, messages, **kwargs):
+            assert use_chat_template
+            assert messages == [{"role": "user", "content": "prompt text"}]
+            assert kwargs == {
+                "add_generation_prompt": True,
+                "tokenize": True,
+                "return_dict": True,
+                "return_tensors": "pt",
+            }
+            return {"input_ids": _FakeTensor(shape=[1, 5])}
 
         def __call__(self, prompt, return_tensors="pt"):
+            assert not use_chat_template
             _ = prompt, return_tensors
             return {"input_ids": _FakeTensor(shape=[1, 5])}
 
@@ -228,6 +242,7 @@ def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch):
     assert generate_kwargs["max_new_tokens"] == 128
     assert generate_kwargs["temperature"] == 0.35
     assert generate_kwargs["do_sample"] is True
+    assert generate_kwargs["pad_token_id"] == 0
 
 
 def test_model_cache_hit_skips_reload_when_cache_model_true(monkeypatch):

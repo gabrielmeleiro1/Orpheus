@@ -97,7 +97,7 @@ _RUNTIME_PROFILES = (
         label="Apple Silicon (MLX)",
         description="Private local TTS and cleaning for macOS 14+ on arm64 Apple Silicon.",
         requirements_file=_REQUIREMENTS_DIR / "mlx.txt",
-        model_groups=("tts-mlx", "cleaner-mlx"),
+        model_groups=("tts-mlx", "cleaner-mlx", "cleaner-mlx-small"),
         platform_kind="apple-silicon",
     ),
     RuntimeProfile(
@@ -108,7 +108,7 @@ _RUNTIME_PROFILES = (
             "a supported NVIDIA GPU and driver probe."
         ),
         requirements_file=_REQUIREMENTS_DIR / "cuda.txt",
-        model_groups=("tts-cpu-cuda", "cleaner-cuda"),
+        model_groups=("tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"),
         platform_kind="nvidia-cuda",
         risk=None,
     ),

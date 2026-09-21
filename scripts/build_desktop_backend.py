@@ -125,7 +125,8 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Runtime bundled into the sidecar. Explicit CLI selection overrides "
             "ORPHEUS_RUNTIME_PROFILE; otherwise the environment value is used, "
-            "then mlx for Apple Silicon targets or base elsewhere."
+            "then the previous sidecar's profile, or mlx for a new Apple Silicon "
+            "build and base elsewhere."
         ),
     )
     parser.add_argument(
@@ -307,6 +308,27 @@ def _resolve_runtime_profile(target_triple: str, runtime_profile: str | None) ->
     if profile == "cuda" and _target_os(target_triple) not in {"linux", "windows"}:
         raise RuntimeError("The CUDA runtime profile requires a Linux or Windows target.")
     return profile
+
+
+def _resolve_build_runtime_profile(target_triple: str, runtime_profile: str | None) -> str:
+    """Keep the previously packaged runtime when rebuilding without an override."""
+    if runtime_profile is not None or os.getenv("ORPHEUS_RUNTIME_PROFILE", "").strip():
+        return _resolve_runtime_profile(target_triple, runtime_profile)
+
+    marker = TAURI_SIDECAR_RESOURCE_DIR / RUNTIME_PROFILE_RESOURCE
+    if not marker.exists():
+        return _resolve_runtime_profile(target_triple, None)
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+        previous = payload.get("profile") if isinstance(payload, dict) else None
+        if not isinstance(previous, str) or not previous.strip():
+            raise ValueError("missing profile")
+        return _resolve_runtime_profile(target_triple, previous)
+    except (OSError, ValueError, RuntimeError) as exc:
+        raise RuntimeError(
+            "Cannot reuse the previous sidecar runtime profile. Set "
+            "ORPHEUS_RUNTIME_PROFILE to base, mlx, or cuda explicitly before rebuilding."
+        ) from exc
 
 
 def required_modules(
@@ -1120,7 +1142,7 @@ def main() -> int:
         return 0
 
     _validate_pyinstaller_target_matches_host(target_triple)
-    runtime_profile = _resolve_runtime_profile(target_triple, args.runtime_profile)
+    runtime_profile = _resolve_build_runtime_profile(target_triple, args.runtime_profile)
     ffmpeg_binaries = _validate_runtime_dependencies(
         args.python,
         target_triple=target_triple,

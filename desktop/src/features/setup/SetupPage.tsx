@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
+import { invalidateRuntimeBootstrap } from "../../app/runtimeBootstrapCache";
 import {
   cancelRuntimeSetup,
   getRuntimeSetupEnvironment,
@@ -19,10 +20,13 @@ import {
   acquireSetupStart,
   backendInstallProfileId,
   canStartSetup,
+  createSelection,
   diagnosticsSnapshot,
   modelDownloadProgressEvent,
   profileChoices,
   selectionEstimate,
+  selectionMatchesConfigured,
+  selectionReadiness,
   type SetupProgressEvent,
   type SetupProgressState,
 } from "./setupModel";
@@ -33,6 +37,7 @@ import {
   safeError,
 } from "./setupPageHelpers";
 import { SetupDangerZone } from "./SetupDangerZone";
+import { SetupModelManager } from "./SetupModelManager";
 import { SetupPlanSection } from "./SetupPlanSection";
 import { SetupProgressSection } from "./SetupProgressSection";
 import { SetupRecoveryNotice } from "./SetupRecoveryNotice";
@@ -88,7 +93,7 @@ export function SetupPage({
     onReady(next);
   }, [onReady]);
   const { status, setStatus, selection, setSelection, error, setError, refreshStatus } = useSetupStatus({
-    apiClient, initialStatus, initialError, onReady: handleReady,
+    apiClient, initialStatus, initialError, onReady: handleReady, preserveSelection: settingsEntry,
   });
   const [busy, setBusy] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy diagnostics");
@@ -100,17 +105,29 @@ export function SetupPage({
   const [listenerAttempt, setListenerAttempt] = useState(0);
   const [awaitingReconnect, setAwaitingReconnect] = useState(false);
   const [adopting, setAdopting] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [managingModels, setManagingModels] = useState(false);
+  const [downloadingGroup, setDownloadingGroup] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(settingsEntry);
   const [downloadPhase, setDownloadPhase] = useState<SetupDownloadPhase>("idle");
   const [statusRefreshing, setStatusRefreshing] = useState(false);
   const startLocked = useRef(false);
   const restartLocked = useRef(false);
+  const adoptLocked = useRef(false);
+  const adoptGeneration = useRef(0);
   const lastAttempt = useRef<"backend" | "bridge" | null>(null);
   const statusRefreshLock = useRef(false);
   const preRestartClient = useRef<ApiClient | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
   const setupHeadingRef = useRef<HTMLHeadingElement>(null);
   const progressHeadingRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    adoptGeneration.current += 1;
+    adoptLocked.current = false;
+    setAdopting(false);
+    setManagingModels(false);
+    return () => { adoptGeneration.current += 1; };
+  }, [apiClient]);
 
   const applyRunnerSnapshot = useCallback((runner: RuntimeSetupRunnerStatus) => {
     setProgress((previous) => applyRunnerStatus(previous, runner));
@@ -211,6 +228,11 @@ export function SetupPage({
     downloadPhase,
     selection,
     onReady,
+    onModelDownloadReady: (next) => {
+      if (apiClient) invalidateRuntimeBootstrap(apiClient);
+      onReady(next);
+    },
+    onDownloadingModel: setDownloadingGroup,
     setDownloadPhase,
     setBusy,
     setError,
@@ -241,7 +263,7 @@ export function SetupPage({
   }, [progress.lifecycle, settingsEntry, status]);
 
   useEffect(() => {
-    if (!environment?.available || !busy || awaitingReconnect) return undefined;
+    if (!environment?.available || !busy || awaitingReconnect || downloadPhase !== "idle") return undefined;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
     const poll = async () => {
@@ -253,7 +275,7 @@ export function SetupPage({
       active = false;
       clearTimeout(timer);
     };
-  }, [awaitingReconnect, busy, environment?.available, refreshRunner]);
+  }, [awaitingReconnect, busy, downloadPhase, environment?.available, refreshRunner]);
 
   useEffect(() => {
     if (!awaitingReconnect || !apiClient || apiClient === preRestartClient.current) {
@@ -294,14 +316,15 @@ export function SetupPage({
   const installedReadyGroups = installedReady
     ? installedRuntime!.model_groups.filter((group) => group.ready).map((group) => group.id)
     : [];
-  const riskProfile = installedReady ? installedProfile : selectedProfile;
-  const showRiskBlock = installedReady
+  const riskProfile = installedReady && !settingsEntry ? installedProfile : selectedProfile;
+  const showRiskBlock = installedReady && !settingsEntry
     ? Boolean(installedIsCuda && installedProfile?.risk)
     : selection.profile === "cuda" && Boolean(selectedProfile?.risk);
-  const adoptDisabled = adopting || Boolean(installedProfile?.risk && !selection.acceptPytorchRisk);
-  const readyToStart = Boolean(listenerReady && runnerReconciled && mutationsAvailable && status && canStartSetup(selection, status) && !busy && !startLocked.current);
+  const adoptDisabled = busy || adopting || Boolean(installedProfile?.risk && !selection.acceptPytorchRisk);
+  const readyToStart = Boolean(listenerReady && runnerReconciled && mutationsAvailable && status && canStartSetup(selection, status) && !busy && !adopting && !startLocked.current);
   const packagedMode = environment !== null && !mutationsAvailable;
   const backendInstallProfile = backendInstallProfileId(mutationsAvailable, installedRuntime);
+  const selectedReadiness = status ? selectionReadiness(selection, status) : { runtimeReady: false, ready: false };
   const backendReadyToStart = Boolean(
     apiClient
     && status
@@ -314,7 +337,10 @@ export function SetupPage({
   const showRestart = awaitingReconnect || Boolean(status?.restart_required) || progress.restartRequired;
   const progressValue = progress.percent === null ? undefined : progress.percent;
 
-  const selectedEstimate = selectionEstimate(selection.modelGroups);
+  const cachedGroups = installedRuntime?.profile === selection.profile ? installedRuntime.model_groups
+    : status?.selected_profile === selection.profile ? status.selected_model_groups : [];
+  const missingGroups = selection.modelGroups.filter((id) => !cachedGroups.some((group) => group.id === id && group.assets_ready));
+  const selectedEstimate = missingGroups.length ? selectionEstimate(missingGroups) : "Already downloaded · no download needed";
   const progressMessage = showRestart && (progress.lifecycle === "idle" || progress.lifecycle === "complete") && !awaitingReconnect
     ? "Installation complete. Restart Orpheus to load the selected runtime."
     : progress.message;
@@ -329,6 +355,7 @@ export function SetupPage({
       const runner = await bridge.start({
         profile: selection.profile,
         modelGroups: [...selection.modelGroups],
+        cleanerCudaQuantization: selection.cleanerCudaQuantization ?? "4bit",
         acceptPytorchRisk: selection.acceptPytorchRisk,
       });
       const running = applyRunnerSnapshot(runner);
@@ -344,14 +371,15 @@ export function SetupPage({
   };
 
   const installFromBackend = async (): Promise<boolean> => {
-    if (!apiClient || !status || selection.profile !== backendInstallProfile || !canStartSetup(selection, status) || !acquireSetupStart(startLocked)) return false;
+    if (!apiClient || !status || selection.profile !== backendInstallProfile || !selectedReadiness.runtimeReady || !acquireSetupStart(startLocked)) return false;
     lastAttempt.current = "backend";
+    setDownloadPhase("starting");
     setBusy(true);
     setError(null);
     setProgress({ ...EMPTY_PROGRESS, lifecycle: "running", message: "Starting model downloads…" });
     try {
       await apiClient.startRuntimeModelDownload(
-        { profile: selection.profile, model_groups: [...selection.modelGroups] },
+        { profile: selection.profile, model_groups: [...selection.modelGroups], cleaner_cuda_quantization: selection.cleanerCudaQuantization ?? "4bit" },
         { timeoutMs: 15_000 },
       );
       setDownloadPhase("downloading");
@@ -359,10 +387,40 @@ export function SetupPage({
       startLocked.current = false;
       setBusy(false);
       const message = safeError(reason, "Model downloads could not start.");
+      setDownloadPhase("idle");
       setError(message);
       setProgress((previous) => ({ ...previous, lifecycle: "failed", message }));
     }
     return true;
+  };
+
+  const installModel = async (profile: "base" | "mlx" | "cuda", groupId: string) => {
+    if (!apiClient || busy || adopting || managingModels || !acquireSetupStart(startLocked)) return;
+    lastAttempt.current = null;
+    setDownloadPhase("starting");
+    setBusy(true);
+    setError(null);
+    setDownloadingGroup(groupId);
+    setProgress({ ...EMPTY_PROGRESS, lifecycle: "running", message: "Starting model download…" });
+    try {
+      await apiClient.startRuntimeModelDownload({ profile, model_groups: [groupId], configure_runtime: false }, { timeoutMs: 15_000 });
+      setDownloadPhase("downloading");
+    } catch (reason: unknown) {
+      startLocked.current = false;
+      setBusy(false);
+      setError(safeError(reason, "The model download could not start. Try again."));
+      setDownloadPhase("idle");
+      setProgress(EMPTY_PROGRESS);
+    }
+  };
+
+  const modelDeleted = async () => {
+    const next = await refreshStatus();
+    if (!next) throw new Error("The model was deleted, but its status could not be refreshed. Check runtime to retry.");
+    setSelection(createSelection(next));
+    setProgress(EMPTY_PROGRESS);
+    if (apiClient) invalidateRuntimeBootstrap(apiClient);
+    onReady(next);
   };
 
   // Keep the progress layout in place while retrying so controls do not shift mid-click.
@@ -396,7 +454,7 @@ export function SetupPage({
 
   const cancel = async () => {
     if (!busy) return;
-    if (packagedMode && downloadPhase === "downloading" && apiClient) {
+    if (downloadPhase === "downloading" && apiClient) {
       try {
         const snapshot = await apiClient.cancelRuntimeModelDownload({ timeoutMs: 8_000 });
         setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
@@ -452,24 +510,60 @@ export function SetupPage({
   };
 
   const adoptInstalled = async () => {
-    if (!apiClient || !installedReady || !installedRuntime || adoptDisabled) return;
+    if (!apiClient || !installedReady || !installedRuntime || adoptDisabled || !acquireSetupStart(adoptLocked)) return;
+    const generation = adoptGeneration.current;
     setAdopting(true);
     setError(null);
     try {
       const next = await apiClient.adoptRuntimeSetup(
         {
-          profile: installedRuntime.profile,
-          model_groups: [...installedReadyGroups],
+          profile: selection.profile,
+          model_groups: [...selection.modelGroups],
+          cleaner_cuda_quantization: selection.cleanerCudaQuantization ?? "4bit",
           accept_pytorch_risk: Boolean(installedIsCuda && selection.acceptPytorchRisk),
         },
-        { timeoutMs: 15_000 },
+        { timeoutMs: 120_000 },
       );
+      if (generation !== adoptGeneration.current) return;
       setStatus(next);
-      onReady(next);
+      if (next.ready && next.state === "ready" && !next.restart_required) onReady(next);
+      else setError("The installed runtime is not ready. Check its status and try again.");
     } catch (reason: unknown) {
-      setError(safeError(reason, "The installed runtime could not be adopted."));
+      if (generation === adoptGeneration.current) setError(safeError(reason, "The installed runtime could not be adopted."));
     } finally {
-      setAdopting(false);
+      if (generation === adoptGeneration.current) {
+        adoptLocked.current = false;
+        setAdopting(false);
+      }
+    }
+  };
+
+  const saveSelection = async () => {
+    if (!apiClient || !selectedReadiness.ready || busy || !acquireSetupStart(adoptLocked)) return;
+    const generation = adoptGeneration.current;
+    setAdopting(true);
+    setError(null);
+    try {
+      const next = await apiClient.adoptRuntimeSetup({
+        profile: selection.profile,
+        model_groups: [...selection.modelGroups],
+        accept_pytorch_risk: selection.acceptPytorchRisk,
+        cleaner_cuda_quantization: selection.cleanerCudaQuantization ?? "4bit",
+      }, { timeoutMs: 120_000 });
+      if (generation !== adoptGeneration.current) return;
+      setStatus(next);
+      if (next.ready && next.state === "ready" && !next.restart_required) {
+        onReady(next);
+      } else {
+        setError("The selected runtime is not ready. Check its status and try again.");
+      }
+    } catch (reason: unknown) {
+      if (generation === adoptGeneration.current) setError(safeError(reason, "Runtime settings could not be saved. Try again."));
+    } finally {
+      if (generation === adoptGeneration.current) {
+        adoptLocked.current = false;
+        setAdopting(false);
+      }
     }
   };
 
@@ -494,23 +588,63 @@ export function SetupPage({
     onContinueLibraryOnly();
   };
 
-  const resolvePrimaryAction = () => {
-    if (configuredReady && status) {
-      return { label: "Done", disabled: false, run: () => onExitSettings ? onExitSettings() : onReady(status) };
+  const resolvePrimaryAction = (): { label: string; disabled: boolean; run: () => void | Promise<unknown>; disabledReason: string | null } => {
+    if (managingModels) return { label: "Updating models…", disabled: true, disabledReason: null, run: () => undefined };
+    if (configuredReady && status && selectionMatchesConfigured(selection, status) && !showRestart) {
+      return { label: "Done", disabled: busy || adopting, disabledReason: null, run: () => onExitSettings ? onExitSettings() : onReady(status) };
     }
     if (showRestart) {
-      return { label: "Restart Orpheus", disabled: busy || !mutationsAvailable, run: restart };
+      const disabled = busy || !mutationsAvailable;
+      return {
+        label: "Restart Orpheus",
+        disabled,
+        disabledReason: disabled && !mutationsAvailable ? "Restart is available in the Orpheus desktop app." : null,
+        run: restart,
+      };
     }
-    if (installedReady) {
-      return { label: "Continue", disabled: adoptDisabled, run: adoptInstalled };
+    if (settingsEntry && selectedReadiness.ready) {
+      return { label: adopting ? "Saving…" : "Save runtime settings", disabled: !apiClient || busy || adopting, disabledReason: null, run: saveSelection };
+    }
+    if (selection.profile !== "base" && selection.modelGroups.length > 0 && selection.modelGroups.every((id) => cachedGroups.some((group) => group.id === id && group.ready)) && !settingsEntry) {
+      return {
+        label: "Continue",
+        disabled: adoptDisabled,
+        disabledReason: adoptDisabled && installedProfile?.risk && !selection.acceptPytorchRisk
+          ? "Accept the security notice to continue."
+          : null,
+        run: adoptInstalled,
+      };
     }
     if (packagedMode && selection.profile === "base") {
-      return { label: "Use library only", disabled: busy || adopting, run: continueLibraryOnly };
+      return { label: "Use library only", disabled: busy || adopting, disabledReason: null, run: continueLibraryOnly };
     }
-    if (packagedMode && backendInstallProfile !== null && selection.profile === backendInstallProfile) {
-      return { label: "Install", disabled: !backendReadyToStart, run: installFromBackend };
+    if (packagedMode && backendInstallProfile !== null && selection.profile === backendInstallProfile && selectedReadiness.runtimeReady) {
+      return {
+        label: "Install",
+        disabled: !backendReadyToStart,
+        disabledReason: !backendReadyToStart && !busy
+          ? (!canStartSetup(selection, status!) ? "Choose a compatible runtime and accept any required notices." : null)
+          : null,
+        run: installFromBackend,
+      };
     }
-    return { label: selection.profile === "base" ? "Use library only" : "Install", disabled: !readyToStart, run: start };
+    const label = selection.profile === "base" ? "Use library only" : "Install";
+    if (readyToStart) {
+      return { label, disabled: false, disabledReason: null, run: start };
+    }
+    let disabledReason: string | null = null;
+    if (status && !canStartSetup(selection, status)) {
+      disabledReason = "Choose a compatible runtime, select at least one model, and accept any required notices.";
+    } else if (!mutationsAvailable) {
+      disabledReason = selection.profile === "base"
+        ? null
+        : environment?.mode === "packaged"
+          ? "This runtime is unavailable in this installation. Check its status or install an Orpheus build with this runtime."
+          : "Open the desktop app to install this runtime.";
+    } else if (!listenerReady || !runnerReconciled) {
+      disabledReason = "Connecting to the installer…";
+    }
+    return { label, disabled: true, disabledReason, run: start };
   };
   const action = resolvePrimaryAction();
   const showEnvironmentNotice = Boolean(
@@ -527,7 +661,7 @@ export function SetupPage({
         <section className="setup-panel" aria-labelledby="setup-heading">
           <div className="setup-intro">
             {settingsEntry && onExitSettings ? (
-              <button id="setup-back-btn" className="btn btn-ghost btn-compact setup-back" type="button" onClick={onExitSettings}>
+              <button id="setup-back-btn" className="btn btn-ghost setup-back" type="button" disabled={busy || adopting || managingModels} onClick={onExitSettings}>
                 Back to dashboard
               </button>
             ) : null}
@@ -542,7 +676,7 @@ export function SetupPage({
             </div>
           ) : null}
 
-          {installedReady && installedRuntime ? (
+          {installedReady && installedRuntime && !configuredReady ? (
             <div className="setup-installed" role="note">
               <strong>Installed {INSTALLED_PROFILE_LABEL[installedRuntime.profile]} runtime ready</strong>
               <ModelListTip modelGroups={installedReadyGroups} label="Installed runtime details" />
@@ -611,7 +745,7 @@ export function SetupPage({
             </SetupRecoveryNotice>
           ) : null}
 
-          {status && !installedReady && !configuredReady ? (
+          {status ? (
             <SetupPlanSection
               status={status}
               selection={selection}
@@ -619,16 +753,25 @@ export function SetupPage({
               selectedProfile={selectedProfile}
               selectedEstimate={selectedEstimate}
               choices={choices}
-              busy={busy}
+              busy={busy || managingModels}
               adopting={adopting}
               showAdvanced={showAdvanced}
               setShowAdvanced={setShowAdvanced}
               showRiskBlock={showRiskBlock}
               riskProfile={riskProfile}
+              showModels={!settingsEntry}
             />
           ) : null}
 
-          {status && installedReady && showRiskBlock && riskProfile?.risk ? (
+          {settingsEntry && status ? <SetupModelManager
+            apiClient={apiClient} status={status} selection={selection} setSelection={setSelection}
+            disabled={busy || adopting || managingModels || showRestart}
+            downloadingGroup={busy ? downloadingGroup : null}
+            downloadMessage={busy ? progressMessage : null}
+            onInstall={installModel} onDeleted={modelDeleted} onBusyChange={setManagingModels}
+          /> : null}
+
+          {status && installedReady && !settingsEntry && showRiskBlock && riskProfile?.risk ? (
             <SetupRiskNotice
               summary={riskProfile.risk.summary}
               checked={selection.acceptPytorchRisk}
@@ -655,7 +798,7 @@ export function SetupPage({
             </div>
           ) : null}
 
-          {settingsEntry && !busy ? (
+          {settingsEntry && !busy && !adopting && !managingModels ? (
             <SetupDangerZone
               apiClient={apiClient}
               onDeleted={refreshStatus}
@@ -665,12 +808,16 @@ export function SetupPage({
 
           <footer className="setup-footer">
             <div className="setup-footer-left">
-              {(error || listenerError || runnerError || progress.lifecycle === "failed") ? <button className="btn btn-ghost btn-compact" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button> : null}
+              {settingsEntry && status ? <button className="btn btn-ghost" type="button" disabled={busy || adopting || managingModels || statusRefreshing} onClick={() => void retryStatus()}>{statusRefreshing ? "Checking…" : "Check runtime"}</button> : null}
+              {(error || listenerError || runnerError || progress.lifecycle === "failed") ? <button className="btn btn-ghost" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button> : null}
+              {action.disabled && action.disabledReason ? (
+                <span className="hint setup-action-hint">{action.disabledReason}</span>
+              ) : null}
             </div>
             <div className="setup-actions">
-              {busy && (mutationsAvailable || (packagedMode && downloadPhase === "downloading")) ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
+              {busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading") ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
               {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
-              <button className="btn btn-primary setup-primary" type="button" disabled={action.disabled} onClick={() => void action.run()}>
+              <button className="btn btn-primary btn-lg setup-primary" type="button" disabled={action.disabled} onClick={() => void action.run()}>
                 {action.label}
               </button>
             </div>

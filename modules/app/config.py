@@ -149,6 +149,23 @@ class AppConfig:
     # Database
     db_path: Optional[Path] = None
     
+    def apply_setup_preferences(self) -> None:
+        """Use the saved local model and precision as defaults for new conversions."""
+        from scripts import setup_runtime
+        from scripts.download_models import MODEL_GROUPS
+
+        try:
+            state, _ = setup_runtime._read_setup_state(setup_runtime.default_state_path())
+        except setup_runtime.SetupExecutionError:
+            return
+        if state is None:
+            return
+        cleaner = next((group for group in state["model_groups"] if group.startswith("cleaner-")), None)
+        self.cleaner_backend = state["profile"] if cleaner else "api"
+        if cleaner:
+            self.cleaner_model_name = MODEL_GROUPS[cleaner][0]
+        self.cleaner_cuda_quantization = state["cleaner_cuda_quantization"]
+
     def __post_init__(self):
         """Ensure directories exist and set defaults."""
         # Load local env defaults so API keys can be tracked in .env.local.

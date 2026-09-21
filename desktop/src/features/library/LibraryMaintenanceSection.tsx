@@ -15,12 +15,15 @@ export function LibraryMaintenanceSection({ library, selectedDetailId }: {
   }, [library.selectedBookId, selectedDetailId]);
 
   return (
-    <details className="library-disclosure maintenance-toggle">
-      <summary>Maintenance</summary>
+    <details className="disclosure disclosure-card library-disclosure maintenance-toggle">
+      <summary>
+        <span>Maintenance</span>
+        <span className="disclosure-card-meta">Diagnostics, backup, and storage cleanup</span>
+      </summary>
       <div className="maintenance-body">
         <div className="maintenance-actions">
           <button
-            className="btn btn-compact"
+            className="btn"
             type="button"
             disabled={library.maintenanceLoading}
             data-tip="Audit storage for orphaned files and missing chapters"
@@ -29,7 +32,7 @@ export function LibraryMaintenanceSection({ library, selectedDetailId }: {
             Diagnostics
           </button>
           <button
-            className="btn btn-compact"
+            className="btn"
             type="button"
             disabled={library.maintenanceLoading}
             data-tip="Copy the library database to a timestamped backup"
@@ -44,7 +47,7 @@ export function LibraryMaintenanceSection({ library, selectedDetailId }: {
               </span>
               <button
                 id="library-cleanup-cancel-btn"
-                className="btn btn-ghost btn-compact"
+                className="btn btn-ghost"
                 type="button"
                 onClick={() => {
                   cleanupConfirmationRef.current = false;
@@ -55,7 +58,7 @@ export function LibraryMaintenanceSection({ library, selectedDetailId }: {
               </button>
               <button
                 id="library-cleanup-confirm-btn"
-                className="btn btn-danger btn-compact"
+                className="btn btn-danger"
                 type="button"
                 disabled={library.maintenanceLoading}
                 onClick={() => {
@@ -73,7 +76,7 @@ export function LibraryMaintenanceSection({ library, selectedDetailId }: {
           ) : (
             <button
               id="library-cleanup-btn"
-              className="btn btn-compact"
+              className="btn btn-danger"
               type="button"
               disabled={library.maintenanceLoading}
               data-tip="Remove orphaned temp files. Finished audio is never touched."
@@ -86,7 +89,7 @@ export function LibraryMaintenanceSection({ library, selectedDetailId }: {
             </button>
           )}
           <button
-            className="btn btn-compact"
+            className="btn"
             type="button"
             disabled={!library.canOpenAppData}
             data-tip="Open the application data folder"

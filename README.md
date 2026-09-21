@@ -132,8 +132,9 @@ npm run desktop:release
 ```
 
 `desktop:release` builds a fresh sidecar and frontend before packaging. It
-bundles `ORPHEUS_RUNTIME_PROFILE` when set, otherwise the target default
-(`mlx` on Apple Silicon and `base` elsewhere), so install that profile first.
+bundles `ORPHEUS_RUNTIME_PROFILE` when set, otherwise retaining the previous
+sidecar's profile. A first build uses the target default (`mlx` on Apple
+Silicon and `base` elsewhere), so install that profile first.
 To package a `base`-only app instead:
 
 ```bash

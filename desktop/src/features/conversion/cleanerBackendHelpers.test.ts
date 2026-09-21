@@ -219,7 +219,7 @@ describe("cleaner runtime status", () => {
     const option = cleanerBackendOption({ id: "cuda", display_name: "Local CUDA" });
 
     expect(deriveCleanerRuntimeStatus(capabilities({ cuda: true }), option)).toEqual({
-      message: "Local CUDA cleaner ready.",
+      message: "Local CUDA runtime available.",
       isError: false,
     });
     expect(deriveCleanerRuntimeStatus(capabilities({ cuda: false }, "missing torch"), option)).toEqual({
@@ -236,7 +236,7 @@ describe("cleaner runtime status", () => {
     const option = cleanerBackendOption({ id: "cuda", display_name: "CUDA" });
 
     expect(deriveCleanerRuntimeStatus(capabilities({ cuda: true }), option)).toEqual({
-      message: "Local CUDA cleaner ready.",
+      message: "Local CUDA runtime available.",
       isError: false,
     });
     expect(deriveCleanerRuntimeStatus(capabilities({ cuda: false }), option)).toEqual({

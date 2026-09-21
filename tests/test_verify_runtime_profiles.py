@@ -99,6 +99,19 @@ def test_base_runs_isolated_install_check_import_prohibition_and_audit(tmp_path)
     assert all("PYTHONPATH" not in env for env in runner.environments)
 
 
+def test_cuda_verifier_uses_the_desktop_installers_cuda_wheel(tmp_path, monkeypatch) -> None:
+    from modules.runtime_profiles import RuntimeProfile
+    from scripts.setup_runtime import build_install_plan
+
+    monkeypatch.setattr(RuntimeProfile, "is_compatible", lambda self: True)
+    monkeypatch.setattr(verifier, "hardware_preflight", lambda *args, **kwargs: (True, "available"))
+    runner = FakeRunner()
+    verifier.verify_profiles(["cuda"], runner=runner, work_dir=tmp_path)
+    command = next(cmd for cmd in runner.commands if "--no-compile" in cmd)
+    assert command[1:-1] == list(build_install_plan("cuda").pip_command[1:])
+    assert command[-2].endswith("+cu126")
+
+
 def test_command_spawn_error_is_structured_and_cuda_preflight_skips(monkeypatch) -> None:
     def missing(*args, **kwargs):
         raise FileNotFoundError("missing tool")
@@ -400,6 +413,19 @@ def test_clean_environment_blocks_pip_and_user_site_configuration() -> None:
     assert "PIP_TRUSTED_HOST" not in clean
     assert "PYTHONPATH" not in clean
     assert "PYTHONUSERBASE" not in clean
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows home and cache resolution")
+def test_clean_environment_preserves_windows_home_for_audit_tools() -> None:
+    assert verifier.clean_environment().get("PROGRAMFILES") == os.environ.get("PROGRAMFILES")
+    result = subprocess.run(
+        [sys.executable, "-c", "from pathlib import Path; print(Path.home())"],
+        env=verifier.clean_environment(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert Path(result.stdout.strip()) == Path.home()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group regression")

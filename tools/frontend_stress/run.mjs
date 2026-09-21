@@ -232,7 +232,7 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
 
   const scenariosToRun = args.only
     ? SCENARIOS.filter((s) => args.only.includes(s.id) || args.only.includes(s.name))
-    : SCENARIOS;
+    : SCENARIOS.filter((s) => !s.optIn);
 
   const results = [];
   let hadFailure = false;

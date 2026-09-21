@@ -106,6 +106,7 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
       : "";
 
     const nextSettings = {
+      setup_selection: persistedSettingsRef.current.setup_selection,
       tts_engine: ttsOptions.selectedEngine || undefined,
       voice: ttsOptions.selectedVoice || undefined,
       speed: ttsOptions.speed,

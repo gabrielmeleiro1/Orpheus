@@ -1,5 +1,6 @@
 import type { ConversionJobStatus, PerformanceSnapshot, ProgressStageView } from "../../types/api";
 import { ProgressBar } from "../../ui/ProgressBar";
+import { Icon } from "../../ui/icons";
 import { buildProgressTerminalPresentation } from "./progressTerminalPresentation";
 import "./progress.css";
 
@@ -26,9 +27,6 @@ function hasJobToShow(uiState: ConversionJobStatus): boolean {
     uiState === "cancelled"
   );
 }
-
-const RING_RADIUS = 30;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
 
 const PLACEHOLDER_VALUES = new Set([
   "",
@@ -58,25 +56,25 @@ function stageStatus(stage: ProgressStageView): string {
   return "Queued";
 }
 
-function ProgressRing({ pct, state }: { pct: number; state: ConversionJobStatus }) {
-  const bounded = clampPercent(pct);
-  const offset = RING_CIRCUMFERENCE * (1 - bounded / 100);
-
+function StageMarker({ state }: { state: ProgressStageView["state"] }) {
+  if (state === "done") {
+    return (
+      <span className="stage-node is-done" aria-hidden="true">
+        <Icon name="check" size={14} />
+      </span>
+    );
+  }
+  if (state === "active") {
+    return (
+      <span className="stage-node is-active" aria-hidden="true">
+        <span className="stage-spinner" />
+      </span>
+    );
+  }
   return (
-    <div className={`progress-ring is-${state}`} aria-hidden="true">
-      <svg viewBox="0 0 76 76" focusable="false">
-        <circle className="progress-ring-track" cx="38" cy="38" r={RING_RADIUS} />
-        <circle
-          className="progress-ring-fill"
-          cx="38"
-          cy="38"
-          r={RING_RADIUS}
-          strokeDasharray={RING_CIRCUMFERENCE}
-          strokeDashoffset={offset}
-        />
-      </svg>
-      <span id="progress-pct" className="progress-ring-value">{`${bounded}%`}</span>
-    </div>
+    <span className="stage-node is-pending" aria-hidden="true">
+      <span className="stage-dot" />
+    </span>
   );
 }
 
@@ -96,8 +94,11 @@ export function ProgressPanel({
 }: ProgressPanelProps) {
   if (!hasJobToShow(uiState)) {
     return (
-      <div className="panel-section progress-empty">
+      <div className="panel-section progress-empty card">
         <div className="empty-state">
+          <span className="empty-state-icon" aria-hidden="true">
+            <Icon name="progress" />
+          </span>
           <span className="empty-state-title">No conversion running</span>
           <span className="empty-state-hint">
             Start a conversion from the Convert tab and its progress will appear here.
@@ -118,7 +119,7 @@ export function ProgressPanel({
   const stageDetails = activeStage?.detail ?? [];
   const activeTitles = performance?.active_chapter_titles ?? [];
   const running = uiState === "running";
-  const heroClass = `panel-section progress-hero is-${uiState}`;
+  const heroClass = `panel-section progress-hero card is-${uiState}`;
   const presentation = buildProgressTerminalPresentation({
     uiState,
     stages,
@@ -143,84 +144,94 @@ export function ProgressPanel({
         hasValue(presentation.modeSummary),
       ];
   const showTerminalPerformance = !live && terminalTiles.some(Boolean);
+  const barTone = uiState === "cancelled" || uiState === "failed"
+    ? "danger"
+    : running
+      ? "active"
+      : "done";
 
   return (
     <>
       <div className={heroClass}>
-        <ProgressRing pct={boundedProgress} state={uiState} />
-
-        <div className="progress-hero-main">
-          <span className="progress-kicker">Current operation</span>
-          <h2 className="progress-title">{presentation.operationTitle}</h2>
-          <div id="progress-overall-bar" className="progress-overall">
-            <ProgressBar
-              pct={boundedProgress}
-              tone={uiState === "cancelled" || uiState === "failed" ? "danger" : running ? "active" : "done"}
-              label="Overall conversion progress"
-            />
+        <div className="progress-hero-top">
+          <div className="progress-hero-copy">
+            <span className="card-eyebrow">Current operation</span>
+            <h2 className="progress-title">{presentation.operationTitle}</h2>
           </div>
-          {showStatusLine || (running && etaText) ? (
-            <div className="progress-hero-meta">
-              {showStatusLine ? (
-                <span id="status-text" className="progress-status-text" role="status" aria-live="polite">{statusText || uiState}</span>
-              ) : null}
-              {running && etaText ? (
-                <span
-                  id="eta-text"
-                  className="progress-chip"
-                  data-tip="Estimated time remaining, from current throughput"
-                >
-                  {etaText}
-                </span>
-              ) : null}
-            </div>
+          {running && activeJobId ? (
+            <button
+              id="progress-cancel-btn"
+              className="btn btn-danger"
+              type="button"
+              disabled={!canCancel}
+              data-tip="Stop the running conversion. Finished chapters are kept."
+              data-tip-pos="left"
+              onClick={() => {
+                void onCancel();
+              }}
+            >
+              <Icon name="stop" />
+              {isCancelling ? "Cancelling…" : "Cancel"}
+            </button>
           ) : null}
         </div>
 
-        {running && activeJobId ? (
-          <button
-            id="progress-cancel-btn"
-            className="btn btn-compact progress-cancel"
-            type="button"
-            disabled={!canCancel}
-            data-tip="Stop the running conversion. Finished chapters are kept."
-            data-tip-pos="left"
-            onClick={() => {
-              void onCancel();
-            }}
-          >
-            {isCancelling ? "Cancelling…" : "Cancel"}
-          </button>
-        ) : null}
+        <div className="progress-overall-block">
+          <div className="progress-overall-meta tabular-nums">
+            <span id="progress-pct" className="progress-pct-value">{`${boundedProgress}%`}</span>
+            {running && etaText ? (
+              <span
+                id="eta-text"
+                className="progress-eta"
+                data-tip="Estimated time remaining, from current throughput"
+              >
+                {etaText}
+              </span>
+            ) : (
+              <span className="progress-eta is-muted">{uiState === "completed" ? "Complete" : stateLabel(uiState)}</span>
+            )}
+          </div>
+          <div id="progress-overall-bar" className="progress-overall">
+            <ProgressBar
+              pct={boundedProgress}
+              tone={barTone}
+              size="lg"
+              label="Overall conversion progress"
+            />
+          </div>
+          {showStatusLine ? (
+            <span id="status-text" className="progress-status-text" role="status" aria-live="polite">
+              {statusText || uiState}
+            </span>
+          ) : null}
+        </div>
       </div>
 
       {presentation.showLiveActiveTask && stageDetails.length > 0 ? (
-        <div className="panel-section subtask-section" aria-label="Active stage detail">
+        <div className="panel-section subtask-section card" aria-label="Active stage detail">
+          <div className="card-header">
+            <h3 className="card-title">Active stage</h3>
+          </div>
           {stageDetails.map((detail) => (
             <div className="subtask-row" key={`${detail.label}-${detail.value}`}>
               <span className="subtask-label">{detail.label}</span>
               <ProgressBar pct={detail.pct} tone={running ? "active" : "neutral"} size="hairline" label={`${detail.label} progress`} />
-              <span className="subtask-value">{detail.value}</span>
+              <span className="subtask-value tabular-nums">{detail.value}</span>
             </div>
           ))}
         </div>
       ) : null}
 
-      <div id="stage-list" className="panel-section stage-flow" aria-label="Pipeline stages">
-        {stages.map((stage, index) => (
+      <div id="stage-list" className="panel-section stage-flow card" aria-label="Pipeline stages">
+        <div className="card-header">
+          <h3 className="card-title">Stages</h3>
+        </div>
+        {stages.map((stage) => (
           <div
             key={stage.name}
             className={`stage-row${stage.state === "active" ? " stage-active" : ""}${stage.state === "done" ? " stage-done" : ""}`}
           >
-            <span className="stage-node" aria-hidden="true">
-              {stage.state === "done" ? (
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <path d="M5 12.5l4.5 4.5L19 7.5" />
-                </svg>
-              ) : (
-                <span className="stage-node-index">{String(index + 1).padStart(2, "0")}</span>
-              )}
-            </span>
+            <StageMarker state={stage.state} />
             <span className="stage-name">{stageLabel(stage.name)}</span>
             <ProgressBar
               pct={stage.pct}
@@ -228,13 +239,16 @@ export function ProgressPanel({
               size="hairline"
               label={`${stageLabel(stage.name)} progress`}
             />
-            <span className="stage-status">{stageStatus(stage)}</span>
+            <span className="stage-status tabular-nums">{stageStatus(stage)}</span>
           </div>
         ))}
       </div>
 
       {live ? (
-        <div className="panel-section performance-section" aria-label="Performance snapshot">
+        <div className="panel-section performance-section card" aria-label="Performance snapshot">
+          <div className="card-header">
+            <h3 className="card-title">Performance</h3>
+          </div>
           <div className="performance-grid">
             <div className="performance-item" data-tip={workersTip} data-tip-pos="top">
               <span className="performance-label">Workers</span>
@@ -271,7 +285,10 @@ export function ProgressPanel({
           </div>
         </div>
       ) : showTerminalPerformance ? (
-        <div className="panel-section performance-section" aria-label="Performance snapshot">
+        <div className="panel-section performance-section card" aria-label="Performance snapshot">
+          <div className="card-header">
+            <h3 className="card-title">Performance</h3>
+          </div>
           <div className="performance-grid">
             {hasValue(presentation.workerSummary) ? (
               <div className="performance-item" data-tip={workersTip} data-tip-pos="top">
@@ -311,4 +328,14 @@ export function ProgressPanel({
       ) : null}
     </>
   );
+}
+
+function stateLabel(uiState: ConversionJobStatus): string {
+  switch (uiState) {
+    case "completed": return "Complete";
+    case "failed": return "Failed";
+    case "cancelled": return "Cancelled";
+    case "running": return "Running";
+    default: return "Idle";
+  }
 }

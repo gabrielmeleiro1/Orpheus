@@ -2,6 +2,7 @@ import type { RequestJson, ApiRequestOptions } from "../http";
 import type {
   RuntimeModelDownloadRequest,
   RuntimeModelDownloadStatus,
+  RuntimeModelInventory,
   RuntimeSetupAdoptRequest,
   RuntimeSetupRuntimeDeleteResponse,
   RuntimeSetupStatusResponse,
@@ -59,6 +60,8 @@ export function createSetupApi(requestJson: RequestJson) {
   }
 
   return {
+    getRuntimeModelInventory: (options?: ApiRequestOptions) => requestJson<RuntimeModelInventory>("/api/setup/models", options),
+    deleteRuntimeModel: (groupId: string, options?: ApiRequestOptions) => requestJson<RuntimeSetupRuntimeDeleteResponse>(`/api/setup/models/${encodeURIComponent(groupId)}`, { ...options, method: "DELETE" }),
     getRuntimeSetupStatus,
     adoptRuntimeSetup,
     getRuntimeModelDownloadStatus,

@@ -14,7 +14,7 @@ function StageState({ id, progress }: { id: string; progress: SetupProgressState
   const active = progress.lifecycle === "running" && progress.stage === id;
   return (
     <li className={`setup-stage${complete ? " is-complete" : active ? " is-active" : ""}`}>
-      <span aria-hidden="true">{complete ? "✓" : active ? "◌" : "·"}</span>
+      <span className="setup-stage-mark" aria-hidden="true">{complete ? "✓" : active ? "◌" : "·"}</span>
       <span>{STAGES.find((stage) => stage.id === id)?.label ?? id}</span>
     </li>
   );
@@ -34,15 +34,15 @@ export function SetupProgressSection({
   headingRef: RefObject<HTMLDivElement>;
 }) {
   return (
-    <section className="setup-progress" aria-labelledby="setup-progress-heading">
-      <div>
+    <section className="setup-progress card" aria-labelledby="setup-progress-heading">
+      <div className="setup-progress-head">
         <div className="section-label" id="setup-progress-heading" ref={headingRef} tabIndex={-1}>
           Installation <ModelListTip modelGroups={modelGroups} label="Models being installed" />
         </div>
         <p className="setup-progress-message" aria-live="polite">{progressMessage}</p>
       </div>
       <progress value={progressValue} max={100} aria-label={progressValue === undefined ? "Setup in progress" : `Setup ${Math.round(progressValue)} percent complete`} />
-      <ol>{STAGES.map(({ id }) => <StageState key={id} id={id} progress={progress} />)}</ol>
+      <ol className="setup-stage-list">{STAGES.map(({ id }) => <StageState key={id} id={id} progress={progress} />)}</ol>
     </section>
   );
 }

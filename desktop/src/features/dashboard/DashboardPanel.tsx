@@ -6,6 +6,7 @@ import type {
 } from "../../types/api";
 import type { UseLibraryResult } from "../library/useLibrary";
 import { ProgressBar } from "../../ui/ProgressBar";
+import { Icon } from "../../ui/icons";
 import { formatClockWithHours } from "../../format/time";
 import { dashboardNowStageLabel } from "../progress/progressTerminalPresentation";
 import "./dashboard.css";
@@ -59,10 +60,6 @@ function StatusDot({ tone }: { tone: "ok" | "neutral" | "busy" | "error" }) {
   return <span className={`status-dot is-${tone}`} aria-hidden="true" />;
 }
 
-function Chevron() {
-  return <span className="dashboard-chevron" aria-hidden="true">›</span>;
-}
-
 export function DashboardPanel({
   hidden,
   library,
@@ -114,7 +111,7 @@ export function DashboardPanel({
         ? "Ready"
         : ttsReady === false
           ? "Unavailable"
-          : "Checking";
+          : "Not verified";
   const cleanerValue = cleanerLabel?.trim() || "—";
   const backendStatus = normalizedStatus(connectionState, health);
   const backendStatusLabel = backendStatus.toLowerCase() === "ok" ? "OK" : backendStatus;
@@ -122,6 +119,8 @@ export function DashboardPanel({
   const libraryReady = !library.loadingList && !library.loadingDetail && !library.errorMessage;
   const libraryStatus = library.loadingList || library.loadingDetail ? "Loading" : library.errorMessage ? "Error" : "Ready";
   const libraryTone = library.errorMessage ? "error" : libraryReady ? "neutral" : "busy";
+  const booksLabel = `${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`;
+  const durationDisplay = formatClockWithHours(durationSec > 0 ? durationSec : selectedDurationSec);
 
   return (
     <section
@@ -133,83 +132,234 @@ export function DashboardPanel({
       hidden={hidden}
     >
       <section className="dashboard-stats" aria-label="Dashboard overview">
-        <button className="dashboard-stat" type="button" onClick={onOpenLibrary} aria-label={`Books: ${library.indexedCount}. Open library`}>
-          <span className="dashboard-stat-copy"><strong>{library.indexedCount}</strong><span>Books</span></span>
-          <Chevron />
+        <button
+          className="dashboard-stat"
+          type="button"
+          onClick={onOpenLibrary}
+          aria-label={`Books: ${library.indexedCount}. Open library`}
+        >
+          <span className="dashboard-stat-icon" aria-hidden="true">
+            <Icon name="library" />
+          </span>
+          <span className="dashboard-stat-copy">
+            <span className="dashboard-stat-label">Books</span>
+            <strong className="tabular-nums">{library.indexedCount}</strong>
+          </span>
+          <Icon name="chevron-right" className="dashboard-stat-chevron" />
         </button>
-        <button className="dashboard-stat" type="button" onClick={onOpenSettings} aria-label={`TTS engine: ${ttsStatus}. Open settings`}>
-          <span className="dashboard-stat-copy"><strong className={ttsStatus === "Ready" ? "is-positive" : ""}>{ttsStatus}</strong><span>TTS engine</span></span>
-          <Chevron />
+        <button
+          className="dashboard-stat"
+          type="button"
+          onClick={onOpenSettings}
+          aria-label={`TTS engine: ${ttsStatus}. Open settings`}
+        >
+          <span className="dashboard-stat-icon" aria-hidden="true">
+            <Icon name="convert" />
+          </span>
+          <span className="dashboard-stat-copy">
+            <span className="dashboard-stat-label">TTS engine</span>
+            <strong className={ttsStatus === "Ready" ? "is-positive" : ""}>{ttsStatus}</strong>
+          </span>
+          <Icon name="chevron-right" className="dashboard-stat-chevron" />
         </button>
-        <button className="dashboard-stat" type="button" onClick={onOpenSettings} aria-label={`Cleaner: ${cleanerValue}. Open settings`}>
-          <span className="dashboard-stat-copy"><strong>{cleanerValue}</strong><span>Cleaner</span></span>
-          <Chevron />
+        <button
+          className="dashboard-stat"
+          type="button"
+          onClick={onOpenSettings}
+          aria-label={`Cleaner: ${cleanerValue}. Open settings`}
+        >
+          <span className="dashboard-stat-icon" aria-hidden="true">
+            <Icon name="settings" />
+          </span>
+          <span className="dashboard-stat-copy">
+            <span className="dashboard-stat-label">Cleaner</span>
+            <strong>{cleanerValue}</strong>
+          </span>
+          <Icon name="chevron-right" className="dashboard-stat-chevron" />
         </button>
       </section>
 
-      <section className={`dashboard-card now-playing-panel${hasPlayback ? "" : " is-empty"}`} aria-label="Audiobook overview">
-        <div className="dashboard-card-header">
-          <div>
-            <span className="dashboard-card-kicker">Now playing</span>
-            <h3>{hasPlayback ? (selected?.title || playerTitle || "Untitled audiobook") : "Nothing playing"}</h3>
-            <p>{hasPlayback ? currentChapterLabel || "Ready to listen" : "Open a book from your library or convert a source."}</p>
-          </div>
-          {hasPlayback ? <span className="dashboard-percent tabular-nums">{playbackPercent}%</span> : null}
+      <section
+        className={`dashboard-card now-playing-panel${hasPlayback ? "" : " is-empty"}`}
+        aria-label="Audiobook overview"
+      >
+        {!hasPlayback ? (
+          <span className="now-playing-icon" aria-hidden="true">
+            <Icon name="play" />
+          </span>
+        ) : null}
+        <div className="now-playing-main">
+          <span className="card-eyebrow">Now playing</span>
+          <h3 className="now-playing-title">
+            {hasPlayback ? (selected?.title || playerTitle || "Untitled audiobook") : "Nothing playing"}
+          </h3>
+          <p className="now-playing-subtitle">
+            {hasPlayback
+              ? currentChapterLabel || "Ready to listen"
+              : "Open a book from your library or convert a source."}
+          </p>
+          {hasPlayback ? (
+            <div className="now-playing-progress">
+              <div
+                className="playback-progress"
+                role="progressbar"
+                aria-label="Playback progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={playbackPercent}
+              >
+                <span style={{ width: `${playbackPercent}%` }} />
+              </div>
+              <div className="now-playing-times tabular-nums">
+                <span>{formatClockWithHours(elapsedSec)}</span>
+                <span className="now-playing-pct">{playbackPercent}%</span>
+                <span>{durationDisplay}</span>
+              </div>
+              <p className="now-playing-chapters">{chapterText}</p>
+            </div>
+          ) : null}
         </div>
-        {hasPlayback ? (
-          <>
-            <div className="playback-progress" role="progressbar" aria-label="Playback progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={playbackPercent}>
-              <span style={{ width: `${playbackPercent}%` }} />
-            </div>
-            <div className="metric-row">
-              <div className="metric"><span className="metric-label">Elapsed</span><strong>{formatClockWithHours(elapsedSec)}</strong></div>
-              <div className="metric"><span className="metric-label">Duration</span><strong>{formatClockWithHours(durationSec > 0 ? durationSec : selectedDurationSec)}</strong></div>
-              <div className="metric"><span className="metric-label">Chapters</span><strong className="metric-word">{chapterText}</strong></div>
-            </div>
-          </>
-        ) : (
-          <div className="empty-state-actions">
-            {onOpenLibrary ? <button className="btn btn-ghost" type="button" onClick={onOpenLibrary}>Open library</button> : null}
+        {!hasPlayback && onOpenLibrary ? (
+          <div className="now-playing-actions">
+            <button className="btn" type="button" onClick={onOpenLibrary}>
+              <Icon name="library" />
+              Open library
+            </button>
           </div>
-        )}
+        ) : null}
       </section>
 
       {hasJob ? (
         <section className="dashboard-card conversion-card" aria-label="Conversion">
           <div className="dashboard-card-header">
-            <div><span className="dashboard-card-kicker">Conversion</span><h3>{jobTitle || "Current conversion"}</h3><p>{jobAuthor || (conversionIsActive ? "In progress" : "Latest job")}</p></div>
-            {onOpenProgress ? <button className="dashboard-card-action tabular-nums" type="button" onClick={onOpenProgress}>{stateLabel} · {conversionPercent}% <Chevron /></button> : <span className="dashboard-card-action tabular-nums">{stateLabel} · {conversionPercent}%</span>}
+            <div className="dashboard-card-copy">
+              <span className="card-eyebrow">Conversion</span>
+              <h3>{jobTitle || "Current conversion"}</h3>
+              <p>{jobAuthor || (conversionIsActive ? "In progress" : "Latest job")}</p>
+            </div>
+            {onOpenProgress ? (
+              <button className="dashboard-card-action tabular-nums" type="button" onClick={onOpenProgress}>
+                {stateLabel} · {conversionPercent}%
+                <Icon name="chevron-right" />
+              </button>
+            ) : (
+              <span className="dashboard-card-action tabular-nums">
+                {stateLabel} · {conversionPercent}%
+              </span>
+            )}
           </div>
-          <ProgressBar pct={conversionPercent} tone={conversionIsActive ? "active" : "neutral"} size="hairline" label="Conversion progress" />
+          <ProgressBar
+            pct={conversionPercent}
+            tone={conversionIsActive ? "active" : "neutral"}
+            size="hairline"
+            label="Conversion progress"
+          />
           <div className="metric-row metric-row-flow">
-            <div className="metric"><span className="metric-label">Status</span><strong className="metric-word">{statusTileValue}</strong></div>
-            {etaValue ? <div className="metric"><span className="metric-label">ETA</span><strong>{etaValue}</strong></div> : null}
+            <div className="metric">
+              <span className="metric-label">Status</span>
+              <strong className="metric-word">{statusTileValue}</strong>
+            </div>
+            {etaValue ? (
+              <div className="metric">
+                <span className="metric-label">ETA</span>
+                <strong className="tabular-nums">{etaValue}</strong>
+              </div>
+            ) : null}
           </div>
         </section>
       ) : null}
 
       <div className="lower-grid">
         <section className="dashboard-card recent-section" aria-label="Recent books">
-          <div className="section-title"><span>Recent</span>{onOpenLibrary ? <button className="section-title-action tabular-nums" type="button" onClick={onOpenLibrary}>{library.indexedCount} {library.indexedCount === 1 ? "book" : "books"} <Chevron /></button> : <span className="section-title-meta tabular-nums">{library.indexedCount} books</span>}</div>
+          <div className="card-header section-title">
+            <h3 className="card-title">Recent</h3>
+            {onOpenLibrary ? (
+              <button className="section-title-action tabular-nums" type="button" onClick={onOpenLibrary}>
+                {booksLabel}
+                <Icon name="chevron-right" />
+              </button>
+            ) : (
+              <span className="section-title-meta tabular-nums">{booksLabel}</span>
+            )}
+          </div>
           {recentBooks.length === 0 ? (
-            <div className="empty-state"><span className="empty-state-title">No converted books yet</span><span className="empty-state-hint">Convert a source to build your library.</span></div>
+            <div className="empty-state dashboard-empty">
+              <span className="empty-state-icon" aria-hidden="true"><Icon name="library" /></span>
+              <span className="empty-state-title">No converted books yet</span>
+              <span className="empty-state-hint">Convert a source to build your library.</span>
+            </div>
           ) : (
             <div className="recent-list">
               {recentBooks.map((book) => {
-                const pct = book.total_chapters > 0 ? clampPercent((book.completed_chapters / book.total_chapters) * 100) : 0;
+                const pct = book.total_chapters > 0
+                  ? clampPercent((book.completed_chapters / book.total_chapters) * 100)
+                  : 0;
                 const ready = book.completed_chapters >= book.total_chapters;
                 const chapterCount = book.total_chapters || 0;
-                return <div className="recent-row" key={book.id}><div><strong>{book.title || "Untitled"}</strong><span>{`${book.author || "Unknown author"} · ${chapterCount} ${chapterCount === 1 ? "chapter" : "chapters"}`}</span></div><span className={`recent-state${ready ? "" : " is-partial"}`}>{ready ? "Ready" : "Partial"}</span>{!ready ? <ProgressBar pct={pct} tone="neutral" size="hairline" label={`${book.title || "Book"} completion`} /> : null}</div>;
+                return (
+                  <div className="recent-row" key={book.id}>
+                    <div>
+                      <strong>{book.title || "Untitled"}</strong>
+                      <span>
+                        {`${book.author || "Unknown author"} · ${chapterCount} ${chapterCount === 1 ? "chapter" : "chapters"}`}
+                      </span>
+                    </div>
+                    <span className={`recent-state${ready ? "" : " is-partial"}`}>
+                      {ready ? "Ready" : "Partial"}
+                    </span>
+                    {!ready ? (
+                      <ProgressBar
+                        pct={pct}
+                        tone="neutral"
+                        size="hairline"
+                        label={`${book.title || "Book"} completion`}
+                      />
+                    ) : null}
+                  </div>
+                );
               })}
             </div>
           )}
         </section>
 
         <section className="dashboard-card services-section" aria-label="Services">
-          <div className="section-title"><span>Services</span></div>
+          <div className="card-header section-title">
+            <h3 className="card-title">Services</h3>
+          </div>
           <div className="service-list">
-            <button className="service-row" type="button" onClick={onOpenLogs} aria-label={`Desktop API: ${backendStatusLabel}`}><span><StatusDot tone={backendTone} /><strong>Desktop API</strong><small>{statusMessage || `Backend ${connectionState}`}</small></span><em className={`service-state is-${backendTone}`}>{backendStatusLabel}</em><Chevron /></button>
-            <button className="service-row" type="button" onClick={onOpenLibrary} aria-label={`Library: ${libraryStatus}`}><span><StatusDot tone={libraryTone} /><strong>Library</strong><small>{library.statusMessage || (libraryReady ? `${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}` : "Library unavailable")}</small></span><em className={`service-state is-${libraryTone}`}>{libraryStatus}</em><Chevron /></button>
+            <button
+              className="service-row"
+              type="button"
+              onClick={onOpenLogs}
+              aria-label={`Desktop API: ${backendStatusLabel}`}
+            >
+              <span>
+                <StatusDot tone={backendTone} />
+                <strong>Desktop API</strong>
+                <small>{statusMessage || `Backend ${connectionState}`}</small>
+              </span>
+              <em className={`service-state is-${backendTone}`}>{backendStatusLabel}</em>
+              <Icon name="chevron-right" className="service-chevron" />
+            </button>
+            <button
+              className="service-row"
+              type="button"
+              onClick={onOpenLibrary}
+              aria-label={`Library: ${libraryStatus}`}
+            >
+              <span>
+                <StatusDot tone={libraryTone} />
+                <strong>Library</strong>
+                <small>
+                  {library.statusMessage
+                    || (libraryReady
+                      ? `${library.indexedCount} ${library.indexedCount === 1 ? "book" : "books"}`
+                      : "Library unavailable")}
+                </small>
+              </span>
+              <em className={`service-state is-${libraryTone}`}>{libraryStatus}</em>
+              <Icon name="chevron-right" className="service-chevron" />
+            </button>
           </div>
         </section>
       </div>

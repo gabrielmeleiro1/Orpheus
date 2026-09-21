@@ -3,6 +3,8 @@
 mod backend;
 mod paths;
 mod setup;
+#[cfg(windows)]
+mod windows_identity;
 
 #[cfg(test)]
 mod capability_tests;
@@ -146,6 +148,12 @@ impl AppState {
             launch_dev_backend(manager, &runtime_paths)?
         } else {
             let resource_dir = app_handle.path().resource_dir().ok();
+            // Windows app virtualization can redirect only the executable into
+            // a package cache. Keep the loader's logical path so adjacent
+            // sidecar resources remain reachable in the original install.
+            #[cfg(target_os = "windows")]
+            let current_binary = std::env::current_exe().ok();
+            #[cfg(not(target_os = "windows"))]
             let current_binary = tauri::process::current_binary(&app_handle.env()).ok();
             let sidecar_path =
                 resolve_sidecar_path(resource_dir.as_deref(), current_binary.as_deref())
@@ -539,6 +547,14 @@ fn open_app_data_folder(app_handle: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn main() {
+    let context = tauri::generate_context!();
+    // Set the same identity as the installed shortcuts before any window exists.
+    // Otherwise Windows can treat a running Orpheus window as a separate app.
+    #[cfg(windows)]
+    if let Err(error) = windows_identity::set_app_id(&context.config().identifier) {
+        eprintln!("failed to register taskbar identity: HRESULT {error:#010x}");
+    }
+
     let app = tauri::Builder::default()
         .manage(AppState::default())
         .manage(SetupRunnerState::default())
@@ -565,7 +581,7 @@ fn main() {
             setup::runtime_setup_environment,
             setup::cancel_runtime_setup
         ])
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application");
 
     app.run(|app_handle, event| match event {

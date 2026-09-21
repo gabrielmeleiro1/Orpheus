@@ -37,6 +37,7 @@ import type {
   SystemCapabilitiesResponse,
   RuntimeModelDownloadRequest,
   RuntimeModelDownloadStatus,
+  RuntimeModelInventory,
   RuntimeSetupAdoptRequest,
   RuntimeSetupRuntimeDeleteResponse,
   RuntimeSetupStatusResponse,
@@ -73,6 +74,8 @@ export interface ApiClient {
     options?: ApiRequestOptions,
   ): Promise<RuntimeSetupStatusResponse>;
   deleteRuntimeSetupData(options?: ApiRequestOptions): Promise<RuntimeSetupRuntimeDeleteResponse>;
+  getRuntimeModelInventory(options?: ApiRequestOptions): Promise<RuntimeModelInventory>;
+  deleteRuntimeModel(groupId: string, options?: ApiRequestOptions): Promise<RuntimeSetupRuntimeDeleteResponse>;
   getRuntimeModelDownloadStatus(options?: ApiRequestOptions): Promise<RuntimeModelDownloadStatus>;
   startRuntimeModelDownload(
     request: RuntimeModelDownloadRequest,

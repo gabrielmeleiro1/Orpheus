@@ -2,11 +2,11 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 
 import { computeVirtualWindow, scrollOffsetForIndex, type VirtualWindow } from "./virtualWindow";
 
-// Matches `.book-row` (50px border-box minimum) plus the 7px grid gap in
-// library.css. Only used until the real stride is measured from the DOM, and as
-// the estimate whenever the list is too short to measure a row-to-row delta.
-const ESTIMATED_ROW_STRIDE = 57;
-const LIBRARY_GRID_GAP = 7;
+// Matches `.book-row` min-height (56px) with no list gap. Only used until the
+// real stride is measured from the DOM, and as the estimate whenever the list
+// is too short to measure a row-to-row delta.
+const ESTIMATED_ROW_STRIDE = 56;
+const LIBRARY_GRID_GAP = 0;
 const DEFAULT_OVERSCAN = 6;
 
 interface UseBookListWindowArgs {

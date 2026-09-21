@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../api/client";
-import { getRuntimeBootstrap, updateRuntimeBootstrapCapabilities } from "./runtimeBootstrapCache";
+import { getRuntimeBootstrap, invalidateRuntimeBootstrap, updateRuntimeBootstrapCapabilities } from "./runtimeBootstrapCache";
 
 function clientWith(
   getModelOptions: ApiClient["getModelOptions"],
@@ -11,6 +11,16 @@ function clientWith(
 }
 
 describe("runtimeBootstrapCache", () => {
+  it("reloads model and capability data after runtime settings are saved", async () => {
+    const models = {} as Awaited<ReturnType<ApiClient["getModelOptions"]>>;
+    const capabilities = {} as Awaited<ReturnType<ApiClient["getSystemCapabilities"]>>;
+    const client = clientWith(vi.fn(async () => models), vi.fn(async () => capabilities));
+    await getRuntimeBootstrap(client);
+    invalidateRuntimeBootstrap(client);
+    await getRuntimeBootstrap(client);
+    expect(client.getModelOptions).toHaveBeenCalledTimes(2);
+    expect(client.getSystemCapabilities).toHaveBeenCalledTimes(2);
+  });
   it("shares one in-flight bootstrap between consumers of the same client", async () => {
     const models = { tts_engines: [] } as unknown as Awaited<ReturnType<ApiClient["getModelOptions"]>>;
     const capabilities = {} as Awaited<ReturnType<ApiClient["getSystemCapabilities"]>>;

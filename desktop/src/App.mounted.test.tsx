@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => {
     libraryRefresh: vi.fn(async () => undefined),
     conversionUiState: "idle" as "idle" | "completed" | "failed" | "cancelled",
     setupPageStatuses: [] as Array<RuntimeSetupStatusResponse | null>,
+    dashboardSetupStatus: null as RuntimeSetupStatusResponse | null,
     backend: {
       apiClient: apiClient as typeof apiClient | null,
       backendBaseUrl: "http://127.0.0.1:48123",
@@ -31,7 +32,10 @@ vi.mock("./app/useBackendClient", () => ({
   useBackendClient: () => mocks.backend,
 }));
 vi.mock("./app/usePrimaryRuntime", () => ({
-  useRuntimeIdentity: () => ({ ttsLabel: "Library only", cleanerLabel: "—", ttsReady: false }),
+  useRuntimeIdentity: (_client: unknown, status: RuntimeSetupStatusResponse | null) => {
+    mocks.dashboardSetupStatus = status;
+    return { ttsLabel: "Library only", cleanerLabel: "—", ttsReady: false };
+  },
 }));
 vi.mock("./app/useGlobalShortcuts", () => ({
   useGlobalShortcuts: vi.fn(),
@@ -329,9 +333,11 @@ describe("App runtime setup recovery", () => {
     await act(async () => findButton(container, "Library").click());
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Hide sidebar"]')!.click());
     expect(container.querySelector<HTMLElement>(".rail")?.hidden).toBe(true);
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Show sidebar");
     expect(container.querySelector("#tab-btn-library")?.getAttribute("aria-selected")).toBe("true");
     await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show sidebar"]')!.click());
     expect(container.querySelector<HTMLElement>(".rail")?.hidden).toBe(false);
+    expect(document.activeElement?.id).toBe("tab-btn-library");
     expect(container.querySelector("#tab-btn-library")?.getAttribute("aria-selected")).toBe("true");
   });
 
@@ -366,15 +372,45 @@ describe("App runtime setup recovery", () => {
     },
   );
 
-  it("moves focus to the Settings tab when a conversion shortcut opens Settings", async () => {
+  it("focuses visible content when a conversion shortcut opens Settings with the sidebar hidden", async () => {
     await act(async () => {
       root.render(<App />);
     });
     await act(async () => findButton(container, "Continue in library-only mode").click());
 
     await act(async () => findButton(container, "Convert").click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Hide sidebar"]')!.click());
     await act(async () => findButton(container, "Open Settings").click());
 
-    expect(document.activeElement?.id).toBe("tab-btn-settings");
+    expect(document.activeElement?.id).toBe("workspace-heading");
+    expect(document.activeElement?.textContent).toBe("Settings");
+    expect(container.querySelector<HTMLElement>(".rail")?.hidden).toBe(true);
+  });
+
+  it("returns focus to the sidebar toggle on Escape", async () => {
+    await act(async () => root.render(<App />));
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+    const tab = container.querySelector<HTMLButtonElement>("#tab-btn-dashboard")!;
+    tab.focus();
+    await act(async () => tab.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Show sidebar");
+    expect(container.querySelector<HTMLElement>(".rail")?.hidden).toBe(true);
+  });
+
+  it("keeps the current workspace mounted while requiring fresh readiness after reconnect", async () => {
+    const ready = { ...setupStatus, configured: true, state: "ready" as const, ready: true };
+    mocks.apiClient.getRuntimeSetupStatus.mockResolvedValue(ready);
+    await act(async () => root.render(<App />));
+    await act(async () => findButton(container, "Convert").click());
+    const workspace = container.querySelector(".app-frame");
+    let resolveStatus!: (status: RuntimeSetupStatusResponse) => void;
+    mocks.backend.apiClient = { getRuntimeSetupStatus: vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveStatus = resolve; })) };
+    await act(async () => root.render(<App />));
+    expect(container.querySelector(".app-frame")).toBe(workspace);
+    expect(container.querySelector("#tab-btn-convert")?.getAttribute("aria-selected")).toBe("true");
+    expect(mocks.dashboardSetupStatus).toBeNull();
+    await act(async () => resolveStatus(ready));
+    expect(mocks.dashboardSetupStatus).toBe(ready);
+    expect(container.querySelector(".app-frame")).toBe(workspace);
   });
 });

@@ -99,6 +99,8 @@ pub struct SetupRequest {
     pub model_groups: Vec<String>,
     #[serde(default)]
     pub accept_pytorch_risk: bool,
+    #[serde(default)]
+    pub cleaner_cuda_quantization: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -584,8 +586,8 @@ fn valid_identifier(value: &str) -> bool {
 fn allowed_groups(profile: &str) -> &'static [&'static str] {
     match profile {
         "base" => &[],
-        "mlx" => &["tts-mlx", "cleaner-mlx"],
-        "cuda" => &["tts-cpu-cuda", "cleaner-cuda"],
+        "mlx" => &["tts-mlx", "cleaner-mlx", "cleaner-mlx-small"],
+        "cuda" => &["tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"],
         _ => &[],
     }
 }
@@ -643,6 +645,13 @@ fn build_setup_launch_config(
         args.push(group);
     }
     args.push("--progress-json".to_string());
+    if let Some(quantization) = request.cleaner_cuda_quantization {
+        if !matches!(quantization.as_str(), "4bit" | "8bit" | "fp16") {
+            return Err("unsupported cleaner quantization".to_string());
+        }
+        args.push("--cleaner-cuda-quantization".to_string());
+        args.push(quantization);
+    }
     Ok(SetupLaunchConfig {
         program: python_program.as_ref().to_path_buf(),
         script,

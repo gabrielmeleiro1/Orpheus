@@ -122,10 +122,12 @@ def test_profile_model_groups_are_explicit() -> None:
     assert runtime_profiles.get_runtime_profile("mlx").model_groups == (
         "tts-mlx",
         "cleaner-mlx",
+        "cleaner-mlx-small",
     )
     assert runtime_profiles.get_runtime_profile("cuda").model_groups == (
         "tts-cpu-cuda",
         "cleaner-cuda",
+        "cleaner-cuda-large",
     )
 
 

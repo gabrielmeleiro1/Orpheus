@@ -9,6 +9,7 @@ import {
   type SetupProfileChoice,
   type SetupSelection,
 } from "./setupModel";
+import { SetupPrecisionChoice } from "./SetupPrecisionChoice";
 import { SetupRiskNotice } from "./SetupRiskNotice";
 import { InfoTip, ModelListTip } from "./SetupTips";
 
@@ -25,6 +26,7 @@ interface SetupPlanSectionProps {
   setShowAdvanced: Dispatch<SetStateAction<boolean>>;
   showRiskBlock: boolean;
   riskProfile: RuntimeSetupProfile | null;
+  showModels?: boolean;
 }
 
 export function SetupPlanSection({
@@ -40,35 +42,40 @@ export function SetupPlanSection({
   setShowAdvanced,
   showRiskBlock,
   riskProfile,
+  showModels = true,
 }: SetupPlanSectionProps) {
+  const title = selection.profile === "base" ? "Library only" : selectedProfile?.label ?? selection.profile;
+  const detailPrimary =
+    selection.profile === "base"
+      ? "No downloads"
+      : `${selection.modelGroups.map((group) => MODEL_GROUP_DETAILS[group]?.label).filter(Boolean).join(" + ")} · ${selectedEstimate}`;
+
   return (
     <>
-      <div className="setup-plan">
-        <div className="setup-plan-summary">
+      <div className="setup-plan card">
+        <div className="setup-plan-header">
           <span className="setup-plan-title">
-            <strong>{selection.profile === "base" ? "Library only" : selectedProfile?.label ?? selection.profile}</strong>
+            <strong>{title}</strong>
             {status.recommended_profile === selection.profile ? <span className="setup-chip">Recommended</span> : null}
             {selection.profile === "base"
               ? <InfoTip label="Library-only details"><span>Document conversion, playback, and cloud cleaning. No local models are installed — add them later in Settings.</span></InfoTip>
               : <ModelListTip modelGroups={selection.modelGroups} label="What will be installed" />}
           </span>
-          <span className="setup-plan-detail">
-            {selection.profile === "base"
-              ? "No downloads"
-              : `${selection.modelGroups.map((group) => MODEL_GROUP_DETAILS[group]?.label).filter(Boolean).join(" + ")} · ${selectedEstimate}`}
-          </span>
+          <button className="btn setup-customize-toggle" type="button" aria-expanded={showAdvanced} onClick={() => setShowAdvanced((open) => !open)}>
+            {showAdvanced ? "Hide options" : "Customize"}
+          </button>
+        </div>
+        <div className="setup-plan-body">
+          <span className="setup-plan-detail">{detailPrimary}</span>
           {selection.modelGroups.length > 0 && selection.profile !== "base" ? (
-            <span className="setup-plan-detail">Models download from Hugging Face and run locally on your device.</span>
+            <span className="setup-plan-detail">{showModels ? "Models download from Hugging Face and run locally on your device." : "Choose the models to use below. Installed models are reused."}</span>
           ) : null}
         </div>
-        <button className="btn btn-compact setup-customize-toggle" type="button" aria-expanded={showAdvanced} onClick={() => setShowAdvanced((open) => !open)}>
-          {showAdvanced ? "Hide options" : "Customize"}
-        </button>
       </div>
 
       {showAdvanced ? (
         <>
-          <fieldset className="setup-section" disabled={busy}>
+          <fieldset className="setup-section" disabled={busy || adopting}>
             <legend className="section-label">Runtime</legend>
             <div className="setup-profile-grid">
               {choices.map((profile) => (
@@ -87,32 +94,39 @@ export function SetupPlanSection({
             </div>
           </fieldset>
 
-          <fieldset className="setup-section setup-model-section" disabled={busy || !selectedProfile || selectedProfile.model_groups.length === 0}>
-            <legend className="section-label">Models</legend>
-            {selectedProfile?.model_groups.length ? (
-              <div className="setup-model-list">
-                {selectedProfile.model_groups.map((groupId) => {
-                  const details = MODEL_GROUP_DETAILS[groupId];
-                  if (!details) return null;
-                  return (
-                    <label className="setup-model-row" key={groupId}>
-                      <input type="checkbox" checked={selection.modelGroups.includes(groupId)} onChange={() => setSelection((current) => toggleModelGroup(current, groupId, status))} />
-                      <span className="setup-model-name">
-                        <strong>{details.label}</strong>
-                        <InfoTip label={`${details.label} details`}>
-                          <span>{details.description}</span>
-                          <code>{details.model}</code>
-                        </InfoTip>
-                      </span>
-                      <span className="setup-estimate">{groupEstimate(groupId)}</span>
-                    </label>
-                  );
-                })}
-              </div>
-            ) : <p className="setup-empty-models">No local models in library-only mode.</p>}
-          </fieldset>
+
         </>
       ) : null}
+
+      {showModels && selectedProfile?.model_groups.length ? (
+        <fieldset className="setup-section setup-model-section" disabled={busy || adopting}>
+          <legend className="section-label">Choose what to install</legend>
+          <p className="setup-model-explanation">Kokoro turns text into speech. The optional cleaner repairs text before narration. Choose one cleaner; other models can be installed or deleted later in Settings.</p>
+          <div className="setup-model-list">
+            {selectedProfile.model_groups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts").map((id) => (
+              <label className="setup-model-row" key={id}>
+                <input type="checkbox" checked={selection.modelGroups.includes(id)} onChange={() => setSelection((current) => toggleModelGroup(current, id, status))} />
+                <span className="setup-model-name"><strong>Kokoro voice model</strong><small>{MODEL_GROUP_DETAILS[id].model}</small></span>
+                <span className="setup-estimate">{groupEstimate(id)}</span>
+              </label>
+            ))}
+            <label className="setup-model-row">
+              <input type="radio" name="setup-cleaner" checked={!selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "cleaner")} onChange={() => setSelection((current) => ({ ...current, modelGroups: current.modelGroups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind !== "cleaner") }))} />
+              <span className="setup-model-name"><strong>No local cleaner</strong><small>Skip the cleaner download. Basic text cleanup remains available.</small></span>
+            </label>
+            {selectedProfile.model_groups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind === "cleaner").map((id) => {
+              const detail = MODEL_GROUP_DETAILS[id];
+              const installed = status.installed_runtime?.model_groups.some((group) => group.id === id && group.assets_ready);
+              return <label className="setup-model-row" key={id}>
+                <input type="radio" name="setup-cleaner" checked={selection.modelGroups.includes(id)} onChange={() => setSelection((current) => toggleModelGroup(current, id, status))} />
+                <span className="setup-model-name"><strong>{detail.label}</strong><small>{detail.description}</small><code>{detail.model}</code></span>
+                <span className="setup-estimate">{installed ? "Already downloaded" : groupEstimate(id)}</span>
+              </label>;
+            })}
+          </div>
+        </fieldset>
+      ) : null}
+      <SetupPrecisionChoice selection={selection} disabled={busy || adopting} onChange={(value) => setSelection((current) => ({ ...current, cleanerCudaQuantization: value }))} />
 
       {showRiskBlock && riskProfile?.risk ? (
         <SetupRiskNotice

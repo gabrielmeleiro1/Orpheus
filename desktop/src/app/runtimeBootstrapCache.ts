@@ -8,6 +8,10 @@ export interface RuntimeBootstrap {
 
 const bootstrapByClient = new WeakMap<ApiClient, Promise<RuntimeBootstrap>>();
 
+export function invalidateRuntimeBootstrap(apiClient: ApiClient): void {
+  bootstrapByClient.delete(apiClient);
+}
+
 export function getRuntimeBootstrap(apiClient: ApiClient): Promise<RuntimeBootstrap> {
   const existing = bootstrapByClient.get(apiClient);
   if (existing) {
@@ -20,7 +24,7 @@ export function getRuntimeBootstrap(apiClient: ApiClient): Promise<RuntimeBootst
   ])
     .then(([models, capabilities]) => ({ models, capabilities }))
     .catch((error: unknown) => {
-      bootstrapByClient.delete(apiClient);
+      if (bootstrapByClient.get(apiClient) === request) bootstrapByClient.delete(apiClient);
       throw error;
     });
   bootstrapByClient.set(apiClient, request);

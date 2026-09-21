@@ -114,7 +114,7 @@ class ModelDownloadService:
         with self._mutex:
             return dict(self._state, model_groups=list(self._state["model_groups"]))
 
-    def start(self, *, profile_id: str, model_groups: Iterable[str]) -> dict[str, Any]:
+    def start(self, *, profile_id: str, model_groups: Iterable[str], configure_runtime: bool = True, cleaner_cuda_quantization: str = "4bit") -> dict[str, Any]:
         """Begin a download; raises when busy or when the setup lock is held.
 
         The lock is acquired synchronously so callers get an immediate
@@ -146,6 +146,7 @@ class ModelDownloadService:
                 "lifecycle": "running",
                 "profile": profile_id,
                 "model_groups": groups,
+                "cleaner_cuda_quantization": cleaner_cuda_quantization,
                 "total_models": sum(len(models) for _, models in plan),
                 "completed_models": 0,
                 "current_model_group": groups[0] if groups else None,
@@ -153,6 +154,8 @@ class ModelDownloadService:
                 "error": None,
             }
             self._thread = thread
+            if not configure_runtime:
+                self._state["configure_runtime"] = False
             try:
                 thread.start()
             except Exception:

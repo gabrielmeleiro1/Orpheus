@@ -22,6 +22,11 @@ from modules.tts.cleaner_backends.registry import (
 
 ProbeResult = dict[str, Any]
 
+# Transformers exposes lazy imports that can fail while a different probe is
+# importing the same package. Frozen probes share one interpreter, including
+# probes owned by different service instances; serialize their import work.
+_FROZEN_PROBE_LOCK = threading.RLock()
+
 
 class RuntimeCapabilityService:
     """Runs short-lived subprocess probes and caches their results."""
@@ -242,7 +247,8 @@ except Exception as exc:
         started_at = time.perf_counter()
         if getattr(sys, "frozen", False):
             try:
-                payload = self._run_in_process_probe(script)
+                with _FROZEN_PROBE_LOCK:
+                    payload = self._run_in_process_probe(script)
                 return {
                     "available": bool(payload.get("available")),
                     "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),

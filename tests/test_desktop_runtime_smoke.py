@@ -340,6 +340,56 @@ def test_local_tts_runtime_available_requires_explicit_runtime_probe() -> None:
     )
 
 
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("runtime_ready,assets_ready", [(True, True), (True, False), (False, True)])
+def test_package_tts_gate_requires_runtime_and_cached_assets(configured, runtime_ready, assets_ready):
+    group = {"id": "tts-cpu-cuda", "runtime_ready": runtime_ready, "assets_ready": assets_ready}
+    status = {
+        "configured": configured,
+        "selected_profile": "cuda" if configured else None,
+        "packages": {"ready": True},
+        "selected_model_groups": [group] if configured else [],
+        "installed_runtime": None if configured else {
+            "profile": "cuda", "runtime_available": True, "model_groups": [group],
+        },
+    }
+    capabilities = {
+        "primary_runtime": "cuda",
+        "available_tts_engines": ["kokoro"],
+        "runtime_probe": {"tts": {"available": False}},
+        "setup_status": status,
+    }
+    assert desktop_runtime_smoke.local_tts_runtime_available(capabilities) == (runtime_ready and assets_ready)
+    status["restart_required"] = True
+    assert not desktop_runtime_smoke.local_tts_runtime_available(capabilities)
+
+
+@pytest.mark.parametrize("status", [None, {}, {"installed_runtime": {"ready": True}}, {
+    "configured": True, "selected_profile": "cuda", "packages": {"ready": True},
+    "selected_model_groups": [{"id": "cleaner-cuda", "runtime_ready": True, "assets_ready": True}],
+}])
+def test_package_tts_gate_rejects_missing_tts_evidence(status):
+    assert not desktop_runtime_smoke.local_tts_runtime_available({
+        "primary_runtime": "cuda", "setup_status": status, "mlx_runtime_available": True,
+    })
+
+
+def test_package_capabilities_fetcher_reads_setup_status(monkeypatch):
+    calls = []
+    def request(method, url, **kwargs):
+        calls.append(url)
+        assert kwargs["token"] == "test-token"
+        payload = {"primary_runtime": "cuda"} if url.endswith("capabilities") else {"configured": False}
+        return desktop_runtime_smoke.HttpResult(200, json.dumps(payload).encode())
+    monkeypatch.setattr(desktop_runtime_smoke, "http_request", request)
+    fetch = desktop_runtime_smoke._capabilities_fetcher(
+        desktop_runtime_smoke.ReadyPayload("127.0.0.1", 9, "test-token"),
+        timeout_seconds=5, label="test",
+    )
+    assert fetch()["setup_status"] == {"configured": False}
+    assert [url.rsplit("/", 1)[-1] for url in calls] == ["capabilities", "status"]
+
+
 def test_classify_tts_probe_readiness_distinguishes_pending_unavailable_ready() -> None:
     assert (
         desktop_runtime_smoke.classify_tts_probe_readiness(

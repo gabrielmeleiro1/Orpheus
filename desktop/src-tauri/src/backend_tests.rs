@@ -488,6 +488,23 @@ fn resolve_sidecar_path_reports_missing_binary() {
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 
+#[test]
+fn resolve_sidecar_path_uses_logical_install_when_resource_directory_is_virtualized() {
+    let temp_root = unique_temp_path("virtualized-resource");
+    let install = temp_root.join("install");
+    let resources = temp_root.join("package-cache");
+    let sidecar_dir = install.join("binaries").join(sidecar_binary_stem());
+    std::fs::create_dir_all(&sidecar_dir).unwrap();
+    let sidecar = sidecar_dir.join(runtime_sidecar_file_name_for_tests());
+    std::fs::write(&sidecar, b"test-sidecar").unwrap();
+    let executable = install.join("Orpheus.exe");
+    assert_eq!(
+        resolve_sidecar_path(Some(&resources), Some(&executable)).unwrap(),
+        sidecar
+    );
+    std::fs::remove_dir_all(&temp_root).unwrap();
+}
+
 fn runtime_sidecar_file_name_for_tests() -> String {
     if cfg!(target_os = "windows") {
         format!("{}.exe", sidecar_binary_stem())

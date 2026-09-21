@@ -8,6 +8,7 @@
   cursor: pointer;
   display: flex;
   justify-content: space-between;
+  min-height: var(--control-h);
   text-align: left;
 }
 
@@ -15,8 +16,9 @@
   align-items: center;
   color: var(--text-secondary);
   display: grid;
+  flex-shrink: 0;
   height: 14px;
-  margin-left: 8px;
+  margin-left: var(--space-2);
   width: 14px;
 }
 
@@ -34,14 +36,14 @@
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 18px 38px color-mix(in srgb, var(--overlay) 45%, transparent);
+  box-shadow: var(--shadow-popover);
   left: 0;
-  max-height: 220px;
+  max-height: 240px;
   overflow-y: auto;
-  padding: 4px;
+  padding: var(--space-1);
   position: absolute;
   right: 0;
-  top: calc(100% + 4px);
+  top: calc(100% + var(--space-1));
   z-index: 200;
 }
 
@@ -51,11 +53,12 @@
   color: var(--text-secondary);
   cursor: pointer;
   display: grid;
-  font-size: 12px;
-  gap: 8px;
+  font-size: var(--text-base);
+  gap: var(--space-2);
   grid-template-columns: 8px minmax(0, 1fr);
+  min-height: var(--control-h);
   overflow: hidden;
-  padding: 6px 8px;
+  padding: 0 var(--space-2);
   text-overflow: ellipsis;
   transition: background 100ms ease, color 100ms ease;
   white-space: nowrap;

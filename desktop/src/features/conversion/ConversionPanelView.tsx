@@ -35,33 +35,27 @@ export function ConversionPanelView({
       aria-labelledby={`tab-btn-${shell.isDocumentMode ? "document" : "convert"}`}
       hidden={shell.hidden}
     >
-      <header className="conversion-context">
-        <p className="conversion-lede">
-          {shell.isDocumentMode
-            ? "Turn a document or pasted text into a focused listening copy."
-            : "Prepare a source, choose a voice, and export a chaptered audiobook."}
-        </p>
-        <span className="conversion-header-meta">{shell.isDocumentMode ? "M4A" : "M4B"}</span>
-      </header>
-
-      <div className="conversion-form">
-        <SourceQueueView
-          sourceQueue={sourceQueue}
-          capabilities={capabilities}
-          actions={actions}
-          hidden={shell.hidden}
-        />
-        <TtsOptionsView
-          ttsOptions={ttsOptions}
-          capabilities={capabilities}
-          actions={actions}
-        />
-        <AdvancedOptionsView
-          advancedOptions={advancedOptions}
-          actions={actions}
-        />
+      <div className="conversion-scroll" tabIndex={0} aria-label="Conversion options">
+        <div className="conversion-form">
+          <SourceQueueView
+            sourceQueue={sourceQueue}
+            capabilities={capabilities}
+            actions={actions}
+            hidden={shell.hidden}
+          />
+          <TtsOptionsView
+            ttsOptions={ttsOptions}
+            capabilities={capabilities}
+            actions={actions}
+          />
+          <AdvancedOptionsView
+            advancedOptions={advancedOptions}
+            actions={actions}
+          />
+        </div>
       </div>
       <ConversionActionsView
+        sourceQueue={sourceQueue}
         conversionActions={conversionActions}
         capabilities={capabilities}
         actions={actions}

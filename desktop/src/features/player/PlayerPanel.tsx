@@ -4,6 +4,7 @@ import {
   type Ref,
 } from "react";
 import { formatClock } from "../../format/time";
+import { Icon } from "../../ui/icons";
 import "./player.css";
 
 function clamp(value: number, min: number, max: number): number {
@@ -93,6 +94,7 @@ export function PlayerPanel({
   const nextDisabled = !enabled || !canGoNext;
   const playDisabled = !enabled;
   const resolvedStatusText = title.trim() || "Ready";
+  const playbackNotice = /failed|could not|reconnecting/i.test(resolvedStatusText) ? resolvedStatusText : "";
   const rootClassName = className ? `player-bar ${className}` : "player-bar";
 
   const handleSeekChange: ChangeEventHandler<HTMLInputElement> = (event) => {
@@ -112,105 +114,99 @@ export function PlayerPanel({
   };
 
   return (
-    <footer className={rootClassName} hidden={!visible} aria-hidden={!visible}>
+    <footer className={rootClassName} hidden={!visible} aria-hidden={!visible} aria-label="Audiobook player">
       <div className="player-main">
-        <div className="player-controls">
-          <button
-            id="prev-btn"
-            className="btn-player btn-icon"
-            type="button"
-            data-tip="Previous audiobook"
-            aria-label="Previous audiobook"
-            disabled={prevDisabled}
-            onClick={onPrevious}
-          >
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <path d="M6 5v14" />
-              <path d="M18 6l-8 6 8 6z" />
-            </svg>
-          </button>
-          <button
-            id="seek-back-btn"
-            className="btn-player btn-icon"
-            type="button"
-            data-tip="Back 10 seconds"
-            aria-label="Seek back 10 seconds"
-            disabled={seekDisabled}
-            onClick={() => onSeekBy(-10)}
-          >
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <path d="M11 8l-4 4 4 4" />
-              <path d="M17 8l-4 4 4 4" />
-            </svg>
-          </button>
-          <button
-            id="play-btn"
-            className="btn-player btn-icon btn-play"
-            type="button"
-            data-tip={playing ? "Pause" : "Play"}
-            aria-label={playing ? "Pause audiobook" : "Play audiobook"}
-            disabled={playDisabled}
-            onClick={onTogglePlay}
-          >
-            {playing ? (
-              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-                <path d="M9 5v14M15 5v14" />
-              </svg>
-            ) : (
-              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-                <path d="M8 5l11 7-11 7z" />
-              </svg>
-            )}
-          </button>
-          <button
-            id="seek-fwd-btn"
-            className="btn-player btn-icon"
-            type="button"
-            data-tip="Forward 10 seconds"
-            aria-label="Seek forward 10 seconds"
-            disabled={seekDisabled}
-            onClick={() => onSeekBy(10)}
-          >
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <path d="M7 8l4 4-4 4" />
-              <path d="M13 8l4 4-4 4" />
-            </svg>
-          </button>
-          <button
-            id="next-btn"
-            className="btn-player btn-icon"
-            type="button"
-            data-tip="Next audiobook"
-            aria-label="Next audiobook"
-            disabled={nextDisabled}
-            onClick={onNext}
-          >
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-              <path d="M18 5v14" />
-              <path d="M6 6l8 6-8 6z" />
-            </svg>
-          </button>
+        <div className="player-meta">
+          <span id="player-status" className="player-track-title" title={bookTitle || resolvedStatusText}>
+            {bookTitle || resolvedStatusText}
+          </span>
+          {bookTitle && chapterTitle ? (
+            <span className="player-track-chapter" title={chapterTitle}>{chapterTitle}</span>
+          ) : null}
+          {playbackNotice ? <span className="player-notice">{playbackNotice}</span> : null}
         </div>
 
-        <div className="player-track-info">
-          <div className="player-status-row">
-            <span id="player-status" className="player-track-title">
-              {bookTitle || resolvedStatusText}
-            </span>
+        <div className="player-center">
+          <div className="player-controls">
             <button
-              id="player-close-btn"
-              className="btn-player player-close-btn"
+              id="prev-btn"
+              className="btn-player btn-icon"
               type="button"
-              data-tip="Close the player"
-              aria-label="Close player"
-              onClick={onClose}
+              data-tip="Previous audiobook"
+              aria-label="Previous audiobook"
+              disabled={prevDisabled}
+              onClick={onPrevious}
             >
-              ×
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M6 5v14" />
+                <path d="M18 6l-8 6 8 6z" />
+              </svg>
+            </button>
+            <button
+              id="seek-back-btn"
+              className="btn-player btn-icon"
+              type="button"
+              data-tip="Back 10 seconds"
+              aria-label="Seek back 10 seconds"
+              disabled={seekDisabled}
+              onClick={() => onSeekBy(-10)}
+            >
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M11 8l-4 4 4 4" />
+                <path d="M17 8l-4 4 4 4" />
+              </svg>
+            </button>
+            <button
+              id="play-btn"
+              className="btn-player btn-icon btn-play"
+              type="button"
+              data-tip={playing ? "Pause" : "Play"}
+              aria-label={playing ? "Pause audiobook" : "Play audiobook"}
+              disabled={playDisabled}
+              onClick={onTogglePlay}
+            >
+              {playing ? (
+                <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="M9 5v14M15 5v14" />
+                </svg>
+              ) : (
+                <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                  <path d="M8 5l11 7-11 7z" />
+                </svg>
+              )}
+            </button>
+            <button
+              id="seek-fwd-btn"
+              className="btn-player btn-icon"
+              type="button"
+              data-tip="Forward 10 seconds"
+              aria-label="Seek forward 10 seconds"
+              disabled={seekDisabled}
+              onClick={() => onSeekBy(10)}
+            >
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M7 8l4 4-4 4" />
+                <path d="M13 8l4 4-4 4" />
+              </svg>
+            </button>
+            <button
+              id="next-btn"
+              className="btn-player btn-icon"
+              type="button"
+              data-tip="Next audiobook"
+              aria-label="Next audiobook"
+              disabled={nextDisabled}
+              onClick={onNext}
+            >
+              <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+                <path d="M18 5v14" />
+                <path d="M6 6l8 6-8 6z" />
+              </svg>
             </button>
           </div>
-          {bookTitle && chapterTitle ? <span className="player-track-chapter">{chapterTitle}</span> : null}
+
           <div className="player-timeline">
-            <span id="player-elapsed" className="player-time">
+            <span id="player-elapsed" className="player-time tabular-nums">
               {formatClock(normalizedElapsedSec)}
             </span>
             <input
@@ -222,36 +218,52 @@ export function PlayerPanel({
               step={0.1}
               value={normalizedElapsedSec}
               aria-label="Seek position"
+              aria-valuetext={`${formatClock(normalizedElapsedSec)} of ${formatClock(normalizedDurationSec)}`}
               disabled={seekDisabled}
               onChange={handleSeekChange}
             />
-            <span id="player-duration" className="player-time">
+            <span id="player-duration" className="player-time tabular-nums">
               {formatClock(normalizedDurationSec)}
             </span>
           </div>
         </div>
 
-        <div className="player-volume-wrap">
-          <span className="player-volume-label" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false">
-              <path d="M4 9v6h4l5 4V5L8 9H4z" />
-              <path d="M16.5 8.5a5 5 0 0 1 0 7" />
-            </svg>
-          </span>
-          <input
-            id="player-volume"
-            className="player-volume"
-            type="range"
-            min={0}
-            max={100}
-            step={1}
-            value={normalizedVolume}
-            aria-label="Volume"
-            disabled={volumeDisabled}
-            onChange={handleVolumeChange}
-          />
+        <div className="player-trailing">
+          <div className="player-volume-wrap">
+            <span className="player-volume-label" aria-hidden="true">
+              <svg viewBox="0 0 24 24" focusable="false">
+                <path d="M4 9v6h4l5 4V5L8 9H4z" />
+                <path d="M16.5 8.5a5 5 0 0 1 0 7" />
+              </svg>
+            </span>
+            <input
+              id="player-volume"
+              className="player-volume"
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={normalizedVolume}
+              aria-label="Volume"
+              aria-valuetext={`${normalizedVolume}%`}
+              disabled={volumeDisabled}
+              onChange={handleVolumeChange}
+            />
+          </div>
+          <button
+            id="player-close-btn"
+            className="btn-player btn-icon player-close-btn"
+            type="button"
+            data-tip="Close the player"
+            aria-label="Close player"
+            onClick={onClose}
+          >
+            <Icon name="x" size={14} />
+          </button>
         </div>
       </div>
+      <span className="sr-only" role="status" aria-atomic="true">{[bookTitle || "Audiobook player", chapterTitle].filter(Boolean).join(". ")}</span>
+      <span className="sr-only" role="alert">{playbackNotice}</span>
 
       <audio
         id="audio-player"

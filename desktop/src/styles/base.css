@@ -21,9 +21,9 @@
   --accent: #d97757;
   --accent-soft: rgba(217, 119, 87, 0.12);
   --accent-muted: #c6613f;
-  --accent-text: #dd8467;
+  --accent-text: #e38d70;
   --tag-bg: rgba(217, 119, 87, 0.14);
-  --focus-ring: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
+  --focus-ring: 0 0 0 2px var(--accent);
   --dur-fast: 120ms;
   --ease-out: cubic-bezier(0, 0, 0.2, 1);
 
@@ -39,25 +39,79 @@
 
   --overlay: #000000;
 
-  --density-rail-width: 220px;
-  --density-page-x: 48px;
+  --density-rail-width: 224px;
+  --density-page-x: 40px;
   --density-panel-gap: 16px;
   --density-panel-pad: 16px;
   --density-control-height: 32px;
 
-  /* Shared spacing for forms and cards. */
+  /* Control heights: every button, input, select and segmented control uses one of these. */
+  --control-h-sm: 28px;
+  --control-h: 32px;
+  --control-h-lg: 36px;
+
+  /* Spacing scale (4px grid). */
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;
   --space-4: 16px;
   --space-5: 20px;
   --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+
+  /* Type scale. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+
+  /* Cards: one padding, one radius, everywhere. */
+  --card-pad: 16px;
+  --card-radius: var(--radius-lg);
+  --section-gap: 32px;
+
+  /* Every page shares one column so the heading never shifts between tabs. */
+  --page-max-width: 1120px;
+  /* Form-first pages (Convert, Document, Settings) cap their content at this width. */
+  --content-narrow: 760px;
+
+  --shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.45), 0 0 0 1px var(--border);
 
   /* Text inputs stay readable instead of stretching the full column. */
   --field-text-width: 34rem;
 
+  /* Matches ::-webkit-scrollbar width; the workspace reserves it on both edges. */
+  --scroll-gutter: 8px;
+
   --scroll-thumb: #2f2f2c;
   --scroll-thumb-hover: #3b3b37;
+}
+
+/* Use the user's high-contrast palette, including computed text/focus colors. */
+@media (forced-colors: active) {
+  :root {
+    --bg: Canvas;
+    --bg-elevated: Canvas;
+    --surface: Canvas;
+    --surface-hover: Canvas;
+    --surface-active: ButtonFace;
+    --text: CanvasText;
+    --text-secondary: CanvasText;
+    --text-tertiary: CanvasText;
+    --accent: LinkText;
+    --accent-soft: Canvas;
+    --accent-muted: LinkText;
+    --accent-text: LinkText;
+    --positive: CanvasText;
+    --negative: CanvasText;
+    --warning: CanvasText;
+    --border: ButtonText;
+    --border-light: ButtonText;
+    --border-strong: ButtonText;
+  }
 }
 
 * {
@@ -93,9 +147,13 @@ button {
   letter-spacing: 0;
 }
 
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
 ::-webkit-scrollbar {
-  height: 5px;
-  width: 5px;
+  height: 8px;
+  width: 8px;
 }
 
 ::-webkit-scrollbar-track {
@@ -104,7 +162,9 @@ button {
 
 ::-webkit-scrollbar-thumb {
   background: var(--scroll-thumb);
-  border-radius: 3px;
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {

@@ -2,7 +2,7 @@ import type { SystemCapabilitiesResponse } from "../../types/api";
 
 export const CAPABILITIES_PROBE_POLL_BASE_MS = 1500;
 export const CAPABILITIES_PROBE_POLL_MAX_MS = 6000;
-export const CAPABILITIES_PROBE_MAX_WAIT_MS = 60_000;
+export const CAPABILITIES_PROBE_MAX_WAIT_MS = 120_000;
 
 type RuntimeProbeSnapshot = Pick<
   SystemCapabilitiesResponse["runtime_probe"],

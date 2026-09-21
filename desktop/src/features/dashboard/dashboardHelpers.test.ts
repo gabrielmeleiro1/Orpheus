@@ -7,6 +7,19 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 import { waitForDesktopEndpoint } from "./dashboardHelpers";
 
 describe("waitForDesktopEndpoint", () => {
+  it("allows a cold backend to finish after ninety seconds", async () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const endpoint = { host: "127.0.0.1", port: 43123, base_url: "http://127.0.0.1:43123", token: "test" };
+    invoke.mockImplementation(async (command: string) => command === "backend_endpoint"
+      ? endpoint
+      : Date.now() - startedAt < 90_000
+        ? { lifecycle: "starting", endpoint: null, error: null }
+        : { lifecycle: "ready", endpoint, error: null });
+    const result = waitForDesktopEndpoint();
+    await vi.advanceTimersByTimeAsync(90_150);
+    await expect(result).resolves.toEqual(endpoint);
+  });
   beforeEach(() => {
     invoke.mockReset();
   });

@@ -50,8 +50,11 @@ export function SetupDangerZone({
   };
 
   return (
-    <details className="setup-danger disclosure" onToggle={(event) => { if (!event.currentTarget.open) disarmDelete(); }}>
-      <summary>Local data <span className="setup-danger-note">Manage downloaded models and runtime setup</span></summary>
+    <details className="setup-danger disclosure-card disclosure" onToggle={(event) => { if (!event.currentTarget.open) disarmDelete(); }}>
+      <summary>
+        <span>Local data</span>
+        <span className="disclosure-card-meta">Manage downloaded models and runtime setup</span>
+      </summary>
       <div className="setup-danger-box">
         <p>Delete downloaded models and reset runtime setup.</p>
         <div className="setup-danger-actions">

@@ -98,4 +98,21 @@ describe("useBackendClient explicit reconnect", () => {
     expect(latest?.apiClient).not.toBe(firstClient);
     expect(waitForDesktopEndpoint).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps the startup failure visible after automatic recovery is exhausted", async () => {
+    vi.useFakeTimers();
+    const error = "Desktop backend sidecar is missing. Reinstall Orpheus.";
+    readDesktopBackendStatus.mockResolvedValue({ lifecycle: "failed", endpoint: null, error });
+    waitForDesktopEndpoint.mockRejectedValue(new Error(error));
+    function Harness() {
+      latest = useBackendClient();
+      return <span>{latest.statusMessage}</span>;
+    }
+    await act(async () => root.render(<Harness />));
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    }
+    expect(container.textContent).toContain("failed to recover after multiple attempts");
+    expect(container.textContent).toContain(error);
+  });
 });

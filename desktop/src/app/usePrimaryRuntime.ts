@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../api/client";
-import type { ModelOptionsResponse, SystemCapabilitiesResponse } from "../types/api";
+import type { ModelOptionsResponse, RuntimeSetupStatusResponse, SystemCapabilitiesResponse } from "../types/api";
+import { runtimeTtsReady } from "./runtimeReadiness";
 import {
   DESKTOP_SETTINGS_CHANGED_EVENT,
   readPersistedSettings,
@@ -10,19 +11,8 @@ import { buildRuntimeIdentityFromSnapshot, formatRuntimeIdentity, type RuntimeId
 import { getRuntimeBootstrap, updateRuntimeBootstrapCapabilities } from "./runtimeBootstrapCache";
 import { startRuntimeCapabilityPolling } from "../features/conversion/runtimeCapabilityPolling";
 
-function runtimeReadiness(capabilities: SystemCapabilitiesResponse | null): boolean | null {
-  // runtime_probe.tts checks MLX imports only. CUDA availability is reported
-  // by the engine registry; a missing MLX module must not disable CUDA.
-  if (capabilities?.primary_runtime === "cuda") {
-    return capabilities.available_tts_engines?.includes(capabilities.default_tts_engine) ?? null;
-  }
-  const probe = capabilities?.runtime_probe;
-  if (!probe || probe.refresh_in_progress || probe.state === "pending" || probe.state === "stale") return null;
-  return probe.tts?.available ?? null;
-}
-
-export function useRuntimeIdentity(apiClient: ApiClient | null): RuntimeIdentity & { ttsReady: boolean | null } {
-  const [identity, setIdentity] = useState<RuntimeIdentity & { ttsReady: boolean | null }>({ ttsLabel: "—", cleanerLabel: "—", ttsReady: null });
+export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: RuntimeSetupStatusResponse | null = null): RuntimeIdentity & { ttsReady: boolean | null } {
+  const [identity, setIdentity] = useState<RuntimeIdentity>({ ttsLabel: "—", cleanerLabel: "—" });
   const capabilitiesRef = useRef<SystemCapabilitiesResponse | null>(null);
   const modelOptionsRef = useRef<ModelOptionsResponse | null>(null);
 
@@ -30,13 +20,13 @@ export function useRuntimeIdentity(apiClient: ApiClient | null): RuntimeIdentity
     if (!apiClient) {
       capabilitiesRef.current = null;
       modelOptionsRef.current = null;
-      setIdentity({ ttsLabel: "—", cleanerLabel: "—", ttsReady: null });
+      setIdentity({ ttsLabel: "—", cleanerLabel: "—" });
       return undefined;
     }
     let cancelled = false;
     capabilitiesRef.current = null;
     modelOptionsRef.current = null;
-    setIdentity({ ttsLabel: "—", cleanerLabel: "—", ttsReady: null });
+    setIdentity({ ttsLabel: "—", cleanerLabel: "—" });
     const updateIdentity = () => {
       if (cancelled || !modelOptionsRef.current) return;
       setIdentity({
@@ -45,7 +35,6 @@ export function useRuntimeIdentity(apiClient: ApiClient | null): RuntimeIdentity
           modelOptions: modelOptionsRef.current,
           settings: readPersistedSettings(),
         }),
-        ttsReady: runtimeReadiness(capabilitiesRef.current),
       });
     };
     const poller = startRuntimeCapabilityPolling({
@@ -71,7 +60,7 @@ export function useRuntimeIdentity(apiClient: ApiClient | null): RuntimeIdentity
       })
       .catch(() => {
         if (!cancelled) {
-          setIdentity({ ttsLabel: "—", cleanerLabel: "—", ttsReady: null });
+          setIdentity({ ttsLabel: "—", cleanerLabel: "—" });
         }
       });
     return () => {
@@ -94,7 +83,6 @@ export function useRuntimeIdentity(apiClient: ApiClient | null): RuntimeIdentity
           modelOptions: modelOptionsRef.current,
           settings: readPersistedSettings(),
         }),
-        ttsReady: runtimeReadiness(capabilitiesRef.current),
       });
     };
     window.addEventListener(DESKTOP_SETTINGS_CHANGED_EVENT, onSettingsChanged);
@@ -103,7 +91,7 @@ export function useRuntimeIdentity(apiClient: ApiClient | null): RuntimeIdentity
     };
   }, [apiClient]);
 
-  return identity;
+  return { ...identity, ttsReady: apiClient ? runtimeTtsReady(setupStatus) : null };
 }
 
 export function useRuntimeIdentityLabel(apiClient: ApiClient | null): string {

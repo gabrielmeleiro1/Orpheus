@@ -246,7 +246,7 @@ export function deriveCleanerRuntimeStatus(
   const availability = capabilities.cleaner_runtime_availability[selectedBackend.id];
   if (availability === true) {
     return {
-      message: `${localCleanerRuntimeDisplayName(displayName, "Local")} cleaner ready.`,
+      message: `${localCleanerRuntimeDisplayName(displayName, "Local")} runtime available.`,
       isError: false,
     };
   }

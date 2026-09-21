@@ -39,6 +39,9 @@ def get_controller_from_app(app: FastAPI) -> AppController:
         service = getattr(app.state, "controller", None)
         if service is None:
             service = factory()
+            apply_preferences = getattr(getattr(service, "config", None), "apply_setup_preferences", None)
+            if callable(apply_preferences):
+                apply_preferences()
             app.state.controller = service
     return service
 

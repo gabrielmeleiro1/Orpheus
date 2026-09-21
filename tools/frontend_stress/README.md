@@ -52,6 +52,7 @@ Credentials are omitted/redacted from harness diagnostics and reports. Avoid sha
 | c | add-book-files | File upload and preflight for EPUB, PDF, Markdown and TXT; malformed/empty fixture handling |
 | d | options-sweep | Engine, voice, voice filter, speed and cleaner selections |
 | e | convert-single | Isolated single source starts, completes and appears in the library |
+| l | cuda-cleaner (opt-in) | Switch Qwen through 4bit → 8bit → fp16 → 4bit in one session; each choice reaches the API and produces successful cleanup and audio |
 | f | convert-cancel | Multi-section conversion cancels, stop control clears and start becomes usable |
 | g | queue-run | Two sources convert sequentially and both queue rows reach Done |
 | h | rapid-fire | Duplicate start suppression, tab switching, source inspection and title-edit races |
@@ -61,6 +62,37 @@ Credentials are omitted/redacted from harness diagnostics and reports. Avoid sha
 
 The PDF and EPUB repository fixtures are deliberately empty/malformed, so they are preflight cases, not successful conversion fixtures. Cancellation uses generated multi-section text with enough work to exercise interruption reliably.
 
+To check the CUDA settings through cleanup, audio generation, and playback, run
+`node tools/frontend_stress/run.mjs --only=a,l,j`. A passing `l` scenario requires
+an `llm_success` trace and the expected repaired text; rule-only cleanup or a
+successful conversion with a cleaner fallback does not pass. Missing CUDA or
+Qwen weights fail the test. The model must already be installed. Scenario `l`
+runs only when explicitly selected with `--only`. It also checks that the device
+displays “Cuda” without spellcheck while the API receives the canonical `cuda`.
+
+For offline inference checks of all three precision choices in PowerShell
+(including actual quantized layer classes and weight dtypes):
+
+```powershell
+$env:ORPHEUS_TEST_CUDA_CLEANER = "1"
+.venv/Scripts/python.exe -m pytest --no-cov -m gpu tests/test_cleaner_cuda_real.py
+Remove-Item Env:ORPHEUS_TEST_CUDA_CLEANER
+```
+
 Failed starts, failed/cancelled conversion terminals when success is required, missing prerequisites, and timeouts **fail**. None implies that a runtime is unavailable. Reconnect is explicitly skipped in reuse mode because the harness does not own those processes. Browser console/page errors fail scenarios; the deliberate backend-disconnection scenario permits a bounded number of connection errors.
 
 Reports are written to `artifacts/report.json`; failed scenarios also capture `artifacts/<id>-<name>.png`. Any failure produces a nonzero exit status. These outputs and isolated runtime state are gitignored.
+# Model setup end-to-end check
+
+From the repository root, build the frontend with `npm --prefix desktop run build`,
+then run `node tools/frontend_stress/model-setup.mjs`. Pass a packaged backend
+executable as the optional first argument to test the release bundle.
+
+This opt-in check needs a CUDA GPU and complete, receipt-verified Kokoro,
+Qwen 2.5 1.5B and Qwen 2.5 3B snapshots in the default Hugging Face cache.
+It creates isolated application data and an isolated model cache, using hard links
+to avoid duplicating weights. It installs the selected model from cached weights,
+checks saved precision after reload, switches precision through four real
+conversions, deletes one isolated model, and checks that books and playback still
+work. It never deletes the original cache. Reports and screenshots are written
+under `.artifacts/model-setup-check/`.

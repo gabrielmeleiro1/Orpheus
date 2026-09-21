@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import ipaddress
 import json
 import multiprocessing
 import os
 import secrets
+import shutil
 import signal
 import socket
 import sys
@@ -43,7 +45,7 @@ def _path_filesystem_byte_length(path: Path | str) -> int:
 
 
 def _frozen_espeak_runtime_base() -> Path:
-    """Short per-user cache dir for the espeak-ng-data symlink bridge."""
+    """Short per-user cache dir for the espeak-ng-data bridge or copy."""
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "Orpheus" / "espeak"
     xdg_cache = os.environ.get("XDG_CACHE_HOME")
@@ -53,8 +55,10 @@ def _frozen_espeak_runtime_base() -> Path:
 
 
 def _ensure_short_espeak_data_path(packaged_data: Path) -> Path:
-    """Expose packaged espeak-ng-data via a path within N_PATH_HOME, without copying."""
+    """Expose packaged speech data through a path the native library can read."""
     packaged_data = packaged_data.resolve()
+    if sys.platform == "win32":
+        return _windows_espeak_data_path(packaged_data)
     if _path_filesystem_byte_length(packaged_data) < _LIBESPEAK_PATH_HOME_LIMIT:
         return packaged_data
 
@@ -100,6 +104,58 @@ def _ensure_short_espeak_data_path(packaged_data: Path) -> Path:
 
     # Last resort: return packaged path (may still truncate in libespeak).
     return packaged_data
+
+
+def _windows_espeak_data_path(packaged_data: Path) -> Path:
+    # The bundled C library uses narrow Windows filesystem calls. UTF-8 paths
+    # can terminate the process inside espeak_Initialize, before Python can
+    # catch an error. Phonemizer resolves junctions/8.3 names back to the unsafe
+    # path, so keep a small, versioned data copy when a bridge cannot work.
+    if (
+        str(packaged_data).isascii()
+        and _path_filesystem_byte_length(packaged_data) < _LIBESPEAK_PATH_HOME_LIMIT
+    ):
+        return packaged_data
+    files = sorted(path for path in packaged_data.rglob("*") if path.is_file())
+    fingerprint = hashlib.sha256(str(packaged_data).encode("utf-8"))
+    for path in files:
+        stat = path.stat()
+        fingerprint.update(
+            f"{path.relative_to(packaged_data)}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
+        )
+    version = fingerprint.hexdigest()[:16]
+    for base in (_frozen_espeak_runtime_base(), Path(tempfile.gettempdir()) / "orpheus-espeak"):
+        target = base / version / "espeak-ng-data"
+        if not str(target).isascii() or _path_filesystem_byte_length(target) >= _LIBESPEAK_PATH_HOME_LIMIT:
+            continue
+        try:
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix=".copy-", dir=target.parent) as staging:
+                    copied = Path(staging) / "espeak-ng-data"
+                    shutil.copytree(packaged_data, copied)
+                    try:
+                        copied.rename(target)
+                    except FileExistsError:
+                        # Another backend may have completed the same cache.
+                        pass
+            if (target / "phontab").is_file() and all(
+                (target / path.relative_to(packaged_data)).is_file()
+                and (target / path.relative_to(packaged_data)).stat().st_size == path.stat().st_size
+                for path in files
+            ):
+                resolved = target.resolve()
+                if (
+                    str(resolved).isascii()
+                    and _path_filesystem_byte_length(resolved) < _LIBESPEAK_PATH_HOME_LIMIT
+                ):
+                    return resolved
+        except OSError:
+            continue
+    raise RuntimeError(
+        "Speech data needs a short ASCII cache path. "
+        "Choose an ASCII Windows TEMP directory and restart Orpheus."
+    )
 
 
 def _parse_host(raw_value: str) -> str:
@@ -322,9 +378,9 @@ def configure_frozen_espeak_runtime() -> None:
 
     Nested .app paths often exceed libespeak POSIX N_PATH_HOME (160 filesystem
     bytes). When the packaged data path is too long, expose it through a short
-    symlink bridge in a per-user cache location (no data-tree copy) and set
+    symlink bridge in a per-user cache location and set
     ESPEAK_DATA_PATH / PHONEMIZER_* consistently for parent and spawn-worker
-    re-entry.
+    re-entry. Windows uses a versioned ASCII data copy for unsafe paths.
     """
     if not getattr(sys, "frozen", False):
         return

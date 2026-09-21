@@ -73,6 +73,23 @@ describe("shouldPollRuntimeCapabilities", () => {
 });
 
 describe("startRuntimeCapabilityPolling", () => {
+  it("keeps checking a cold CUDA probe beyond the former sixty-second cutoff", async () => {
+    const startedAt = Date.now();
+    const pending = capabilities({ primary_runtime: "cpu", cleaner_runtime_availability: { cuda: false } });
+    const ready = capabilities({ probeState: "fresh", primary_runtime: "cpu", cleaner_runtime_availability: { cuda: true } });
+    const onCapabilities = vi.fn();
+    const poller = startRuntimeCapabilityPolling({
+      initialCapabilities: pending,
+      getSystemCapabilities: async () => Date.now() - startedAt < 96_000 ? pending : ready,
+      onCapabilities,
+    });
+    await vi.advanceTimersByTimeAsync(105_000);
+    expect(onCapabilities).toHaveBeenLastCalledWith(ready);
+    const calls = onCapabilities.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(onCapabilities).toHaveBeenCalledTimes(calls);
+    poller.stop();
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });

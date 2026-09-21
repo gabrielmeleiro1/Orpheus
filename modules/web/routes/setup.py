@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import re
 import sys
 import threading
@@ -177,14 +178,17 @@ def _profile_tts_groups(profile_id: str) -> tuple[str, ...]:
 def _detect_installed_runtime(
     probe_service: RuntimeCapabilityService,
     receipt_verifier: ModelReceiptVerifier,
+    preferred_profile: str | None = None,
 ) -> dict[str, Any] | None:
-    """Detect a baked/packaged operational runtime when no state file exists.
+    """Detect installed runtimes, including models outside the saved selection.
 
     Runs the cheap installed-packages check first and only probes the real
     capability path when packages are ready. Returns ``None`` on any probe
     error rather than guessing readiness.
     """
     for profile in runtime_profiles():
+        if preferred_profile is not None and profile.id != preferred_profile:
+            continue
         if profile.id == "base" or not profile.is_compatible():
             continue
         packages = _check_selected_profile_packages(profile.id)
@@ -355,17 +359,16 @@ def _build_uncached_setup_status_response(
         "state_error": None,
         "selected_profile": selected_profile,
         "selected_model_groups": selected_groups,
+        "cleaner_cuda_quantization": status.get("cleaner_cuda_quantization", "4bit"),
         "packages": packages,
         "probe": {"ready": probe_ready, "checks": probe_checks},
         "ready": ready,
         "restart_required": restart_required,
         "recommended_profile": recommended_profile_id(),
-        # Library-only users can still upgrade to a baked local runtime, so
-        # detection keeps running for them; a configured local profile wins.
-        "installed_runtime": (
-            _detect_installed_runtime(probe_service, receipt_verifier)
-            if selected_profile == "base"
-            else None
+        # Settings must also expose optional models outside the saved selection.
+        "installed_runtime": _detect_installed_runtime(
+            probe_service, receipt_verifier,
+            preferred_profile=selected_profile if selected_profile != "base" else None,
         ),
         "profiles": [
             _profile_payload(item.id, accepted_profile=selected_profile)
@@ -432,6 +435,7 @@ class AdoptRuntimeRequest(BaseModel):
     profile: str
     model_groups: list[str] = Field(default_factory=list)
     accept_pytorch_risk: bool = False
+    cleaner_cuda_quantization: str = Field(default="4bit", pattern="^(4bit|8bit|fp16)$")
 
 
 def _adopt_backend_instance_id(request: Request) -> str | None:
@@ -447,6 +451,7 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
     try:
         profile = setup_runtime._validated_profile(payload.profile)
         groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
+        setup_runtime.validate_model_selection(groups)
     except setup_runtime.SetupValidationError as exc:
         raise HTTPException(
             status_code=422,
@@ -516,6 +521,7 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
                 profile_id=profile.id,
                 model_groups=groups,
                 accepted_risks=accepted_risks,
+                cleaner_cuda_quantization=payload.cleaner_cuda_quantization,
                 backend_instance_id=_adopt_backend_instance_id(request),
                 restart_required=False,
             )
@@ -530,6 +536,10 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
             detail={"error": "invalid_request", "message": str(exc)},
         ) from exc
 
+    config = getattr(get_controller_from_app(request.app), "config", None)
+    apply_preferences = getattr(config, "apply_setup_preferences", None)
+    if callable(apply_preferences):
+        apply_preferences()
     cache.invalidate()
     return build_setup_status_response(request)
 
@@ -538,9 +548,11 @@ class ModelDownloadRequest(BaseModel):
     """Download the model assets for an already-operational (baked) runtime."""
 
     model_config = ConfigDict(extra="forbid")
+    configure_runtime: bool = True
 
     profile: str
     model_groups: list[str]
+    cleaner_cuda_quantization: str = Field(default="4bit", pattern="^(4bit|8bit|fp16)$")
 
 
 def _get_download_service(request: Request) -> ModelDownloadService:
@@ -589,7 +601,7 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
 
     service = _get_download_service(request)
     try:
-        return service.start(profile_id=profile.id, model_groups=groups)
+        return service.start(profile_id=profile.id, model_groups=groups, configure_runtime=payload.configure_runtime, cleaner_cuda_quantization=payload.cleaner_cuda_quantization)
     except ModelDownloadBusyError as exc:
         raise HTTPException(
             status_code=409,
@@ -620,23 +632,24 @@ def _managed_model_repo_ids() -> dict[str, str]:
 def _delete_runtime_models(
     *,
     cache_scanner: Callable[[], Any] = scan_cache_dir,
+    model_groups: tuple[str, ...] | None = None,
 ) -> tuple[list[str], int]:
     """Delete only HF cache repos owned by our model groups; leave others intact."""
     try:
         cache = cache_scanner()
     except CacheNotFound:
         return [], 0
-    except Exception:
-        return [], 0
     owners = _managed_model_repo_ids()
     revisions: list[str] = []
+    selected_repos: set[Any] = set()
     deleted_groups: set[str] = set()
     for repo in getattr(cache, "repos", ()):
         if getattr(repo, "repo_type", "model") != "model":
             continue
         group_id = owners.get(str(getattr(repo, "repo_id", "")))
-        if group_id is None:
+        if group_id is None or (model_groups is not None and group_id not in model_groups):
             continue
+        selected_repos.add(repo)
         for revision in getattr(repo, "revisions", ()):
             commit_hash = getattr(revision, "commit_hash", None)
             if isinstance(commit_hash, str) and commit_hash:
@@ -644,11 +657,84 @@ def _delete_runtime_models(
                 deleted_groups.add(group_id)
     if not revisions:
         return [], 0
-    strategy = cache.delete_revisions(*revisions)
+    # Revision hashes are not repository identities. Scope the HF deletion
+    # strategy so another repo with the same commit hash is never removed.
+    strategy = replace(cache, repos=frozenset(selected_repos)).delete_revisions(*revisions)
     freed = int(getattr(strategy, "expected_freed_size", 0) or 0)
     strategy.execute()
     ordered = [group_id for group_id in MODEL_GROUPS if group_id in deleted_groups]
     return ordered, freed
+
+
+@router.get("/api/setup/models")
+def get_managed_models() -> dict[str, Any]:
+    """List managed cache usage without disclosing filesystem paths."""
+    try:
+        repos = scan_cache_dir().repos
+    except CacheNotFound:
+        repos = ()
+    except OSError as exc:
+        raise HTTPException(503, detail={"error": "cache_unavailable", "message": "Model storage could not be read. Try again."}) from exc
+    by_id = {repo.repo_id: repo for repo in repos if repo.repo_type == "model"}
+    return {"models": [
+        {
+            "id": group,
+            "downloaded": any(model_id in by_id for model_id in resolve_model_groups((group,))),
+            "size_bytes": sum(by_id[model_id].size_on_disk for model_id in resolve_model_groups((group,)) if model_id in by_id),
+        }
+        for group in MODEL_GROUPS
+    ]}
+
+
+@router.delete("/api/setup/models/{group_id}")
+def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
+    """Remove exactly one managed model group, preserving other models and settings."""
+    if group_id not in MODEL_GROUPS:
+        raise HTTPException(422, detail={"error": "invalid_model", "message": "Unknown managed model."})
+    cache = _get_status_cache(request)
+    state_path = setup_runtime.default_state_path()
+    controller = get_controller_from_app(request.app)
+    service = getattr(controller, "_conversion_service", None)
+    begin = getattr(service, "begin_storage_cleanup", None)
+    end = getattr(service, "end_storage_cleanup", None)
+    acquired = False
+    try:
+        if callable(begin):
+            try:
+                begin()
+                acquired = True
+            except RuntimeError as exc:
+                raise HTTPException(409, detail={"error": "conversion_in_progress", "message": "Wait for the current conversion to finish before deleting a model."}) from exc
+        with setup_runtime.SetupLock(state_path, timeout_seconds=0.5):
+            # Read the state first so an unreadable configuration cannot be
+            # discovered only after its model files have already been removed.
+            state, _ = setup_runtime._read_setup_state(state_path)
+            deleted, freed = _delete_runtime_models(model_groups=(group_id,))
+            if state and group_id in state["model_groups"]:
+                remaining = tuple(group for group in state["model_groups"] if group != group_id)
+                setup_runtime.write_setup_state(
+                    state_path,
+                    profile_id=state["profile"] if remaining else "base",
+                    model_groups=remaining,
+                    accepted_risks=tuple(state["accepted_risks"]),
+                    cleaner_cuda_quantization=state["cleaner_cuda_quantization"],
+                    backend_instance_id=_adopt_backend_instance_id(request),
+                    restart_required=False,
+                )
+    except setup_runtime.SetupExecutionError as exc:
+        raise HTTPException(409, detail={"error": "setup_in_progress", "message": str(exc)}) from exc
+    except OSError as exc:
+        raise HTTPException(409, detail={"error": "model_delete_failed", "message": "The model could not be deleted. Close any app using it and try again."}) from exc
+    finally:
+        cache.receipt_verifier.invalidate()
+        cache.invalidate()
+        if acquired and callable(end):
+            end()
+    config = getattr(controller, "config", None)
+    apply_preferences = getattr(config, "apply_setup_preferences", None)
+    if callable(apply_preferences):
+        apply_preferences()
+    return {"deleted_model_groups": deleted, "freed_bytes": freed, "state_deleted": False}
 
 
 @router.delete("/api/setup/runtime")

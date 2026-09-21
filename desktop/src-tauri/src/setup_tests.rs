@@ -29,7 +29,22 @@ fn request(profile: &str, groups: &[&str], accept_pytorch_risk: bool) -> SetupRe
         profile: profile.to_string(),
         model_groups: groups.iter().map(|value| (*value).to_string()).collect(),
         accept_pytorch_risk,
+        cleaner_cuda_quantization: None,
     }
+}
+
+#[test]
+fn setup_forwards_selected_precision_and_rejects_unknown_modes() {
+    let mut choice = request("cuda", &["tts-cpu-cuda", "cleaner-cuda-large"], false);
+    choice.cleaner_cuda_quantization = Some("8bit".to_string());
+    let launch = build_setup_launch_config_for_platform(
+        Path::new("/trusted/orpheus"), "/trusted/python", choice.clone(), "windows", "x86_64",
+    ).expect("catalog model and precision are supported");
+    assert!(launch.args.windows(2).any(|pair| pair == ["--cleaner-cuda-quantization", "8bit"]));
+    choice.cleaner_cuda_quantization = Some("2bit".to_string());
+    assert!(build_setup_launch_config_for_platform(
+        Path::new("/trusted/orpheus"), "/trusted/python", choice, "windows", "x86_64",
+    ).is_err());
 }
 
 #[test]

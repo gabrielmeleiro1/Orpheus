@@ -144,8 +144,9 @@ must remain covered by strict `pip-audit`.
 
 The desktop sidecar builder follows the same boundary. An explicit
 `--runtime-profile` wins, then `ORPHEUS_RUNTIME_PROFILE` is used, then the
-builder defaults to `mlx` for an `aarch64-apple-darwin` target and `base`
-elsewhere. Select CUDA for the Tauri release build with:
+previous sidecar's profile is retained. A first build defaults to `mlx` for
+an `aarch64-apple-darwin` target and `base` elsewhere. Select CUDA for the
+Tauri release build with:
 
 ```bash
 # POSIX

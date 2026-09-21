@@ -3,12 +3,15 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
 } from "react";
 
 import { useBackendClient } from "./app/useBackendClient";
+import { syncSetupPreferences } from "./features/setup/setupPreferences";
+import { invalidateRuntimeBootstrap } from "./app/runtimeBootstrapCache";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
 import { useRuntimeIdentity } from "./app/usePrimaryRuntime";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
@@ -29,6 +32,7 @@ import {
 import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKeyboardNavigation";
 import type { DashboardTab, RuntimeSetupStatusResponse } from "./types/api";
 import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
+import { Icon } from "./ui/icons";
 import { equalWhenHidden, equalWhenInvisible, memoWhenHidden } from "./app/visibilityMemo";
 
 type BackendClientState = ReturnType<typeof useBackendClient>;
@@ -77,7 +81,7 @@ function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetr
           <>
             <h1>Orpheus</h1>
             <div className="setup-startup-status">
-              <BrailleSpinner active />
+              <span className="setup-startup-spinner" aria-hidden="true" />
               <span>Checking your local runtime…</span>
             </div>
           </>
@@ -89,12 +93,15 @@ function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetr
 
 function DashboardApp({
   backend,
+  setupStatus,
   onOpenRuntimeSetup,
 }: {
   backend: BackendClientState;
+  setupStatus: RuntimeSetupStatusResponse | null;
   onOpenRuntimeSetup: () => void;
 }) {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 760);
+  const compactQuery = "(max-width: 760px), (max-height: 540px)";
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia(compactQuery).matches);
   const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
   const {
     apiClient,
@@ -105,13 +112,44 @@ function DashboardApp({
   } = backend;
   const startCommandRef = useRef<(() => void) | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
+  const sidebarRef = useRef<HTMLElement | null>(null);
+  const showSidebarRef = useRef<HTMLButtonElement | null>(null);
+  const pendingFocusRef = useRef<"heading" | "sidebar" | "toggle" | null>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    const query = window.matchMedia(compactQuery);
+    const onChange = () => {
+      if (query.matches && sidebarRef.current?.contains(document.activeElement)) {
+        pendingFocusRef.current = "toggle";
+      } else if (!query.matches && document.activeElement === showSidebarRef.current) {
+        pendingFocusRef.current = "sidebar";
+      }
+      setSidebarCollapsed(query.matches);
+    };
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+
+  useLayoutEffect(() => {
+    const target = pendingFocusRef.current;
+    pendingFocusRef.current = null;
+    if (target === "sidebar") {
+      tabRefs.current[DASHBOARD_TAB_CONFIGS.findIndex((tab) => tab.id === activeTab)]?.focus();
+    } else if (target === "toggle") {
+      showSidebarRef.current?.focus();
+    } else if (target === "heading" || lastFocusedRef.current?.closest("[hidden]")) {
+      headingRef.current?.focus();
+    }
+  });
 
   const library = useLibrary({
     apiClient,
     backendDisconnected: connectionState === "error",
   });
 
-  const runtimeIdentity = useRuntimeIdentity(apiClient);
+  const runtimeIdentity = useRuntimeIdentity(apiClient, setupStatus);
   const player = useAudioPlayer({ apiClient, library });
   const previousUiStateRef = useRef<string>("idle");
   const visitedTabsRef = useRef<Set<DashboardTab>>(new Set(["dashboard"]));
@@ -183,11 +221,13 @@ function DashboardApp({
   }, []);
 
   const selectTab = useCallback((tab: DashboardTab) => {
-    const index = DASHBOARD_TAB_CONFIGS.findIndex((candidate) => candidate.id === tab);
-    if (index >= 0) {
-      selectTabAtIndex(index);
+    if (tab === activeTab) {
+      headingRef.current?.focus();
+      return;
     }
-  }, [selectTabAtIndex]);
+    pendingFocusRef.current = "heading";
+    setActiveTab(tab);
+  }, [activeTab]);
 
   const onTabListKeyDown = useCallback((event: KeyboardEvent<HTMLElement>) => {
     const nextIndex = nextTabIndexAfterKeyboard({
@@ -202,7 +242,7 @@ function DashboardApp({
     selectTabAtIndex(nextIndex);
   }, [activeTabIndex, selectTabAtIndex]);
 
-  const openConvert = useCallback(() => setActiveTab("convert"), []);
+  const openConvert = useCallback(() => selectTab("convert"), [selectTab]);
   const openSettings = useCallback(() => selectTab("settings"), [selectTab]);
   const openLibrary = useCallback(() => selectTab("library"), [selectTab]);
   const openProgress = useCallback(() => selectTab("progress"), [selectTab]);
@@ -215,11 +255,29 @@ function DashboardApp({
   }, [playRelative]);
 
   return (
-    <main className={`app-frame${sidebarCollapsed ? " sidebar-collapsed" : ""}`} role="application" aria-label="Orpheus dashboard">
-      <aside className="rail" aria-label="Orpheus navigation" hidden={sidebarCollapsed}>
+    <main className={`app-frame${sidebarCollapsed ? " sidebar-collapsed" : ""}`} aria-label="Orpheus dashboard" onFocusCapture={(event) => { lastFocusedRef.current = event.target as HTMLElement; }}>
+      <a className="skip-link" href="#workspace-heading" onClick={(event) => { event.preventDefault(); headingRef.current?.focus(); }}>Skip to content</a>
+      <span className="sr-only" role="status" aria-atomic="true">{conversionJob.uiState === "idle" ? "" : conversionJob.isCancelling ? "Stopping conversion." : `Conversion ${conversionJob.uiState === "running" ? "started" : conversionJob.uiState}.`}</span>
+      <aside ref={sidebarRef} id="app-sidebar" className="rail" aria-label="Orpheus navigation" hidden={sidebarCollapsed}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            pendingFocusRef.current = "toggle";
+            setSidebarCollapsed(true);
+          }
+        }}
+        onBlurCapture={(event) => {
+          if (window.matchMedia(compactQuery).matches && event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
+            setSidebarCollapsed(true);
+          }
+        }}
+      >
         <div className="brand">
+          <span className="brand-mark" aria-hidden="true">O</span>
           <span className="brand-name">Orpheus</span>
-          <button type="button" className="sidebar-toggle" aria-label="Hide sidebar" onClick={() => setSidebarCollapsed(true)}>‹</button>
+          <button type="button" className="icon-btn sidebar-toggle" aria-label="Hide sidebar" aria-controls="app-sidebar" aria-expanded="true" data-tip="Hide sidebar" data-tip-pos="right" onClick={() => { pendingFocusRef.current = "toggle"; setSidebarCollapsed(true); }}>
+            <Icon name="sidebar" />
+          </button>
         </div>
 
         <nav
@@ -229,14 +287,12 @@ function DashboardApp({
           aria-orientation="vertical"
           onKeyDown={onTabListKeyDown}
         >
-          {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId }, index) => {
+          {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId, icon, group }, index) => {
             const isActive = activeTab === id;
+            const startsGroup = index === 0 || DASHBOARD_TAB_CONFIGS[index - 1]?.group !== group;
             return (
               <Fragment key={id}>
-                {index === 0 ? <span className={`rail-group-label${["dashboard", "convert", "document"].includes(activeTab) ? " is-active" : ""}`} role="presentation">Audiobooks</span> : null}
-                {id === "library" ? <span className={`rail-group-label rail-section-label${activeTab === "library" ? " is-active" : ""}`} role="presentation">Library</span> : null}
-                {id === "progress" ? <span className={`rail-group-label rail-section-label${["progress", "logs"].includes(activeTab) ? " is-active" : ""}`} role="presentation">Activity</span> : null}
-                {id === "settings" ? <span className={`rail-group-label rail-section-label${activeTab === "settings" ? " is-active" : ""}`} role="presentation">System</span> : null}
+                {startsGroup ? <span className={`rail-group-label${index === 0 ? "" : " rail-section-label"}`} role="presentation">{group}</span> : null}
                 <button
                   id={`tab-btn-${id}`}
                   ref={(node) => {
@@ -249,9 +305,17 @@ function DashboardApp({
                   aria-controls={panelId}
                   aria-label={label}
                   aria-selected={isActive}
-                  onClick={() => setActiveTab(id)}
+                  onClick={() => {
+                    setActiveTab(id);
+                    if (window.matchMedia(compactQuery).matches) {
+                      pendingFocusRef.current = "heading";
+                      setSidebarCollapsed(true);
+                    }
+                  }}
                 >
+                  <Icon name={icon} className="rail-icon" />
                   <span className="rail-label">{label}</span>
+                  {id === "progress" && conversionJob.uiState === "running" ? <span className="rail-badge-dot" aria-hidden="true" /> : null}
                 </button>
               </Fragment>
             );
@@ -268,52 +332,56 @@ function DashboardApp({
               data-tip-pos="right"
               onClick={() => void conversionJob.cancelActiveConversion()}
             >
-              <span className="rail-dot" aria-hidden="true" />
-              <span>{conversionJob.isCancelling ? "Stopping" : "Stop job"}</span>
+              <Icon name="stop" className="rail-icon" />
+              <span>{conversionJob.isCancelling ? "Stopping…" : "Stop conversion"}</span>
             </button>
           ) : null}
-          <button
-            className="rail-action"
-            type="button"
-            data-tip="Reload the library index"
-            data-tip-pos="right"
-            onClick={() => void refreshLibrary()}
-          >
-            <span className="rail-action-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" focusable="false">
-                <path d="M20 6v5h-5" />
-                <path d="M4 18v-5h5" />
-                <path d="M18.5 9A7 7 0 0 0 6.2 6.3L4 8.5" />
-                <path d="M5.5 15A7 7 0 0 0 17.8 17.7L20 15.5" />
-              </svg>
+          <div className="rail-status">
+            <span className={`connection-badge is-${connectionState}`} role="status" aria-label={`Backend ${connectionState}`}>
+              <span className={`status-dot${connectionState === "connected" ? " is-connected" : connectionState === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
+              {connectionState === "connected" ? "Connected" : connectionState === "error" ? "Disconnected" : "Connecting…"}
             </span>
-            <span>Refresh</span>
-          </button>
+            <button
+              className="icon-btn"
+              type="button"
+              aria-label="Refresh library"
+              data-tip="Reload the library index"
+              data-tip-pos="right"
+              onClick={() => void refreshLibrary()}
+            >
+              <Icon name="refresh" />
+            </button>
+          </div>
         </div>
       </aside>
 
-      <div className={`workspace-shell page-${activeTab === "library" || activeTab === "logs" ? "data" : activeTab === "dashboard" || activeTab === "progress" ? "working" : "focused"}`}>
+      <div className="workspace-shell">
         <header className="studio-status">
           <div className="page-heading">
-            {sidebarCollapsed ? <button type="button" className="btn sidebar-expand" onClick={() => setSidebarCollapsed(false)} aria-label="Show sidebar">☰ <span>Sidebar</span></button> : null}
-            <h1>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
+            {sidebarCollapsed ? <button ref={showSidebarRef} type="button" className="icon-btn sidebar-expand" onClick={() => { pendingFocusRef.current = "sidebar"; setSidebarCollapsed(false); }} aria-label="Show sidebar" aria-controls="app-sidebar" aria-expanded="false" data-tip="Show sidebar" data-tip-pos="bottom"><Icon name="sidebar" /></button> : null}
+            <div className="page-title-block">
+              <h1 ref={headingRef} id="workspace-heading" tabIndex={-1}>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
+              <p className="page-description">{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.description}</p>
+            </div>
           </div>
           <div className="studio-controls">
-            {activeTab === "dashboard" ? <button className="btn btn-primary" type="button" onClick={openConvert}>Convert a source</button> : null}
-            {conversionJob.uiState === "running" ? (
-              <span className="control converting-control">
+            {conversionJob.uiState === "running" && activeTab !== "progress" ? (
+              <button type="button" className="btn btn-ghost converting-control" onClick={openProgress}>
                 <BrailleSpinner active />
                 <span>Converting</span>
+              </button>
+            ) : null}
+            {sidebarCollapsed || connectionState !== "connected" ? (
+              <span className={`connection-badge is-${connectionState}`} {...(sidebarCollapsed ? { role: "status", "aria-label": `Backend ${connectionState}` } : { "aria-hidden": true })}>
+                <span className={`status-dot${connectionState === "connected" ? " is-connected" : connectionState === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
+                {connectionState === "connected" ? "Connected" : connectionState === "error" ? "Disconnected" : "Connecting…"}
               </span>
             ) : null}
-            <span className={`connection-badge is-${connectionState}`} role="status" aria-label={`Backend ${connectionState}`}>
-              <span className={`status-dot${connectionState === "connected" ? " is-connected" : connectionState === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
-              {connectionState === "connected" ? "Connected" : connectionState === "error" ? "Disconnected" : "Connecting"}
-            </span>
+            {activeTab === "dashboard" ? <button className="btn btn-primary" type="button" onClick={openConvert}>Convert a source</button> : null}
           </div>
         </header>
 
-        <div className="main-workspace">
+        <div className={`main-workspace${activeTab === "convert" || activeTab === "document" ? " has-conversion" : ""}`}>
           <StableDashboardPanel
             hidden={activeTab !== "dashboard"}
             library={library}
@@ -424,7 +492,7 @@ function DashboardApp({
           onPrevious={playPrevious}
           onNext={playNext}
           onVolumeChange={player.setPlayerVolume}
-          onClose={player.closePlayer}
+          onClose={() => { player.closePlayer(); headingRef.current?.focus(); }}
         />
       </div>
     </main>
@@ -434,16 +502,20 @@ function DashboardApp({
 function App() {
   const backend = useBackendClient();
   const [setupStatus, setSetupStatus] = useState<RuntimeSetupStatusResponse | null>(null);
+  const [setupStatusClient, setSetupStatusClient] = useState<BackendClientState["apiClient"]>(null);
   const [setupError, setSetupError] = useState<string | null>(null);
   const [libraryOnlyOverride, setLibraryOnlyOverride] = useState(false);
   const [forceOpenRuntimeSetup, setForceOpenRuntimeSetup] = useState(false);
 
   const onSetupReady = useCallback((status: RuntimeSetupStatusResponse) => {
+    syncSetupPreferences(status);
+    if (backend.apiClient) invalidateRuntimeBootstrap(backend.apiClient);
+    setSetupStatusClient(backend.apiClient);
     setSetupStatus(status);
     if (!forceOpenRuntimeSetup) {
       setLibraryOnlyOverride(false);
     }
-  }, [forceOpenRuntimeSetup]);
+  }, [backend.apiClient, forceOpenRuntimeSetup]);
 
   const onContinueLibraryOnly = useCallback(() => {
     setForceOpenRuntimeSetup(false);
@@ -462,7 +534,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!backend.apiClient || (libraryOnlyOverride && !forceOpenRuntimeSetup)) {
+    if (!backend.apiClient) {
       return undefined;
     }
     let active = true;
@@ -470,6 +542,8 @@ function App() {
     // Allow time for the cold-start subprocess probe and first-time model hashing.
     void backend.apiClient.getRuntimeSetupStatus({ timeoutMs: 120_000 }).then((status) => {
       if (!active) return;
+      syncSetupPreferences(status);
+      setSetupStatusClient(backend.apiClient);
       setSetupStatus(status);
     }).catch((error: unknown) => {
       if (!active) return;
@@ -482,7 +556,7 @@ function App() {
     return () => {
       active = false;
     };
-  }, [backend.apiClient, forceOpenRuntimeSetup, libraryOnlyOverride]);
+  }, [backend.apiClient, forceOpenRuntimeSetup]);
 
   if (
     !forceOpenRuntimeSetup
@@ -519,6 +593,7 @@ function App() {
   return (
     <DashboardApp
       backend={backend}
+      setupStatus={setupStatusClient === backend.apiClient ? setupStatus : null}
       onOpenRuntimeSetup={onOpenRuntimeSetup}
     />
   );

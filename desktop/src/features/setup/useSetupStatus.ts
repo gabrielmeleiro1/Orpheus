@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
-import { createSelection, type SetupSelection } from "./setupModel";
+import { createSelection, selectionMatchesConfigured, type SetupSelection } from "./setupModel";
 import { safeError } from "./setupPageHelpers";
 
 interface UseSetupStatusArgs {
@@ -10,9 +10,10 @@ interface UseSetupStatusArgs {
   initialStatus: RuntimeSetupStatusResponse | null;
   initialError: string | null;
   onReady: (status: RuntimeSetupStatusResponse) => void;
+  preserveSelection?: boolean;
 }
 
-export function useSetupStatus({ apiClient, initialStatus, initialError, onReady }: UseSetupStatusArgs) {
+export function useSetupStatus({ apiClient, initialStatus, initialError, onReady, preserveSelection = false }: UseSetupStatusArgs) {
   const [status, setStatus] = useState(initialStatus);
   const [error, setError] = useState(initialError);
   const [selection, setSelection] = useState<SetupSelection>(() => initialStatus
@@ -20,18 +21,24 @@ export function useSetupStatus({ apiClient, initialStatus, initialError, onReady
     : { profile: "base", modelGroups: [], acceptPytorchRisk: false });
   const statusRef = useRef(status);
   statusRef.current = status;
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
   const clientRef = useRef(apiClient);
   clientRef.current = apiClient;
   const requestSequence = useRef(0);
+  const previousClient = useRef(apiClient);
 
   useEffect(() => {
     // A replacement client or parent snapshot supersedes pending status reads.
     requestSequence.current += 1;
+    const keepDraft = preserveSelection && previousClient.current === apiClient && statusRef.current
+      && !selectionMatchesConfigured(selectionRef.current, statusRef.current);
+    previousClient.current = apiClient;
     setStatus(initialStatus);
     setError(initialError);
-    if (initialStatus) setSelection(createSelection(initialStatus));
+    if (initialStatus && !keepDraft) setSelection(createSelection(initialStatus));
     return () => { requestSequence.current += 1; };
-  }, [apiClient, initialError, initialStatus]);
+  }, [apiClient, initialError, initialStatus, preserveSelection]);
 
   const refreshStatus = useCallback(async () => {
     if (!apiClient) {
@@ -47,13 +54,15 @@ export function useSetupStatus({ apiClient, initialStatus, initialError, onReady
       if (!statusRef.current) setSelection(createSelection(next));
       setStatus(next);
       setError(null);
-      if (next.ready && next.state === "ready" && !next.restart_required) onReady(next);
+      const draftChanged = preserveSelection && statusRef.current?.configured
+        && !selectionMatchesConfigured(selectionRef.current, statusRef.current);
+      if (next.ready && next.state === "ready" && !next.restart_required && !draftChanged) onReady(next);
       return next;
     } catch (reason: unknown) {
       if (isCurrent()) setError(safeError(reason, "Runtime setup status is temporarily unavailable."));
       return null;
     }
-  }, [apiClient, onReady]);
+  }, [apiClient, onReady, preserveSelection]);
 
   return { status, setStatus, selection, setSelection, error, setError, refreshStatus };
 }

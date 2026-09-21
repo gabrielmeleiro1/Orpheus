@@ -6,8 +6,8 @@ interface ProgressBarProps {
   pct: number;
   label: string;
   tone?: ProgressBarTone;
-  /** Bar height variant. "hairline" for dense rows, "regular" elsewhere. */
-  size?: "hairline" | "regular";
+  /** Bar height variant. "hairline" for dense rows, "regular" elsewhere, "lg" for hero bars. */
+  size?: "hairline" | "regular" | "lg";
   className?: string;
 }
 

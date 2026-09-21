@@ -16,6 +16,15 @@ from modules.web.server import create_app
 TOKEN = "setup-route-test-token"
 
 
+@pytest.fixture(autouse=True)
+def isolate_installed_runtime_detection(monkeypatch):
+    # Hardware discovery is covered in test_setup_onboarding; contract/cache
+    # tests must not start real GPU probes on the machine running the suite.
+    from modules.web.routes import setup as setup_route
+
+    monkeypatch.setattr(setup_route, "_detect_installed_runtime", lambda *args, **kwargs: None)
+
+
 def _client(*, desktop_mode: bool = False) -> TestClient:
     return TestClient(
         create_app(

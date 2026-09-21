@@ -129,6 +129,7 @@ def test_installed_runtime_detected_ready_for_baked_mlx(
         "model_groups": [
             {"id": "tts-mlx", "runtime_ready": True, "assets_ready": True, "ready": True},
             {"id": "cleaner-mlx", "runtime_ready": True, "assets_ready": True, "ready": True},
+            {"id": "cleaner-mlx-small", "runtime_ready": True, "assets_ready": True, "ready": True},
         ],
     }
 
@@ -266,7 +267,7 @@ def _configured_status(profile: str, model_groups: list[str]):
     return _get_setup_status
 
 
-def test_installed_runtime_null_when_local_profile_configured(
+def test_installed_runtime_includes_optional_models_when_local_profile_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from modules.web.routes import setup as setup_route
@@ -290,18 +291,23 @@ def test_installed_runtime_null_when_local_profile_configured(
         },
     )
 
-    def _detector_must_not_run(*args, **kwargs):
-        raise AssertionError(
-            "installed_runtime detection must not run for a configured local profile"
-        )
-
-    monkeypatch.setattr(setup_route, "_detect_installed_runtime", _detector_must_not_run)
+    monkeypatch.setattr(
+        setup_route.setup_runtime,
+        "_probe_profile",
+        lambda groups, service: {
+            "checks": [{"id": group, "available": True} for group in groups]
+        },
+    )
 
     with _client() as client:
         payload = client.get("/api/setup/status").json()
 
     assert payload["configured"] is True
-    assert payload["installed_runtime"] is None
+    assert payload["installed_runtime"]["ready"] is True
+    assert [group["id"] for group in payload["selected_model_groups"]] == ["tts-mlx"]
+    assert {group["id"] for group in payload["installed_runtime"]["model_groups"]} == {
+        "tts-mlx", "cleaner-mlx", "cleaner-mlx-small"
+    }
     assert payload["recommended_profile"] in {"base", "mlx", "cuda"}
 
 
@@ -372,6 +378,7 @@ def test_installed_runtime_splits_runtime_and_asset_readiness(
         "model_groups": [
             {"id": "tts-mlx", "runtime_ready": True, "assets_ready": False, "ready": False},
             {"id": "cleaner-mlx", "runtime_ready": True, "assets_ready": False, "ready": False},
+            {"id": "cleaner-mlx-small", "runtime_ready": True, "assets_ready": False, "ready": False},
         ],
     }
 
@@ -1085,7 +1092,7 @@ def test_model_download_endpoints_validate_start_and_report_conflicts(
                 "error": None,
             }
 
-        def start(self, *, profile_id, model_groups):
+        def start(self, *, profile_id, model_groups, configure_runtime=True, cleaner_cuda_quantization="4bit"):
             if self.busy:
                 raise ModelDownloadBusyError("busy")
             self.calls.append((profile_id, list(model_groups)))

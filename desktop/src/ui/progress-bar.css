@@ -9,6 +9,7 @@
 
 .pbar-regular { height: 6px; }
 .pbar-hairline { height: 4px; }
+.pbar-lg { height: 10px; border-radius: var(--radius-sm); }
 
 .pbar-fill {
   background: var(--accent);

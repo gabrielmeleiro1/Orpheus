@@ -192,12 +192,13 @@ describe("packaged backend install flow", () => {
     ],
   };
 
-  it("offers the backend install only when the installer is unavailable and assets are missing", () => {
+  it("offers model provisioning for installed capabilities, including optional models after initial setup", () => {
     expect(backendInstallProfileId(false, bakedRuntime)).toBe("mlx");
     expect(backendInstallProfileId(true, bakedRuntime)).toBeNull();
     expect(backendInstallProfileId(false, null)).toBeNull();
-    expect(backendInstallProfileId(false, { ...bakedRuntime, runtime_available: false })).toBeNull();
-    expect(backendInstallProfileId(false, { ...bakedRuntime, ready: true })).toBeNull();
+    expect(backendInstallProfileId(false, { ...bakedRuntime, runtime_available: false, model_groups: [] })).toBeNull();
+    expect(backendInstallProfileId(false, { ...bakedRuntime, runtime_available: false, model_groups: [{ id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false }] })).toBe("mlx");
+    expect(backendInstallProfileId(false, { ...bakedRuntime, ready: true })).toBe("mlx");
   });
 
   it("maps download snapshots onto the staged progress model", () => {
@@ -213,7 +214,7 @@ describe("packaged backend install flow", () => {
     const state = applyProgressEvent(undefined, modelDownloadProgressEvent(running));
     expect(state).toMatchObject({ lifecycle: "running", stage: "models", percent: 50 });
     expect(state.completedStages).toEqual(["packages"]);
-    expect(state.message).toBe("Downloading Qwen Cleaner (2 of 2)…");
+    expect(state.message).toBe("Downloading Llama 3.2 · 3B (2 of 2)…");
 
     const stopping = modelDownloadProgressEvent({ ...running, lifecycle: "stopping" });
     expect(stopping.message).toContain("Cancellation requested");

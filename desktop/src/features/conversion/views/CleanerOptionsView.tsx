@@ -12,6 +12,20 @@ interface CleanerOptionsViewProps {
   hidden: boolean;
 }
 
+function statusDotClass(runtimeStatusClass: string, statusText: string): string {
+  if (runtimeStatusClass.includes("is-error")) {
+    return "status-dot is-error";
+  }
+  const lower = statusText.toLowerCase();
+  if (lower.includes("ready") || lower.includes("available")) {
+    return "status-dot is-ok";
+  }
+  if (lower.includes("check") || lower.includes("load") || lower.includes("…") || lower.includes("...")) {
+    return "status-dot is-busy";
+  }
+  return "status-dot";
+}
+
 export function CleanerOptionsView({
   cleanerOptions,
   capabilities,
@@ -20,22 +34,22 @@ export function CleanerOptionsView({
 }: CleanerOptionsViewProps) {
   return (
     <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" aria-labelledby="tab-btn-settings" hidden={hidden}>
-      <header className="conversion-context">
-        <p className="conversion-lede">Choose how Orpheus prepares text before narration.</p>
-        <span className="conversion-header-meta">Runtime</span>
-      </header>
-      <div className="config-grid">
-        <div className="panel-section config-panel-section">
-          <div className="section-title">
-            <span
-              data-tip="The cleaner prepares text before narration. It is independent of the TTS engine — choosing Cloud API here does not change the voice."
-              data-tip-pos="bottom"
-            >
-              Cleaner runtime
-            </span>
+      <div className="config-layout">
+        <section className="conversion-section">
+          <div className="conversion-section-header conversion-section-header-row">
+            <div>
+              <h2
+                className="conversion-group-heading"
+                data-tip="The cleaner prepares text before narration. It is independent of the TTS engine — choosing Cloud API here does not change the voice."
+                data-tip-pos="bottom"
+              >
+                Cleaner runtime
+              </h2>
+              <p className="conversion-section-hint">Backend, model, and device used to prepare text before narration.</p>
+            </div>
             <button
               id="runtime-setup-btn"
-              className="btn btn-primary"
+              className="btn btn-accent-soft"
               type="button"
               data-tip="Install or repair the on-device cleaner and TTS runtimes"
               onClick={actions.onOpenRuntimeSetup}
@@ -43,9 +57,10 @@ export function CleanerOptionsView({
               Runtime setup
             </button>
           </div>
-          <div className="form-row">
-            <span className="form-row-label">Backend</span>
-            <div className="form-row-field">
+
+          <div className="form-grid conversion-form-grid">
+            <div className="field">
+              <label className="field-label" htmlFor="cleaner-backend-select">Backend</label>
               <TermSelect
                 id="cleaner-backend-select"
                 label="Cleaner backend"
@@ -55,20 +70,22 @@ export function CleanerOptionsView({
                 onChange={actions.setCleanerBackend}
               />
             </div>
-          </div>
 
-          <div className="form-row">
-            <span className="form-row-label">Status</span>
-            <div className="form-row-field">
-              <span id="cleaner-runtime-status" className={cleanerOptions.runtimeStatusClass}>
-                {cleanerOptions.cleanerRuntimeStatus}
-              </span>
+            <div className="field">
+              <span className="field-label" id="cleaner-status-label">Status</span>
+              <div
+                id="cleaner-runtime-status"
+                className={`runtime-status-pill ${cleanerOptions.runtimeStatusClass}`}
+                role="status"
+                aria-labelledby="cleaner-status-label"
+              >
+                <span className={statusDotClass(cleanerOptions.runtimeStatusClass, cleanerOptions.cleanerRuntimeStatus)} aria-hidden="true" />
+                <span>{cleanerOptions.cleanerRuntimeStatus}</span>
+              </div>
             </div>
-          </div>
 
-          <div className="form-row">
-            <span className="form-row-label">Model</span>
-            <div className="form-row-field">
+            <div className="field">
+              <label className="field-label" htmlFor="cleaner-model-select">Model</label>
               <TermSelect
                 id="cleaner-model-select"
                 label="Cleaner model"
@@ -79,35 +96,42 @@ export function CleanerOptionsView({
                 onChange={actions.setCleanerModel}
               />
             </div>
-          </div>
 
-          {cleanerOptions.showCleanerCudaControls ? (
-            <>
-              <div className="form-row">
-                <span className="form-row-label" data-tip="CUDA device the cleaner model runs on, e.g. cuda:0" data-tip-pos="right">Device</span>
-                <div className="form-row-field">
+            {cleanerOptions.showCleanerCudaControls ? (
+              <>
+                <div className="field">
+                  <label
+                    className="field-label"
+                    htmlFor="cleaner-cuda-device-input"
+                    data-tip="Use Cuda for automatic placement, or Cuda:0 for the first NVIDIA GPU."
+                    data-tip-pos="right"
+                  >
+                    Device
+                  </label>
                   <input
                     id="cleaner-cuda-device-input"
                     className="field-input"
                     type="text"
+                    spellCheck={false}
+                    autoCapitalize="none"
+                    autoCorrect="off"
                     aria-label="cleaner CUDA device"
-                    placeholder={cleanerOptions.cleanerCudaDevicePlaceholder}
-                    value={cleanerOptions.cleanerCudaDevice}
-                    onChange={(event) => actions.setCleanerCudaDevice(event.target.value)}
+                    placeholder={cleanerOptions.cleanerCudaDevicePlaceholder.replace(/^cuda/i, "Cuda")}
+                    value={cleanerOptions.cleanerCudaDevice.replace(/^cuda/i, "Cuda")}
+                    onChange={(event) => actions.setCleanerCudaDevice(event.target.value.toLowerCase())}
                   />
                 </div>
-              </div>
 
-              {cleanerOptions.cleanerCudaQuantizationOptions.length > 0 ? (
-                <div className="form-row">
-                  <span
-                    className="form-row-label"
-                    data-tip="Model precision. Lower bits run faster with a slight quality trade-off."
-                    data-tip-pos="right"
-                  >
-                    Quantization
-                  </span>
-                  <div className="form-row-field">
+                {cleanerOptions.cleanerCudaQuantizationOptions.length > 0 ? (
+                  <div className="field">
+                    <label
+                      className="field-label"
+                      htmlFor="cleaner-cuda-quantization-select"
+                      data-tip="4bit uses the least GPU memory. 8bit and fp16 use more memory; speed depends on your GPU."
+                      data-tip-pos="right"
+                    >
+                      Quantization
+                    </label>
                     <TermSelect
                       id="cleaner-cuda-quantization-select"
                       label="Cleaner CUDA quantization"
@@ -117,26 +141,28 @@ export function CleanerOptionsView({
                       onChange={actions.setCleanerCudaQuantization}
                     />
                   </div>
-                </div>
-              ) : null}
-            </>
-          ) : null}
-        </div>
+                ) : null}
+              </>
+            ) : null}
+          </div>
+        </section>
 
         {cleanerOptions.requiresApiKey ? (
-          <div className="panel-section config-panel-section">
-            <div className="section-title">
-              <span>{cleanerOptions.selectedBackendDisplayName} cleaner</span>
+          <section className="conversion-section">
+            <div className="conversion-section-header">
+              <h2 className="conversion-group-heading">{cleanerOptions.selectedBackendDisplayName} cleaner</h2>
+              <p className="conversion-section-hint">API credentials for this session only.</p>
             </div>
-            <div className="form-row">
-              <span
-                className="form-row-label"
-                data-tip="Kept for this session only and sent only to this provider. Re-enter it after reconnecting."
-                data-tip-pos="right"
-              >
-                API key
-              </span>
-              <div className="form-row-field">
+            <div className="form-grid conversion-form-grid">
+              <div className="field">
+                <label
+                  className="field-label"
+                  htmlFor="cleaner-api-key-input"
+                  data-tip="Kept for this session only and sent only to this provider. Re-enter it after reconnecting."
+                  data-tip-pos="right"
+                >
+                  API key
+                </label>
                 <input
                   id="cleaner-api-key-input"
                   className="field-input"
@@ -148,28 +174,29 @@ export function CleanerOptionsView({
                   onChange={(event) => actions.setCleanerApiKey(event.target.value)}
                 />
               </div>
+              <div className="field">
+                <span className="field-label">Models</span>
+                <div className="action-row">
+                  <button
+                    id="fetch-cleaner-models-btn"
+                    className="btn"
+                    type="button"
+                    disabled={!capabilities.canFetchCleanerModels}
+                    data-tip="List the models available to this API key"
+                    onClick={() => void actions.onFetchCleanerModels()}
+                  >
+                    {cleanerOptions.openAiModelFetchLoading ? "Fetching…" : "Fetch models"}
+                  </button>
+                </div>
+                <span
+                  id="cleaner-model-fetch-status"
+                  className={`field-hint${cleanerOptions.openAiModelFetchError ? " is-error" : ""}`}
+                >
+                  {cleanerOptions.openAiModelFetchStatus}
+                </span>
+              </div>
             </div>
-
-            <div className="action-row">
-              <button
-                id="fetch-cleaner-models-btn"
-                className="btn btn-compact"
-                type="button"
-                disabled={!capabilities.canFetchCleanerModels}
-                data-tip="List the models available to this API key"
-                onClick={() => void actions.onFetchCleanerModels()}
-              >
-                {cleanerOptions.openAiModelFetchLoading ? "Fetching…" : "Fetch models"}
-              </button>
-            </div>
-
-            <span
-              id="cleaner-model-fetch-status"
-              className={`field-hint${cleanerOptions.openAiModelFetchError ? " is-error" : ""}`}
-            >
-              {cleanerOptions.openAiModelFetchStatus}
-            </span>
-          </div>
+          </section>
         ) : null}
       </div>
     </section>

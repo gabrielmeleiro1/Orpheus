@@ -12,6 +12,7 @@ const SETTINGS_KEY = "orpheus.desktop.settings.v1";
 export const DESKTOP_SETTINGS_CHANGED_EVENT = "orpheus:desktop-settings-changed";
 
 export interface PersistedSettings {
+  setup_selection?: string;
   tts_engine?: string;
   voice?: string;
   speed?: number;

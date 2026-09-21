@@ -210,7 +210,7 @@ export function useBackendClient() {
           setApiClient(null);
           setBackendBaseUrl("");
           setConnectionState("error");
-          setStatusMessage("Desktop backend startup timed out after 60s");
+          setStatusMessage("Desktop backend startup timed out after 120s");
           return;
         }
 
@@ -261,8 +261,10 @@ export function useBackendClient() {
           readyRecoveryAttempts,
         );
         if (decision.action === "give_up") {
+          const cause = status.error?.trim();
           setStatusMessage(
-            "backend failed to recover after multiple attempts; retry the connection or reload the app",
+            "backend failed to recover after multiple attempts; retry the connection or reload the app"
+            + (cause ? `. ${cause}` : ""),
           );
           return;
         }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { EventStreamLogEntry } from "../../types/api";
+import { Icon } from "../../ui/icons";
 import { TermSelect } from "../conversion/TermSelect";
 import {
   countLogLevels,
@@ -31,15 +32,26 @@ const CATEGORY_OPTIONS = [
   { value: "other", label: "Other" },
 ];
 
-function lineClass(level: string): string {
+function levelBadgeLabel(level: string): string {
   const normalized = normalizeLogLevel(level);
   if (normalized === "warn") {
-    return "log-line log-warn";
+    return "warn";
   }
   if (normalized === "error") {
+    return "error";
+  }
+  return "info";
+}
+
+function lineClass(level: string): string {
+  const badge = levelBadgeLabel(level);
+  if (badge === "warn") {
+    return "log-line log-warn";
+  }
+  if (badge === "error") {
     return "log-line log-error";
   }
-  return "log-line";
+  return "log-line log-info";
 }
 
 export function LogPanel({ logs }: LogPanelProps) {
@@ -57,6 +69,10 @@ export function LogPanel({ logs }: LogPanelProps) {
   const levelCounts = useMemo(() => countLogLevels(logs), [logs]);
   // Entries arrive newest-first, so "following" means staying pinned to the top.
   const newestEntryId = visibleLogs.length > 0 ? visibleLogs[0].id : null;
+  const countLabel =
+    visibleLogs.length === logs.length
+      ? `${logs.length} ${logs.length === 1 ? "entry" : "entries"}`
+      : `${visibleLogs.length} of ${logs.length} shown`;
 
   useEffect(() => {
     if (!following) {
@@ -115,16 +131,8 @@ export function LogPanel({ logs }: LogPanelProps) {
   };
 
   return (
-    <>
-      <div className="log-count">
-        <span className="panel-header-meta">
-          {visibleLogs.length === logs.length
-            ? `${logs.length} ${logs.length === 1 ? "entry" : "entries"}`
-            : `${visibleLogs.length} of ${logs.length} shown`}
-        </span>
-      </div>
-
-      <div className="log-toolbar" aria-label="Log filters">
+    <div className="log-panel">
+      <div className="log-toolbar page-toolbar" aria-label="Log filters">
         <div className="seg-control log-level-control log-filter-control" role="group" aria-label="Filter by level">
           {LEVEL_SEGMENTS.map(({ value, label, tip }) => {
             const count = levelCounts[value];
@@ -140,7 +148,7 @@ export function LogPanel({ logs }: LogPanelProps) {
                 onClick={() => setLevel(value)}
               >
                 {label}
-                {value !== "all" && count > 0 ? <span className="log-level-count">{count}</span> : null}
+                {value !== "all" && count > 0 ? <span className="log-level-count tabular-nums">{count}</span> : null}
               </button>
             );
           })}
@@ -156,31 +164,38 @@ export function LogPanel({ logs }: LogPanelProps) {
           onChange={(value) => setCategory(value as LogCategoryFilter)}
         />
 
-        <input
-          id="log-search"
-          className="field-input log-search log-filter-control"
-          type="search"
-          placeholder="Search…"
-          aria-label="Search log messages"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
+        <label className="log-search-wrap" htmlFor="log-search">
+          <Icon name="search" className="log-search-icon" />
+          <input
+            id="log-search"
+            className="field-input log-search log-filter-control"
+            type="search"
+            placeholder="Search..."
+            aria-label="Search log messages"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </label>
 
-        <div className="log-toolbar-spacer" />
-
-        <span className="field-hint log-copy-status" role="status">
-          {copyStatus}
-        </span>
-        <button
-          id="log-copy-btn"
-          className="btn btn-ghost btn-compact"
-          type="button"
-          data-tip="Copy the entries currently shown, with timestamps"
-          data-tip-pos="bottom"
-          onClick={() => void onCopyVisible()}
-        >
-          Copy
-        </button>
+        <div className="log-toolbar-end">
+          <span className="log-count tabular-nums" aria-live="polite">
+            {countLabel}
+          </span>
+          <span className="field-hint log-copy-status" role="status">
+            {copyStatus}
+          </span>
+          <button
+            id="log-copy-btn"
+            className="btn"
+            type="button"
+            data-tip="Copy the entries currently shown, with timestamps"
+            data-tip-pos="bottom"
+            onClick={() => void onCopyVisible()}
+          >
+            <Icon name="copy" />
+            Copy
+          </button>
+        </div>
       </div>
 
       <div className="log-shell">
@@ -195,6 +210,7 @@ export function LogPanel({ logs }: LogPanelProps) {
         >
           {visibleLogs.length === 0 ? (
             <div className="empty-state log-empty">
+              <span className="empty-state-icon" aria-hidden="true"><Icon name="logs" /></span>
               <span className="empty-state-title">{logs.length === 0 ? "No events yet" : "No matches"}</span>
               <span className="empty-state-hint">
                 {logs.length === 0
@@ -203,13 +219,17 @@ export function LogPanel({ logs }: LogPanelProps) {
               </span>
             </div>
           ) : (
-            visibleLogs.map((entry) => (
-              <div key={entry.id} className={lineClass(entry.level)}>
-                <span className="log-marker" aria-hidden="true" />
-                <span className="log-ts">{entry.ts}</span>
-                <span className="log-msg">{entry.msg}</span>
-              </div>
-            ))
+            visibleLogs.map((entry) => {
+              const badge = levelBadgeLabel(entry.level);
+              return (
+                <div key={entry.id} className={lineClass(entry.level)}>
+                  <span className="log-marker" aria-hidden="true" />
+                  <span className="log-ts tabular-nums">{entry.ts}</span>
+                  <span className={`log-level-badge log-level-${badge}`}>{badge}</span>
+                  <span className="log-msg">{entry.msg}</span>
+                </div>
+              );
+            })
           )}
         </div>
 
@@ -222,6 +242,6 @@ export function LogPanel({ logs }: LogPanelProps) {
           </button>
         ) : null}
       </div>
-    </>
+    </div>
   );
 }

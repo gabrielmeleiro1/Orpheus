@@ -50,6 +50,35 @@ Packaged builds download any missing managed models from the Setup screen. The
 download can be cancelled there; cancellation is cooperative and may wait for
 the current Hugging Face transfer call to return.
 
+The first page shows the voice model (Kokoro), one optional text cleaner, and its
+precision. CUDA offers Qwen 2.5 1.5B and 3B; MLX offers Llama 3.2 3B and 1B.
+Only the selected models are installed. CUDA's **4-bit**, **8-bit**, and **FP16**
+choices share one model download: quantization is applied when the model loads.
+4-bit uses the least GPU memory; FP16 uses the most. The download size does not
+shrink with lower precision. MLX cleaners are supplied as 4-bit models.
+
+After setup, use **Settings → Runtime setup** to change the runtime or selected
+models. **Save runtime settings** reuses models already on this device and keeps
+the selection across restarts. Switching to library-only mode does not delete
+downloaded models; switching back reuses them. Missing models offer **Install**.
+Use **Check runtime** to retry discovery after a temporary startup or device
+failure. The cleaner backend, model, and CUDA device can be changed directly in
+Settings when that backend is available.
+
+**Models on this device** shows each managed model's installation status and
+cache size. **Delete** removes that model's shared cached files after confirmation;
+other models, books, and audio are preserved. **Install again** downloads it
+without changing the active runtime selection. Select the models you want to use
+and save the runtime settings separately. Deleting the last selected model leaves
+the app in library-only mode. Model deletion is blocked during conversions or
+another setup operation.
+
+Keep multiple cleaners downloaded, but select one at a time. Changing a cached
+model or precision uses **Save runtime settings** and needs no download. The
+saved model and precision become the defaults for conversion, including after
+a restart. Conversion's model selector lists installed local models; use
+**Runtime setup** to install another supported model.
+
 ## 2. Validate Python/Core
 
 ```bash
@@ -130,7 +159,9 @@ npm run desktop:build
 Remove-Item Env:ORPHEUS_RUNTIME_PROFILE
 ```
 
-When `ORPHEUS_RUNTIME_PROFILE` is unset, the builder defaults to `mlx` for an
+When `ORPHEUS_RUNTIME_PROFILE` is unset, a rebuild retains the profile recorded
+in the previous sidecar's `runtime-profile.json`, so rebuilding the UI cannot
+silently remove the local runtime. A first build defaults to `mlx` for an
 Apple Silicon target and `base` elsewhere. Only `base`, `mlx`, and `cuda` are
 accepted. An explicit standalone `--runtime-profile` takes precedence over the
 environment and is useful for diagnosing the sidecar builder directly:

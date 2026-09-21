@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import stat
@@ -345,6 +346,7 @@ def test_configure_frozen_espeak_runtime_sets_phonemizer_wrapper_to_packaged_pat
     assert fake_loader.get_data_path() == str(data_dir)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink bridge; Windows uses a data copy")
 def test_configure_frozen_espeak_runtime_shortens_paths_for_libespeak_path_home_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -407,6 +409,7 @@ def test_configure_frozen_espeak_runtime_shortens_paths_for_libespeak_path_home_
     assert os.environ["PHONEMIZER_ESPEAK_LIBRARY"] == str(library_path)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink bridge; Windows uses a data copy")
 def test_configure_frozen_espeak_runtime_bridges_multibyte_paths_over_byte_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -484,6 +487,7 @@ def _make_overlimit_packaged_data(tmp_path: Path) -> Path:
     return data_dir
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink bridge; Windows uses a data copy")
 def test_ensure_short_espeak_data_path_falls_back_when_cache_mkdir_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -519,6 +523,89 @@ def test_ensure_short_espeak_data_path_falls_back_when_cache_mkdir_fails(
     assert blocked_temp.is_file()
 
 
+@pytest.mark.parametrize("folder", ["app é", "x" * 100])
+def test_windows_espeak_cache_handles_unicode_and_long_paths(tmp_path, monkeypatch, folder):
+    from apps.launchers import desktop_backend
+
+    source = tmp_path / folder / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    (source / "lang").mkdir()
+    (source / "lang" / "en").write_bytes(b"english")
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "c")
+
+    cached = desktop_backend._windows_espeak_data_path(source)
+    assert cached != source
+    assert str(cached.resolve()).isascii()
+    assert len(os.fsencode(cached)) < 160
+    assert (cached / "lang" / "en").read_bytes() == b"english"
+    before = (cached / "phontab").stat().st_mtime_ns
+    assert desktop_backend._windows_espeak_data_path(source) == cached
+    assert (cached / "phontab").stat().st_mtime_ns == before
+
+    (source / "phontab").write_bytes(b"new phonemes")
+    updated = desktop_backend._windows_espeak_data_path(source)
+    assert updated != cached
+    assert (updated / "phontab").read_bytes() == b"new phonemes"
+    assert (cached / "phontab").read_bytes() == b"phonemes"
+
+
+def test_windows_espeak_cache_falls_back_without_overwriting_blocked_path(tmp_path, monkeypatch):
+    from apps.launchers import desktop_backend
+
+    source = tmp_path / "é" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    blocked = tmp_path / "blocked"
+    blocked.write_text("keep me")
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: blocked)
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path))
+
+    cached = desktop_backend._windows_espeak_data_path(source)
+    assert cached.is_relative_to(tmp_path / "orpheus-espeak")
+    assert blocked.read_text() == "keep me"
+
+
+def test_windows_espeak_cache_fails_before_native_library_when_no_safe_path(tmp_path, monkeypatch):
+    from apps.launchers import desktop_backend
+
+    source = tmp_path / "é" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
+    with pytest.raises(RuntimeError, match="ASCII cache path"):
+        desktop_backend._windows_espeak_data_path(source)
+    assert (source / "phontab").read_bytes() == b"phonemes"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows narrow-path native library regression")
+def test_frozen_windows_phonemizer_survives_unicode_install_path(tmp_path):
+    loader = pytest.importorskip("espeakng_loader")
+    pytest.importorskip("phonemizer")
+    source = tmp_path / "app é" / "espeak-ng-data"
+    shutil.copytree(loader.get_data_path(), source)
+    result = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import sys; from pathlib import Path; from types import SimpleNamespace; "
+            "from apps.launchers import desktop_backend as launcher; "
+            "launcher._frozen_espeak_runtime_base=lambda:Path(sys.argv[3]); "
+            "sys.modules['espeakng_loader']=SimpleNamespace("
+            "get_library_path=lambda:sys.argv[1], get_data_path=lambda:sys.argv[2]); "
+            "sys.frozen=True; launcher.configure_frozen_espeak_runtime(); "
+            "from phonemizer.backend import EspeakBackend; "
+            "assert EspeakBackend('en-us').phonemize(['Hello world.'],strip=True)[0]; "
+            "print('phonemizer survived')",
+            loader.get_library_path(), str(source), str(tmp_path / "c"),
+        ],
+        cwd=PROJECT_ROOT, env=_build_env(), capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "phonemizer survived" in result.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink bridge; Windows uses a data copy")
 def test_ensure_short_espeak_data_path_never_deletes_real_directory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -551,6 +638,7 @@ def test_ensure_short_espeak_data_path_never_deletes_real_directory(
     assert (result / "phontab").read_text(encoding="utf-8") == "packaged-phontab"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink bridge; Windows uses a data copy")
 def test_ensure_short_espeak_data_path_reuses_existing_symlink_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

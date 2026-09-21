@@ -20,8 +20,7 @@ CLEANER_MODEL_CHOICES = [
 # Curated Hugging Face model options for CUDA text cleaning (backend="cuda").
 CUDA_CLEANER_MODEL_CHOICES = [
     CLEANER_CUDA_DEFAULT_MODEL,
-    "meta-llama/Llama-3.2-3B-Instruct",
-    "meta-llama/Llama-3.2-1B-Instruct",
+    "Qwen/Qwen2.5-3B-Instruct",
 ]
 DEFAULT_CUDA_MODEL = CLEANER_CUDA_DEFAULT_MODEL
 CUDA_CLEANER_QUANTIZATIONS = ("4bit", "8bit", "fp16")

@@ -11,6 +11,7 @@ export interface RuntimeSetupEnvironment {
 }
 
 export interface RuntimeSetupRequest {
+  cleanerCudaQuantization?: string;
   profile: "base" | "mlx" | "cuda";
   modelGroups: string[];
   acceptPytorchRisk: boolean;

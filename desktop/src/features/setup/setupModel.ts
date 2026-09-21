@@ -8,6 +8,7 @@ import type {
 export type RuntimeProfileId = RuntimeSetupProfile["id"];
 
 export interface SetupSelection {
+  cleanerCudaQuantization?: string;
   profile: RuntimeProfileId;
   modelGroups: string[];
   acceptPytorchRisk: boolean;
@@ -68,9 +69,11 @@ export interface ModelGroupDetail {
 
 export const MODEL_GROUP_DETAILS: Record<string, ModelGroupDetail> = {
   "tts-mlx": { label: "Kokoro TTS", description: "Natural speech generated locally on Apple Silicon.", model: "mlx-community/Kokoro-82M-bf16", downloadMB: 450, diskMB: 700, kind: "tts" },
-  "cleaner-mlx": { label: "Qwen Cleaner", description: "Optional local text cleanup before synthesis.", model: "mlx-community/Llama-3.2-3B-Instruct-4bit", downloadMB: 1800, diskMB: 2300, kind: "cleaner" },
+  "cleaner-mlx": { label: "Llama 3.2 · 3B", description: "Larger text cleaner, supplied in 4-bit precision.", model: "mlx-community/Llama-3.2-3B-Instruct-4bit", downloadMB: 1800, diskMB: 2300, kind: "cleaner" },
   "tts-cpu-cuda": { label: "Kokoro TTS", description: "Natural speech generated with the CUDA runtime.", model: "hexgrad/Kokoro-82M", downloadMB: 500, diskMB: 900, kind: "tts" },
-  "cleaner-cuda": { label: "Qwen Cleaner", description: "Optional GPU-accelerated local text cleanup.", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 2200, diskMB: 3000, kind: "cleaner" },
+  "cleaner-cuda": { label: "Qwen 2.5 · 1.5B", description: "Recommended balance of size and text-cleaning capability.", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 3100, diskMB: 3200, kind: "cleaner" },
+  "cleaner-cuda-large": { label: "Qwen 2.5 · 3B", description: "Larger model for more demanding text; uses more GPU memory.", model: "Qwen/Qwen2.5-3B-Instruct", downloadMB: 6200, diskMB: 6400, kind: "cleaner" },
+  "cleaner-mlx-small": { label: "Llama 3.2 · 1B", description: "Smaller text cleaner, supplied in 4-bit precision.", model: "mlx-community/Llama-3.2-1B-Instruct-4bit", downloadMB: 713, diskMB: 800, kind: "cleaner" },
 };
 
 function formatMB(mb: number): string {
@@ -94,10 +97,12 @@ export function selectionEstimate(modelGroups: string[]): string {
   return `~${formatMB(download)} download · ~${formatMB(disk)} on disk`;
 }
 
-// One-button setup installs everything the profile offers; users trim the
-// list in the Customize disclosure instead of opting in piece by piece.
+// Download one voice model and one cleaner, never the whole catalog.
 function defaultModelGroups(profile: RuntimeSetupProfile): string[] {
-  return profile.model_groups.filter((group) => MODEL_GROUP_DETAILS[group]);
+  return ["tts", "cleaner"].flatMap((kind) => {
+    const group = profile.model_groups.find((id) => MODEL_GROUP_DETAILS[id]?.kind === kind);
+    return group ? [group] : [];
+  });
 }
 
 export function profileChoices(status: RuntimeSetupStatusResponse): SetupProfileChoice[] {
@@ -105,8 +110,9 @@ export function profileChoices(status: RuntimeSetupStatusResponse): SetupProfile
 }
 
 export function createSelection(status: RuntimeSetupStatusResponse): SetupSelection {
-  const recommended = status.selected_profile == null && status.recommended_profile
-    ? status.profiles.find((profile) => profile.id === status.recommended_profile && profile.compatible)
+  const suggested = status.installed_runtime?.ready ? status.installed_runtime.profile : status.recommended_profile;
+  const recommended = status.selected_profile == null && suggested
+    ? status.profiles.find((profile) => profile.id === suggested && profile.compatible)
     : undefined;
   const selected = status.profiles.find((profile) => profile.id === status.selected_profile && profile.compatible)
     ?? recommended
@@ -115,10 +121,21 @@ export function createSelection(status: RuntimeSetupStatusResponse): SetupSelect
     ?? status.profiles[0];
   const allowed = new Set(selected?.model_groups ?? []);
   const persisted = status.selected_model_groups.map(({ id }) => id).filter((id) => allowed.has(id));
+  const installed = status.installed_runtime?.ready && status.installed_runtime.profile === selected?.id
+    ? status.installed_runtime.model_groups.filter((group) => group.ready).map((group) => group.id) : [];
+  const groups = status.configured && selected?.id === status.selected_profile ? persisted
+    : installed.length ? installed : selected ? defaultModelGroups(selected) : [];
+  const seen = new Set<string>();
   return {
     profile: selected?.id ?? "base",
-    modelGroups: persisted.length > 0 ? persisted : selected ? defaultModelGroups(selected) : [],
+    modelGroups: groups.filter((id) => {
+      const kind = MODEL_GROUP_DETAILS[id]?.kind ?? id;
+      if (seen.has(kind)) return false;
+      seen.add(kind);
+      return true;
+    }),
     acceptPytorchRisk: Boolean(selected?.risk?.accepted),
+    cleanerCudaQuantization: status.cleaner_cuda_quantization ?? "4bit",
   };
 }
 
@@ -135,6 +152,7 @@ export function selectProfile(
     profile: profile.id,
     modelGroups: defaultModelGroups(profile),
     acceptPytorchRisk: Boolean(profile.risk?.accepted),
+    cleanerCudaQuantization: selection.cleanerCudaQuantization ?? "4bit",
   };
 }
 
@@ -151,7 +169,7 @@ export function toggleModelGroup(
     ...selection,
     modelGroups: selection.modelGroups.includes(groupId)
       ? selection.modelGroups.filter((item) => item !== groupId)
-      : [...selection.modelGroups, groupId],
+      : [...selection.modelGroups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind !== MODEL_GROUP_DETAILS[groupId]?.kind), groupId],
   };
 }
 
@@ -179,10 +197,31 @@ export function backendInstallProfileId(
   if (environmentAvailable) {
     return null;
   }
-  if (!installedRuntime?.runtime_available || installedRuntime.ready) {
+  if (!installedRuntime || (!installedRuntime.runtime_available && !installedRuntime.model_groups.some((group) => group.runtime_ready))) {
     return null;
   }
   return installedRuntime.profile;
+}
+
+export function selectionMatchesConfigured(selection: SetupSelection, status: RuntimeSetupStatusResponse): boolean {
+  const configured = new Set(status.selected_model_groups.map(({ id }) => id));
+  return status.configured && selection.profile === status.selected_profile
+    && (selection.cleanerCudaQuantization ?? "4bit") === (status.cleaner_cuda_quantization ?? "4bit")
+    && configured.size === selection.modelGroups.length
+    && selection.modelGroups.every((id) => configured.has(id));
+}
+
+/** Readiness belongs to each requested model, not just the profile's TTS. */
+export function selectionReadiness(selection: SetupSelection, status: RuntimeSetupStatusResponse): { runtimeReady: boolean; ready: boolean } {
+  const groups = status.installed_runtime?.profile === selection.profile
+    ? status.installed_runtime.model_groups
+    : status.selected_profile === selection.profile ? status.selected_model_groups : [];
+  const selected = selection.modelGroups.map((id) => groups.find((group) => group.id === id));
+  const valid = canStartSetup(selection, status);
+  return {
+    runtimeReady: valid && selected.every((group) => group?.runtime_ready),
+    ready: valid && selected.every((group) => group?.ready),
+  };
 }
 
 export function modelDownloadProgressEvent(

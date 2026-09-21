@@ -13,8 +13,12 @@ export function SetupRiskNotice({
 }) {
   return (
     <div className="setup-risk" role="note">
-      <strong>PyTorch security notice</strong><p>{summary}</p>
-      <label><input type="checkbox" checked={checked} disabled={disabled} onChange={onChange} /> I understand and will use only trusted model files.</label>
+      <strong>PyTorch security notice</strong>
+      <p>{summary}</p>
+      <label>
+        <input type="checkbox" checked={checked} disabled={disabled} onChange={onChange} />
+        <span>I understand and will use only trusted model files.</span>
+      </label>
     </div>
   );
 }

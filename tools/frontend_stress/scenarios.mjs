@@ -122,7 +122,7 @@ async function scenarioConnect(ctx) {
   }, { timeoutMs: 45_000, message: "setup resolves and dashboard opens" });
 
   await waitFor(
-    async () => (await page.locator('.sr-only[role="status"]').first().textContent())?.trim().toLowerCase() === "backend connected",
+    async () => await page.getByRole("status", { name: "Backend connected", exact: true }).isVisible(),
     { timeoutMs: 20_000, message: 'header status reaches "backend connected"' },
   );
   assert((await page.locator(".status-dot.is-connected").count()) > 0, "expected a connected status dot in the header");
@@ -351,15 +351,15 @@ async function ensureLocalCleanerBackendSelected(page, log) {
   await gotoTab(page, "document");
 }
 
-async function scenarioConvertSingle(ctx) {
+async function scenarioConvertSingle(ctx, source = null) {
   const { page, log, shared } = ctx;
   await ensureLocalCleanerBackendSelected(page, log);
   await gotoTab(page, "document");
   await waitTabVisible(page, "document");
 
   await clearQueue(page, "document");
-  const title = "Stress Short Chapter";
-  await pasteSource(page, { title, text: "# Narration\n\nThe little boat crossed the quiet lake. We walked home before sunset." });
+  const title = source?.title ?? "Stress Short Chapter";
+  await pasteSource(page, { title, text: source?.text ?? "# Narration\n\nThe little boat crossed the quiet lake. We walked home before sunset." });
   const row = page.locator(".queue-row", { hasText: title });
   assert((await row.count()) > 0, "expected the isolated single-source queue item");
   await row.locator(".queue-item-main").click();
@@ -416,6 +416,70 @@ async function scenarioConvertSingle(ctx) {
     message: "converted book visible in library",
   });
   shared.bookTitles.push(title);
+}
+
+async function scenarioCudaCleaner(ctx) {
+  // Keep the same app/backend session to catch stale selections or model caches.
+  for (const [index, quantization] of ["4bit", "8bit", "fp16", "4bit"].entries()) {
+    await verifyCudaCleanerChoice(ctx, quantization, index);
+  }
+}
+
+export async function verifyCudaCleanerChoice(ctx, quantization, index, modelId = "Qwen/Qwen2.5-1.5B-Instruct") {
+  const { page, backendBaseUrl, token, log } = ctx;
+  await gotoTab(page, "settings");
+  await waitTabVisible(page, "settings");
+  const cudaLabel = await waitFor(async () => {
+    const labels = await termSelectOptions(page, "cleaner-backend-select");
+    return labels.find((label) => /cuda/i.test(label));
+  }, { timeoutMs: 60_000, message: "CUDA cleaner options load for the requested GPU test" });
+  await chooseTermSelectByLabel(page, "cleaner-backend-select", cudaLabel);
+  await chooseTermSelectByLabel(page, "cleaner-model-select", modelId);
+  await page.locator("#cleaner-cuda-device-input").fill("Cuda");
+  assert(await page.locator("#cleaner-cuda-device-input").inputValue() === "Cuda", "device must display Cuda");
+  assert(await page.locator("#cleaner-cuda-device-input").getAttribute("spellcheck") === "false", "GPU identifiers must not be spellchecked");
+  await chooseTermSelectByLabel(page, "cleaner-cuda-quantization-select", quantization);
+
+  let submitted = null;
+  const capture = (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/conversions") {
+      submitted = request.postDataJSON()?.runtime_options;
+    }
+  };
+  page.on("request", capture);
+  const title = `CUDA Cleaner ${quantization} Run ${index + 1}`;
+  const damaged = "Iam tired. Ibegin again. Iwish the wall would stop moving.";
+  try {
+    await scenarioConvertSingle(ctx, { title, text: `# Narration\n\n${damaged}` });
+  } finally {
+    page.off("request", capture);
+  }
+  for (const [key, value] of Object.entries({
+    cleaner_backend: "cuda", cleaner_model: modelId,
+    cleaner_cuda_device: "cuda", cleaner_cuda_quantization: quantization,
+  })) assert(submitted?.[key] === value, `conversion must submit ${key}=${value}`);
+
+  const get = async (route) => {
+    const response = await fetch(`${backendBaseUrl}${route}`, {
+      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000),
+    });
+    assert(response.ok, `${route} returned ${response.status}`);
+    return response.json();
+  };
+  const library = await get(`/api/library?search=${encodeURIComponent(title)}`);
+  const book = library.items.find((item) => item.title === title);
+  assert(book, "CUDA conversion must be saved in the library");
+  const detail = await get(`/api/library/${book.id}`);
+  const traces = [];
+  for (const chapter of detail.chapters) {
+    const preview = await get(`/api/library/${book.id}/chapters/${chapter.number}/cleaning-preview`);
+    traces.push(...preview.trace_rows);
+  }
+  const cleaned = traces.find((trace) => trace.original_text.includes("Ibegin"));
+  assert(cleaned?.mode === "llm_success", `expected actual CUDA inference, got ${cleaned?.mode}`);
+  assert(cleaned.cleaned_text.includes("I am tired. I begin again. I wish the wall would stop moving."), "CUDA must repair the extraction artifacts without rewriting prose");
+  assert(!cleaned.llm_error, "CUDA cleaner must not silently fall back");
+  log(`${quantization}: verified UI selection, submitted precision, saved LLM trace, and corrected text`);
 }
 
 async function scenarioConvertCancel(ctx) {
@@ -579,6 +643,8 @@ async function scenarioRapidFire(ctx) {
     await rows.nth(i).locator(".queue-item-main").click();
   }
 
+  const metadata = page.locator(".metadata-overrides");
+  if (!(await metadata.evaluate((el) => el.open))) await metadata.locator("summary").click();
   await page.locator("#title-input").fill("Edited mid-preflight");
   await sleep(2000);
   assert((await page.locator("#title-input").inputValue()) === "Edited mid-preflight", "late preflight overwrote the user title");
@@ -733,7 +799,7 @@ async function scenarioLibraryCrud(ctx) {
     return false;
   }, { timeoutMs: 45_000, message: "setup resolves and dashboard opens" });
   await waitFor(
-    async () => (await page.locator('.sr-only[role="status"]').first().textContent())?.trim().toLowerCase() === "backend connected",
+    async () => await page.getByRole("status", { name: "Backend connected", exact: true }).isVisible(),
     { timeoutMs: 20_000, message: "reconnected after reload" },
   );
   await gotoTab(page, "library");
@@ -775,7 +841,7 @@ async function scenarioReconnect(ctx) {
   log("killing the backend process to simulate a crash mid-session");
   await backend.stop();
 
-  await waitFor(async () => (await page.locator('.status-dot[title="error"]').count()) > 0, {
+  await waitFor(async () => await page.getByRole("status", { name: "Backend error", exact: true }).isVisible(), {
     timeoutMs: 30_000, message: "backend failure becomes an explicit error state",
   });
   const delta = ctx.getConsoleErrorCount() - errorsBefore;
@@ -801,6 +867,7 @@ export const SCENARIOS = [
   { id: "c", name: "add-book-files", run: scenarioAddBookFiles, allowConsoleErrors: false },
   { id: "d", name: "options-sweep", run: scenarioOptionsSweep, allowConsoleErrors: false },
   { id: "e", name: "convert-single", run: scenarioConvertSingle, allowConsoleErrors: false },
+  { id: "l", name: "cuda-cleaner", run: scenarioCudaCleaner, allowConsoleErrors: false, optIn: true },
   { id: "f", name: "convert-cancel", run: scenarioConvertCancel, allowConsoleErrors: false },
   { id: "g", name: "queue-run", run: scenarioQueueRun, allowConsoleErrors: false },
   { id: "h", name: "rapid-fire", run: scenarioRapidFire, allowConsoleErrors: false },

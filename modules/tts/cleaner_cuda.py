@@ -186,13 +186,28 @@ def generate_cuda_response(cleaner: Any, prompt: str) -> str:
 
         tokenizer = cleaner._tokenizer
         model = cleaner._model
-        inputs = tokenizer(prompt, return_tensors="pt")
+        if getattr(tokenizer, "chat_template", None):
+            # Instruct models need their conversation delimiters and assistant
+            # prefix; a raw completion prompt can produce repeated instructions.
+            inputs = tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                add_generation_prompt=True,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+            )
+        else:
+            inputs = tokenizer(prompt, return_tensors="pt")
         device = next(model.parameters()).device
         inputs = {key: value.to(device) for key, value in inputs.items()}
 
         generation_kwargs: dict[str, object] = {
             "max_new_tokens": cleaner.config.max_tokens,
-            "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+            "pad_token_id": (
+                tokenizer.pad_token_id
+                if tokenizer.pad_token_id is not None
+                else tokenizer.eos_token_id
+            ),
         }
         if cleaner.config.temperature > 0:
             generation_kwargs["temperature"] = cleaner.config.temperature

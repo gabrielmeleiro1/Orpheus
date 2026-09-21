@@ -371,6 +371,12 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
+def validate_model_selection(model_groups: Iterable[str]) -> None:
+    """Installation may cache many models; an active setup chooses one cleaner."""
+    if sum(group.startswith("cleaner-") for group in model_groups) > 1:
+        raise SetupValidationError("Select one local cleaner. Other models can stay downloaded.")
+
+
 def write_setup_state(
     state_path: Path,
     *,
@@ -380,6 +386,7 @@ def write_setup_state(
     installation_id: str | None = None,
     backend_instance_id: str | None = None,
     restart_required: bool = True,
+    cleaner_cuda_quantization: str = "4bit",
 ) -> dict[str, Any]:
     """Atomically write the deliberately small, non-secret setup state.
 
@@ -389,6 +396,9 @@ def write_setup_state(
     """
     profile = get_runtime_profile(profile_id)
     groups = _validated_model_groups(profile, model_groups)
+    validate_model_selection(groups)
+    if cleaner_cuda_quantization not in ("4bit", "8bit", "fp16"):
+        raise SetupValidationError("Unsupported cleaner quantization.")
     risks = tuple(accepted_risks)
     if risks:
         raise SetupValidationError("Setup state contains an unknown risk acknowledgement.")
@@ -402,6 +412,7 @@ def write_setup_state(
         "installed_during_backend_instance_id": backend_instance_id,
         "installed_without_backend_instance": backend_instance_id is None,
         "model_groups": list(groups),
+        "cleaner_cuda_quantization": cleaner_cuda_quantization,
         "profile": profile.id,
         "restart_required": bool(restart_required),
         "schema_version": STATE_SCHEMA_VERSION,
@@ -422,6 +433,9 @@ def _read_setup_state(state_path: Path) -> tuple[dict[str, Any] | None, str | No
             raise ValueError("unsupported setup state schema")
         profile = get_runtime_profile(str(raw.get("profile", "")))
         groups = _validated_model_groups(profile, raw.get("model_groups", ()))
+        quantization = raw.get("cleaner_cuda_quantization", "4bit")
+        if quantization not in ("4bit", "8bit", "fp16"):
+            raise ValueError("unsupported cleaner quantization")
         risks = tuple(str(value) for value in raw.get("accepted_risks", ()))
         allowed_risks = _LEGACY_PYTORCH_RISK_IDS
         if any(risk not in allowed_risks for risk in risks):
@@ -447,6 +461,7 @@ def _read_setup_state(state_path: Path) -> tuple[dict[str, Any] | None, str | No
             "installed_during_backend_instance_id": installed_backend_id,
             "installed_without_backend_instance": installed_without_backend,
             "model_groups": list(groups),
+            "cleaner_cuda_quantization": quantization,
             "profile": profile.id,
             "restart_required": bool(raw.get("restart_required", False)),
             "schema_version": STATE_SCHEMA_VERSION,
@@ -607,9 +622,9 @@ def _probe_profile(model_groups: Iterable[str], service: _ProbeService) -> dict[
                 checks.append((group_id, service.probe_mlx_tts_runtime()))
             elif group_id == "tts-cpu-cuda":
                 checks.append((group_id, service.probe_package_tts_runtime()))
-            elif group_id == "cleaner-mlx":
+            elif group_id.startswith("cleaner-mlx"):
                 checks.append((group_id, service.probe_cleaner_backend("mlx")))
-            elif group_id == "cleaner-cuda":
+            elif group_id.startswith("cleaner-cuda"):
                 checks.append((group_id, service.probe_cleaner_backend("cuda")))
     except Exception as exc:
         raise SetupExecutionError(f"Runtime probe failed: {exc}") from exc
@@ -657,6 +672,7 @@ def get_setup_status(
         "configured": True,
         "profile": state["profile"],
         "model_groups": state["model_groups"],
+        "cleaner_cuda_quantization": state["cleaner_cuda_quantization"],
         "ready": bool(probe["available"]),
         "restart_required": state["restart_required"],
         "probe": probe,
@@ -836,6 +852,7 @@ def run_setup(
     profile_id: str,
     model_groups: Iterable[str] = (),
     accept_pytorch_risk: bool = False,
+    cleaner_cuda_quantization: str = "4bit",
     dry_run: bool = False,
     state_path: Path | None = None,
     command_runner: CommandRunner | None = None,
@@ -847,11 +864,14 @@ def run_setup(
     probe_service: _ProbeService | None = None,
 ) -> dict[str, Any]:
     """Validate, install dependencies/models, then atomically record state."""
+    if cleaner_cuda_quantization not in ("4bit", "8bit", "fp16"):
+        raise SetupValidationError("Unsupported cleaner quantization.")
     plan = build_install_plan(
         profile_id,
         model_groups,
         accept_pytorch_risk=accept_pytorch_risk,
     )
+    validate_model_selection(plan.model_groups)
     result: dict[str, Any] = {
         "profile": plan.profile.id,
         "model_groups": list(plan.model_groups),
@@ -912,6 +932,7 @@ def run_setup(
             profile_id=plan.profile.id,
             model_groups=plan.model_groups,
             accepted_risks=plan.accepted_risks,
+            cleaner_cuda_quantization=cleaner_cuda_quantization,
             backend_instance_id=backend_instance_id,
         )
         event_emitter(
@@ -930,6 +951,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Install an allowlisted Orpheus runtime profile.",
     )
     parser.add_argument("--profile", help="Runtime profile: base, mlx, or cuda.")
+    parser.add_argument("--cleaner-cuda-quantization", choices=("4bit", "8bit", "fp16"), default="4bit")
     parser.add_argument(
         "--models",
         "--model-group",
@@ -1005,6 +1027,7 @@ def main(argv: list[str] | None = None) -> int:
             profile_id=args.profile,
             model_groups=args.model_groups,
             accept_pytorch_risk=args.accept_pytorch_risk,
+            cleaner_cuda_quantization=args.cleaner_cuda_quantization,
             dry_run=args.dry_run,
             emit=emit,
             machine_output=machine_output,

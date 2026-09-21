@@ -64,6 +64,234 @@ describe("mounted SetupPage", () => {
     return api;
   }
 
+  function readySettings(cleanerReady = true): RuntimeSetupStatusResponse {
+    return {
+      ...setupStatus, configured: true, ready: true, state: "ready", selected_profile: "mlx",
+      selected_model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: true, assets_reason: null, ready: true }],
+      installed_runtime: { profile: "mlx", runtime_available: true, ready: true, model_groups: [
+        { id: "tts-mlx", runtime_ready: true, assets_ready: true, ready: true },
+        { id: "cleaner-mlx", runtime_ready: true, assets_ready: cleanerReady, ready: cleanerReady },
+      ] },
+    };
+  }
+
+  const packagedSettingsBridge = () => bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Bundled runtime." })) });
+  function cudaCatalogStatus(): RuntimeSetupStatusResponse {
+    const groups = ["tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"];
+    return {
+      ...setupStatus, recommended_profile: "cuda",
+      profiles: setupStatus.profiles.map((profile) => profile.id === "cuda" ? { ...profile, compatible: true, reason: null, model_groups: groups } : profile),
+      installed_runtime: { profile: "cuda", runtime_available: true, ready: false, model_groups: groups.map((id) => ({ id, runtime_ready: true, assets_ready: false, ready: false })) },
+    };
+  }
+
+  it("shows model and precision choices on the first page and downloads only the chosen pair", async () => {
+    const start = vi.fn(async () => ({ lifecycle: "running" }));
+    await renderPage(packagedSettingsBridge(), { initialStatus: cudaCatalogStatus(), apiClient: { startRuntimeModelDownload: start } as unknown as ApiClient });
+    expect(container.textContent).toContain("Quantization stores model weights");
+    expect(container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]:checked')?.parentElement?.textContent).toContain("1.5B");
+    const small = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')].find((input) => input.parentElement?.textContent?.includes("3B"))!;
+    await act(async () => { small.click(); container.querySelector<HTMLInputElement>('input[value="8bit"]')!.click(); });
+    expect(container.querySelectorAll('input[name="setup-cleaner"]:checked')).toHaveLength(1);
+    await act(async () => container.querySelector<HTMLButtonElement>('.setup-primary')!.click());
+    expect(start).toHaveBeenCalledExactlyOnceWith({ profile: "cuda", model_groups: ["tts-cpu-cuda", "cleaner-cuda-large"], cleaner_cuda_quantization: "8bit" }, { timeoutMs: 15_000 });
+  });
+
+  it("saves a precision change with no downloads and never adopts every cached cleaner", async () => {
+    const initial = cudaCatalogStatus();
+    initial.installed_runtime!.ready = true;
+    initial.installed_runtime!.model_groups.forEach((group) => { group.assets_ready = true; group.ready = true; });
+    const adopt = vi.fn(async () => ({ ...initial, configured: true, ready: true, state: "ready" }));
+    const start = vi.fn();
+    await renderPage(packagedSettingsBridge(), { initialStatus: initial, apiClient: { adoptRuntimeSetup: adopt, startRuntimeModelDownload: start } as unknown as ApiClient });
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="fp16"]')!.click());
+    await act(async () => findButton(container, "Continue").click());
+    expect(adopt).toHaveBeenCalledExactlyOnceWith({ profile: "cuda", model_groups: ["tts-cpu-cuda", "cleaner-cuda"], cleaner_cuda_quantization: "fp16", accept_pytorch_risk: false }, { timeoutMs: 120_000 });
+    expect(start).not.toHaveBeenCalled();
+  });
+
+
+
+  it.each(["base", "mlx"] as const)("edits a ready runtime in Settings and persists the exact %s selection", async (profile) => {
+    const initialStatus = readySettings();
+    let resolveSave!: (value: RuntimeSetupStatusResponse) => void;
+    const adopt = vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveSave = resolve; }));
+    const onReady = vi.fn();
+    const api = { adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus, apiClient: api, settingsEntry: true, onReady, onExitSettings: vi.fn() });
+    expect(findButton(container, "Done")).toBeTruthy();
+    if (profile === "base") {
+      await act(async () => container.querySelector<HTMLInputElement>('input[value="base"]')!.click());
+    } else {
+      await act(async () => [...container.querySelectorAll<HTMLInputElement>('input')]
+        .find((input) => input.parentElement?.textContent?.includes("Llama 3.2 · 3B"))!.click());
+    }
+    const save = findButton(container, "Save runtime settings");
+    await act(async () => { save.click(); save.click(); });
+    expect(adopt).toHaveBeenCalledTimes(1);
+    expect(adopt).toHaveBeenCalledWith({ profile, model_groups: profile === "base" ? [] : ["tts-mlx", "cleaner-mlx"], accept_pytorch_risk: false, cleaner_cuda_quantization: "4bit" }, { timeoutMs: 120_000 });
+    expect(findButton(container, "Back to dashboard").disabled).toBe(true);
+    expect([...container.querySelectorAll("fieldset")].every((fieldset) => fieldset.disabled)).toBe(true);
+    await act(async () => resolveSave({ ...initialStatus, selected_profile: profile }));
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  it("restores an installed runtime from library-only Settings without reinstalling", async () => {
+    const ready = readySettings();
+    const adopt = vi.fn(async () => ready);
+    const runtimeBridge = packagedSettingsBridge();
+    await renderPage(runtimeBridge, {
+      initialStatus: { ...ready, selected_profile: "base", selected_model_groups: [] },
+      settingsEntry: true, apiClient: { adoptRuntimeSetup: adopt } as unknown as ApiClient,
+    });
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="mlx"]')!.click());
+    await act(async () => findButton(container, "Save runtime settings").click());
+    expect(adopt).toHaveBeenCalledWith({ profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], accept_pytorch_risk: false, cleaner_cuda_quantization: "4bit" }, { timeoutMs: 120_000 });
+    expect(runtimeBridge.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps a failed Settings save retryable without silently switching to library-only", async () => {
+    const adopt = vi.fn().mockRejectedValueOnce(new Error("Backend disconnected")).mockResolvedValue(readySettings());
+    const onReady = vi.fn();
+    const onContinueLibraryOnly = vi.fn();
+    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(), settingsEntry: true, apiClient: { adoptRuntimeSetup: adopt } as unknown as ApiClient, onReady, onContinueLibraryOnly });
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="base"]')!.click());
+    await act(async () => findButton(container, "Save runtime settings").click());
+    expect(container.textContent).toContain("Backend disconnected");
+    expect(onReady).not.toHaveBeenCalled();
+    expect(onContinueLibraryOnly).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLInputElement>('input[value="base"]')!.checked).toBe(true);
+    await act(async () => findButton(container, "Save runtime settings").click());
+    expect(adopt).toHaveBeenCalledTimes(2);
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  it("downloads a missing optional cleaner even when the configured TTS is ready", async () => {
+    const start = vi.fn(async () => ({ lifecycle: "running" }));
+    const adopt = vi.fn();
+    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(false), settingsEntry: true, apiClient: { startRuntimeModelDownload: start, adoptRuntimeSetup: adopt } as unknown as ApiClient });
+    await act(async () => [...container.querySelectorAll<HTMLInputElement>('input')]
+      .find((input) => input.parentElement?.textContent?.includes("Llama 3.2 · 3B"))!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('.setup-primary')!.click());
+    expect(start).toHaveBeenCalledWith({ profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], cleaner_cuda_quantization: "4bit" }, { timeoutMs: 15_000 });
+    expect(adopt).not.toHaveBeenCalled();
+  });
+
+  it("does not offer downloads for an unavailable cleaner runtime", async () => {
+    const initialStatus = readySettings(false);
+    initialStatus.installed_runtime!.model_groups[1].runtime_ready = false;
+    await renderPage(packagedSettingsBridge(), { initialStatus, settingsEntry: true });
+    await act(async () => [...container.querySelectorAll<HTMLInputElement>('input')]
+      .find((input) => input.parentElement?.textContent?.includes("Llama 3.2 · 3B"))!.click());
+    expect(findButton(container, "Install").disabled).toBe(true);
+    expect(container.textContent).toContain("This runtime is unavailable in this installation");
+    expect(container.querySelector<HTMLInputElement>('input[value="cuda"]')!.disabled).toBe(true);
+  });
+
+  it("preserves unsaved Settings choices when checking runtime status", async () => {
+    const initialStatus = readySettings();
+    const onReady = vi.fn();
+    const api = { getRuntimeSetupStatus: vi.fn(async () => initialStatus) } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus, settingsEntry: true, apiClient: api, onReady });
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="base"]')!.click());
+    await act(async () => findButton(container, "Check runtime").click());
+    expect(api.getRuntimeSetupStatus).toHaveBeenCalledOnce();
+    expect(container.querySelector<HTMLInputElement>('input[value="base"]')!.checked).toBe(true);
+    expect(findButton(container, "Save runtime settings").disabled).toBe(false);
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
+  it("confirms deletion of one model, guards duplicate clicks, and offers install again", async () => {
+    let currentStatus = readySettings();
+    let resolveDelete!: (value: { deleted_model_groups: string[]; freed_bytes: number; state_deleted: boolean }) => void;
+    const remove = vi.fn(() => new Promise<{ deleted_model_groups: string[]; freed_bytes: number; state_deleted: boolean }>((resolve) => { resolveDelete = resolve; }));
+    const start = vi.fn(async () => ({ lifecycle: "running" }));
+    let removed = false;
+    const api = {
+      getRuntimeModelInventory: vi.fn(async () => ({ models: [
+        { id: "tts-mlx", downloaded: true, size_bytes: 700_000_000 },
+        { id: "cleaner-mlx", downloaded: !removed, size_bytes: removed ? 0 : 2_000_000_000 },
+      ] })),
+      deleteRuntimeModel: remove, startRuntimeModelDownload: start,
+      getRuntimeSetupStatus: vi.fn(async () => currentStatus),
+    } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus: currentStatus, settingsEntry: true, apiClient: api });
+    const deleteButton = container.querySelector<HTMLButtonElement>('[aria-label="Delete Llama 3.2 · 3B"]')!;
+    await act(async () => deleteButton.click());
+    expect(remove).not.toHaveBeenCalled();
+    await act(async () => findButton(container, "Keep model").click());
+    expect(container.textContent).not.toContain("Your books and audio will stay");
+    await act(async () => deleteButton.click());
+    await act(async () => { findButton(container, "Delete model").click(); findButton(container, "Delete model").click(); });
+    expect(remove).toHaveBeenCalledExactlyOnceWith("cleaner-mlx", { timeoutMs: 120_000 });
+    expect(container.querySelector<HTMLFieldSetElement>('fieldset')!.disabled).toBe(true);
+    removed = true;
+    currentStatus = readySettings(false);
+    await act(async () => resolveDelete({ deleted_model_groups: ["cleaner-mlx"], freed_bytes: 2_000_000_000, state_deleted: false }));
+    expect(container.textContent).toContain("Llama 3.2 · 3B deleted. Freed");
+    expect(container.querySelector('[aria-label="Delete Kokoro TTS"]')).not.toBeNull();
+    const install = container.querySelector<HTMLButtonElement>('[aria-label="Install Llama 3.2 · 3B"]')!;
+    expect(install.textContent).toBe("Install again");
+    await act(async () => install.click());
+    expect(start).toHaveBeenCalledExactlyOnceWith({ profile: "mlx", model_groups: ["cleaner-mlx"], configure_runtime: false }, { timeoutMs: 15_000 });
+  });
+
+  it("finishes a model-only download without replacing the saved runtime selection", async () => {
+    const snapshot = { lifecycle: "complete", profile: "mlx", model_groups: ["cleaner-mlx"], total_models: 1, completed_models: 1, current_model_group: null, error: null, configure_runtime: false };
+    const adopt = vi.fn();
+    const onReady = vi.fn();
+    const api = {
+      getRuntimeSetupStatus: vi.fn(async () => readySettings()),
+      getRuntimeModelDownloadStatus: vi.fn(async () => snapshot),
+      startRuntimeModelDownload: vi.fn(async () => snapshot),
+      adoptRuntimeSetup: adopt,
+    } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(false), settingsEntry: true, apiClient: api, onReady });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Install Llama 3.2 · 3B"]')!.click());
+    await act(async () => undefined);
+    expect(adopt).not.toHaveBeenCalled();
+    expect(api.getRuntimeSetupStatus).toHaveBeenCalled();
+    expect(onReady).toHaveBeenCalledWith(expect.objectContaining({ selected_model_groups: [expect.objectContaining({ id: "tts-mlx" })] }));
+    expect(container.textContent).toContain("Model installed");
+  });
+
+  it("keeps an installed model and deletion controls visible after a delete failure", async () => {
+    const remove = vi.fn(async () => { throw new Error("Wait for the current conversion to finish"); });
+    const api = { deleteRuntimeModel: remove } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(), settingsEntry: true, apiClient: api });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Delete Llama 3.2 · 3B"]')!.click());
+    await act(async () => findButton(container, "Delete model").click());
+    expect(container.textContent).toContain("Wait for the current conversion to finish");
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Delete Llama 3.2 · 3B"]')!.disabled).toBe(false);
+    expect(container.querySelector('[aria-label="Install Llama 3.2 · 3B"]')).toBeNull();
+    expect(findButton(container, "Done").disabled).toBe(false);
+  });
+
+  it("explains why an empty local model selection cannot be saved", async () => {
+    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(), settingsEntry: true });
+    await act(async () => [...container.querySelectorAll<HTMLInputElement>('input')]
+      .find((input) => input.parentElement?.textContent?.includes("Kokoro TTS"))!.click());
+    expect(findButton(container, "Install").disabled).toBe(true);
+    expect(container.textContent).toContain("select at least one model");
+  });
+
+  it("ignores a save response from a disconnected backend", async () => {
+    const initialStatus = readySettings();
+    let resolveSave!: (status: RuntimeSetupStatusResponse) => void;
+    const oldApi = { adoptRuntimeSetup: vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveSave = resolve; })) } as unknown as ApiClient;
+    const newApi = {} as ApiClient;
+    const runtimeBridge = packagedSettingsBridge();
+    const onReady = vi.fn();
+    await renderPage(runtimeBridge, { initialStatus, settingsEntry: true, apiClient: oldApi, onReady });
+    await act(async () => container.querySelector<HTMLInputElement>('input[value="base"]')!.click());
+    await act(async () => findButton(container, "Save runtime settings").click());
+    await renderPage(runtimeBridge, { initialStatus, settingsEntry: true, apiClient: newApi, onReady });
+    await act(async () => resolveSave({ ...initialStatus, selected_profile: "base", selected_model_groups: [] }));
+    expect(onReady).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLInputElement>('input[value="mlx"]')!.checked).toBe(true);
+    expect(findButton(container, "Done").disabled).toBe(false);
+  });
+
   it("uses native profile/model controls, exact payload, duplicate guard, focus, and unsubscribe", async () => {
     let resolveStart!: (value: Awaited<ReturnType<SetupPageBridge["start"]>>) => void;
     const start = vi.fn(() => new Promise<Awaited<ReturnType<SetupPageBridge["start"]>>>((resolve) => { resolveStart = resolve; }));
@@ -74,13 +302,13 @@ describe("mounted SetupPage", () => {
     await act(async () => findButton(container, "Customize").click());
     const mlx = container.querySelector<HTMLInputElement>('input[type="radio"][value="mlx"]')!;
     await act(async () => mlx.click());
-    const cleaner = [...container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')]
-      .find((input) => input.parentElement?.textContent?.includes("Qwen Cleaner"))!;
+    const cleaner = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')]
+      .find((input) => input.parentElement?.textContent?.includes("No local cleaner"))!;
     await act(async () => cleaner.click());
     const install = findButton(container, "Install");
     await act(async () => { install.click(); install.click(); });
     expect(start).toHaveBeenCalledTimes(1);
-    expect(start).toHaveBeenCalledWith({ profile: "mlx", modelGroups: ["tts-mlx"], acceptPytorchRisk: false });
+    expect(start).toHaveBeenCalledWith({ profile: "mlx", modelGroups: ["tts-mlx"], acceptPytorchRisk: false, cleanerCudaQuantization: "4bit" });
     expect(document.activeElement?.id).toBe("setup-progress-heading");
     resolveStart({ lifecycle: "running", profile: "mlx", modelGroups: ["tts-mlx"], stage: null, message: null, percent: null, restartRequired: false, error: null });
     await act(async () => undefined);
@@ -537,8 +765,8 @@ describe("mounted SetupPage", () => {
     expect(cta.disabled).toBe(false);
     await act(async () => cta.click());
     expect(adopt).toHaveBeenCalledWith(
-      { profile: "mlx", model_groups: ["tts-mlx"], accept_pytorch_risk: false },
-      { timeoutMs: 15_000 },
+      { profile: "mlx", model_groups: ["tts-mlx"], accept_pytorch_risk: false, cleaner_cuda_quantization: "4bit" },
+      { timeoutMs: 120_000 },
     );
     expect(onReady).toHaveBeenCalledWith(readyStatus);
   });
@@ -579,8 +807,8 @@ describe("mounted SetupPage", () => {
     expect(findButton(container, "Continue").disabled).toBe(false);
     await act(async () => findButton(container, "Continue").click());
     expect(adopt).toHaveBeenCalledWith(
-      { profile: "cuda", model_groups: ["tts-cpu-cuda"], accept_pytorch_risk: true },
-      { timeoutMs: 15_000 },
+      { profile: "cuda", model_groups: ["tts-cpu-cuda"], accept_pytorch_risk: true, cleaner_cuda_quantization: "4bit" },
+      { timeoutMs: 120_000 },
     );
   });
 
@@ -615,11 +843,11 @@ describe("mounted SetupPage", () => {
   });
 
   it("shows a configured packaged runtime as ready and exits settings without reinstalling", async () => {
-    const ready = { ...setupStatus, configured: true, ready: true, state: "ready" as const, selected_profile: "cuda" as const, installed_runtime: null };
+    const ready = readySettings();
     const exit = vi.fn();
     const packagedBridge = bridge({ environment: vi.fn(async () => ({ available: false, mode: "packaged" as const, reason: "Packaged runtime" })) });
     await renderPage(packagedBridge, { initialStatus: ready, settingsEntry: true, onExitSettings: exit });
-    expect(container.textContent).toContain("NVIDIA CUDA runtime is ready");
+    expect(container.textContent).toContain("Apple Silicon (MLX) runtime is ready");
     expect(container.textContent).not.toContain("Audio creation is unavailable");
     expect(container.querySelector(".setup-environment")).toBeNull();
     expect(container.querySelector(".setup-intro #setup-back-btn")).not.toBeNull();
@@ -674,7 +902,7 @@ describe("mounted SetupPage", () => {
     const bakedStatus: RuntimeSetupStatusResponse = {
       ...setupStatus,
       recommended_profile: "mlx",
-      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }, { id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
     };
     const readyStatus = { ...bakedStatus, configured: true, state: "ready" as const, ready: true, installed_runtime: null };
     const downloadSnapshot = { lifecycle: "complete" as const, profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], total_models: 1, completed_models: 1, current_model_group: null, error: null };
@@ -695,14 +923,14 @@ describe("mounted SetupPage", () => {
     await act(async () => { install.click(); install.click(); });
     expect(start).toHaveBeenCalledTimes(1);
     expect(start).toHaveBeenCalledWith(
-      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"] },
+      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], cleaner_cuda_quantization: "4bit" },
       { timeoutMs: 15_000 },
     );
     await act(async () => undefined);
     await act(async () => undefined);
     expect(adopt).toHaveBeenCalledWith(
-      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], accept_pytorch_risk: false },
-      { timeoutMs: 30_000 },
+      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], accept_pytorch_risk: false, cleaner_cuda_quantization: "4bit" },
+      { timeoutMs: 120_000 },
     );
     expect(onReady).toHaveBeenCalledWith(readyStatus);
   });
@@ -719,8 +947,8 @@ describe("mounted SetupPage", () => {
     } as unknown as ApiClient;
     await renderPage(packagedBridge, { apiClient: api });
     expect(adopt).toHaveBeenCalledWith(
-      { profile: "mlx", model_groups: ["tts-mlx"], accept_pytorch_risk: false },
-      { timeoutMs: 30_000 },
+      { profile: "mlx", model_groups: ["tts-mlx"], accept_pytorch_risk: false, cleaner_cuda_quantization: "4bit" },
+      { timeoutMs: 120_000 },
     );
     const onReady = vi.fn();
     await renderPage(packagedBridge, { apiClient: api, onReady });
@@ -735,7 +963,7 @@ describe("mounted SetupPage", () => {
     const bakedStatus: RuntimeSetupStatusResponse = {
       ...setupStatus,
       recommended_profile: "mlx",
-      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }, { id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
     };
     const runningSnapshot = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
     const cancelDownload = vi.fn(async () => ({ ...runningSnapshot, lifecycle: "stopping" as const }));
@@ -788,7 +1016,7 @@ describe("mounted SetupPage", () => {
     const bakedStatus: RuntimeSetupStatusResponse = {
       ...setupStatus,
       recommended_profile: "mlx",
-      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }, { id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
     };
     const runningSnapshot = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
     const idleSnapshot = { ...runningSnapshot, lifecycle: "idle" as const, current_model_group: null };
@@ -812,7 +1040,7 @@ describe("mounted SetupPage", () => {
     await act(async () => retry.click());
     expect(start).toHaveBeenCalledTimes(2);
     expect(start).toHaveBeenLastCalledWith(
-      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"] },
+      { profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"], cleaner_cuda_quantization: "4bit" },
       { timeoutMs: 15_000 },
     );
     expect(container.textContent).not.toContain("network unreachable");
@@ -834,7 +1062,7 @@ describe("mounted SetupPage", () => {
 
     await act(async () => findButton(container, "Retry").click());
     expect(start).toHaveBeenCalledTimes(2);
-    expect(start).toHaveBeenLastCalledWith({ profile: "base", modelGroups: [], acceptPytorchRisk: false });
+    expect(start).toHaveBeenLastCalledWith({ profile: "base", modelGroups: [], acceptPytorchRisk: false, cleanerCudaQuantization: "4bit" });
     expect(container.textContent).not.toContain("installer crashed");
     expect(container.textContent).not.toContain("Copy diagnostics");
   });
@@ -876,7 +1104,7 @@ describe("mounted SetupPage", () => {
       const bakedStatus: RuntimeSetupStatusResponse = {
         ...setupStatus,
         recommended_profile: "mlx",
-        installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+        installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }, { id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
       };
       const runningSnapshot = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: "tts-mlx", error: null };
       const api = {
@@ -901,7 +1129,7 @@ describe("mounted SetupPage", () => {
     const bakedStatus: RuntimeSetupStatusResponse = {
       ...setupStatus,
       recommended_profile: "mlx",
-      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false }, { id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false }] },
     };
     const failedSnapshot = { lifecycle: "failed" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, current_model_group: null, error: "disk full" };
     const adopt = vi.fn();

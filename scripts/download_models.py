@@ -40,6 +40,8 @@ MODEL_GROUPS: Mapping[str, tuple[str, ...]] = {
     "tts-cpu-cuda": (KOKORO_PACKAGE_DEFAULT_MODEL,),
     "cleaner-mlx": (CLEANER_MLX_DEFAULT_MODEL,),
     "cleaner-cuda": (CLEANER_CUDA_DEFAULT_MODEL,),
+    "cleaner-cuda-large": ("Qwen/Qwen2.5-3B-Instruct",),
+    "cleaner-mlx-small": ("mlx-community/Llama-3.2-1B-Instruct-4bit",),
 }
 
 # Pinned Hugging Face commit revisions for every curated model. Each download is
@@ -51,6 +53,8 @@ MODEL_REVISIONS: Mapping[str, str] = {
     KOKORO_PACKAGE_DEFAULT_MODEL: "f3ff3571791e39611d31c381e3a41a3af07b4987",
     CLEANER_MLX_DEFAULT_MODEL: "7f0dc925e0d0afb0322d96f9255cfddf2ba5636e",
     CLEANER_CUDA_DEFAULT_MODEL: "989aa7980e4cf806f80c7fef2b1adb7bc71aa306",
+    "Qwen/Qwen2.5-3B-Instruct": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+    "mlx-community/Llama-3.2-1B-Instruct-4bit": "08231374eeacb049a0eade7922910865b8fce912",
 }
 
 

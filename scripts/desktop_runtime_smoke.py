@@ -209,10 +209,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--require-local-tts",
         action="store_true",
         help=(
-            "Fail the smoke run unless /api/system/capabilities reports an "
-            "explicit local TTS runtime-ready signal (mlx_runtime_available or "
-            "runtime_probe.tts.available). Intended for packaged MLX sidecar "
-            "gates; does not download models."
+            "Fail unless local TTS readiness is explicit: MLX capabilities, or "
+            "CUDA/CPU setup status with working package imports and cached "
+            "TTS assets. Does not download models."
         ),
     )
     parser.add_argument(
@@ -935,6 +934,8 @@ def local_tts_runtime_available(capabilities: dict[str, Any]) -> bool:
     values and must never alone authorize a conversion (they can be present
     when models are not installed and would trigger downloads).
     """
+    if capabilities.get("primary_runtime") in {"cuda", "cpu"}:
+        return _package_tts_setup_ready(capabilities.get("setup_status"))
     if capabilities.get("mlx_runtime_available") is True:
         return True
 
@@ -945,6 +946,33 @@ def local_tts_runtime_available(capabilities: dict[str, Any]) -> bool:
             return True
 
     return False
+
+
+def _package_tts_setup_ready(status: object) -> bool:
+    """Require both package imports and cached TTS assets for CUDA/CPU smoke."""
+    if not isinstance(status, dict) or status.get("restart_required") is True:
+        return False
+    if status.get("configured") is True and status.get("selected_profile") == "cuda":
+        packages = status.get("packages")
+        if not isinstance(packages, dict) or packages.get("ready") is not True:
+            return False
+        groups = status.get("selected_model_groups")
+    else:
+        installed = status.get("installed_runtime")
+        if not isinstance(installed, dict) or installed.get("profile") != "cuda":
+            return False
+        if installed.get("runtime_available") is not True:
+            return False
+        groups = installed.get("model_groups")
+    if not isinstance(groups, list):
+        return False
+    return any(
+        isinstance(group, dict)
+        and group.get("id") == "tts-cpu-cuda"
+        and group.get("runtime_ready") is True
+        and group.get("assets_ready") is True
+        for group in groups
+    )
 
 
 def classify_tts_probe_readiness(capabilities: dict[str, Any]) -> TtsProbeReadiness:
@@ -969,6 +997,11 @@ def classify_tts_probe_readiness(capabilities: dict[str, Any]) -> TtsProbeReadin
 
 
 def _tts_unavailable_reason(capabilities: dict[str, Any]) -> str:
+    if capabilities.get("primary_runtime") in {"cuda", "cpu"}:
+        return (
+            "Package TTS runtime or cached model assets are not ready in setup status; "
+            "conversion portion skipped without downloading models"
+        )
     probe = capabilities.get("runtime_probe")
     detail = ""
     if isinstance(probe, dict):
@@ -1056,6 +1089,20 @@ def _capabilities_fetcher(
         ).json()
         if not isinstance(payload, dict):
             raise SmokeFailure(f"unexpected capabilities payload: {payload!r}")
+        if payload.get("primary_runtime") in {"cuda", "cpu"}:
+            # The legacy capabilities TTS probe is MLX-specific. Setup status
+            # independently verifies package imports and model receipts without
+            # downloading anything, including before the first setup adoption.
+            payload["setup_status"] = expect_status(
+                http_request(
+                    "GET",
+                    f"{ready.base_url}/api/setup/status",
+                    token=ready.token,
+                    timeout_seconds=timeout_seconds,
+                ),
+                200,
+                f"{label} setup readiness",
+            ).json()
         return payload
 
     return fetch_capabilities

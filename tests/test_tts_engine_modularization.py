@@ -523,6 +523,42 @@ def test_runtime_capability_service_uses_in_process_probe_when_frozen(monkeypatc
     assert isinstance(result["latency_ms"], float)
 
 
+def test_frozen_runtime_probes_serialize_imports_across_service_instances(monkeypatch) -> None:
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from modules.app.services import runtime_capability_service
+
+    monkeypatch.setattr(runtime_capability_service.sys, "frozen", True, raising=False)
+    services = [runtime_capability_service.RuntimeCapabilityService() for _ in range(4)]
+    active = 0
+    maximum = 0
+    counter_lock = threading.Lock()
+    barrier = threading.Barrier(len(services))
+
+    def import_probe(_script):
+        nonlocal active, maximum
+        with counter_lock:
+            active += 1
+            maximum = max(maximum, active)
+        time.sleep(0.02)
+        with counter_lock:
+            active -= 1
+        return {"available": True}
+
+    for service in services:
+        monkeypatch.setattr(service, "_run_in_process_probe", import_probe)
+
+    def run(service):
+        barrier.wait(timeout=5)
+        return service._run_probe("import packages", 5)
+
+    with ThreadPoolExecutor(max_workers=len(services)) as pool:
+        results = list(pool.map(run, services))
+    assert maximum == 1
+    assert all(result["available"] for result in results)
+
+
 def test_in_process_probe_survives_missing_stdout_rebind_and_concurrency(
     monkeypatch,
 ) -> None:

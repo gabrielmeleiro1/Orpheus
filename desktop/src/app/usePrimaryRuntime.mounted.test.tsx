@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../api/client";
-import type { ModelOptionsResponse, SystemCapabilitiesResponse } from "../types/api";
+import type { ModelOptionsResponse, RuntimeSetupStatusResponse, SystemCapabilitiesResponse } from "../types/api";
 
 const { getRuntimeBootstrap, updateRuntimeBootstrapCapabilities } = vi.hoisted(() => ({
   getRuntimeBootstrap: vi.fn(),
@@ -80,8 +80,8 @@ const modelOptions: ModelOptionsResponse = {
   ],
 };
 
-function IdentityProbe({ apiClient }: { apiClient: ApiClient }): null {
-  const identity = useRuntimeIdentity(apiClient);
+function IdentityProbe({ apiClient, setupStatus = null }: { apiClient: ApiClient; setupStatus?: RuntimeSetupStatusResponse | null }): null {
+  const identity = useRuntimeIdentity(apiClient, setupStatus);
   (globalThis as typeof globalThis & { runtimeIdentityProbe?: RuntimeIdentityState }).runtimeIdentityProbe = identity;
   return null;
 }
@@ -121,10 +121,10 @@ describe("useRuntimeIdentity capability polling", () => {
   });
 
   it.each([
-    [["kokoro"], true],
-    [[], false],
+    [["kokoro"], null],
+    [[], null],
     [undefined, null],
-  ] as const)("uses CUDA engine availability instead of the MLX probe: %j", async (engines, expected) => {
+  ] as const)("does not infer model readiness from the CUDA engine catalog: %j", async (engines, expected) => {
     const snapshot = {
       ...capabilities({ probeState: "fresh", refreshInProgress: false, mlxAvailable: false, ttsAvailable: false }),
       primary_runtime: "cuda",
@@ -174,7 +174,7 @@ describe("useRuntimeIdentity capability polling", () => {
     expect(getIdentityProbe()).toMatchObject({
       ttsLabel: "MLX",
       cleanerLabel: "Local MLX",
-      ttsReady: true,
+      ttsReady: null,
     });
 
     const callsAfterReady = getSystemCapabilities.mock.calls.length;
@@ -208,5 +208,26 @@ describe("useRuntimeIdentity capability polling", () => {
     });
 
     expect(getSystemCapabilities).not.toHaveBeenCalled();
+  });
+
+  it("updates readiness immediately when setup evidence changes without repeating the bootstrap", async () => {
+    const snapshot = capabilities({ probeState: "fresh", refreshInProgress: false, mlxAvailable: true, ttsAvailable: true });
+    getRuntimeBootstrap.mockResolvedValue({ models: modelOptions, capabilities: snapshot });
+    const apiClient = { getSystemCapabilities: vi.fn().mockResolvedValue(snapshot) } as unknown as ApiClient;
+    const status: RuntimeSetupStatusResponse = {
+      schema_version: 1, configured: true, state: "ready", state_error: null,
+      selected_profile: "mlx", selected_model_groups: [{ id: "tts-mlx", ready: true, runtime_ready: true, assets_ready: true, assets_reason: null }],
+      packages: { ready: true, missing: [], incompatible: [] }, probe: { ready: true, checks: [] },
+      ready: true, restart_required: false, profiles: [], risk: null,
+      backend: { instance_id: "test", status: "running" },
+    };
+    await act(async () => root.render(<IdentityProbe apiClient={apiClient} setupStatus={status} />));
+    await flushBootstrap();
+    expect(getIdentityProbe().ttsReady).toBe(true);
+    await act(async () => root.render(<IdentityProbe apiClient={apiClient} setupStatus={{ ...status, restart_required: true }} />));
+    expect(getIdentityProbe().ttsReady).toBe(false);
+    await act(async () => root.render(<IdentityProbe apiClient={apiClient} setupStatus={null} />));
+    expect(getIdentityProbe().ttsReady).toBeNull();
+    expect(getRuntimeBootstrap).toHaveBeenCalledTimes(1);
   });
 });

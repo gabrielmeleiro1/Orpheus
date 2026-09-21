@@ -263,6 +263,7 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
         "installed_without_backend_instance": True,
         "model_groups": ["tts-cpu-cuda"],
         "profile": "cuda",
+        "cleaner_cuda_quantization": "4bit",
         "restart_required": True,
         "schema_version": setup_runtime.STATE_SCHEMA_VERSION,
     }
