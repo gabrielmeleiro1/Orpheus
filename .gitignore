@@ -28,9 +28,11 @@ venv/
 # Local tool state
 .artifacts/
 .artifacts/release-qualification/
-docs/plans/
 .claude/
 scripts/sync_to_desktop.sh
+
+# Local documentation, reports, and planning notes
+/docs/
 
 # Coverage and test output
 .coverage
@@ -63,4 +65,3 @@ desktop/release/
 *.m4b
 *.mp3
 test_books/
-docs/superpowers/plans/
