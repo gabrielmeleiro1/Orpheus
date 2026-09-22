@@ -88,7 +88,10 @@ _RUNTIME_PROFILES = (
     RuntimeProfile(
         id="base",
         label="Library only",
-        description="Document conversion, playback, and cloud cleaning without local ML models.",
+        description=(
+            "Library, playback, and source inspection. Converting requires a local "
+            "voice runtime — you can add one later from Settings."
+        ),
         requirements_file=_REQUIREMENTS_DIR / "base.txt",
         model_groups=(),
     ),

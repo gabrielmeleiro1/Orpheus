@@ -192,6 +192,23 @@ describe("App runtime setup recovery", () => {
     vi.clearAllMocks();
   });
 
+  it("explains a slow first status check after five seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.apiClient.getRuntimeSetupStatus.mockImplementationOnce(() => new Promise(() => undefined));
+      await act(async () => root.render(<App />));
+      expect(container.textContent).toContain("Checking your local runtime");
+      expect(container.textContent).not.toContain("First launch checks");
+      await act(async () => vi.advanceTimersByTime(4_999));
+      expect(container.textContent).not.toContain("First launch checks");
+      await act(async () => vi.advanceTimersByTime(1));
+      expect(container.textContent).toContain("First launch checks your GPU and model files — this can take up to a minute.");
+      await act(async () => root.unmount());
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it.each([
     "Desktop backend startup timed out after 60s",
     "backend failed to recover after multiple attempts; select Retry connection to try again",

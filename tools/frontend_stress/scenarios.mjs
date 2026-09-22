@@ -436,7 +436,7 @@ export async function verifyCudaCleanerChoice(ctx, quantization, index, modelId 
   await chooseTermSelectByLabel(page, "cleaner-backend-select", cudaLabel);
   await chooseTermSelectByLabel(page, "cleaner-model-select", modelId);
   await page.locator("#cleaner-cuda-device-input").fill("Cuda");
-  assert(await page.locator("#cleaner-cuda-device-input").inputValue() === "Cuda", "device must display Cuda");
+  assert(await page.locator("#cleaner-cuda-device-input").inputValue() === "CUDA", "device must display CUDA");
   assert(await page.locator("#cleaner-cuda-device-input").getAttribute("spellcheck") === "false", "GPU identifiers must not be spellchecked");
   await chooseTermSelectByLabel(page, "cleaner-cuda-quantization-select", quantization);
 

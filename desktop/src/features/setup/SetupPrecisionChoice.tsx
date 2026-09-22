@@ -24,7 +24,7 @@ export function SetupPrecisionChoice({ selection, onChange, disabled }: {
           </label>
         ))}
       </div>
-      <p className="setup-model-explanation">One shared download for all three settings. Cuda applies your choice when the cleaner loads. Switch later without downloading it again. Leave GPU memory for speech generation and longer text, too.</p>
+      <p className="setup-model-explanation">One shared download for all three settings. CUDA applies your choice when the cleaner loads. Switch later without downloading it again. Leave GPU memory for speech generation and longer text, too.</p>
     </fieldset>
   );
 }

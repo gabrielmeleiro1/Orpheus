@@ -58,11 +58,11 @@ export function SetupPlanSection({
             <strong>{title}</strong>
             {status.recommended_profile === selection.profile ? <span className="setup-chip">Recommended</span> : null}
             {selection.profile === "base"
-              ? <InfoTip label="Library-only details"><span>Document conversion, playback, and cloud cleaning. No local models are installed — add them later in Settings.</span></InfoTip>
+              ? <InfoTip label="Library-only details"><span>Library, playback, and source inspection. Converting requires a local voice runtime — you can add one later from Settings.</span></InfoTip>
               : <ModelListTip modelGroups={selection.modelGroups} label="What will be installed" />}
           </span>
           <button className="btn setup-customize-toggle" type="button" aria-expanded={showAdvanced} onClick={() => setShowAdvanced((open) => !open)}>
-            {showAdvanced ? "Hide options" : "Customize"}
+            {showAdvanced ? "Hide runtimes" : "Change runtime"}
           </button>
         </div>
         <div className="setup-plan-body">
@@ -103,13 +103,14 @@ export function SetupPlanSection({
           <legend className="section-label">Choose what to install</legend>
           <p className="setup-model-explanation">Kokoro turns text into speech. The optional cleaner repairs text before narration. Choose one cleaner; other models can be installed or deleted later in Settings.</p>
           <div className="setup-model-list">
-            {selectedProfile.model_groups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts").map((id) => (
-              <label className="setup-model-row" key={id}>
+            {selectedProfile.model_groups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts").map((id) => {
+              const installed = status.installed_runtime?.model_groups.some((group) => group.id === id && group.assets_ready);
+              return <label className="setup-model-row" key={id}>
                 <input type="checkbox" checked={selection.modelGroups.includes(id)} onChange={() => setSelection((current) => toggleModelGroup(current, id, status))} />
                 <span className="setup-model-name"><strong>Kokoro voice model</strong><small>{MODEL_GROUP_DETAILS[id].model}</small></span>
-                <span className="setup-estimate">{groupEstimate(id)}</span>
-              </label>
-            ))}
+                <span className="setup-estimate">{installed ? "Already downloaded" : groupEstimate(id)}</span>
+              </label>;
+            })}
             <label className="setup-model-row">
               <input type="radio" name="setup-cleaner" checked={!selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "cleaner")} onChange={() => setSelection((current) => ({ ...current, modelGroups: current.modelGroups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind !== "cleaner") }))} />
               <span className="setup-model-name"><strong>No local cleaner</strong><small>Skip the cleaner download. Basic text cleanup remains available.</small></span>

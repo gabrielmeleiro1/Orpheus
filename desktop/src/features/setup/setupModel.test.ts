@@ -82,6 +82,16 @@ describe("runtime setup selection", () => {
     expect(createSelection(recommended).modelGroups).toEqual(["tts-mlx", "cleaner-mlx"]);
   });
 
+  it("keeps defaults stable while installed-runtime probes finish", () => {
+    const initial = status({ recommended_profile: "mlx" });
+    for (const ready of [false, true]) {
+      expect(createSelection({ ...initial, installed_runtime: {
+        profile: "mlx", ready, runtime_available: ready,
+        model_groups: [{ id: "tts-mlx", runtime_ready: ready, assets_ready: true, ready }],
+      } })).toEqual(createSelection(initial));
+    }
+  });
+
   it("ignores an incompatible recommended profile and keeps the base fallback", () => {
     expect(createSelection(status({ recommended_profile: "cuda" })).profile).toBe("base");
   });

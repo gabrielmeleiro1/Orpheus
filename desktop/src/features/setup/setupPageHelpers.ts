@@ -14,7 +14,6 @@ export function safeError(error: unknown, fallback: string): string {
   return value.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 512) || fallback;
 }
 
-export const INSTALLED_PROFILE_LABEL: Record<"mlx" | "cuda", string> = { mlx: "MLX", cuda: "CUDA" };
 
 export function formatFreedBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return "0 bytes";

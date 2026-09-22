@@ -300,6 +300,35 @@
   width: 14px;
 }
 
+.setup-frame input:disabled:checked:not([name="runtime-profile"]) {
+  appearance: none;
+  background: var(--accent);
+  border: 0;
+  box-shadow: 0 0 0 1px var(--accent);
+  flex: none;
+  height: 14px;
+  opacity: 1;
+  position: relative;
+  width: 14px;
+}
+
+.setup-frame input[type="radio"]:disabled:checked:not([name="runtime-profile"]) {
+  border: 3px solid var(--surface);
+  border-radius: 50%;
+}
+
+.setup-frame input[type="checkbox"]:disabled:checked::after {
+  border: solid var(--bg);
+  border-width: 0 2px 2px 0;
+  content: "";
+  height: 8px;
+  left: 4px;
+  position: absolute;
+  top: 1px;
+  transform: rotate(45deg);
+  width: 5px;
+}
+
 .setup-model-name {
   align-items: center;
   display: flex;
@@ -571,8 +600,8 @@
 
 .setup-installed {
   align-items: center;
-  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: var(--card-radius);
   display: flex;
   flex-wrap: wrap;
@@ -586,9 +615,18 @@
 }
 
 .setup-installed > strong {
-  color: var(--accent-text);
+  color: var(--text-secondary);
   font-size: var(--text-sm);
   font-weight: 600;
+}
+
+.setup-installed::before {
+  background: var(--positive);
+  border-radius: 50%;
+  content: "";
+  flex: none;
+  height: 6px;
+  width: 6px;
 }
 
 .setup-danger {

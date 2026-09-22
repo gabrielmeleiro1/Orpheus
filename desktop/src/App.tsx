@@ -68,6 +68,14 @@ const VisibilityProgressPanel = memoWhenHidden(ProgressPanel);
 const VisibilityLogPanel = memoWhenHidden(LogPanel);
 
 function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+  const [longCheck, setLongCheck] = useState(false);
+  useEffect(() => {
+    setLongCheck(false);
+    if (error) return;
+    const timer = window.setTimeout(() => setLongCheck(true), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
   return (
     <main className="setup-frame" aria-label="Orpheus startup">
       <section className="setup-shell setup-startup" role={error ? undefined : "status"} aria-live={error ? undefined : "polite"}>
@@ -84,6 +92,7 @@ function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetr
               <span className="setup-startup-spinner" aria-hidden="true" />
               <span>Checking your local runtime…</span>
             </div>
+            {longCheck ? <p>First launch checks your GPU and model files — this can take up to a minute.</p> : null}
           </>
         )}
       </section>

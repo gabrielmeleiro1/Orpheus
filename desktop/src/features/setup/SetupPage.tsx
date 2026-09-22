@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
+import { BrailleSpinner } from "../../ui/ascii/BrailleSpinner";
+import { RUNTIME_LABELS } from "../../format/runtime";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
 import { invalidateRuntimeBootstrap } from "../../app/runtimeBootstrapCache";
 import {
@@ -33,7 +35,6 @@ import {
 import { restartAndReconnectSetup } from "./setupLifecycle";
 import {
   EMPTY_PROGRESS,
-  INSTALLED_PROFILE_LABEL,
   safeError,
 } from "./setupPageHelpers";
 import { SetupDangerZone } from "./SetupDangerZone";
@@ -589,6 +590,7 @@ export function SetupPage({
   };
 
   const resolvePrimaryAction = (): { label: string; disabled: boolean; run: () => void | Promise<unknown>; disabledReason: string | null } => {
+    if (adopting) return { label: settingsEntry ? "Saving…" : "Continue…", disabled: true, disabledReason: null, run: () => undefined };
     if (managingModels) return { label: "Updating models…", disabled: true, disabledReason: null, run: () => undefined };
     if (configuredReady && status && selectionMatchesConfigured(selection, status) && !showRestart) {
       return { label: "Done", disabled: busy || adopting, disabledReason: null, run: () => onExitSettings ? onExitSettings() : onReady(status) };
@@ -603,7 +605,7 @@ export function SetupPage({
       };
     }
     if (settingsEntry && selectedReadiness.ready) {
-      return { label: adopting ? "Saving…" : "Save runtime settings", disabled: !apiClient || busy || adopting, disabledReason: null, run: saveSelection };
+      return { label: "Save runtime settings", disabled: !apiClient || busy, disabledReason: null, run: saveSelection };
     }
     if (selection.profile !== "base" && selection.modelGroups.length > 0 && selection.modelGroups.every((id) => cachedGroups.some((group) => group.id === id && group.ready)) && !settingsEntry) {
       return {
@@ -678,7 +680,7 @@ export function SetupPage({
 
           {installedReady && installedRuntime && !configuredReady ? (
             <div className="setup-installed" role="note">
-              <strong>Installed {INSTALLED_PROFILE_LABEL[installedRuntime.profile]} runtime ready</strong>
+              <strong>Installed {RUNTIME_LABELS[installedRuntime.profile]} runtime ready</strong>
               <ModelListTip modelGroups={installedReadyGroups} label="Installed runtime details" />
             </div>
           ) : null}
@@ -817,7 +819,8 @@ export function SetupPage({
             <div className="setup-actions">
               {busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading") ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
               {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
-              <button className="btn btn-primary btn-lg setup-primary" type="button" disabled={action.disabled} onClick={() => void action.run()}>
+              <button className="btn btn-primary btn-lg setup-primary" type="button" disabled={action.disabled} aria-busy={adopting} onClick={() => void action.run()}>
+                {adopting ? <BrailleSpinner active /> : null}
                 {action.label}
               </button>
             </div>

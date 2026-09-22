@@ -68,7 +68,7 @@ an `llm_success` trace and the expected repaired text; rule-only cleanup or a
 successful conversion with a cleaner fallback does not pass. Missing CUDA or
 Qwen weights fail the test. The model must already be installed. Scenario `l`
 runs only when explicitly selected with `--only`. It also checks that the device
-displays “Cuda” without spellcheck while the API receives the canonical `cuda`.
+displays “CUDA” without spellcheck while the API receives the canonical `cuda`.
 
 For offline inference checks of all three precision choices in PowerShell
 (including actual quantized layer classes and weight dtypes):

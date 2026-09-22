@@ -1,4 +1,5 @@
 import { TermSelect } from "../TermSelect";
+import { formatDevice } from "../../../format/runtime";
 import type {
   CleanerOptionsViewModel,
   ConversionCapabilities,
@@ -103,7 +104,7 @@ export function CleanerOptionsView({
                   <label
                     className="field-label"
                     htmlFor="cleaner-cuda-device-input"
-                    data-tip="Use Cuda for automatic placement, or Cuda:0 for the first NVIDIA GPU."
+                    data-tip="Use CUDA for automatic placement, or CUDA:0 for the first NVIDIA GPU."
                     data-tip-pos="right"
                   >
                     Device
@@ -116,8 +117,8 @@ export function CleanerOptionsView({
                     autoCapitalize="none"
                     autoCorrect="off"
                     aria-label="cleaner CUDA device"
-                    placeholder={cleanerOptions.cleanerCudaDevicePlaceholder.replace(/^cuda/i, "Cuda")}
-                    value={cleanerOptions.cleanerCudaDevice.replace(/^cuda/i, "Cuda")}
+                    placeholder={formatDevice(cleanerOptions.cleanerCudaDevicePlaceholder)}
+                    value={formatDevice(cleanerOptions.cleanerCudaDevice)}
                     onChange={(event) => actions.setCleanerCudaDevice(event.target.value.toLowerCase())}
                   />
                 </div>

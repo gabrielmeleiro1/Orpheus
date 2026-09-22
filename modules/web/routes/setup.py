@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 import re
 import sys
 import threading
@@ -195,7 +196,14 @@ def _detect_installed_runtime(
         if not packages["ready"]:
             continue
         try:
-            probe = setup_runtime._probe_profile(profile.model_groups, probe_service)
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                assets = executor.submit(
+                    _check_model_group_assets,
+                    profile.model_groups,
+                    receipt_verifier=receipt_verifier,
+                )
+                probe = setup_runtime._probe_profile(profile.model_groups, probe_service)
+                asset_status = assets.result()
         except Exception:
             return None
         readiness_by_group = {
@@ -203,10 +211,6 @@ def _detect_installed_runtime(
             for check in probe.get("checks", [])
             if isinstance(check, Mapping)
         }
-        asset_status = _check_model_group_assets(
-            profile.model_groups,
-            receipt_verifier=receipt_verifier,
-        )
         model_groups = [
             {
                 "id": group_id,

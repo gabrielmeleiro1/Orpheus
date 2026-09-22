@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -95,6 +96,30 @@ def _unconfigured_absent(**kwargs):
         "risk": None,
         "state_error": None,
     }
+
+
+def test_setup_detection_checks_assets_and_runtime_concurrently(monkeypatch):
+    from modules.web.routes import setup as setup_route
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setattr(setup_route, "_check_selected_profile_packages", lambda _: {"ready": True})
+    both_started = threading.Barrier(2)
+
+    def assets(groups, **kwargs):
+        both_started.wait(timeout=5)
+        return {group: {"ready": group.startswith("tts")} for group in groups}
+
+    def probe(groups, service):
+        both_started.wait(timeout=5)
+        return _probe(True)(groups, service)
+
+    monkeypatch.setattr(setup_route, "_check_model_group_assets", assets)
+    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", probe)
+    result = setup_route._detect_installed_runtime(object(), object())
+    assert result is not None
+    assert result["ready"] is True
+    assert result["model_groups"][0]["ready"] is True
+    assert result["model_groups"][1]["ready"] is False
 
 
 def test_installed_runtime_detected_ready_for_baked_mlx(

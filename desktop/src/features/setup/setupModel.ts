@@ -110,7 +110,7 @@ export function profileChoices(status: RuntimeSetupStatusResponse): SetupProfile
 }
 
 export function createSelection(status: RuntimeSetupStatusResponse): SetupSelection {
-  const suggested = status.installed_runtime?.ready ? status.installed_runtime.profile : status.recommended_profile;
+  const suggested = status.recommended_profile;
   const recommended = status.selected_profile == null && suggested
     ? status.profiles.find((profile) => profile.id === suggested && profile.compatible)
     : undefined;
@@ -121,10 +121,8 @@ export function createSelection(status: RuntimeSetupStatusResponse): SetupSelect
     ?? status.profiles[0];
   const allowed = new Set(selected?.model_groups ?? []);
   const persisted = status.selected_model_groups.map(({ id }) => id).filter((id) => allowed.has(id));
-  const installed = status.installed_runtime?.ready && status.installed_runtime.profile === selected?.id
-    ? status.installed_runtime.model_groups.filter((group) => group.ready).map((group) => group.id) : [];
   const groups = status.configured && selected?.id === status.selected_profile ? persisted
-    : installed.length ? installed : selected ? defaultModelGroups(selected) : [];
+    : selected ? defaultModelGroups(selected) : [];
   const seen = new Set<string>();
   return {
     profile: selected?.id ?? "base",

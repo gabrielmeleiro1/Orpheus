@@ -110,6 +110,48 @@ describe("mounted SetupPage", () => {
     expect(start).not.toHaveBeenCalled();
   });
 
+  it("keeps the user's no-cleaner choice across parent status snapshots and while saving", async () => {
+    const initialStatus = cudaCatalogStatus();
+    initialStatus.installed_runtime!.ready = true;
+    initialStatus.installed_runtime!.model_groups.forEach((group) => { group.assets_ready = true; group.ready = true; });
+    let resolveSave!: (value: RuntimeSetupStatusResponse) => void;
+    const adopt = vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveSave = resolve; }));
+    const apiClient = { adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    const runtimeBridge = packagedSettingsBridge();
+    await renderPage(runtimeBridge, { initialStatus, apiClient });
+    const voiceRow = container.querySelector<HTMLInputElement>('.setup-model-row input[type="checkbox"]')!.parentElement!;
+    expect(voiceRow.textContent).toContain("Already downloaded");
+    const noCleaner = () => container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]')!;
+    await act(async () => noCleaner().click());
+    const refreshed = { ...initialStatus, installed_runtime: { ...initialStatus.installed_runtime! } };
+    await renderPage(runtimeBridge, { initialStatus: refreshed, apiClient });
+    expect(noCleaner().checked).toBe(true);
+    await act(async () => findButton(container, "Continue").click());
+    expect(adopt).toHaveBeenCalledExactlyOnceWith({ profile: "cuda", model_groups: ["tts-cpu-cuda"], cleaner_cuda_quantization: "4bit", accept_pytorch_risk: false }, { timeoutMs: 120_000 });
+    const primary = container.querySelector<HTMLButtonElement>(".setup-primary")!;
+    expect(primary.disabled).toBe(true);
+    expect(primary.textContent).toContain("Continue…");
+    expect(primary.querySelector(".braille-spinner")).not.toBeNull();
+    expect(noCleaner().checked).toBe(true);
+    expect(noCleaner().closest("fieldset")!.disabled).toBe(true);
+    await act(async () => resolveSave({ ...initialStatus, configured: true, ready: true, state: "ready" }));
+  });
+
+  it.each(["client", "incompatible"])("resets a dirty choice when the %s changes", async (change) => {
+    const initialStatus = cudaCatalogStatus();
+    const apiClient = {} as ApiClient;
+    const runtimeBridge = packagedSettingsBridge();
+    await renderPage(runtimeBridge, { initialStatus, apiClient });
+    await act(async () => container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]')!.click());
+    const next = change === "incompatible" ? { ...initialStatus, profiles: initialStatus.profiles.map((profile) => profile.id === "cuda" ? { ...profile, compatible: false } : profile) } : { ...initialStatus };
+    await renderPage(runtimeBridge, { initialStatus: next, apiClient: change === "client" ? {} as ApiClient : apiClient });
+    if (change === "client") {
+      expect(container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]:checked')!.parentElement!.textContent).toContain("1.5B");
+    } else {
+      expect(container.querySelector(".setup-plan-title")!.textContent).toContain("Library only");
+    }
+  });
+
 
 
   it.each(["base", "mlx"] as const)("edits a ready runtime in Settings and persists the exact %s selection", async (profile) => {
@@ -131,6 +173,8 @@ describe("mounted SetupPage", () => {
     expect(adopt).toHaveBeenCalledTimes(1);
     expect(adopt).toHaveBeenCalledWith({ profile, model_groups: profile === "base" ? [] : ["tts-mlx", "cleaner-mlx"], accept_pytorch_risk: false, cleaner_cuda_quantization: "4bit" }, { timeoutMs: 120_000 });
     expect(findButton(container, "Back to dashboard").disabled).toBe(true);
+    expect(container.querySelector(".setup-primary")!.textContent).toContain("Saving…");
+    expect(container.querySelector(".setup-primary .braille-spinner")).not.toBeNull();
     expect([...container.querySelectorAll("fieldset")].every((fieldset) => fieldset.disabled)).toBe(true);
     await act(async () => resolveSave({ ...initialStatus, selected_profile: profile }));
     expect(onReady).toHaveBeenCalledOnce();
@@ -299,7 +343,7 @@ describe("mounted SetupPage", () => {
     const runtimeBridge = bridge({ start, listen: vi.fn(async () => unlisten) });
     await renderPage(runtimeBridge);
 
-    await act(async () => findButton(container, "Customize").click());
+    await act(async () => findButton(container, "Change runtime").click());
     const mlx = container.querySelector<HTMLInputElement>('input[type="radio"][value="mlx"]')!;
     await act(async () => mlx.click());
     const cleaner = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')]
@@ -761,6 +805,7 @@ describe("mounted SetupPage", () => {
     await renderPage(bridge(), { apiClient: api, initialStatus: installedStatus, onReady });
 
     expect(container.textContent).toContain("Installed MLX runtime ready");
+    await act(async () => container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]')!.click());
     const cta = findButton(container, "Continue");
     expect(cta.disabled).toBe(false);
     await act(async () => cta.click());
@@ -774,6 +819,7 @@ describe("mounted SetupPage", () => {
   it("surfaces an adopt failure without reporting ready", async () => {
     const installedStatus: RuntimeSetupStatusResponse = {
       ...setupStatus,
+      recommended_profile: "mlx",
       installed_runtime: { profile: "mlx", ready: true, runtime_available: true, model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: true, ready: true }] },
     };
     const adopt = vi.fn(async () => { throw new Error("API request failed (409): CUDA capability probe failed"); });
@@ -781,6 +827,7 @@ describe("mounted SetupPage", () => {
     const api = { getRuntimeSetupStatus: vi.fn(async () => installedStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
     await renderPage(bridge(), { apiClient: api, initialStatus: installedStatus, onReady });
 
+    await act(async () => container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]')!.click());
     await act(async () => findButton(container, "Continue").click());
     expect(adopt).toHaveBeenCalledOnce();
     expect(onReady).not.toHaveBeenCalled();
@@ -1094,7 +1141,7 @@ describe("mounted SetupPage", () => {
     await act(async () => resolveOld({ ...setupStatus, configured: true, ready: true, state: "ready", selected_profile: "base" }));
     expect(onReady).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Library-only mode is ready");
-    expect(findButton(container, "Customize")).toBeTruthy();
+    expect(findButton(container, "Change runtime")).toBeTruthy();
   });
 
   it("marks progress failed when the download poll loses the backend", async () => {
