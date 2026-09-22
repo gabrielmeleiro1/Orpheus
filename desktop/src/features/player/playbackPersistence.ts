@@ -28,6 +28,7 @@ interface UsePlaybackPersistenceArgs {
   audioRef: RefObject<HTMLAudioElement | null>;
   loadedBookId: number | null;
   onSaveFailed: () => void;
+  positionOffsetRef?: RefObject<number>;
 }
 
 export interface PlaybackPersistence {
@@ -54,6 +55,7 @@ export function usePlaybackPersistence({
   audioRef,
   loadedBookId,
   onSaveFailed,
+  positionOffsetRef,
 }: UsePlaybackPersistenceArgs): PlaybackPersistence {
   const pendingResumeBookIdRef = useRef<number | null>(null);
   const pendingResumePositionSecRef = useRef(0);
@@ -218,7 +220,7 @@ export function usePlaybackPersistence({
       }
       const resolvedPosition = hasExplicitPosition
         ? options.positionSec!
-        : Number(audio!.currentTime || 0);
+        : Number(audio!.currentTime || 0) + (positionOffsetRef?.current ?? 0);
 
       return persistBookPlaybackPosition(bookId, resolvedPosition, options);
     },
@@ -226,6 +228,7 @@ export function usePlaybackPersistence({
       audioRef,
       loadedBookId,
       persistBookPlaybackPosition,
+      positionOffsetRef,
     ],
   );
 
@@ -268,7 +271,7 @@ export function usePlaybackPersistence({
         return;
       }
 
-      const target = Math.max(0, Number(pendingResumePositionSecRef.current || 0));
+      const target = Math.max(0, Number(pendingResumePositionSecRef.current || 0) - (positionOffsetRef?.current ?? 0));
       const duration = Number.isFinite(audio.duration) ? audio.duration : target;
       const safeTarget = Math.max(0, Math.min(duration || target, target));
 
@@ -283,7 +286,7 @@ export function usePlaybackPersistence({
       pendingResumeBookIdRef.current = null;
       pendingResumePositionSecRef.current = 0;
     },
-    [loadedBookId],
+    [loadedBookId, positionOffsetRef],
   );
 
   useEffect(() => {

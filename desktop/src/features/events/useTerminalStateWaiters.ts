@@ -52,6 +52,10 @@ export function useTerminalStateWaiters({
         });
       }
 
+      if (!apiClient) {
+        return Promise.resolve({ jobId: normalizedJobId, status: "unknown", message: "backend is not connected" });
+      }
+
       const cached = terminalEventsRef.current.get(normalizedJobId);
       if (cached) {
         return Promise.resolve(cached);
@@ -59,7 +63,6 @@ export function useTerminalStateWaiters({
 
       return new Promise((resolve) => {
         let settled = false;
-        let timeoutId: number | undefined;
         let pollId: number | undefined;
 
         const removeWaiter = (waiter: TerminalWaiter) => {
@@ -73,9 +76,6 @@ export function useTerminalStateWaiters({
         };
 
         const cleanup = () => {
-          if (timeoutId !== undefined) {
-            window.clearTimeout(timeoutId);
-          }
           if (pollId !== undefined) {
             window.clearInterval(pollId);
           }
@@ -93,13 +93,15 @@ export function useTerminalStateWaiters({
           },
         };
 
+        let pollInFlight = false;
         let missingPollCount = 0;
         let errorPollCount = 0;
 
         const runTerminalStatePoll = async () => {
-          if (!apiClient || settled) {
+          if (!apiClient || settled || pollInFlight) {
             return;
           }
+          pollInFlight = true;
           try {
             const result = await pollTerminalStateFromClient({
               apiClient,
@@ -130,16 +132,10 @@ export function useTerminalStateWaiters({
             // SSE remains the primary path; this is only a resilience fallback.
             // Poll exceptions are counted inside pollTerminalState; this catch
             // only guards against unexpected synchronous failures.
+          } finally {
+            pollInFlight = false;
           }
         };
-
-        timeoutId = window.setTimeout(() => {
-          waiter.finish({
-            jobId: normalizedJobId,
-            status: "unknown",
-            message: "terminal event timed out",
-          });
-        }, 30 * 60 * 1000);
 
         const waiters = terminalWaitersRef.current.get(normalizedJobId) ?? [];
         terminalWaitersRef.current.set(normalizedJobId, [...waiters, waiter]);
@@ -155,7 +151,7 @@ export function useTerminalStateWaiters({
   // Flush pending waiters whenever the apiClient identity changes (backend
   // restart mints a new port/token) and on unmount: waiters closed over the
   // old client can never observe the terminal event, so resolving them as
-  // "unknown" lets callers re-sync instead of hanging until the poll/timeout.
+  // "unknown" lets callers re-sync instead of hanging until the poll.
   useEffect(
     () => () => {
       const pendingWaiters = Array.from(terminalWaitersRef.current.entries());

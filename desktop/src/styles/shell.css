@@ -105,10 +105,18 @@
   width: 16px;
 }
 
-.rail-tab:hover,
+.rail-tab:hover:not(.active),
+.rail-action:hover:not(:disabled) {
+  color: var(--text);
+}
+
 .rail-action:hover:not(:disabled) {
   background: var(--surface-hover);
-  color: var(--text);
+}
+
+.rail-tab:focus-visible {
+  box-shadow: var(--focus-ring);
+  outline: none;
 }
 
 .rail-tab.active {

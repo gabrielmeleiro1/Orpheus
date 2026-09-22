@@ -154,6 +154,7 @@
 
 /* Structured rows only inside the log viewer; elsewhere .log-line is a plain status line. */
 .log-box .log-line {
+  flex-shrink: 0;
   align-items: baseline;
   border-radius: var(--radius-xs);
   column-gap: var(--space-3);

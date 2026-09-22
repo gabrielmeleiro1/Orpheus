@@ -262,6 +262,14 @@ export function SourceQueueView({
         <section className="conversion-section queue-panel" aria-label="Conversion queue">
           <div className="queue-header">
             <span>{`Queue · ${sourceQueue.queueCount}`}</span>
+            <button
+              className="btn btn-ghost btn-sm"
+              type="button"
+              disabled={!sourceQueue.queueItems.some((item) => item.finished)}
+              onClick={() => sourceQueue.queueItems.filter((item) => item.finished).forEach((item) => actions.removeQueueItem(item.id))}
+            >
+              Clear finished
+            </button>
           </div>
           <div className="queue-list">
             {sourceQueue.queueItems.map((item) => (

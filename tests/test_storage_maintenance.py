@@ -662,6 +662,11 @@ def test_prune_does_not_move_upload_sources_until_db_prune_commits(tmp_path, mon
                 )
             ],
         )
+        # The recoverable upload must survive; use a genuine orphan to exercise
+        # rollback before any source relocation is allowed.
+        repo.create_book(BookCreate(
+            title="Unrecoverable", source_path="missing.pdf", source_type=SourceType.PDF,
+        ))
     finally:
         repo.close()
 

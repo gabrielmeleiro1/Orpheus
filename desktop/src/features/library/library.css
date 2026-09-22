@@ -380,7 +380,7 @@
 }
 
 #book-detail,
-#cleaning-preview {
+.cleaning-comparison pre {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--card-radius);
@@ -391,6 +391,26 @@
   overflow: auto;
   padding: var(--card-pad);
   white-space: pre-wrap;
+}
+
+.cleaning-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.cleaning-comparison h4 {
+  margin-bottom: var(--space-2);
+}
+
+.cleaning-comparison pre {
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 900px) {
+  .cleaning-comparison {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 #book-detail {

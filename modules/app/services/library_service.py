@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -42,7 +43,7 @@ MARKDOWN_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+\S+", re.MULTILINE)
 logger = logging.getLogger(__name__)
 
 # Delete server-owned uploads left untouched for longer than this (seconds).
-WEB_UPLOAD_TTL_SECONDS = 24 * 60 * 60
+WEB_UPLOAD_TTL_SECONDS = 7 * 24 * 60 * 60
 
 # Re-exported for backward compatibility; canonical definitions live in
 # ``modules.contracts``.
@@ -97,6 +98,27 @@ class LibraryService:
         ensure_owner_only_directory(self._output_dir)
         ensure_owner_only_directory(self._temp_dir)
         self._folder_opener = folder_opener or _default_folder_opener
+        self.sweep_delete_staging()
+
+    def sweep_delete_staging(self) -> int:
+        from modules.storage.maintenance import (
+            DEFAULT_CLEANUP_GRACE_SECONDS, _delete_orphan_entry, _recency_filter,
+        )
+
+        root = self._delete_staging_root()
+        if not root.is_dir() or root.is_symlink():
+            return 0
+        removed = 0
+        try:
+            stale = _recency_filter(root.iterdir(), time.time() - DEFAULT_CLEANUP_GRACE_SECONDS)
+            for raw in stale:
+                try:
+                    removed += int(_delete_orphan_entry(Path(raw), root, expect_dir=True))
+                except OSError:
+                    logger.debug("Failed to sweep deletion staging: %s", raw, exc_info=True)
+        except OSError:
+            logger.debug("Failed to list deletion staging", exc_info=True)
+        return removed
 
     def _workspace_root(self) -> Path:
         return self._storage_root.resolve()
@@ -113,6 +135,31 @@ class LibraryService:
         return self._temp_dir / MANAGED_UPLOAD_ROOT_NAME
 
     def sweep_stale_uploads(self, ttl_seconds: float = WEB_UPLOAD_TTL_SECONDS) -> int:
+        try:
+            with getattr(self, "upload_cleanup_guard", nullcontext)():
+                return self._sweep_stale_uploads(ttl_seconds)
+        except RuntimeError:
+            # A reserved/running conversion may still be copying its upload.
+            return 0
+
+    def delete_upload(self, handle: str) -> dict:
+        """Remove an opaque upload handle unless a library book still uses it."""
+        if not handle.startswith(UPLOAD_HANDLE_PREFIX):
+            raise ValueError("uploaded source handle is invalid")
+        name = handle.removeprefix(UPLOAD_HANDLE_PREFIX)
+        if not name or Path(name).name != name or name in {".", ".."} or any(char in name for char in "/\\:"):
+            raise ValueError("uploaded source handle is invalid")
+        path = self._upload_root() / name
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise ValueError("uploaded source handle is invalid")
+        guard = getattr(self, "upload_cleanup_guard", None)
+        with guard(path) if guard else nullcontext():
+            if self._is_source_referenced_by_books(path):
+                raise RuntimeError("A library book still references this upload")
+            path.unlink(missing_ok=True)
+        return {"deleted": True}
+
+    def _sweep_stale_uploads(self, ttl_seconds: float) -> int:
         """Opportunistically delete web uploads older than ``ttl_seconds``.
 
         Only files directly under the server-owned ``web_uploads`` root are
@@ -281,13 +328,17 @@ class LibraryService:
     def preflight_source(source_path: Path | str) -> dict:
         return inspect_source(source_path)
 
-    def get_book_playback_file(self, book_id: int) -> Optional[Path]:
+    def get_book_playback_file(self, book_id: int, chapter_number: int | None = None) -> Optional[Path]:
         detail = self._get_book_record(book_id)
         if detail is None:
             return None
 
-        book, _chapters = detail
-        playback_path = self._resolve_stored_path(getattr(book, "playback_path", None))
+        book, chapters = detail
+        raw_path = getattr(book, "playback_path", None)
+        if chapter_number is not None:
+            chapter = next((item for item in chapters if item.chapter_number == chapter_number), None)
+            raw_path = getattr(chapter, "mp3_path", None)
+        playback_path = self._resolve_stored_path(raw_path)
         if playback_path is None:
             return None
         if not self._is_within_output_root(playback_path):
@@ -716,7 +767,7 @@ class LibraryService:
             return None
         return updated_book.playback_position_sec
 
-    def delete_book(self, book_id: int) -> bool:
+    def delete_book(self, book_id: int) -> bool | dict:
         detail = self._get_book_record(book_id)
         if detail is None:
             return False
@@ -764,15 +815,14 @@ class LibraryService:
             try:
                 self._commit_staged_artifacts(staged_artifacts)
             except Exception:
-                # DB row is already gone; treat deletion as successful and leave
-                # staged trash for maintenance recovery instead of failing the API.
+                # The library removal succeeded; report files left for maintenance.
                 logger.exception(
                     "Failed to permanently remove staged artifacts after deleting book %s; "
                     "leaving trash under %s for maintenance",
                     book_id,
                     staging_root,
                 )
-                return True
+                return {"deleted": True, "files_pending": True, "path": str(staging_root)}
             self._prune_empty_output_dirs(staged_output_files)
             return True
         except Exception:

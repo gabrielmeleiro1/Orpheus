@@ -1,0 +1,27 @@
+.settings-page {
+  display: grid;
+  gap: var(--space-4);
+  margin-inline: auto;
+  max-width: calc(var(--page-max-width) - var(--density-page-x) * 2);
+}
+
+.settings-content {
+  display: contents;
+}
+
+.settings-content > .panel {
+  margin-inline: auto;
+  max-width: calc(var(--page-max-width) - var(--density-page-x) * 2);
+}
+
+.settings-storage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.settings-path {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}

@@ -320,10 +320,11 @@ export function useConversionPanelState({
       statusText: queueStatusText(item),
       statusClassName: `queue-item-status status-${item.status}`,
       converting: item.status === "converting",
+      finished: ["done", "failed", "cancelled", "warning"].includes(item.status),
       selected,
-      canMoveUp: index !== 0 && !queueRunner.queueRunning,
-      canMoveDown: index !== queueController.queueItems.length - 1 && !queueRunner.queueRunning,
-      canRemove: !queueRunner.queueRunning,
+      canMoveUp: index !== 0 && item.status !== "converting",
+      canMoveDown: index !== queueController.queueItems.length - 1 && item.status !== "converting",
+      canRemove: item.status !== "converting",
     };
   });
 
@@ -341,9 +342,11 @@ export function useConversionPanelState({
         Boolean(optionState.cleanerApiKey.trim()),
       canInspectSource: Boolean(apiClient) && Boolean(queueController.sourcePath.trim()),
       canPreviewVoice: !preview.previewBusy && Boolean(optionState.selectedVoice) && Boolean(apiClient),
+      recommendationUnavailableReason: preview.recommendationUnavailableReason,
       canRecommendVoice:
         Boolean(apiClient) &&
         !preview.voiceSuggestBusy &&
+        !preview.recommendationUnavailableReason &&
         Boolean(queueController.sourcePath.trim()) &&
         Boolean(optionState.selectedEngine),
       canRunQueue: primaryAction.showRunQueue && canRunQueue,

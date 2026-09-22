@@ -24,9 +24,15 @@ def start_conversion(
     event_broker: EventBrokerDep,
     temp_dir: TempDirDep,
 ) -> dict:
+    try:
+        source_path = resolve_source_reference(payload.source_path, temp_dir)
+    except ValueError as exc:
+        if payload.source_path.startswith("upload:"):
+            raise HTTPException(status_code=400, detail="Source file is no longer available — add it again") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     job = call_with_http_errors(
         lambda: controller.start_conversion(
-            source_path=resolve_source_reference(payload.source_path, temp_dir),
+            source_path=source_path,
             runtime_options=payload.to_runtime_options(),
             callbacks=ConversionCallbacks(on_event=event_broker.publish),
             conversion_mode=payload.conversion_mode,

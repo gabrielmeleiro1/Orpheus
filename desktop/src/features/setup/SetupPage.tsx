@@ -22,6 +22,7 @@ import {
   acquireSetupStart,
   backendInstallProfileId,
   canStartSetup,
+  MODEL_GROUP_DETAILS,
   createSelection,
   diagnosticsSnapshot,
   modelDownloadProgressEvent,
@@ -97,6 +98,7 @@ export function SetupPage({
     apiClient, initialStatus, initialError, onReady: handleReady, preserveSelection: settingsEntry,
   });
   const [busy, setBusy] = useState(false);
+  const [runnerStopping, setRunnerStopping] = useState(false);
   const [copyLabel, setCopyLabel] = useState("Copy diagnostics");
   const [environment, setEnvironment] = useState<RuntimeSetupEnvironment | null>(null);
   const [listenerReady, setListenerReady] = useState(false);
@@ -133,6 +135,7 @@ export function SetupPage({
   const applyRunnerSnapshot = useCallback((runner: RuntimeSetupRunnerStatus) => {
     setProgress((previous) => applyRunnerStatus(previous, runner));
     const running = runner.lifecycle === "running" || runner.lifecycle === "cancelling";
+    setRunnerStopping(runner.lifecycle === "cancelling");
     setBusy(running);
     startLocked.current = running;
     return running;
@@ -458,6 +461,7 @@ export function SetupPage({
     if (downloadPhase === "downloading" && apiClient) {
       try {
         const snapshot = await apiClient.cancelRuntimeModelDownload({ timeoutMs: 8_000 });
+        if (snapshot.lifecycle === "stopping") setDownloadPhase("stopping");
         setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
         if (snapshot.lifecycle === "cancelled") {
           setDownloadPhase("idle");
@@ -592,6 +596,9 @@ export function SetupPage({
   const resolvePrimaryAction = (): { label: string; disabled: boolean; run: () => void | Promise<unknown>; disabledReason: string | null } => {
     if (adopting) return { label: settingsEntry ? "Saving…" : "Continue…", disabled: true, disabledReason: null, run: () => undefined };
     if (managingModels) return { label: "Updating models…", disabled: true, disabledReason: null, run: () => undefined };
+    if (selection.profile !== "base" && !selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts")) {
+      return { label: "Continue", disabled: true, disabledReason: "Select the Kokoro voice model — it's required to create audio", run: () => undefined };
+    }
     if (configuredReady && status && selectionMatchesConfigured(selection, status) && !showRestart) {
       return { label: "Done", disabled: busy || adopting, disabledReason: null, run: () => onExitSettings ? onExitSettings() : onReady(status) };
     }
@@ -663,7 +670,7 @@ export function SetupPage({
         <section className="setup-panel" aria-labelledby="setup-heading">
           <div className="setup-intro">
             {settingsEntry && onExitSettings ? (
-              <button id="setup-back-btn" className="btn btn-ghost setup-back" type="button" disabled={busy || adopting || managingModels} onClick={onExitSettings}>
+              <button id="setup-back-btn" className="btn btn-ghost setup-back" type="button" disabled={(busy && downloadPhase !== "stopping" && !runnerStopping) || adopting || managingModels} onClick={onExitSettings}>
                 Back to dashboard
               </button>
             ) : null}
@@ -800,6 +807,8 @@ export function SetupPage({
             </div>
           ) : null}
 
+          {status?.state_error && !["invalid", "unavailable"].includes(status.state_error) ? <p className="setup-model-feedback is-error" role="alert">{status.state_error}</p> : null}
+
           {settingsEntry && !busy && !adopting && !managingModels ? (
             <SetupDangerZone
               apiClient={apiClient}
@@ -817,6 +826,7 @@ export function SetupPage({
               ) : null}
             </div>
             <div className="setup-actions">
+              {!settingsEntry && (downloadPhase === "stopping" || runnerStopping) ? <button className="btn btn-ghost" type="button" onClick={onContinueLibraryOnly}>Back to dashboard</button> : null}
               {busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading") ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
               {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
               <button className="btn btn-primary btn-lg setup-primary" type="button" disabled={action.disabled} aria-busy={adopting} onClick={() => void action.run()}>

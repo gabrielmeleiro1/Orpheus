@@ -848,7 +848,7 @@ def test_model_options_expose_kokoro_conversion_capabilities():
     backend_options = payload.get("cleaner_backend_options")
     assert isinstance(backend_options, list)
     option_names = [option["name"] for option in backend_options]
-    assert option_names == ["api", "cuda", "mlx"]
+    assert option_names == ["api", "basic", "cuda", "mlx"]
     cuda_option = next(option for option in backend_options if option["name"] == "cuda")
     assert cuda_option["supported_quantizations"] == ["4bit", "8bit", "fp16"]
     assert cuda_option["default_device"] == "cuda"

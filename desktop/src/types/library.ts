@@ -81,6 +81,8 @@ export interface OpenBookFolderResponse {
 export interface DeleteBookResponse {
   book_id: number;
   deleted: boolean;
+  files_pending?: boolean;
+  path?: string;
 }
 
 export interface MaintenanceDiagnosticsResponse {

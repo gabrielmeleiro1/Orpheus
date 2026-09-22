@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-import type { CleaningPreviewResponse, LibraryChapterDetail } from "../../types/api";
+import type { LibraryChapterDetail } from "../../types/api";
 import { formatDurationClock } from "../../format/time";
 import { Icon } from "../../ui/icons";
 import { TermSelect } from "../conversion/TermSelect";
@@ -19,18 +19,6 @@ interface LibraryPanelProps {
   playing?: boolean;
   onJumpToChapter?: (chapter: LibraryChapterDetail) => void;
   onStartConvert?: () => void;
-}
-
-function previewText(preview: CleaningPreviewResponse | null): string {
-  if (!preview) {
-    return "Select a chapter preview.";
-  }
-  if (!preview.available) {
-    return "No cleaning artifacts are available for this chapter yet.";
-  }
-  const before = preview.before_text?.trim() || "(missing before text)";
-  const cleaned = preview.cleaned_text?.trim() || "(missing cleaned text)";
-  return [`before:\n${before.slice(0, 1200)}`, `cleaned:\n${cleaned.slice(0, 1200)}`].join("\n\n---\n\n");
 }
 
 const LIBRARY_MODE_OPTIONS = [
@@ -67,6 +55,7 @@ export function LibraryPanel({
     cleaningPreview,
     cleaningPreviewLoading,
     loadCleaningPreview,
+    closeCleaningPreview,
   } = useLibraryPanelState({ library });
 
   useEffect(() => {
@@ -84,7 +73,7 @@ export function LibraryPanel({
   const isRedundantStatus =
     showEmpty || (!library.loadingDetail && library.statusMessage.startsWith("Selected:"));
   const showDetailStatus =
-    !library.errorMessage && !isRedundantStatus && (Boolean(library.statusMessage) || library.loadingDetail);
+    !library.errorMessage && !isRedundantStatus && !library.pendingDeletionPath && (Boolean(library.statusMessage) || library.loadingDetail);
   const bookCountLabel = `${library.items.length}${library.hasMore ? "+" : ""} ${library.items.length === 1 ? "book" : "books"}`;
 
   return (
@@ -231,6 +220,14 @@ export function LibraryPanel({
         >
           {library.errorMessage ? (
             <p className="field-hint is-error status-sentence" role="alert">{library.errorMessage}</p>
+          ) : null}
+          {library.pendingDeletionPath ? (
+            <div className="field-hint status-sentence" role="status">
+              Removed from library, but some files couldn't be deleted.
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => void library.openPendingDeletionFolder?.()}>
+                Open folder
+              </button>
+            </div>
           ) : null}
           {showDetailStatus ? (
             <p className="field-hint status-sentence" role="status" aria-live="polite">
@@ -418,12 +415,22 @@ export function LibraryPanel({
               </div>
 
               {showCleaningPreview ? (
-                <details className="library-disclosure cleaning-preview-toggle" open>
-                  <summary>Cleaning preview</summary>
-                  <pre id="cleaning-preview">
-                    {cleaningPreviewLoading ? "Loading cleaning preview…" : previewText(cleaningPreview)}
-                  </pre>
-                </details>
+                <section className="panel-section cleaning-preview" aria-label="Cleaning preview">
+                  <div className="section-title">
+                    <span>Cleaning preview</span>
+                    <button className="btn btn-ghost btn-sm" type="button" onClick={closeCleaningPreview}>
+                      Close preview
+                    </button>
+                  </div>
+                  {cleaningPreviewLoading ? <p role="status">Loading cleaning preview…</p> : !cleaningPreview?.available ? (
+                    <p className="hint">No cleaning artifacts are available for this chapter yet.</p>
+                  ) : (
+                    <div className="cleaning-comparison">
+                      <div><h4>Original</h4><pre tabIndex={0} aria-label="Original text">{cleaningPreview.before_text || "(missing original text)"}</pre></div>
+                      <div><h4>Cleaned</h4><pre tabIndex={0} aria-label="Cleaned text">{cleaningPreview.cleaned_text || "(missing cleaned text)"}</pre></div>
+                    </div>
+                  )}
+                </section>
               ) : null}
             </>
           ) : showEmpty ? null : (

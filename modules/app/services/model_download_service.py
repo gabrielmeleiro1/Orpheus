@@ -9,6 +9,7 @@ download receipts) are missing.
 from __future__ import annotations
 
 import errno
+import multiprocessing
 import re
 import threading
 from typing import Any, Callable, Iterable
@@ -31,6 +32,16 @@ _LOCK_ACQUIRE_TIMEOUT_SECONDS = 0.5
 
 class ModelDownloadBusyError(RuntimeError):
     """A download is already running in this backend."""
+
+
+def _download_worker(model_id: str, result: Any) -> None:
+    try:
+        download_model_snapshot(model_id)
+        result.send(None)
+    except BaseException as exc:
+        result.send(_user_facing_error(exc, model_id))
+    finally:
+        result.close()
 
 
 def _sanitized_error(exc: BaseException) -> str:
@@ -86,12 +97,12 @@ class ModelDownloadService:
     def __init__(
         self,
         *,
-        downloader: Callable[[str], Any] = download_model_snapshot,
+        downloader: Callable[[str], Any] | None = None,
         group_resolver: Callable[[Iterable[str]], tuple[str, ...]] = resolve_model_groups,
         lock_factory: Callable[[], Any] | None = None,
         on_terminal: Callable[[], None] | None = None,
     ) -> None:
-        self._downloader = downloader
+        self._downloader = downloader or self._download_interruptibly
         self._group_resolver = group_resolver
         self._lock_factory = lock_factory or (
             lambda: setup_runtime.SetupLock(
@@ -166,13 +177,7 @@ class ModelDownloadService:
         return self.status()
 
     def shutdown(self, *, timeout_seconds: float = 2.0) -> bool:
-        """Request cooperative cancellation and boundedly join the worker.
-
-        Downloader calls cannot be force-killed safely. When a noninterruptible
-        call exceeds the deadline, the service remains ``stopping`` and keeps
-        the setup lock until that call returns; this limitation is surfaced in
-        status rather than pretending the lock was released.
-        """
+        """Cancel the transfer and join; retain the lock until its worker exits."""
         self.request_cancel()
         with self._mutex:
             thread = self._thread
@@ -196,6 +201,41 @@ class ModelDownloadService:
                 )
             return dict(self._state, model_groups=list(self._state["model_groups"]))
 
+    def _download_interruptibly(self, model_id: str) -> None:
+        context = multiprocessing.get_context("spawn")
+        reader, writer = context.Pipe(duplex=False)
+        process = context.Process(target=_download_worker, args=(model_id, writer), daemon=True)
+        started = False
+        try:
+            process.start()
+            started = True
+            writer.close()
+            while process.is_alive():
+                if self._cancel_event.wait(0.1):
+                    process.terminate()
+                    break
+            process.join(timeout=1.0)
+            if process.is_alive():
+                process.kill()
+                process.join()
+            if self.cancel_requested:
+                return
+            if not reader.poll():
+                raise RuntimeError("The download worker stopped unexpectedly. Try again.")
+            message = reader.recv()
+            if message:
+                raise RuntimeError(message)
+            if process.exitcode != 0:
+                raise RuntimeError("The download worker stopped unexpectedly. Try again.")
+        finally:
+            if started and process.is_alive():
+                process.terminate()
+                process.join()
+            reader.close()
+            writer.close()
+            if started:
+                process.close()
+
     def _run(
         self,
         plan: list[tuple[str, tuple[str, ...]]],
@@ -216,6 +256,8 @@ class ModelDownloadService:
                     with self._mutex:
                         self._state["current_model"] = model_id
                     self._downloader(model_id)
+                    if self.cancel_requested:
+                        break
                     with self._mutex:
                         self._state["completed_models"] += 1
         except BaseException as exc:

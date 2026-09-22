@@ -30,6 +30,7 @@ interface UseAudioElementBindingsArgs {
   handleAudioMetadata: (expectedBookId?: number | null) => void;
   updatePlayerStatus: () => void;
   playRelative: (delta: number) => Promise<void>;
+  advanceChapter?: () => boolean;
   setIsPlaying: Dispatch<SetStateAction<boolean>>;
   setElapsedSec: Dispatch<SetStateAction<number>>;
   setTotalSec: Dispatch<SetStateAction<number>>;
@@ -55,6 +56,7 @@ export function useAudioElementBindings({
   handleAudioMetadata,
   updatePlayerStatus,
   playRelative,
+  advanceChapter,
   setIsPlaying,
   setElapsedSec,
   setTotalSec,
@@ -144,6 +146,7 @@ export function useAudioElementBindings({
         updatePlayerStatus();
       },
       onEnded: () => {
+        if (advanceChapter?.()) return;
         setIsPlaying(false);
         const finishedBookId = loadedBookId;
         if (finishedBookId) {
@@ -177,6 +180,7 @@ export function useAudioElementBindings({
     onPlaybackHealthy,
     persistLoadedBookPlaybackPosition,
     playRelative,
+    advanceChapter,
     setElapsedSec,
     setIsPlaying,
     setPlayerTitle,

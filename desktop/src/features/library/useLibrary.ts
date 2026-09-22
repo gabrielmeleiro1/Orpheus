@@ -35,6 +35,8 @@ export interface UseLibraryResult {
   loadingDetail: boolean;
   errorMessage: string;
   statusMessage: string;
+  pendingDeletionPath?: string | null;
+  openPendingDeletionFolder?: () => Promise<void>;
   bookSummaryTitle: string;
   bookSummaryMeta: string;
   bookDetailText: string;
@@ -89,6 +91,8 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     loadingDetail: list.loadingDetail,
     errorMessage: list.errorMessage,
     statusMessage: list.statusMessage,
+    pendingDeletionPath: list.pendingDeletionPath,
+    openPendingDeletionFolder: list.openPendingDeletionFolder,
     bookSummaryTitle: list.bookSummaryTitle,
     bookSummaryMeta: list.bookSummaryMeta,
     bookDetailText: list.bookDetailText,
@@ -127,6 +131,8 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     list.loadingDetail,
     list.errorMessage,
     list.statusMessage,
+    list.pendingDeletionPath,
+    list.openPendingDeletionFolder,
     list.bookSummaryTitle,
     list.bookSummaryMeta,
     list.bookDetailText,

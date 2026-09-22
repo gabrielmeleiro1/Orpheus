@@ -122,7 +122,15 @@ export function useConversionPreview({
     previewText,
   ]);
 
+  const recommendationUnavailableReason = optionState.cleanerBackend !== "api" || !optionState.cleanerApiKey.trim() || !optionState.cleanerModel.trim()
+    ? "Configure an API cleaner model and key in Settings to recommend a voice."
+    : "";
+
   const onRecommendVoice = useCallback(async () => {
+    if (recommendationUnavailableReason) {
+      setVoiceSuggestStatus(recommendationUnavailableReason);
+      return;
+    }
     if (!apiClient) {
       setVoiceSuggestStatus("Backend is not connected.");
       return;
@@ -139,6 +147,12 @@ export function useConversionPreview({
       const response = await apiClient.suggestVoice(
         sourcePath.trim(),
         optionState.selectedEngine || null,
+        undefined,
+        {
+          cleaner_backend: optionState.cleanerBackend,
+          cleaner_api_model: optionState.cleanerModel,
+          cleaner_api_key: optionState.cleanerApiKey,
+        },
       );
       const voiceId = response.voice_suggestion?.recommended_voice_id?.trim();
       if (!voiceId) {
@@ -170,6 +184,7 @@ export function useConversionPreview({
     applyPreviewSample,
     beginVoiceSuggestRequest,
     optionState,
+    recommendationUnavailableReason,
     previewText,
     selectedPreflight?.sample,
     sourcePath,
@@ -184,6 +199,7 @@ export function useConversionPreview({
     previewAudioRef,
     voiceSuggestBusy,
     voiceSuggestStatus,
+    recommendationUnavailableReason,
     onPreviewVoice,
     onRecommendVoice,
     applyPreviewSample,

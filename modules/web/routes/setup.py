@@ -1,22 +1,25 @@
-"""Read-only runtime setup status for the desktop onboarding flow."""
+"""Runtime setup status and managed model storage for the desktop app."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
 import re
+import os
+import shutil
 import sys
 import threading
 from typing import Any, Callable, Mapping
 
 from fastapi import APIRouter, HTTPException, Request
 from huggingface_hub import scan_cache_dir
+from huggingface_hub import constants as hf_constants
 from huggingface_hub.errors import CacheNotFound
 from pydantic import BaseModel, ConfigDict, Field
 
 from modules.runtime_profiles import (
     get_runtime_profile,
+    cuda_hardware_error,
     recommended_profile_id,
     runtime_profiles,
 )
@@ -26,6 +29,8 @@ from modules.app.services.model_download_service import (
 )
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
 from modules.web.deps import get_controller_from_app
+from modules.app.services.library_service import _default_folder_opener
+from modules.storage.maintenance_paths import workspace_root_for_db
 from modules.web.setup_manifest import (
     VersionResolver,
     _check_manifest_packages,
@@ -40,6 +45,28 @@ from scripts.download_models import MODEL_GROUPS, ModelReceiptVerifier, resolve_
 
 
 router = APIRouter()
+
+
+@router.get("/api/system/storage")
+def get_storage_folders(request: Request) -> dict[str, str]:
+    config = get_controller_from_app(request.app).config
+    return {
+        "output_path": str(Path(config.output_dir).resolve()),
+        "app_data_path": str(workspace_root_for_db(Path(config.db_path))),
+    }
+
+
+@router.post("/api/system/storage/{folder}/open")
+def open_storage_folder(folder: str, request: Request) -> dict[str, str]:
+    if folder not in {"output", "app_data"}:
+        raise HTTPException(422, detail="Unknown storage folder.")
+    path = Path(get_storage_folders(request)[f"{folder}_path"])
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        _default_folder_opener(path)
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(409, detail="The folder could not be opened. Try opening the displayed path manually.") from exc
+    return {"folder_path": str(path)}
 
 _RUNTIME_SETUP_STATE_FALLBACK_LOCK = threading.RLock()
 
@@ -159,12 +186,15 @@ def _check_model_group_assets(
 def _profile_payload(profile_id: str, *, accepted_profile: str | None) -> dict[str, Any]:
     profile = get_runtime_profile(profile_id)
     del accepted_profile
+    reason = profile.incompatibility_reason()
+    if reason is None and profile.id == "cuda":
+        reason = cuda_hardware_error()
     return {
         "id": profile.id,
         "label": profile.label,
         "description": profile.description,
-        "compatible": profile.is_compatible(),
-        "reason": profile.incompatibility_reason(),
+        "compatible": profile.is_compatible() and reason is None,
+        "reason": reason,
         "model_groups": list(profile.model_groups),
         "risk": None,
     }
@@ -191,6 +221,8 @@ def _detect_installed_runtime(
         if preferred_profile is not None and profile.id != preferred_profile:
             continue
         if profile.id == "base" or not profile.is_compatible():
+            continue
+        if profile.id == "cuda" and cuda_hardware_error():
             continue
         packages = _check_selected_profile_packages(profile.id)
         if not packages["ready"]:
@@ -341,10 +373,14 @@ def _build_uncached_setup_status_response(
     ]
     restart_required = bool(status.get("restart_required"))
     assets_ready = all(group["assets_ready"] for group in selected_groups)
+    voice_ready = selected_profile == "base" or any(
+        group["id"].startswith("tts-") and group["assets_ready"] for group in selected_groups
+    )
     ready = (
         bool(status.get("ready"))
         and packages["ready"]
         and assets_ready
+        and voice_ready
         and not restart_required
     )
     if restart_required:
@@ -360,7 +396,7 @@ def _build_uncached_setup_status_response(
         "schema_version": 1,
         "configured": True,
         "state": state,
-        "state_error": None,
+        "state_error": None if voice_ready else "The Kokoro voice model is missing. Install it to create audio.",
         "selected_profile": selected_profile,
         "selected_model_groups": selected_groups,
         "cleaner_cuda_quantization": status.get("cleaner_cuda_quantization", "4bit"),
@@ -456,6 +492,7 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
         profile = setup_runtime._validated_profile(payload.profile)
         groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
         setup_runtime.validate_model_selection(groups)
+        setup_runtime.require_voice_model(profile.id, groups)
     except setup_runtime.SetupValidationError as exc:
         raise HTTPException(
             status_code=422,
@@ -589,6 +626,8 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
     try:
         profile = setup_runtime._validated_profile(payload.profile)
         groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
+        if payload.configure_runtime:
+            setup_runtime.require_voice_model(profile.id, groups)
     except setup_runtime.SetupValidationError as exc:
         raise HTTPException(
             status_code=422,
@@ -604,6 +643,10 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
         )
 
     service = _get_download_service(request)
+    if profile.id == "cuda":
+        reason = cuda_hardware_error()
+        if reason:
+            raise HTTPException(422, detail={"error": "invalid_request", "message": reason})
     try:
         return service.start(profile_id=profile.id, model_groups=groups, configure_runtime=payload.configure_runtime, cleaner_cuda_quantization=payload.cleaner_cuda_quantization)
     except ModelDownloadBusyError as exc:
@@ -633,39 +676,65 @@ def _managed_model_repo_ids() -> dict[str, str]:
     return owners
 
 
+def _managed_cache_paths(cache: Any, *, cache_root: Path | None = None) -> dict[str, Path]:
+    # Only construct names from our fixed model catalog, never request paths or warnings.
+    roots = {Path(repo.repo_path).parent for repo in getattr(cache, "repos", ())}
+    if cache_root is not None:
+        roots = {cache_root}
+    elif not roots:
+        roots = {Path(hf_constants.HF_HUB_CACHE)}
+    return {
+        model_id: root / ("models--" + model_id.replace("/", "--"))
+        for root in roots for model_id in _managed_model_repo_ids()
+    }
+
+
+def _cache_bytes(path: Path) -> int:
+    if path.is_symlink() or path.is_junction():
+        return 0
+    total = 0
+    for root, dirs, files in os.walk(path, followlinks=False):
+        dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink() and not (Path(root) / name).is_junction()]
+        for name in files:
+            file = Path(root) / name
+            if not file.is_symlink():
+                try:
+                    total += file.stat().st_size
+                except FileNotFoundError:
+                    pass
+    return total
+
+
 def _delete_runtime_models(
     *,
-    cache_scanner: Callable[[], Any] = scan_cache_dir,
+    cache_scanner: Callable[[], Any] | None = None,
     model_groups: tuple[str, ...] | None = None,
+    cache_root: Path | None = None,
 ) -> tuple[list[str], int]:
     """Delete only HF cache repos owned by our model groups; leave others intact."""
     try:
-        cache = cache_scanner()
+        cache = (cache_scanner or scan_cache_dir)()
     except CacheNotFound:
         return [], 0
     owners = _managed_model_repo_ids()
-    revisions: list[str] = []
-    selected_repos: set[Any] = set()
-    deleted_groups: set[str] = set()
-    for repo in getattr(cache, "repos", ()):
-        if getattr(repo, "repo_type", "model") != "model":
-            continue
-        group_id = owners.get(str(getattr(repo, "repo_id", "")))
-        if group_id is None or (model_groups is not None and group_id not in model_groups):
-            continue
-        selected_repos.add(repo)
-        for revision in getattr(repo, "revisions", ()):
-            commit_hash = getattr(revision, "commit_hash", None)
-            if isinstance(commit_hash, str) and commit_hash:
-                revisions.append(commit_hash)
-                deleted_groups.add(group_id)
-    if not revisions:
+    if cache_scanner is not None and not cache.repos and cache_root is None:
         return [], 0
-    # Revision hashes are not repository identities. Scope the HF deletion
-    # strategy so another repo with the same commit hash is never removed.
-    strategy = replace(cache, repos=frozenset(selected_repos)).delete_revisions(*revisions)
-    freed = int(getattr(strategy, "expected_freed_size", 0) or 0)
-    strategy.execute()
+    deleted_groups: set[str] = set()
+    freed = 0
+    for model_id, path in _managed_cache_paths(cache, cache_root=cache_root).items():
+        group_id = owners[model_id]
+        if model_groups is not None and group_id not in model_groups:
+            continue
+        if not path.exists() or path.is_symlink() or path.is_junction():
+            continue
+        before = _cache_bytes(path)
+        try:
+            shutil.rmtree(path)
+        except OSError:
+            pass  # The rescan below reports partial deletion, including locked files.
+        freed += max(0, before - _cache_bytes(path))
+        if not path.exists():
+            deleted_groups.add(group_id)
     ordered = [group_id for group_id in MODEL_GROUPS if group_id in deleted_groups]
     return ordered, freed
 
@@ -674,17 +743,21 @@ def _delete_runtime_models(
 def get_managed_models() -> dict[str, Any]:
     """List managed cache usage without disclosing filesystem paths."""
     try:
-        repos = scan_cache_dir().repos
+        cache = scan_cache_dir()
+        repos = cache.repos
     except CacheNotFound:
+        cache = None
         repos = ()
     except OSError as exc:
         raise HTTPException(503, detail={"error": "cache_unavailable", "message": "Model storage could not be read. Try again."}) from exc
     by_id = {repo.repo_id: repo for repo in repos if repo.repo_type == "model"}
+    paths = _managed_cache_paths(cache)
     return {"models": [
         {
             "id": group,
-            "downloaded": any(model_id in by_id for model_id in resolve_model_groups((group,))),
-            "size_bytes": sum(by_id[model_id].size_on_disk for model_id in resolve_model_groups((group,)) if model_id in by_id),
+            "downloaded": any(paths[model_id].exists() for model_id in resolve_model_groups((group,))),
+            "size_bytes": sum(_cache_bytes(paths[model_id]) for model_id in resolve_model_groups((group,))),
+            **({"damaged": True} if any(paths[model_id].exists() and model_id not in by_id for model_id in resolve_model_groups((group,))) else {}),
         }
         for group in MODEL_GROUPS
     ]}
@@ -714,7 +787,8 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
             # discovered only after its model files have already been removed.
             state, _ = setup_runtime._read_setup_state(state_path)
             deleted, freed = _delete_runtime_models(model_groups=(group_id,))
-            if state and group_id in state["model_groups"]:
+            residual = [model["id"] for model in get_managed_models()["models"] if model["id"] == group_id and model["downloaded"]]
+            if state and group_id in state["model_groups"] and not residual and not group_id.startswith("tts-"):
                 remaining = tuple(group for group in state["model_groups"] if group != group_id)
                 setup_runtime.write_setup_state(
                     state_path,
@@ -738,7 +812,13 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
     apply_preferences = getattr(config, "apply_setup_preferences", None)
     if callable(apply_preferences):
         apply_preferences()
-    return {"deleted_model_groups": deleted, "freed_bytes": freed, "state_deleted": False}
+    return {"deleted_model_groups": deleted, "freed_bytes": freed, "state_deleted": False, **_residual_notice(residual)}
+
+
+def _residual_notice(groups: list[str]) -> dict[str, Any]:
+    if not groups:
+        return {}
+    return {"residual_model_groups": groups, "message": "Couldn't delete some files — they may be in use. Close other apps and retry."}
 
 
 @router.delete("/api/setup/runtime")
@@ -763,8 +843,12 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
     try:
         with setup_runtime.SetupLock(state_path):
             deleted_groups, freed_bytes = _delete_runtime_models()
+            residual = [model["id"] for model in get_managed_models()["models"] if model["downloaded"]]
             state_deleted = state_path.exists()
-            state_path.unlink(missing_ok=True)
+            if not residual:
+                state_path.unlink(missing_ok=True)
+            else:
+                state_deleted = False
     except setup_runtime.SetupExecutionError as exc:
         raise HTTPException(
             status_code=409,
@@ -778,4 +862,5 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
         "deleted_model_groups": deleted_groups,
         "freed_bytes": freed_bytes,
         "state_deleted": state_deleted,
+        **_residual_notice(residual),
     }

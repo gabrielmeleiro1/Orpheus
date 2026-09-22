@@ -155,7 +155,7 @@ class _PreviewStrategy:
     def load(self) -> None:
         self._loaded = True
 
-    def unload(self) -> None:
+    def unload(self, *, keep_in_cache: bool = True) -> None:
         self.unload_calls += 1
         if self._synthesizing:
             self.unload_during_synthesize = True
@@ -639,3 +639,50 @@ def test_get_available_tts_engines_exposes_supported_conversion_engines(tmp_path
     assert all(engine["available_for_conversion"] is True for engine in engines)
     assert engines[0]["capabilities"]["worker_auto_mode"] == "sequential"
     assert engines[0]["capabilities"]["process_safe"] is False
+
+
+def test_preview_idle_timer_waits_for_synthesis_and_ignores_stale_callbacks(tmp_path, monkeypatch):
+    timers = []
+    class ManualTimer:
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.function = function
+            self.daemon = False
+            timers.append(self)
+        def start(self):
+            pass
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr("modules.app.services.voice_service.threading.Timer", ManualTimer)
+    monkeypatch.setattr("modules.app.services.voice_service.sf.write", lambda *args: None)
+    state = _PreviewState()
+    spec = TTSRuntimeSpec.from_legacy("kokoro", "bf16")
+    state.primary_runtime_key = spec.cache_key()
+    factory = _PreviewFactory(state)
+    service = VoiceService(_build_config(tmp_path), tts_factory=factory)
+    errors = []
+    def preview():
+        try:
+            service.generate_voice_preview("am_adam", runtime_spec=spec)
+        except Exception as exc:
+            errors.append(exc)
+    worker = threading.Thread(target=preview)
+    worker.start()
+    assert state.first_preview_synthesize_entered.wait(2)
+    engine = service._preview_engine
+    retiring_timer = threading.Thread(target=timers[-1].function)
+    retiring_timer.start()
+    assert engine.unload_calls == 0
+    state.release_first_preview_synthesize.set()
+    worker.join(2)
+    retiring_timer.join(2)
+    assert not errors
+    assert engine.is_loaded and engine.unload_calls == 0
+    assert not engine.unload_during_synthesize
+    timers[-1].function()
+    assert engine.unload_calls == 1
+    assert service._preview_engine is None
+    service.generate_voice_preview("am_adam", runtime_spec=spec)
+    assert service._preview_engine.is_loaded
+    service.cleanup()

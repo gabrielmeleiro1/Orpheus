@@ -10,10 +10,31 @@ from dataclasses import dataclass
 from pathlib import Path
 import platform
 import shutil
+import ctypes
 from typing import Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def cuda_hardware_error() -> str | None:
+    """Check the installed driver without importing or installing torch."""
+    reason = (
+        "CUDA needs a usable NVIDIA GPU and a driver supporting CUDA 12.6. "
+        "Install or update the NVIDIA driver, restart, and try again; "
+        "otherwise choose Library only."
+    )
+    try:
+        driver = ctypes.CDLL("nvcuda.dll" if platform.system() == "Windows" else "libcuda.so.1")
+        count = ctypes.c_int()
+        version = ctypes.c_int()
+        if (driver.cuInit(0) != 0 or driver.cuDeviceGetCount(ctypes.byref(count)) != 0
+                or count.value < 1 or driver.cuDriverGetVersion(ctypes.byref(version)) != 0
+                or version.value < 12060):
+            return reason
+    except (OSError, AttributeError):
+        return reason
+    return None
 
 
 @dataclass(frozen=True)

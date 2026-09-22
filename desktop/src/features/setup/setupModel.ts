@@ -176,10 +176,7 @@ export function canStartSetup(selection: SetupSelection, status: RuntimeSetupSta
   if (!profile?.compatible || selection.modelGroups.some((group) => !profile.model_groups.includes(group))) {
     return false;
   }
-  // A profile that offers model groups needs at least one: installing none
-  // provisions no TTS model, which the backend rejects and which would
-  // otherwise leave the app looking configured with nothing to synthesize with.
-  if (profile.model_groups.length > 0 && selection.modelGroups.length === 0) {
+  if (profile.id !== "base" && !selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts")) {
     return false;
   }
   return !profile.risk || selection.acceptPytorchRisk;
@@ -229,7 +226,7 @@ export function modelDownloadProgressEvent(
     return {
       event: "status",
       stage: "models",
-      message: "Cancellation requested; waiting for the current download to stop…",
+      message: "Stopping download… You can leave setup while it stops.",
     };
   }
   if (status.lifecycle === "cancelled") {
@@ -368,7 +365,7 @@ export function applyRunnerStatus(
   if (status.lifecycle === "running" || status.lifecycle === "cancelling") {
     const next = applyProgressEvent(prior, snapshot);
     return status.lifecycle === "cancelling"
-      ? { ...next, message: "Cancelling setup…" }
+      ? { ...next, message: status.stage === "models" || status.stage === "Model download" ? "Stopping download… You can leave setup while it stops." : "Cancelling setup… You can leave setup while it stops." }
       : next;
   }
   if (status.lifecycle === "complete") {

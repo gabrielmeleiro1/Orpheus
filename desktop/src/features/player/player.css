@@ -295,3 +295,8 @@
     grid-template-columns: 40px minmax(0, 1fr) 40px;
   }
 }
+
+.player-seek:focus-visible,
+.player-volume:focus-visible {
+  box-shadow: var(--focus-ring);
+}

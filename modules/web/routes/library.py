@@ -6,7 +6,7 @@ import mimetypes
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.responses import FileResponse
 
 from modules.web.deps import ControllerDep, call_with_http_errors
@@ -42,6 +42,13 @@ class LibraryBookUpdateRequest(BaseModel):
     author: Optional[str] = None
     tags: Optional[str] = None
     favorite: Optional[bool] = None
+
+    @field_validator("title")
+    @classmethod
+    def title_required(cls, value):
+        if value is None or not value.strip():
+            raise ValueError("Title is required")
+        return value.strip()
 
 
 def _playback_media_type(output_path) -> str:
@@ -114,8 +121,8 @@ def update_library_book(
     updated = controller.update_book_metadata(
         book_id,
         title=payload.title,
-        author=payload.author,
-        tags=payload.tags,
+        author=(payload.author or "") if "author" in payload.model_fields_set else None,
+        tags=(payload.tags or "") if "tags" in payload.model_fields_set else None,
         favorite=payload.favorite,
     )
     if updated is None:
@@ -164,6 +171,7 @@ def delete_library_book(book_id: int, controller: ControllerDep) -> dict:
     return {
         "book_id": book_id,
         "deleted": True,
+        **(deleted if isinstance(deleted, dict) else {}),
     }
 
 
@@ -171,8 +179,13 @@ def delete_library_book(book_id: int, controller: ControllerDep) -> dict:
 def get_library_audio(
     book_id: int,
     controller: ControllerDep,
+    chapter_number: int | None = Query(default=None, ge=1),
 ) -> FileResponse:
-    output_path = controller.get_book_playback_file(book_id)
+    output_path = (
+        controller.get_book_playback_file(book_id)
+        if chapter_number is None
+        else controller.get_book_playback_file(book_id, chapter_number=chapter_number)
+    )
     if output_path is None:
         raise HTTPException(status_code=404, detail="Playable audio not found")
 

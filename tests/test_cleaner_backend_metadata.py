@@ -43,4 +43,4 @@ def test_list_cleaner_backend_options_returns_all_registered_backends() -> None:
     options = list_cleaner_backend_options()
     names = [option["name"] for option in options]
 
-    assert names == ["api", "cuda", "mlx"]
+    assert names == ["api", "basic", "cuda", "mlx"]

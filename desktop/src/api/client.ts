@@ -85,7 +85,8 @@ export interface ApiClient {
   preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight>;
   uploadSourceFile(file: File, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
   uploadSourceText(payload: SourceTextUploadRequest, options?: ApiRequestOptions): Promise<SourceUploadResponse>;
-  suggestVoice(sourcePath: string, engine?: string | null, options?: ApiRequestOptions): Promise<VoiceSuggestionResponse>;
+  deleteUpload(handle: string): Promise<{ deleted: boolean }>;
+  suggestVoice(sourcePath: string, engine?: string | null, options?: ApiRequestOptions, settings?: Pick<StartConversionRequest, "cleaner_backend" | "cleaner_api_model" | "cleaner_api_key">): Promise<VoiceSuggestionResponse>;
   startConversion(payload: StartConversionRequest, options?: ApiRequestOptions): Promise<StartConversionResponse>;
   repairConversion(
     bookId: number,
@@ -127,6 +128,7 @@ export interface ApiClient {
   getMaintenanceDiagnostics(options?: ApiRequestOptions): Promise<MaintenanceDiagnosticsResponse>;
   backupDatabase(options?: ApiRequestOptions): Promise<MaintenanceBackupResponse>;
   cleanupStorage(options?: ApiRequestOptions): Promise<MaintenanceCleanupResponse>;
+  openDeletionFolder(path: string): Promise<{ folder_path: string }>;
 }
 
 export function createApiClient({ baseUrl, token }: ApiClientOptions): ApiClient {

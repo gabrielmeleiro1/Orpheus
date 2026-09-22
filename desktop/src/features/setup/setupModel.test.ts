@@ -227,7 +227,7 @@ describe("packaged backend install flow", () => {
     expect(state.message).toBe("Downloading Llama 3.2 · 3B (2 of 2)…");
 
     const stopping = modelDownloadProgressEvent({ ...running, lifecycle: "stopping" });
-    expect(stopping.message).toContain("Cancellation requested");
+    expect(stopping.message).toContain("Stopping download");
     const cancelled = modelDownloadProgressEvent({ ...running, lifecycle: "cancelled" });
     expect(cancelled.message).toBe("Model download cancelled.");
 

@@ -26,8 +26,8 @@ from modules.tts.cleaner_config import (
 from tests.fixtures.fake_cleaner_backend import FakeCleanerBackend
 
 
-def test_available_cleaner_backends_returns_sorted_api_cuda_and_mlx():
-    assert available_cleaner_backends() == ("api", "cuda", "mlx")
+def test_available_cleaner_backends_returns_sorted_builtins():
+    assert available_cleaner_backends() == ("api", "basic", "cuda", "mlx")
 
 
 def test_get_cleaner_backend_api_returns_api_strategy():
@@ -64,7 +64,7 @@ def test_get_cleaner_backend_cuda_returns_cuda_strategy():
 def test_unknown_backend_raises_value_error_with_clear_message():
     with pytest.raises(ValueError, match=(
         r"Text cleaner backend 'unknown' is not supported\. "
-        r"Available backends: api, cuda, mlx\."
+        r"Available backends: api, basic, cuda, mlx\."
     )):
         validate_cleaner_backend("unknown")
 

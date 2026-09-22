@@ -24,6 +24,7 @@ import { PlayerPanel } from "./features/player/PlayerPanel";
 import { useAudioPlayer } from "./features/player/useAudioPlayer";
 import { ProgressPanel } from "./features/progress/ProgressPanel";
 import { SetupPage } from "./features/setup/SetupPage";
+import { SettingsPage } from "./features/setup/SettingsPage";
 import { shouldShowRuntimeSetup } from "./features/setup/setupModel";
 import {
   DASHBOARD_TAB_CONFIGS,
@@ -392,6 +393,7 @@ function DashboardApp({
 
         <div className={`main-workspace${activeTab === "convert" || activeTab === "document" ? " has-conversion" : ""}`}>
           <StableDashboardPanel
+            apiClient={apiClient}
             hidden={activeTab !== "dashboard"}
             library={library}
             connectionState={connectionState}
@@ -416,7 +418,7 @@ function DashboardApp({
             ttsReady={runtimeIdentity.ttsReady}
           />
 
-          {conversionPanelMounted ? <StableConversionPanel
+          {conversionPanelMounted ? <SettingsPage active={activeTab === "settings"} apiClient={apiClient} status={setupStatus} onManageModels={onOpenRuntimeSetup}><StableConversionPanel
             activeTab={conversionPanelTab}
             hidden={!isConversionPanelVisible}
             apiClient={apiClient}
@@ -427,7 +429,7 @@ function DashboardApp({
             onOpenSettings={openSettings}
             onOpenRuntimeSetup={onOpenRuntimeSetup}
             startCommandRef={startCommandRef}
-          /> : null}
+          /></SettingsPage> : null}
           {["tab-convert", "tab-document", "tab-config"].map((panelId) => (
             panelId === renderedConversionPanelId ? null : (
               <section key={panelId} id={panelId} role="tabpanel" hidden />
@@ -492,7 +494,8 @@ function DashboardApp({
           canSeek={player.canSeek}
           volume={player.volume}
           canGoPrevious={player.canGoPrevious}
-          canGoNext={player.canGoNext}
+            canGoNext={player.canGoNext}
+            chapterPlaylist={player.chapterPlaylist}
           audioRef={player.audioRef}
           audio={player.audioProps}
           onTogglePlay={togglePlay}

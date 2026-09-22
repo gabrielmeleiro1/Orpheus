@@ -9,9 +9,14 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from modules.contracts.limits import MAX_BOOK_TITLE_LENGTH, MAX_UPLOAD_BYTES
 from modules.contracts.upload_errors import UploadTooLargeError
-from modules.web.deps import ControllerDep
+from modules.web.deps import ControllerDep, call_with_http_errors
 
 router = APIRouter()
+
+
+@router.delete("/api/uploads/{handle}")
+def delete_upload(handle: str, controller: ControllerDep) -> dict:
+    return call_with_http_errors(lambda: controller.delete_upload(handle), runtime_status=409)
 
 # Multipart framing (boundary lines and part headers) rides along with the
 # file bytes in Content-Length; allow modest overhead before rejecting.

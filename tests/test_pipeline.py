@@ -489,7 +489,8 @@ class TestConversionPipeline:
         """Verify that source.md and chapter_XX_cleaned.md files are created."""
         config = PipelineConfig(
             output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp"
+            temp_dir=tmp_path / "temp",
+            save_cleaning_debug=True,
         )
         pipeline = ConversionPipeline(config)
         
@@ -657,7 +658,7 @@ class TestConversionPipeline:
         assert workspace.output_dir.exists()
         assert repeated_workspace.output_dir.exists()
 
-    def test_persistence_files_skipped_when_debug_disabled(self, mock_components, tmp_path):
+    def test_cleaned_text_retained_when_debug_disabled(self, mock_components, tmp_path):
         """Verify large debug artifacts are skipped when save_cleaning_debug is disabled."""
         config = PipelineConfig(
             output_dir=tmp_path / "output",
@@ -677,7 +678,7 @@ class TestConversionPipeline:
         chapters_dir = book_output_dir / "chapters"
         assert not (book_output_dir / "source.md").exists()
         assert not (chapters_dir / "chapter_01_before_cleaning.md").exists()
-        assert not (chapters_dir / "chapter_01_cleaned.md").exists()
+        assert (chapters_dir / "chapter_01_cleaned.md").exists()
 
     def test_chunk_overlap_is_not_tied_to_global_pipelining(self, mock_components, tmp_path):
         """Global pipelining should not force overlap mode for multi-chunk chapters."""

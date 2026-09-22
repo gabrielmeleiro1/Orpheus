@@ -404,7 +404,7 @@ describe("useConversionQueueRunner", () => {
 });
 
 describe("useConversionQueueRunner indeterminate outcomes", () => {
-  it("keeps running the queue when one item's terminal state is unknown", async () => {
+  it("continues after an unknown terminal state only when the backend is idle", async () => {
     // A backend health blip swaps the apiClient, which flushes pending waiters
     // as "unknown". That says nothing about the conversion, so it must not
     // cancel the books queued behind it.
@@ -433,7 +433,7 @@ describe("useConversionQueueRunner indeterminate outcomes", () => {
     });
 
     const { result, cleanup } = renderRunner({
-      apiClient: {} as never,
+      apiClient: { getActiveConversion: vi.fn(async () => ({ active: false, job: null })) } as never,
       conversionJob,
       queueItems: items,
       selectedQueueItem: first,

@@ -150,6 +150,23 @@ describe("useLibrary indexed total", () => {
     expect(getLibraryBook).toHaveBeenCalledTimes(2);
   });
 
+  it("retains pending-file feedback and opens the returned deletion folder", async () => {
+    const getLibrary = vi.fn().mockResolvedValueOnce({ items: [book], count: 1 }).mockResolvedValue({ items: [], count: 0 });
+    const openDeletionFolder = vi.fn(async () => ({ folder_path: "trash" }));
+    const apiClient = {
+      getLibrary, getLibraryCount: vi.fn(async () => ({ count: 0 })),
+      getLibraryBook: vi.fn(async () => detail), openDeletionFolder,
+      deleteBook: vi.fn(async () => ({ book_id: book.id, deleted: true, files_pending: true, path: "trash" })),
+    } as unknown as ApiClient;
+    root = createRoot(container);
+    await act(async () => root.render(<LibraryProbe apiClient={apiClient} />));
+    await act(async () => { await getLibraryProbe().deleteSelectedBook(); });
+    expect(getLibraryProbe().items).toEqual([]);
+    expect(getLibraryProbe().pendingDeletionPath).toBe("trash");
+    await act(async () => getLibraryProbe().openPendingDeletionFolder!());
+    expect(openDeletionFolder).toHaveBeenCalledWith("trash");
+  });
+
   it("clears a stale selection when an unfiltered refresh finds an empty library", async () => {
     const getLibrary = vi
       .fn()

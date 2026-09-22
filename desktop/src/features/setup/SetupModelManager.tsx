@@ -65,6 +65,12 @@ export function SetupModelManager({ apiClient, status, selection, setSelection, 
     try {
       const result = await apiClient.deleteRuntimeModel(groupId, { timeoutMs: 120_000 });
       if (current !== generation.current) return;
+      if (result.residual_model_groups?.length) {
+        setNotice(`${result.message} Freed ${formatFreedBytes(result.freed_bytes)}.`);
+        await onDeleted();
+        if (current === generation.current) setRefresh((value) => value + 1);
+        return;
+      }
       setInventory((previous) => previous ? { models: previous.models.map((model) => model.id === groupId ? { ...model, downloaded: false, size_bytes: 0 } : model) } : previous);
       setRemoved((previous) => [...new Set([...previous, groupId])]);
       setNotice(`${MODEL_GROUP_DETAILS[groupId].label} deleted. Freed ${formatFreedBytes(result.freed_bytes)}.`);
@@ -107,7 +113,7 @@ export function SetupModelManager({ apiClient, status, selection, setSelection, 
           const installed = Boolean(capability?.assets_ready && downloaded);
           const selected = selection.modelGroups.includes(id);
           const saved = status.selected_model_groups.some((group) => group.id === id);
-          const label = pending ? "Deleting…" : active ? "Downloading…" : installed ? "Installed" : downloaded ? "Needs attention" : "Not installed";
+          const label = pending ? "Deleting…" : active ? "Downloading…" : cached?.damaged ? "Damaged" : installed ? "Installed" : downloaded ? "Needs attention" : "Not installed";
           return (
             <article className={`setup-managed-model${active ? " is-downloading" : ""}`} key={id} aria-label={details.label} aria-busy={pending || active}>
               <div className="setup-managed-model-main">

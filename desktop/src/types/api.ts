@@ -77,13 +77,15 @@ export interface RuntimeSetupAdoptRequest {
 }
 
 export interface RuntimeSetupRuntimeDeleteResponse {
+  residual_model_groups?: string[];
+  message?: string;
   deleted_model_groups: string[];
   freed_bytes: number;
   state_deleted: boolean;
 }
 
 export interface RuntimeModelInventory {
-  models: Array<{ id: string; downloaded: boolean; size_bytes: number }>;
+  models: Array<{ id: string; downloaded: boolean; size_bytes: number; damaged?: boolean }>;
 }
 
 export interface RuntimeSetupStatusResponse {
@@ -91,7 +93,7 @@ export interface RuntimeSetupStatusResponse {
   schema_version: 1;
   configured: boolean;
   state: RuntimeSetupState;
-  state_error: "invalid" | "unavailable" | null;
+  state_error: string | null;
   selected_profile: RuntimeSetupProfile["id"] | null;
   selected_model_groups: RuntimeSetupModelGroupStatus[];
   recommended_profile?: RuntimeSetupProfile["id"];

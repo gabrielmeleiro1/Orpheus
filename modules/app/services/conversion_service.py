@@ -8,6 +8,7 @@ import shutil
 import threading
 import time
 from itertools import count
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -97,6 +98,19 @@ class ConversionService:
         # book id -> owning thread ident; only the owner may end the reservation.
         self._book_cleanup_ids: dict[int, int] = {}
         self._tts_session = TtsEngineSession()
+        self.upload_reference_checker: Callable[[Path], bool] | None = None
+
+    @contextmanager
+    def upload_cleanup_guard(self, source_path: Path | None = None):
+        with self._job_lock:
+            if self._storage_cleanup_active:
+                raise RuntimeError("Storage cleanup is in progress")
+            job = self._active_job
+            if job is not None and self._job_is_active_or_pending(job):
+                active_source = getattr(job, "upload_source_path", None)
+                if source_path is None or active_source is None or active_source == source_path.resolve():
+                    raise RuntimeError("An active conversion still references this upload")
+            yield
 
     def _job_is_active_or_pending(self, job: Any) -> bool:
         status = getattr(job, "status", None)
@@ -242,6 +256,7 @@ class ConversionService:
                 title=title,
                 author=author,
             )
+            job.upload_source_path = source_path.resolve()
             self._active_job = job
 
         # Copying a large upload into durable storage must not run under the
@@ -301,6 +316,11 @@ class ConversionService:
                     self._cleanup_partial_durable_source(durable_path)
                     raise
                 owner_only(durable_path)
+                if self.upload_reference_checker is not None and not self.upload_reference_checker(source_path):
+                    try:
+                        source_path.unlink(missing_ok=True)
+                    except OSError:
+                        logger.warning("Failed to remove copied upload: %s", source_path)
                 return durable_path
             except FileExistsError:
                 durable_path = sources_dir / f"{source_path.stem}_{index}{source_path.suffix}"

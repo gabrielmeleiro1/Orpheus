@@ -49,6 +49,8 @@ class VoiceService:
             api_key_env=config.cleaner_api_key_env,
             api_model=config.cleaner_api_model,
         )
+        self._preview_idle_timer: threading.Timer | None = None
+        self._preview_generation = 0
         self._preview_engine: Optional[TTSStrategy] = None
         self._preview_runtime_key: Optional[tuple[object, ...]] = None
         self._validated_tts_runtimes: set[tuple[object, ...]] = set()
@@ -90,14 +92,16 @@ class VoiceService:
         with self._runtime_validation_lock:
             if self._preview_engine is None or self._preview_runtime_key != runtime_key:
                 if self._preview_engine is not None:
-                    self._preview_engine.unload()
+                    self._preview_engine.unload(keep_in_cache=False)
                 self._preview_engine = self._create_tts_strategy(spec)
                 self._preview_engine.load()
                 self._preview_runtime_key = runtime_key
+                self._schedule_preview_idle_unload()
                 return self._preview_engine
 
             if not self._preview_engine.is_loaded:
                 self._preview_engine.load()
+            self._schedule_preview_idle_unload()
             return self._preview_engine
 
     def validate_tts_runtime(
@@ -150,6 +154,8 @@ class VoiceService:
             finally:
                 if not using_preview_engine:
                     strategy.unload(keep_in_cache=False)
+                else:
+                    self._schedule_preview_idle_unload()
 
     def generate_voice_preview(
         self,
@@ -183,26 +189,29 @@ class VoiceService:
                 runtime_spec=spec,
             )
 
-            if not preview_engine.validate_voice(voice):
-                raise ValueError(
-                    f"Voice '{voice}' not supported. "
-                    f"Available: {[v.id for v in preview_engine.supported_voices]}"
-                )
-
-            audio = preview_engine.synthesize(text, voice, speed)
-            with tempfile.NamedTemporaryFile(
-                suffix=".wav",
-                delete=False,
-                dir=self._config.temp_dir,
-            ) as temp_file:
-                temp_path = Path(temp_file.name)
             try:
-                sf.write(str(temp_path), audio, preview_engine.sample_rate)
-            except Exception:
-                temp_path.unlink(missing_ok=True)
-                raise
-            self._perf_metrics["preview_generation_count"] += 1
-            return temp_path
+                if not preview_engine.validate_voice(voice):
+                    raise ValueError(
+                        f"Voice '{voice}' not supported. "
+                        f"Available: {[v.id for v in preview_engine.supported_voices]}"
+                    )
+
+                audio = preview_engine.synthesize(text, voice, speed)
+                with tempfile.NamedTemporaryFile(
+                    suffix=".wav",
+                    delete=False,
+                    dir=self._config.temp_dir,
+                ) as temp_file:
+                    temp_path = Path(temp_file.name)
+                try:
+                    sf.write(str(temp_path), audio, preview_engine.sample_rate)
+                except Exception:
+                    temp_path.unlink(missing_ok=True)
+                    raise
+                self._perf_metrics["preview_generation_count"] += 1
+                return temp_path
+            finally:
+                self._schedule_preview_idle_unload()
 
     def _create_tts_strategy(self, spec: TTSRuntimeSpec) -> TTSStrategy:
         return self._tts_factory.create(
@@ -258,6 +267,9 @@ class VoiceService:
         self,
         source_path: Path,
         engine_name: Optional[str] = None,
+        cleaner_backend: Optional[str] = None,
+        cleaner_api_model: Optional[str] = None,
+        cleaner_api_key: Optional[str] = None,
     ) -> dict[str, Any]:
         if not source_path.exists():
             raise ValueError(f"Source file not found: {source_path}")
@@ -267,7 +279,17 @@ class VoiceService:
         if not voices:
             raise RuntimeError(f"No voices available for engine '{selected_engine}'")
 
-        recommendation = self._voice_recommender.suggest_for_book(
+        recommender = self._voice_recommender
+        if cleaner_backend is not None:
+            if cleaner_backend != "api" or not cleaner_api_model or not cleaner_api_key:
+                raise ValueError("Configure an API cleaner model and key to recommend a voice")
+            recommender = VoiceRecommender(
+                api_base_url=self._config.cleaner_api_base_url,
+                api_key_env=self._config.cleaner_api_key_env,
+                api_model=cleaner_api_model,
+                api_key=cleaner_api_key,
+            )
+        recommendation = recommender.suggest_for_book(
             source_path=source_path,
             voices=voices,
         )
@@ -313,9 +335,30 @@ class VoiceService:
             models.insert(0, self._config.cleaner_api_model)
         return models
 
+    def _schedule_preview_idle_unload(self) -> None:
+        """Called under the synthesis lock; stale timer callbacks cannot evict a new engine."""
+        if self._preview_idle_timer is not None:
+            self._preview_idle_timer.cancel()
+        self._preview_generation += 1
+        generation = self._preview_generation
+
+        def unload_if_idle() -> None:
+            with self._runtime_validation_lock:
+                if generation == self._preview_generation:
+                    self.cleanup()
+
+        timer = threading.Timer(max(0.0, self._config.tts_idle_timeout_seconds), unload_if_idle)
+        timer.daemon = True
+        self._preview_idle_timer = timer
+        timer.start()
+
     def cleanup(self) -> None:
         with self._runtime_validation_lock:
+            self._preview_generation += 1
+            if self._preview_idle_timer is not None:
+                self._preview_idle_timer.cancel()
+                self._preview_idle_timer = None
             if self._preview_engine is not None:
-                self._preview_engine.unload()
+                self._preview_engine.unload(keep_in_cache=False)
                 self._preview_engine = None
                 self._preview_runtime_key = None

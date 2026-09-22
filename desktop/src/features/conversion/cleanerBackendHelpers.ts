@@ -81,7 +81,7 @@ export function isCleanerBackendRuntimeAvailable(
   option: CleanerBackendOption,
   capabilities: SystemCapabilitiesResponse | null,
 ): boolean {
-  if (!option.is_local) {
+  if (!option.is_local || option.id === "basic") {
     return true;
   }
 
@@ -228,6 +228,9 @@ export function deriveCleanerRuntimeStatus(
   }
 
   const displayName = selectedBackend.display_name;
+  if (selectedBackend.id === "basic") {
+    return { message: `${displayName} ready.`, isError: false };
+  }
 
   if (!selectedBackend.is_local) {
     if (selectedBackend.requires_api_key && !hasApiKey) {

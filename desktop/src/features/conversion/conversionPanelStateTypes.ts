@@ -40,6 +40,7 @@ export interface ConversionCapabilities {
   canInspectSource: boolean;
   canPreviewVoice: boolean;
   canRecommendVoice: boolean;
+  recommendationUnavailableReason?: string;
   canRunQueue: boolean;
   canStartConversion: boolean;
   canCancelJob: boolean;
@@ -121,6 +122,7 @@ interface QueueItemViewModel {
   canMoveUp: boolean;
   canMoveDown: boolean;
   canRemove: boolean;
+  finished?: boolean;
 }
 
 export interface SourceQueueViewModel {

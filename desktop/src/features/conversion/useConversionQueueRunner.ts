@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { StartConversionRequest } from "../../types/api";
@@ -32,6 +32,14 @@ export function useConversionQueueRunner({
 }: UseConversionQueueRunnerArgs) {
   const [queueRunning, setQueueRunning] = useState(false);
   const commandInFlightRef = useRef(false);
+  const latestRef = useRef({ apiClient, queueItems });
+  latestRef.current = { apiClient, queueItems };
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
 
   const onStartConversion = useCallback(async (itemOverride?: ConversionQueueItem) => {
     if (commandInFlightRef.current) {
@@ -149,7 +157,11 @@ export function useConversionQueueRunner({
 
     try {
       let queueCompleted = true;
-      for (const item of runnableItems) {
+      const remainingIds = new Set(runnableItems.map((item) => item.id));
+      while (mountedRef.current) {
+        const item = latestRef.current.queueItems.find((candidate) => remainingIds.has(candidate.id));
+        if (!item) break;
+        remainingIds.delete(item.id);
         updateQueueItem(item.id, (current) => ({
           ...current,
           status: "converting",
@@ -167,28 +179,52 @@ export function useConversionQueueRunner({
             status: "converting",
           }));
           setQueueStatus(`Converting ${item.label}...`);
-          const finalStatus = (await conversionJob.waitForTerminalState(startResult.jobId)).status;
+          let finalStatus = (await conversionJob.waitForTerminalState(startResult.jobId)).status;
+          if (finalStatus === "unknown") {
+            const unknownMessage = "conversion status unknown - check Library";
+            setQueueStatus("Checking backend before continuing the queue...");
+            // Losing observation does not release the backend's job slot.
+            // Poll with the current client until the slot is demonstrably idle.
+            let reconciled = false;
+            while (mountedRef.current) {
+              try {
+                const client = latestRef.current.apiClient;
+                if (!client) break;
+                const active = await client.getActiveConversion();
+                if (!active.active && active.job?.status !== "running" && active.job?.status !== "idle") {
+                  if (active.job?.id === startResult.jobId &&
+                    (active.job.status === "completed" || active.job.status === "failed" || active.job.status === "cancelled")) {
+                    finalStatus = active.job.status;
+                  }
+                  reconciled = true;
+                  break;
+                }
+              } catch {
+                break;
+              }
+              await new Promise((resolve) => window.setTimeout(resolve, 1500));
+            }
+            if (!reconciled || finalStatus === "unknown") {
+              updateQueueItem(item.id, (current) => ({
+                ...current,
+                status: "warning",
+                error: unknownMessage,
+              }));
+              queueCompleted = false;
+              setQueueStatus(unknownMessage);
+              if (!reconciled) {
+                setQueueStatus("Queue paused: backend status unavailable. Reconnect before running the remaining items.");
+                break;
+              }
+              continue;
+            }
+          }
           if (finalStatus === "completed") {
             updateQueueItem(item.id, (current) => ({
               ...current,
               status: "done",
               error: "",
             }));
-            continue;
-          }
-          // "unknown" means we stopped observing the job (the backend health
-          // monitor swapped the client, or the wait timed out), not that the
-          // conversion failed -- it usually finishes fine. Flag this item for
-          // the user to check, but keep converting the rest of the queue.
-          if (finalStatus === "unknown") {
-            const unknownMessage = "conversion status unknown - check Library";
-            updateQueueItem(item.id, (current) => ({
-              ...current,
-              status: "warning",
-              error: unknownMessage,
-            }));
-            setQueueStatus(unknownMessage);
-            queueCompleted = false;
             continue;
           }
           const message =

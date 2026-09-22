@@ -177,7 +177,7 @@ class PipelineConfig:
     cleaner_api_key_env: str = "OPENAI_API_KEY"
     cleaner_api_key: Optional[str] = None
     cleaner_api_model: Optional[str] = "gpt-5-nano"
-    save_cleaning_debug: bool = True
+    save_cleaning_debug: bool = False
     cleaner_skip_llm_when_not_needed: bool = True
     source_type: Optional[str] = None
     pdf_extraction_backend: str = "fitz"

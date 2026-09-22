@@ -113,15 +113,24 @@ def audit_storage_state(
             return resolved_path
 
         playable_book_ids: set[int] = set()
+        recoverable_book_ids: set[int] = set()
         for row in books:
             # Interrupted conversions can own only their durable source/inventory.
-            add_output_reference(row["source_path"])
+            source_path = add_output_reference(row["source_path"])
+            if source_path is not None:
+                from modules.pipeline.recovery import recovery_audio_paths
+
+                if source_path.is_file() or recovery_audio_paths(source_path):
+                    recoverable_book_ids.add(int(row["id"]))
             playback_path = add_output_reference(row["playback_path"])
             if playback_path and playback_path.exists() and playback_path.is_file():
                 playable_book_ids.add(int(row["id"]))
 
         for row in chapters:
             raw_path = row["mp3_path"]
+            if int(row["book_id"]) in recoverable_book_ids:
+                add_output_reference(raw_path)
+                continue
             if raw_path:
                 mp3_path = add_output_reference(raw_path)
                 if mp3_path is None:
@@ -240,6 +249,7 @@ def audit_storage_state(
             "workspace_root": str(workspace_root),
             "row_counts": row_counts,
             "stale_chapter_rows": stale_chapter_rows,
+            "recoverable_book_ids": sorted(recoverable_book_ids),
             "stale_book_sources": stale_book_sources,
             "orphan_output_dirs": orphan_output_dirs,
             "stale_temp_uploads": stale_temp_uploads,

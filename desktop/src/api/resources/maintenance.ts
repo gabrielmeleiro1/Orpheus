@@ -28,6 +28,10 @@ export function createMaintenanceApi(requestJson: RequestJson) {
   }
 
   return {
+    openDeletionFolder: (path: string) => requestJson<{ folder_path: string }>("/api/maintenance/delete-staging/open-folder", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    }),
     getMaintenanceDiagnostics,
     backupDatabase,
     cleanupStorage,

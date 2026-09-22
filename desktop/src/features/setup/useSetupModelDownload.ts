@@ -11,7 +11,7 @@ import {
 } from "./setupModel";
 import { EMPTY_PROGRESS, safeError } from "./setupPageHelpers";
 
-export type SetupDownloadPhase = "idle" | "starting" | "downloading" | "adopting";
+export type SetupDownloadPhase = "idle" | "starting" | "downloading" | "stopping" | "adopting";
 
 interface UseSetupModelDownloadArgs {
   apiClient: ApiClient | null;
@@ -66,7 +66,7 @@ export function useSetupModelDownload({
       lastAttempt.current = "backend";
       startLocked.current = true;
       setBusy(true);
-      setDownloadPhase("downloading");
+      setDownloadPhase(snapshot.lifecycle === "stopping" ? "stopping" : "downloading");
       setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
     }).catch(() => {
       // Backends without the download endpoint (or transient failures) just
@@ -78,7 +78,7 @@ export function useSetupModelDownload({
   }, [apiClient, environment]);
 
   useEffect(() => {
-    if (downloadPhase !== "downloading" || !apiClient) {
+    if ((downloadPhase !== "downloading" && downloadPhase !== "stopping") || !apiClient) {
       return undefined;
     }
     let active = true;
@@ -104,7 +104,10 @@ export function useSetupModelDownload({
       if (!active) return;
       pollFailures = 0;
       latest.current.onDownloadingModel?.(snapshot.current_model_group ?? snapshot.model_groups[0] ?? null);
-      setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
+      setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(
+        downloadPhase === "stopping" && snapshot.lifecycle === "running" ? { ...snapshot, lifecycle: "stopping" } : snapshot,
+      )));
+      if (snapshot.lifecycle === "stopping") setDownloadPhase("stopping");
       if (snapshot.lifecycle === "complete") {
         configureRuntime.current = snapshot.configure_runtime !== false;
         const selected = latest.current.selection;

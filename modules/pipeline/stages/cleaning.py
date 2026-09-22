@@ -116,13 +116,12 @@ def save_cleaning_artifacts(
                 "info",
             )
 
-        if runtime.config.save_cleaning_debug:
-            clean_md = output_dir / f"chapter_{chapter.number:02d}_cleaned.md"
-            clean_md.write_text(
-                f"# {chapter.title}\n\n" + "\n\n".join(cleaned_chunks),
-                encoding="utf-8",
-            )
-            runtime.log_verbose(f"[CLEANER] Saved cleaned text: {clean_md.name}", "success")
+        clean_md = output_dir / f"chapter_{chapter.number:02d}_cleaned.md"
+        clean_md.write_text(
+            f"# {chapter.title}\n\n" + "\n\n".join(cleaned_chunks),
+            encoding="utf-8",
+        )
+        runtime.log_verbose(f"[CLEANER] Saved cleaned text: {clean_md.name}", "success")
     except Exception as exc:
         runtime.log_verbose(f"[CLEANER] Failed to save cleaned md: {exc}", "warning")
 

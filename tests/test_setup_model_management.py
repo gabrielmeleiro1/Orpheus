@@ -32,8 +32,10 @@ def storage(monkeypatch, tmp_path):
     cache.mkdir()
     monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(routes, "scan_cache_dir", lambda: scan_cache_dir(cache))
+    monkeypatch.setattr(routes.hf_constants, "HF_HUB_CACHE", str(cache))
+    monkeypatch.setattr(routes, "cuda_hardware_error", lambda: None)
     original_delete = routes._delete_runtime_models
-    monkeypatch.setattr(routes, "_delete_runtime_models", lambda **kwargs: original_delete(cache_scanner=lambda: scan_cache_dir(cache), **kwargs))
+    monkeypatch.setattr(routes, "_delete_runtime_models", lambda **kwargs: original_delete(cache_scanner=lambda: scan_cache_dir(cache), cache_root=cache, **kwargs))
     state_path = setup_runtime.default_state_path()
     setup_runtime.write_setup_state(state_path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"), accepted_risks=())
     repos = {group: make_repo(cache, resolve_model_groups((group,))[0]) for group in ("tts-cpu-cuda", "cleaner-cuda")}
@@ -60,7 +62,7 @@ def test_inventory_and_deletion_preserve_other_repos_even_with_same_commit(stora
         assert client.delete("/api/setup/models/cleaner-cuda").json()["freed_bytes"] == 0
         assert client.delete("/api/setup/models/tts-cpu-cuda").status_code == 200
         state = setup_runtime.read_setup_state(state_path)
-        assert (state["profile"], state["model_groups"], state["restart_required"]) == ("base", [], False)
+        assert (state["profile"], state["model_groups"], state["restart_required"]) == ("cuda", ["tts-cpu-cuda"], False)
 
 
 def test_delete_then_download_again_preserves_the_active_runtime(storage, monkeypatch):
@@ -133,3 +135,54 @@ def test_model_management_requires_auth_and_rejects_unknown_models(storage):
         assert client.get("/api/setup/models").status_code == 401
         assert client.delete("/api/setup/models/cleaner-cuda").status_code == 401
         assert client.delete("/api/setup/models/unknown", headers={"Authorization": "Bearer test-token"}).status_code == 422
+
+
+def test_damaged_managed_repo_is_visible_and_removable(storage):
+    _, _, repos = storage
+    (repos["cleaner-cuda"] / "refs" / "main").write_text("missing-revision")
+    with TestClient(create_app(controller=object())) as client:
+        item = next(item for item in client.get("/api/setup/models").json()["models"] if item["id"] == "cleaner-cuda")
+        assert item["downloaded"] and item["damaged"]
+        response = client.delete("/api/setup/models/cleaner-cuda")
+    assert response.status_code == 200
+    assert not repos["cleaner-cuda"].exists()
+    assert repos["unrelated"].exists()
+
+
+def test_partial_delete_reports_actual_bytes_and_keeps_selection(storage, monkeypatch):
+    _, state_path, repos = storage
+    before = setup_runtime.read_setup_state(state_path)
+    victim = repos["cleaner-cuda"] / "extra.bin"
+    victim.write_bytes(b"1234567")
+    original_remove = routes.shutil.rmtree
+    def partial(path, **kwargs):
+        if path != repos["cleaner-cuda"]:
+            return original_remove(path, **kwargs)
+        victim.unlink()
+        raise PermissionError("locked")
+    monkeypatch.setattr(routes.shutil, "rmtree", partial)
+    with TestClient(create_app(controller=object())) as client:
+        response = client.delete("/api/setup/models/cleaner-cuda")
+    assert response.status_code == 200
+    result = response.json()
+    assert result["freed_bytes"] == 7
+    assert result["deleted_model_groups"] == []
+    assert result["residual_model_groups"] == ["cleaner-cuda"]
+    assert "Couldn't delete some files" in result["message"]
+    assert setup_runtime.read_setup_state(state_path) == before
+
+
+def test_deleting_voice_model_leaves_runtime_not_ready(storage, monkeypatch):
+    _, state_path, _ = storage
+    setup_runtime.write_setup_state(state_path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"), accepted_risks=(), restart_required=False)
+    monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True, "missing": [], "incompatible": []})
+    monkeypatch.setattr(setup_runtime, "_probe_profile", lambda groups, _: {"available": True, "checks": [{"id": g, "available": True} for g in groups]})
+    monkeypatch.setattr(routes, "_detect_installed_runtime", lambda *a, **k: None)
+    check_assets = routes._check_model_group_assets
+    monkeypatch.setattr(routes, "_check_model_group_assets", lambda groups, **kwargs: check_assets(groups, cache_scanner=routes.scan_cache_dir, **kwargs))
+    with TestClient(create_app(controller=object())) as client:
+        assert client.delete("/api/setup/models/tts-cpu-cuda").status_code == 200
+        status = client.get("/api/setup/status").json()
+    assert status["ready"] is False
+    assert status["state"] == "unavailable"
+    assert "Kokoro voice model is missing" in status["state_error"]

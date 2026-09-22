@@ -13,7 +13,7 @@ be converted again to include them.
 | --- | --- |
 | macOS 14+ on Apple Silicon | Primary release platform. Unsigned DMG builds use the local MLX runtime. |
 | Windows 10/11 | Source development is supported and checked in CI, with base and NVIDIA CUDA runtime options. |
-| Linux | Core development and NVIDIA CUDA runtimes are supported; no packaged desktop release is currently published. |
+| Linux | Desktop builds are source-only. Core development and NVIDIA CUDA runtimes are supported; no packaged desktop release is published. |
 
 ### Windows 11: Smart App Control
 
@@ -54,9 +54,9 @@ be converted again to include them.
 
 ## Quick Start
 
-The commands below are for macOS. Windows contributors should use the
-[PowerShell source setup](docs/DEPENDENCIES.md#windows), including the Tauri
-C++ and WebView2 prerequisites.
+Install [system prerequisites](docs/DEPENDENCIES.md#system-prerequisites) first,
+including Git, Python 3.12, Node 20+, Rust, and FFmpeg. Clone the repository and
+run these commands from its root. macOS and Linux use a POSIX shell:
 
 ```bash
 python3.12 -m venv .venv
@@ -68,6 +68,29 @@ python run_tests.py --contract
 cd desktop
 npm ci
 npm run desktop:dev
+```
+
+Windows PowerShell (including [C++ Build Tools and WebView2](docs/DEPENDENCIES.md#windows)):
+
+```powershell
+winget install --exact --id Git.Git
+winget install --exact --id Gyan.FFmpeg
+# Open a new terminal after installing prerequisites.
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python scripts\setup_runtime.py --profile base
+python -m pip install -r requirements-dev.txt
+cd desktop
+npm ci
+npm run desktop:dev
+```
+
+For local audio on Windows, run this from the repository root with the venv
+active, or select CUDA in Setup:
+
+```powershell
+python scripts\setup_runtime.py --profile cuda --group tts-cpu-cuda --group cleaner-cuda
 ```
 
 This quick start selects the `base` profile for library management, existing-audio
@@ -98,6 +121,15 @@ packaged releases cannot run that dependency installer. Release artifacts must
 include their intended `base`, `mlx`, or `cuda` runtime in the sidecar. A packaged
 base build supports source inspection, library management, and playback of
 existing audio; conversion requires a build with TTS.
+
+### First launch
+
+Setup checks the runtime, lets you choose the required Kokoro voice model and
+an optional cleaner, downloads those models, then verifies that audio creation
+is ready. CUDA hardware is checked before installation. Library-only mode skips
+model downloads. Later, use **Settings → Manage models** to install, repair, or
+delete models; **Settings → Storage** shows and opens the actual data folders.
+See [data locations](docs/RUN_APPLICATION.md#data-locations) for each OS.
 
 `requirements.txt` installs the base runtime. The profile manifests live under
 `requirements/`, and `requirements-dev.txt` adds test, lint, and desktop

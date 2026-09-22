@@ -231,15 +231,25 @@ export function useConversionQueueController({
   );
 
   const moveQueueItem = useCallback((itemId: string, delta: number) => {
+    if (stateRef.current.queueItems.find((item) => item.id === itemId)?.status === "converting") return;
     dispatch({ type: "itemMoved", itemId, delta });
   }, []);
 
   const removeQueueItem = useCallback(
     (itemId: string) => {
+      const item = stateRef.current.queueItems.find((candidate) => candidate.id === itemId);
+      if (!item || item.status === "converting") return;
       abortPreflight(itemId);
       dispatch({ type: "itemRemoved", itemId });
+      if (item.sourcePath.startsWith("upload:") && !stateRef.current.queueItems.some(
+        (candidate) => candidate.id !== itemId && candidate.sourcePath === item.sourcePath,
+      )) {
+        void apiClient?.deleteUpload(item.sourcePath).catch(() => {
+          dispatch({ type: "queueStatusSet", status: "Item removed. Its upload could not be deleted yet." });
+        });
+      }
     },
-    [abortPreflight],
+    [abortPreflight, apiClient],
   );
 
   const updateQueueItem = useCallback(

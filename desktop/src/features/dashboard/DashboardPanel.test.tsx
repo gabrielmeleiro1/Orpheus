@@ -2,7 +2,8 @@
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApiClient } from "../../api/client";
 
 import type { UseLibraryResult } from "../library/useLibrary";
 import { DashboardPanel } from "./DashboardPanel";
@@ -20,6 +21,36 @@ describe("DashboardPanel library count", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+  });
+
+  it("labels paused playback truthfully and dismisses a completed conversion", async () => {
+    const props = { hidden: false, library: { items: [], indexedCount: 0, selectedBookDetail: null } as unknown as UseLibraryResult, connectionState: "connected" as const, health: null, statusMessage: "", uiState: "completed" as const, progressPct: 100, etaText: "", stages: [], currentChapterLabel: "One", playerTitle: "Paused", playing: false, elapsedSec: 0, durationSec: 20 };
+    root = createRoot(container);
+    await act(async () => root.render(<DashboardPanel {...props} />));
+    expect(container.querySelector(".now-playing-main .card-eyebrow")?.textContent).toBe("Continue listening");
+    expect(container.querySelector('[aria-label="Conversion progress"]')?.classList.contains("pbar-done")).toBe(true);
+    await act(async () => root.render(<DashboardPanel {...props} playing />));
+    expect(container.querySelector(".now-playing-main .card-eyebrow")?.textContent).toBe("Now playing");
+    await act(async () => (container.querySelector('[aria-label="Dismiss conversion"]') as HTMLButtonElement).click());
+    expect(container.querySelector(".conversion-card")).toBeNull();
+    await act(async () => root.render(<DashboardPanel {...props} uiState="running" />));
+    expect(container.querySelector(".conversion-card")).not.toBeNull();
+    expect(container.querySelector('[aria-label="Conversion progress"]')?.classList.contains("pbar-active")).toBe(true);
+    await act(async () => root.render(<DashboardPanel {...props} uiState="failed" />));
+    expect(container.querySelector('[aria-label="Conversion progress"]')?.classList.contains("pbar-danger")).toBe(true);
+  });
+
+  it("checks the completed book by id even when filtered out, then hides it after deletion", async () => {
+    const getLibraryBook = vi.fn(async () => ({ id: 42 }));
+    const apiClient = { getActiveConversion: vi.fn(async () => ({ job: { id: "job", status: "completed", book_id: 42 } })), getLibraryBook } as unknown as ApiClient;
+    const props = { apiClient, hidden: false, library: { items: [], indexedCount: 1, selectedBookDetail: null } as unknown as UseLibraryResult, connectionState: "connected" as const, health: null, statusMessage: "", uiState: "completed" as const, progressPct: 100, etaText: "", stages: [], currentChapterLabel: "", playerTitle: "", playing: false, elapsedSec: 0, durationSec: 0 };
+    root = createRoot(container);
+    await act(async () => root.render(<DashboardPanel {...props} />));
+    expect(getLibraryBook).toHaveBeenCalledWith(42);
+    expect(container.querySelector(".conversion-card")).not.toBeNull();
+    getLibraryBook.mockRejectedValueOnce({ status: 404 });
+    await act(async () => root.render(<DashboardPanel {...props} library={{ ...props.library, indexedCount: 0 }} />));
+    expect(container.querySelector(".conversion-card")).toBeNull();
   });
 
   it("uses indexedCount when visible library items are filtered", async () => {

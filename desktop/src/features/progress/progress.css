@@ -175,9 +175,9 @@
 }
 
 .stage-node.is-done {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  color: var(--accent-text);
+  background: color-mix(in srgb, var(--positive) 12%, transparent);
+  border-color: color-mix(in srgb, var(--positive) 40%, transparent);
+  color: var(--positive);
 }
 
 .stage-node.is-active {
@@ -224,7 +224,7 @@
 }
 
 .stage-done::before {
-  background: color-mix(in srgb, var(--accent) 30%, var(--border));
+  background: color-mix(in srgb, var(--positive) 30%, var(--border));
 }
 
 .stage-status {

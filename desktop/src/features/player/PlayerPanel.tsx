@@ -39,6 +39,7 @@ interface PlayerPanelProps {
   volume: number;
   canGoPrevious?: boolean;
   canGoNext?: boolean;
+  chapterPlaylist?: boolean;
   className?: string;
   audioRef?: Ref<HTMLAudioElement>;
   audio?: PlayerPanelAudioProps;
@@ -64,6 +65,7 @@ export function PlayerPanel({
   volume,
   canGoPrevious = false,
   canGoNext = false,
+  chapterPlaylist = false,
   className,
   audioRef,
   audio,
@@ -132,8 +134,8 @@ export function PlayerPanel({
               id="prev-btn"
               className="btn-player btn-icon"
               type="button"
-              data-tip="Previous audiobook"
-              aria-label="Previous audiobook"
+              data-tip={chapterPlaylist ? "Previous chapter" : "Previous audiobook"}
+              aria-label={chapterPlaylist ? "Previous chapter" : "Previous audiobook"}
               disabled={prevDisabled}
               onClick={onPrevious}
             >
@@ -193,8 +195,8 @@ export function PlayerPanel({
               id="next-btn"
               className="btn-player btn-icon"
               type="button"
-              data-tip="Next audiobook"
-              aria-label="Next audiobook"
+              data-tip={chapterPlaylist ? "Next chapter" : "Next audiobook"}
+              aria-label={chapterPlaylist ? "Next chapter" : "Next audiobook"}
               disabled={nextDisabled}
               onClick={onNext}
             >

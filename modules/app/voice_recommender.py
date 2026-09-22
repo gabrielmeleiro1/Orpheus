@@ -26,11 +26,13 @@ class VoiceRecommender:
         api_key_env: str,
         api_model: Optional[str],
         timeout_seconds: int = 45,
+        api_key: Optional[str] = None,
     ) -> None:
         self.api_base_url = (api_base_url or "").strip().rstrip("/")
         self.api_key_env = (api_key_env or "OPENAI_API_KEY").strip() or "OPENAI_API_KEY"
         self.api_model = (api_model or "gpt-5-nano").strip() or "gpt-5-nano"
         self.timeout_seconds = timeout_seconds
+        self.api_key = api_key
 
     def suggest_for_book(
         self,
@@ -45,23 +47,12 @@ class VoiceRecommender:
             raise ValueError("No voices available for recommendation")
 
         sample = self._extract_book_sample(source_path=source_path, max_units=max_units, max_chars=max_chars)
-        api_used = False
-        try:
-            model_payload = self._request_model_suggestion(book_sample=sample["excerpt"], voices=voices)
-            api_used = True
-        except RuntimeError as exc:
-            model_payload = {
-                "book_type": "general",
-                "tone": "balanced",
-                "recommended_voice_id": voices[0]["id"],
-                "recommended_voice_style": "neutral long-form narration",
-                "reasoning": f"API suggestion unavailable ({exc}). Falling back to first available voice.",
-            }
+        model_payload = self._request_model_suggestion(book_sample=sample["excerpt"], voices=voices)
 
         available_voice_ids = {str(v["id"]) for v in voices if v.get("id")}
         recommended_voice_id = str(model_payload.get("recommended_voice_id", "")).strip()
         if recommended_voice_id not in available_voice_ids:
-            recommended_voice_id = str(voices[0]["id"])
+            raise RuntimeError("Voice suggestion did not identify an available voice")
 
         return {
             "book_sample": sample,
@@ -80,7 +71,7 @@ class VoiceRecommender:
                     or "Selected for long-form audiobook clarity."
                 ),
             },
-            "api_used": api_used,
+            "api_used": True,
         }
 
     def _extract_book_sample(
@@ -197,7 +188,7 @@ class VoiceRecommender:
         if not self.api_base_url:
             raise RuntimeError("Cleaner API base URL is empty")
 
-        api_key = os.getenv(self.api_key_env)
+        api_key = self.api_key if self.api_key is not None else os.getenv(self.api_key_env)
         if not api_key:
             raise RuntimeError(f"Missing API key in environment variable: {self.api_key_env}")
 

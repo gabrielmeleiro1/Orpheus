@@ -55,6 +55,8 @@ export interface UseLibraryListResult {
   loadingDetail: boolean;
   errorMessage: string;
   statusMessage: string;
+  pendingDeletionPath: string | null;
+  openPendingDeletionFolder: () => Promise<void>;
   bookSummaryTitle: string;
   bookSummaryMeta: string;
   bookDetailText: string;
@@ -89,6 +91,16 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("Library idle");
+  const [pendingDeletionPath, setPendingDeletionPath] = useState<string | null>(null);
+  useEffect(() => setPendingDeletionPath(null), [apiClient]);
+  const openPendingDeletionFolder = useCallback(async () => {
+    if (!apiClient || !pendingDeletionPath) return;
+    try {
+      await apiClient.openDeletionFolder(pendingDeletionPath);
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : "Could not open folder");
+    }
+  }, [apiClient, pendingDeletionPath]);
 
   const requestContextGenerationRef = useRef(0);
   const queryContextGenerationRef = useRef(0);
@@ -583,7 +595,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     });
 
     const title = selectedBookDetail?.title || items.find((item) => item.id === selectedBookId)?.title || "selected book";
-    const deletedStatus = `Deleted ${title}`;
+    let deletedStatus = `Deleted ${title}`;
     const selectionGenerationAtDeleteStart = selectionGenerationRef.current;
     const queryContextGenerationAtDeleteStart = queryContextGenerationRef.current;
     const isDeleteQueryCurrent = () =>
@@ -630,11 +642,15 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     setSelectedBookDetail(null);
 
     try {
-      await repository.deleteBook(selectedBookId, { signal: deleteController.signal });
+      const deletion = await repository.deleteBook(selectedBookId, { signal: deleteController.signal });
       if (!isCurrentMutation()) {
         return true;
       }
       clearPlaybackCheckpoint(selectedBookId);
+      if (deletion.files_pending) {
+        deletedStatus = "Removed from library, but some files couldn't be deleted";
+        setPendingDeletionPath(deletion.path ?? null);
+      }
 
       const selectionStillDeleteOwned = () =>
         selectedBookIdRef.current === optimisticSelectedBookId &&
@@ -905,6 +921,8 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
     loadingDetail,
     errorMessage,
     statusMessage,
+    pendingDeletionPath,
+    openPendingDeletionFolder,
     bookSummaryTitle: summaryValues.title,
     bookSummaryMeta: summaryValues.meta,
     bookDetailText: summaryValues.raw,

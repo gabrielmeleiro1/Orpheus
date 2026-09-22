@@ -130,6 +130,25 @@ function normalizeErrorText(bodyText: string): string {
     if (typeof parsed.detail === "string" && parsed.detail.trim()) {
       return parsed.detail.trim();
     }
+    if (parsed.detail && typeof parsed.detail === "object" && !Array.isArray(parsed.detail)) {
+      const detail = parsed.detail as { message?: unknown; error?: unknown };
+      if (typeof detail.message === "string" && detail.message.trim()) return detail.message.trim();
+      const messages: Record<string, string> = {
+        invalid_request: "Check your runtime and model selection.",
+        packages_not_ready: "Runtime dependencies are missing. Run runtime setup to repair them.",
+        probe_unavailable: "The runtime check could not run. Check runtime and try again.",
+        probe_failed: "The selected runtime is unavailable. Check its dependencies and device support.",
+        assets_missing: "Required model files are missing. Install or repair the selected models.",
+        download_in_progress: "A model download is already running. Wait for it to finish or cancel it.",
+        setup_in_progress: "Runtime setup is already running. Wait for it to finish.",
+        conversion_in_progress: "Wait for the current conversion to finish before changing runtime data.",
+        cache_unavailable: "Model storage could not be read. Try again.",
+        invalid_model: "Unknown managed model.",
+        model_delete_failed: "The model could not be deleted. Close apps using it and try again.",
+      };
+      return typeof detail.error === "string" && messages[detail.error]
+        ? messages[detail.error] : "The request could not be completed. Try again.";
+    }
     const detailSummary = summarizeValidationDetails(parsed.detail);
     if (detailSummary) {
       return detailSummary;

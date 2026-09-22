@@ -83,6 +83,40 @@ function libraryModel(): UseLibraryResult {
 }
 
 describe("LibraryPanel", () => {
+  it("shows full cleaning text in labelled panes and closes the preview", async () => {
+    const model = libraryModel();
+    model.selectedBookDetail = { ...selectedBook, chapters: [{ id: 1, number: 1, title: "One", duration_ms: 0, mp3_path: null }] };
+    const original = "Original ".repeat(400) + "original end";
+    const cleaned = "Cleaned ".repeat(400) + "cleaned end";
+    model.loadCleaningPreview = vi.fn(async () => ({ book_id: 1, chapter_number: 1, title: "One", available: true, before_text: original, cleaned_text: cleaned, llm_input_text: "", trace_rows: [] }));
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<LibraryPanel hidden={false} library={model} />));
+      await act(async () => (container.querySelector(".chapter-cleaned-btn") as HTMLButtonElement).click());
+      expect(container.querySelector('[aria-label="Original text"]')?.textContent).toBe(original);
+      expect(container.querySelector('[aria-label="Cleaned text"]')?.textContent).toBe(cleaned);
+      await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Close preview")!.click());
+      expect(container.querySelector(".cleaning-comparison")).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("keeps partial deletion feedback and Open folder visible in an empty library", async () => {
+    const model = libraryModel();
+    Object.assign(model, { items: [], indexedCount: 0, selectedBookDetail: null, selectedBookIndex: -1, pendingDeletionPath: "temp/delete_staging/trash", openPendingDeletionFolder: vi.fn(async () => {}) });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<LibraryPanel hidden={false} library={model} />));
+      expect(container.textContent).toContain("Removed from library, but some files couldn't be deleted");
+      await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Open folder")!.click());
+      expect(model.openPendingDeletionFolder).toHaveBeenCalledOnce();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
   it("associates metadata labels with their editable controls", () => {
     const html = renderToString(<LibraryPanel hidden={false} library={libraryModel()} />);
 

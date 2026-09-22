@@ -20,8 +20,10 @@ def _client() -> TestClient:
 
 def _all_profiles_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
     from modules.runtime_profiles import RuntimeProfile
+    from modules.web.routes import setup as setup_route
 
     monkeypatch.setattr(RuntimeProfile, "is_compatible", lambda self, **kwargs: True)
+    monkeypatch.setattr(setup_route, "cuda_hardware_error", lambda: None)
 
 
 def _probe(available: bool):
@@ -782,6 +784,7 @@ def test_delete_runtime_endpoint_removes_state_and_reports(
         lambda **kwargs: (["tts-mlx"], 12345),
     )
 
+    monkeypatch.setattr(setup_route, "get_managed_models", lambda: {"models": []})
     with _client() as client:
         response = client.request("DELETE", "/api/setup/runtime")
 

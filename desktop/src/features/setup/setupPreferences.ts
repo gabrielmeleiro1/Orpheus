@@ -6,10 +6,10 @@ import { MODEL_GROUP_DETAILS } from "./setupModel";
 export function syncSetupPreferences(status: RuntimeSetupStatusResponse): void {
   if (!status.configured) return;
   const cleaner = status.selected_model_groups.find(({ id }) => MODEL_GROUP_DETAILS[id]?.kind === "cleaner");
-  const backend = cleaner ? status.selected_profile ?? "api" : "api";
+  const backend = cleaner ? status.selected_profile ?? "basic" : "basic";
   const model = cleaner ? MODEL_GROUP_DETAILS[cleaner.id].model : "";
   const quantization = status.cleaner_cuda_quantization ?? "4bit";
-  const signature = JSON.stringify([status.selected_profile, model, quantization]);
+  const signature = JSON.stringify([status.selected_profile, model, quantization, backend]);
   const previous = readPersistedSettings();
   if (previous.setup_selection === signature) return;
   savePersistedSettings({

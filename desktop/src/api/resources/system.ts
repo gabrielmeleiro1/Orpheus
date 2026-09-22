@@ -46,6 +46,8 @@ export function createSystemApi(requestJson: RequestJson) {
   }
 
   return {
+    getStorageFolders: (options?: ApiRequestOptions) => requestJson<{ output_path: string; app_data_path: string }>("/api/system/storage", options),
+    openStorageFolder: (folder: "output" | "app_data", options?: ApiRequestOptions) => requestJson<{ folder_path: string }>(`/api/system/storage/${folder}/open`, { ...options, method: "POST" }),
     getHealth,
     getModelOptions,
     fetchOpenAiModelIds,

@@ -58,12 +58,14 @@ def _register_builtin_backends() -> None:
         return
 
     from modules.tts.cleaner_api import CleanerAPIStrategy
+    from modules.tts.cleaner_backends.basic import CleanerBasicStrategy
     from modules.tts.cleaner_cuda import CleanerCUDAStrategy
     from modules.tts.cleaner_mlx import CleanerMLXStrategy
 
     register_cleaner_backend("mlx", CleanerMLXStrategy)
     register_cleaner_backend("cuda", CleanerCUDAStrategy)
     register_cleaner_backend("api", CleanerAPIStrategy)
+    register_cleaner_backend("basic", CleanerBasicStrategy)
     _BUILTIN_BACKENDS_REGISTERED = True
 
 

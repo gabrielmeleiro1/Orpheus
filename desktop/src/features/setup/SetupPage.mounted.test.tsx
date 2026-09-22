@@ -315,8 +315,46 @@ describe("mounted SetupPage", () => {
     await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(), settingsEntry: true });
     await act(async () => [...container.querySelectorAll<HTMLInputElement>('input')]
       .find((input) => input.parentElement?.textContent?.includes("Kokoro TTS"))!.click());
-    expect(findButton(container, "Install").disabled).toBe(true);
-    expect(container.textContent).toContain("select at least one model");
+    expect(findButton(container, "Continue").disabled).toBe(true);
+    expect(container.textContent).toContain("Select the Kokoro voice model");
+  });
+
+  it("requires Kokoro even when a cleaner remains selected", async () => {
+    const start = vi.fn();
+    await renderPage(packagedSettingsBridge(), { initialStatus: cudaCatalogStatus(), apiClient: { startRuntimeModelDownload: start } as unknown as ApiClient });
+    await act(async () => container.querySelector<HTMLInputElement>('.setup-model-list input[type="checkbox"]')!.click());
+    expect(container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]:checked')?.parentElement?.textContent).toContain("1.5B");
+    expect(findButton(container, "Continue").disabled).toBe(true);
+    expect(container.textContent).toContain("Select the Kokoro voice model");
+    expect(start).not.toHaveBeenCalled();
+  });
+
+  it("shows the compatibility reason directly on disabled runtime cards", async () => {
+    await renderPage(bridge(), { settingsEntry: true });
+    const cuda = container.querySelector<HTMLInputElement>('input[value="cuda"]')!;
+    expect(cuda.disabled).toBe(true);
+    expect(cuda.closest("label")?.textContent).toContain("Not compatible: Unavailable.");
+  });
+
+  it("lets Settings close while a resumed download is stopping", async () => {
+    const exit = vi.fn();
+    const snapshot = { lifecycle: "stopping", profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0 };
+    await renderPage(packagedSettingsBridge(), { settingsEntry: true, onExitSettings: exit, apiClient: { getRuntimeModelDownloadStatus: vi.fn(async () => snapshot) } as unknown as ApiClient });
+    expect(container.textContent).toContain("Stopping download");
+    expect(findButton(container, "Back to dashboard").disabled).toBe(false);
+    await act(async () => findButton(container, "Back to dashboard").click());
+    expect(exit).toHaveBeenCalledOnce();
+  });
+
+  it("shows damaged models and preserves Delete after a partial removal", async () => {
+    const inventory = { models: [{ id: "tts-mlx", downloaded: true, size_bytes: 42, damaged: true }] };
+    const api = { getRuntimeModelInventory: vi.fn(async () => inventory), getRuntimeSetupStatus: vi.fn(async () => readySettings()), deleteRuntimeModel: vi.fn(async () => ({ freed_bytes: 10, residual_model_groups: ["tts-mlx"], message: "Couldn't delete some files — they may be in use." })) } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { settingsEntry: true, initialStatus: readySettings(), apiClient: api });
+    expect(container.textContent).toContain("Damaged");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Delete Kokoro TTS"]')!.click());
+    await act(async () => findButton(container, "Delete model").click());
+    expect(container.textContent).toContain("Couldn't delete some files");
+    expect(container.querySelector('[aria-label="Delete Kokoro TTS"]')).not.toBeNull();
   });
 
   it("ignores a save response from a disconnected backend", async () => {
@@ -574,6 +612,7 @@ describe("mounted SetupPage", () => {
     // and the install/library primary action must stay disabled.
     expect(findButton(container, "Cancel")).toBeTruthy();
     expect(findButton(container, "Use library only").disabled).toBe(true);
+    expect(findButton(container, "Back to dashboard").disabled).toBe(false);
   });
 
   it("does not let the busy poll interrupt an in-flight restart", async () => {
@@ -921,9 +960,11 @@ describe("mounted SetupPage", () => {
     expect(findButton(container, "Delete local runtime data")).toBeTruthy();
     await act(async () => { disclosure.open = true; });
     await act(async () => findButton(container, "Delete local runtime data").click());
-    expect(findButton(container, "Confirm delete")).toBeTruthy();
+    expect(document.activeElement?.textContent).toBe("Keep");
+    await act(async () => findButton(container, "Delete local runtime data").click());
+    expect(del).not.toHaveBeenCalled();
     await act(async () => {
-      const confirm = findButton(container, "Confirm delete");
+      const confirm = container.querySelector<HTMLButtonElement>(".setup-model-confirm .btn-danger")!;
       confirm.click();
       confirm.click();
     });
@@ -1028,7 +1069,7 @@ describe("mounted SetupPage", () => {
     await act(async () => cancelButton.click());
 
     expect(cancelDownload).toHaveBeenCalledWith({ timeoutMs: 8_000 });
-    expect(container.textContent).toContain("Cancellation requested");
+    expect(container.textContent).toContain("Stopping download");
   });
 
   it("keeps a slow packaged download cancellable without overlapping polls or consulting the bridge", async () => {

@@ -45,16 +45,22 @@ export function createConversionApi(requestJson: RequestJson) {
     });
   }
 
+  async function deleteUpload(handle: string): Promise<{ deleted: boolean }> {
+    return requestJson(`/api/uploads/${encodeURIComponent(handle)}`, { method: "DELETE" });
+  }
+
   async function suggestVoice(
     sourcePath: string,
     engine?: string | null,
     options?: ApiRequestOptions,
+    settings?: Pick<StartConversionRequest, "cleaner_backend" | "cleaner_api_model" | "cleaner_api_key">,
   ): Promise<VoiceSuggestionResponse> {
     return requestJson<VoiceSuggestionResponse>("/api/voices/suggest", {
       method: "POST",
       body: JSON.stringify({
         source_path: sourcePath,
         tts_engine: engine || null,
+        ...settings,
       }),
       ...options,
     });
@@ -110,6 +116,7 @@ export function createConversionApi(requestJson: RequestJson) {
     preflightSource,
     uploadSourceFile,
     uploadSourceText,
+    deleteUpload,
     suggestVoice,
     startConversion,
     repairConversion,

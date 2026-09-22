@@ -9,7 +9,7 @@ export const TERMINAL_MISSING_POLL_THRESHOLD = 3;
 // Poll exceptions (e.g. a backend restart left this client pointing at a dead
 // port/token) also mean the terminal event can never be observed through this
 // client, so consecutive failures must terminate the wait instead of riding
-// the 30-minute timeout. Slightly higher than the missing threshold so a
+// indefinitely. Slightly higher than the missing threshold so a
 // transient network blip does not resolve a healthy wait early.
 const TERMINAL_ERROR_POLL_THRESHOLD = 5;
 

@@ -49,6 +49,7 @@ def _compatible(monkeypatch: pytest.MonkeyPatch, profile_id: str) -> None:
 
     profile = setup_runtime.get_runtime_profile(profile_id)
     monkeypatch.setattr(type(profile), "is_compatible", lambda self: True)
+    monkeypatch.setattr(setup_runtime, "cuda_hardware_error", lambda: None)
 
 
 def test_build_plan_uses_fixed_argument_lists(monkeypatch: pytest.MonkeyPatch):
@@ -347,7 +348,7 @@ def test_failed_install_does_not_replace_existing_state(
 
     with pytest.raises(setup_runtime.SetupExecutionError, match="Dependency installation failed"):
         setup_runtime.run_setup(
-            profile_id="mlx",
+            profile_id="base",
             model_groups=(),
             state_path=state_path,
             command_runner=runner,
@@ -409,10 +410,10 @@ def test_setup_state_cache_key_tracks_identity_profile_and_model_groups(tmp_path
     ("profile", "groups", "expected_calls", "available"),
     [
         ("mlx", ("tts-mlx",), ["mlx-tts"], True),
-        ("mlx", ("cleaner-mlx",), ["cleaner-mlx"], True),
-        ("mlx", (), [], True),
+        ("mlx", ("cleaner-mlx",), ["cleaner-mlx"], False),
+        ("mlx", (), [], False),
         ("cuda", ("tts-cpu-cuda",), ["package-tts"], False),
-        ("cuda", ("cleaner-cuda",), ["cleaner-cuda"], True),
+        ("cuda", ("cleaner-cuda",), ["cleaner-cuda"], False),
     ],
 )
 def test_status_probes_only_selected_model_groups(
@@ -592,7 +593,7 @@ def test_concurrent_setup_is_excluded_before_second_pip(
 
     thread = threading.Thread(
         target=lambda: setup_runtime.run_setup(
-            profile_id="mlx",
+            profile_id="base",
             state_path=state_path,
             command_runner=first_runner,
         )
@@ -601,7 +602,7 @@ def test_concurrent_setup_is_excluded_before_second_pip(
     assert entered.wait(timeout=5)
     with pytest.raises(setup_runtime.SetupExecutionError, match="already running"):
         setup_runtime.run_setup(
-            profile_id="mlx",
+            profile_id="base",
             state_path=state_path,
             command_runner=lambda command, **kwargs: second_calls.append(command),
             lock_timeout_seconds=0.05,
@@ -619,7 +620,7 @@ def test_non_finite_lock_timeout_is_rejected(monkeypatch: pytest.MonkeyPatch, tm
     _compatible(monkeypatch, "mlx")
     with pytest.raises(setup_runtime.SetupValidationError, match="finite"):
         setup_runtime.run_setup(
-            profile_id="mlx",
+            profile_id="base",
             state_path=tmp_path / "runtime-setup.json",
             lock_timeout_seconds=float("nan"),
         )
@@ -694,7 +695,7 @@ def test_corrupt_backend_instance_blocks_setup_before_pip(
     calls = []
     with pytest.raises(setup_runtime.SetupExecutionError, match="corrupt"):
         setup_runtime.run_setup(
-            profile_id="mlx",
+            profile_id="base",
             state_path=state_path,
             command_runner=lambda command, **kwargs: calls.append(command),
         )
@@ -797,6 +798,7 @@ def test_json_cli_parse_errors_are_machine_readable(
 
 def test_subprocess_oserror_is_wrapped_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ):
     import scripts.setup_runtime as setup_runtime
 
@@ -807,8 +809,9 @@ def test_subprocess_oserror_is_wrapped_without_traceback(
 
     with pytest.raises(setup_runtime.SetupExecutionError, match="could not start"):
         setup_runtime.run_setup(
-            profile_id="mlx",
+            profile_id="base",
             command_runner=unavailable,
+            state_path=tmp_path / "runtime-setup.json",
         )
 
 

@@ -30,6 +30,7 @@ from modules.app.services.runtime_capability_service import (  # noqa: E402
 )
 from modules.runtime_profiles import (  # noqa: E402
     RuntimeProfile,
+    cuda_hardware_error,
     get_runtime_profile,
     runtime_profiles,
 )
@@ -371,6 +372,11 @@ def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
             temporary_path.unlink(missing_ok=True)
 
 
+def require_voice_model(profile_id: str, model_groups: Iterable[str]) -> None:
+    if profile_id != "base" and not any(group.startswith("tts-") for group in model_groups):
+        raise SetupValidationError("Select the Kokoro voice model — it's required to create audio.")
+
+
 def validate_model_selection(model_groups: Iterable[str]) -> None:
     """Installation may cache many models; an active setup chooses one cleaner."""
     if sum(group.startswith("cleaner-") for group in model_groups) > 1:
@@ -667,18 +673,23 @@ def get_setup_status(
         timeout_seconds=15.0,
     )
     probe = _probe_profile(state["model_groups"], service)
+    selection_error = None
+    try:
+        require_voice_model(state["profile"], state["model_groups"])
+    except SetupValidationError as exc:
+        selection_error = str(exc)
     risk = None
     return {
         "configured": True,
         "profile": state["profile"],
         "model_groups": state["model_groups"],
         "cleaner_cuda_quantization": state["cleaner_cuda_quantization"],
-        "ready": bool(probe["available"]),
+        "ready": bool(probe["available"]) and selection_error is None,
         "restart_required": state["restart_required"],
         "probe": probe,
         "profiles": profiles,
         "risk": risk,
-        "state_error": None,
+        "state_error": selection_error,
     }
 
 
@@ -872,6 +883,7 @@ def run_setup(
         accept_pytorch_risk=accept_pytorch_risk,
     )
     validate_model_selection(plan.model_groups)
+    require_voice_model(plan.profile.id, plan.model_groups)
     result: dict[str, Any] = {
         "profile": plan.profile.id,
         "model_groups": list(plan.model_groups),
@@ -884,6 +896,11 @@ def run_setup(
     event_emitter({"event": "plan", "percent": SETUP_PLAN_PERCENT, **result})
     if dry_run:
         return result
+
+    if plan.profile.id == "cuda":
+        reason = cuda_hardware_error()
+        if reason:
+            raise SetupValidationError(reason)
 
     setup_state_path = state_path or default_state_path()
     with SetupLock(setup_state_path, timeout_seconds=lock_timeout_seconds):

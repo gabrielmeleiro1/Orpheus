@@ -17,6 +17,7 @@ export interface UseLibraryPanelStateResult {
   cleaningPreview: CleaningPreviewResponse | null;
   cleaningPreviewLoading: boolean;
   loadCleaningPreview: (chapterNumber: number) => Promise<void>;
+  closeCleaningPreview: () => void;
 }
 
 /**
@@ -71,6 +72,11 @@ export function useLibraryPanelState({ library }: UseLibraryPanelStateArgs): Use
   );
 
   return {
+    closeCleaningPreview: () => {
+      previewGenerationRef.current += 1;
+      setCleaningPreview(null);
+      setCleaningPreviewLoading(false);
+    },
     editTitle,
     editAuthor,
     editTags,

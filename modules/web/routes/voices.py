@@ -33,6 +33,9 @@ class VoicePreviewRequest(BaseModel):
 class VoiceSuggestionRequest(BaseModel):
     source_path: str = Field(..., min_length=1)
     tts_engine: Optional[str] = None
+    cleaner_backend: Optional[str] = None
+    cleaner_api_model: Optional[str] = None
+    cleaner_api_key: Optional[str] = Field(default=None, repr=False)
 
 
 @router.post("/api/voices/preview")
@@ -73,5 +76,6 @@ def post_voice_suggestion(
         lambda: controller.suggest_voice_for_book(
             source_path=resolve_source_reference(payload.source_path, temp_dir),
             engine_name=payload.tts_engine,
+            **payload.model_dump(include={"cleaner_backend", "cleaner_api_model", "cleaner_api_key"}, exclude_none=True),
         )
     )

@@ -194,6 +194,9 @@ except Exception as exc:
         for backend_name in available_cleaner_backends():
             if not is_local_cleaner_backend(backend_name):
                 continue
+            if not get_cleaner_backend(backend_name).requires_model:
+                availability[backend_name] = True
+                continue
             cached = self._read_cached_cleaner_backend_result(backend_name)
             availability[backend_name] = (
                 bool(cached.get("available", False)) if cached is not None else False
@@ -400,7 +403,7 @@ except Exception as exc:
             return cached
 
         strategy = get_cleaner_backend(normalized)
-        if strategy.requires_api_key:
+        if strategy.requires_api_key or not strategy.requires_model:
             return self._store_result(
                 cache_key,
                 {

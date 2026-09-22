@@ -60,19 +60,21 @@ export function LogPanel({ logs }: LogPanelProps) {
   const [query, setQuery] = useState("");
   const [copyStatus, setCopyStatus] = useState("");
   const [following, setFollowing] = useState(true);
+  const [clearedIds, setClearedIds] = useState<Set<string | number>>(new Set());
   const scrollBoxRef = useRef<HTMLDivElement | null>(null);
+  const bufferedLogs = useMemo(() => logs.filter((entry) => !clearedIds.has(entry.id)), [logs, clearedIds]);
 
   const visibleLogs = useMemo(
-    () => filterVisibleLogs(logs, { level, category, query }),
-    [category, level, logs, query],
+    () => filterVisibleLogs(bufferedLogs, { level, category, query }),
+    [category, level, bufferedLogs, query],
   );
-  const levelCounts = useMemo(() => countLogLevels(logs), [logs]);
+  const levelCounts = useMemo(() => countLogLevels(bufferedLogs), [bufferedLogs]);
   // Entries arrive newest-first, so "following" means staying pinned to the top.
   const newestEntryId = visibleLogs.length > 0 ? visibleLogs[0].id : null;
   const countLabel =
-    visibleLogs.length === logs.length
-      ? `${logs.length} ${logs.length === 1 ? "entry" : "entries"}`
-      : `${visibleLogs.length} of ${logs.length} shown`;
+    visibleLogs.length === bufferedLogs.length
+      ? `${bufferedLogs.length} ${bufferedLogs.length === 1 ? "entry" : "entries"}`
+      : `${visibleLogs.length} of ${bufferedLogs.length} shown`;
 
   useEffect(() => {
     if (!following) {
@@ -195,6 +197,12 @@ export function LogPanel({ logs }: LogPanelProps) {
             <Icon name="copy" />
             Copy
           </button>
+          <button className="btn btn-ghost" type="button" onClick={() => {
+            setClearedIds(new Set(logs.map((entry) => entry.id)));
+            setCopyStatus("");
+          }}>
+            Clear
+          </button>
         </div>
       </div>
 
@@ -211,9 +219,9 @@ export function LogPanel({ logs }: LogPanelProps) {
           {visibleLogs.length === 0 ? (
             <div className="empty-state log-empty">
               <span className="empty-state-icon" aria-hidden="true"><Icon name="logs" /></span>
-              <span className="empty-state-title">{logs.length === 0 ? "No events yet" : "No matches"}</span>
+              <span className="empty-state-title">{bufferedLogs.length === 0 ? "No events yet" : "No matches"}</span>
               <span className="empty-state-hint">
-                {logs.length === 0
+                {bufferedLogs.length === 0
                   ? "Activity streams here while a conversion runs."
                   : "Adjust the filters or search to see more."}
               </span>

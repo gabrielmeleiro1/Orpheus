@@ -75,7 +75,8 @@ export function TtsOptionsView({
             className="btn voice-action-btn"
             type="button"
             disabled={!capabilities.canRecommendVoice}
-            data-tip="Suggest a voice suited to this book from a text sample"
+            title={capabilities.recommendationUnavailableReason || "Suggest a voice suited to this book from a text sample"}
+            data-tip={capabilities.recommendationUnavailableReason || "Suggest a voice suited to this book from a text sample"}
             onClick={() => void actions.onRecommendVoice()}
           >
             {ttsOptions.voiceSuggestBusy ? "Analyzing…" : "Recommend"}

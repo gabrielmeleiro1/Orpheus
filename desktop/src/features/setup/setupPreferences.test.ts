@@ -28,5 +28,5 @@ it("preserves later conversion tuning until the saved setup choice changes", () 
 it("clears a deleted local cleaner preference", () => {
   syncSetupPreferences(snapshot());
   syncSetupPreferences(snapshot(""));
-  expect(readPersistedSettings()).toMatchObject({ preferred_cleaner_backend: "api", preferred_cleaner_model: "" });
+  expect(readPersistedSettings()).toMatchObject({ preferred_cleaner_backend: "basic", preferred_cleaner_model: "" });
 });

@@ -92,7 +92,7 @@ export function CleanerOptionsView({
                 label="Cleaner model"
                 value={cleanerOptions.cleanerModel}
                 options={cleanerOptions.cleanerModelOptions}
-                placeholder={cleanerOptions.requiresApiKey ? "Paste an API key to load models" : "-"}
+                placeholder={cleanerOptions.requiresApiKey ? "Paste an API key to load models" : cleanerOptions.cleanerBackend === "basic" ? "No model required" : "-"}
                 disabled={cleanerOptions.cleanerModelOptions.length === 0}
                 onChange={actions.setCleanerModel}
               />

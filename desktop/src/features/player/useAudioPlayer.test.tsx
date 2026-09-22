@@ -90,6 +90,69 @@ afterEach(() => {
 });
 
 describe("useAudioPlayer audio load failures", () => {
+  it("plays chapter files with local seeking and whole-book checkpoints", async () => {
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book?token=secret"),
+      updateBookPlaybackPosition: vi.fn(async (_id: number, position: number) => ({ position_sec: position })),
+    } as unknown as ApiClient;
+    const detail = createBookDetail();
+    detail.playback_status = "chapter_audio";
+    detail.chapters = [
+      { id: 1, number: 1, title: "one", duration_ms: 10000, mp3_path: "1.mp3" },
+      { id: 2, number: 2, title: "missing", duration_ms: 0, mp3_path: null },
+      { id: 3, number: 3, title: "three", duration_ms: 20000, mp3_path: "3.mp3" },
+      { id: 4, number: 4, title: "four", duration_ms: 20000, mp3_path: "4.mp3" },
+    ];
+    detail.playback_position_sec = 13;
+    const library = createLibraryMock(detail);
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    Object.assign(audio, { duration: 20 });
+    current.audioRef.current = audio;
+    try {
+      await act(async () => current.togglePlay());
+      expect(new URL(audio.src).searchParams.get("chapter_number")).toBe("3");
+      expect(new URL(audio.src).searchParams.get("token")).toBe("secret");
+      expect(audio.currentTime).toBe(3);
+      expect(current.currentChapter?.number).toBe(3);
+      expect(current.durationSec).toBe(20);
+      await act(async () => current.seekTo(7));
+      expect(audio.currentTime).toBe(7);
+      expect(readPlaybackCheckpoint(detail.id, playbackCheckpointBookIdentity(detail))).toBe(17);
+      await act(async () => current.playRelative(-1));
+      expect(current.currentChapter?.number).toBe(1);
+      expect(audio.currentTime).toBe(0);
+      expect(current.canGoPrevious).toBe(false);
+      await act(async () => current.audioProps.onEnded());
+      expect(current.currentChapter?.number).toBe(3);
+      expect(new URL(audio.src).searchParams.get("chapter_number")).toBe("3");
+      await act(async () => current.playRelative(1));
+      expect(current.currentChapter?.number).toBe(4);
+      expect(current.canGoNext).toBe(false);
+      expect(library.selectBook).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("shows chapter playback rejection visibly", async () => {
+    const apiClient = { getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book") } as unknown as ApiClient;
+    const detail = createBookDetail();
+    const library = createLibraryMock(detail);
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    audio.play = vi.fn(async () => { throw new Error("Blocked"); });
+    current.audioRef.current = audio;
+    await act(async () => current.jumpToChapter({ id: 1, number: 1, title: "one", duration_ms: 1000, mp3_path: null }));
+    expect(current.title).toContain("Playback failed");
+    await act(async () => root.unmount());
+  });
   it("fails softly when the backend returns a malformed audio URL", async () => {
     const apiClient = {
       getLibraryAudioUrl: vi.fn(async () => "not a URL"),
@@ -186,6 +249,7 @@ describe("useAudioPlayer audio load failures", () => {
     });
 
     expect(audio.currentTime).toBe(1.5);
+    expect(audio.play).toHaveBeenCalledOnce();
     expect(current.elapsedSec).toBe(1.5);
     expect(current.currentChapter?.number).toBe(2);
     await act(async () => root.unmount());

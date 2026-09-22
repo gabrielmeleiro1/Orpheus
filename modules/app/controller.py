@@ -217,6 +217,8 @@ class AppController:
             runtime_validator=self._voice_service.validate_tts_runtime,
             shared_worker_pool_manager=self._shared_worker_pool_manager,
         )
+        self._library_service.upload_cleanup_guard = self._conversion_service.upload_cleanup_guard
+        self._conversion_service.upload_reference_checker = self._library_service._is_source_referenced_by_books
 
     @property
     def runtime_capability_service(self) -> RuntimeCapabilityService:
@@ -267,8 +269,11 @@ class AppController:
     def sweep_stale_uploads(self) -> int:
         return self._library_service.sweep_stale_uploads()
 
-    def get_book_playback_file(self, book_id: int) -> Optional[Path]:
-        return self._library_service.get_book_playback_file(book_id)
+    def delete_upload(self, handle: str) -> dict:
+        return self._library_service.delete_upload(handle)
+
+    def get_book_playback_file(self, book_id: int, chapter_number: int | None = None) -> Optional[Path]:
+        return self._library_service.get_book_playback_file(book_id, chapter_number=chapter_number)
 
     def update_book_playback_position(self, book_id: int, position_sec: float) -> Optional[float]:
         return self._library_service.update_book_playback_position(book_id, position_sec)
@@ -293,7 +298,7 @@ class AppController:
     def get_chapter_cleaning_preview(self, book_id: int, chapter_number: int) -> Optional[dict]:
         return self._library_service.get_chapter_cleaning_preview(book_id, chapter_number)
 
-    def delete_book(self, book_id: int) -> bool:
+    def delete_book(self, book_id: int) -> bool | dict:
         begin_cleanup = getattr(self._conversion_service, "begin_book_cleanup", None)
         end_cleanup = getattr(self._conversion_service, "end_book_cleanup", None)
         if callable(begin_cleanup) and callable(end_cleanup):
@@ -524,9 +529,15 @@ class AppController:
         self,
         source_path: Path,
         engine_name: Optional[str] = None,
+        cleaner_backend: Optional[str] = None,
+        cleaner_api_model: Optional[str] = None,
+        cleaner_api_key: Optional[str] = None,
     ) -> dict[str, Any]:
         return self._voice_service.suggest_voice_for_book(
-            source_path=source_path, engine_name=engine_name
+            source_path=source_path, engine_name=engine_name,
+            cleaner_backend=cleaner_backend,
+            cleaner_api_model=cleaner_api_model,
+            cleaner_api_key=cleaner_api_key,
         )
 
     def get_available_tts_engines(self) -> list[dict]:

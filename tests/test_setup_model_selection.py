@@ -20,6 +20,7 @@ def test_selection_round_trip_and_delete_preserves_precision(tmp_path, monkeypat
     monkeypatch.setattr(routes, "_check_model_group_assets", lambda groups, **_: {g: {"ready": True, "reason": None} for g in groups})
     monkeypatch.setattr(routes, "build_setup_status_response", lambda _: setup_runtime.read_setup_state(path))
     monkeypatch.setattr(routes, "_delete_runtime_models", lambda **_: (["cleaner-cuda-large"], 100))
+    monkeypatch.setattr(routes, "get_managed_models", lambda: {"models": []})
     config = AppConfig(data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
     with TestClient(create_app(controller=SimpleNamespace(config=config))) as client:
         result = client.post("/api/setup/adopt", json={

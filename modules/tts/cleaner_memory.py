@@ -14,6 +14,11 @@ _CLEANER_CUDA_MEMORY_BYTES: dict[tuple[str, str], int] = {
     ("meta-llama/Llama-3.2-1B-Instruct", "4bit"): 2 * GIB,
     ("meta-llama/Llama-3.2-1B-Instruct", "8bit"): 3 * GIB,
     ("meta-llama/Llama-3.2-1B-Instruct", "fp16"): 4 * GIB,
+    # Weight bytes (0.5/1/2 per parameter) plus 1 GiB runtime overhead,
+    # rounded up to GiB, as for the 1.5B model.
+    ("Qwen/Qwen2.5-3B-Instruct", "4bit"): 3 * GIB,
+    ("Qwen/Qwen2.5-3B-Instruct", "8bit"): 4 * GIB,
+    ("Qwen/Qwen2.5-3B-Instruct", "fp16"): 7 * GIB,
     ("Qwen/Qwen2.5-1.5B-Instruct", "4bit"): 2 * GIB,
     ("Qwen/Qwen2.5-1.5B-Instruct", "8bit"): 3 * GIB,
     ("Qwen/Qwen2.5-1.5B-Instruct", "fp16"): 4 * GIB,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import { formatFreedBytes, safeError } from "./setupPageHelpers";
@@ -15,23 +15,13 @@ export function SetupDangerZone({
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
-  const deleteTimer = useRef<ReturnType<typeof setTimeout>>();
   const deleteLocked = useRef(false);
 
-  const disarmDelete = useCallback(() => {
-    clearTimeout(deleteTimer.current);
-    setDeleteArmed(false);
-  }, []);
-
-  useEffect(() => () => clearTimeout(deleteTimer.current), []);
+  const disarmDelete = () => setDeleteArmed(false);
 
   const onDeleteClick = async () => {
     if (!apiClient || deleteLocked.current) return;
-    if (!deleteArmed) {
-      setDeleteArmed(true);
-      deleteTimer.current = setTimeout(disarmDelete, 5_000);
-      return;
-    }
+    if (!deleteArmed) return;
     disarmDelete();
     deleteLocked.current = true;
     setDeletePending(true);
@@ -39,7 +29,7 @@ export function SetupDangerZone({
     onError(null);
     try {
       const result = await apiClient.deleteRuntimeSetupData({ timeoutMs: 20_000 });
-      setDeleteResult(`Freed ${formatFreedBytes(result.freed_bytes)}.`);
+      setDeleteResult(`${result.message ? `${result.message} ` : ""}Freed ${formatFreedBytes(result.freed_bytes)}.`);
       await onDeleted();
     } catch (reason: unknown) {
       onError(safeError(reason, "Local runtime data could not be deleted."));
@@ -62,14 +52,16 @@ export function SetupDangerZone({
             className="btn btn-danger"
             type="button"
             disabled={deletePending}
-            onClick={() => void onDeleteClick()}
-            onBlur={disarmDelete}
-            onKeyDown={(event) => { if (event.key === "Escape") disarmDelete(); }}
+            onClick={() => setDeleteArmed(true)}
           >
-            {deletePending ? "Deleting…" : deleteArmed ? "Confirm delete" : "Delete local runtime data"}
+            {deletePending ? "Deleting…" : "Delete local runtime data"}
           </button>
           {deleteResult ? <span className="setup-danger-note">{deleteResult}</span> : null}
         </div>
+        {deleteArmed ? <div className="setup-model-confirm" role="group" aria-label="Confirm deleting local runtime data" onKeyDown={(event) => { if (event.key === "Escape") disarmDelete(); }}>
+          <p>Delete downloaded models and reset runtime setup? This cannot be undone. Your books and audio will stay.</p>
+          <div className="setup-model-buttons"><button className="btn" type="button" autoFocus onClick={disarmDelete}>Keep</button><button className="btn btn-danger" type="button" onClick={() => void onDeleteClick()}>Delete</button></div>
+        </div> : null}
       </div>
     </details>
   );

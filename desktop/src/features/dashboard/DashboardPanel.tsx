@@ -1,3 +1,6 @@
+import { useEffect, useState } from "react";
+
+import type { ApiClient } from "../../api/client";
 import type {
   BackendConnectionState,
   ConversionJobStatus,
@@ -12,6 +15,7 @@ import { dashboardNowStageLabel } from "../progress/progressTerminalPresentation
 import "./dashboard.css";
 
 interface DashboardPanelProps {
+  apiClient?: ApiClient | null;
   hidden: boolean;
   library: UseLibraryResult;
   connectionState: BackendConnectionState;
@@ -61,6 +65,7 @@ function StatusDot({ tone }: { tone: "ok" | "neutral" | "busy" | "error" }) {
 }
 
 export function DashboardPanel({
+  apiClient,
   hidden,
   library,
   connectionState,
@@ -84,6 +89,31 @@ export function DashboardPanel({
   cleanerLabel,
   ttsReady,
 }: DashboardPanelProps) {
+  const [dismissed, setDismissed] = useState(false);
+  const [completedBookMissing, setCompletedBookMissing] = useState(false);
+  useEffect(() => {
+    setDismissed(false);
+    setCompletedBookMissing(false);
+  }, [apiClient, jobTitle, uiState]);
+  useEffect(() => {
+    if (uiState !== "completed" || !apiClient) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { job } = await apiClient.getActiveConversion();
+        if (cancelled || job?.status !== "completed" || job.book_id == null) return;
+        try {
+          await apiClient.getLibraryBook(job.book_id);
+          if (!cancelled) setCompletedBookMissing(false);
+        } catch (error) {
+          if (!cancelled && (error as { status?: number }).status === 404) setCompletedBookMissing(true);
+        }
+      } catch {
+        // Keep the last job visible while the backend reconnects.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [apiClient, uiState, library.items, library.indexedCount]);
   const selected = library.selectedBookDetail;
   const recentBooks = library.items.slice(0, 3);
   const nowLabel = dashboardNowStageLabel(uiState, stages);
@@ -96,7 +126,7 @@ export function DashboardPanel({
   const conversionPercent = clampPercent(progressPct);
   const conversionIsActive = uiState === "running";
   const hasPlayback = playing || durationSec > 0;
-  const hasJob = uiState !== "idle";
+  const hasJob = uiState !== "idle" && !dismissed && !completedBookMissing;
   const chapterText = selectedChapterCount > 0
     ? `${selectedChapterCount} ${selectedChapterCount === 1 ? "chapter" : "chapters"}`
     : "No chapters";
@@ -189,7 +219,7 @@ export function DashboardPanel({
           </span>
         ) : null}
         <div className="now-playing-main">
-          <span className="card-eyebrow">Now playing</span>
+          <span className="card-eyebrow">{playing ? "Now playing" : "Continue listening"}</span>
           <h3 className="now-playing-title">
             {hasPlayback ? (selected?.title || playerTitle || "Untitled audiobook") : "Nothing playing"}
           </h3>
@@ -247,10 +277,15 @@ export function DashboardPanel({
                 {stateLabel} · {conversionPercent}%
               </span>
             )}
+            {!conversionIsActive ? (
+              <button className="btn btn-ghost btn-sm" type="button" aria-label="Dismiss conversion" onClick={() => setDismissed(true)}>
+                ×
+              </button>
+            ) : null}
           </div>
           <ProgressBar
             pct={conversionPercent}
-            tone={conversionIsActive ? "active" : "neutral"}
+            tone={conversionIsActive ? "active" : uiState === "completed" ? "done" : uiState === "failed" || uiState === "cancelled" ? "danger" : "neutral"}
             size="hairline"
             label="Conversion progress"
           />

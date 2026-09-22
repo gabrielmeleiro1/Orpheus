@@ -112,7 +112,7 @@ def test_probe_local_cleaner_backends_iterates_registered_local_backends() -> No
     ):
         results = service.probe_local_cleaner_backends()
 
-    assert set(results) == {"mlx", "cuda"}
+    assert set(results) == {"basic", "mlx", "cuda"}
     assert all(result["available"] is True for result in results.values())
 
 

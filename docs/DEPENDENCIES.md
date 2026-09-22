@@ -52,6 +52,34 @@ winget install --exact --id Gyan.FFmpeg
 Open a new PowerShell session after installation, then confirm `git`, `py`,
 `node`, `npm`, `rustc`, `cargo`, `ffmpeg`, and `ffprobe` are on `PATH`.
 
+### Linux
+
+Linux desktop builds are **source-only**; no Linux desktop installer is published.
+Use Python 3.12, Node.js 20+, Rust 1.88+ (via [rustup](https://rustup.rs/)), Git,
+and FFmpeg/ffprobe. Install the [Tauri v2 Linux prerequisites](https://v2.tauri.app/start/prerequisites/#linux)
+for your distribution. For Ubuntu 24.04:
+
+```bash
+sudo apt update
+sudo apt install git python3.12 python3.12-venv ffmpeg nodejs npm \
+  build-essential libwebkit2gtk-4.1-dev libssl-dev librsvg2-dev \
+  libayatana-appindicator3-dev libxdo-dev pkg-config curl wget file
+```
+
+On Fedora:
+
+```bash
+sudo dnf install git python3.12 ffmpeg-free nodejs npm gcc gcc-c++ make \
+  webkit2gtk4.1-devel openssl-devel librsvg2-devel \
+  libappindicator-gtk3-devel libxdo-devel pkgconf-pkg-config curl wget file
+```
+
+Check `node --version` (20+) and `rustc --version` (1.88+) before continuing;
+distribution packages may be older. Confirm `ffmpeg` and `ffprobe` are on PATH.
+Then use the POSIX Python commands below and `cd desktop`, `npm ci`,
+`npm run desktop:dev`. Local audio needs an NVIDIA GPU with a driver supporting
+CUDA 12.6; other Linux machines can use the base library-only profile.
+
 ## Python
 
 Runtime packages are listed in:

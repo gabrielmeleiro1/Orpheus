@@ -266,7 +266,7 @@ def test_conversion_and_repair_jobs_capture_display_metadata(tmp_path, monkeypat
     assert repair_job.author == "Stub"
 
 
-def test_app_config_defaults_cleaning_artifact_saving_on(tmp_path):
+def test_app_config_defaults_cleaning_debug_off(tmp_path):
     config = AppConfig(
         data_dir=tmp_path / "data",
         output_dir=tmp_path / "output",
@@ -274,7 +274,7 @@ def test_app_config_defaults_cleaning_artifact_saving_on(tmp_path):
         db_path=tmp_path / "data" / "app.db",
     )
 
-    assert config.save_cleaning_debug is True
+    assert config.save_cleaning_debug is False
 
 
 def test_app_config_serializes_kokoro_efficiency_settings(tmp_path):
@@ -2228,7 +2228,7 @@ def test_conversion_service_pipeline_config_includes_conversion_mode(tmp_path):
     assert pipeline_config.conversion_mode == "document_audio"
 
 
-def test_conversion_service_pipeline_config_defaults_cleaning_artifacts_on(tmp_path):
+def test_conversion_service_pipeline_config_defaults_cleaning_debug_off(tmp_path):
     service = _make_service(tmp_path, _PipelineStub)
 
     pipeline_config = service._create_pipeline_config(  # noqa: SLF001 - direct contract coverage
@@ -2245,7 +2245,7 @@ def test_conversion_service_pipeline_config_defaults_cleaning_artifacts_on(tmp_p
         conversion_mode="audiobook",
     )
 
-    assert pipeline_config.save_cleaning_debug is True
+    assert pipeline_config.save_cleaning_debug is False
 
 
 def test_conversion_service_pipeline_config_rejects_invalid_cleaner_backend(tmp_path):

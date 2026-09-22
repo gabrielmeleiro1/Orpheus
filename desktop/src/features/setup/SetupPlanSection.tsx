@@ -88,6 +88,7 @@ export function SetupPlanSection({
                       {status.recommended_profile === profile.id && profile.compatible ? <span className="setup-chip">Recommended</span> : null}
                       <InfoTip label={`${profile.label} details`}><span>{profile.description}{profile.reason ? ` ${profile.reason}` : ""}</span></InfoTip>
                     </span>
+                    {profile.disabled && profile.reason ? <span className="setup-model-feedback">Not compatible: {profile.reason}</span> : null}
                   </span>
                 </label>
               ))}

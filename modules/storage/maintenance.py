@@ -357,6 +357,9 @@ def prune_stale_records_and_files(
                 )
                 continue
 
+            if int(book_row["id"]) in audit_before["recoverable_book_ids"]:
+                actions["preserved_book_rows"].append(int(book_row["id"]))
+                continue
             books_to_delete.append(int(book_row["id"]))
 
         # Safety gate before deleting any fileless row: if a finished-audio
@@ -374,7 +377,7 @@ def prune_stale_records_and_files(
                 ),
             )
             if unclaimed_audio:
-                actions["preserved_book_rows"] = books_to_delete
+                actions["preserved_book_rows"].extend(books_to_delete)
                 actions["unclaimed_audio_dirs"] = unclaimed_audio
                 books_to_delete = []
 

@@ -136,6 +136,14 @@ def _start_trace_decision_flow(
         )
 
     rule_based_text = cleaner._rule_based_clean(text)  # noqa: SLF001
+    if getattr(getattr(cleaner, "config", None), "backend", None) == "basic":
+        return make_rule_only_trace(
+            cleaner,
+            trace_cls,
+            original_text=original_text,
+            rule_based_text=rule_based_text,
+            start_time=start_time,
+        )
     if cleaner._needs_llm_cleaning(rule_based_text):  # noqa: SLF001
         artifact_score = None
     else:

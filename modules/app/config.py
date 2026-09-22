@@ -128,7 +128,7 @@ class AppConfig:
     cleaner_api_model: Optional[str] = "gpt-5-nano"
     cleaner_api_global_concurrency: int = 6
     worker_pool_reuse_enabled: bool = True
-    save_cleaning_debug: bool = True
+    save_cleaning_debug: bool = False
     pdf_extraction_backend: str = "fitz"
     
     # Pipeline settings
@@ -161,7 +161,7 @@ class AppConfig:
         if state is None:
             return
         cleaner = next((group for group in state["model_groups"] if group.startswith("cleaner-")), None)
-        self.cleaner_backend = state["profile"] if cleaner else "api"
+        self.cleaner_backend = state["profile"] if cleaner else "basic"
         if cleaner:
             self.cleaner_model_name = MODEL_GROUPS[cleaner][0]
         self.cleaner_cuda_quantization = state["cleaner_cuda_quantization"]

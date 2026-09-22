@@ -9,7 +9,7 @@ first.
 
 Use the platform-specific source setup in
 [DEPENDENCIES.md](DEPENDENCIES.md#system-prerequisites): macOS commands use a
-POSIX shell, while Windows commands use PowerShell and
+POSIX shell (also used on Linux), while Windows commands use PowerShell and
 `.\.venv\Scripts\Activate.ps1`.
 
 ```bash
@@ -40,15 +40,18 @@ python scripts/setup_runtime.py --profile cuda \
   --group tts-cpu-cuda --group cleaner-cuda
 ```
 
-The CUDA profile is opt-in. Load only trusted model artifacts. To install
-dependencies without downloading models, omit the `--group` arguments. The equivalent fixed
+The CUDA profile is opt-in and checks the NVIDIA driver before installing.
+Non-base setup requires a Kokoro voice group. To install dependencies alone,
+use `python -m pip install -r requirements/mlx.txt` (Apple Silicon) or
+`python -m pip install -r requirements/cuda.txt` (NVIDIA); this does not mark setup ready.
+The equivalent fixed
 manifests are `requirements/base.txt`, `requirements/mlx.txt`, and
 `requirements/cuda.txt`; prefer `setup_runtime.py` because it validates platform
 compatibility and records the selected profile.
 
 Packaged builds download any missing managed models from the Setup screen. The
-download can be cancelled there; cancellation is cooperative and may wait for
-the current Hugging Face transfer call to return.
+download can be cancelled there. The in-flight download worker is stopped;
+**Stopping download…** allows returning to the dashboard while it exits.
 
 The first page shows the voice model (Kokoro), one optional text cleaner, and its
 precision. CUDA offers Qwen 2.5 1.5B and 3B; MLX offers Llama 3.2 3B and 1B.
@@ -57,7 +60,7 @@ choices share one model download: quantization is applied when the model loads.
 4-bit uses the least GPU memory; FP16 uses the most. The download size does not
 shrink with lower precision. MLX cleaners are supplied as 4-bit models.
 
-After setup, use **Settings → Runtime setup** to change the runtime or selected
+After setup, use **Settings → Manage models** to change the runtime or selected
 models. **Save runtime settings** reuses models already on this device and keeps
 the selection across restarts. Switching to library-only mode does not delete
 downloaded models; switching back reuses them. Missing models offer **Install**.
@@ -69,15 +72,39 @@ Settings when that backend is available.
 cache size. **Delete** removes that model's shared cached files after confirmation;
 other models, books, and audio are preserved. **Install again** downloads it
 without changing the active runtime selection. Select the models you want to use
-and save the runtime settings separately. Deleting the last selected model leaves
-the app in library-only mode. Model deletion is blocked during conversions or
+and save the runtime settings separately. Deleting Kokoro makes audio creation
+not-ready until it is installed again or you choose library-only mode. Damaged
+caches remain visible for deletion; partial deletions report residual files and
+the bytes actually removed. Model deletion is blocked during conversions or
 another setup operation.
 
 Keep multiple cleaners downloaded, but select one at a time. Changing a cached
 model or precision uses **Save runtime settings** and needs no download. The
 saved model and precision become the defaults for conversion, including after
 a restart. Conversion's model selector lists installed local models; use
-**Runtime setup** to install another supported model.
+**Manage models** to install another supported model.
+
+### Data locations
+
+The Tauri desktop keeps `data/audiobooks.db`, `output/`, `temp/`, and
+`runtime-setup.json` under its app data directory:
+
+| OS | Desktop app data directory |
+| --- | --- |
+| macOS | `~/Library/Application Support/com.orpheus.desktop/` |
+| Windows | `%APPDATA%\com.orpheus.desktop\` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/com.orpheus.desktop/` |
+
+**Settings → Storage** displays the resolved paths and opens either folder.
+Models use Hugging Face's shared cache (normally `~/.cache/huggingface/hub`,
+including on Windows); `HF_HOME` or `HF_HUB_CACHE` can relocate it.
+
+When run directly outside Tauri, the backend defaults to repository-local
+`data/`, `output/`, and `temp/`. Standalone `scripts/setup_runtime.py` stores its
+state in `~/Library/Application Support/Orpheus/` on macOS,
+`%LOCALAPPDATA%\Orpheus\` on Windows, or `${XDG_DATA_HOME:-~/.local/share}/orpheus/`
+on Linux. If `AUDIOBOOK_DATA_DIR` is set, setup state is placed in its parent;
+the desktop supplies this override automatically.
 
 ## 2. Validate Python/Core
 

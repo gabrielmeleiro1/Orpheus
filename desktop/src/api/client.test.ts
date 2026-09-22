@@ -11,6 +11,16 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("api client errors", () => {
+  it.each([
+    [{ error: "invalid_request", message: "Select the Kokoro voice model." }, "Select the Kokoro voice model."],
+    [{ error: "assets_missing" }, "Required model files are missing. Install or repair the selected models."],
+    [{ error: "download_in_progress", message: "  " }, "A model download is already running. Wait for it to finish or cancel it."],
+    [{ error: "unknown_code", internal: "private data" }, "The request could not be completed. Try again."],
+  ])("normalizes structured setup errors: %j", async (detail, message) => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ detail }, 422));
+    const client = createApiClient({ baseUrl: "http://127.0.0.1" });
+    await expect(client.requestJson("/api/setup/adopt")).rejects.toMatchObject({ detail: message, status: 422 });
+  });
   beforeEach(() => {
     vi.useRealTimers();
   });
