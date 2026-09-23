@@ -209,6 +209,19 @@ describe("ConversionPanelView", () => {
     }
   });
 
+  it.each([true, false])("hides Details until a queue item is selected (document mode: %s)", (isDocumentMode) => {
+    const model = viewModel();
+    model.shell = { ...model.shell, isDocumentMode, activeTab: isDocumentMode ? "document" : "convert" };
+    model.sourceQueue.isDocumentMode = isDocumentMode;
+    for (const queueItems of [[], [{ id: "book", title: "Book", selected: false }]]) {
+      model.sourceQueue.queueItems = queueItems as typeof model.sourceQueue.queueItems;
+      const html = renderToString(<ConversionPanelView {...model} />);
+      expect(html).not.toContain('id="conversion-review-anchor"');
+      expect(html).not.toContain('id="title-input"');
+      expect(html).not.toContain("Edit title &amp; author");
+    }
+  });
+
   it("shows the quantization selector only when the engine offers a real choice", () => {
     const base = viewModel();
     expect(renderToString(<ConversionPanelView {...base} />)).not.toContain("tts-quantization-select");
@@ -249,6 +262,7 @@ describe("ConversionPanelView", () => {
         {...viewModel({
           sourceQueue: {
             ...viewModel().sourceQueue,
+            queueItems: [{ id: "pdf", title: "Invalid PDF", selected: true } as ConversionPanelViewModel["sourceQueue"]["queueItems"][number]],
             preflightCard: {
               title: "Invalid PDF",
               meta: "pdf / 0 chapters / 1 KB",
@@ -269,7 +283,9 @@ describe("ConversionPanelView", () => {
   });
 
   it("gives every editable conversion control a programmatic label", () => {
-    const html = renderToString(<ConversionPanelView {...viewModel()} />);
+    const model = viewModel();
+    model.sourceQueue.queueItems = [{ id: "book", title: "Book", selected: true } as typeof model.sourceQueue.queueItems[number]];
+    const html = renderToString(<ConversionPanelView {...model} />);
 
     const labelsById = {
       "paste-text-input": "Pasted document text",

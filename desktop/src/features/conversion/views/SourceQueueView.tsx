@@ -303,54 +303,56 @@ export function SourceQueueView({
         {sourceQueue.formError}
       </div>
 
-      <section ref={reviewAnchorRef} id="conversion-review-anchor" className="conversion-section details-section">
-        <div className="conversion-section-header">
-          <h2 className="conversion-group-heading">
-            Details{selectedItem?.title ? ` — ${selectedItem.title}` : ""}
-          </h2>
-        </div>
-        {sourceQueue.preflightCard ? (
-          <div className="panel-section preflight-card">
-            <div className="preflight-title">
-              <span>{sourceQueue.preflightCard.title}</span>
-              <span>{sourceQueue.preflightCard.meta}</span>
-            </div>
-            {[sourceQueue.preflightCard.author, sourceQueue.preflightCard.sourceType].filter(Boolean).length > 0 ? (
-              <div className="preflight-meta">
-                {[sourceQueue.preflightCard.author, sourceQueue.preflightCard.sourceType].filter(Boolean).join(" · ")}
-              </div>
-            ) : null}
-            {sourceQueue.preflightCard.warnings.length > 0 ? (
-              <div className="preflight-warnings">
-                {sourceQueue.preflightCard.warnings.map((warning) => (
-                  <div key={warning}>Warning: {warning}</div>
-                ))}
-              </div>
-            ) : null}
-            <p className="preflight-sample">{sourceQueue.preflightCard.sample}</p>
-            <p className="field-hint">
-              {!sourceQueue.preflightCard.canConvert
-                ? `Source cannot be converted — ${sourceQueue.preflightCard.blockingReason}`
-                : capabilities.showStartConversion
-                  ? "Source ready — use Start conversion below."
-                  : "Source ready — use Run queue below."}
-            </p>
+      {selectedItem ? (
+        <section ref={reviewAnchorRef} id="conversion-review-anchor" className="conversion-section details-section">
+          <div className="conversion-section-header">
+            <h2 className="conversion-group-heading">
+              Details{selectedItem?.title ? ` — ${selectedItem.title}` : ""}
+            </h2>
           </div>
-        ) : sourceQueue.preflightStatus ? (
-          <div className="field-hint preflight-status">{sourceQueue.preflightStatus}</div>
-        ) : null}
-
-        {sourceQueue.isDocumentMode ? (
-          <details className="metadata-overrides disclosure disclosure-card">
-            <summary>
-              <span>Edit title &amp; author</span>
-            </summary>
-            <div className="metadata-overrides-body">
-              {metadataFields}
+          {sourceQueue.preflightCard ? (
+            <div className="panel-section preflight-card">
+              <div className="preflight-title">
+                <span>{sourceQueue.preflightCard.title}</span>
+                <span>{sourceQueue.preflightCard.meta}</span>
+              </div>
+              {[sourceQueue.preflightCard.author, sourceQueue.preflightCard.sourceType].filter(Boolean).length > 0 ? (
+                <div className="preflight-meta">
+                  {[sourceQueue.preflightCard.author, sourceQueue.preflightCard.sourceType].filter(Boolean).join(" · ")}
+                </div>
+              ) : null}
+              {sourceQueue.preflightCard.warnings.length > 0 ? (
+                <div className="preflight-warnings">
+                  {sourceQueue.preflightCard.warnings.map((warning) => (
+                    <div key={warning}>Warning: {warning}</div>
+                  ))}
+                </div>
+              ) : null}
+              <p className="preflight-sample">{sourceQueue.preflightCard.sample}</p>
+              <p className="field-hint">
+                {!sourceQueue.preflightCard.canConvert
+                  ? `Source cannot be converted — ${sourceQueue.preflightCard.blockingReason}`
+                  : capabilities.showStartConversion
+                    ? "Source ready — use Start conversion below."
+                    : "Source ready — use Run queue below."}
+              </p>
             </div>
-          </details>
-        ) : metadataFields}
-      </section>
+          ) : sourceQueue.preflightStatus ? (
+            <div className="field-hint preflight-status">{sourceQueue.preflightStatus}</div>
+          ) : null}
+
+          {sourceQueue.isDocumentMode ? (
+            <details className="metadata-overrides disclosure disclosure-card">
+              <summary>
+                <span>Edit title &amp; author</span>
+              </summary>
+              <div className="metadata-overrides-body">
+                {metadataFields}
+              </div>
+            </details>
+          ) : metadataFields}
+        </section>
+      ) : null}
     </div>
   );
 }

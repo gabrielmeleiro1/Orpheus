@@ -3,6 +3,12 @@
   gap: var(--space-4);
   margin-inline: auto;
   max-width: calc(var(--page-max-width) - var(--density-page-x) * 2);
+  min-width: 0;
+  width: 100%;
+}
+
+.settings-page > .panel {
+  max-width: var(--content-narrow);
 }
 
 .settings-content {
@@ -14,9 +20,24 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
+  max-width: var(--field-text-width);
 }
 
 .settings-path {
+  min-width: 0;
   overflow-wrap: anywhere;
   color: var(--text-secondary);
+}
+
+.settings-storage-row > div {
+  min-width: 0;
+}
+
+.settings-storage-row > .btn {
+  flex-shrink: 0;
+}
+
+p.settings-path {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }

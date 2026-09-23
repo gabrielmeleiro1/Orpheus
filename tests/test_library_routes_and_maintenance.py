@@ -1,15 +1,18 @@
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 import os
 import time
 
 import pytest
+from fastapi.testclient import TestClient
 
 from modules.app.services.library_service import LibraryService
 from modules.pipeline.recovery import prepare_recovery_source
 from modules.storage.maintenance import audit_storage_state, prune_stale_records_and_files
 from modules.storage.models import BookCreate, ChapterCreate, SourceType
 from modules.storage.sqlite_repo import SQLiteRepository
+from modules.web.server import create_app
 from tests.test_web_api import _make_client_with_controller
 
 
@@ -134,3 +137,28 @@ def test_startup_sweeps_old_delete_staging_but_keeps_recent_entries(tmp_path):
     LibraryService(SimpleNamespace(), output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
     assert not stale.exists()
     assert recent.exists()
+
+
+@pytest.mark.parametrize("title", [None, "omitted", "Updated title"])
+def test_metadata_patch_allows_unchanged_title(title):
+    update = Mock(return_value={"id": 1, "title": "Existing title"})
+    controller = SimpleNamespace(update_book_metadata=update)
+    payload = {"author": "New author", "tags": "edited"}
+    if title != "omitted":
+        payload["title"] = title
+    with TestClient(create_app(controller=controller)) as client:
+        assert client.patch("/api/library/1", json=payload).status_code == 200
+    update.assert_called_once_with(
+        1, title=None if title == "omitted" else title,
+        author="New author", tags="edited", favorite=None,
+    )
+
+
+@pytest.mark.parametrize("title", ["", "   ", "\t\n"])
+def test_metadata_patch_rejects_blank_title(title):
+    update = Mock()
+    with TestClient(create_app(controller=SimpleNamespace(update_book_metadata=update))) as client:
+        response = client.patch("/api/library/1", json={"title": title})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["msg"] == "Value error, Title is required"
+    update.assert_not_called()

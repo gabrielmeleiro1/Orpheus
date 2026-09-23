@@ -267,21 +267,23 @@ export function DashboardPanel({
               <h3>{jobTitle || "Current conversion"}</h3>
               <p>{jobAuthor || (conversionIsActive ? "In progress" : "Latest job")}</p>
             </div>
-            {onOpenProgress ? (
-              <button className={`dashboard-card-action tabular-nums${uiState === "completed" ? " is-complete" : uiState === "failed" || uiState === "cancelled" ? " is-error" : ""}`} type="button" onClick={onOpenProgress}>
-                {stateLabel} · {conversionPercent}%
-                <Icon name="chevron-right" />
-              </button>
-            ) : (
-              <span className={`dashboard-card-action tabular-nums${uiState === "completed" ? " is-complete" : uiState === "failed" || uiState === "cancelled" ? " is-error" : ""}`}>
-                {stateLabel} · {conversionPercent}%
-              </span>
-            )}
-            {!conversionIsActive ? (
-              <button className="btn btn-ghost btn-sm" type="button" aria-label="Dismiss conversion" onClick={() => setDismissed(true)}>
-                ×
-              </button>
-            ) : null}
+            <div className="dashboard-card-actions">
+              {onOpenProgress ? (
+                <button className={`dashboard-card-action tabular-nums${uiState === "completed" ? " is-complete" : uiState === "failed" || uiState === "cancelled" ? " is-error" : ""}`} type="button" onClick={onOpenProgress}>
+                  {stateLabel} · {conversionPercent}%
+                  <Icon name="chevron-right" />
+                </button>
+              ) : (
+                <span className={`dashboard-card-action tabular-nums${uiState === "completed" ? " is-complete" : uiState === "failed" || uiState === "cancelled" ? " is-error" : ""}`}>
+                  {stateLabel} · {conversionPercent}%
+                </span>
+              )}
+              {!conversionIsActive ? (
+                <button className="btn btn-ghost btn-sm" type="button" aria-label="Dismiss conversion" onClick={() => setDismissed(true)}>
+                  ×
+                </button>
+              ) : null}
+            </div>
           </div>
           <ProgressBar
             pct={conversionPercent}

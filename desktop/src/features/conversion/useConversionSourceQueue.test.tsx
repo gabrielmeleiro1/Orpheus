@@ -66,7 +66,7 @@ describe("useConversionSourceQueue", () => {
     vi.clearAllMocks();
   });
 
-  it("bounds uploads across batches and keeps input order after out-of-order completion", async () => {
+  it("bounds concurrent uploads and keeps input order after out-of-order completion", async () => {
     type Response = { source_handle: string; original_name: string; preflight: null };
     const resolvers = new Map<string, (value: Response) => void>();
     const uploadSourceFile = vi.fn((file: File) => new Promise<Response>((resolve) => {
@@ -292,7 +292,7 @@ describe("useConversionSourceQueue", () => {
     expect(setPreflightStatus).toHaveBeenLastCalledWith("Uploading stale.md...");
   });
 
-  it("queues concurrent browser batches but lets only the latest batch own final status and selection", async () => {
+  it("queues concurrent browser file selections and uses the latest selection for final status", async () => {
     type UploadResponse = { source_handle: string; original_name: string; preflight: null };
     const uploadResolvers = new Map<string, (value: UploadResponse) => void>();
     const uploadSourceFile = vi.fn((file: File) => {

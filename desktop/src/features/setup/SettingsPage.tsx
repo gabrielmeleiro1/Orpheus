@@ -114,7 +114,9 @@ export function SettingsPage({
               <div className="settings-storage-row" key={folder}>
                 <div>
                   <span className="field-label">{folder === "output" ? "Output folder" : "App data folder"}</span>
-                  <p className="settings-path">{folders?.[`${folder}_path`] ?? "Unavailable"}</p>
+                  <p className="settings-path" title={folders?.[`${folder}_path`]}>
+                    {folders?.[`${folder}_path`] ?? "Unavailable"}
+                  </p>
                 </div>
                 <button
                   className="btn btn-ghost"

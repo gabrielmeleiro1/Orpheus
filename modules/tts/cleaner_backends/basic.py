@@ -7,7 +7,7 @@ from typing import Any
 
 class CleanerBasicStrategy:
     name = "basic"
-    display_name = "Basic cleanup — no model"
+    display_name = "Basic cleanup"
     is_local = True
     requires_model = False
     requires_api_key = False
