@@ -24,9 +24,9 @@ SetupIconFile=src-tauri\icons\icon.ico
 UninstallDisplayIcon={app}\Orpheus.ico
 Uninstallable=not ExtractOnly
 CreateUninstallRegKey=not ExtractOnly
-Compression=lzma2/fast
-LZMADictionarySize=2048
-LZMANumBlockThreads=4
+; Maximum compression keeps the CUDA installer under GitHub's 2 GiB release-asset limit.
+Compression=lzma2/ultra64
+LZMANumBlockThreads=8
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes
