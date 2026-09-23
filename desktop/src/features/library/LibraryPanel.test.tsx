@@ -83,6 +83,54 @@ function libraryModel(): UseLibraryResult {
 }
 
 describe("LibraryPanel", () => {
+  it("hides pagination for a single page and keeps it for more results", () => {
+    const model = libraryModel();
+    model.items = [selectedSummary, { ...selectedSummary, id: 2 }];
+    expect(renderToString(<LibraryPanel hidden={false} library={model} />)).not.toContain("library-pager");
+    model.hasMore = true;
+    expect(renderToString(<LibraryPanel hidden={false} library={model} />)).toContain("library-pager");
+    model.hasMore = false;
+    model.items = Array.from({ length: 101 }, (_, id) => ({ ...selectedSummary, id }));
+    expect(renderToString(<LibraryPanel hidden={false} library={model} />)).toContain("library-pager");
+  });
+
+  it("blocks saving a blank title with inline feedback", async () => {
+    const model = libraryModel();
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<LibraryPanel hidden={false} library={model} />));
+      const input = container.querySelector<HTMLInputElement>("#book-title-edit")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "   ");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      expect(container.querySelector("#book-title-error")?.textContent).toBe("Title is required");
+      const save = container.querySelector<HTMLButtonElement>("#library-save-metadata-btn")!;
+      expect(save.disabled).toBe(true);
+      await act(async () => save.click());
+      expect(model.updateSelectedBookMetadata).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("explains missing original text for older books", async () => {
+    const model = libraryModel();
+    model.selectedBookDetail = { ...selectedBook, chapters: [{ id: 1, number: 1, title: "One", duration_ms: 0, mp3_path: null }] };
+    model.loadCleaningPreview = vi.fn(async () => ({ book_id: 1, chapter_number: 1, title: "One", available: true, before_text: "", cleaned_text: "Cleaned", llm_input_text: "", trace_rows: [] }));
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<LibraryPanel hidden={false} library={model} />));
+      await act(async () => container.querySelector<HTMLButtonElement>(".chapter-cleaned-btn")!.click());
+      expect(container.querySelector('[aria-label="Original text"]')?.textContent).toBe("Original text isn't available for books converted before this version.");
+      expect(container.textContent).not.toContain("Loaded cleaning preview");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("shows full cleaning text in labelled panes and closes the preview", async () => {
     const model = libraryModel();
     model.selectedBookDetail = { ...selectedBook, chapters: [{ id: 1, number: 1, title: "One", duration_ms: 0, mp3_path: null }] };

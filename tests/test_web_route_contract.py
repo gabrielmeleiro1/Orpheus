@@ -30,6 +30,8 @@ FRONTEND_ROUTE_CONTRACT = {
     "/api/setup/models/download/cancel": {"POST"},
     "/api/setup/runtime": {"DELETE"},
     "/api/system/capabilities": {"GET"},
+    "/api/system/storage": {"GET"},
+    "/api/system/storage/{folder}/open": {"POST"},
     "/api/sources/preflight": {"POST"},
     "/api/uploads/source": {"POST"},
     "/api/uploads/text": {"POST"},
@@ -44,6 +46,7 @@ FRONTEND_ROUTE_CONTRACT = {
     "/api/maintenance/diagnostics": {"GET"},
     "/api/maintenance/backup": {"POST"},
     "/api/maintenance/cleanup": {"POST"},
+    "/api/maintenance/delete-staging/open-folder": {"POST"},
     "/api/desktop/query-token": {"POST"},
     "/api/events/stream": {"GET"},
 }

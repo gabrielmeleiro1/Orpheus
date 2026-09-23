@@ -389,7 +389,7 @@ def test_runtime_capability_snapshot_returns_pending_then_refreshes_in_backgroun
         "latency_ms": mlx_cached["latency_ms"],
         "error": mlx_cached["error"],
     }
-    assert service.get_cached_cleaner_backend_availability() == {"mlx": True, "cuda": False}
+    assert service.get_cached_cleaner_backend_availability() == {"basic": True, "mlx": True, "cuda": False}
     assert mock_run_probe.call_count == 3
 
 
@@ -475,7 +475,7 @@ def test_runtime_capability_snapshot_returns_stale_and_deduplicates_refreshes() 
         "latency_ms": mlx_cached["latency_ms"],
         "error": mlx_cached["error"],
     }
-    assert service.get_cached_cleaner_backend_availability() == {"mlx": True, "cuda": False}
+    assert service.get_cached_cleaner_backend_availability() == {"basic": True, "mlx": True, "cuda": False}
     assert mock_run_probe.call_count == 3
 
 

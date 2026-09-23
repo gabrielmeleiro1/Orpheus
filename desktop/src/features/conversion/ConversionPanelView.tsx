@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import type { ConversionPanelViewModel } from "./useConversionPanelState";
 import { AdvancedOptionsView } from "./views/AdvancedOptionsView";
 import { CleanerOptionsView } from "./views/CleanerOptionsView";
@@ -15,6 +16,21 @@ export function ConversionPanelView({
   conversionActions,
   actions,
 }: ConversionPanelViewModel) {
+  const panelRef = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const bar = panel?.querySelector<HTMLElement>(".conversion-actions");
+    if (!panel || !bar) return;
+    const measure = () => {
+      panel.style.setProperty("--conversion-actions-height", `${bar.getBoundingClientRect().height}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(bar);
+    return () => observer.disconnect();
+  }, [shell.activeTab, shell.hidden]);
+
   if (shell.activeTab === "config") {
     return (
       <CleanerOptionsView
@@ -28,6 +44,7 @@ export function ConversionPanelView({
 
   return (
     <section
+      ref={panelRef}
       id={shell.isDocumentMode ? "tab-document" : "tab-convert"}
       className="panel conversion-panel"
       role="tabpanel"

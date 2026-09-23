@@ -8,6 +8,7 @@ import { chapterPlaybackStatusLabel } from "../player/chapterPlaybackLabel";
 import type { UseLibraryResult } from "./useLibrary";
 import { formatLibraryMeta } from "./useLibrary";
 import { LibraryMaintenanceSection } from "./LibraryMaintenanceSection";
+import { LIBRARY_PAGE_SIZE } from "./libraryRepository";
 import { useBookListWindow } from "./useBookListWindow";
 import { useLibraryPanelState } from "./useLibraryPanelState";
 import "./library.css";
@@ -62,7 +63,7 @@ export function LibraryPanel({
     setDeleteConfirmationBookId(null);
   }, [library.selectedBookId, selected?.id]);
 
-  const showPager = library.items.length > 1 || library.hasMore;
+  const showPager = library.items.length > LIBRARY_PAGE_SIZE || library.hasMore;
   const selectedAtLoadedEnd = library.selectedBookIndex >= library.items.length - 1;
   const { containerRef: listContainerRef, window: listWindow } = useBookListWindow({
     itemCount: library.items.length,
@@ -247,9 +248,14 @@ export function LibraryPanel({
                         className="field-input"
                         type="text"
                         value={editTitle}
+                        aria-invalid={!editTitle.trim()}
+                        aria-describedby={!editTitle.trim() ? "book-title-error" : undefined}
                         disabled={detailTransitionPending}
                         onChange={(event) => setEditTitle(event.target.value)}
                       />
+                      {!editTitle.trim() ? (
+                        <p id="book-title-error" className="field-hint is-error" role="alert">Title is required</p>
+                      ) : null}
                     </div>
                     <div className="field">
                       <label className="field-label" htmlFor="book-author-edit">Author</label>
@@ -291,7 +297,7 @@ export function LibraryPanel({
                   id="library-save-metadata-btn"
                   className="btn btn-primary"
                   type="button"
-                  disabled={detailTransitionPending}
+                  disabled={detailTransitionPending || !editTitle.trim()}
                   data-tip="Save title, author, and tags in your library"
                   onClick={() =>
                     void library.updateSelectedBookMetadata({
@@ -426,7 +432,7 @@ export function LibraryPanel({
                     <p className="hint">No cleaning artifacts are available for this chapter yet.</p>
                   ) : (
                     <div className="cleaning-comparison">
-                      <div><h4>Original</h4><pre tabIndex={0} aria-label="Original text">{cleaningPreview.before_text || "(missing original text)"}</pre></div>
+                      <div><h4>Original</h4><pre tabIndex={0} aria-label="Original text">{cleaningPreview.before_text || "Original text isn't available for books converted before this version."}</pre></div>
                       <div><h4>Cleaned</h4><pre tabIndex={0} aria-label="Cleaned text">{cleaningPreview.cleaned_text || "(missing cleaned text)"}</pre></div>
                     </div>
                   )}

@@ -43,6 +43,18 @@ describe("api client errors", () => {
     });
   });
 
+  it.each([
+    ["Title is required", "Title is required"],
+    ["must not be blank", "title: must not be blank"],
+  ])("removes validation boilerplate while retaining needed field context", async (message, detail) => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => jsonResponse({
+      detail: [{ loc: ["body", "title"], msg: `Value error, ${message}` }],
+    }, 422));
+    const client = createApiClient({ baseUrl: "http://127.0.0.1" });
+    await expect(client.requestJson("/api/test")).rejects.toMatchObject({ detail });
+    await expect(client.requestBlob("/api/test")).rejects.toMatchObject({ detail });
+  });
+
   it("summarizes FastAPI validation detail arrays", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       jsonResponse(

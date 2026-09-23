@@ -17,7 +17,7 @@ export const DASHBOARD_TAB_CONFIGS: DashboardTabConfig[] = [
   { id: "library", label: "Library", panelId: "tab-library", group: "Listen", icon: "library", description: "Browse, play, and manage your converted audiobooks." },
   { id: "progress", label: "Progress", panelId: "tab-progress", group: "Activity", icon: "progress", description: "Follow the running conversion stage by stage." },
   { id: "logs", label: "Logs", panelId: "tab-logs", group: "Activity", icon: "logs", description: "Events streamed from the conversion pipeline." },
-  { id: "settings", label: "Settings", panelId: "tab-config", group: "System", icon: "settings", description: "Choose how Orpheus prepares text before narration." },
+  { id: "settings", label: "Settings", panelId: "tab-config", group: "System", icon: "settings", description: "Voice models, text cleaning, and storage." },
 ];
 
 export function conversionPanelTabForDashboardTab(tab: DashboardTab): DashboardTab | "config" {

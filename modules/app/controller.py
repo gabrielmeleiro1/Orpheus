@@ -217,8 +217,12 @@ class AppController:
             runtime_validator=self._voice_service.validate_tts_runtime,
             shared_worker_pool_manager=self._shared_worker_pool_manager,
         )
-        self._library_service.upload_cleanup_guard = self._conversion_service.upload_cleanup_guard
-        self._conversion_service.upload_reference_checker = self._library_service._is_source_referenced_by_books
+        if hasattr(self._conversion_service, "upload_cleanup_guard"):
+            self._library_service.upload_cleanup_guard = self._conversion_service.upload_cleanup_guard
+        if hasattr(self._conversion_service, "upload_reference_checker") and hasattr(
+            self._library_service, "_is_source_referenced_by_books"
+        ):
+            self._conversion_service.upload_reference_checker = self._library_service._is_source_referenced_by_books
 
     @property
     def runtime_capability_service(self) -> RuntimeCapabilityService:

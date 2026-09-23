@@ -418,18 +418,27 @@ function DashboardApp({
             ttsReady={runtimeIdentity.ttsReady}
           />
 
-          {conversionPanelMounted ? <SettingsPage active={activeTab === "settings"} apiClient={apiClient} status={setupStatus} onManageModels={onOpenRuntimeSetup}><StableConversionPanel
-            activeTab={conversionPanelTab}
-            hidden={!isConversionPanelVisible}
-            apiClient={apiClient}
-            connectionState={connectionState}
-            health={health}
-            statusMessage={statusMessage}
-            conversionJob={conversionJob}
-            onOpenSettings={openSettings}
-            onOpenRuntimeSetup={onOpenRuntimeSetup}
-            startCommandRef={startCommandRef}
-          /></SettingsPage> : null}
+          {conversionPanelMounted ? (
+            <SettingsPage
+              active={activeTab === "settings"}
+              apiClient={apiClient}
+              status={setupStatus}
+              onManageModels={onOpenRuntimeSetup}
+            >
+              <StableConversionPanel
+                activeTab={conversionPanelTab}
+                hidden={!isConversionPanelVisible}
+                apiClient={apiClient}
+                connectionState={connectionState}
+                health={health}
+                statusMessage={statusMessage}
+                conversionJob={conversionJob}
+                onOpenSettings={openSettings}
+                onOpenRuntimeSetup={onOpenRuntimeSetup}
+                startCommandRef={startCommandRef}
+              />
+            </SettingsPage>
+          ) : null}
           {["tab-convert", "tab-document", "tab-config"].map((panelId) => (
             panelId === renderedConversionPanelId ? null : (
               <section key={panelId} id={panelId} role="tabpanel" hidden />
@@ -494,8 +503,8 @@ function DashboardApp({
           canSeek={player.canSeek}
           volume={player.volume}
           canGoPrevious={player.canGoPrevious}
-            canGoNext={player.canGoNext}
-            chapterPlaylist={player.chapterPlaylist}
+          canGoNext={player.canGoNext}
+          chapterPlaylist={player.chapterPlaylist}
           audioRef={player.audioRef}
           audio={player.audioProps}
           onTogglePlay={togglePlay}

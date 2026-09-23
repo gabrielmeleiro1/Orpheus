@@ -223,6 +223,12 @@ except Exception as exc:
             for backend_name in available_cleaner_backends():
                 if not is_local_cleaner_backend(backend_name):
                     continue
+                if not get_cleaner_backend(backend_name).requires_model:
+                    self._store_cleaner_backend_result(
+                        backend_name,
+                        {"available": True, "latency_ms": 0.0, "error": None},
+                    )
+                    continue
                 script = self._CLEANER_PROBE_SCRIPTS.get(backend_name)
                 if script is None:
                     continue

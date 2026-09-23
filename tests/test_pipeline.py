@@ -677,7 +677,7 @@ class TestConversionPipeline:
         book_output_dir = tmp_path / "output" / "Test Book"
         chapters_dir = book_output_dir / "chapters"
         assert not (book_output_dir / "source.md").exists()
-        assert not (chapters_dir / "chapter_01_before_cleaning.md").exists()
+        assert (chapters_dir / "chapter_01_before_cleaning.md").exists()
         assert (chapters_dir / "chapter_01_cleaned.md").exists()
 
     def test_chunk_overlap_is_not_tied_to_global_pipelining(self, mock_components, tmp_path):

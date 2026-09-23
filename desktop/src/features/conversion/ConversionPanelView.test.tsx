@@ -1,9 +1,17 @@
-import { createRef } from "react";
+// @vitest-environment happy-dom
+
+import { act, createRef } from "react";
+import { createRoot } from "react-dom/client";
+import { readFileSync } from "node:fs";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { ConversionPanelView } from "./ConversionPanelView";
 import type { ConversionPanelViewModel } from "./conversionPanelStateTypes";
+import { SettingsPage } from "../setup/SettingsPage";
+
+const conversionCss = readFileSync("src/features/conversion/conversion.css", "utf8");
+const settingsCss = readFileSync("src/features/setup/settings.css", "utf8");
 
 function viewModel(overrides: Partial<ConversionPanelViewModel> = {}): ConversionPanelViewModel {
   const noop = vi.fn();
@@ -170,7 +178,7 @@ describe("ConversionPanelView", () => {
     expect(html).toContain("Open Settings");
   });
 
-  it("keeps Runtime setup available from the existing Settings panel", () => {
+  it("uses one text cleaning heading and leaves model management to Settings", () => {
     const html = renderToString(
       <ConversionPanelView
         {...viewModel({
@@ -183,8 +191,22 @@ describe("ConversionPanelView", () => {
       />,
     );
 
-    expect(html).toContain('id="runtime-setup-btn"');
-    expect(html).toContain("Runtime setup");
+    expect(html).not.toContain('id="runtime-setup-btn"');
+    expect(html).not.toContain("Runtime setup");
+    expect(html).toContain("Text cleaning");
+  });
+
+  it("labels metadata with the selected queue item in both conversion modes", () => {
+    for (const isDocumentMode of [true, false]) {
+      const model = viewModel();
+      model.shell = { ...model.shell, isDocumentMode, activeTab: isDocumentMode ? "document" : "convert" };
+      model.sourceQueue = { ...model.sourceQueue, isDocumentMode, queueItems: [{ id: "paste", title: "Selected paste", selected: true } as typeof model.sourceQueue.queueItems[number]] };
+      const html = renderToString(<ConversionPanelView {...model} />);
+      expect(html.replace(/<[^>]*>/g, "")).toContain("Details — Selected paste");
+      expect(html).not.toContain("Pasted text uses its own fields above");
+      expect(html).toContain('id="title-input"');
+      if (isDocumentMode) expect(html).toContain('id="paste-title-input"');
+    }
   });
 
   it("shows the quantization selector only when the engine offers a real choice", () => {
@@ -271,4 +293,54 @@ describe("ConversionPanelView", () => {
 
     expect(html).toContain(".pdf, .epub, .txt, or .md");
   });
+});
+
+
+it.each(["convert", "document"] as const)("reserves the %s action height and keeps the inactive Settings wrapper layout-neutral", async (activeTab) => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  let height = 80;
+  let resize = () => {};
+  const disconnect = vi.fn();
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(callback: () => void) { resize = callback; }
+    observe() {}
+    disconnect = disconnect;
+  });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({ height }) as DOMRect);
+  const container = document.createElement("div");
+  container.className = "main-workspace";
+  const style = document.createElement("style");
+  style.textContent = `${conversionCss}\n${settingsCss}`;
+  document.head.append(style);
+  document.body.append(container);
+  const root = createRoot(container);
+  const model = viewModel({ shell: { activeTab, hidden: false, isDocumentMode: activeTab === "document" } });
+  const panel = <ConversionPanelView {...model} />;
+  try {
+    await act(async () => root.render(panel));
+    const unwrapped = container.querySelector<HTMLElement>(".conversion-panel")!;
+    const originalStyle = getComputedStyle(unwrapped);
+    const dimensions = [originalStyle.width, originalStyle.maxWidth, originalStyle.marginLeft, originalStyle.marginBottom];
+    await act(async () => root.render(
+      <SettingsPage active={false} apiClient={null} status={null} onManageModels={() => {}}>{panel}</SettingsPage>,
+    ));
+    const wrapped = container.querySelector<HTMLElement>(".conversion-panel")!;
+    expect(getComputedStyle(container.querySelector(".settings-content")!).display).toBe("contents");
+    const wrappedStyle = getComputedStyle(wrapped);
+    expect([wrappedStyle.width, wrappedStyle.maxWidth, wrappedStyle.marginLeft, wrappedStyle.marginBottom]).toEqual(dimensions);
+    expect(wrapped.style.getPropertyValue("--conversion-actions-height")).toBe("80px");
+    height = 128;
+    await act(async () => resize());
+    expect(wrapped.style.getPropertyValue("--conversion-actions-height")).toBe("128px");
+    const scroll = getComputedStyle(container.querySelector(".conversion-scroll")!);
+    expect(scroll.paddingBottom).toContain("128px");
+    expect(wrapped.lastElementChild?.className).toBe("conversion-actions");
+  } finally {
+    await act(async () => root.unmount());
+    expect(disconnect).toHaveBeenCalled();
+    style.remove();
+    container.remove();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  }
 });

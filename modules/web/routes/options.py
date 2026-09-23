@@ -56,7 +56,7 @@ def get_model_options(controller: ControllerDep, request: Request) -> dict:
         options = []
         for option in result["cleaner_backend_options"]:
             option = dict(option)
-            if option.get("is_local"):
+            if option.get("is_local") and option.get("requires_model", True):
                 option["models"] = [model for model in option.get("models", []) if model in installed]
                 if not option["models"]:
                     continue

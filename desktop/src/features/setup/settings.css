@@ -9,11 +9,6 @@
   display: contents;
 }
 
-.settings-content > .panel {
-  margin-inline: auto;
-  max-width: calc(var(--page-max-width) - var(--density-page-x) * 2);
-}
-
 .settings-storage-row {
   display: flex;
   align-items: center;

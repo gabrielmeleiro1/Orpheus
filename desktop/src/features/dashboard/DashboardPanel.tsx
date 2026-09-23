@@ -268,12 +268,12 @@ export function DashboardPanel({
               <p>{jobAuthor || (conversionIsActive ? "In progress" : "Latest job")}</p>
             </div>
             {onOpenProgress ? (
-              <button className="dashboard-card-action tabular-nums" type="button" onClick={onOpenProgress}>
+              <button className={`dashboard-card-action tabular-nums${uiState === "completed" ? " is-complete" : uiState === "failed" || uiState === "cancelled" ? " is-error" : ""}`} type="button" onClick={onOpenProgress}>
                 {stateLabel} · {conversionPercent}%
                 <Icon name="chevron-right" />
               </button>
             ) : (
-              <span className="dashboard-card-action tabular-nums">
+              <span className={`dashboard-card-action tabular-nums${uiState === "completed" ? " is-complete" : uiState === "failed" || uiState === "cancelled" ? " is-error" : ""}`}>
                 {stateLabel} · {conversionPercent}%
               </span>
             )}

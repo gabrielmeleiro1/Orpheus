@@ -29,6 +29,7 @@ describe("DashboardPanel library count", () => {
     await act(async () => root.render(<DashboardPanel {...props} />));
     expect(container.querySelector(".now-playing-main .card-eyebrow")?.textContent).toBe("Continue listening");
     expect(container.querySelector('[aria-label="Conversion progress"]')?.classList.contains("pbar-done")).toBe(true);
+    expect(container.querySelector(".conversion-card .dashboard-card-action")?.classList.contains("is-complete")).toBe(true);
     await act(async () => root.render(<DashboardPanel {...props} playing />));
     expect(container.querySelector(".now-playing-main .card-eyebrow")?.textContent).toBe("Now playing");
     await act(async () => (container.querySelector('[aria-label="Dismiss conversion"]') as HTMLButtonElement).click());
@@ -36,8 +37,10 @@ describe("DashboardPanel library count", () => {
     await act(async () => root.render(<DashboardPanel {...props} uiState="running" />));
     expect(container.querySelector(".conversion-card")).not.toBeNull();
     expect(container.querySelector('[aria-label="Conversion progress"]')?.classList.contains("pbar-active")).toBe(true);
+    expect(container.querySelector(".conversion-card .dashboard-card-action")?.classList.contains("is-complete")).toBe(false);
     await act(async () => root.render(<DashboardPanel {...props} uiState="failed" />));
     expect(container.querySelector('[aria-label="Conversion progress"]')?.classList.contains("pbar-danger")).toBe(true);
+    expect(container.querySelector(".conversion-card .dashboard-card-action")?.classList.contains("is-error")).toBe(true);
   });
 
   it("checks the completed book by id even when filtered out, then hides it after deletion", async () => {

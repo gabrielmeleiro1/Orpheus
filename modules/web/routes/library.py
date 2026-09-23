@@ -38,15 +38,17 @@ class PlaybackPositionRequest(BaseModel):
 
 
 class LibraryBookUpdateRequest(BaseModel):
-    title: Optional[str] = Field(default=None, min_length=1)
+    title: Optional[str] = None
     author: Optional[str] = None
     tags: Optional[str] = None
     favorite: Optional[bool] = None
 
     @field_validator("title")
     @classmethod
-    def title_required(cls, value):
-        if value is None or not value.strip():
+    def title_required(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if not value.strip():
             raise ValueError("Title is required")
         return value.strip()
 

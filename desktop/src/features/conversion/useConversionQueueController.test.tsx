@@ -79,6 +79,18 @@ describe("useConversionQueueController", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["file", "paste"])("edits the selected %s metadata independently of the paste draft", async (kind) => {
+    const client = { preflightSource: vi.fn(async () => preflight()) };
+    await act(async () => root?.render(<Probe apiClient={client} />));
+    const item = createQueueItem("upload:document.md", "document_audio", "Document", preflight());
+    await act(async () => {
+      if (kind === "paste") getController().addPastedSource(item, { selectItem: true });
+      else getController().addQueueItems([item], { selectFirst: true });
+    });
+    await act(async () => getController().syncSelectedQueueEdits({ title: "Edited title", author: "Edited author" }));
+    expect(getController().selectedQueueItem).toMatchObject({ title: "Edited title", author: "Edited author" });
+  });
+
   it.each(["resolve", "reject"] as const)(
     "ignores client A preflight %s after switching to client B while current B still completes",
     async (oldOutcome) => {

@@ -798,7 +798,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
         if (!isCurrentPreview()) {
           return null;
         }
-        setStatusMessage(preview.available ? `Loaded cleaning preview for chapter ${chapterNumber}` : "Cleaning preview unavailable");
+        setStatusMessage(preview.available ? "" : "Cleaning preview unavailable");
         return preview;
       } catch (error: unknown) {
         if (!isCurrentPreview()) {

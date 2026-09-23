@@ -24,6 +24,7 @@ export function SourceQueueView({
 }: SourceQueueViewProps) {
   const reviewAnchorRef = useRef<HTMLDivElement | null>(null);
   const previousReadyKeyRef = useRef("");
+  const selectedItem = sourceQueue.queueItems.find((item) => item.selected);
 
   useEffect(() => {
     const readyKey = sourceQueue.preflightCard
@@ -304,12 +305,9 @@ export function SourceQueueView({
 
       <section ref={reviewAnchorRef} id="conversion-review-anchor" className="conversion-section details-section">
         <div className="conversion-section-header">
-          <h2 className="conversion-group-heading">Details</h2>
-          <p className="conversion-section-hint">
-            {sourceQueue.isDocumentMode
-              ? "Optional title and author for a chosen file. Pasted text uses its own fields above."
-              : "Optional metadata overrides for the selected source."}
-          </p>
+          <h2 className="conversion-group-heading">
+            Details{selectedItem?.title ? ` — ${selectedItem.title}` : ""}
+          </h2>
         </div>
         {sourceQueue.preflightCard ? (
           <div className="panel-section preflight-card">

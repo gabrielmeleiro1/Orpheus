@@ -33,7 +33,10 @@ def controller(tmp_path):
     app.repository.close()
 
 
-def test_basic_conversion_request_runs_rule_only_cleaning(controller, monkeypatch):
+@pytest.mark.parametrize("backend", ["basic", None])
+def test_basic_conversion_request_runs_rule_only_cleaning(controller, monkeypatch, backend):
+    if backend is None:
+        controller.config.cleaner_backend = "basic"
     source = controller.config.temp_dir / "book.txt"
     source.write_text("A paragraph with **formatting** and a reference [12]. " * 5)
     service = controller._conversion_service
@@ -44,7 +47,7 @@ def test_basic_conversion_request_runs_rule_only_cleaning(controller, monkeypatc
         return kwargs["job"]
     monkeypatch.setattr(service, "_start_pipeline_job", reserve_only)
     response = TestClient(create_app(controller=controller)).post("/api/conversions", json={
-        "source_path": str(source), "runtime_options": {"cleaner_backend": "basic"},
+        "source_path": str(source), "runtime_options": {"cleaner_backend": backend},
     })
     assert response.status_code == 200, response.text
     config = service._create_pipeline_config(runtime_options=submitted["runtime_options"])
@@ -77,7 +80,8 @@ def test_cleaned_text_is_saved_independently_of_debug(tmp_path, debug):
     save_cleaning_artifacts(runtime, chapter=chapter, output_dir=tmp_path,
                             cleaned_chunks=["clean"], llm_input_chunks=["input"], cleaning_trace_rows=[{"mode": "rule_only"}])
     assert (tmp_path / "chapter_01_cleaned.md").read_text() == "# Chapter\n\nclean"
-    for name in ["before_cleaning.md", "llm_input.md", "cleaning_trace.jsonl"]:
+    assert (tmp_path / "chapter_01_before_cleaning.md").read_text() == "# Chapter\n\nraw"
+    for name in ["llm_input.md", "cleaning_trace.jsonl"]:
         assert (tmp_path / f"chapter_01_{name}").exists() is debug
     assert PipelineConfig().save_cleaning_debug is False
 
@@ -182,3 +186,22 @@ def test_basic_runtime_is_available_without_any_model_probe(monkeypatch):
     monkeypatch.setattr(service, "_run_probe", Mock(side_effect=AssertionError("No probe needed")))
     assert service.get_cached_cleaner_backend_availability()["basic"] is True
     assert service.probe_cleaner_backend("basic")["available"] is True
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+def test_basic_cleaner_lifecycle_never_loads_or_advertises_a_model(monkeypatch, parallel):
+    from modules.pipeline.model_lifecycle import get_text_cleaner_for_chapter, warmup_models
+
+    monkeypatch.setattr(TextCleaner, "load", Mock(side_effect=AssertionError("No model may load")))
+    runtime = SimpleNamespace(
+        config=PipelineConfig(cleaner_backend="basic"),
+        state=SimpleNamespace(tts_engine=SimpleNamespace(is_loaded=True), text_cleaner=None, parallel_execution_active=parallel),
+        log_verbose=Mock(),
+    )
+    warmup_models(runtime)
+    cleaner = get_text_cleaner_for_chapter(runtime)
+    cleaner.clean_with_trace("A quiet lake.")
+    assert cleaner.stats_snapshot()["rule_only"] == 1
+    messages = [call.args[0] for call in runtime.log_verbose.call_args_list]
+    assert any("no model" in message for message in messages)
+    assert not any("Text Cleaner model" in message for message in messages)

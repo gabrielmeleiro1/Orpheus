@@ -104,6 +104,20 @@ describe("useLibrary indexed total", () => {
     vi.useRealTimers();
   });
 
+  it("loads cleaning preview without a redundant success status", async () => {
+    const apiClient = {
+      getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
+      getLibraryCount: vi.fn(async () => ({ count: 1 })),
+      getLibraryBook: vi.fn(async () => detail),
+      getCleaningPreview: vi.fn(async () => cleaningPreview),
+    } as unknown as ApiClient;
+    root = createRoot(container);
+    await act(async () => root.render(<LibraryProbe apiClient={apiClient} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(220); });
+    await act(async () => { expect(await getLibraryProbe().loadCleaningPreview(1)).toEqual(cleaningPreview); });
+    expect(getLibraryProbe().statusMessage).toBe("");
+  });
+
   it("keeps the indexed total stable when a search has no matches", async () => {
     const getLibrary = vi.fn(async (search?: string) => ({
       items: search ? [] : [book],

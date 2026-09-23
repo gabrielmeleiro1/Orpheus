@@ -44,19 +44,10 @@ export function CleanerOptionsView({
                 data-tip="The cleaner prepares text before narration. It is independent of the TTS engine — choosing Cloud API here does not change the voice."
                 data-tip-pos="bottom"
               >
-                Cleaner runtime
+                Text cleaning
               </h2>
               <p className="conversion-section-hint">Backend, model, and device used to prepare text before narration.</p>
             </div>
-            <button
-              id="runtime-setup-btn"
-              className="btn btn-accent-soft"
-              type="button"
-              data-tip="Install or repair the on-device cleaner and TTS runtimes"
-              onClick={actions.onOpenRuntimeSetup}
-            >
-              Runtime setup
-            </button>
           </div>
 
           <div className="form-grid conversion-form-grid">

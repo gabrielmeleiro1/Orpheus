@@ -40,7 +40,7 @@ def test_selection_round_trip_and_delete_preserves_precision(tmp_path, monkeypat
         saved = setup_runtime.read_setup_state(path)
         assert saved["model_groups"] == ["tts-cpu-cuda"]
         assert saved["cleaner_cuda_quantization"] == quantization
-        assert config.cleaner_backend == "api"
+        assert config.cleaner_backend == "basic"
 
 
 def test_catalog_downloads_only_requested_model_and_pins_every_revision():

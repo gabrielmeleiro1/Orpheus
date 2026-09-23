@@ -510,3 +510,11 @@
     transition: none;
   }
 }
+
+.dashboard-card-action.is-complete {
+  color: var(--positive);
+}
+
+.dashboard-card-action.is-error {
+  color: var(--negative);
+}

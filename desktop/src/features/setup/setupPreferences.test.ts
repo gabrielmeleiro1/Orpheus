@@ -30,3 +30,11 @@ it("clears a deleted local cleaner preference", () => {
   syncSetupPreferences(snapshot(""));
   expect(readPersistedSettings()).toMatchObject({ preferred_cleaner_backend: "basic", preferred_cleaner_model: "" });
 });
+
+
+it("preserves an explicit Settings backend after synchronizing the same no-cleaner setup", () => {
+  syncSetupPreferences(snapshot(""));
+  savePersistedSettings({ ...readPersistedSettings(), cleaner_backend: "api", preferred_cleaner_backend: "api", cleaner_model: "gpt-5-nano" });
+  syncSetupPreferences(snapshot(""));
+  expect(readPersistedSettings()).toMatchObject({ cleaner_backend: "api", preferred_cleaner_backend: "api", cleaner_model: "gpt-5-nano" });
+});

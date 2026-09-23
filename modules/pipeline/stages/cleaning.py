@@ -40,10 +40,7 @@ def save_pre_clean_markdown(
     output_dir: Path,
     original_chunks: list[str],
 ) -> None:
-    """Persist pre-clean chunk text for debugging when enabled."""
-    if not runtime.config.save_cleaning_debug:
-        return
-
+    """Persist original text for the library's cleaning comparison."""
     try:
         before_clean_md = output_dir / f"chapter_{chapter.number:02d}_before_cleaning.md"
         before_clean_md.write_text(

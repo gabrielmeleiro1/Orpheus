@@ -108,6 +108,9 @@ def create_text_cleaner_instance(runtime: Any):
 
     cleaner_config = _cleaner_config_from_runtime(runtime)
     cleaner = TextCleaner(config=cleaner_config)
+    if cleaner_config.backend == "basic":
+        runtime.log_verbose("[CLEANER] Basic cleanup ready (no model)", "success")
+        return cleaner
     if _should_defer_cleaner_load(runtime):
         runtime.log_verbose(
             "[CLEANER] Deferring model load until a chunk requires LLM cleanup",
@@ -128,6 +131,14 @@ def get_text_cleaner_for_chapter(runtime: Any):
     In sequential mode the cleaner is cached; in parallel mode each worker uses
     a fresh cleaner instance.
     """
+    if getattr(runtime.config, "cleaner_backend", "") == "basic":
+        runtime.log_verbose("[CLEANER] Using rule-only cleanup (no model)", "info")
+        if runtime.state.parallel_execution_active:
+            return create_text_cleaner_instance(runtime)
+        if runtime.state.text_cleaner is None:
+            runtime.state.text_cleaner = create_text_cleaner_instance(runtime)
+        return runtime.state.text_cleaner
+
     if not runtime.state.parallel_execution_active:
         if runtime.state.text_cleaner is None:
             runtime.log_verbose(
@@ -179,7 +190,9 @@ def warmup_models(runtime: Any) -> None:
 
         cleaner_config = _cleaner_config_from_runtime(runtime)
         runtime.state.text_cleaner = TextCleaner(config=cleaner_config)
-        if _should_defer_cleaner_load(runtime):
+        if cleaner_config.backend == "basic":
+            runtime.log_verbose("[WARMUP] Basic cleanup ready (no model)", "success")
+        elif _should_defer_cleaner_load(runtime):
             runtime.log_verbose(
                 "[WARMUP] Text Cleaner model load deferred until LLM cleanup is needed",
                 "info",

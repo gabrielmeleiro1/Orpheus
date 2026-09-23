@@ -63,7 +63,11 @@ def test_patch_clears_explicit_null_but_preserves_omitted_metadata(tmp_path):
         assert response.status_code == 200
         assert response.json()["author"] is None
         assert response.json()["tags"] == ""
-        for title in (None, "", "   "):
+        unchanged = client.patch(f"/api/library/{book.id}", json={"title": None, "author": "Edited"})
+        assert unchanged.status_code == 200
+        assert unchanged.json()["title"] == "Title"
+        assert unchanged.json()["author"] == "Edited"
+        for title in ("", "   "):
             assert client.patch(f"/api/library/{book.id}", json={"title": title}).status_code == 422
     finally:
         repo.close()

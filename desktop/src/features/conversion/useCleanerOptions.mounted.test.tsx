@@ -7,6 +7,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ApiClient } from "../../api/client";
 import type { ModelOptionsResponse, SystemCapabilitiesResponse } from "../../types/api";
 import { useCleanerOptions, type UseCleanerOptionsResult } from "./useCleanerOptions";
+import { syncSetupPreferences } from "../setup/setupPreferences";
+import { readPersistedSettings } from "./conversionOptionsShared";
+import { buildCleanerRuntimePayloadFields } from "./cleanerBackendHelpers";
+import { buildRuntimeIdentityFromSnapshot } from "../../app/runtimeIdentity";
+import type { RuntimeSetupStatusResponse } from "../../types/api";
 import type { PersistedSettings } from "./conversionOptionsShared";
 
 function capabilities(
@@ -52,17 +57,19 @@ function CleanerProbe({
   systemCapabilities,
   persisted = {},
   persistedRef,
+  models = modelOptions,
 }: {
   apiClient: ApiClient;
   systemCapabilities: SystemCapabilitiesResponse | null;
   persisted?: PersistedSettings;
   persistedRef?: MutableRefObject<PersistedSettings>;
+  models?: ModelOptionsResponse;
 }): null {
   const ownedPersistedSettingsRef = useRef(persisted);
   const persistedSettingsRef = persistedRef ?? ownedPersistedSettingsRef;
   const result = useCleanerOptions({
     apiClient,
-    modelOptions,
+    modelOptions: models,
     systemCapabilities,
     persistedSettingsRef,
   });
@@ -90,6 +97,32 @@ describe("useCleanerOptions capability transitions", () => {
     });
     container.remove();
     delete (globalThis as typeof globalThis & { cleanerProbe?: UseCleanerOptionsResult }).cleanerProbe;
+  });
+
+  it("keeps fresh-profile no-cleaner setup through probe refresh and sends basic by default", async () => {
+    localStorage.clear();
+    syncSetupPreferences({ configured: true, selected_profile: "cuda", selected_model_groups: [{ id: "tts-cpu-cuda" }] } as RuntimeSetupStatusResponse);
+    const persisted = readPersistedSettings();
+    const models = { ...modelOptions, cleaner_backend_options: [
+      ...modelOptions.cleaner_backend_options!,
+      { name: "basic", display_name: "Basic cleanup", is_local: true, requires_api_key: false, requires_model: false, models: [] },
+      { name: "cuda", display_name: "Local CUDA", is_local: true, requires_api_key: false, requires_model: true, models: ["Qwen/Qwen2.5-1.5B-Instruct"] },
+    ] };
+    const apiClient = {} as ApiClient;
+    const pending = { ...capabilities(false), cleaner_runtime_availability: { basic: true, cuda: false, mlx: false } };
+    const fresh = { ...capabilities(true), cleaner_runtime_availability: { basic: true, cuda: true, mlx: true } };
+    root = createRoot(container);
+    await act(async () => root.render(<CleanerProbe apiClient={apiClient} systemCapabilities={pending} persisted={persisted} models={models} />));
+    expect(getCleanerProbe().cleanerBackend).toBe("basic");
+    await act(async () => root.render(<CleanerProbe apiClient={apiClient} systemCapabilities={fresh} persisted={persisted} models={models} />));
+    const options = getCleanerProbe();
+    expect(options.cleanerBackend).toBe("basic");
+    expect(options.cleanerModel).toBe("");
+    expect(buildCleanerRuntimePayloadFields({ ...options, selectedBackend: options.selectedCleanerBackend })).toEqual({ cleaner_backend: "basic", cleaner_model: null });
+    expect(buildRuntimeIdentityFromSnapshot({ capabilities: fresh, modelOptions: models, settings: persisted }).cleanerLabel).toBe("Basic cleanup");
+    await act(async () => options.setCleanerBackend("cuda"));
+    expect(getCleanerProbe().cleanerBackend).toBe("cuda");
+    localStorage.clear();
   });
 
   it("promotes Local MLX once a pending probe reports the local runtime ready", async () => {

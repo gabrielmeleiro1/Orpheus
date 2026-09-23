@@ -108,12 +108,16 @@ function summarizeValidationDetails(detail: unknown): string {
         return "";
       }
       const source = item as Record<string, unknown>;
-      const message = typeof source.msg === "string" ? source.msg.trim() : "";
+      const message = typeof source.msg === "string"
+        ? source.msg.trim().replace(/^Value error,\s*/i, "")
+        : "";
       if (!message) {
         return "";
       }
       const location = summarizeValidationLocation(source.loc);
-      return location ? `${location}: ${message}` : message;
+      const field = location.split(".").at(-1)?.replace(/_/g, " ").toLowerCase();
+      const selfExplanatory = field && message.toLowerCase().startsWith(`${field} `);
+      return location && !selfExplanatory ? `${location}: ${message}` : message;
     })
     .filter((item) => item.length > 0)
     .join("; ");
