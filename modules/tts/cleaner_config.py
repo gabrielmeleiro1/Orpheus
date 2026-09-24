@@ -46,7 +46,7 @@ class CleanerConfig:
 
     model_name: str = CLEANER_MLX_DEFAULT_MODEL
     max_tokens: int = 2048
-    temperature: float = 0.1
+    temperature: float = 0.0
     batch_size: int = 1
     cache_model: bool = True
     skip_llm_when_not_needed: bool = True

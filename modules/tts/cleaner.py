@@ -258,7 +258,7 @@ class TextCleaner:
                     prompt=prompt,
                     max_tokens=self.config.max_tokens,
                     sampler=cleaner_mlx_backend.make_sampler(
-                        temp=self.config.temperature
+                        temp=0.0
                     ),
                     verbose=False
                 )
@@ -269,7 +269,7 @@ class TextCleaner:
                     self._tokenizer,
                     prompt=prompt,
                     max_tokens=self.config.max_tokens,
-                    temp=self.config.temperature,
+                    temp=0.0,
                     verbose=False
                 )
             except TypeError as exc:
@@ -280,7 +280,7 @@ class TextCleaner:
                     self._tokenizer,
                     prompt=prompt,
                     max_tokens=self.config.max_tokens,
-                    temperature=self.config.temperature,
+                    temperature=0.0,
                     verbose=False
                 )
 

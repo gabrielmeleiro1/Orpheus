@@ -256,9 +256,18 @@ export function SetupPage({
 
   useEffect(() => {
     if (busy || progress.lifecycle === "complete" || progress.lifecycle === "failed") {
-      progressHeadingRef.current?.focus();
+      progressHeadingRef.current?.focus({ preventScroll: busy });
     }
   }, [busy, progress.lifecycle]);
+
+  useEffect(() => {
+    if (busy) {
+      progressHeadingRef.current?.closest("section")?.scrollIntoView({
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+        block: "start",
+      });
+    }
+  }, [busy]);
 
   useEffect(() => {
     if (settingsEntry) {

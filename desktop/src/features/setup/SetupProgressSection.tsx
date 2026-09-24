@@ -1,5 +1,6 @@
 import type { RefObject } from "react";
 
+import { ProgressBar } from "../../ui/ProgressBar";
 import type { SetupProgressState } from "./setupModel";
 import { ModelListTip } from "./SetupTips";
 
@@ -41,7 +42,11 @@ export function SetupProgressSection({
         </div>
         <p className="setup-progress-message" aria-live="polite">{progressMessage}</p>
       </div>
-      <progress value={progressValue} max={100} aria-label={progressValue === undefined ? "Setup in progress" : `Setup ${Math.round(progressValue)} percent complete`} />
+      <ProgressBar
+        pct={progressValue}
+        tone={progress.lifecycle === "complete" ? "done" : "active"}
+        label={progressValue === undefined ? "Setup in progress" : `Setup ${Math.round(progressValue)} percent complete`}
+      />
       <ol className="setup-stage-list">{STAGES.map(({ id }) => <StageState key={id} id={id} progress={progress} />)}</ol>
     </section>
   );

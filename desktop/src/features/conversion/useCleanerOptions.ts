@@ -481,7 +481,7 @@ export function useCleanerOptions({
     cleanerModel,
     setCleanerModel,
     cleanerModelOptions,
-    cleanerCudaDevice,
+    cleanerCudaDevice: cleanerCudaDevice.trim() || defaultCleanerCudaDevice(selectedCleanerBackend),
     setCleanerCudaDevice,
     cleanerCudaQuantization,
     setCleanerCudaQuantization,

@@ -178,6 +178,21 @@ describe("ConversionPanelView", () => {
     expect(html).toContain("Open Settings");
   });
 
+  it.each(["", "   ", "cuda:1"])("renders the cleaner device with its backend default and runtime label (%s)", (device) => {
+    const model = viewModel();
+    model.shell = { ...model.shell, activeTab: "config" };
+    model.cleanerOptions = {
+      ...model.cleanerOptions,
+      cleanerBackend: "cuda",
+      showCleanerCudaControls: true,
+      cleanerCudaDevice: device,
+      cleanerCudaDevicePlaceholder: "cuda",
+    };
+    const container = document.createElement("div");
+    container.innerHTML = renderToString(<ConversionPanelView {...model} />);
+    expect(container.querySelector<HTMLInputElement>("#cleaner-cuda-device-input")?.value).toBe(device.trim() ? "CUDA:1" : "CUDA");
+  });
+
   it("uses one text cleaning heading and leaves model management to Settings", () => {
     const html = renderToString(
       <ConversionPanelView

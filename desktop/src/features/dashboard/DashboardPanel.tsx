@@ -219,7 +219,7 @@ export function DashboardPanel({
           </span>
         ) : null}
         <div className="now-playing-main">
-          <span className="card-eyebrow">{playing ? "Now playing" : "Continue listening"}</span>
+          <span className="card-eyebrow">{playing ? "Now playing" : hasPlayback ? "Continue listening" : "Listening"}</span>
           <h3 className="now-playing-title">
             {hasPlayback ? (selected?.title || playerTitle || "Untitled audiobook") : "Nothing playing"}
           </h3>

@@ -54,6 +54,7 @@ describe("mounted SetupPage", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
   });
 
   async function renderPage(runtimeBridge: SetupPageBridge, props: Partial<Parameters<typeof SetupPage>[0]> = {}) {
@@ -84,6 +85,23 @@ describe("mounted SetupPage", () => {
       installed_runtime: { profile: "cuda", runtime_available: true, ready: false, model_groups: groups.map((id) => ({ id, runtime_ready: true, assets_ready: false, ready: false })) },
     };
   }
+
+  it.each([false, true])("scrolls installation into view once, respecting reduced motion (%s)", async (reducedMotion) => {
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => undefined);
+    vi.spyOn(window, "matchMedia").mockReturnValue({ matches: reducedMotion } as MediaQueryList);
+    let onProgress!: (event: SetupProgressEvent) => void;
+    const runtimeBridge = bridge({ listen: vi.fn(async (listener) => { onProgress = listener; return vi.fn(); }) });
+    await renderPage(runtimeBridge);
+    expect(scroll).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLButtonElement>(".setup-primary")!.click());
+    expect(scroll).toHaveBeenCalledExactlyOnceWith({ behavior: reducedMotion ? "instant" : "smooth", block: "start" });
+    expect(scroll.mock.instances[0]).toBe(container.querySelector(".setup-progress"));
+    const bar = container.querySelector('[role="progressbar"]');
+    expect(bar?.classList.contains("pbar-active")).toBe(true);
+    expect(bar?.hasAttribute("aria-valuenow")).toBe(false);
+    await act(async () => onProgress({ stage: "packages", message: "Installing", percent: 25 } as SetupProgressEvent));
+    expect(scroll).toHaveBeenCalledTimes(1);
+  });
 
   it("shows model and precision choices on the first page and downloads only the chosen pair", async () => {
     const start = vi.fn(async () => ({ lifecycle: "running" }));
@@ -531,14 +549,14 @@ describe("mounted SetupPage", () => {
       await Promise.resolve();
     });
     expect(status).toHaveBeenCalledTimes(2);
-    expect(container.querySelector("progress")?.getAttribute("value")).toBe("92");
+    expect(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("92");
     expect(container.textContent).toContain("Verifying setup");
     expect(container.querySelectorAll(".setup-stage.is-complete")).toHaveLength(2);
 
     await act(async () => {
       progressListeners[1]({ event: "stage_started", stage: "verify", message: "Verifying setup", percent: 92 });
     });
-    expect(container.querySelector("progress")?.getAttribute("value")).toBe("92");
+    expect(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("92");
     expect(container.textContent).toContain("Verifying setup");
     expect(container.querySelectorAll(".setup-stage.is-complete")).toHaveLength(2);
   });
@@ -656,7 +674,8 @@ describe("mounted SetupPage", () => {
     expect(getStatus).not.toHaveBeenCalled();
     expect(onReady).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')).toBeNull();
-    expect(container.querySelector("progress")?.getAttribute("value")).toBe("100");
+    expect(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("100");
+    expect(container.querySelector('[role="progressbar"]')?.classList.contains("pbar-done")).toBe(true);
     expect(container.textContent).toContain("Installation complete. Restart Orpheus to load the selected runtime.");
     expect(findButton(container, "Restart Orpheus").disabled).toBe(false);
   });
@@ -772,7 +791,7 @@ describe("mounted SetupPage", () => {
 
     expect(api.getRuntimeSetupStatus).toHaveBeenCalledOnce();
     expect(onReady).toHaveBeenCalledWith(readyStatus);
-    expect(container.querySelector("progress")?.getAttribute("value")).toBe("100");
+    expect(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("100");
   });
 
   it("focuses the setup heading when the page mounts", async () => {

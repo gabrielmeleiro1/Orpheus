@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from difflib import SequenceMatcher
 import re
 
@@ -231,8 +232,55 @@ def normalize_markdown_tables(text: str) -> str:
     return "\n".join(out)
 
 
+def page_furniture_lines(text: str) -> set[int]:
+    """Identify page numbers and short, title-like running headers/footers.
+
+    Repetition alone is not enough for prose or dialogue: candidates must look
+    like titles, without sentence punctuation or list/Markdown markers.
+    """
+    furniture: set[int] = set()
+    candidates: dict[int, str] = {}
+    for index, line in enumerate(text.splitlines()):
+        line = line.strip()
+        if re.fullmatch(r"\d+", line):
+            furniture.add(index)
+            continue
+        if not line or line.startswith("#") or len(line) > 100:
+            continue
+        title = re.sub(r"^\d+\s+|\s+\d+$", "", line).strip()
+        if (
+            len(title.split()) > 12
+            or not re.fullmatch(r"[^\W\d_][\w\s'’–—-]*", title)
+            or not (title.isupper() or title.istitle())
+            or (len(title.split()) == 1 and (not title.isupper() or len(title) < 4))
+        ):
+            continue
+        key = re.sub(r"[\d\s]+", "", title).casefold()
+        candidates[index] = key
+        if title.isupper() and title != line:
+            furniture.add(index)
+    counts = Counter(candidates.values())
+    furniture.update(index for index, key in candidates.items() if counts[key] >= 2)
+    return furniture
+
+
+def strip_page_furniture(text: str) -> str:
+    furniture = page_furniture_lines(text)
+    return "".join(
+        line for index, line in enumerate(text.splitlines(keepends=True))
+        if index not in furniture
+    )
+
+
+def repair_line_break_hyphenation(text: str) -> str:
+    """Join word fragments only across an explicit line break and ASCII hyphen."""
+    return re.sub(r"([^\W\d_])-[ \t]*\r?\n[ \t]*(?=[a-zà-öø-ÿ])", r"\1", text)
+
+
 def rule_based_clean(text: str) -> str:
     """Apply fast rule-based text normalization for TTS preprocessing."""
+    text = strip_page_furniture(text)
+    text = repair_line_break_hyphenation(text)
     text = repair_separated_drop_cap_fragments(text)
     text = re.sub(r"(?i)<br\s*/?>", " ", text)
     text = strip_inline_numeric_references(text)
@@ -380,7 +428,49 @@ def _is_orphan_single_letter_delete(before: list[str], after: list[str]) -> bool
         return False
     if token in {"A", "I"}:
         return False
-    return token.upper() == token
+    return token.isalpha() and token.upper() == token
+
+
+def _preserves_content_with_merges(source_text: str, cleaned_tokens: list[str]) -> bool:
+    """Match in order, allowing only exact merges and identified furniture skips.
+
+    A sequence diff can align a header's KEEPER with the repaired prose's keeper,
+    hiding a valid merge. Explicit alignment avoids that ambiguity without
+    allowing any prose token to disappear.
+    """
+    furniture = page_furniture_lines(source_text)
+    source: list[str] = []
+    optional: set[int] = set()
+    for index, line in enumerate(source_text.splitlines()):
+        tokens = _word_tokens(line)
+        if index in furniture:
+            optional.update(range(len(source), len(source) + len(tokens)))
+        source.extend(tokens)
+    pending = [(0, 0)]
+    visited: set[tuple[int, int]] = set()
+    while pending:
+        i, j = pending.pop()
+        if (i, j) in visited:
+            continue
+        visited.add((i, j))
+        if i == len(source) and j == len(cleaned_tokens):
+            return True
+        if i in optional:
+            pending.append((i + 1, j))
+        if j == len(cleaned_tokens):
+            continue
+        target = cleaned_tokens[j].casefold()
+        merged = ""
+        for end in range(i, len(source)):
+            if end > i and any(token in {"A", "I"} for token in source[i:end + 1]):
+                break
+            merged += source[end].casefold()
+            if not target.startswith(merged):
+                break
+            if merged == target:
+                pending.append((end + 1, j + 1))
+                break
+    return False
 
 
 def llm_preservation_violation(source_text: str, cleaned_text: str) -> str | None:
@@ -388,14 +478,17 @@ def llm_preservation_violation(source_text: str, cleaned_text: str) -> str | Non
     Return a guard message when LLM output changes source tokens too freely.
 
     The cleaner is allowed to adjust punctuation/casing and to merge obvious OCR
-    split tokens like ``F EAR`` -> ``FEAR``. Broader token additions, removals, or
-    replacements are rejected so literary phrasing is not silently rewritten.
+    split tokens like ``keep er`` -> ``keeper`` and remove identified page
+    furniture. Broader token additions, removals, or replacements are rejected
+    so literary phrasing is not silently rewritten.
     """
     source_tokens = _word_tokens(source_text)
     cleaned_tokens = _word_tokens(cleaned_text)
     if [token.casefold() for token in source_tokens] == [
         token.casefold() for token in cleaned_tokens
     ]:
+        return None
+    if _preserves_content_with_merges(source_text, cleaned_tokens):
         return None
 
     source_folded = [token.casefold() for token in source_tokens]

@@ -682,16 +682,6 @@
   overflow-wrap: anywhere;
 }
 
-.setup-progress progress {
-  accent-color: var(--accent);
-  background: var(--bg-elevated);
-  border: 0;
-  border-radius: 999px;
-  height: 6px;
-  overflow: hidden;
-  width: 100%;
-}
-
 .setup-stage-list {
   display: flex;
   flex-wrap: wrap;

@@ -140,7 +140,7 @@ export function resolveInitialCleanerBackendId(
 }
 
 export function defaultCleanerCudaDevice(option: CleanerBackendOption | null): string {
-  return String(option?.default_device ?? "").trim();
+  return String(option?.default_device ?? "").trim() || (option?.id === "cuda" ? "cuda" : "");
 }
 
 export function defaultCleanerCudaQuantization(option: CleanerBackendOption | null): string {

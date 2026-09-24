@@ -23,6 +23,13 @@
 .pbar-done .pbar-fill { background: var(--positive); }
 .pbar-danger .pbar-fill { background: var(--negative); }
 
+.pbar-indeterminate .pbar-fill { animation: pbar-pulse 1.5s ease-in-out infinite alternate; }
+
+@keyframes pbar-pulse {
+  from { transform: translateX(0); }
+  to { transform: translateX(185%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .pbar-fill { transition: none; }
+  .pbar-fill { transition: none; animation: none !important; }
 }

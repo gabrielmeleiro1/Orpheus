@@ -406,7 +406,7 @@ export function useConversionPanelState({
       cleanerModelOptions: optionState.cleanerModelOptions,
       showCleanerCudaControls,
       cleanerCudaDevice: optionState.cleanerCudaDevice,
-      cleanerCudaDevicePlaceholder: selectedCleanerBackend?.default_device || "cuda:0",
+      cleanerCudaDevicePlaceholder: selectedCleanerBackend?.default_device?.trim() || "cuda",
       cleanerCudaQuantization: optionState.cleanerCudaQuantization,
       cleanerCudaQuantizationOptions,
       requiresApiKey: Boolean(selectedCleanerBackend?.requires_api_key),

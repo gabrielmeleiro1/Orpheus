@@ -193,6 +193,8 @@ describe("DashboardPanel library count", () => {
     });
 
     expect(container.textContent).toContain("Open library");
+    expect(container.querySelector(".now-playing-main .card-eyebrow")?.textContent).toBe("Listening");
+    expect(container.querySelector(".now-playing-title")?.textContent).toBe("Nothing playing");
     expect([...container.querySelectorAll("button")].some(button => button.textContent === "Convert a source")).toBe(false);
   });
 });

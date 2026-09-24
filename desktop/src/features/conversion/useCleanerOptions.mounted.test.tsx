@@ -99,6 +99,27 @@ describe("useCleanerOptions capability transitions", () => {
     delete (globalThis as typeof globalThis & { cleanerProbe?: UseCleanerOptionsResult }).cleanerProbe;
   });
 
+  it.each([undefined, "", "   ", "cuda:1"])("uses the backend default for an empty persisted CUDA device (%s)", async (device) => {
+    const models = { ...modelOptions, cleaner_backend_options: [
+      { name: "cuda", display_name: "Local CUDA", is_local: true, requires_api_key: false, models: ["local-model"], default_device: "cuda" },
+    ] };
+    const persisted = { cleaner_backend_configured: true, cleaner_backend: "cuda", cleaner_cuda_device: device };
+    root = createRoot(container);
+    await act(async () => root.render(<CleanerProbe apiClient={{} as ApiClient} systemCapabilities={null} persisted={persisted} models={models} />));
+    expect(getCleanerProbe().cleanerCudaDevice).toBe(device?.trim() || "cuda");
+    await act(async () => getCleanerProbe().setCleanerCudaDevice(""));
+    expect(getCleanerProbe().cleanerCudaDevice).toBe("cuda");
+  });
+
+  it("defaults a fresh CUDA profile when older backend metadata omits the device", async () => {
+    const models = { ...modelOptions, cleaner_backend_options: [
+      { name: "cuda", display_name: "Local CUDA", is_local: true, requires_api_key: false, models: ["local-model"] },
+    ] };
+    root = createRoot(container);
+    await act(async () => root.render(<CleanerProbe apiClient={{} as ApiClient} systemCapabilities={null} models={models} />));
+    expect(getCleanerProbe().cleanerCudaDevice).toBe("cuda");
+  });
+
   it("keeps fresh-profile no-cleaner setup through probe refresh and sends basic by default", async () => {
     localStorage.clear();
     syncSetupPreferences({ configured: true, selected_profile: "cuda", selected_model_groups: [{ id: "tts-cpu-cuda" }] } as RuntimeSetupStatusResponse);

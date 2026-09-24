@@ -202,6 +202,9 @@ def generate_cuda_response(cleaner: Any, prompt: str) -> str:
         inputs = {key: value.to(device) for key, value in inputs.items()}
 
         generation_kwargs: dict[str, object] = {
+            # Cleanup must be repeatable even with legacy nonzero temperatures.
+            "do_sample": False,
+            "num_beams": 1,
             "max_new_tokens": cleaner.config.max_tokens,
             "pad_token_id": (
                 tokenizer.pad_token_id
@@ -209,12 +212,6 @@ def generate_cuda_response(cleaner: Any, prompt: str) -> str:
                 else tokenizer.eos_token_id
             ),
         }
-        if cleaner.config.temperature > 0:
-            generation_kwargs["temperature"] = cleaner.config.temperature
-            generation_kwargs["do_sample"] = True
-        else:
-            generation_kwargs["do_sample"] = False
-
         try:
             output_ids = model.generate(**inputs, **generation_kwargs)
         except Exception as exc:

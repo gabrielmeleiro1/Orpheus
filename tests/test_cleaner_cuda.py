@@ -162,7 +162,7 @@ def test_default_cuda_quantization_dependency_is_declared():
 
 
 @pytest.mark.parametrize("use_chat_template", [False, True])
-def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch, use_chat_template):
+def test_generate_llm_response_is_greedy_and_passes_max_tokens(monkeypatch, use_chat_template):
     import modules.tts.cleaner_cuda as cleaner_cuda_module
 
     fake_torch = make_fake_torch_module(cuda_available=True)
@@ -240,8 +240,9 @@ def test_generate_llm_response_passes_temperature_and_max_tokens(monkeypatch, us
 
     assert result == "cleaned output"
     assert generate_kwargs["max_new_tokens"] == 128
-    assert generate_kwargs["temperature"] == 0.35
-    assert generate_kwargs["do_sample"] is True
+    assert "temperature" not in generate_kwargs
+    assert generate_kwargs["do_sample"] is False
+    assert generate_kwargs["num_beams"] == 1
     assert generate_kwargs["pad_token_id"] == 0
 
 

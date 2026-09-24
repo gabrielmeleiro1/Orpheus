@@ -109,7 +109,7 @@ export function CleanerOptionsView({
                     autoCorrect="off"
                     aria-label="cleaner CUDA device"
                     placeholder={formatDevice(cleanerOptions.cleanerCudaDevicePlaceholder)}
-                    value={formatDevice(cleanerOptions.cleanerCudaDevice)}
+                    value={formatDevice(cleanerOptions.cleanerCudaDevice.trim() || cleanerOptions.cleanerCudaDevicePlaceholder)}
                     onChange={(event) => actions.setCleanerCudaDevice(event.target.value.toLowerCase())}
                   />
                 </div>
