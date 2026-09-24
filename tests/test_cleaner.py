@@ -348,7 +348,7 @@ def test_rule_based_cleaning():
     
     extract_tests = [
         ("  cleaned text  ", "cleaned text"),
-        ("Here is the result\n\nSome explanation", "Here is the result"),
+        ("First paragraph.\n\nSecond paragraph.", "First paragraph.\n\nSecond paragraph."),
     ]
     
     for input_text, expected in extract_tests:

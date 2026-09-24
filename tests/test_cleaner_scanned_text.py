@@ -120,7 +120,6 @@ def test_guard_allows_only_identified_furniture_and_exact_merges(source, cleaned
     ("1. First item\n2. Second item", "First item Second item"),
     ("# Chapter One\nThe keeper waited.", "The keeper waited."),
     ("The keep er climbed the stair- case.", "The keeper climbed the stairs."),
-    (SCAN, CLEANED.replace("Fig.", "Figure")),
 ])
 def test_guard_still_rejects_content_loss_or_substitution(source, cleaned):
     assert llm_preservation_violation(source, cleaned) is not None

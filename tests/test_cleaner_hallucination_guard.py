@@ -81,21 +81,21 @@ def test_hallucination_fallback_stat_incremented(monkeypatch: pytest.MonkeyPatch
     assert after == before + 1
 
 
-def test_abbreviation_expansion_triggers_preservation_fallback(
+def test_standard_abbreviation_expansion_is_accepted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cleaner = _make_cleaner("mlx")
     input_text = "Dr. Smith met Mr. Jones in 1987."
-    rule_based = cleaner._rule_based_clean(input_text)
     expanded = "Doctor Smith met Mister Jones in 1987."
 
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: expanded)
 
     trace = cleaner.clean_with_trace(input_text)
-    assert trace.mode == "hallucination_fallback"
-    assert trace.cleaned_text == rule_based
-    assert "preservation guard" in (trace.llm_error or "")
+    assert trace.mode == "llm_success"
+    assert trace.cleaned_text == expanded
+    assert trace.llm_error is None
+    assert trace.llm_rejected_edits == []
 
 
 def test_api_backend_hallucination_also_guarded(monkeypatch: pytest.MonkeyPatch) -> None:

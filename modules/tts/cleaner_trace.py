@@ -10,6 +10,7 @@ from typing import Any
 
 from . import cleaner_rules as cleaner_rules_backend
 from .cleaner_config import build_cleaner_prompt
+from .cleaner_edits import abbreviation_expansion_allowance, reconcile_llm_edits
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ def make_success_trace(
     llm_output: str | None,
     start_time: float,
     artifact_score: dict[str, object] | None = None,
+    llm_rejected_edits: list[dict[str, object]] | None = None,
 ):
     """Build a successful LLM trace and update counters."""
     cleaner._llm_success_count += 1  # noqa: SLF001
@@ -71,6 +73,7 @@ def make_success_trace(
         llm_error=None,
         mode="llm_success",
         artifact_score=artifact_score,
+        llm_rejected_edits=llm_rejected_edits or [],
     )
 
 
@@ -85,6 +88,7 @@ def make_fallback_trace(
     llm_output: str | None = None,
     hallucination: bool = False,
     artifact_score: dict[str, object] | None = None,
+    llm_rejected_edits: list[dict[str, object]] | None = None,
 ):
     """Build a fallback trace and update counters."""
     cleaner._llm_fallback_count += 1  # noqa: SLF001
@@ -97,6 +101,7 @@ def make_fallback_trace(
         llm_error=llm_error,
         mode="hallucination_fallback" if hallucination else "llm_fallback",
         artifact_score=artifact_score,
+        llm_rejected_edits=llm_rejected_edits or [],
     )
 
 
@@ -187,19 +192,27 @@ def _complete_trace_decision_flow(
 ) -> Any:
     artifact_score = _resolve_trace_artifact_score(cleaner, request)
     cleaned = cleaner._extract_result(response)  # noqa: SLF001
-    final_text = cleaned if cleaned else request.rule_based_text
+    final_text = cleaned
     final_text = cleaner._repair_known_leading_letter_fragments(final_text)  # noqa: SLF001
 
-    if (
-        cleaned
-        and len(request.rule_based_text) > 0
-        and len(final_text) > len(request.rule_based_text) * 1.3
-    ):
+    source_length = len(request.rule_based_text)
+    expansion_allowance = abbreviation_expansion_allowance(request.rule_based_text)
+    guard_message = None
+    if not final_text.strip():
+        guard_message = "LLM output is empty; using rule-based fallback"
+    elif len(final_text) > source_length * 1.3 + expansion_allowance:
         guard_message = (
             "LLM output is suspiciously long "
-            f"({len(final_text)} chars vs {len(request.rule_based_text)} chars); "
+            f"({len(final_text)} chars vs {source_length} chars); "
             "using rule-based fallback"
         )
+    elif len(final_text) < source_length * 0.7:
+        guard_message = (
+            "LLM output is suspiciously short "
+            f"({len(final_text)} chars vs {source_length} chars); "
+            "using rule-based fallback"
+        )
+    if guard_message:
         _warn(warning_logger, "Cleaner: %s", guard_message)
         return make_fallback_trace(
             cleaner,
@@ -213,34 +226,52 @@ def _complete_trace_decision_flow(
             artifact_score=artifact_score,
         )
 
-    if cleaned:
-        preservation_error = cleaner_rules_backend.llm_preservation_violation(
-            request.rule_based_text,
-            final_text,
+    edits = reconcile_llm_edits(request.rule_based_text, final_text)
+    rejected_count = len(edits.rejected_edits)
+    if rejected_count:
+        # The pipeline's fixed JSONL field list already retains artifact_score.
+        # Keep diagnostics there as well as on CleanTrace without changing modes
+        # or pipeline files. Copy the score so cached input metadata stays intact.
+        artifact_score = {**artifact_score, "llm_rejected_edits": edits.rejected_edits}
+    total_edits = edits.accepted_edits + rejected_count
+    preservation_error = edits.alignment_error
+    if rejected_count and rejected_count / total_edits > 0.3:
+        preservation_error = (
+            f"{edits.rejected_edits[0]['reason']}; "
+            f"rejected {rejected_count}/{total_edits} edit spans (over 30%); using rule-based fallback"
         )
-        if preservation_error:
-            _warn(warning_logger, "Cleaner: %s", preservation_error)
-            return make_fallback_trace(
-                cleaner,
-                trace_cls,
-                original_text=request.original_text,
-                rule_based_text=request.rule_based_text,
-                start_time=request.start_time,
-                llm_output=cleaned,
-                llm_error=preservation_error,
-                hallucination=True,
-                artifact_score=artifact_score,
-            )
+    if preservation_error:
+        _warn(warning_logger, "Cleaner: %s", preservation_error)
+        return make_fallback_trace(
+            cleaner,
+            trace_cls,
+            original_text=request.original_text,
+            rule_based_text=request.rule_based_text,
+            start_time=request.start_time,
+            llm_output=cleaned,
+            llm_error=preservation_error,
+            hallucination=True,
+            artifact_score=artifact_score,
+            llm_rejected_edits=edits.rejected_edits,
+        )
+    if rejected_count:
+        _warn(
+            warning_logger,
+            "Cleaner: kept %s accepted edits and reverted %s rejected spans",
+            edits.accepted_edits,
+            rejected_count,
+        )
 
     return make_success_trace(
         cleaner,
         trace_cls,
         original_text=request.original_text,
         rule_based_text=request.rule_based_text,
-        cleaned_text=final_text,
+        cleaned_text=edits.text,
         llm_output=cleaned,
         start_time=request.start_time,
         artifact_score=artifact_score,
+        llm_rejected_edits=edits.rejected_edits,
     )
 
 

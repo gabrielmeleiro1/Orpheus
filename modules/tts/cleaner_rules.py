@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import Counter
-from difflib import SequenceMatcher
 import re
 
 from modules.ingestion.extraction_artifact_signals import (
@@ -372,22 +371,6 @@ def describe_llm_cleaning_reason(text: str, *, source_type: str | None = None) -
     return "default conservative cleanup pass"
 
 
-def _word_tokens(text: str) -> list[str]:
-    return [match.group(0) for match in _WORD_TOKEN_RE.finditer(text)]
-
-
-def _is_uppercase_split_merge(before: list[str], after: list[str]) -> bool:
-    if len(before) < 2 or len(after) != 1:
-        return False
-    if before[0] in {"A", "I"}:
-        return False
-    if not any(len(token) == 1 for token in before):
-        return False
-    if not all(token.upper() == token for token in [*before, *after]):
-        return False
-    return "".join(before).casefold() == after[0].casefold()
-
-
 def _is_dropped_leading_letter_repair(before: list[str], after: list[str]) -> bool:
     if len(before) != 1 or len(after) != 1:
         return False
@@ -398,26 +381,6 @@ def _is_dropped_leading_letter_repair(before: list[str], after: list[str]) -> bo
     if candidate[:1].upper() in {"A", "I"}:
         return False
     return candidate.casefold().endswith(source.casefold())
-
-
-def _is_token_boundary_repair(before: list[str], after: list[str]) -> bool:
-    if before == after:
-        return False
-    if not before or not after:
-        return False
-    if any(token in {"A", "I"} for token in before if len(token) == 1):
-        return False
-    return "".join(before).casefold() == "".join(after).casefold()
-
-
-def _is_split_leading_letter_repair(before: list[str], after: list[str]) -> bool:
-    if len(before) != 2 or len(after) != 1:
-        return False
-    if len(before[0]) != 1:
-        return False
-    if before[0] in {"A", "I"}:
-        return False
-    return "".join(before).casefold() == after[0].casefold()
 
 
 def _is_orphan_single_letter_delete(before: list[str], after: list[str]) -> bool:
@@ -431,107 +394,21 @@ def _is_orphan_single_letter_delete(before: list[str], after: list[str]) -> bool
     return token.isalpha() and token.upper() == token
 
 
-def _preserves_content_with_merges(source_text: str, cleaned_tokens: list[str]) -> bool:
-    """Match in order, allowing only exact merges and identified furniture skips.
-
-    A sequence diff can align a header's KEEPER with the repaired prose's keeper,
-    hiding a valid merge. Explicit alignment avoids that ambiguity without
-    allowing any prose token to disappear.
-    """
-    furniture = page_furniture_lines(source_text)
-    source: list[str] = []
-    optional: set[int] = set()
-    for index, line in enumerate(source_text.splitlines()):
-        tokens = _word_tokens(line)
-        if index in furniture:
-            optional.update(range(len(source), len(source) + len(tokens)))
-        source.extend(tokens)
-    pending = [(0, 0)]
-    visited: set[tuple[int, int]] = set()
-    while pending:
-        i, j = pending.pop()
-        if (i, j) in visited:
-            continue
-        visited.add((i, j))
-        if i == len(source) and j == len(cleaned_tokens):
-            return True
-        if i in optional:
-            pending.append((i + 1, j))
-        if j == len(cleaned_tokens):
-            continue
-        target = cleaned_tokens[j].casefold()
-        merged = ""
-        for end in range(i, len(source)):
-            if end > i and any(token in {"A", "I"} for token in source[i:end + 1]):
-                break
-            merged += source[end].casefold()
-            if not target.startswith(merged):
-                break
-            if merged == target:
-                pending.append((end + 1, j + 1))
-                break
-    return False
-
-
 def llm_preservation_violation(source_text: str, cleaned_text: str) -> str | None:
-    """
-    Return a guard message when LLM output changes source tokens too freely.
+    """Return the first rejected edit without applying partial acceptance."""
+    from .cleaner_edits import reconcile_llm_edits
 
-    The cleaner is allowed to adjust punctuation/casing and to merge obvious OCR
-    split tokens like ``keep er`` -> ``keeper`` and remove identified page
-    furniture. Broader token additions, removals, or replacements are rejected
-    so literary phrasing is not silently rewritten.
-    """
-    source_tokens = _word_tokens(source_text)
-    cleaned_tokens = _word_tokens(cleaned_text)
-    if [token.casefold() for token in source_tokens] == [
-        token.casefold() for token in cleaned_tokens
-    ]:
-        return None
-    if _preserves_content_with_merges(source_text, cleaned_tokens):
-        return None
-
-    source_folded = [token.casefold() for token in source_tokens]
-    cleaned_folded = [token.casefold() for token in cleaned_tokens]
-    matcher = SequenceMatcher(None, source_folded, cleaned_folded, autojunk=False)
-    for tag, source_start, source_end, cleaned_start, cleaned_end in matcher.get_opcodes():
-        if tag == "equal":
-            continue
-
-        before = source_tokens[source_start:source_end]
-        after = cleaned_tokens[cleaned_start:cleaned_end]
-        if tag == "replace" and (
-            _is_uppercase_split_merge(before, after)
-            or _is_dropped_leading_letter_repair(before, after)
-            or _is_token_boundary_repair(before, after)
-            or _is_split_leading_letter_repair(before, after)
-        ):
-            continue
-
-        if tag == "delete" and _is_orphan_single_letter_delete(before, after):
-            continue
-
-        return (
-            "LLM preservation guard rejected token "
-            f"{tag}: {' '.join(before)!r} -> {' '.join(after)!r}"
-        )
-
+    result = reconcile_llm_edits(source_text, cleaned_text)
+    if result.alignment_error:
+        return result.alignment_error
+    if result.rejected_edits:
+        return str(result.rejected_edits[0]["reason"])
     return None
 
 
 def extract_result(response: str) -> str:
     """Extract cleaned text payload from model output."""
     result = response.strip()
-    result = re.sub(r"(?m)^\s*---+\s*$", "", result).strip()
-
-    if "\n\n" in result:
-        parts = result.split("\n\n")
-        for part in parts:
-            cleaned_part = re.sub(r"(?m)^\s*---+\s*$", "", part).strip()
-            if cleaned_part:
-                result = cleaned_part
-                break
-
     result = re.sub(r"(?m)^\s*---+\s*$", "", result).strip()
     result = re.sub(r"---+\s*$", "", result).strip()
     result = re.sub(r"^\s*---+(?:\s|$)", "", result).strip()
