@@ -142,6 +142,7 @@ def test_package_kokoro_runtime_loads_local_model_dir_without_repo_id(
     }
     assert "repo_id" not in calls["pipeline"]
     assert calls["device"] == provider
+    assert calls["pipeline"]["device"] == provider
     assert calls["eval"] is True
     assert calls["synthesis"]["voice"] == str(voices_dir / "am_adam.pt")
     model_cache.clear_model_cache()

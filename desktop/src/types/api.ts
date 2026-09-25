@@ -12,6 +12,8 @@ interface RuntimeSetupRisk {
 }
 
 export interface RuntimeSetupProfile {
+  device?: "cuda" | "cpu";
+  group_availability?: Record<string, { available: boolean; unavailable_reason: string | null }>;
   id: "base" | "mlx" | "cuda";
   label: string;
   description: string;
@@ -43,6 +45,7 @@ interface RuntimeSetupInstalledRuntimeGroup {
 }
 
 export interface RuntimeSetupInstalledRuntime {
+  device?: "cuda" | "cpu";
   profile: "mlx" | "cuda";
   ready: boolean;
   runtime_available: boolean;

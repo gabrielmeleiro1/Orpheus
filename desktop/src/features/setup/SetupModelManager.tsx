@@ -102,6 +102,7 @@ export function SetupModelManager({ apiClient, status, selection, setSelection, 
       <div className="setup-managed-models">
         {models.map(({ id, profile }) => {
           const details = MODEL_GROUP_DETAILS[id];
+          const availability = profile.group_availability?.[id];
           const cached = inventory?.models.find((model) => model.id === id);
           const capability = status.installed_runtime?.profile === profile.id
             ? status.installed_runtime.model_groups.find((group) => group.id === id)
@@ -129,8 +130,8 @@ export function SetupModelManager({ apiClient, status, selection, setSelection, 
                   {downloaded ? <button className="btn btn-ghost setup-model-delete" type="button" disabled={blocked || !apiClient} aria-label={`Delete ${details.label}`} onClick={() => { setError(null); setConfirming(id); }}>{pending ? "Deleting…" : "Delete"}</button> : null}
                 </div>
               </div>
-              {selection.profile === profile.id ? <label className="setup-model-use"><input type={details.kind === "cleaner" ? "radio" : "checkbox"} name={details.kind === "cleaner" ? "managed-cleaner" : undefined} checked={selected} disabled={blocked} onChange={() => setSelection((current) => toggleModelGroup(current, id, status))} /><span>Use {details.label} in this runtime</span></label> : null}
-              {!installed && !capability?.runtime_ready && !active ? <p className="setup-model-feedback">{profile.compatible ? "The local runtime must be available before this model can be installed." : "This runtime is not supported on this device."}</p> : null}
+              {selection.profile === profile.id ? <label className="setup-model-use"><input type={details.kind === "cleaner" ? "radio" : "checkbox"} name={details.kind === "cleaner" ? "managed-cleaner" : undefined} checked={selected} disabled={blocked || availability?.available === false} onChange={() => setSelection((current) => toggleModelGroup(current, id, status))} /><span>Use {details.label} in this runtime</span></label> : null}
+              {(availability?.available === false || (!installed && !capability?.runtime_ready)) && !active ? <p className="setup-model-feedback">{availability?.unavailable_reason ?? (profile.compatible ? "The local runtime must be available before this model can be installed." : "This runtime is not supported on this device.")}</p> : null}
               {active && downloadMessage ? <p className="setup-model-feedback" role="status">{downloadMessage}</p> : null}
               {confirming === id ? <div className="setup-model-confirm" role="group" aria-label={`Confirm deleting ${details.label}`} onKeyDown={(event) => { if (event.key === "Escape") setConfirming(null); }}>
                 <p>Delete {details.label} from this device? You can install it again later. Your books and audio will stay.</p>

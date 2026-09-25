@@ -15,10 +15,11 @@ it("shows models, storage, version and opens only the selected storage folder", 
   const requestJson = vi.fn(async () => ({ output_path: "C:/books", app_data_path: "C:/Orpheus" }));
   const manage = vi.fn();
   const client = { requestJson, getRuntimeModelInventory: vi.fn(async () => ({ models: [{ id: "tts-cpu-cuda", downloaded: true, size_bytes: 10 }, { id: "cleaner-cuda", downloaded: true }, { id: "cleaner-cuda-large", downloaded: true }] })) } as unknown as ApiClient;
-  const status = { configured: true, selected_profile: "cuda", selected_model_groups: [{ id: "tts-cpu-cuda", assets_ready: true }], profiles: [] } as unknown as RuntimeSetupStatusResponse;
+  const status = { configured: true, ready: true, selected_profile: "cuda", selected_model_groups: [{ id: "tts-cpu-cuda", assets_ready: true }], profiles: [{ id: "cuda", label: "NVIDIA CUDA", device: "cpu" }] } as unknown as RuntimeSetupStatusResponse;
   try {
     await act(async () => root.render(<SettingsPage active apiClient={client} status={status} onManageModels={manage}><div>Existing cleaner controls</div></SettingsPage>));
     expect(container.textContent).toContain("Voice & models");
+    expect(container.textContent).toContain("NVIDIA CUDA · Ready · CPU");
     expect(container.textContent).toContain("Kokoro TTS");
     expect(container.querySelector("h1")).toBeNull();
     expect(container.textContent).toContain("Basic cleanup (no model)");

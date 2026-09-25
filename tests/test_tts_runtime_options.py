@@ -24,6 +24,22 @@ from modules.tts.runtime_options import (
 from modules.tts.runtime_spec import TTSRuntimeSpec
 
 
+@pytest.mark.parametrize("device", [None, "auto"])
+def test_auto_without_cuda_uses_cpu_and_one_worker(monkeypatch, tmp_path, device):
+    from modules.tts.device_memory import HostMemoryPolicy
+
+    monkeypatch.setattr(TTSRuntimeSpec, "mlx_supported_on_current_platform", staticmethod(lambda: False))
+    monkeypatch.setattr(TTSRuntimeSpec, "cuda_available_on_current_platform", staticmethod(lambda: False))
+    config = AppConfig(data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp", cleaner_backend="basic", tts_device=device)
+    resolver = RuntimeOptionsResolver(config=config, cleaner_api_limiter=MagicMock(), runtime_validator=lambda *args, **kwargs: None)
+    result = resolver.normalize(ConversionRuntimeOptions(enable_parallel=True, max_parallel_chapters=4))
+    assert result.tts_runtime.provider == "cpu"
+    assert result.enable_parallel is False
+    assert result.max_parallel_chapters == 1
+    assert result.memory_policy is None
+    assert isinstance(result.device_memory_policy, HostMemoryPolicy)
+
+
 def test_legacy_payload_quantization_resolves_quantization() -> None:
     options = TTSRuntimeOptions.from_payload({"quantization": "q4"})
 

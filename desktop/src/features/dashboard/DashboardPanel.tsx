@@ -38,6 +38,7 @@ interface DashboardPanelProps {
   onOpenLogs?: () => void;
   cleanerLabel?: string;
   ttsReady?: boolean | null;
+  ttsDevice?: "cuda" | "cpu";
 }
 
 function clampPercent(value: number): number {
@@ -88,6 +89,7 @@ export function DashboardPanel({
   onOpenLogs,
   cleanerLabel,
   ttsReady,
+  ttsDevice,
 }: DashboardPanelProps) {
   const [dismissed, setDismissed] = useState(false);
   const [completedBookMissing, setCompletedBookMissing] = useState(false);
@@ -138,7 +140,7 @@ export function DashboardPanel({
     : connectionState === "checking"
       ? "Checking"
       : ttsReady === true
-        ? "Ready"
+        ? ttsDevice === "cpu" ? "Ready · CPU" : "Ready"
         : ttsReady === false
           ? "Unavailable"
           : "Not verified";
@@ -188,7 +190,7 @@ export function DashboardPanel({
           </span>
           <span className="dashboard-stat-copy">
             <span className="dashboard-stat-label">TTS engine</span>
-            <strong className={ttsStatus === "Ready" ? "is-positive" : ""}>{ttsStatus}</strong>
+            <strong className={ttsStatus.startsWith("Ready") ? "is-positive" : ""}>{ttsStatus}</strong>
           </span>
           <Icon name="chevron-right" className="dashboard-stat-chevron" />
         </button>

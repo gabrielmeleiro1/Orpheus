@@ -26,7 +26,8 @@ describe("DashboardPanel library count", () => {
   it("labels paused playback truthfully and dismisses a completed conversion", async () => {
     const props = { hidden: false, library: { items: [], indexedCount: 0, selectedBookDetail: null } as unknown as UseLibraryResult, connectionState: "connected" as const, health: null, statusMessage: "", uiState: "completed" as const, progressPct: 100, etaText: "", stages: [], currentChapterLabel: "One", playerTitle: "Paused", playing: false, elapsedSec: 0, durationSec: 20 };
     root = createRoot(container);
-    await act(async () => root.render(<DashboardPanel {...props} />));
+    await act(async () => root.render(<DashboardPanel {...props} ttsReady ttsDevice="cpu" />));
+    expect(container.textContent).toContain("Ready · CPU");
     expect(container.querySelector(".now-playing-main .card-eyebrow")?.textContent).toBe("Continue listening");
     expect(container.querySelector('[aria-label="Conversion progress"]')?.classList.contains("pbar-done")).toBe(true);
     expect(container.querySelector(".conversion-card .dashboard-card-action")?.classList.contains("is-complete")).toBe(true);

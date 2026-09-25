@@ -207,6 +207,9 @@ class RuntimeOptionsResolver:
                 requested_enable_parallel = requested_max_parallel > 1
         if requested_max_parallel <= 1:
             requested_enable_parallel = False
+        if tts_runtime.provider == "cpu":
+            requested_max_parallel = 1
+            requested_enable_parallel = False
 
         memory_policy = None
         resolved_cleaner_model = resolve_cleaner_model_name(

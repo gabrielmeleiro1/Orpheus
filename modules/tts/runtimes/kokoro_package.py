@@ -172,8 +172,7 @@ class PackageKokoroRuntime:
             "lang_code": language_code,
             "repo_id": self._config.runtime_spec.resolved_model(),
         }
-        if self._config.runtime_spec.device:
-            kwargs["device"] = self._config.runtime_spec.device
+        kwargs["device"] = self._config.runtime_spec.device or self.provider
         return kwargs
 
     def _voice_arg(self, voice: str) -> str:

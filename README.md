@@ -12,7 +12,7 @@ be converted again to include them.
 | Platform | Support |
 | --- | --- |
 | macOS 14+ on Apple Silicon | Primary release platform. Unsigned DMG builds use the local MLX runtime. |
-| Windows 10/11 | Source development is supported and checked in CI, with base and NVIDIA CUDA runtime options. |
+| Windows 10/11 | One installer with CPU narration and Basic cleanup on PCs without an NVIDIA GPU. A supported NVIDIA GPU enables local LLM cleaning and faster narration. |
 | Linux | Desktop builds are source-only. Core development and NVIDIA CUDA runtimes are supported; no packaged desktop release is published. |
 
 ### Windows 11: Smart App Control
@@ -86,11 +86,16 @@ npm ci
 npm run desktop:dev
 ```
 
-For local audio on Windows, run this from the repository root with the venv
-active, or select CUDA in Setup:
+The Windows installer bundles the CUDA runtime, which also runs Kokoro narration
+on CPU without an NVIDIA GPU. Setup selects Kokoro and **No local cleaner** on
+these PCs; Basic cleanup uses rules and needs no model. A usable NVIDIA GPU with
+a CUDA 12.6 driver enables the optional local LLM cleaner and faster narration.
+
+For local audio from source on Windows, run this from the repository root with
+the venv active, or select CUDA in Setup:
 
 ```powershell
-python scripts\setup_runtime.py --profile cuda --group tts-cpu-cuda --group cleaner-cuda
+python scripts\setup_runtime.py --profile cuda --group tts-cpu-cuda
 ```
 
 This quick start selects the `base` profile for library management, existing-audio
@@ -109,7 +114,8 @@ python scripts/setup_runtime.py --profile cuda \
   --group tts-cpu-cuda --group cleaner-cuda
 ```
 
-CUDA is opt-in and requires a supported NVIDIA GPU and driver. Use trusted
+Add `--group cleaner-cuda` for local LLM cleaning with a supported NVIDIA GPU
+and CUDA 12.6 driver. CPU narration needs no GPU. Use trusted
 model artifacts only. Run either command with `--dry-run` first to inspect its
 fixed install and download commands.
 
@@ -126,7 +132,8 @@ existing audio; conversion requires a build with TTS.
 
 Setup checks the runtime, lets you choose the required Kokoro voice model and
 an optional cleaner, downloads those models, then verifies that audio creation
-is ready. CUDA hardware is checked before installation. Library-only mode skips
+is ready. CUDA hardware is checked for local cleaners; narration falls back to
+CPU when CUDA is unavailable. Library-only mode skips
 model downloads. Later, use **Settings → Manage models** to install, repair, or
 delete models; **Settings → Storage** shows and opens the actual data folders.
 See [data locations](docs/RUN_APPLICATION.md#data-locations) for each OS.

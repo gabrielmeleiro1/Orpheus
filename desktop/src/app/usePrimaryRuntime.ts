@@ -11,7 +11,7 @@ import { buildRuntimeIdentityFromSnapshot, formatRuntimeIdentity, type RuntimeId
 import { getRuntimeBootstrap, updateRuntimeBootstrapCapabilities } from "./runtimeBootstrapCache";
 import { startRuntimeCapabilityPolling } from "../features/conversion/runtimeCapabilityPolling";
 
-export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: RuntimeSetupStatusResponse | null = null): RuntimeIdentity & { ttsReady: boolean | null } {
+export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: RuntimeSetupStatusResponse | null = null): RuntimeIdentity & { ttsReady: boolean | null; ttsDevice?: "cuda" | "cpu" } {
   const [identity, setIdentity] = useState<RuntimeIdentity>({ ttsLabel: "—", cleanerLabel: "—" });
   const capabilitiesRef = useRef<SystemCapabilitiesResponse | null>(null);
   const modelOptionsRef = useRef<ModelOptionsResponse | null>(null);
@@ -91,7 +91,7 @@ export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: Run
     };
   }, [apiClient]);
 
-  return { ...identity, ttsReady: apiClient ? runtimeTtsReady(setupStatus) : null };
+  return { ...identity, ttsReady: apiClient ? runtimeTtsReady(setupStatus) : null, ttsDevice: setupStatus?.profiles.find((profile) => profile.id === setupStatus.selected_profile)?.device };
 }
 
 export function useRuntimeIdentityLabel(apiClient: ApiClient | null): string {

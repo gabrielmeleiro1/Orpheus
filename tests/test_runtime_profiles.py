@@ -158,6 +158,12 @@ def test_recommended_profile_is_cuda_only_when_nvidia_smi_is_present() -> None:
     assert recommended == "cuda"
 
 
+def test_windows_recommends_cpu_capable_cuda_profile_without_nvidia_smi() -> None:
+    assert runtime_profiles.recommended_profile_id(
+        system="Windows", machine="AMD64", which=lambda _: None,
+    ) == "cuda"
+
+
 def test_recommended_profile_falls_back_to_base_without_gpu_or_apple_silicon() -> None:
     # Linux without a locatable nvidia-smi, and an Intel Mac, both fall back.
     assert (

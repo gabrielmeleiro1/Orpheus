@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 from modules.tts.runtime_options import validate_device
@@ -78,6 +78,7 @@ class CleanTrace:
     llm_output: Optional[str] = None
     llm_error: Optional[str] = None
     artifact_score: Optional[dict[str, Any]] = None
+    llm_rejected_edits: list[dict[str, object]] = field(default_factory=list)
 
 
 def list_cleaner_models() -> list[str]:

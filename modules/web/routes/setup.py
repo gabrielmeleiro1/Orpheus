@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from modules.runtime_profiles import (
     get_runtime_profile,
     cuda_hardware_error,
+    CUDA_CLEANER_UNAVAILABLE_REASON,
     recommended_profile_id,
     runtime_profiles,
 )
@@ -183,13 +184,35 @@ def _check_model_group_assets(
     return result
 
 
-def _profile_payload(profile_id: str, *, accepted_profile: str | None) -> dict[str, Any]:
+def _profile_payload(
+    profile_id: str,
+    *,
+    accepted_profile: str | None,
+    installed_runtime: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     profile = get_runtime_profile(profile_id)
     del accepted_profile
     reason = profile.incompatibility_reason()
+    capabilities = {}
     if reason is None and profile.id == "cuda":
-        reason = cuda_hardware_error()
+        detected = (
+            installed_runtime
+            if installed_runtime and installed_runtime["profile"] == "cuda" else {}
+        )
+        device = detected.get("device") or ("cpu" if cuda_hardware_error() else "cuda")
+        capabilities = {
+            "device": device,
+            "group_availability": {
+                group: {
+                    "available": not (group.startswith("cleaner-cuda") and device == "cpu"),
+                    "unavailable_reason": CUDA_CLEANER_UNAVAILABLE_REASON
+                    if group.startswith("cleaner-cuda") and device == "cpu" else None,
+                }
+                for group in profile.model_groups
+            },
+        }
     return {
+        **capabilities,
         "id": profile.id,
         "label": profile.label,
         "description": profile.description,
@@ -221,8 +244,6 @@ def _detect_installed_runtime(
         if preferred_profile is not None and profile.id != preferred_profile:
             continue
         if profile.id == "base" or not profile.is_compatible():
-            continue
-        if profile.id == "cuda" and cuda_hardware_error():
             continue
         packages = _check_selected_profile_packages(profile.id)
         if not packages["ready"]:
@@ -264,12 +285,18 @@ def _detect_installed_runtime(
             bool(asset_status.get(group_id, {}).get("ready"))
             for group_id in tts_groups
         )
-        return {
+        result = {
             "profile": profile.id,
             "ready": ready,
             "runtime_available": runtime_available,
             "model_groups": model_groups,
         }
+        if profile.id == "cuda":
+            result["device"] = next(
+                (check["device"] for check in probe.get("checks", []) if check.get("device")),
+                "cpu" if cuda_hardware_error() else "cuda",
+            )
+        return result
     return None
 
 
@@ -293,7 +320,7 @@ def _empty_status(
         "recommended_profile": recommended_profile_id(),
         "installed_runtime": installed_runtime,
         "profiles": [
-            _profile_payload(profile.id, accepted_profile=None)
+            _profile_payload(profile.id, accepted_profile=None, installed_runtime=installed_runtime)
             for profile in runtime_profiles()
         ],
         "risk": None,
@@ -392,6 +419,11 @@ def _build_uncached_setup_status_response(
 
     risk = None
 
+    installed_runtime = _detect_installed_runtime(
+        probe_service, receipt_verifier,
+        preferred_profile=selected_profile if selected_profile != "base" else None,
+    )
+
     return {
         "schema_version": 1,
         "configured": True,
@@ -406,12 +438,9 @@ def _build_uncached_setup_status_response(
         "restart_required": restart_required,
         "recommended_profile": recommended_profile_id(),
         # Settings must also expose optional models outside the saved selection.
-        "installed_runtime": _detect_installed_runtime(
-            probe_service, receipt_verifier,
-            preferred_profile=selected_profile if selected_profile != "base" else None,
-        ),
+        "installed_runtime": installed_runtime,
         "profiles": [
-            _profile_payload(item.id, accepted_profile=selected_profile)
+            _profile_payload(item.id, accepted_profile=selected_profile, installed_runtime=installed_runtime)
             for item in runtime_profiles()
         ],
         "risk": risk,
@@ -643,7 +672,7 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
         )
 
     service = _get_download_service(request)
-    if profile.id == "cuda":
+    if any(group.startswith("cleaner-cuda") for group in groups):
         reason = cuda_hardware_error()
         if reason:
             raise HTTPException(422, detail={"error": "invalid_request", "message": reason})

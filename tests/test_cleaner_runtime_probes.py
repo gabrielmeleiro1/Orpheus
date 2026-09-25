@@ -11,6 +11,26 @@ from modules.app.controller import AppController
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
 
 
+@pytest.mark.parametrize("gpu", [False, True])
+def test_frozen_package_probe_reports_device_and_cleaner_requirement(monkeypatch, gpu):
+    import sys
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: gpu)))
+    monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KModel=object, KPipeline=object))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "bitsandbytes", SimpleNamespace())
+    service = RuntimeCapabilityService()
+    tts = service.probe_package_tts_runtime()
+    assert tts["available"] is True
+    assert tts["device"] == ("cuda" if gpu else "cpu")
+    cleaner = service.probe_cleaner_backend("cuda")
+    assert cleaner["available"] is gpu
+    if not gpu:
+        assert cleaner["error"] == "Needs an NVIDIA GPU with a CUDA 12.6 driver"
+
+
 def test_cleaner_mlx_probe_script_imports_mlx_lm() -> None:
     assert "import mlx_lm" in RuntimeCapabilityService._CLEANER_MLX_PROBE
 
@@ -244,11 +264,11 @@ def test_cuda_probe_reports_unavailable_when_gpu_absent() -> None:
         "modules.app.services.runtime_capability_service.subprocess.run",
         return_value=MagicMock(
             returncode=0,
-            stdout='{"available": false, "error": "CUDA is not available on this system."}',
+            stdout='{"available": false, "error": "Needs an NVIDIA GPU with a CUDA 12.6 driver"}',
             stderr="",
         ),
     ):
         result = service.probe_cleaner_backend("cuda")
 
     assert result["available"] is False
-    assert "cuda is not available" in str(result["error"]).lower()
+    assert result["error"] == "Needs an NVIDIA GPU with a CUDA 12.6 driver"

@@ -61,7 +61,9 @@ import json
 try:
     import torch  # noqa: F401
     from kokoro import KModel, KPipeline  # noqa: F401
-    print(json.dumps({"available": True}))
+    from modules.tts.runtime_spec import TTSRuntimeSpec
+    device = "cuda" if TTSRuntimeSpec.cuda_available_on_current_platform() else "cpu"
+    print(json.dumps({"available": True, "device": device}))
 except Exception as exc:
     print(json.dumps({"available": False, "error": str(exc)}))
 """
@@ -71,10 +73,11 @@ import json
 import os
 try:
     import torch
-    if not torch.cuda.is_available():
+    from modules.runtime_profiles import cuda_hardware_error, CUDA_CLEANER_UNAVAILABLE_REASON
+    if not torch.cuda.is_available() or cuda_hardware_error() is not None:
         print(json.dumps({
             "available": False,
-            "error": "CUDA is not available on this system.",
+            "error": CUDA_CLEANER_UNAVAILABLE_REASON,
         }))
     else:
         import transformers  # noqa: F401
@@ -259,6 +262,7 @@ except Exception as exc:
                 with _FROZEN_PROBE_LOCK:
                     payload = self._run_in_process_probe(script)
                 return {
+                    **({"device": payload["device"]} if payload.get("device") in {"cpu", "cuda"} else {}),
                     "available": bool(payload.get("available")),
                     "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
                     "error": payload.get("error"),
@@ -318,6 +322,7 @@ except Exception as exc:
             }
 
         return {
+            **({"device": payload["device"]} if payload.get("device") in {"cpu", "cuda"} else {}),
             "available": bool(payload.get("available")),
             "latency_ms": latency_ms,
             "error": payload.get("error"),
@@ -377,6 +382,7 @@ except Exception as exc:
             }
 
         return {
+            **({"device": payload["device"]} if payload.get("device") in {"cpu", "cuda"} else {}),
             "available": bool(payload.get("available")),
             "error": payload.get("error"),
         }

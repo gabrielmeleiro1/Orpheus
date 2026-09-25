@@ -11,19 +11,19 @@ from pathlib import Path
 import platform
 import shutil
 import ctypes
+import os
 from typing import Callable
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CUDA_CLEANER_UNAVAILABLE_REASON = "Needs an NVIDIA GPU with a CUDA 12.6 driver"
 
 
 def cuda_hardware_error() -> str | None:
     """Check the installed driver without importing or installing torch."""
-    reason = (
-        "CUDA needs a usable NVIDIA GPU and a driver supporting CUDA 12.6. "
-        "Install or update the NVIDIA driver, restart, and try again; "
-        "otherwise choose Library only."
-    )
+    reason = CUDA_CLEANER_UNAVAILABLE_REASON
+    if os.environ.get("CUDA_VISIBLE_DEVICES", "").strip() == "-1":
+        return reason
     try:
         driver = ctypes.CDLL("nvcuda.dll" if platform.system() == "Windows" else "libcuda.so.1")
         count = ctypes.c_int()
@@ -128,8 +128,8 @@ _RUNTIME_PROFILES = (
         id="cuda",
         label="NVIDIA CUDA",
         description=(
-            "Opt-in local TTS and cleaning for Linux/Windows; readiness requires "
-            "a supported NVIDIA GPU and driver probe."
+            "Local narration on CPU or NVIDIA GPU for Linux/Windows. Local text "
+            "cleaners require an NVIDIA GPU with a CUDA 12.6 driver."
         ),
         requirements_file=_REQUIREMENTS_DIR / "cuda.txt",
         model_groups=("tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"),
@@ -168,8 +168,8 @@ def recommended_profile_id(
     """Recommend a runtime profile from the host platform alone.
 
     This is a pure hardware/OS hint independent of any install state:
-    ``mlx`` on compatible Apple Silicon, ``cuda`` on Linux/Windows when an
-    NVIDIA GPU is plausibly present (``nvidia-smi`` on PATH), otherwise
+    ``mlx`` on compatible Apple Silicon, ``cuda`` on Windows (including CPU
+    narration) or Linux with ``nvidia-smi`` on PATH, otherwise
     ``base``. It never spawns a subprocess; ``nvidia-smi`` is only located,
     never executed.
     """
@@ -179,7 +179,7 @@ def recommended_profile_id(
     cuda = get_runtime_profile("cuda")
     if (
         cuda.is_compatible(system=system, machine=machine, os_version=os_version)
-        and which("nvidia-smi") is not None
+        and ((system or platform.system()).lower() == "windows" or which("nvidia-smi") is not None)
     ):
         return "cuda"
     return "base"

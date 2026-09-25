@@ -318,6 +318,7 @@ class TTSRuntimeOptions:
     def with_resolved_provider(self) -> "TTSRuntimeOptions":
         """Hoist provider from provider_options and infer CUDA from device when needed."""
         provider = self.provider
+        device = None if str(self.device).strip().lower() == "auto" else self.device
         runtime_options_mapping = dict(self.runtime_provider_options)
 
         nested_runtime_provider = _provider_from_provider_options(runtime_options_mapping)
@@ -331,15 +332,15 @@ class TTSRuntimeOptions:
                 )
 
         if provider is None:
-            provider = _infer_provider_from_device(self.device)
+            provider = _infer_provider_from_device(device)
 
         runtime_options_mapping = _strip_provider_from_options(runtime_options_mapping)
-        validate_device(provider, self.device)
+        validate_device(provider, device)
         return TTSRuntimeOptions(
             model_name=self.model_name,
             quantization=self.quantization,
             provider=provider,
-            device=self.device,
+            device=device,
             dtype=self.dtype,
             compile_mode=self.compile_mode,
             batch_policy=self.batch_policy,

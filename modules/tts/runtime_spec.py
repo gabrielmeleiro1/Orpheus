@@ -21,6 +21,8 @@ def canonical_provider(provider: str | None) -> str | None:
     if normalized is None:
         return None
     lowered = normalized.lower()
+    if lowered == "auto":
+        return None
     if lowered in {"mlx-audio", "mlx_audio"}:
         return "mlx"
     return lowered
@@ -94,7 +96,7 @@ class TTSRuntimeSpec:
             engine=normalized_engine,
             model=_normalize_text(model),
             quantization=normalized_quantization,
-            device=_normalize_text(device),
+            device=None if str(device).strip().lower() == "auto" else _normalize_text(device),
             runtime_options=cls.canonicalize_runtime_options(
                 cls.coerce_legacy_runtime_options(options)
             ),
@@ -119,7 +121,9 @@ class TTSRuntimeSpec:
         except Exception:
             return False
         try:
-            return bool(torch.cuda.is_available())
+            from modules.runtime_profiles import cuda_hardware_error
+
+            return bool(torch.cuda.is_available()) and cuda_hardware_error() is None
         except Exception:
             return False
 

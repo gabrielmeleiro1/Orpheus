@@ -40,6 +40,19 @@ function status(overrides: Partial<RuntimeSetupStatusResponse> = {}): RuntimeSet
 }
 
 describe("runtime setup selection", () => {
+  it("defaults to CPU narration without selecting unavailable CUDA cleaners", () => {
+    const cpuStatus = status({ recommended_profile: "cuda", profiles: status().profiles.map((profile) => profile.id === "cuda" ? {
+      ...profile, compatible: true, reason: null, risk: null, device: "cpu",
+      group_availability: { "cleaner-cuda": { available: false, unavailable_reason: "Needs an NVIDIA GPU with a CUDA 12.6 driver" } },
+    } : profile) });
+    const selection = createSelection(cpuStatus);
+    expect(selection.profile).toBe("cuda");
+    expect(selection.modelGroups).toEqual(["tts-cpu-cuda"]);
+    expect(canStartSetup(selection, cpuStatus)).toBe(true);
+    expect(toggleModelGroup(selection, "cleaner-cuda", cpuStatus)).toEqual(selection);
+    expect(canStartSetup({ ...selection, modelGroups: ["tts-cpu-cuda", "cleaner-cuda"] }, cpuStatus)).toBe(false);
+  });
+
   it("preserves compatible choices and disabled reasons", () => {
     expect(profileChoices(status()).map(({ id, disabled, reason }) => ({ id, disabled, reason }))).toEqual([
       { id: "base", disabled: false, reason: null },

@@ -44,7 +44,7 @@ export function SetupPlanSection({
   riskProfile,
   showModels = true,
 }: SetupPlanSectionProps) {
-  const title = selection.profile === "base" ? "Library only" : selectedProfile?.label ?? selection.profile;
+  const title = selection.profile === "base" ? "Library only" : `${selectedProfile?.label ?? selection.profile}${selectedProfile?.device === "cpu" ? " — running on CPU" : ""}`;
   const detailPrimary =
     selection.profile === "base"
       ? "No downloads"
@@ -66,6 +66,7 @@ export function SetupPlanSection({
           </button>
         </div>
         <div className="setup-plan-body">
+          {selectedProfile?.device === "cpu" ? <span className="setup-plan-detail">No NVIDIA GPU found — narration runs on your processor (about 2–3× faster than realtime). Local text cleaners need an NVIDIA GPU; Basic cleanup is used instead.</span> : null}
           <span className="setup-plan-detail">{detailPrimary}</span>
           {selection.modelGroups.length > 0 && selection.profile !== "base" ? (
             <span className="setup-plan-detail">{showModels ? "Models download from Hugging Face and run locally on your device." : "Choose the models to use below. Installed models are reused."}</span>
@@ -84,7 +85,7 @@ export function SetupPlanSection({
                   <span className="setup-card-radio" aria-hidden="true" />
                   <span className="setup-card-copy">
                     <span className="setup-card-head">
-                      <strong>{profile.label}</strong>
+                      <strong>{profile.label}{profile.device === "cpu" ? " — running on CPU" : ""}</strong>
                       {status.recommended_profile === profile.id && profile.compatible ? <span className="setup-chip">Recommended</span> : null}
                       <InfoTip label={`${profile.label} details`}><span>{profile.description}{profile.reason ? ` ${profile.reason}` : ""}</span></InfoTip>
                     </span>
@@ -118,10 +119,11 @@ export function SetupPlanSection({
             </label>
             {selectedProfile.model_groups.filter((id) => MODEL_GROUP_DETAILS[id]?.kind === "cleaner").map((id) => {
               const detail = MODEL_GROUP_DETAILS[id];
+              const availability = selectedProfile.group_availability?.[id];
               const installed = status.installed_runtime?.model_groups.some((group) => group.id === id && group.assets_ready);
               return <label className="setup-model-row" key={id}>
-                <input type="radio" name="setup-cleaner" checked={selection.modelGroups.includes(id)} onChange={() => setSelection((current) => toggleModelGroup(current, id, status))} />
-                <span className="setup-model-name"><strong>{detail.label}</strong><small>{detail.description}</small><code>{detail.model}</code></span>
+                <input type="radio" name="setup-cleaner" disabled={availability?.available === false} checked={selection.modelGroups.includes(id)} onChange={() => setSelection((current) => toggleModelGroup(current, id, status))} />
+                <span className="setup-model-name"><strong>{detail.label}</strong><small>{availability?.unavailable_reason ?? detail.description}</small><code>{detail.model}</code></span>
                 <span className="setup-estimate">{installed ? "Already downloaded" : groupEstimate(id)}</span>
               </label>;
             })}

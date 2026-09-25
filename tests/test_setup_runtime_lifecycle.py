@@ -24,32 +24,45 @@ def test_voice_required_before_setup_work(monkeypatch, endpoint, groups):
     assert "Kokoro voice model" in response.json()["detail"]["message"]
 
 
-def test_cuda_fails_before_install_or_download(monkeypatch, tmp_path):
+def test_cuda_cleaner_fails_before_install_or_download(monkeypatch, tmp_path):
     monkeypatch.setattr(RuntimeProfile, "is_compatible", lambda self, **_: True)
     monkeypatch.setattr(setup_runtime, "cuda_hardware_error", lambda: "Install the NVIDIA driver.")
     calls = []
     with pytest.raises(setup_runtime.SetupValidationError, match="NVIDIA driver"):
-        setup_runtime.run_setup(profile_id="cuda", model_groups=["tts-cpu-cuda"], state_path=tmp_path / "state.json", command_runner=lambda *a, **k: calls.append(a))
+        setup_runtime.run_setup(profile_id="cuda", model_groups=["tts-cpu-cuda", "cleaner-cuda"], state_path=tmp_path / "state.json", command_runner=lambda *a, **k: calls.append(a))
     assert calls == []
     assert not (tmp_path / "state.json").exists()
     monkeypatch.setattr(routes, "cuda_hardware_error", lambda: "Install the NVIDIA driver.")
     card = routes._profile_payload("cuda", accepted_profile=None)
-    assert card["compatible"] is False
-    assert card["reason"] == "Install the NVIDIA driver."
+    assert card["compatible"] is True
+    assert card["device"] == "cpu"
+    assert card["group_availability"]["cleaner-cuda"]["available"] is False
     with TestClient(create_app(controller=object())) as client:
-        response = client.post("/api/setup/models/download", json={"profile": "cuda", "model_groups": ["tts-cpu-cuda"]})
+        response = client.post("/api/setup/models/download", json={"profile": "cuda", "model_groups": ["tts-cpu-cuda", "cleaner-cuda"]})
     assert response.status_code == 422
     assert response.json()["detail"]["message"] == "Install the NVIDIA driver."
 
 
 @pytest.mark.parametrize("count,version,init,ready", [(1, 12060, 0, True), (0, 12060, 0, False), (1, 11000, 0, False), (1, 12060, 100, False)])
 def test_cuda_driver_probe(monkeypatch, count, version, init, ready):
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
     def assign(pointer, value):
         pointer._obj.value = value
         return 0
     driver = SimpleNamespace(cuInit=lambda _: init, cuDeviceGetCount=lambda p: assign(p, count), cuDriverGetVersion=lambda p: assign(p, version))
     monkeypatch.setattr("modules.runtime_profiles.ctypes.CDLL", lambda _: driver)
     assert (cuda_hardware_error() is None) is ready
+
+
+def test_hidden_cuda_does_not_block_tts_download(monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "-1")
+    monkeypatch.setattr(RuntimeProfile, "is_compatible", lambda self, **_: True)
+    calls = []
+    monkeypatch.setattr(routes, "_get_download_service", lambda _: SimpleNamespace(start=lambda **kwargs: calls.append(kwargs) or {"lifecycle": "running"}))
+    with TestClient(create_app(controller=object())) as client:
+        response = client.post("/api/setup/models/download", json={"profile": "cuda", "model_groups": ["tts-cpu-cuda"]})
+    assert response.status_code == 200
+    assert calls[0]["model_groups"] == ("tts-cpu-cuda",)
 
 
 def _slow_download(model_id, result):

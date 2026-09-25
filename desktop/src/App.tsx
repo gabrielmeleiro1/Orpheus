@@ -416,6 +416,7 @@ function DashboardApp({
             onOpenLogs={openLogs}
             cleanerLabel={runtimeIdentity.cleanerLabel}
             ttsReady={runtimeIdentity.ttsReady}
+            ttsDevice={runtimeIdentity.ttsDevice}
           />
 
           {conversionPanelMounted ? (

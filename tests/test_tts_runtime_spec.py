@@ -20,8 +20,13 @@ def test_cuda_available_on_current_platform_contract_with_mocked_torch(
         cuda=SimpleNamespace(is_available=lambda: True),
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
 
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is True
+
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: "driver too old")
+    assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
 
     fake_torch.cuda.is_available = lambda: False
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is False

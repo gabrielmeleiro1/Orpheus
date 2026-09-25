@@ -89,6 +89,7 @@ export function SettingsPage({
               <p className="conversion-section-hint">
                 {status?.profiles.find((profile) => profile.id === status.selected_profile)?.label ?? "Runtime not configured"}
                 {" · "}{status?.ready ? "Ready" : "Needs setup"}
+                {status?.profiles.find((profile) => profile.id === status.selected_profile)?.device === "cpu" ? " · CPU" : ""}
               </p>
             </div>
             <button className="btn btn-accent-soft" type="button" onClick={onManageModels}>

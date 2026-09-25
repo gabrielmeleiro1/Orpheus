@@ -607,6 +607,7 @@ def _combine_probe_checks(checks: Sequence[tuple[str, Mapping[str, Any]]]) -> di
     sanitized = [
         {
             "id": check_id,
+            **({"device": result["device"]} if result.get("device") in {"cpu", "cuda"} else {}),
             "available": bool(result.get("available", False)),
             "error": _sanitize_diagnostic(str(result.get("error")))
             if result.get("error")
@@ -897,7 +898,7 @@ def run_setup(
     if dry_run:
         return result
 
-    if plan.profile.id == "cuda":
+    if any(group.startswith("cleaner-cuda") for group in plan.model_groups):
         reason = cuda_hardware_error()
         if reason:
             raise SetupValidationError(reason)

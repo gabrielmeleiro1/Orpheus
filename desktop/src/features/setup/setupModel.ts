@@ -70,7 +70,7 @@ export interface ModelGroupDetail {
 export const MODEL_GROUP_DETAILS: Record<string, ModelGroupDetail> = {
   "tts-mlx": { label: "Kokoro TTS", description: "Natural speech generated locally on Apple Silicon.", model: "mlx-community/Kokoro-82M-bf16", downloadMB: 450, diskMB: 700, kind: "tts" },
   "cleaner-mlx": { label: "Llama 3.2 · 3B", description: "Larger text cleaner, supplied in 4-bit precision.", model: "mlx-community/Llama-3.2-3B-Instruct-4bit", downloadMB: 1800, diskMB: 2300, kind: "cleaner" },
-  "tts-cpu-cuda": { label: "Kokoro TTS", description: "Natural speech generated with the CUDA runtime.", model: "hexgrad/Kokoro-82M", downloadMB: 500, diskMB: 900, kind: "tts" },
+  "tts-cpu-cuda": { label: "Kokoro TTS", description: "Natural speech generated locally on CPU or NVIDIA GPU.", model: "hexgrad/Kokoro-82M", downloadMB: 500, diskMB: 900, kind: "tts" },
   "cleaner-cuda": { label: "Qwen 2.5 · 1.5B", description: "Recommended balance of size and text-cleaning capability.", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 3100, diskMB: 3200, kind: "cleaner" },
   "cleaner-cuda-large": { label: "Qwen 2.5 · 3B", description: "Larger model for more demanding text; uses more GPU memory.", model: "Qwen/Qwen2.5-3B-Instruct", downloadMB: 6200, diskMB: 6400, kind: "cleaner" },
   "cleaner-mlx-small": { label: "Llama 3.2 · 1B", description: "Smaller text cleaner, supplied in 4-bit precision.", model: "mlx-community/Llama-3.2-1B-Instruct-4bit", downloadMB: 713, diskMB: 800, kind: "cleaner" },
@@ -100,7 +100,7 @@ export function selectionEstimate(modelGroups: string[]): string {
 // Download one voice model and one cleaner, never the whole catalog.
 function defaultModelGroups(profile: RuntimeSetupProfile): string[] {
   return ["tts", "cleaner"].flatMap((kind) => {
-    const group = profile.model_groups.find((id) => MODEL_GROUP_DETAILS[id]?.kind === kind);
+    const group = profile.model_groups.find((id) => MODEL_GROUP_DETAILS[id]?.kind === kind && profile.group_availability?.[id]?.available !== false);
     return group ? [group] : [];
   });
 }
@@ -119,7 +119,7 @@ export function createSelection(status: RuntimeSetupStatusResponse): SetupSelect
     ?? status.profiles.find((profile) => profile.id === "base" && profile.compatible)
     ?? status.profiles.find((profile) => profile.compatible)
     ?? status.profiles[0];
-  const allowed = new Set(selected?.model_groups ?? []);
+  const allowed = new Set(selected?.model_groups.filter((id) => selected.group_availability?.[id]?.available !== false) ?? []);
   const persisted = status.selected_model_groups.map(({ id }) => id).filter((id) => allowed.has(id));
   const groups = status.configured && selected?.id === status.selected_profile ? persisted
     : selected ? defaultModelGroups(selected) : [];
@@ -160,7 +160,7 @@ export function toggleModelGroup(
   status: RuntimeSetupStatusResponse,
 ): SetupSelection {
   const profile = status.profiles.find((candidate) => candidate.id === selection.profile);
-  if (!profile?.compatible || !profile.model_groups.includes(groupId)) {
+  if (!profile?.compatible || !profile.model_groups.includes(groupId) || profile.group_availability?.[groupId]?.available === false) {
     return selection;
   }
   return {
@@ -173,7 +173,7 @@ export function toggleModelGroup(
 
 export function canStartSetup(selection: SetupSelection, status: RuntimeSetupStatusResponse): boolean {
   const profile = status.profiles.find((candidate) => candidate.id === selection.profile);
-  if (!profile?.compatible || selection.modelGroups.some((group) => !profile.model_groups.includes(group))) {
+  if (!profile?.compatible || selection.modelGroups.some((group) => !profile.model_groups.includes(group) || profile.group_availability?.[group]?.available === false)) {
     return false;
   }
   if (profile.id !== "base" && !selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts")) {

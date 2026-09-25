@@ -52,6 +52,25 @@ def _compatible(monkeypatch: pytest.MonkeyPatch, profile_id: str) -> None:
     monkeypatch.setattr(setup_runtime, "cuda_hardware_error", lambda: None)
 
 
+def test_cpu_only_cuda_setup_installs_and_verifies_without_gpu(monkeypatch, tmp_path):
+    from scripts import setup_runtime
+
+    _compatible(monkeypatch, "cuda")
+    monkeypatch.setattr(setup_runtime, "cuda_hardware_error", lambda: "Needs an NVIDIA GPU with a CUDA 12.6 driver")
+    probe = _ProbeService(cuda_available=False)
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    state_path = tmp_path / "runtime-setup.json"
+    setup_runtime.run_setup(profile_id="cuda", model_groups=["tts-cpu-cuda"], state_path=state_path, command_runner=runner, probe_service=probe)
+    assert len(calls) == 2
+    assert setup_runtime.read_setup_state(state_path)["model_groups"] == ["tts-cpu-cuda"]
+    assert probe.calls == ["package-tts"]
+
+
 def test_build_plan_uses_fixed_argument_lists(monkeypatch: pytest.MonkeyPatch):
     import scripts.setup_runtime as setup_runtime
 

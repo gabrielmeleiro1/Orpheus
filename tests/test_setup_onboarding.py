@@ -18,6 +18,41 @@ def _client() -> TestClient:
     return TestClient(create_app(controller=object(), desktop_mode=False))
 
 
+@pytest.mark.parametrize("imports_work", [True, False])
+def test_cpu_narration_status_without_cuda(monkeypatch, imports_work):
+    from modules.app.services.runtime_capability_service import RuntimeCapabilityService
+    from modules.web.routes import setup as setup_route
+    from modules.runtime_profiles import CUDA_CLEANER_UNAVAILABLE_REASON
+
+    monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
+    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr(setup_route, "cuda_hardware_error", lambda: CUDA_CLEANER_UNAVAILABLE_REASON)
+    monkeypatch.setattr(setup_route, "_check_selected_profile_packages", lambda _: {"ready": True})
+    monkeypatch.setattr(setup_route, "_check_model_group_assets", lambda groups, **_: {
+        group: {"ready": True, "reason": None} for group in groups
+    })
+    monkeypatch.setattr(RuntimeCapabilityService, "probe_package_tts_runtime", lambda _: {
+        "available": imports_work, "device": "cpu", "error": None if imports_work else "broken import",
+    })
+    monkeypatch.setattr(RuntimeCapabilityService, "probe_cleaner_backend", lambda *args: {
+        "available": False, "error": CUDA_CLEANER_UNAVAILABLE_REASON,
+    })
+    with _client() as client:
+        payload = client.get("/api/setup/status").json()
+    profile = next(item for item in payload["profiles"] if item["id"] == "cuda")
+    assert payload["recommended_profile"] == "cuda"
+    assert profile["compatible"] is True
+    assert profile["device"] == "cpu"
+    assert profile["group_availability"]["tts-cpu-cuda"]["available"] is True
+    for group in ("cleaner-cuda", "cleaner-cuda-large"):
+        assert profile["group_availability"][group] == {
+            "available": False, "unavailable_reason": CUDA_CLEANER_UNAVAILABLE_REASON,
+        }
+    assert payload["installed_runtime"]["runtime_available"] is imports_work
+    assert payload["installed_runtime"]["ready"] is imports_work
+    assert [group["ready"] for group in payload["installed_runtime"]["model_groups"]] == [imports_work, False, False]
+
+
 def _all_profiles_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
     from modules.runtime_profiles import RuntimeProfile
     from modules.web.routes import setup as setup_route

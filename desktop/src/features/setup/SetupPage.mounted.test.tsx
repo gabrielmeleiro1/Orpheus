@@ -86,6 +86,44 @@ describe("mounted SetupPage", () => {
     };
   }
 
+  it.each([false, true])("allows CPU onboarding with disabled cleaners (assets ready: %s)", async (ready) => {
+    const initial = cudaCatalogStatus();
+    initial.profiles = initial.profiles.map((profile) => profile.id === "cuda" ? {
+      ...profile, device: "cpu", group_availability: Object.fromEntries(["cleaner-cuda", "cleaner-cuda-large"].map((id) => [id, {
+        available: false, unavailable_reason: "Needs an NVIDIA GPU with a CUDA 12.6 driver",
+      }])),
+    } : profile);
+    initial.installed_runtime!.device = "cpu";
+    initial.installed_runtime!.ready = ready;
+    initial.installed_runtime!.model_groups.forEach((group) => {
+      group.runtime_ready = group.id === "tts-cpu-cuda";
+      group.assets_ready = ready;
+      group.ready = ready && group.runtime_ready;
+    });
+    const adopt = vi.fn(async () => ({ ...initial, configured: true, ready: true, state: "ready" }));
+    const start = vi.fn(async () => ({ lifecycle: "running", profile: "cuda", model_groups: ["tts-cpu-cuda"] }));
+    await renderPage(packagedSettingsBridge(), { initialStatus: initial, apiClient: { adoptRuntimeSetup: adopt, startRuntimeModelDownload: start } as unknown as ApiClient });
+    expect(container.textContent).toContain("NVIDIA CUDA — running on CPU");
+    expect(container.textContent).toContain("Basic cleanup is used instead");
+    expect(container.textContent).not.toContain("could not verify the installed runtime");
+    const cleaners = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')];
+    expect(cleaners[0].checked).toBe(true);
+    expect(cleaners.slice(1).every((input) => input.disabled && !input.checked)).toBe(true);
+    expect(container.textContent).toContain("Needs an NVIDIA GPU with a CUDA 12.6 driver");
+    const primary = container.querySelector<HTMLButtonElement>(".setup-primary")!;
+    expect(primary.disabled).toBe(false);
+    await act(async () => primary.click());
+    expect(ready ? adopt : start).toHaveBeenCalledWith(expect.objectContaining({ profile: "cuda", model_groups: ["tts-cpu-cuda"] }), expect.anything());
+    if (ready) {
+      const configured: RuntimeSetupStatusResponse = { ...initial, configured: true, ready: true, state: "ready", selected_profile: "cuda", selected_model_groups: [{ id: "tts-cpu-cuda", ready: true, runtime_ready: true, assets_ready: true, assets_reason: null }] };
+      await renderPage(packagedSettingsBridge(), { initialStatus: configured, settingsEntry: true, apiClient: { getRuntimeModelInventory: vi.fn(async () => ({ models: [] })) } as unknown as ApiClient });
+      const managed = [...container.querySelectorAll<HTMLInputElement>('input[name="managed-cleaner"]')].filter((input) => input.closest("article"));
+      expect(managed).toHaveLength(2);
+      expect(managed.every((input) => input.disabled)).toBe(true);
+      expect(container.textContent).toContain("Needs an NVIDIA GPU with a CUDA 12.6 driver");
+    }
+  });
+
   it.each([false, true])("scrolls installation into view once, respecting reduced motion (%s)", async (reducedMotion) => {
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => undefined);
     vi.spyOn(window, "matchMedia").mockReturnValue({ matches: reducedMotion } as MediaQueryList);

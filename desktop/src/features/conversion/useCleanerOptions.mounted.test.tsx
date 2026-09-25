@@ -135,6 +135,7 @@ describe("useCleanerOptions capability transitions", () => {
     root = createRoot(container);
     await act(async () => root.render(<CleanerProbe apiClient={apiClient} systemCapabilities={pending} persisted={persisted} models={models} />));
     expect(getCleanerProbe().cleanerBackend).toBe("basic");
+    expect(getCleanerProbe().cleanerBackendOptions.some((option) => option.value === "cuda")).toBe(false);
     await act(async () => root.render(<CleanerProbe apiClient={apiClient} systemCapabilities={fresh} persisted={persisted} models={models} />));
     const options = getCleanerProbe();
     expect(options.cleanerBackend).toBe("basic");
