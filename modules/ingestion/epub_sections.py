@@ -14,6 +14,8 @@ import ebooklib
 from bs4 import BeautifulSoup
 from bs4.element import PageElement, Tag
 
+from .text_layout import repair_text_layout
+
 
 MIN_SECTION_CHARS = 50
 
@@ -144,7 +146,13 @@ def soup_to_epub_text(soup: BeautifulSoup) -> str:
     for element in soup(["script", "style", "nav", "header", "footer"]):
         element.decompose()
 
+    # Inline markup is not a page/line boundary: an emphasized number in prose
+    # must not become a standalone folio when get_text inserts separators.
+    for element in soup(["a", "span", "b", "strong", "i", "em", "small", "sup", "sub"]):
+        element.unwrap()
+    soup.smooth()
     text = soup.get_text(separator="\n", strip=True)
+    text = repair_text_layout(text)
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     return "\n\n".join(lines)
 

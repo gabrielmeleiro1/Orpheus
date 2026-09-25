@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .models import Chapter, Document
 from .text_encoding import read_source_text
+from .text_layout import repair_text_layout
 
 from modules.errors import CorruptedFileError
 
@@ -25,7 +26,7 @@ class TextParser:
     def parse(self) -> Document:
         raw_text = self._read_text()
         title = self.file_path.stem
-        content = raw_text.strip()
+        content = repair_text_layout(raw_text).strip()
         if not content:
             raise CorruptedFileError(
                 message="Text file contains no readable text",

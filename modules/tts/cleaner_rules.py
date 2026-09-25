@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from collections import Counter
 import re
 
+from modules.ingestion.text_layout import (
+    page_furniture_lines,
+    repair_line_break_hyphenation,
+    strip_page_furniture,
+)
 from modules.ingestion.extraction_artifact_signals import (
     has_joined_first_person_leakage,
     has_pdf_hyphenation_leakage,
@@ -158,6 +162,30 @@ def repair_known_closed_compound_hyphenation(text: str) -> str:
     return _KNOWN_CLOSED_COMPOUND_HYPHEN_RE.sub(_join, text)
 
 
+def repair_flattened_hyphenation(text: str) -> str:
+    """Recover soft hyphens after ingestion/chunking has collapsed line breaks."""
+    known_words = {
+        "keeper", "staircase", "waited", "countrywoman", "countrywomen",
+        "countryman", "countrymen",
+    }
+
+    def _join(match: re.Match[str]) -> str:
+        left, right = match.group("left"), match.group("right")
+        # A suspended compound leaves its hyphen before a conjunction.
+        if right in {"and", "or", "nor", "but"}:
+            return match.group(0)
+        joined = left + right
+        if (left.islower() and right.islower()) or joined.casefold() in known_words:
+            return joined
+        return match.group(0)
+
+    return re.sub(
+        r"(?<![\w-])(?P<left>[^\W\d_]+)-[ \t]+(?P<right>[a-zà-öø-ÿ]+)(?![\w-])",
+        _join,
+        text,
+    )
+
+
 def is_markdown_table_line(line: str) -> bool:
     stripped = line.strip()
     return stripped.startswith("|") and stripped.count("|") >= 2
@@ -231,51 +259,6 @@ def normalize_markdown_tables(text: str) -> str:
     return "\n".join(out)
 
 
-def page_furniture_lines(text: str) -> set[int]:
-    """Identify page numbers and short, title-like running headers/footers.
-
-    Repetition alone is not enough for prose or dialogue: candidates must look
-    like titles, without sentence punctuation or list/Markdown markers.
-    """
-    furniture: set[int] = set()
-    candidates: dict[int, str] = {}
-    for index, line in enumerate(text.splitlines()):
-        line = line.strip()
-        if re.fullmatch(r"\d+", line):
-            furniture.add(index)
-            continue
-        if not line or line.startswith("#") or len(line) > 100:
-            continue
-        title = re.sub(r"^\d+\s+|\s+\d+$", "", line).strip()
-        if (
-            len(title.split()) > 12
-            or not re.fullmatch(r"[^\W\d_][\w\s'’–—-]*", title)
-            or not (title.isupper() or title.istitle())
-            or (len(title.split()) == 1 and (not title.isupper() or len(title) < 4))
-        ):
-            continue
-        key = re.sub(r"[\d\s]+", "", title).casefold()
-        candidates[index] = key
-        if title.isupper() and title != line:
-            furniture.add(index)
-    counts = Counter(candidates.values())
-    furniture.update(index for index, key in candidates.items() if counts[key] >= 2)
-    return furniture
-
-
-def strip_page_furniture(text: str) -> str:
-    furniture = page_furniture_lines(text)
-    return "".join(
-        line for index, line in enumerate(text.splitlines(keepends=True))
-        if index not in furniture
-    )
-
-
-def repair_line_break_hyphenation(text: str) -> str:
-    """Join word fragments only across an explicit line break and ASCII hyphen."""
-    return re.sub(r"([^\W\d_])-[ \t]*\r?\n[ \t]*(?=[a-zà-öø-ÿ])", r"\1", text)
-
-
 def rule_based_clean(text: str) -> str:
     """Apply fast rule-based text normalization for TTS preprocessing."""
     text = strip_page_furniture(text)
@@ -304,6 +287,7 @@ def rule_based_clean(text: str) -> str:
     text = repair_spaced_caps_em_dash_attributions(text)
     text = repair_clear_spaced_hyphenated_compounds(text)
     text = repair_known_closed_compound_hyphenation(text)
+    text = repair_flattened_hyphenation(text)
     return text.strip()
 
 

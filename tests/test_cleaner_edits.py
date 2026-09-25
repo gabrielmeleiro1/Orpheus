@@ -172,7 +172,8 @@ def test_catastrophic_output_falls_back_entirely(monkeypatch, candidate, reason)
 
 @pytest.mark.parametrize("repair_wind, mode", [(True, "llm_success"), (False, "hallucination_fallback")])
 def test_rejected_span_budget_counts_edits_not_unchanged_words(monkeypatch, repair_wind, mode):
-    source = "Mara repaired the stair- case, count ing steps in the w ind at sunset."
+    # Unmarked fragments remain LLM edits; spaced hyphens are now rule repairs.
+    source = "Mara repaired the stair case, count ing steps in the w ind at sunset."
     candidate = "Nora repaired the staircase, counting steps in the w ind at sunset."
     if repair_wind:
         candidate = candidate.replace("w ind", "wind")

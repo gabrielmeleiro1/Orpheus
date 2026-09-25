@@ -1405,7 +1405,7 @@ def test_cleaner_gate_quality_fails_on_rule_only_artifact_leakage(
             Chapter(
                 number=1,
                 title="One",
-                content="The paragraph still contains experi- ence after extraction.",
+                content="The paragraph still contains inde-pendence after extraction.",
             )
         ],
     )
@@ -1418,7 +1418,7 @@ def test_cleaner_gate_quality_fails_on_rule_only_artifact_leakage(
 
     assert result["artifact_quality"]["success"] is False
     assert any(
-        issue["type"] == "pdf_hyphenation_leakage"
+        issue["type"] == "pdf_internal_hyphen_fragment"
         for issue in result["artifact_quality"]["issues"]
     )
 

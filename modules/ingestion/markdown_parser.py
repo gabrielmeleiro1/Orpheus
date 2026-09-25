@@ -10,6 +10,7 @@ import re
 
 from .models import Chapter, Document
 from .text_encoding import read_source_text
+from .text_layout import repair_text_layout
 
 from modules.errors import CorruptedFileError
 
@@ -94,6 +95,8 @@ class MarkdownParser:
         chapters = sections or [
             Chapter(number=1, title=self.file_path.stem, content=content_text.strip())
         ]
+        for chapter in chapters:
+            chapter.content = repair_text_layout(chapter.content).strip()
         if not any(chapter.content.strip() for chapter in chapters):
             raise CorruptedFileError(
                 message="Markdown file contains no readable text",

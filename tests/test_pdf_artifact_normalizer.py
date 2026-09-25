@@ -9,6 +9,29 @@ from pathlib import Path
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "pdf_artifact_normalization_samples.json"
 
 
+def test_numbered_running_headers_match_across_pages_without_matching_chapter_numbers():
+    from modules.ingestion.pdf_artifact_normalizer import RepeatedPageBoundaryPolicy
+
+    pages = [
+        {"text": "The lighthouse keeper 12\nChapter 1\nThe lamp was cold."},
+        {"text": "13 The lighthouse keeper\nChapter 2\nHe struck a match."},
+    ]
+    normalized = RepeatedPageBoundaryPolicy().normalize_pages(pages)
+
+    assert [page["text"] for page in normalized] == [
+        "Chapter 1\nThe lamp was cold.",
+        "Chapter 2\nHe struck a match.",
+    ]
+    assert "keeper 12" in pages[0]["text"]
+
+
+def test_single_pdf_page_repairs_layout_before_paragraph_reflow():
+    from modules.ingestion.pdf_artifact_normalizer import normalize_pdf_artifacts
+
+    pages = [{"text": "THE LIGHTHOUSE KEEPER 12\nThe keep-\ner wa-\nited."}]
+    assert normalize_pdf_artifacts(pages)[0]["text"] == "The keeper waited."
+
+
 def test_pdf_artifact_normalization_fixture_samples() -> None:
     from modules.ingestion.pdf_artifact_normalizer import (
         KNOWN_CORPUS_PDF_ARTIFACT_POLICIES,

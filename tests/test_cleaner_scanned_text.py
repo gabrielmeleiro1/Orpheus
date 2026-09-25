@@ -1,7 +1,11 @@
 """Scanned chapter cleanup must keep repairs without weakening content checks."""
 
+from types import SimpleNamespace
+
 import pytest
 
+from modules.pipeline.stages.ingestion import ingest_source
+from modules.tts.chunker import TextChunker
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
 from modules.tts.cleaner_rules import (
@@ -37,6 +41,120 @@ CLEANED = (
 )
 
 
+def _ingestion_runtime(**config):
+    return SimpleNamespace(
+        config=SimpleNamespace(**config),
+        log_verbose=lambda *_args: None,
+        notify_progress=lambda **_kwargs: None,
+    )
+
+
+@pytest.mark.parametrize("suffix", [".md", ".txt"])
+@pytest.mark.parametrize("pre_chunk_cleanup", [True, False])
+def test_scan_ingestion_repairs_layout_before_chunking(tmp_path, suffix, pre_chunk_cleanup):
+    source_path = tmp_path / f"scan{suffix}"
+    source_path.write_text(SCAN, encoding="utf-8")
+
+    document = ingest_source(
+        _ingestion_runtime(pre_chunk_document_cleanup=pre_chunk_cleanup), source_path
+    )
+
+    assert document.raw_markdown.splitlines() == SCAN.splitlines()
+    assert len(document.chapters) == 1
+    content = document.chapters[0].content
+    assert "The keeper climbed the stair- case" in content
+    assert "He waited, listening" in content
+    assert "LIGHTHOUSE" not in content
+    assert "12" not in content
+    assert "13" not in content
+    cleaned = " ".join(rule_based_clean(chunk) for chunk in TextChunker().chunk(content))
+    assert "The keeper climbed the staircase" in cleaned
+    assert "He waited, listening" in cleaned
+    assert "count ing" in cleaned
+    assert "w ind" in cleaned
+
+
+@pytest.mark.parametrize("suffix", [".md", ".txt"])
+def test_ingestion_preserves_suspended_compounds_when_reflowing(tmp_path, suffix):
+    source_path = tmp_path / f"compounds{suffix}"
+    source_path.write_text(
+        "He compared pre-\nand post-war maps with a twenty-\nor thirty-year-old guide.",
+        encoding="utf-8",
+    )
+
+    document = ingest_source(_ingestion_runtime(), source_path)
+    cleaned = rule_based_clean(" ".join(TextChunker().chunk(document.chapters[0].content)))
+
+    assert cleaned == "He compared pre- and post-war maps with a twenty- or thirty-year-old guide."
+
+
+def test_epub_scan_ingestion_repairs_explicit_and_markup_line_breaks(tmp_path):
+    from ebooklib import epub
+
+    book = epub.EpubBook()
+    book.set_identifier("scan-layout-test")
+    book.set_title("Scanned chapter")
+    book.set_language("en")
+    chapter = epub.EpubHtml(title="Chapter One", file_name="chapter.xhtml")
+    chapter.content = (
+        "<h1>Chapter One</h1><p>THE LIGHTHOUSE KEEPER 12</p>"
+        "<p>The keep-<br/>er climbed the stair- case at dusk. He wa-\n"
+        "ited, listening, but there was only the tide.</p>"
+        "<p>13 THE LIGHTHOUSE KEEPER</p>"
+        "<p>The sea was loud and the wind pressed against the glass like a hand.</p>"
+        "<p>He counted <b>12</b> steps and read <em>THE LIGHTHOUSE KEEPER</em> aloud.</p>"
+    )
+    book.add_item(chapter)
+    book.add_item(epub.EpubNcx())
+    book.add_item(epub.EpubNav())
+    book.toc = [chapter]
+    book.spine = [chapter]
+    source_path = tmp_path / "scan.epub"
+    epub.write_epub(str(source_path), book)
+
+    document = ingest_source(_ingestion_runtime(), source_path)
+
+    content = "\n\n".join(ch.content for ch in document.chapters)
+    assert "The keeper climbed" in content
+    assert "He waited, listening" in content
+    assert content.count("THE LIGHTHOUSE KEEPER") == 1
+    assert "He counted 12 steps and read THE LIGHTHOUSE KEEPER aloud." in content
+    assert "13" not in content
+
+
+@pytest.mark.parametrize("backend", ["fitz", "pymupdf4llm"])
+def test_pdf_scan_ingestion_removes_numbered_running_headers(tmp_path, backend):
+    import fitz
+
+    source_path = tmp_path / "scan.pdf"
+    with fitz.open() as pdf:
+        for number, body in enumerate([
+            "The keep-\ner climbed the stair- case at dusk, counting each step.\n"
+            "The lamp was cold; the sea was loud and the wind pressed\n"
+            "against the glass like a hand. He was alone in the tower.",
+            "He struck a match, and the wick caught.\n"
+            "Out beyond the rocks a ship's light blinked twice, then went dark.\n"
+            "He wa-\nited, listening, but there was only the tide.",
+        ], start=12):
+            page = pdf.new_page()
+            header = f"The lighthouse keeper {number}" if number == 12 else f"{number} The lighthouse keeper"
+            page.insert_text((72, 35), header, fontsize=10)
+            page.insert_text((72, 120), body, fontsize=12)
+            page.insert_text((72, 800), str(number), fontsize=10)
+        pdf.save(source_path)
+
+    document = ingest_source(_ingestion_runtime(pdf_extraction_backend=backend), source_path)
+
+    content = "\n\n".join(ch.content for ch in document.chapters)
+    assert "lighthouse keeper" not in content.lower()
+    assert "12" not in content
+    assert "13" not in content
+    assert "The keeper climbed" in content
+    assert "He waited, listening" in content
+    cleaned = " ".join(rule_based_clean(chunk) for chunk in TextChunker().chunk(content))
+    assert "The keeper climbed the staircase" in cleaned
+
+
 def test_scan_rules_repair_hyphenation_and_remove_page_furniture():
     cleaned = rule_based_clean(SCAN)
     assert cleaned.startswith("Chapter One The keeper climbed")
@@ -44,8 +162,8 @@ def test_scan_rules_repair_hyphenation_and_remove_page_furniture():
     assert "LIGHTHOUSE" not in cleaned
     assert "12" not in cleaned
     assert "13" not in cleaned
-    # Mid-line spacing needs the LLM; rules must not guess word boundaries.
-    assert "stair- case" in cleaned
+    # Spaced hyphens are repairable; unmarked word boundaries still need the LLM.
+    assert "staircase" in cleaned
     assert "count ing" in cleaned
     assert "w ind" in cleaned
 
@@ -65,7 +183,15 @@ def test_scan_fake_llm_trace_accepts_cleaned_text(monkeypatch):
 @pytest.mark.parametrize("source, expected", [
     ("The keep-\ner wa-\nited.", "The keeper waited."),
     ("The keep-  \r\n  er waited.", "The keeper waited."),
-    ("The stair- case is well-known.", "The stair- case is well-known."),
+    ("The stair- case is well-known.", "The staircase is well-known."),
+    ("The keep- er wa- ited.", "The keeper waited."),
+    ("Keep- er and Stair- case", "Keeper and Staircase"),
+    ("twenty- or thirty-year-old", "twenty- or thirty-year-old"),
+    ("pre- and post-war", "pre- and post-war"),
+    ("twenty-\nor thirty-year-old", "twenty- or thirty-year-old"),
+    ("pre-\nand post-war", "pre- and post-war"),
+    ("Anglo- Saxon and type- 2", "Anglo- Saxon and type- 2"),
+    ("well- being and self- governed", "well-being and self-governed"),
     ("She paused—\nthen spoke–\nsoftly.", "She paused— then spoke– softly."),
     ("He said-\nNo.", "He said- No."),
     ("# THE LIGHTHOUSE KEEPER 12\n# THE LIGHTHOUSE KEEPER 13", "THE LIGHTHOUSE KEEPER 12 THE LIGHTHOUSE KEEPER 13"),

@@ -10,6 +10,7 @@ import string
 
 from modules.errors import ChapterTooLongError
 from modules.ingestion.models import Chapter, Document
+from modules.ingestion.text_layout import repair_line_break_hyphenation
 from modules.ingestion.content_filter import (
     ContentClassification,
     SkippedSection,
@@ -46,7 +47,6 @@ def _is_page_number(line: str) -> bool:
     if _DIGIT_PAGE_NUMBER_RE.fullmatch(stripped):
         return True
     return bool(_ROMAN_PAGE_NUMBER_RE.fullmatch(stripped))
-_LOWERCASE_HYPHEN_BREAK_RE = re.compile(r"([a-z])-\s*\n\s*([a-z])")
 _BACKLINK_RE = re.compile(
     r"(?im)(?:^\s*|\s+)(?:back to (?:top|contents)|return to (?:top|contents))\s*[↩\u21a9]?\s*$"
 )
@@ -332,7 +332,7 @@ def _normalize_pdf_chapter(text: str, repeated_headers: set[str]) -> str:
         kept_lines.append(line.rstrip())
 
     cleaned = "\n".join(kept_lines)
-    cleaned = _LOWERCASE_HYPHEN_BREAK_RE.sub(r"\1\2", cleaned)
+    cleaned = repair_line_break_hyphenation(cleaned)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = _reflow_lines(cleaned)
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
@@ -358,7 +358,7 @@ def _normalize_text_like_chapter(text: str, *, markdown: bool = False) -> str:
     if markdown:
         cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
         return cleaned.strip()
-    cleaned = _LOWERCASE_HYPHEN_BREAK_RE.sub(r"\1\2", cleaned)
+    cleaned = repair_line_break_hyphenation(cleaned)
     cleaned = _reflow_lines(cleaned)
     return cleaned.strip()
 

@@ -98,14 +98,14 @@ def test_rule_based_clean_repairs_reviewed_spaced_hyphen_compounds():
     )
 
 
-def test_rule_based_clean_preserves_unknown_spaced_hyphen_text_for_gate():
+def test_rule_based_clean_repairs_lowercase_spaced_hyphens_before_gate():
     cleaned = cleaner_rules_backend.rule_based_clean(
         "The passage left experi- ence and gover- nment artifacts."
     )
 
-    assert "experi- ence" in cleaned
-    assert "gover- nment" in cleaned
-    assert cleaner_rules_backend.needs_llm_cleaning(cleaned) is True
+    assert "experience" in cleaned
+    assert "government" in cleaned
+    assert cleaner_rules_backend.needs_llm_cleaning(cleaned) is False
 
 
 def test_rule_based_clean_preserves_valid_prose_against_hyphen_repair():

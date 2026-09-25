@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 import re
 
+from .text_layout import repair_line_break_hyphenation as repair_wrapped_words
+from .text_layout import strip_page_furniture
+
 
 PageData = dict[str, object]
 
@@ -21,7 +24,7 @@ _PAGE_BOUNDARY_WINDOW = 4
 _PAGE_NUMBER_RE = re.compile(r"^\s*\d{1,4}\s*$")
 _PAGE_NUMBER_RESIDUE_RE = re.compile(r"^\s*\d{1,4}[Il]\s*$")
 _LINE_BREAK_HYPHEN_RE = re.compile(
-    r"(?<!-)\b(?P<prefix>[A-Za-z]{2,})-\s*\n\s*(?P<suffix>[a-z]{3,})\b"
+    r"(?<!-)\b(?P<prefix>[A-Za-z]{2,})-\s*\n\s*(?P<suffix>[a-z]+)\b"
 )
 # The left-hand compound is matched atomically (lookahead capture + backref)
 # and its hyphenated segments are bounded, so a hyphen-dense page cannot drive
@@ -227,7 +230,7 @@ def repair_line_break_hyphenation(text: str, *, known_corpus_repairs: bool = Fal
             or suffix.casefold() in _HYPHENATION_SUFFIX_EXCEPTIONS
         ):
             return f"{prefix}-\n {suffix}"
-        return f"{prefix}{suffix}"
+        return repair_wrapped_words(match.group(0))
 
     text = _KNOWN_HYPHENATED_LINE_BREAK_RE.sub(_repair_known_compound, text)
     return _LINE_BREAK_HYPHEN_RE.sub(_join, text)
@@ -273,7 +276,15 @@ def _normalize_repeated_boundary_line(line: str) -> Optional[str]:
         return None
     if len(stripped) > 120:
         return None
-    return stripped.casefold()
+    if re.match(
+        r"^(?:#{1,6}\s+)?(?:chapter|part|book|section)\s+\d+\b",
+        stripped,
+        re.IGNORECASE,
+    ):
+        return None
+    # Running folios vary by page and can switch sides on facing pages.
+    stripped = re.sub(r"^\d+\s+|\s+\d+$", "", stripped).strip()
+    return stripped.casefold() or None
 
 
 def _is_page_boundary_noise_line(line: str, *, strip_page_numbers: bool) -> bool:
@@ -529,7 +540,10 @@ class PDFLineArtifactPolicy:
                 cleaned_pages.append(page)
                 continue
 
-            page_text = str(page.get("text", ""))
+            # A lone number in a one-page extraction may be a section heading.
+            page_text = strip_page_furniture(
+                str(page.get("text", "")), strip_page_numbers=len(pages_data) > 1
+            )
             page_text = repair_line_break_hyphenation(
                 page_text,
                 known_corpus_repairs=self.known_corpus_repairs,
