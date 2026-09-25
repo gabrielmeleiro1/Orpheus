@@ -14,16 +14,21 @@ import re
 import threading
 from typing import Any, Callable, Iterable
 
-import requests
-from huggingface_hub.errors import (
+from modules.hf_cache import configure_hf_cache
+
+# Also runs when multiprocessing spawn imports the download worker's module.
+configure_hf_cache()
+
+import requests  # noqa: E402
+from huggingface_hub.errors import (  # noqa: E402
     GatedRepoError,
     HfHubHTTPError,
     LocalEntryNotFoundError,
     RepositoryNotFoundError,
 )
 
-from scripts import setup_runtime
-from scripts.download_models import download_model_snapshot, resolve_model_groups
+from scripts import setup_runtime  # noqa: E402
+from scripts.download_models import download_model_snapshot, resolve_model_groups  # noqa: E402
 
 # Fail fast when the installer, adopt, or delete already holds the setup lock;
 # the caller surfaces this as a 409 rather than queueing behind a long run.

@@ -20,6 +20,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from modules.hf_cache import configure_hf_cache  # noqa: E402
+
+configure_hf_cache()
+
 from modules.tts.runtime_spec import (  # noqa: E402
     CLEANER_CUDA_DEFAULT_MODEL,
     CLEANER_MLX_DEFAULT_MODEL,
@@ -561,7 +565,6 @@ def download_model_snapshot(
     cache_dir: Path | None = None,
     local_dir: Path | None = None,
 ) -> Path:
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     try:
         from huggingface_hub import snapshot_download
     except ImportError as exc:

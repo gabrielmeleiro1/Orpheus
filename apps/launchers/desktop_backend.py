@@ -21,10 +21,14 @@ from collections.abc import Generator
 from pathlib import Path
 from typing import Sequence
 
-import uvicorn
-from uvicorn.server import HANDLED_SIGNALS
+from modules.hf_cache import configure_hf_cache
 
-from modules.web.server import create_app
+configure_hf_cache()
+
+import uvicorn  # noqa: E402
+from uvicorn.server import HANDLED_SIGNALS  # noqa: E402
+
+from modules.web.server import create_app  # noqa: E402
 
 # libespeak-ng POSIX path_home buffer (speech.h N_PATH_HOME).
 # Limit is filesystem bytes (C char buffer), not Python string code points.
