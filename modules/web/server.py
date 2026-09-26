@@ -158,6 +158,14 @@ def _configure_desktop_runtime(
 
     add_desktop_auth_middleware(app)
 
+    @app.post("/api/desktop/shutdown", status_code=202)
+    async def shutdown_desktop_backend() -> JSONResponse:
+        shutdown = getattr(app.state, "desktop_shutdown", None)
+        if not callable(shutdown):
+            return JSONResponse(status_code=503, content={"detail": "Shutdown is unavailable"})
+        shutdown()
+        return JSONResponse(status_code=202, content={"status": "shutting_down"})
+
     # Vite runs on a separate localhost port during desktop development; that
     # origin is allowed only in debug builds (see _desktop_dev_cors_origins).
     app.add_middleware(

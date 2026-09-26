@@ -268,6 +268,11 @@ class _DesktopReadyServer(uvicorn.Server):
         self._runtime_profile = runtime_profile
         self.ready_emitted = False
         self._broker_shutdown_done = False
+        self.config.app.state.desktop_shutdown = self.request_shutdown
+
+    def request_shutdown(self) -> None:
+        self._shutdown_event_broker()
+        self.should_exit = True
 
     def handle_exit(self, sig: int, frame: object) -> None:
         # Close the event broker the instant Uvicorn handles its exit signal,

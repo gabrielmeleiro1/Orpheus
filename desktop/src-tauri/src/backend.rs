@@ -195,6 +195,8 @@ pub struct RunningBackend {
     // Set by the stdout reader when the backend prints its shutdown
     // acknowledgement after finishing cleanup; exit is imminent at that point.
     shutdown_ack: Arc<AtomicBool>,
+    #[cfg(windows)]
+    shutdown_endpoint: Arc<Mutex<Option<BackendReadyPayload>>>,
     generation: u64,
     #[cfg(unix)]
     process_group_id: Option<i32>,
@@ -250,6 +252,7 @@ fn terminate_backend_process(
     #[cfg(unix)] process_group_id: Option<i32>,
     #[cfg(unix)] child_reaped: &mut bool,
     #[cfg(windows)] job: Option<&WindowsJob>,
+    #[cfg(windows)] endpoint: Option<&BackendReadyPayload>,
 ) -> ShutdownOutcome {
     #[cfg(unix)]
     {
@@ -305,11 +308,9 @@ fn terminate_backend_process(
         return ShutdownOutcome::AlreadyExited;
     }
 
-    // Deliver a best-effort graceful stop that the backend understands, then
-    // honor the shutdown budget on every platform before force-killing. Only
-    // wait when a graceful signal was actually delivered: if it could not be
-    // sent (e.g. no console on Windows) the backend will not self-exit, so
-    // waiting out the budget would only delay the inevitable force-kill.
+    // Deliver a best-effort graceful stop, then honor the cleanup budget before
+    // force-killing. A ready Windows child gets the budget even if its HTTP
+    // response is lost after the shutdown request reached the server.
     let graceful_signal_sent;
     #[cfg(unix)]
     {
@@ -318,10 +319,10 @@ fn terminate_backend_process(
     }
     #[cfg(windows)]
     {
-        // uvicorn installs a SIGBREAK handler on Windows, so a CTRL_BREAK to the
-        // backend's own process group (created via CREATE_NEW_PROCESS_GROUP)
-        // triggers the same graceful shutdown as SIGTERM on unix.
-        graceful_signal_sent = send_ctrl_break_to_child(child).is_ok();
+        graceful_signal_sent = endpoint.is_some();
+        if let Some(endpoint) = endpoint {
+            let _ = request_backend_shutdown(endpoint);
+        }
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -400,25 +401,34 @@ fn terminate_backend_process(
     ShutdownOutcome::ForcedKill
 }
 
-// Windows-only graceful stop. The child is spawned with CREATE_NEW_PROCESS_GROUP
-// so its process-group id equals its pid; targeting that group leaves this
-// process (a different group) untouched. Best-effort: in a console-less GUI
-// build GenerateConsoleCtrlEvent fails, and the caller falls back to TerminateProcess.
+// Hidden Windows children have no console, so use the authenticated local API.
 #[cfg(windows)]
-fn send_ctrl_break_to_child(child: &Child) -> std::io::Result<()> {
-    const CTRL_BREAK_EVENT: u32 = 1;
-    let result = unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, child.id()) };
-    if result != 0 {
-        Ok(())
-    } else {
-        Err(std::io::Error::last_os_error())
-    }
-}
+fn request_backend_shutdown(endpoint: &BackendReadyPayload) -> std::io::Result<()> {
+    use std::io::{Read, Write};
+    use std::net::{IpAddr, SocketAddr, TcpStream};
 
-#[cfg(windows)]
-#[link(name = "kernel32")]
-extern "system" {
-    fn GenerateConsoleCtrlEvent(ctrl_event: u32, process_group_id: u32) -> i32;
+    let invalid = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid shutdown endpoint",
+        )
+    };
+    let host: IpAddr = endpoint.host.parse().map_err(|_| invalid())?;
+    if !host.is_loopback() || endpoint.token.contains(['\r', '\n']) {
+        return Err(invalid());
+    }
+    let address = SocketAddr::new(host, endpoint.port);
+    let timeout = Duration::from_millis(500);
+    let mut stream = TcpStream::connect_timeout(&address, timeout)?;
+    stream.set_write_timeout(Some(timeout))?;
+    stream.set_read_timeout(Some(timeout))?;
+    write!(stream, "POST /api/desktop/shutdown HTTP/1.1\r\nHost: {address}\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", endpoint.token)?;
+    let mut status = [0_u8; 12];
+    stream.read_exact(&mut status)?;
+    if &status != b"HTTP/1.1 202" && &status != b"HTTP/1.0 202" {
+        return Err(std::io::Error::other("backend rejected shutdown request"));
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -677,6 +687,12 @@ impl RunningBackend {
         // leave same-group grandchildren behind; getpgid ownership checks keep
         // a late Drop from signaling a reused process group.
         let generation = self.generation;
+        #[cfg(windows)]
+        let endpoint = self
+            .shutdown_endpoint
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
         let _ = terminate_backend_process(
             &mut self.child,
             BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT,
@@ -687,6 +703,8 @@ impl RunningBackend {
             &mut self.child_reaped,
             #[cfg(windows)]
             Some(self.job.as_ref()),
+            #[cfg(windows)]
+            endpoint.as_ref(),
         );
 
         let _ = self.child.wait();
@@ -981,9 +999,8 @@ fn launch_backend(
     #[cfg(unix)]
     command.process_group(0);
 
-    // Put the backend in its own process group so a graceful CTRL_BREAK can
-    // target it without signalling this process. Keep it suspended until the
-    // process has been assigned to a kill-on-close Job Object.
+    // Keep the hidden backend suspended until it has been assigned to a
+    // kill-on-close Job Object.
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -1094,10 +1111,18 @@ fn launch_backend(
     let stdout_stderr_lines = Arc::clone(&stderr_lines);
     let shutdown_ack = Arc::new(AtomicBool::new(false));
     let stdout_shutdown_ack = Arc::clone(&shutdown_ack);
+    #[cfg(windows)]
+    let shutdown_endpoint = Arc::new(Mutex::new(None));
+    #[cfg(windows)]
+    let stdout_shutdown_endpoint = Arc::clone(&shutdown_endpoint);
     let stdout_thread = thread::spawn(move || {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
             if let Ok(payload) = parse_ready_line(&line) {
+                #[cfg(windows)]
+                if let Ok(mut endpoint) = stdout_shutdown_endpoint.lock() {
+                    *endpoint = Some(payload.clone());
+                }
                 if let Ok(mut guard) = stdout_manager.lock() {
                     guard.mark_ready_for_generation(generation, payload);
                 }
@@ -1163,6 +1188,8 @@ fn launch_backend(
         stdout_thread: Some(stdout_thread),
         stderr_thread: Some(stderr_thread),
         shutdown_ack,
+        #[cfg(windows)]
+        shutdown_endpoint,
         generation,
         #[cfg(unix)]
         process_group_id,

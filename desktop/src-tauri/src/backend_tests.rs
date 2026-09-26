@@ -36,20 +36,22 @@ fn forced_backend_shutdown_terminates_root_and_descendant_in_job() {
         .expect("expected system time after unix epoch")
         .as_nanos();
     let marker = std::env::temp_dir().join(format!("orpheus-backend-descendant-{unique}.txt"));
-    let script = r#"import ctypes, json, os, pathlib, signal, subprocess, sys, time
+    let script = r#"import ctypes, http.server, json, os, pathlib, subprocess, sys, threading, time
 assert ctypes.windll.kernel32.GetConsoleWindow() == 0, "backend opened a console"
 marker = pathlib.Path(sys.argv[1])
-# Keep the root alive when terminate_backend_process sends CTRL_BREAK, so this
-# test must exercise the forced Job Object termination path. Put the descendant
-# in its own console process group so it cannot receive that graceful signal.
-if hasattr(signal, "SIGBREAK"):
-    signal.signal(signal.SIGBREAK, lambda _signum, _frame: None)
+# Accept shutdown but never exit, exercising the timeout fallback.
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        self.send_response(202)
+        self.end_headers()
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
 descendant = subprocess.Popen(
     [sys.executable, "-c", "import time; time.sleep(60)"],
     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
 )
 marker.write_text(f"{os.getpid()} {descendant.pid}", encoding="ascii")
-print(json.dumps({"event":"ready","host":"127.0.0.1","port":1,"token":"test"}), flush=True)
+print(json.dumps({"event":"ready","host":"127.0.0.1","port":server.server_port,"token":"test"}), flush=True)
 while True:
     time.sleep(1)
 "#;
@@ -87,11 +89,22 @@ while True:
     assert!(process_is_running(pids[0]));
     assert!(process_is_running(pids[1]));
 
+    let endpoint = loop {
+        if let Some(endpoint) = running.shutdown_endpoint.lock().unwrap().clone() {
+            break endpoint;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "missing ready endpoint"
+        );
+        thread::sleep(Duration::from_millis(25));
+    };
     let outcome = super::terminate_backend_process(
         &mut running.child,
         Duration::from_millis(100),
         None,
         Some(running.job.as_ref()),
+        Some(&endpoint),
     );
     assert_eq!(outcome, super::ShutdownOutcome::ForcedKill);
     let _ = running.child.wait();
@@ -115,6 +128,65 @@ while True:
 }
 use crate::paths::DesktopRuntimePaths;
 use std::path::{Path, PathBuf};
+
+#[cfg(windows)]
+#[test]
+fn hidden_backend_shutdown_runs_cleanup_and_acknowledges_before_exit() {
+    use std::sync::{atomic::Ordering, Arc, Mutex};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let marker = std::env::temp_dir().join(format!("orpheus-graceful-shutdown-{unique}.txt"));
+    let script = r#"import ctypes, json, pathlib, sys
+assert ctypes.windll.kernel32.GetConsoleWindow() == 0, "backend opened a console"
+from apps.launchers.desktop_backend import _build_desktop_server
+from modules.web import server
+server._acknowledge_runtime_setup_on_startup = lambda _: None
+class Controller:
+    def cleanup(self):
+        pathlib.Path(sys.argv[1]).write_text('cleanup completed', encoding='ascii')
+        print(json.dumps({'event': 'shutdown'}), flush=True)
+app = server.create_app(controller_factory=Controller, desktop_mode=True, desktop_api_token='shutdown-test')
+backend = _build_desktop_server(app, host='127.0.0.1', port=0, token='shutdown-test', runtime_profile='base')
+backend.run()
+"#;
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let running = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                marker.to_string_lossy().into_owned(),
+            ],
+            cwd: Some(super::project_root_dir()),
+            env: Vec::new(),
+        },
+    )
+    .expect("hidden backend should start");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while manager.lock().unwrap().endpoint().is_none() {
+        assert!(Instant::now() < deadline, "backend did not become ready");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    let acknowledgement = Arc::clone(&running.shutdown_ack);
+    // Even if a new generation replaces the manager, stop must target this child.
+    manager.lock().unwrap().mark_starting();
+    running.stop(&manager);
+    assert!(
+        acknowledgement.load(Ordering::SeqCst),
+        "cleanup was not acknowledged"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "cleanup completed"
+    );
+    let _ = std::fs::remove_file(marker);
+}
 
 #[test]
 fn parse_ready_line_accepts_valid_json_payload() {
