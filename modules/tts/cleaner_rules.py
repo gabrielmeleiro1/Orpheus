@@ -276,6 +276,8 @@ def rule_based_clean(text: str) -> str:
     text = re.sub(r"`", "", text)
     text = re.sub(r"\|+", " ", text)
     text = re.sub(r"(?m)\s*---+\s*", " ", text)
+    # Keep numbered (and Roman numeral) references such as § 12 or ¶ IV.
+    text = re.sub(r"(?<!\w)[¶§]+(?![\w¶§]|\s*(?:\d|[IVXLCDM]+\b))", " ", text)
     text = re.sub(r"\s+", " ", text)
     text = re.sub(r"\n\s*\n", "\n\n", text)
     text = re.sub(r"\s+([,.!?;:])", r"\1", text)

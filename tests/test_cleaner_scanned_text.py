@@ -14,6 +14,7 @@ from modules.tts.cleaner_rules import (
     rule_based_clean,
     strip_page_furniture,
 )
+from tests.fixtures.scanned_chapter import SCANNED_CHAPTER
 
 
 SCAN = """# Chapter One
@@ -178,6 +179,60 @@ def test_scan_fake_llm_trace_accepts_cleaned_text(monkeypatch):
     assert trace.cleaned_text == CLEANED
     assert trace.rule_based_text == rule_based_clean(SCAN)
     assert llm_preservation_violation(SCAN, CLEANED) is None
+
+
+@pytest.mark.parametrize("backend", ["cuda", "mlx", "api"])
+@pytest.mark.parametrize("source", [SCANNED_CHAPTER, "The w ind blew.", "He was count ing steps."])
+def test_split_words_reach_llm_with_default_gate(monkeypatch, backend, source):
+    cleaner = TextCleaner(CleanerConfig(backend=backend))
+    cleaner._loaded = True
+    expected = rule_based_clean(source).replace("count ing", "counting").replace("w ind", "wind")
+    prompts = []
+
+    def generate(prompt):
+        prompts.append(prompt)
+        return expected
+
+    monkeypatch.setattr(cleaner, "_generate_llm_response", generate)
+    trace = cleaner.clean_with_trace(source)
+
+    assert len(prompts) == 1
+    assert "¶" not in prompts[0]
+    assert trace.mode == "llm_success"
+    assert trace.llm_error is None
+    assert trace.cleaned_text == expected
+    assert "split_words" in trace.artifact_score["reason_codes"]
+    assert trace.artifact_score["total"] > cleaner.config.artifact_gate_light_threshold
+
+
+@pytest.mark.parametrize("skip_llm", [False, True])
+def test_basic_split_word_cleanup_never_loads_or_calls_llm(monkeypatch, skip_llm):
+    cleaner = TextCleaner(CleanerConfig(backend="basic", skip_llm_when_not_needed=skip_llm))
+
+    def unexpected_call(*_args):
+        pytest.fail("Basic cleanup must never load or call an LLM")
+
+    monkeypatch.setattr(cleaner, "load", unexpected_call)
+    monkeypatch.setattr(cleaner, "_generate_llm_response", unexpected_call)
+    trace = cleaner.clean_with_trace(SCANNED_CHAPTER)
+
+    assert trace.mode == "rule_only"
+    assert trace.cleaned_text == rule_based_clean(SCANNED_CHAPTER)
+    assert "¶" not in trace.cleaned_text
+    assert "count ing" in trace.cleaned_text
+    assert "w ind" in trace.cleaned_text
+
+
+@pytest.mark.parametrize("source, expected", [
+    ("He waited. ¶ Out beyond the rocks.", "He waited. Out beyond the rocks."),
+    ("He waited. § Then he left.", "He waited. Then he left."),
+    ("¶ The lamp was cold. §", "The lamp was cold."),
+    ("The lamp ¶ § was cold.", "The lamp was cold."),
+    ("¶\n§\nThe lamp was cold.", "The lamp was cold."),
+    ("See § 12 and §12, §§ 13–14, § IV, and ¶ 9.", "See § 12 and §12, §§ 13–14, § IV, and ¶ 9."),
+])
+def test_rules_remove_stray_marks_and_preserve_references(source, expected):
+    assert rule_based_clean(source) == expected
 
 
 @pytest.mark.parametrize("source, expected", [
