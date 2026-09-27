@@ -35,7 +35,8 @@ def test_spoken_label_preserves_source_number_without_duplicate_prefix(title, mo
     "The ship arrived.",
 ])
 def test_only_matching_opening_heading_is_removed(content):
-    assert chapter_body(Chapter(1, "Chapter 1: Arrival", content)) == "The ship arrived."
+    heading = content.removesuffix("The ship arrived.").rstrip()
+    assert chapter_body(Chapter(1, "Chapter 1: Arrival", content, heading_text=heading)) == "The ship arrived."
 
 
 def test_title_words_in_prose_are_not_removed():

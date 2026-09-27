@@ -8,12 +8,14 @@ Optimized for clean text extraction suitable for TTS.
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
+import re
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 
 from .models import Chapter as IngestionChapter
 from .models import Document as IngestionDocument
+from .text_layout import opening_heading_text
 from .epub_sections import (
     EPUBSection,
     build_epub_sections,
@@ -155,11 +157,20 @@ class EPUBParser:
             if enforce_max_words and word_count > max_words:
                 raise ChapterTooLongError(chapter_num, word_count, max_words)
 
+            heading_text = ""
+            soup = parse_epub_markup(section.html_content)
+            heading = soup.find(["h1", "h2", "h3"])
+            if (
+                heading and opening_heading_text(soup_to_epub_text(heading), section.title)
+                or re.match(r"(?i)^part\s+[ivxlcdm\d]+\b", section.title)
+            ):
+                heading_text = opening_heading_text(section.content, section.title)
             chapters.append(Chapter(
                 number=chapter_num,
                 title=section.title or f"Chapter {chapter_num}",
                 content=section.content,
-                html_content=section.html_content
+                html_content=section.html_content,
+                heading_text=heading_text,
             ))
         
         # Check if we got any chapters

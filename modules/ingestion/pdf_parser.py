@@ -15,6 +15,7 @@ from .models import Chapter as IngestionChapter
 from .models import Document as IngestionDocument
 from .pdf_artifact_normalizer import normalize_pdf_artifacts
 from .pdf_preflight import analyze_extracted_pdf_text_layer
+from .text_layout import opening_heading_text
 
 from modules.errors import (
     validate_pdf,
@@ -231,6 +232,7 @@ class PDFParser:
             # Join text for pages in this chapter
             chapter_pages = pages_data[start_idx:end_idx]
             chapter.content = "\n\n".join(p["text"] for p in chapter_pages)
+            chapter.heading_text = opening_heading_text(chapter.content, chapter.title)
             
             # Check for empty chapter
             content_stripped = chapter.content.strip()

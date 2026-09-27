@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 import codecs
@@ -143,6 +144,7 @@ def extract_title_from_soup(soup: BeautifulSoup) -> Optional[str]:
 
 def soup_to_epub_text(soup: BeautifulSoup) -> str:
     """Convert parsed EPUB markup to clean block-separated text."""
+    soup = deepcopy(soup)
     for element in soup(["script", "style", "nav", "header", "footer"]):
         element.decompose()
 

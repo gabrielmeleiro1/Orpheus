@@ -9,7 +9,7 @@ from typing import Optional, Protocol
 import re
 
 from .text_layout import repair_line_break_hyphenation as repair_wrapped_words
-from .text_layout import strip_page_furniture
+from .text_layout import corroborated_folio_titles, hyphenation_word_forms, numbered_folio_title, strip_page_furniture
 
 
 PageData = dict[str, object]
@@ -24,7 +24,7 @@ _PAGE_BOUNDARY_WINDOW = 4
 _PAGE_NUMBER_RE = re.compile(r"^\s*\d{1,4}\s*$")
 _PAGE_NUMBER_RESIDUE_RE = re.compile(r"^\s*\d{1,4}[Il]\s*$")
 _LINE_BREAK_HYPHEN_RE = re.compile(
-    r"(?<!-)\b(?P<prefix>[A-Za-z]{2,})-\s*\n\s*(?P<suffix>[a-z]+)\b"
+    r"(?<!-)\b(?P<prefix>[A-Za-z]{2,})-\s*\n\s*(?P<suffix>[A-Za-z]+)\b"
 )
 # The left-hand compound is matched atomically (lookahead capture + backref)
 # and its hyphenated segments are bounded, so a hyphen-dense page cannot drive
@@ -205,8 +205,12 @@ def _strip_reference_sections(text: str) -> str:
     return "\n".join(kept).rstrip()
 
 
-def repair_line_break_hyphenation(text: str, *, known_corpus_repairs: bool = False) -> str:
+def repair_line_break_hyphenation(
+    text: str, *, known_corpus_repairs: bool = False, word_forms: set[str] | None = None,
+) -> str:
     """Join likely soft hyphenation introduced by PDF line wrapping."""
+    if word_forms is None:
+        word_forms = hyphenation_word_forms(text)
 
     known_repairs = _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS
     if known_corpus_repairs:
@@ -225,12 +229,12 @@ def repair_line_break_hyphenation(text: str, *, known_corpus_repairs: bool = Fal
     def _join(match: re.Match[str]) -> str:
         prefix = match.group("prefix")
         suffix = match.group("suffix")
-        if (
+        if (prefix + suffix).casefold() not in word_forms and (
             prefix.casefold() in _HYPHENATION_PREFIX_EXCEPTIONS
             or suffix.casefold() in _HYPHENATION_SUFFIX_EXCEPTIONS
         ):
             return f"{prefix}-\n {suffix}"
-        return repair_wrapped_words(match.group(0))
+        return repair_wrapped_words(match.group(0), word_forms=word_forms)
 
     text = _KNOWN_HYPHENATED_LINE_BREAK_RE.sub(_repair_known_compound, text)
     return _LINE_BREAK_HYPHEN_RE.sub(_join, text)
@@ -270,7 +274,7 @@ def _page_boundary_line_indexes(lines: list[str]) -> set[int]:
     return set(non_empty[:_PAGE_BOUNDARY_WINDOW]) | set(non_empty[-_PAGE_BOUNDARY_WINDOW:])
 
 
-def _normalize_repeated_boundary_line(line: str) -> Optional[str]:
+def _normalize_repeated_boundary_line(line: str, folio_titles: set[str]) -> Optional[str]:
     stripped = re.sub(r"\s+", " ", line).strip()
     if not stripped or _PAGE_NUMBER_RE.match(stripped):
         return None
@@ -282,8 +286,9 @@ def _normalize_repeated_boundary_line(line: str) -> Optional[str]:
         re.IGNORECASE,
     ):
         return None
-    # Running folios vary by page and can switch sides on facing pages.
-    stripped = re.sub(r"^\d+\s+|\s+\d+$", "", stripped).strip()
+    title = numbered_folio_title(stripped)
+    if title.casefold() in folio_titles:
+        stripped = title
     return stripped.casefold() or None
 
 
@@ -484,9 +489,13 @@ class RepeatedPageBoundaryPolicy:
             lines = str(page.get("text", "")).splitlines()
             boundary_indexes = _page_boundary_line_indexes(lines)
             page_line_indexes.append((page, lines, boundary_indexes))
+        folio_titles = corroborated_folio_titles([
+            lines[index] for _, lines, indexes in page_line_indexes for index in sorted(indexes)
+        ])
+        for _, lines, boundary_indexes in page_line_indexes:
             seen_on_page: set[str] = set()
             for idx in boundary_indexes:
-                normalized = _normalize_repeated_boundary_line(lines[idx])
+                normalized = _normalize_repeated_boundary_line(lines[idx], folio_titles)
                 if normalized:
                     seen_on_page.add(normalized)
             boundary_counts.update(seen_on_page)
@@ -514,7 +523,7 @@ class RepeatedPageBoundaryPolicy:
             kept_lines: list[str] = []
             for idx, line in enumerate(lines):
                 if idx in boundary_indexes:
-                    normalized = _normalize_repeated_boundary_line(line)
+                    normalized = _normalize_repeated_boundary_line(line, folio_titles)
                     if normalized in repeated_lines or _is_page_boundary_noise_line(
                         line,
                         strip_page_numbers=strip_page_numbers,
@@ -535,6 +544,9 @@ class PDFLineArtifactPolicy:
 
     def normalize_pages(self, pages_data: list[PageData]) -> list[PageData]:
         cleaned_pages: list[PageData] = []
+        word_forms = hyphenation_word_forms("\n".join(
+            str(page.get("text", "")) for page in pages_data if isinstance(page, dict)
+        ))
         for page in pages_data:
             if not isinstance(page, dict):
                 cleaned_pages.append(page)
@@ -547,6 +559,7 @@ class PDFLineArtifactPolicy:
             page_text = repair_line_break_hyphenation(
                 page_text,
                 known_corpus_repairs=self.known_corpus_repairs,
+                word_forms=word_forms,
             )
             page_text = _strip_page_number_residue_lines(page_text)
             cleaned_pages.append(_copy_page_with_text(page, page_text.strip()))

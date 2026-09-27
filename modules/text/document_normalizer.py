@@ -454,7 +454,8 @@ def _split_overlong_chapter(chapter: Chapter, *, max_chapter_words: int) -> list
         len(parts),
     )
     return [
-        replace(chapter, title=f"{chapter.title} (part {index})", content=part)
+        replace(chapter, title=f"{chapter.title} (part {index})", content=part,
+                heading_text=chapter.heading_text if index == 1 else "")
         for index, part in enumerate(parts, start=1)
     ]
 
@@ -615,6 +616,11 @@ def _normalize_chapters(
                 )
             )
             continue
+        heading = getattr(chapter, "heading_text", "")
+        if heading and content.startswith(heading):
+            content = content[len(heading):].lstrip()
+        else:
+            heading = ""
         if source_type == "pdf":
             content = _normalize_pdf_chapter(content, repeated_headers)
         elif source_type == "epub":
@@ -623,8 +629,10 @@ def _normalize_chapters(
             content = _normalize_text_like_chapter(content, markdown=True)
         else:
             content = _normalize_text_like_chapter(content)
+        if heading:
+            content = heading + ("\n\n" + content if content else "")
         if content.strip():
-            normalized_chapter = replace(chapter, content=content)
+            normalized_chapter = replace(chapter, content=content, heading_text=heading)
             normalized_chapters.extend(
                 _split_overlong_chapter(
                     normalized_chapter,

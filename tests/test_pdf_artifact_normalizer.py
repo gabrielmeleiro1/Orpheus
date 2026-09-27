@@ -29,7 +29,7 @@ def test_single_pdf_page_repairs_layout_before_paragraph_reflow():
     from modules.ingestion.pdf_artifact_normalizer import normalize_pdf_artifacts
 
     pages = [{"text": "THE LIGHTHOUSE KEEPER 12\nThe keep-\ner wa-\nited."}]
-    assert normalize_pdf_artifacts(pages)[0]["text"] == "The keeper waited."
+    assert normalize_pdf_artifacts(pages)[0]["text"] == "THE LIGHTHOUSE KEEPER 12\nThe keeper waited."
 
 
 def test_pdf_artifact_normalization_fixture_samples() -> None:

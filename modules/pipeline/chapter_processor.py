@@ -573,6 +573,15 @@ class ChapterProcessor:
             )
 
             if len(chunks) == 0:
+                from .chapter_narration import add_chapter_narration, chapter_body
+
+                if getattr(chapter, "heading_text", "") and not chapter_body(chapter).strip():
+                    narrated = add_chapter_narration(
+                        self.runtime, chapter, np.empty(0, dtype=np.float32), result,
+                    )
+                    if narrated is None:
+                        result.error = "Cancelled"
+                    return result, narrated, narrated is None
                 result.error = "No text content"
                 self.runtime.log_verbose(f"[CHAPTER {chapter.number}] Empty chapter!", "error")
                 return result, None, False

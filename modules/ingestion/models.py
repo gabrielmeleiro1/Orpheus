@@ -13,6 +13,7 @@ class Chapter:
     number: int
     title: str
     content: str
+    heading_text: str = field(default="", kw_only=True)
 
 
 @dataclass

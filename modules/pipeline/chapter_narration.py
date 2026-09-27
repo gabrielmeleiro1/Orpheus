@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -52,17 +51,11 @@ def chapter_announcement(chapter: Any, conversion_mode: str = "audiobook") -> st
 
 
 def chapter_body(chapter: Any) -> str:
-    """Remove only a matching opening heading, never title words inside prose."""
-    def key(value: str) -> str:
-        return re.sub(r"\W+", " ", unicodedata.normalize("NFKC", _plain_title(value))).strip().casefold()
-
-    content = str(chapter.content or "").lstrip()
-    title = key(_plain_title(chapter.title))
-    lines = content.splitlines(keepends=True)
-    # EPUBs may split the label and title across two heading lines.
-    for count in (1, 2, 3):
-        if title and len(lines) >= count and key(" ".join(lines[:count])) == title:
-            return "".join(lines[count:]).lstrip()
+    """Remove the parser-identified heading span, preserving opening prose."""
+    content = str(chapter.content or "")
+    heading = getattr(chapter, "heading_text", "")
+    if isinstance(heading, str) and heading and content.startswith(heading):
+        return content[len(heading):].lstrip()
     return content
 
 
