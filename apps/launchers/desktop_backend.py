@@ -110,6 +110,33 @@ def _ensure_short_espeak_data_path(packaged_data: Path) -> Path:
     return packaged_data
 
 
+def _espeak_data_manifest(root: Path) -> dict[Path, tuple[int, str]]:
+    manifest = {}
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        if path.is_symlink() or path.is_junction():
+            raise OSError("Speech data must not contain links")
+        if path.is_dir():
+            pending.extend(path.iterdir())
+        elif path.is_file():
+            with path.open("rb") as handle:
+                manifest[path.relative_to(root)] = (
+                    os.fstat(handle.fileno()).st_size,
+                    hashlib.file_digest(handle, "sha256").hexdigest(),
+                )
+        else:
+            raise OSError(f"Invalid speech data entry: {path}")
+    return manifest
+
+
+def _espeak_data_matches(root: Path, expected: dict[Path, tuple[int, str]]) -> bool:
+    try:
+        return _espeak_data_manifest(root) == expected
+    except OSError:
+        return False
+
+
 def _windows_espeak_data_path(packaged_data: Path) -> Path:
     # The bundled C library uses narrow Windows filesystem calls. UTF-8 paths
     # can terminate the process inside espeak_Initialize, before Python can
@@ -128,21 +155,55 @@ def _windows_espeak_data_path(packaged_data: Path) -> Path:
             f"{path.relative_to(packaged_data)}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
         )
     version = fingerprint.hexdigest()[:16]
-    for base in (_frozen_espeak_runtime_base(), Path(tempfile.gettempdir()) / "orpheus-espeak"):
-        target = base / version / "espeak-ng-data"
+    # A single key preserves user isolation and versioning without spending the
+    # native path budget on two separate hash directories.
+    cache_key = hashlib.sha256(f"{Path.home()}:{version}".encode("utf-8")).hexdigest()[:16]
+    program_data = Path(os.environ.get("PROGRAMDATA", "C:/ProgramData"))
+    packaged_manifest = None
+    for base in (
+        _frozen_espeak_runtime_base() / version,
+        Path(tempfile.gettempdir()) / "orpheus-espeak" / version,
+        program_data / f"orpheus-espeak-{cache_key}",
+    ):
+        target = base / "espeak-ng-data"
         if not str(target).isascii() or _path_filesystem_byte_length(target) >= _LIBESPEAK_PATH_HOME_LIMIT:
             continue
         try:
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
+            shared_cache = base.is_relative_to(program_data) or base.resolve().is_relative_to(program_data.resolve())
+            if shared_cache and (base.is_symlink() or base.is_junction()):
+                continue
+            # Windows Python 3.12.4+ restricts new 0700 directories to the user
+            # and administrators. Existing directories (or older Python builds)
+            # still require content verification; their inherited ACL is unchanged.
+            base.mkdir(mode=0o700 if shared_cache else 0o777, parents=True, exist_ok=True)
+            if shared_cache and packaged_manifest is None:
+                packaged_manifest = _espeak_data_manifest(packaged_data)
+            # Verify write access even when reusing a previously populated cache.
+            with tempfile.TemporaryFile(dir=target.parent) as probe:
+                probe.write(b"orpheus")
+            needs_copy = not target.exists() or (
+                shared_cache and not _espeak_data_matches(target, packaged_manifest)
+            )
+            if needs_copy:
                 with tempfile.TemporaryDirectory(prefix=".copy-", dir=target.parent) as staging:
                     copied = Path(staging) / "espeak-ng-data"
                     shutil.copytree(packaged_data, copied)
+                    if shared_cache:
+                        if not _espeak_data_matches(copied, packaged_manifest):
+                            raise OSError("Copied speech data does not match the package")
+                        # Publish only a complete, verified directory. Move an
+                        # untrusted target aside rather than modifying it in place.
+                        try:
+                            target.rename(Path(staging) / "discarded")
+                        except FileNotFoundError:
+                            pass
                     try:
                         copied.rename(target)
                     except FileExistsError:
                         # Another backend may have completed the same cache.
                         pass
+            if shared_cache and not _espeak_data_matches(target, packaged_manifest):
+                continue
             if (target / "phontab").is_file() and all(
                 (target / path.relative_to(packaged_data)).is_file()
                 and (target / path.relative_to(packaged_data)).stat().st_size == path.stat().st_size
@@ -157,8 +218,8 @@ def _windows_espeak_data_path(packaged_data: Path) -> Path:
         except OSError:
             continue
     raise RuntimeError(
-        "Speech data needs a short ASCII cache path. "
-        "Choose an ASCII Windows TEMP directory and restart Orpheus."
+        "Speech data needs a writable short ASCII cache path in ProgramData or TEMP. "
+        "Library features remain available; repair cache access and restart to enable speech."
     )
 
 
@@ -409,7 +470,20 @@ def configure_frozen_espeak_runtime() -> None:
     if not library_path.is_file() or not packaged_data.is_dir():
         return
 
-    data_path = _ensure_short_espeak_data_path(packaged_data)
+    try:
+        data_path = _ensure_short_espeak_data_path(packaged_data)
+    except (OSError, RuntimeError) as exc:
+        message = f"Speech initialization is unavailable: {exc}"
+        print(message, file=sys.stderr)
+
+        def unavailable(*_args: object, **_kwargs: object) -> str:
+            raise RuntimeError(message)
+
+        # Fail in Python before any native initialization can use the unsafe path.
+        espeakng_loader.get_library_path = unavailable
+        espeakng_loader.get_data_path = unavailable
+        EspeakWrapper.library = classmethod(unavailable)
+        return
     library = str(library_path)
     data = str(data_path)
 

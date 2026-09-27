@@ -574,9 +574,199 @@ def test_windows_espeak_cache_fails_before_native_library_when_no_safe_path(tmp_
     (source / "phontab").write_bytes(b"phonemes")
     monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
     monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "é"))
     with pytest.raises(RuntimeError, match="ASCII cache path"):
         desktop_backend._windows_espeak_data_path(source)
     assert (source / "phontab").read_bytes() == b"phonemes"
+
+
+def test_windows_espeak_cache_works_with_unicode_profile_and_temp(tmp_path, monkeypatch):
+    from apps.launchers import desktop_backend
+
+    profile = tmp_path / "Jörg"
+    source = profile / "Orpheus" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    monkeypatch.setattr(Path, "home", lambda: profile)
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(profile / "Temp"))
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+
+    cached = desktop_backend._windows_espeak_data_path(source)
+    assert cached.is_relative_to(tmp_path / "ProgramData")
+    assert str(cached.resolve()).isascii()
+    assert (cached / "phontab").read_bytes() == b"phonemes"
+
+
+def test_windows_espeak_programdata_cache_keeps_short_paths_isolated_and_versioned(tmp_path, monkeypatch):
+    from apps.launchers import desktop_backend
+
+    source = tmp_path / "shared é" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    program_data = tmp_path / "ProgramData"
+    monkeypatch.setenv("PROGRAMDATA", str(program_data))
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
+    # Leave room for one cache key and espeak-ng-data, but not two hash levels.
+    path_limit = len(os.fsencode(program_data)) + 50
+    monkeypatch.setattr(desktop_backend, "_LIBESPEAK_PATH_HOME_LIMIT", path_limit)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "Jörg")
+
+    first = desktop_backend._windows_espeak_data_path(source)
+    assert len(os.fsencode(first)) < path_limit
+    assert first.is_relative_to(program_data)
+    assert desktop_backend._windows_espeak_data_path(source) == first
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "René")
+    second = desktop_backend._windows_espeak_data_path(source)
+    assert second != first
+    (source / "phontab").write_bytes(b"updated phonemes")
+    updated = desktop_backend._windows_espeak_data_path(source)
+    assert updated != second
+    assert (first / "phontab").read_bytes() == b"phonemes"
+    assert (second / "phontab").read_bytes() == b"phonemes"
+    assert (updated / "phontab").read_bytes() == b"updated phonemes"
+
+
+@pytest.mark.parametrize("alteration", ["same_size", "missing", "extra", "renamed"])
+def test_windows_espeak_programdata_cache_replaces_untrusted_contents(tmp_path, monkeypatch, alteration):
+    from apps.launchers import desktop_backend
+
+    source = tmp_path / "é" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    (source / "lang").mkdir()
+    (source / "lang" / "en").write_bytes(b"english")
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    target = desktop_backend._windows_espeak_data_path(source)
+    if alteration == "same_size":
+        before = (target / "phontab").stat()
+        (target / "phontab").write_bytes(b"tampered")
+        os.utime(target / "phontab", ns=(before.st_atime_ns, before.st_mtime_ns))
+    elif alteration == "missing":
+        (target / "lang" / "en").unlink()
+    elif alteration == "extra":
+        (target / "injected").write_bytes(b"extra data")
+    else:
+        (target / "lang" / "en").rename(target / "lang" / "xx")
+
+    real_manifest = desktop_backend._espeak_data_manifest
+    source_reads = []
+
+    def counted_manifest(root):
+        if root == source:
+            source_reads.append(root)
+        return real_manifest(root)
+
+    real_copytree = shutil.copytree
+    copies = []
+
+    def staged_copy(src, dst, *args, **kwargs):
+        if Path(src) == source:
+            assert Path(dst) != target
+            assert target.is_dir()
+            copies.append(dst)
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(desktop_backend, "_espeak_data_manifest", counted_manifest)
+    monkeypatch.setattr(desktop_backend.shutil, "copytree", staged_copy)
+    assert desktop_backend._windows_espeak_data_path(source) == target
+    assert source_reads == [source]
+    assert len(copies) == 1
+    assert real_manifest(target) == real_manifest(source)
+    assert list(target.parent.iterdir()) == [target]
+
+    copies.clear()
+    assert desktop_backend._windows_espeak_data_path(source) == target
+    assert not copies
+
+
+def test_windows_espeak_programdata_cache_does_not_publish_failed_copy(tmp_path, monkeypatch):
+    from apps.launchers import desktop_backend
+
+    source = tmp_path / "é" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    target = desktop_backend._windows_espeak_data_path(source)
+    (target / "phontab").write_bytes(b"tampered")
+
+    def fail_copy(src, dst):
+        Path(dst).mkdir()
+        (Path(dst) / "phontab").write_bytes(b"partial")
+        raise OSError("interrupted copy")
+
+    monkeypatch.setattr(desktop_backend.shutil, "copytree", fail_copy)
+    with pytest.raises(RuntimeError, match="ASCII cache path"):
+        desktop_backend._windows_espeak_data_path(source)
+    assert (target / "phontab").read_bytes() == b"tampered"
+    assert list(target.parent.iterdir()) == [target]
+
+
+def test_windows_espeak_programdata_cache_creates_private_directory(tmp_path, monkeypatch):
+    from apps.launchers import desktop_backend
+
+    source = tmp_path / "é" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    program_data = tmp_path / "ProgramData"
+    program_data.mkdir()
+    monkeypatch.setenv("PROGRAMDATA", str(program_data))
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
+    real_mkdir = Path.mkdir
+    modes = []
+
+    def record_mkdir(path, mode=0o777, parents=False, exist_ok=False):
+        if path.parent == program_data:
+            modes.append(mode)
+        return real_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    monkeypatch.setattr(Path, "mkdir", record_mkdir)
+    target = desktop_backend._windows_espeak_data_path(source)
+    assert target.is_relative_to(program_data)
+    assert modes == [0o700]
+
+
+def test_unavailable_speech_cache_does_not_prevent_library_backend_start(tmp_path, monkeypatch, capsys):
+    from apps.launchers import desktop_backend
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+
+    source = tmp_path / "Jörg" / "espeak-ng-data"
+    source.mkdir(parents=True)
+    (source / "phontab").write_bytes(b"phonemes")
+    library = source.parent / "libespeak-ng.dll"
+    library.write_bytes(b"library")
+    loader = SimpleNamespace(get_library_path=lambda: str(library), get_data_path=lambda: str(source))
+    monkeypatch.setitem(sys.modules, "espeakng_loader", loader)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setattr(desktop_backend, "_ensure_short_espeak_data_path", desktop_backend._windows_espeak_data_path)
+    monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: source)
+    monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(source))
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a writable directory")
+    monkeypatch.setenv("PROGRAMDATA", str(blocked))
+    monkeypatch.setattr(EspeakWrapper, "library", EspeakWrapper.__dict__["library"])
+    monkeypatch.setattr(desktop_backend.multiprocessing, "freeze_support", lambda: None)
+    monkeypatch.setattr(desktop_backend, "_runtime_profile_identity", lambda: "cuda")
+    started = []
+    monkeypatch.setattr(desktop_backend, "_build_desktop_server", lambda *_args, **_kwargs: SimpleNamespace(
+        ready_emitted=True, run=lambda: started.append(True),
+    ))
+
+    assert desktop_backend.main([]) == 0
+    assert started == [True]
+    assert "Speech initialization is unavailable" in capsys.readouterr().err
+    with pytest.raises(RuntimeError, match="ASCII cache path"):
+        loader.get_data_path()
+    with pytest.raises(RuntimeError, match="ASCII cache path"):
+        EspeakWrapper.library()
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows narrow-path native library regression")
