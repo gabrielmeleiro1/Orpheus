@@ -253,7 +253,6 @@ class TTSRuntimeOptions:
         )
         device = _payload_value(payload, "device")
         quantization = _payload_value(payload, "quantization")
-        validate_device(provider, device)
         resolved = cls(
             model_name=(
                 _payload_value(payload, "model_name")
@@ -279,10 +278,12 @@ class TTSRuntimeOptions:
         config: Any,
     ) -> "TTSRuntimeOptions":
         payload = getattr(runtime_options, "tts_options", None)
-        parsed = cls.from_payload(payload if isinstance(payload, Mapping) else None)
+        payload = payload if isinstance(payload, Mapping) else {}
+        parsed = cls.from_payload(payload)
         provider = canonical_provider(
             getattr(runtime_options, "tts_provider", None)
             or parsed.provider
+            or _payload_value(payload, "provider")
             or getattr(config, "tts_provider", None)
         )
         if parsed.provider is not None and provider is not None and parsed.provider != provider:
@@ -293,6 +294,7 @@ class TTSRuntimeOptions:
         device = (
             _text(getattr(runtime_options, "tts_device", None))
             or parsed.device
+            or _payload_value(payload, "device")
             or _text(getattr(config, "tts_device", None))
         )
         quantization = (

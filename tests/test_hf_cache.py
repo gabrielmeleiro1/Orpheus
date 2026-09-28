@@ -27,7 +27,7 @@ def cache_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("HF_HOME", str(tmp_path))
-    monkeypatch.setattr(hf_cache, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(hf_cache, "sys", SimpleNamespace(platform="win32", modules={}))
     monkeypatch.setattr(hf_cache, "_configured", False)
     return tmp_path / "hub"
 
@@ -136,7 +136,7 @@ def test_entry_configures_before_first_hub_import(tmp_path, module):
         from modules import hf_cache
 
         assert 'huggingface_hub' not in sys.modules
-        hf_cache.sys = SimpleNamespace(platform='win32')
+        hf_cache.sys = SimpleNamespace(platform='win32', modules=sys.modules)
         def denied(*args, **kwargs):
             assert 'huggingface_hub' not in sys.modules
             raise OSError(1314, 'privilege not held')

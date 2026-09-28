@@ -591,6 +591,33 @@ def download_model_snapshot(
         and _REVISION_RE.fullmatch(snapshot_path.name.lower())
         else None
     )
+    receipt_path = snapshot_path / DOWNLOAD_RECEIPT_FILENAME
+    if receipt_path.exists():
+        trusted = (
+            _parse_download_receipt(snapshot_path, model_id=model_id, revision=receipt_revision)
+            if receipt_revision is not None else None
+        )
+        if trusted is None:
+            # An unreadable receipt cannot certify any of the cached bytes.
+            snapshot_path = Path(snapshot_download(**kwargs, force_download=True))
+        elif not _validate_parsed_receipt(trusted):
+            from huggingface_hub import hf_hub_download
+
+            for entry in trusted.files:
+                target = _resolved_allowed_file_target(trusted.snapshot, trusted.snapshot / entry.path)
+                try:
+                    matches = target is not None and _file_size_and_sha256(target) == (entry.size, entry.sha256)
+                except OSError:
+                    matches = False
+                if not matches:
+                    hf_hub_download(
+                        **{**kwargs, "revision": receipt_revision},
+                        filename=entry.path, force_download=True,
+                    )
+            if not _validate_parsed_receipt(trusted):
+                raise RuntimeError(f"Repaired cache for {model_id} still fails its download receipt.")
+        if trusted is not None:
+            return snapshot_path
     write_download_receipt(
         snapshot_path,
         model_id=model_id,

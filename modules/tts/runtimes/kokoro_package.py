@@ -81,6 +81,9 @@ class PackageKokoroRuntime:
             logger.info("Package Kokoro runtime loaded from cache")
             return
 
+        from modules.hf_cache import configure_hf_cache
+
+        configure_hf_cache()
         try:
             from kokoro import KPipeline
         except ImportError as exc:

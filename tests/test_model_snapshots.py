@@ -1,7 +1,7 @@
 """Installed pinned snapshots must work without a cached main branch reference."""
 
 from modules.tts.model_snapshots import installed_model_path
-from scripts.download_models import MODEL_REVISIONS
+from scripts.download_models import MODEL_REVISIONS, write_download_receipt
 
 
 def test_resolves_curated_snapshot_at_installed_revision(monkeypatch, tmp_path):
@@ -14,7 +14,9 @@ def test_resolves_curated_snapshot_at_installed_revision(monkeypatch, tmp_path):
         return str(tmp_path)
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
+    (tmp_path / "config.json").write_text("{}")
     for model in ("hexgrad/Kokoro-82M", "Qwen/Qwen2.5-1.5B-Instruct"):
+        write_download_receipt(tmp_path, model_id=model, revision=MODEL_REVISIONS[model])
         assert installed_model_path(model) == str(tmp_path)
         assert calls[-1] == {
             "repo_id": model, "revision": MODEL_REVISIONS[model], "local_files_only": True,

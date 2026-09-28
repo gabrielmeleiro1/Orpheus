@@ -17,7 +17,12 @@ def test_frozen_package_probe_reports_device_and_cleaner_requirement(monkeypatch
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
-    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: gpu)))
+    tensor = MagicMock()
+    tensor.add_.return_value.item.return_value = 2
+    ones = MagicMock(return_value=tensor)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=SimpleNamespace(is_available=lambda: gpu), ones=ones,
+    ))
     monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KModel=object, KPipeline=object))
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "bitsandbytes", SimpleNamespace())
@@ -25,6 +30,12 @@ def test_frozen_package_probe_reports_device_and_cleaner_requirement(monkeypatch
     tts = service.probe_package_tts_runtime()
     assert tts["available"] is True
     assert tts["device"] == ("cuda" if gpu else "cpu")
+    if gpu:
+        ones.assert_called_once_with(1, device="cuda")
+        tensor.add_.assert_called_once_with(1)
+        tensor.add_.return_value.item.assert_called_once_with()
+    else:
+        ones.assert_not_called()
     cleaner = service.probe_cleaner_backend("cuda")
     assert cleaner["available"] is gpu
     if not gpu:

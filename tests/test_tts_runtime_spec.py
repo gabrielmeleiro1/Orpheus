@@ -15,9 +15,13 @@ def test_cuda_available_on_current_platform_contract_with_mocked_torch(
 ) -> None:
     """CUDA runtime probing must follow torch.cuda.is_available() when torch imports."""
     from types import SimpleNamespace
+    from unittest.mock import Mock
 
+    tensor = Mock()
+    tensor.add_.return_value.item.return_value = 2
     fake_torch = SimpleNamespace(
         cuda=SimpleNamespace(is_available=lambda: True),
+        ones=Mock(return_value=tensor),
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
@@ -25,7 +29,7 @@ def test_cuda_available_on_current_platform_contract_with_mocked_torch(
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is True
 
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: "driver too old")
-    assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
+    assert TTSRuntimeSpec.cuda_available_on_current_platform() is True
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
 
     fake_torch.cuda.is_available = lambda: False

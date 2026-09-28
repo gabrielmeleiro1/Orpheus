@@ -121,9 +121,10 @@ class TTSRuntimeSpec:
         except Exception:
             return False
         try:
-            from modules.runtime_profiles import cuda_hardware_error
-
-            return bool(torch.cuda.is_available()) and cuda_hardware_error() is None
+            if not torch.cuda.is_available():
+                return False
+            # Execute and synchronize a tiny kernel with the installed runtime.
+            return torch.ones(1, device="cuda").add_(1).item() == 2
         except Exception:
             return False
 

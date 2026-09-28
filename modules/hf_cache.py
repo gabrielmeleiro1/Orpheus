@@ -68,4 +68,10 @@ def configure_hf_cache() -> None:
                 # where a blob exists but its snapshot file is missing.
                 os.environ["HF_HUB_DISABLE_SYMLINKS"] = "1"
                 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+        # Direct runtime users may have imported Hub before this bootstrap.
+        constants = sys.modules.get("huggingface_hub.constants")
+        if constants is not None:
+            for name in ("HF_HUB_DISABLE_SYMLINKS", "HF_HUB_DISABLE_SYMLINKS_WARNING"):
+                if name in os.environ:
+                    setattr(constants, name, os.environ[name].upper() in {"1", "ON", "YES", "TRUE"})
         _configured = True

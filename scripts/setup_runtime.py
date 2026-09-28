@@ -86,6 +86,13 @@ CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 EventEmitter = Callable[[Mapping[str, Any]], None]
 
 
+class _SetupRuntimeCapabilityService(RuntimeCapabilityService):
+    def _run_probe(self, script: str, timeout_seconds: float) -> dict[str, Any]:
+        if not getattr(sys, "frozen", False):
+            script = f"import sys\nsys.path.insert(0, {str(REPO_ROOT)!r})\n" + script
+        return super()._run_probe(script, timeout_seconds)
+
+
 @dataclass(frozen=True)
 class InstallPlan:
     """Fully validated commands for one setup run."""
@@ -291,6 +298,7 @@ def build_install_plan(
         "install",
         "-r",
         str(_fixed_requirements_path(profile)),
+        "--upgrade",
     )
     if profile.id == "cuda":
         # A plain torch==X pin also accepts X+cpu, which pip keeps installed.
@@ -669,7 +677,7 @@ def get_setup_status(
             "state_error": state_error,
         }
 
-    service = probe_service or RuntimeCapabilityService(
+    service = probe_service or _SetupRuntimeCapabilityService(
         cache_ttl_seconds=0.0,
         timeout_seconds=15.0,
     )
@@ -937,7 +945,7 @@ def run_setup(
         )
         probe = _probe_profile(
             plan.model_groups,
-            probe_service or RuntimeCapabilityService(cache_ttl_seconds=0, timeout_seconds=30),
+            probe_service or _SetupRuntimeCapabilityService(cache_ttl_seconds=0, timeout_seconds=30),
         )
         if not probe["available"]:
             details = "; ".join(
