@@ -173,8 +173,8 @@ def test_catastrophic_output_falls_back_entirely(monkeypatch, candidate, reason)
 @pytest.mark.parametrize("repair_wind, mode", [(True, "llm_success"), (False, "hallucination_fallback")])
 def test_rejected_span_budget_counts_edits_not_unchanged_words(monkeypatch, repair_wind, mode):
     # Unmarked fragments remain LLM edits; spaced hyphens are now rule repairs.
-    source = "Mara repaired the stair case, count ing steps in the w ind at sunset."
-    candidate = "Nora repaired the staircase, counting steps in the w ind at sunset."
+    source = "Mara gathered inform ation, count ing steps in the w ind at sunset."
+    candidate = "Nora gathered information, counting steps in the w ind at sunset."
     if repair_wind:
         candidate = candidate.replace("w ind", "wind")
     trace = _cleaner(monkeypatch, candidate).clean_with_trace(source)
@@ -222,3 +222,25 @@ def test_async_and_sync_partial_traces_match(monkeypatch):
     asynchronous = asyncio.run(cleaner._clean_with_trace_api_async(SCAN, asyncio.Semaphore(1)))
     assert asdict(sync) == asdict(asynchronous)
     assert sync.mode == "llm_success"
+
+
+@pytest.mark.parametrize("source, candidate", [
+    ("ONE ## rom", "ONE From"),
+    ("TWO ## alking", "TWO Walking"),
+    ("TITLE ## he time came to build a # T finely tuned mind.", "TITLE the time came to build a finely tuned mind."),
+])
+def test_marked_fragments_and_corresponding_displaced_drop_caps_are_allowed(source, candidate):
+    edits = reconcile_llm_edits(source, candidate)
+    assert edits.text == candidate
+    assert edits.rejected_edits == []
+
+
+@pytest.mark.parametrize("source, candidate", [
+    ("We ate # less today.", "We ate bless today."),
+    ("Use vitamin # D daily.", "Use vitamin daily."),
+    ("A # T shaped junction.", "A shaped junction."),
+    ("TITLE ## he time came to build a # T finely tuned mind.", "TITLE he time came to build a finely tuned mind."),
+    ("TITLE ## he time came. Take vitamin D daily.", "TITLE the time came. Take vitamin daily."),
+])
+def test_markup_does_not_authorize_unrelated_letter_edits(source, candidate):
+    assert reconcile_llm_edits(source, candidate).rejected_edits

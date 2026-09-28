@@ -31,7 +31,7 @@ def test_artifact_scorer_escalates_pdf_and_ocr_artifacts():
 
 @pytest.mark.parametrize("text", [
     "The w ind pressed against the glass.",
-    "T he keeper waited.",
+    "P erhaps the keeper waited.",
     "The b roken lamp was cold.",
     "He was count ing the steps.",
     "The conversa tion ended.",
@@ -39,6 +39,11 @@ def test_artifact_scorer_escalates_pdf_and_ocr_artifacts():
     "His amaze ment showed.",
     "Her kind ness helped.",
     "He spoke quiet ly.",
+    "They collected inform ation.",
+    "She moved q uickly.",
+    "The z ebra approached.",
+    "It was a joy ful reunion.",
+    "Several arrange ments followed.",
 ])
 def test_one_clear_split_crosses_light_gate(text):
     score = score_text_artifacts(text)
@@ -77,6 +82,11 @@ def test_flattened_scanned_chapter_escalates_for_split_words(apply_rules):
     "```text\ncount ing\nw ind\n```",
     "foo_ing count_ing foo.ly path/ing STEM ing",
     "The keeper climbed the staircase, counting steps as the wind blew.",
+    "T he keeper waited.",
+    "A cat slept while I am working.",
+    "Let x equals y describe the equation; z represents a value.",
+    "The beam is 5 m tall and the pulse lasted 2 s exactly.",
+    "P. erhaps and Q. uickly are initials on a form.",
 ])
 def test_split_word_signal_preserves_clean_prose_and_literals(text):
     score = score_text_artifacts(text)

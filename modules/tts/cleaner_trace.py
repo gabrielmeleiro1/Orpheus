@@ -10,7 +10,7 @@ from typing import Any
 
 from . import cleaner_rules as cleaner_rules_backend
 from .cleaner_config import build_cleaner_prompt
-from .cleaner_edits import abbreviation_expansion_allowance, reconcile_llm_edits
+from .cleaner_edits import abbreviation_expansion_allowance, reconcile_llm_edits, repair_source_backed_fragments
 
 
 @dataclass(frozen=True)
@@ -194,6 +194,7 @@ def _complete_trace_decision_flow(
     cleaned = cleaner._extract_result(response)  # noqa: SLF001
     final_text = cleaned
     final_text = cleaner._repair_known_leading_letter_fragments(final_text)  # noqa: SLF001
+    final_text = repair_source_backed_fragments(request.rule_based_text, final_text)
 
     source_length = len(request.rule_based_text)
     expansion_allowance = abbreviation_expansion_allowance(request.rule_based_text)
@@ -220,7 +221,7 @@ def _complete_trace_decision_flow(
             original_text=request.original_text,
             rule_based_text=request.rule_based_text,
             start_time=request.start_time,
-            llm_output=cleaned,
+            llm_output=final_text,
             llm_error=guard_message,
             hallucination=True,
             artifact_score=artifact_score,
@@ -248,7 +249,7 @@ def _complete_trace_decision_flow(
             original_text=request.original_text,
             rule_based_text=request.rule_based_text,
             start_time=request.start_time,
-            llm_output=cleaned,
+            llm_output=final_text,
             llm_error=preservation_error,
             hallucination=True,
             artifact_score=artifact_score,
@@ -268,7 +269,7 @@ def _complete_trace_decision_flow(
         original_text=request.original_text,
         rule_based_text=request.rule_based_text,
         cleaned_text=edits.text,
-        llm_output=cleaned,
+        llm_output=final_text,
         start_time=request.start_time,
         artifact_score=artifact_score,
         llm_rejected_edits=edits.rejected_edits,

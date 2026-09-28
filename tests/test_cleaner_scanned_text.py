@@ -8,9 +8,9 @@ from modules.pipeline.stages.ingestion import ingest_source
 from modules.tts.chunker import TextChunker
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
+from modules.ingestion.text_layout import page_furniture_lines
 from modules.tts.cleaner_rules import (
     llm_preservation_violation,
-    page_furniture_lines,
     rule_based_clean,
     strip_page_furniture,
 )
@@ -250,11 +250,12 @@ def test_rules_remove_stray_marks_and_preserve_references(source, expected):
     ("She paused—\nthen spoke–\nsoftly.", "She paused— then spoke– softly."),
     ("He said-\nNo.", "He said- No."),
     ("# THE LIGHTHOUSE KEEPER 12\n# THE LIGHTHOUSE KEEPER 13", "THE LIGHTHOUSE KEEPER 12 THE LIGHTHOUSE KEEPER 13"),
-    ("12\nThe lamp was cold.\n13", "The lamp was cold."),
-    ("THE LIGHTHOUSE KEEPER 12\nThe lamp was cold.", "The lamp was cold."),
-    ("13 THE LIGHTHOUSE KEEPER\nThe lamp was cold.", "The lamp was cold."),
+    ("12\nThe lamp was cold.\n13", "12 The lamp was cold. 13"),
+    ("THE LIGHTHOUSE KEEPER 12\nThe lamp was cold.", "THE LIGHTHOUSE KEEPER 12 The lamp was cold."),
+    ("13 THE LIGHTHOUSE KEEPER\nThe lamp was cold.", "13 THE LIGHTHOUSE KEEPER The lamp was cold."),
     ("The Lighthouse Keeper 12\nThe lamp was cold.\n13 The Lighthouse Keeper", "The lamp was cold."),
-    ("The Lighthouse Keeper\nThe lamp was cold.\nThe Lighthouse Keeper", "The lamp was cold."),
+    ("The Lighthouse Keeper\nThe lamp was cold.\nThe Lighthouse Keeper", "The Lighthouse Keeper The lamp was cold. The Lighthouse Keeper"),
+    ("12\nThe lamp was cold.\f13\nThe wick caught.", "The lamp was cold. The wick caught."),
 ])
 def test_layout_rules(source, expected):
     assert rule_based_clean(source) == expected
@@ -282,8 +283,8 @@ def test_furniture_detector_preserves_prose_dialogue_lists_and_headings(source):
 
 @pytest.mark.parametrize("source, cleaned", [
     ("The keep er climbed the stair- case in the w ind.", "The keeper climbed the staircase in the wind."),
-    ("12\nThe keep er waited.\n13", "The keeper waited."),
-    ("12\nThe keep er waited.\n13", "12 The keeper waited."),
+    ("12\nThe keep er waited.\f13\nThe lamp was cold.", "The keeper waited. The lamp was cold."),
+    ("12\nThe keep er waited.\f13\nThe lamp was cold.", "12 The keeper waited. The lamp was cold."),
     ("THE KEEPER 12\nThe keep er waited.\n13 THE KEEPER", "The keeper waited."),
     ("THE KEEPER 12\nThe keep er waited.\n13 THE KEEPER", "THE KEEPER 12 The keeper waited."),
 ])

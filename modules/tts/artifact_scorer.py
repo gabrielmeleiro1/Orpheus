@@ -6,22 +6,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 import re
 
+from .cleaner_evidence import has_fragment_evidence
 
-# A bare letter can be a variable, unit, or name. Require a known joined word
-# for this signal rather than treating every letter followed by prose as OCR.
-# Avoid joins with ordinary words, e.g. 'h and', 'w as', or 'w here'. The
-# reviewed 't he' split is an exception because 'he' is also a pronoun.
-_LEADING_LETTER_WORDS = frozenset({
-    "because", "before", "between", "broken", "climbed", "could", "counting",
-    "during", "every", "first", "found", "from", "glass", "have",
-    "keeper", "lamp", "light", "listening", "little", "looked",
-    "night", "people", "pressed", "quiet", "rocks",
-    "should", "something", "staircase", "steps", "struck", "than",
-    "the", "their", "these", "thing", "thought", "through", "under", "waited",
-    "went", "were", "which", "while",
-    "wick", "wind", "with", "without", "would",
-})
-_BOUND_FRAGMENTS = frozenset({"ing", "tion", "tions", "ment", "ments", "ness", "ly"})
+
 _WORD_PAIR_RE = re.compile(
     r"(?<![\w.'’`/\-])(?=([A-Za-z]+)[ \t]+([a-z]+)(?![\w'’`/\-]))"
 )
@@ -34,20 +21,13 @@ def _count_split_words(text: str) -> int:
     count = 0
     for match in _WORD_PAIR_RE.finditer(prose):
         left, right = match.groups()
-        if len(left) == 1:
-            if (
-                left.casefold() not in {"a", "i", "o"}
-                and (left + right).lower() in _LEADING_LETTER_WORDS
-            ):
-                count += 1
-        elif (
-            right in _BOUND_FRAGMENTS
-            and len(left) >= 3
-            and re.fullmatch(r"[A-Z]?[a-z]+", left)
-            and re.search(r"[aeiouy]", left, re.IGNORECASE)
+        prefix = prose[max(0, match.start() - 80):match.start()]
+        if re.search(r"\b\d+(?:[.,]\d+)?\s*$", prefix):
+            continue
+        previous = re.search(r"([A-Za-z]+)\s+$", prefix)
+        if has_fragment_evidence(
+            left, right, conservative=True, previous_word=previous.group(1) if previous else "",
         ):
-            # Exclude standalone words/interjections such as 'ed', 'er', 's',
-            # and 'es'; uppercase abbreviations are not plausible stems.
             count += 1
     return count
 

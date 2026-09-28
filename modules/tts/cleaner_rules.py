@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import re
 
+from .cleaner_evidence import COMMON_WORDS
+
 from modules.ingestion.text_layout import (
-    page_furniture_lines,
+    hyphenation_word_forms,
     repair_line_break_hyphenation,
+    should_join_hyphenated_word,
     strip_page_furniture,
 )
 from modules.ingestion.extraction_artifact_signals import (
@@ -18,17 +21,17 @@ from modules.ingestion.extraction_artifact_signals import (
 
 _WORD_TOKEN_RE = re.compile(r"[A-Za-z0-9À-ÖØ-öø-ÿ]+")
 _DROP_CAP_BREAK = r"(?:\s*(?:<br\s*/?>|\n)\s*)"
-_REVIEW_HASH_DROP_CAP_RE = re.compile(
+_HASH_DROP_CAP_RE = re.compile(
     rf"(?im)(^|\n\s*)#\s*{_DROP_CAP_BREAK}"
-    rf"(?P<letter>[D]){_DROP_CAP_BREAK}(?P<rest>eejay)\b"
+    rf"(?P<letter>[B-HJ-NP-Z]){_DROP_CAP_BREAK}(?P<rest>[a-z]{{2,}})\b"
 )
-_REVIEW_DROP_CAP_RE = re.compile(
-    rf"(?im)(^|\n\s*)(?P<letter>[TW]){_DROP_CAP_BREAK}"
-    rf"(?P<rest>he(?:re(?:['’]s)?)?|hen|hat)\b"
+_DROP_CAP_RE = re.compile(
+    rf"(?m)(^|\n\s*)(?P<letter>[B-HJ-NP-Z]){_DROP_CAP_BREAK}"
+    rf"(?P<rest>[a-z]{{2,}})\b"
 )
 _CLEAR_SPACED_HYPHEN_COMPOUND_RE = re.compile(
     r"\b(?P<left>card|self|promise|recipient|well)-\s+"
-    r"(?P<right>being|governed|making|keeping|cum|sharper)\b",
+    r"(?P<right>being|control|governed|making|keeping|cum|sharper)\b",
     re.IGNORECASE,
 )
 _KNOWN_CLOSED_COMPOUND_HYPHEN_RE = re.compile(
@@ -119,13 +122,13 @@ def repair_spaced_caps_em_dash_attributions(text: str) -> str:
 
 
 def repair_separated_drop_cap_fragments(text: str) -> str:
-    """Repair reviewed dropped-cap fragments with explicit line-break evidence."""
+    """Repair separated drop caps with explicit line-break evidence."""
 
     def _join(match: re.Match[str]) -> str:
         return f"{match.group(1)}{match.group('letter').upper()}{match.group('rest')}"
 
-    repaired = _REVIEW_HASH_DROP_CAP_RE.sub(_join, text)
-    return _REVIEW_DROP_CAP_RE.sub(_join, repaired)
+    repaired = _HASH_DROP_CAP_RE.sub(_join, text)
+    return _DROP_CAP_RE.sub(_join, repaired)
 
 
 def repair_known_leading_letter_fragments(text: str) -> str:
@@ -134,17 +137,20 @@ def repair_known_leading_letter_fragments(text: str) -> str:
     repaired = repair_separated_drop_cap_fragments(repaired)
     repaired = strip_inline_numeric_references(repaired)
     repaired = repair_split_uppercase_word_fragments(repaired)
-    repaired = re.sub(r"\bhe time\b", "the time", repaired)
-    repaired = re.sub(r"\bHe time\b", "The time", repaired)
     repaired = repair_spaced_caps_em_dash_attributions(repaired)
     return repaired
 
 
 def repair_clear_spaced_hyphenated_compounds(text: str) -> str:
     """Repair clear hyphenated compounds left with a space after the hyphen."""
+    word_forms = hyphenation_word_forms(text)
 
     def _join(match: re.Match[str]) -> str:
-        return f"{match.group('left')}-{match.group('right')}"
+        left, right = match.group("left"), match.group("right")
+        hyphenated = f"{left}-{right}"
+        if (left + right).casefold() in word_forms and hyphenated.casefold() not in word_forms:
+            return left + right
+        return hyphenated
 
     return _CLEAR_SPACED_HYPHEN_COMPOUND_RE.sub(_join, text)
 
@@ -164,10 +170,7 @@ def repair_known_closed_compound_hyphenation(text: str) -> str:
 
 def repair_flattened_hyphenation(text: str) -> str:
     """Recover soft hyphens after ingestion/chunking has collapsed line breaks."""
-    known_words = {
-        "keeper", "staircase", "waited", "countrywoman", "countrywomen",
-        "countryman", "countrymen",
-    }
+    word_forms = hyphenation_word_forms(text)
 
     def _join(match: re.Match[str]) -> str:
         left, right = match.group("left"), match.group("right")
@@ -175,7 +178,10 @@ def repair_flattened_hyphenation(text: str) -> str:
         if right in {"and", "or", "nor", "but"}:
             return match.group(0)
         joined = left + right
-        if (left.islower() and right.islower()) or joined.casefold() in known_words:
+        # Without a line break, a dash between ordinary words may mark dialogue.
+        if left.casefold() in COMMON_WORDS and right in COMMON_WORDS and joined.casefold() not in word_forms:
+            return match.group(0)
+        if should_join_hyphenated_word(left, right, word_forms):
             return joined
         return match.group(0)
 
@@ -262,6 +268,7 @@ def normalize_markdown_tables(text: str) -> str:
 def rule_based_clean(text: str) -> str:
     """Apply fast rule-based text normalization for TTS preprocessing."""
     text = strip_page_furniture(text)
+    text = repair_clear_spaced_hyphenated_compounds(text)
     text = repair_line_break_hyphenation(text)
     text = repair_separated_drop_cap_fragments(text)
     text = re.sub(r"(?i)<br\s*/?>", " ", text)
@@ -355,29 +362,6 @@ def describe_llm_cleaning_reason(text: str, *, source_type: str | None = None) -
         return "possible joined first-person word extraction artifact"
 
     return "default conservative cleanup pass"
-
-
-def _is_dropped_leading_letter_repair(before: list[str], after: list[str]) -> bool:
-    if len(before) != 1 or len(after) != 1:
-        return False
-    source = before[0]
-    candidate = after[0]
-    if len(candidate) != len(source) + 1:
-        return False
-    if candidate[:1].upper() in {"A", "I"}:
-        return False
-    return candidate.casefold().endswith(source.casefold())
-
-
-def _is_orphan_single_letter_delete(before: list[str], after: list[str]) -> bool:
-    if after or len(before) != 1:
-        return False
-    token = before[0]
-    if len(token) != 1:
-        return False
-    if token in {"A", "I"}:
-        return False
-    return token.isalpha() and token.upper() == token
 
 
 def llm_preservation_violation(source_text: str, cleaned_text: str) -> str | None:
