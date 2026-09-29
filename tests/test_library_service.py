@@ -1899,7 +1899,8 @@ def test_library_service_delete_book_does_not_restore_after_successful_db_delete
     result = service.delete_book(100)
     assert result["deleted"] is True
     assert result["files_pending"] is True
-    assert Path(result["path"]).is_dir()
+    assert (tmp_path / "temp" / "delete_staging" / result["path"]).is_dir()
+    assert not Path(result["path"]).is_absolute()
 
     assert repository.deleted_ids == [100]
     assert repository.get_book_with_chapters(100) is None

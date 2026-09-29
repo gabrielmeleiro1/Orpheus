@@ -46,7 +46,16 @@ def get_model_options(controller: ControllerDep, request: Request) -> dict:
     from scripts import setup_runtime
     from scripts.download_models import MODEL_GROUPS
 
-    state, _ = setup_runtime._read_setup_state(setup_runtime.default_state_path())
+    try:
+        state, _ = setup_runtime._read_setup_state(setup_runtime.default_state_path())
+    except setup_runtime.SetupExecutionError:
+        result["cleaner_models"] = []
+        result["cuda_cleaner_models"] = []
+        result["cleaner_backend_options"] = [
+            option for option in result["cleaner_backend_options"]
+            if not option.get("is_local") or not option.get("requires_model", True)
+        ]
+        return result
     if state is not None:
         groups = [group for group in MODEL_GROUPS if group.startswith("cleaner-")]
         assets = _check_model_group_assets(groups, receipt_verifier=_get_status_cache(request).receipt_verifier)

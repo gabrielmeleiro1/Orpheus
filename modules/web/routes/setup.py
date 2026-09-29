@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from uuid import uuid4
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import re
@@ -586,7 +588,7 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
     state_path = setup_runtime.default_state_path()
     try:
         with setup_runtime.SetupLock(state_path):
-            setup_runtime.write_setup_state(
+            saved_state = setup_runtime.write_setup_state(
                 state_path,
                 profile_id=profile.id,
                 model_groups=groups,
@@ -595,6 +597,10 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
                 backend_instance_id=_adopt_backend_instance_id(request),
                 restart_required=False,
             )
+            config = getattr(get_controller_from_app(request.app), "config", None)
+            apply_preferences = getattr(config, "apply_setup_preferences", None)
+            if callable(apply_preferences):
+                apply_preferences(state=saved_state)
     except setup_runtime.SetupExecutionError as exc:
         raise HTTPException(
             status_code=409,
@@ -606,10 +612,6 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
             detail={"error": "invalid_request", "message": str(exc)},
         ) from exc
 
-    config = getattr(get_controller_from_app(request.app), "config", None)
-    apply_preferences = getattr(config, "apply_setup_preferences", None)
-    if callable(apply_preferences):
-        apply_preferences()
     cache.invalidate()
     return build_setup_status_response(request)
 
@@ -656,6 +658,7 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
         profile = setup_runtime._validated_profile(payload.profile)
         groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
         if payload.configure_runtime:
+            setup_runtime.validate_model_selection(groups)
             setup_runtime.require_voice_model(profile.id, groups)
     except setup_runtime.SetupValidationError as exc:
         raise HTTPException(
@@ -734,23 +737,52 @@ def _cache_bytes(path: Path) -> int:
     return total
 
 
+@contextmanager
+def _stage_runtime_models(group_id: str):
+    try:
+        cache = scan_cache_dir()
+    except CacheNotFound:
+        cache = None
+    staged: dict[str, Path] = {}
+    originals: dict[str, Path] = {}
+    try:
+        for model_id, path in _managed_cache_paths(cache).items():
+            if model_id not in resolve_model_groups((group_id,)):
+                continue
+            if not path.exists() or path.is_symlink() or path.is_junction():
+                continue
+            destination = path.with_name(f".orpheus-delete-{uuid4().hex}")
+            path.rename(destination)
+            originals[model_id] = path
+            staged[model_id] = destination
+        yield staged
+    finally:
+        # Roll back on a state-write failure; restore residuals for later retries.
+        for model_id, path in staged.items():
+            if path.exists():
+                path.rename(originals[model_id])
+
+
 def _delete_runtime_models(
     *,
     cache_scanner: Callable[[], Any] | None = None,
     model_groups: tuple[str, ...] | None = None,
     cache_root: Path | None = None,
+    model_paths: dict[str, Path] | None = None,
 ) -> tuple[list[str], int]:
     """Delete only HF cache repos owned by our model groups; leave others intact."""
-    try:
-        cache = (cache_scanner or scan_cache_dir)()
-    except CacheNotFound:
-        return [], 0
+    if model_paths is None:
+        try:
+            cache = (cache_scanner or scan_cache_dir)()
+        except CacheNotFound:
+            return [], 0
+        if cache_scanner is not None and not cache.repos and cache_root is None:
+            return [], 0
+        model_paths = _managed_cache_paths(cache, cache_root=cache_root)
     owners = _managed_model_repo_ids()
-    if cache_scanner is not None and not cache.repos and cache_root is None:
-        return [], 0
     deleted_groups: set[str] = set()
     freed = 0
-    for model_id, path in _managed_cache_paths(cache, cache_root=cache_root).items():
+    for model_id, path in model_paths.items():
         group_id = owners[model_id]
         if model_groups is not None and group_id not in model_groups:
             continue
@@ -815,19 +847,29 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
             # Read the state first so an unreadable configuration cannot be
             # discovered only after its model files have already been removed.
             state, _ = setup_runtime._read_setup_state(state_path)
-            deleted, freed = _delete_runtime_models(model_groups=(group_id,))
-            residual = [model["id"] for model in get_managed_models()["models"] if model["id"] == group_id and model["downloaded"]]
-            if state and group_id in state["model_groups"] and not residual and not group_id.startswith("tts-"):
+            if state and group_id in state["model_groups"] and not group_id.startswith("tts-"):
                 remaining = tuple(group for group in state["model_groups"] if group != group_id)
-                setup_runtime.write_setup_state(
-                    state_path,
-                    profile_id=state["profile"] if remaining else "base",
-                    model_groups=remaining,
-                    accepted_risks=tuple(state["accepted_risks"]),
-                    cleaner_cuda_quantization=state["cleaner_cuda_quantization"],
-                    backend_instance_id=_adopt_backend_instance_id(request),
-                    restart_required=False,
-                )
+                with _stage_runtime_models(group_id) as staged:
+                    try:
+                        saved_state = setup_runtime.write_setup_state(
+                            state_path,
+                            profile_id=state["profile"] if remaining else "base",
+                            model_groups=remaining,
+                            accepted_risks=tuple(state["accepted_risks"]),
+                            cleaner_cuda_quantization=state["cleaner_cuda_quantization"],
+                            backend_instance_id=_adopt_backend_instance_id(request),
+                            restart_required=False,
+                        )
+                    except (setup_runtime.SetupExecutionError, OSError) as exc:
+                        raise HTTPException(503, detail={"error": "setup_state_write_failed", "message": "Model settings could not be saved. Try again."}) from exc
+                    config = getattr(controller, "config", None)
+                    apply_preferences = getattr(config, "apply_setup_preferences", None)
+                    if callable(apply_preferences):
+                        apply_preferences(state=saved_state)
+                    deleted, freed = _delete_runtime_models(model_groups=(group_id,), model_paths=staged)
+            else:
+                deleted, freed = _delete_runtime_models(model_groups=(group_id,))
+            residual = [model["id"] for model in get_managed_models()["models"] if model["id"] == group_id and model["downloaded"]]
     except setup_runtime.SetupExecutionError as exc:
         raise HTTPException(409, detail={"error": "setup_in_progress", "message": str(exc)}) from exc
     except OSError as exc:
@@ -837,10 +879,6 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
         cache.invalidate()
         if acquired and callable(end):
             end()
-    config = getattr(controller, "config", None)
-    apply_preferences = getattr(config, "apply_setup_preferences", None)
-    if callable(apply_preferences):
-        apply_preferences()
     return {"deleted_model_groups": deleted, "freed_bytes": freed, "state_deleted": False, **_residual_notice(residual)}
 
 

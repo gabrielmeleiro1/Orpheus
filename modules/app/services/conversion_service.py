@@ -160,7 +160,7 @@ class ConversionService:
     def _preflight_job_slot_available(self, *, book_id: int | None = None) -> None:
         """Fail fast before potentially expensive runtime validation.
 
-        The caller must still reserve the slot under ``_job_lock`` after
+        The caller must still reserve the slot under ``_job_lock`` before
         validation because another request can start in between.
         """
         with self._job_lock:
@@ -244,8 +244,6 @@ class ConversionService:
 
         self._preflight_job_slot_available()
         runtime_options = runtime_options or ConversionRuntimeOptions()
-        self._validate_requested_tts_runtime(runtime_options=runtime_options)
-
         with self._job_lock:
             self._ensure_job_slot_available_locked()
             job_id = f"conv_{time.time_ns()}_{next(self._job_sequence)}"
@@ -264,6 +262,8 @@ class ConversionService:
         # block for the whole copy. The reserved IDLE job above keeps
         # concurrent starts out while the copy runs.
         try:
+            runtime_options = self._runtime_options_resolver.with_setup_defaults(runtime_options)
+            self._validate_requested_tts_runtime(runtime_options=runtime_options)
             source_path = self._durable_source_path_for_conversion(source_path)
         except Exception:
             with self._job_lock:
@@ -316,11 +316,6 @@ class ConversionService:
                     self._cleanup_partial_durable_source(durable_path)
                     raise
                 owner_only(durable_path)
-                if self.upload_reference_checker is not None and not self.upload_reference_checker(source_path):
-                    try:
-                        source_path.unlink(missing_ok=True)
-                    except OSError:
-                        logger.warning("Failed to remove copied upload: %s", source_path)
                 return durable_path
             except FileExistsError:
                 durable_path = sources_dir / f"{source_path.stem}_{index}{source_path.suffix}"
@@ -356,15 +351,6 @@ class ConversionService:
         if detail is None:
             raise ValueError("Book not found")
         book, _chapters = detail
-        resolved_options = resolve_repair_runtime_options(
-            book=book,
-            request_options=request_options,
-            request_fields_set=fields_set,
-            app_config=self._config,
-        )
-
-        self._validate_requested_tts_runtime(runtime_options=resolved_options)
-
         with self._job_lock:
             if int(book_id) in self._book_cleanup_ids:
                 raise RuntimeError("Book cleanup is in progress")
@@ -378,6 +364,21 @@ class ConversionService:
                 author=getattr(book, "author", None),
             )
             self._active_job = job
+
+        try:
+            resolved_options = resolve_repair_runtime_options(
+                book=book,
+                request_options=request_options,
+                request_fields_set=fields_set,
+                app_config=self._config,
+            )
+            resolved_options = self._runtime_options_resolver.with_setup_defaults(resolved_options)
+            self._validate_requested_tts_runtime(runtime_options=resolved_options)
+        except Exception:
+            with self._job_lock:
+                if self._active_job is job:
+                    self._active_job = None
+            raise
 
         return self._start_pipeline_job(
             job=job,
@@ -703,6 +704,7 @@ class ConversionService:
                     runtime_options=command.runtime_options,
                 )
                 command.job.book_id = book_id
+                self._remove_recoverable_upload(command.job)
                 return
         self._update_conversion_library_records(book_id, result)
 
@@ -749,6 +751,7 @@ class ConversionService:
             )
         else:
             self._update_conversion_library_records(book_id, pipeline_result)
+        self._remove_recoverable_upload(job)
         complete = getattr(job, "complete", None)
         if callable(complete):
             complete(book_id)
@@ -759,6 +762,17 @@ class ConversionService:
             callbacks.on_complete(job.result)
         if callbacks and callbacks.on_event:
             callbacks.on_event(make_state_event(JobState.COMPLETED, job.id, "conversion completed"))
+
+    def _remove_recoverable_upload(self, job: Any) -> None:
+        source = getattr(job, "upload_source_path", None)
+        if source is None or not source.is_relative_to((self._config.temp_dir / "web_uploads").resolve()):
+            return
+        if self.upload_reference_checker is None or self.upload_reference_checker(source):
+            return
+        try:
+            source.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove copied upload: %s", source)
 
     def _handle_conversion_failure(
         self,

@@ -6,6 +6,7 @@ Configuration management for the audiobook creator application.
 
 from dataclasses import dataclass, field
 import os
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -86,6 +87,13 @@ def _resolve_path_override(current: Path, *, env_key: str, default: Path) -> Pat
     return env_path
 
 
+@dataclass(frozen=True)
+class SetupPreferences:
+    cleaner_backend: str
+    cleaner_model_name: str
+    cleaner_cuda_quantization: str
+
+
 @dataclass
 class AppConfig:
     """
@@ -148,23 +156,38 @@ class AppConfig:
     
     # Database
     db_path: Optional[Path] = None
+    _preferences_lock: object = field(default_factory=threading.RLock, init=False, repr=False, compare=False)
+    _setup_preferences: Optional[SetupPreferences] = field(default=None, init=False, repr=False, compare=False)
+
+    def setup_preferences(self) -> SetupPreferences:
+        with self._preferences_lock:
+            return self._setup_preferences or SetupPreferences(
+                self.cleaner_backend, self.cleaner_model_name, self.cleaner_cuda_quantization,
+            )
     
-    def apply_setup_preferences(self) -> None:
+    def apply_setup_preferences(self, *, state: Optional[dict] = None) -> None:
         """Use the saved local model and precision as defaults for new conversions."""
         from scripts import setup_runtime
         from scripts.download_models import MODEL_GROUPS
 
-        try:
-            state, _ = setup_runtime._read_setup_state(setup_runtime.default_state_path())
-        except setup_runtime.SetupExecutionError:
-            return
-        if state is None:
-            return
-        cleaner = next((group for group in state["model_groups"] if group.startswith("cleaner-")), None)
-        self.cleaner_backend = state["profile"] if cleaner else "basic"
-        if cleaner:
-            self.cleaner_model_name = MODEL_GROUPS[cleaner][0]
-        self.cleaner_cuda_quantization = state["cleaner_cuda_quantization"]
+        with self._preferences_lock:
+            if state is None:
+                try:
+                    state, _ = setup_runtime._read_setup_state(setup_runtime.default_state_path())
+                except setup_runtime.SetupExecutionError:
+                    return
+            if state is None:
+                return
+            cleaner = next((group for group in state["model_groups"] if group.startswith("cleaner-")), None)
+            preferences = SetupPreferences(
+                state["profile"] if cleaner else "basic",
+                MODEL_GROUPS[cleaner][0] if cleaner else self.cleaner_model_name,
+                state["cleaner_cuda_quantization"],
+            )
+            self.cleaner_backend = preferences.cleaner_backend
+            self.cleaner_model_name = preferences.cleaner_model_name
+            self.cleaner_cuda_quantization = preferences.cleaner_cuda_quantization
+            self._setup_preferences = preferences
 
     def __post_init__(self):
         """Ensure directories exist and set defaults."""

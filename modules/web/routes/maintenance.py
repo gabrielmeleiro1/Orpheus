@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
@@ -25,11 +26,16 @@ def open_deletion_folder(payload: OpenDeletionFolderRequest, controller: Control
     from modules.app.services.library_service import _default_folder_opener
 
     root = Path(controller.config.temp_dir).resolve() / "delete_staging"
-    path = Path(payload.path).resolve()
-    if root.is_symlink() or path.parent != root or not path.is_dir():
+    if not re.fullmatch(r"[0-9a-f]{32}", payload.path):
         raise HTTPException(status_code=404, detail="Pending deletion folder not found")
-    call_with_http_errors(lambda: _default_folder_opener(path))
-    return {"folder_path": str(path)}
+    path = root / payload.path
+    if root.is_symlink() or root.is_junction() or path.is_symlink() or path.is_junction() or not path.is_dir():
+        raise HTTPException(status_code=404, detail="Pending deletion folder not found")
+    try:
+        _default_folder_opener(path)
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail="Pending deletion folder could not be opened") from exc
+    return {"folder_path": payload.path}
 
 
 @router.get("/api/maintenance/diagnostics")

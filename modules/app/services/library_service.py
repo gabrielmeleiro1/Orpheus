@@ -34,6 +34,7 @@ from modules.storage.permissions import ensure_owner_only_directory, owner_only
 
 MANAGED_UPLOAD_ROOT_NAME = "web_uploads"
 DELETE_STAGING_DIR_NAME = "delete_staging"
+DELETE_COMMIT_MARKER = ".committed"
 UPLOAD_HANDLE_PREFIX = "upload:"
 SUPPORTED_UPLOAD_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
@@ -113,7 +114,11 @@ class LibraryService:
             stale = _recency_filter(root.iterdir(), time.time() - DEFAULT_CLEANUP_GRACE_SECONDS)
             for raw in stale:
                 try:
-                    removed += int(_delete_orphan_entry(Path(raw), root, expect_dir=True))
+                    entry = Path(raw)
+                    marker = entry / DELETE_COMMIT_MARKER
+                    if entry.is_symlink() or entry.is_junction() or marker.is_symlink() or not marker.is_file():
+                        continue
+                    removed += int(_delete_orphan_entry(entry, root, expect_dir=True))
                 except OSError:
                     logger.debug("Failed to sweep deletion staging: %s", raw, exc_info=True)
         except OSError:
@@ -813,7 +818,10 @@ class LibraryService:
 
             db_deleted = True
             try:
+                # Unmarked transactions may contain the only copy after a failed rollback.
+                (staging_root / DELETE_COMMIT_MARKER).touch()
                 self._commit_staged_artifacts(staged_artifacts)
+                (staging_root / DELETE_COMMIT_MARKER).unlink()
             except Exception:
                 # The library removal succeeded; report files left for maintenance.
                 logger.exception(
@@ -822,7 +830,7 @@ class LibraryService:
                     book_id,
                     staging_root,
                 )
-                return {"deleted": True, "files_pending": True, "path": str(staging_root)}
+                return {"deleted": True, "files_pending": True, "path": staging_root.name}
             self._prune_empty_output_dirs(staged_output_files)
             return True
         except Exception:

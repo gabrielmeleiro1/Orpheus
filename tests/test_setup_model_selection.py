@@ -21,6 +21,8 @@ def test_selection_round_trip_and_delete_preserves_precision(tmp_path, monkeypat
     monkeypatch.setattr(routes, "build_setup_status_response", lambda _: setup_runtime.read_setup_state(path))
     monkeypatch.setattr(routes, "_delete_runtime_models", lambda **_: (["cleaner-cuda-large"], 100))
     monkeypatch.setattr(routes, "get_managed_models", lambda: {"models": []})
+    monkeypatch.setattr(routes, "scan_cache_dir", lambda: SimpleNamespace(repos=[]))
+    monkeypatch.setattr(routes.hf_constants, "HF_HUB_CACHE", str(tmp_path / "models"))
     config = AppConfig(data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
     with TestClient(create_app(controller=SimpleNamespace(config=config))) as client:
         result = client.post("/api/setup/adopt", json={

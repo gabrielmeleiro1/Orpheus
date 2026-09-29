@@ -26,14 +26,14 @@ def controller(tmp_path):
     app.repository.close()
 
 
-def test_uploaded_source_removed_only_after_durable_copy(controller, monkeypatch):
+def test_uploaded_source_kept_until_recoverable_record_exists(controller, monkeypatch):
     uploaded = controller.upload_text_source(text="Keep these words.", title="Book", max_bytes=1024)
     source = controller.config.temp_dir / "web_uploads" / uploaded["source_handle"].removeprefix("upload:")
     original = source.read_bytes()
     durable = controller._conversion_service._durable_source_path_for_conversion(source)
     assert durable.read_bytes() == original
-    assert not source.exists()
-    # Explicit queue deletion after conversion is idempotent.
+    assert source.exists()
+    # Explicit queue deletion remains available before conversion.
     assert controller.delete_upload(uploaded["source_handle"]) == {"deleted": True}
 
 

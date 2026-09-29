@@ -117,12 +117,12 @@ def test_deletion_refuses_concurrent_downloads_and_releases_conversion_guard(sto
     assert repos["cleaner-cuda"].exists()
 
 
-def test_deletion_failure_does_not_change_selection(storage, monkeypatch):
+def test_staging_failure_does_not_change_selection(storage, monkeypatch):
     _, state_path, _ = storage
     before = setup_runtime.read_setup_state(state_path)
-    def failed(**kwargs):
+    def failed(*args, **kwargs):
         raise PermissionError("private path")
-    monkeypatch.setattr(routes, "_delete_runtime_models", failed)
+    monkeypatch.setattr(routes, "_stage_runtime_models", failed)
     with TestClient(create_app(controller=object())) as client:
         response = client.delete("/api/setup/models/cleaner-cuda")
     assert response.status_code == 409
@@ -149,16 +149,15 @@ def test_damaged_managed_repo_is_visible_and_removable(storage):
     assert repos["unrelated"].exists()
 
 
-def test_partial_delete_reports_actual_bytes_and_keeps_selection(storage, monkeypatch):
+def test_partial_delete_reports_actual_bytes_and_clears_selection(storage, monkeypatch):
     _, state_path, repos = storage
-    before = setup_runtime.read_setup_state(state_path)
     victim = repos["cleaner-cuda"] / "extra.bin"
     victim.write_bytes(b"1234567")
     original_remove = routes.shutil.rmtree
     def partial(path, **kwargs):
-        if path != repos["cleaner-cuda"]:
+        if not path.name.startswith(".orpheus-delete-"):
             return original_remove(path, **kwargs)
-        victim.unlink()
+        (path / victim.name).unlink()
         raise PermissionError("locked")
     monkeypatch.setattr(routes.shutil, "rmtree", partial)
     with TestClient(create_app(controller=object())) as client:
@@ -169,7 +168,7 @@ def test_partial_delete_reports_actual_bytes_and_keeps_selection(storage, monkey
     assert result["deleted_model_groups"] == []
     assert result["residual_model_groups"] == ["cleaner-cuda"]
     assert "Couldn't delete some files" in result["message"]
-    assert setup_runtime.read_setup_state(state_path) == before
+    assert setup_runtime.read_setup_state(state_path)["model_groups"] == ["tts-cpu-cuda"]
 
 
 def test_deleting_voice_model_leaves_runtime_not_ready(storage, monkeypatch):

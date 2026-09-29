@@ -1,4 +1,3 @@
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 import os
@@ -107,18 +106,20 @@ def test_partial_deletion_response_and_constrained_open_folder(tmp_path, monkeyp
     from modules.app.services import library_service
 
     root = tmp_path / "temp" / "delete_staging"
-    pending = root / "pending"
+    handle = "a" * 32
+    pending = root / handle
     pending.mkdir(parents=True)
     controller = SimpleNamespace(
         config=SimpleNamespace(temp_dir=tmp_path / "temp"),
-        delete_book=lambda book_id: {"deleted": True, "files_pending": True, "path": str(pending)},
+        delete_book=lambda book_id: {"deleted": True, "files_pending": True, "path": handle},
     )
     opened = []
     monkeypatch.setattr(library_service, "_default_folder_opener", opened.append)
     client = _make_client_with_controller(controller)
     response = client.delete("/api/library/1")
-    assert response.json() == {"book_id": 1, "deleted": True, "files_pending": True, "path": str(pending)}
-    assert client.post("/api/maintenance/delete-staging/open-folder", json={"path": str(pending)}).status_code == 200
+    assert response.json() == {"book_id": 1, "deleted": True, "files_pending": True, "path": handle}
+    opened_response = client.post("/api/maintenance/delete-staging/open-folder", json={"path": handle})
+    assert opened_response.json() == {"folder_path": handle}
     assert opened == [pending.resolve()]
     assert client.post("/api/maintenance/delete-staging/open-folder", json={"path": str(tmp_path)}).status_code == 404
 
@@ -131,8 +132,10 @@ def test_startup_sweeps_old_delete_staging_but_keeps_recent_entries(tmp_path):
     recent.mkdir()
     artifact = stale / "audio.mp3"
     artifact.write_bytes(b"audio")
+    (stale / ".committed").touch()
+    (recent / ".committed").touch()
     old = time.time() - 3 * 86400
-    for path in (artifact, stale):
+    for path in (artifact, stale / ".committed", stale):
         os.utime(path, (old, old))
     LibraryService(SimpleNamespace(), output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
     assert not stale.exists()

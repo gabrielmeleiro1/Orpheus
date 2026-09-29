@@ -117,6 +117,7 @@ def legacy_repair_runtime_options_from_app_config(
     app_config: AppConfig,
 ) -> ConversionRuntimeOptions:
     """Safe fallback for pre-v7 books that never persisted conversion settings."""
+    preferences = app_config.setup_preferences()
     return ConversionRuntimeOptions(
         voice=app_config.default_voice,
         speed=float(app_config.default_speed),
@@ -124,10 +125,10 @@ def legacy_repair_runtime_options_from_app_config(
         tts_quantization=app_config.tts_quantization,
         tts_provider=app_config.tts_provider,
         tts_device=app_config.tts_device,
-        cleaner_model=app_config.cleaner_model_name,
-        cleaner_backend=app_config.cleaner_backend,
+        cleaner_model=preferences.cleaner_model_name,
+        cleaner_backend=preferences.cleaner_backend,
         cleaner_cuda_device=app_config.cleaner_cuda_device,
-        cleaner_cuda_quantization=app_config.cleaner_cuda_quantization,
+        cleaner_cuda_quantization=preferences.cleaner_cuda_quantization,
         cleaner_api_model=app_config.cleaner_api_model,
         cleaner_api_key=None,
         tts_options=None,

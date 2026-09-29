@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 from modules.app.config import AppConfig
@@ -147,6 +147,7 @@ class RuntimeOptionsResolver:
         self,
         runtime_options: ConversionRuntimeOptions,
     ) -> NormalizedConversionRuntimeOptions:
+        preferences = self._config.setup_preferences()
         tts_runtime, tts_runtime_options = self._resolve_tts_runtime_pair(
             runtime_options=runtime_options,
         )
@@ -155,7 +156,7 @@ class RuntimeOptionsResolver:
         effective_tts_model_name = tts_runtime.resolved_model()
 
         effective_cleaner_backend = normalize_cleaner_backend(
-            runtime_options.cleaner_backend or self._config.cleaner_backend
+            runtime_options.cleaner_backend or preferences.cleaner_backend
         )
 
         effective_cleaner_api_model = (
@@ -174,13 +175,13 @@ class RuntimeOptionsResolver:
             cuda_quant_source = (
                 runtime_options.cleaner_cuda_quantization
                 if runtime_options.cleaner_cuda_quantization is not None
-                else self._config.cleaner_cuda_quantization
+                else preferences.cleaner_cuda_quantization
             )
             effective_cuda_device = normalize_cuda_device(cuda_device_source)
             effective_cuda_quantization = normalize_cuda_quantization(cuda_quant_source)
         else:
             effective_cuda_device = self._config.cleaner_cuda_device
-            effective_cuda_quantization = self._config.cleaner_cuda_quantization
+            effective_cuda_quantization = preferences.cleaner_cuda_quantization
 
         from modules.tts.factory import TTSEngineFactory
 
@@ -215,7 +216,7 @@ class RuntimeOptionsResolver:
         resolved_cleaner_model = resolve_cleaner_model_name(
             backend=effective_cleaner_backend,
             requested_model=runtime_options.cleaner_model,
-            configured_model=self._config.cleaner_model_name,
+            configured_model=preferences.cleaner_model_name,
         )
         cleaner_config = CleanerConfig(
             model_name=resolved_cleaner_model,
@@ -272,6 +273,23 @@ class RuntimeOptionsResolver:
             process_safe=process_safe,
             memory_policy=memory_policy,
             device_memory_policy=device_memory_policy,
+        )
+
+    def with_setup_defaults(self, options: ConversionRuntimeOptions) -> ConversionRuntimeOptions:
+        preferences = self._config.setup_preferences()
+        backend = options.cleaner_backend or preferences.cleaner_backend
+        return replace(
+            options,
+            cleaner_backend=backend,
+            cleaner_model=resolve_cleaner_model_name(
+                backend=backend, requested_model=options.cleaner_model,
+                configured_model=preferences.cleaner_model_name,
+            ),
+            cleaner_cuda_quantization=(
+                options.cleaner_cuda_quantization
+                if options.cleaner_cuda_quantization is not None
+                else preferences.cleaner_cuda_quantization
+            ),
         )
 
     def create_pipeline_config(
