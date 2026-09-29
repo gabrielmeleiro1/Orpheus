@@ -13,6 +13,7 @@ from scripts.download_models import MODEL_GROUPS, MODEL_REVISIONS, resolve_model
 
 @pytest.mark.parametrize("quantization", ["4bit", "8bit", "fp16"])
 def test_selection_round_trip_and_delete_preserves_precision(tmp_path, monkeypatch, quantization):
+    monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
     path = tmp_path / "runtime-setup.json"
     monkeypatch.setattr(setup_runtime, "default_state_path", lambda: path)
     monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True})
@@ -52,6 +53,7 @@ def test_catalog_downloads_only_requested_model_and_pins_every_revision():
 
 
 def test_setup_rejects_multiple_active_cleaners_before_probing(monkeypatch):
+    monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
     def unexpected_probe(*args, **kwargs):
         pytest.fail("An ambiguous selection must be rejected before probing")
     monkeypatch.setattr(setup_runtime, "_probe_profile", unexpected_probe)

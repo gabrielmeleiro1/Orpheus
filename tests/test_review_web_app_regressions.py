@@ -215,6 +215,7 @@ def test_unreadable_setup_keeps_basic_and_api_options(controller, monkeypatch):
 
 @pytest.mark.parametrize("configure", [True, False])
 def test_download_validates_active_selection_only_when_configuring(monkeypatch, configure):
+    monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
     start = Mock(return_value={"lifecycle": "running"})
     monkeypatch.setattr(routes, "_get_download_service", lambda _: SimpleNamespace(start=start))
     monkeypatch.setattr(routes, "cuda_hardware_error", lambda: None)

@@ -21,6 +21,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def _isolated_program_data(tmp_path, monkeypatch):
+    # The Windows speech cache falls back to %PROGRAMDATA%; never write the real one.
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+
+
 def _skip_if_loopback_bind_unavailable() -> None:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -560,6 +566,7 @@ def test_windows_espeak_cache_falls_back_without_overwriting_blocked_path(tmp_pa
     blocked.write_text("keep me")
     monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: blocked)
     monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path))
+    _fit_path_limit_to(monkeypatch, desktop_backend, tmp_path / "orpheus-espeak")
 
     cached = desktop_backend._windows_espeak_data_path(source)
     assert cached.is_relative_to(tmp_path / "orpheus-espeak")
@@ -580,6 +587,12 @@ def test_windows_espeak_cache_fails_before_native_library_when_no_safe_path(tmp_
     assert (source / "phontab").read_bytes() == b"phonemes"
 
 
+def _fit_path_limit_to(monkeypatch, desktop_backend, program_data: Path) -> None:
+    # pytest's temp root can exceed libespeak's limit on its own (macOS).
+    limit = max(desktop_backend._LIBESPEAK_PATH_HOME_LIMIT, len(os.fsencode(program_data)) + 50)
+    monkeypatch.setattr(desktop_backend, "_LIBESPEAK_PATH_HOME_LIMIT", limit)
+
+
 def test_windows_espeak_cache_works_with_unicode_profile_and_temp(tmp_path, monkeypatch):
     from apps.launchers import desktop_backend
 
@@ -591,6 +604,7 @@ def test_windows_espeak_cache_works_with_unicode_profile_and_temp(tmp_path, monk
     monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(profile / "Temp"))
     monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
     monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    _fit_path_limit_to(monkeypatch, desktop_backend, tmp_path / "ProgramData")
 
     cached = desktop_backend._windows_espeak_data_path(source)
     assert cached.is_relative_to(tmp_path / "ProgramData")
@@ -641,6 +655,7 @@ def test_windows_espeak_programdata_cache_replaces_untrusted_contents(tmp_path, 
     monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
     monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
     monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    _fit_path_limit_to(monkeypatch, desktop_backend, tmp_path / "ProgramData")
     target = desktop_backend._windows_espeak_data_path(source)
     if alteration == "same_size":
         before = (target / "phontab").stat()
@@ -693,6 +708,7 @@ def test_windows_espeak_programdata_cache_does_not_publish_failed_copy(tmp_path,
     monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
     monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
     monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    _fit_path_limit_to(monkeypatch, desktop_backend, tmp_path / "ProgramData")
     target = desktop_backend._windows_espeak_data_path(source)
     (target / "phontab").write_bytes(b"tampered")
 
@@ -719,6 +735,7 @@ def test_windows_espeak_programdata_cache_creates_private_directory(tmp_path, mo
     monkeypatch.setenv("PROGRAMDATA", str(program_data))
     monkeypatch.setattr(desktop_backend, "_frozen_espeak_runtime_base", lambda: tmp_path / "é")
     monkeypatch.setattr(desktop_backend.tempfile, "gettempdir", lambda: str(tmp_path / "é"))
+    _fit_path_limit_to(monkeypatch, desktop_backend, program_data)
     real_mkdir = Path.mkdir
     modes = []
 

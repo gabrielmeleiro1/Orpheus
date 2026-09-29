@@ -635,6 +635,7 @@ def test_exception_file_rejects_future_created_date(tmp_path) -> None:
 def test_profile_inventory_rejects_every_cross_profile_package(
     monkeypatch, tmp_path, profile, inventory, package
 ) -> None:
+    monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
     monkeypatch.setattr(verifier, "hardware_preflight", lambda profile, **_: (True, "available"))
     report = verifier.verify_profiles(
         [profile], runner=FakeRunner(inventory=inventory), work_dir=tmp_path
