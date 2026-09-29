@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { StartConversionRequest } from "../../types/api";
-import type { ConversionQueueItem } from "./conversionPanelModel";
+import { isPreflightConvertible, type ConversionQueueItem } from "./conversionPanelModel";
 import type { QueueEditPatch } from "./conversionPanelStateTypes";
 import type { ConversionJobController } from "./useConversionJob";
 
@@ -32,8 +32,8 @@ export function useConversionQueueRunner({
 }: UseConversionQueueRunnerArgs) {
   const [queueRunning, setQueueRunning] = useState(false);
   const commandInFlightRef = useRef(false);
-  const latestRef = useRef({ apiClient, queueItems });
-  latestRef.current = { apiClient, queueItems };
+  const latestRef = useRef({ apiClient, queueItems, conversionJob, buildStartPayload });
+  latestRef.current = { apiClient, queueItems, conversionJob, buildStartPayload };
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -157,19 +157,27 @@ export function useConversionQueueRunner({
 
     try {
       let queueCompleted = true;
+      let skippedItems = false;
       const remainingIds = new Set(runnableItems.map((item) => item.id));
       while (mountedRef.current) {
         const item = latestRef.current.queueItems.find((candidate) => remainingIds.has(candidate.id));
         if (!item) break;
         remainingIds.delete(item.id);
+        if (!item.sourcePath.trim() ||
+          (item.status !== "ready" && item.status !== "warning") ||
+          (item.preflight && !isPreflightConvertible(item.preflight)) ||
+          item.sourcePath !== runnableItems.find((candidate) => candidate.id === item.id)?.sourcePath) {
+          skippedItems = true;
+          continue;
+        }
         updateQueueItem(item.id, (current) => ({
           ...current,
           status: "converting",
           error: "",
         }));
-        const payload = buildStartPayload(item);
+        const payload = latestRef.current.buildStartPayload(item);
         try {
-          const startResult = await conversionJob.startConversion(payload);
+          const startResult = await latestRef.current.conversionJob.startConversion(payload);
           if (!startResult.ok) {
             throw new Error(startResult.error);
           }
@@ -179,7 +187,7 @@ export function useConversionQueueRunner({
             status: "converting",
           }));
           setQueueStatus(`Converting ${item.label}...`);
-          let finalStatus = (await conversionJob.waitForTerminalState(startResult.jobId)).status;
+          let finalStatus = (await latestRef.current.conversionJob.waitForTerminalState(startResult.jobId)).status;
           if (finalStatus === "unknown") {
             const unknownMessage = "conversion status unknown - check Library";
             setQueueStatus("Checking backend before continuing the queue...");
@@ -250,9 +258,9 @@ export function useConversionQueueRunner({
         }
       }
       if (queueCompleted) {
-        setQueueStatus("Queue run finished.");
+        setQueueStatus(skippedItems ? "Queue run finished. Edited or unready items were skipped." : "Queue run finished.");
       }
-      await conversionJob.refreshActiveConversion();
+      await latestRef.current.conversionJob.refreshActiveConversion();
     } finally {
       commandInFlightRef.current = false;
       setQueueRunning(false);

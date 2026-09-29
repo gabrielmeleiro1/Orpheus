@@ -104,6 +104,32 @@ describe("useLibrary indexed total", () => {
     vi.useRealTimers();
   });
 
+  it.each([false, true])("keeps selection and detail consistent when filtering a pending selection (has results: %s)", async (hasResults) => {
+    const pending = deferred<LibraryBookDetail>();
+    const second = { ...book, id: 2, title: "Second" };
+    const third = { ...book, id: 3, title: "Third" };
+    const apiClient = {
+      getLibrary: vi.fn(async (search?: string) => ({ items: search ? (hasResults ? [third] : []) : [book, second], count: 3 })),
+      getLibraryCount: vi.fn(async () => ({ count: 3 })),
+      getLibraryBook: vi.fn((id: number) => id === 2 ? pending.promise : Promise.resolve({ ...detail, id, playback_url: `/audio/${id}` })),
+    } as unknown as ApiClient;
+    root = createRoot(container);
+    await act(async () => root.render(<LibraryProbe apiClient={apiClient} />));
+    await act(async () => { await vi.advanceTimersByTimeAsync(220); });
+    expect(getLibraryProbe().selectedBookDetail?.id).toBe(1);
+    let selection: Promise<LibraryBookDetail | null>;
+    await act(async () => { selection = getLibraryProbe().selectBook(1); });
+    expect(getLibraryProbe().selectedBookPlayable).toBe(false);
+    await act(async () => getLibraryProbe().setSearchQuery("filtered"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(220); });
+    expect(getLibraryProbe().selectedBookId).toBe(hasResults ? 3 : null);
+    expect(getLibraryProbe().selectedBookDetail?.id ?? null).toBe(hasResults ? 3 : null);
+    expect(getLibraryProbe().loadingDetail).toBe(false);
+    await act(async () => { pending.resolve({ ...detail, id: 2, playback_url: "/audio/2" }); await selection; });
+    expect(getLibraryProbe().selectedBookId).toBe(hasResults ? 3 : null);
+    expect(getLibraryProbe().selectedBookDetail?.id ?? null).toBe(hasResults ? 3 : null);
+  });
+
   it("loads cleaning preview without a redundant success status", async () => {
     const apiClient = {
       getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),

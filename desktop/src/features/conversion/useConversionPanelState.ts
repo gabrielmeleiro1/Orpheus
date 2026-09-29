@@ -320,7 +320,7 @@ export function useConversionPanelState({
       statusText: queueStatusText(item),
       statusClassName: `queue-item-status status-${item.status}`,
       converting: item.status === "converting",
-      finished: ["done", "failed", "cancelled", "warning"].includes(item.status),
+      finished: item.status === "done" || ((item.status === "failed" || item.status === "warning") && item.jobId !== null),
       selected,
       canMoveUp: index !== 0 && item.status !== "converting",
       canMoveDown: index !== queueController.queueItems.length - 1 && item.status !== "converting",

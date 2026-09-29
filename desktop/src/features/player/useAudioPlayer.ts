@@ -478,6 +478,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   }, [updatePlayerStatus]);
 
   const closePlayer = useCallback(() => {
+    loadSequenceRef.current += 1;
+    clearPendingResume();
     if (library.selectedBookId) {
       setPlayerDismissedBookId(library.selectedBookId);
     }
@@ -488,7 +490,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     }
 
     void persistLoadedBookPlaybackPosition({ force: true, silent: true });
-  }, [library.selectedBookId, persistLoadedBookPlaybackPosition]);
+  }, [clearPendingResume, library.selectedBookId, persistLoadedBookPlaybackPosition]);
 
   const handlePlaybackError = useCallback(() => {
     setPlaybackError("Playback failed");

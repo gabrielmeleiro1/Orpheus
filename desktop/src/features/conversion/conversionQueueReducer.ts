@@ -276,7 +276,7 @@ export function conversionQueueReducer(
         ...state,
         preflightStatus: `Inspecting ${splitPath(action.stamp.sourcePath)}...`,
         queueItems: state.queueItems.map((item) =>
-          item.id === action.stamp.itemId && hasFreshStamp(state, item, action.stamp)
+          item.id === action.stamp.itemId && hasFreshStamp(state, item, action.stamp) && item.status !== "converting"
             ? { ...item, status: "preflighting", error: "" }
             : item,
         ),
@@ -345,7 +345,7 @@ export function conversionQueueReducer(
           return item;
         }
         applied = true;
-        return { ...item, status: "failed" as const, error: action.error };
+        return item.status === "converting" ? item : { ...item, status: "failed" as const, error: action.error };
       });
       return applied ? { ...state, queueItems, preflightStatus: action.error } : state;
     }

@@ -649,6 +649,22 @@ describe("mounted SetupPage", () => {
     expect(onReady).toHaveBeenCalledWith(readyStatus);
   });
 
+  it("keeps repeated cancellation owned by a stopping backend download in a source checkout", async () => {
+    const runtimeBridge = bridge();
+    const initial = readySettings(false);
+    const running = { lifecycle: "running" as const, profile: "mlx", model_groups: ["cleaner-mlx"], total_models: 1, completed_models: 0 };
+    const cancelDownload = vi.fn(async () => ({ ...running, lifecycle: "stopping" as const }));
+    const apiClient = { startRuntimeModelDownload: vi.fn(async () => running), cancelRuntimeModelDownload: cancelDownload } as unknown as ApiClient;
+    await renderPage(runtimeBridge, { initialStatus: initial, settingsEntry: true, apiClient });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label^="Install "]')!.click());
+    await act(async () => findButton(container, "Cancel").click());
+    expect(container.textContent).toContain("Stopping download");
+    await act(async () => findButton(container, "Cancel").click());
+    expect(runtimeBridge.cancel).not.toHaveBeenCalled();
+    expect(cancelDownload).toHaveBeenCalledOnce();
+    expect(container.querySelector<HTMLButtonElement>(".setup-primary")!.disabled).toBe(true);
+  });
+
   it("cancels an authoritative running setup", async () => {
     const runtimeBridge = bridge({ status: vi.fn(async (): Promise<RuntimeSetupRunnerStatus> => ({ lifecycle: "running", profile: "base", modelGroups: [], stage: null, message: null, percent: null, restartRequired: false, error: null })) });
     await renderPage(runtimeBridge);

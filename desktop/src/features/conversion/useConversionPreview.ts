@@ -38,18 +38,37 @@ export function useConversionPreview({
   const previewObjectUrlRef = useRef<string | null>(null);
   const beginPreviewRequest = useLatestRequest();
   const beginVoiceSuggestRequest = useLatestRequest();
+  const voiceSuggestPendingRef = useRef(false);
 
   const applyPreviewSample = useCallback((sample: string) => {
     setPreviewText(compactSample(sample, 220));
   }, []);
 
   useEffect(() => {
+    beginPreviewRequest();
+    setPreviewBusy(false);
+    setPreviewStatus("");
+    setPreviewError(false);
     return () => {
+      beginPreviewRequest();
+      previewAudioRef.current?.pause();
       if (previewObjectUrlRef.current) {
         URL.revokeObjectURL(previewObjectUrlRef.current);
+        previewObjectUrlRef.current = null;
       }
     };
-  }, []);
+  }, [apiClient, beginPreviewRequest, optionState.selectedEngine, optionState.selectedQuantization,
+    optionState.selectedVoice, optionState.speed, previewText]);
+
+  useEffect(() => {
+    beginVoiceSuggestRequest();
+    if (voiceSuggestPendingRef.current) {
+      voiceSuggestPendingRef.current = false;
+      setVoiceSuggestBusy(false);
+      setVoiceSuggestStatus("");
+    }
+  }, [apiClient, beginVoiceSuggestRequest, sourcePath, previewText, selectedPreflight?.sample, optionState.selectedEngine,
+    optionState.selectedVoice, optionState.cleanerBackend, optionState.cleanerModel, optionState.cleanerApiKey]);
 
   useEffect(() => {
     if (sampleText) {
@@ -101,6 +120,9 @@ export function useConversionPreview({
       audio.src = objectUrl;
       audio.currentTime = 0;
       await audio.play();
+      if (!isLatest()) {
+        return;
+      }
       setPreviewStatus(`Previewing ${optionState.selectedVoice}`);
     } catch (error: unknown) {
       if (isLatest() && !isAbortLikeError(error)) {
@@ -141,6 +163,7 @@ export function useConversionPreview({
     }
 
     setVoiceSuggestBusy(true);
+    voiceSuggestPendingRef.current = true;
     setVoiceSuggestStatus("Analyzing first chapters...");
     const isLatest = beginVoiceSuggestRequest();
     try {
@@ -176,6 +199,7 @@ export function useConversionPreview({
       }
     } finally {
       if (isLatest()) {
+        voiceSuggestPendingRef.current = false;
         setVoiceSuggestBusy(false);
       }
     }

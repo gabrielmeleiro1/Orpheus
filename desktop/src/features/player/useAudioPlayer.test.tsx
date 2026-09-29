@@ -90,6 +90,44 @@ afterEach(() => {
 });
 
 describe("useAudioPlayer audio load failures", () => {
+  it("closing the player invalidates a pending chapter autoplay", async () => {
+    let resolveUrl!: (value: string) => void;
+    const getLibraryAudioUrl = vi.fn().mockResolvedValueOnce("http://desktop.test/book")
+      .mockImplementationOnce(() => new Promise<string>((resolve) => { resolveUrl = resolve; }));
+    const apiClient = { getLibraryAudioUrl,
+      updateBookPlaybackPosition: vi.fn(async (_id: number, position: number) => ({ position_sec: position })),
+    } as unknown as ApiClient;
+    const detail = createBookDetail();
+    detail.playback_status = "chapter_audio";
+    detail.chapters = [
+      { id: 1, number: 1, title: "one", duration_ms: 10000, mp3_path: "1.mp3" },
+      { id: 2, number: 2, title: "two", duration_ms: 10000, mp3_path: "2.mp3" },
+    ];
+    const library = createLibraryMock(detail);
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    current.audioRef.current = audio;
+    try {
+      await act(async () => current.togglePlay());
+      const originalSrc = audio.src;
+      Object.assign(audio, { paused: false });
+      vi.mocked(audio.play).mockClear();
+      let loading: Promise<void>;
+      await act(async () => { loading = current.jumpToChapter(detail.chapters[1]); });
+      await act(async () => current.closePlayer());
+      expect(current.playerVisible).toBe(false);
+      await act(async () => { resolveUrl("http://desktop.test/book"); await loading; });
+      expect(audio.src).toBe(originalSrc);
+      expect(audio.play).not.toHaveBeenCalled();
+      expect(current.playerVisible).toBe(false);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("plays chapter files with local seeking and whole-book checkpoints", async () => {
     const apiClient = {
       getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book?token=secret"),

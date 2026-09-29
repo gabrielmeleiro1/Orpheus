@@ -339,7 +339,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
           const preserveSelectionForPlayback =
             (query.trim() !== "" || requestModeFilter !== "all") &&
             selectedBookIdRef.current !== null &&
-            selectedBookDetailRef.current !== null;
+            selectedBookDetailRef.current?.id === selectedBookIdRef.current;
           detailAbortRef.current?.abort();
           detailAbortRef.current = null;
           beginDetailRequest();
@@ -363,7 +363,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
           if (
             (query.trim() !== "" || requestModeFilter !== "all") &&
             selectedBookIdRef.current !== null &&
-            selectedBookDetailRef.current !== null
+            selectedBookDetailRef.current?.id === selectedBookIdRef.current
           ) {
             // Keep the current selection alive for the player while a search or
             // filter temporarily hides it. The detail pane hides selections
@@ -902,7 +902,7 @@ export function useLibraryList({ apiClient, backendDisconnected }: UseLibraryLis
   }, [backendDisconnected, beginListRequest, beginOwnedRequest, loadLibrary, repository, resetLibraryState, searchQuery]);
 
   const summaryValues = useMemo(() => buildBookSummary(selectedBookDetail), [selectedBookDetail]);
-  const selectedBookPlayable = Boolean(selectedBookDetail?.playback_url);
+  const selectedBookPlayable = selectedBookDetail?.id === selectedBookId && Boolean(selectedBookDetail?.playback_url);
 
   return {
     searchQuery,

@@ -467,6 +467,7 @@ export function SetupPage({
 
   const cancel = async () => {
     if (!busy) return;
+    if (downloadPhase === "stopping") return;
     if (downloadPhase === "downloading" && apiClient) {
       try {
         const snapshot = await apiClient.cancelRuntimeModelDownload({ timeoutMs: 8_000 });

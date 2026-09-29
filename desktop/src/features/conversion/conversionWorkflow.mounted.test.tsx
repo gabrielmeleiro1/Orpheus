@@ -219,3 +219,73 @@ it("reports unknown immediately when no backend client can observe the job", asy
   const hook = await mount(() => useTerminalStateWaiters({ apiClient: null, onTerminalStatus: vi.fn() }));
   await expect(hook.current.waitForTerminalState("job")).resolves.toMatchObject({ status: "unknown" });
 });
+
+it.each(["success", "failure"])("inspection %s cannot release an active row for removal", async (outcome) => {
+  let finishInspection!: (value: unknown) => void;
+  let failInspection!: (error: Error) => void;
+  const client = { deleteUpload: vi.fn(), preflightSource: vi.fn(() => new Promise((resolve, reject) => { finishInspection = resolve; failInspection = reject; })) } as unknown as ApiClient;
+  const hook = await mount(() => useConversionQueueController({ apiClient: client }));
+  const item = { ...createQueueItem("upload:active.txt", "audiobook"), status: "converting" as const, jobId: "active" };
+  await act(async () => hook.current.addPastedSource(item, { selectItem: true }));
+  let inspection: Promise<void>;
+  await act(async () => { inspection = hook.current.runPreflightForItem(item); });
+  expect(hook.current.queueItems[0].status).toBe("converting");
+  await act(async () => hook.current.removeQueueItem(item.id));
+  expect(hook.current.queueItems).toHaveLength(1);
+  expect(client.deleteUpload).not.toHaveBeenCalled();
+  await act(async () => {
+    if (outcome === "success") finishInspection({ chapter_count: 1, warnings: [] });
+    else failInspection(new Error("Inspection failed"));
+    await inspection;
+  });
+  expect(hook.current.queueItems[0].status).toBe("converting");
+});
+
+it.each(["blank", "edited", "preflighting", "failed"] as const)("skips a waiting row made %s during conversion", async (change) => {
+  const client = {} as ApiClient;
+  let finish!: (value: ConversionJobTerminalEvent) => void;
+  const job = jobController({ waitForTerminalState: vi.fn().mockImplementationOnce(() => new Promise<ConversionJobTerminalEvent>((resolve) => { finish = resolve; }))
+    .mockResolvedValue({ jobId: "job", status: "completed", message: "" }) });
+  const hook = await mount(() => {
+    const queue = useConversionQueueController({ apiClient: client });
+    const runner = useConversionQueueRunner({ apiClient: client, conversionJob: job, queueItems: queue.queueItems,
+      selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload, updateQueueItem: queue.updateQueueItem,
+      syncSelectedQueueEdits: queue.syncSelectedQueueEdits, setQueueStatus: queue.setQueueStatus });
+    return { queue, runner };
+  });
+  const items = ["a.txt", "b.txt", "c.txt"].map((path) => ({ ...createQueueItem(path, "audiobook"), status: "ready" as const }));
+  await act(async () => items.forEach((item) => hook.current.queue.addPastedSource(item)));
+  let running: Promise<void>;
+  await act(async () => { running = hook.current.runner.onRunQueue(); });
+  await act(async () => hook.current.queue.applySelectedQueueItem(items[1]));
+  await act(async () => {
+    if (change === "blank" || change === "edited") hook.current.queue.syncSelectedQueueEdits({ sourcePath: change === "blank" ? "" : "new.txt" });
+    else hook.current.queue.updateQueueItem(items[1].id, (item) => ({ ...item, status: change }));
+  });
+  await act(async () => { finish({ jobId: "job", status: "completed", message: "" }); await running; });
+  expect(vi.mocked(job.startConversion).mock.calls.map(([request]) => request.source_path)).toEqual(["a.txt", "c.txt"]);
+  expect(hook.current.queue.queueItems[1].jobId).toBeNull();
+  expect(hook.current.queue.queueItems[2].status).toBe("done");
+});
+
+it("uses the replacement conversion controller after reconciling with the new client", async () => {
+  let finish!: (value: ConversionJobTerminalEvent) => void;
+  const oldJob = jobController({ waitForTerminalState: vi.fn(() => new Promise<ConversionJobTerminalEvent>((resolve) => { finish = resolve; })) });
+  const newJob = jobController();
+  let job = oldJob;
+  let client = {} as ApiClient;
+  const items = ["a.txt", "b.txt"].map((path) => ({ ...createQueueItem(path, "audiobook"), status: "ready" as const }));
+  const hook = await mount(() => useConversionQueueRunner({ apiClient: client, conversionJob: job, queueItems: items,
+    selectedQueueItem: items[0], buildStartPayload: payload, updateQueueItem: vi.fn(), syncSelectedQueueEdits: vi.fn(), setQueueStatus: vi.fn() }));
+  let running: Promise<void>;
+  await act(async () => { running = hook.current.onRunQueue(); });
+  job = newJob;
+  client = { getActiveConversion: vi.fn(async () => ({ active: false, job: null })) } as unknown as ApiClient;
+  await hook.rerender();
+  await act(async () => { finish({ jobId: "job", status: "unknown", message: "" }); });
+  expect(client.getActiveConversion).toHaveBeenCalledOnce();
+  expect(oldJob.startConversion).toHaveBeenCalledTimes(1);
+  expect(newJob.startConversion).toHaveBeenCalledWith(expect.objectContaining({ source_path: "b.txt" }));
+  await act(async () => { await running; });
+  expect(newJob.refreshActiveConversion).toHaveBeenCalledOnce();
+});
