@@ -31,8 +31,9 @@ venv/
 .claude/
 scripts/sync_to_desktop.sh
 
-# Local documentation, reports, and planning notes
+# Local documentation, reports, planning notes, and design review artifacts
 /docs/
+/design/
 
 # Coverage and test output
 .coverage
