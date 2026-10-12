@@ -93,14 +93,15 @@ def _tokens(text: str) -> list[_Token]:
             next_start = matches[position + 1].start() if position + 1 < len(matches) else len(line)
             previous_end = matches[position - 1].end() if position else 0
             gap = line[previous_end:match.start()]
-            marked = bool(re.search(r"[#|]+\s*$", gap))
+            # Matching only from the start of a marker run keeps this linear.
+            marked = bool(re.search(r"(?<![#|])[#|]+\s*$", gap))
             heading_start = position
             while heading_start and len(matches[heading_start - 1].group()) > 1 and matches[heading_start - 1].group().isupper():
                 if heading_start < position and not line[matches[heading_start - 1].end():matches[heading_start].start()].isspace():
                     break
                 heading_start -= 1
             sentence_start = (
-                position == 0 or bool(re.search(r"[.!?:][\"'’”)]*\s*[#|\s]*$", gap))
+                position == 0 or bool(re.search(r"[.!?:][\"'’”)]*[#|\s]*$", gap))
                 or position - heading_start >= 2 or (heading_start == 0 and position == 1)
             )
             drop_cap = len(word) == 1 and word.isupper() and (
@@ -431,7 +432,7 @@ def reconcile_llm_edits(source_text: str, output_text: str) -> GuardedEdits:
             if left_numeric and right_numeric:
                 return re.sub(r"\s+", "", gap)
             if right_numeric:
-                match = re.search(r"[+\-−.,]+\s*$", gap)
+                match = re.search(r"(?<![+\-−.,])[+\-−.,]+\s*$", gap)
                 return match.group().strip() if match else ""
             if left_numeric:
                 return "".join(re.findall(r"[%‰°]", gap))

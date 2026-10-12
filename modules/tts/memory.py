@@ -8,7 +8,6 @@ Ensures models are properly loaded and unloaded sequentially.
 import gc
 import logging
 from typing import Any, Optional, Callable
-from contextlib import contextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -57,11 +56,6 @@ class VRAMManager:
         self._model_unloaders: dict[str, Callable] = {}
         self._initialized = True
     
-    @property
-    def current_model(self) -> Optional[str]:
-        """Get the currently loaded model name."""
-        return self._current_model
-    
     def register_model(
         self, 
         name: str, 
@@ -96,24 +90,6 @@ class VRAMManager:
         """
         if self._current_model and self._current_model != model_name:
             logger.info(f"Unloading {self._current_model} to load {model_name}")
-            self.unload_current()
-    
-    @contextmanager
-    def model_context(self, name: str, unload_fn: Callable[[], None]):
-        """
-        Context manager for model loading.
-        
-        Automatically registers and unloads model.
-        
-        Args:
-            name: Model identifier
-            unload_fn: Function to unload the model
-        """
-        self.ensure_can_load(name)
-        self.register_model(name, unload_fn)
-        try:
-            yield
-        finally:
             self.unload_current()
 
 

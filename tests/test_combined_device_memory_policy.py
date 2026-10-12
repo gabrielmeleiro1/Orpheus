@@ -260,9 +260,3 @@ def test_combined_device_memory_policy_sampling_unavailable_without_torch(monkey
 
     assert policy.sampling_unavailable_reason == "cuda device memory sampling unavailable"
     assert policy.sample() is None
-
-
-def test_no_cleaner_device_memory_policy_class_exists():
-    import modules.tts.device_memory as device_memory
-
-    assert not hasattr(device_memory, "CleanerDeviceMemoryPolicy")

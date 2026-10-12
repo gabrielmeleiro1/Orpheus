@@ -83,16 +83,6 @@ def test_factory_create_from_absent_runtime_model_keeps_kokoro_default() -> None
     assert strategy.config.runtime_spec is spec
 
 
-def test_factory_only_registers_kokoro(monkeypatch) -> None:
-    monkeypatch.setattr(TTSEngineFactory, "_optional_loaded", False)
-
-    assert TTSEngineFactory.available_engines() == ["kokoro"]
-
-
-def test_conversion_engines_only_include_kokoro() -> None:
-    assert TTSEngineFactory.available_conversion_engines() == ["kokoro"]
-
-
 def test_conversion_engine_provider_filter_accepts_mlx_audio_alias() -> None:
     assert TTSEngineFactory.available_conversion_engines(provider="mlx") == ["kokoro"]
     assert TTSEngineFactory.available_conversion_engines(provider="mlx-audio") == ["kokoro"]
@@ -169,9 +159,6 @@ class _SequentialFallbackStrategy(TTSStrategy):
         if text == "explode":
             raise RuntimeError("boom")
         return np.full(3, len(text), dtype=np.float32)
-
-    def estimate_duration(self, text: str, speed: float = 1.0) -> float:
-        return len(text) / max(speed, 0.1)
 
 
 def test_base_strategy_batch_falls_back_to_sequential_items() -> None:

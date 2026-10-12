@@ -14,17 +14,50 @@ _WORD_PAIR_RE = re.compile(
 )
 
 
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+def _strip_code_spans(text: str) -> str:
+    """Blank out backtick code spans in linear time.
+
+    A span opens at a backtick run and closes at the next run of the same
+    length, as in Markdown. The backreference regex this replaces rescanned the
+    rest of the text from every backtick, which is cubic on long backtick runs.
+    """
+    runs = [(match.start(), match.end()) for match in _BACKTICK_RUN_RE.finditer(text)]
+    next_same_length: list[int | None] = [None] * len(runs)
+    latest_by_length: dict[int, int] = {}
+    for index in range(len(runs) - 1, -1, -1):
+        length = runs[index][1] - runs[index][0]
+        next_same_length[index] = latest_by_length.get(length)
+        latest_by_length[length] = index
+    pieces: list[str] = []
+    position = 0
+    index = 0
+    while index < len(runs):
+        closing = next_same_length[index]
+        if closing is None:
+            index += 1
+            continue
+        pieces.append(text[position:runs[index][0]])
+        pieces.append(" ")
+        position = runs[closing][1]
+        index = closing + 1
+    pieces.append(text[position:])
+    return "".join(pieces)
+
+
 def _count_split_words(text: str) -> int:
     """Count conservative English OCR splits, leaving ambiguous boundaries alone."""
     # Literal code may intentionally contain fragments as identifiers.
-    prose = re.sub(r"(`+).*?\1", " ", text, flags=re.DOTALL)
+    prose = _strip_code_spans(text)
     count = 0
     for match in _WORD_PAIR_RE.finditer(prose):
         left, right = match.groups()
         prefix = prose[max(0, match.start() - 80):match.start()]
         if re.search(r"\b\d+(?:[.,]\d+)?\s*$", prefix):
             continue
-        previous = re.search(r"([A-Za-z]+)\s+$", prefix)
+        previous = re.search(r"(?<![A-Za-z])([A-Za-z]+)\s+$", prefix)
         if has_fragment_evidence(
             left, right, conservative=True, previous_word=previous.group(1) if previous else "",
         ):

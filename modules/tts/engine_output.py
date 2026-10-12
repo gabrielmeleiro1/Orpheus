@@ -84,7 +84,8 @@ def synthesize_to_output_path(
             file_prefix=output_path.stem,
             generate_fn=active_generate_fn,
         )
-        active_generate_fn(**gen_kwargs)
+        with mlx_compat_backend.use_installed_voices(engine._model_path):  # noqa: SLF001
+            active_generate_fn(**gen_kwargs)
 
     if output_path.exists():
         audio, _ = sf.read(str(output_path), dtype="float32")
@@ -184,7 +185,8 @@ def synthesize_to_output_file(
             file_prefix=output_path.stem,
             generate_fn=active_generate_fn,
         )
-        active_generate_fn(**gen_kwargs)
+        with mlx_compat_backend.use_installed_voices(engine._model_path):  # noqa: SLF001
+            active_generate_fn(**gen_kwargs)
 
     if output_path.exists():
         return output_path
@@ -249,7 +251,8 @@ def generate_temp_wav_paths(
                 file_prefix="tts_output",
                 generate_fn=active_generate_fn,
             )
-            active_generate_fn(**gen_kwargs)
+            with mlx_compat_backend.use_installed_voices(engine._model_path):  # noqa: SLF001
+                active_generate_fn(**gen_kwargs)
 
         for _ in range(20):
             wav_paths = sorted(temp_path.rglob("*.wav"))
@@ -303,21 +306,3 @@ def synthesize_to_temp_audio(
         if len(audio_segments) == 1:
             return audio_segments[0]
         return np.concatenate(audio_segments)
-
-
-def synthesize_to_file(
-    engine,  # noqa: ANN001
-    text: str,
-    output_path: Path | str,
-    voice: str | None = None,
-    speed: float = 1.0,
-) -> Path:
-    """Synthesize speech and save to a WAV file."""
-    import soundfile as sf
-
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    audio = engine.synthesize(text, voice, speed)
-    sf.write(str(output_path), audio, engine.config.sample_rate, subtype="PCM_16")
-    return output_path

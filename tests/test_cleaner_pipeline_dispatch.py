@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import types
-from unittest.mock import patch
 
 from modules.pipeline.models import PipelineConfig, build_worker_plan
 from modules.pipeline.stages.cleaning import clean_chunks_with_trace
@@ -15,6 +14,34 @@ from modules.tts.cleaner_backends.registry import (
 from modules.tts.cleaner_config import CleanTrace
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from tests.fixtures.fake_cleaner_backend import FakeLocalCleanerBackend
+
+
+def test_local_cleaning_stops_scheduling_chunks_when_cancelled(monkeypatch):
+    from modules.tts.cleaner import TextCleaner
+    from modules.tts.cleaner_config import CleanerConfig
+
+    cleaner = TextCleaner(CleanerConfig(backend="mlx"))
+    processed = []
+
+    def clean(text):
+        processed.append(text)
+        return CleanTrace(
+            original_text=text, rule_based_text=text, cleaned_text=text, mode="rule_only",
+        )
+
+    monkeypatch.setattr(cleaner, "clean_with_trace", clean)
+    runtime = types.SimpleNamespace(
+        check_cancelled=lambda: bool(processed),
+        log_verbose=lambda *_args, **_kwargs: None,
+        config=types.SimpleNamespace(save_cleaning_debug=False),
+    )
+    _cleaned, _inputs, _rows, cancelled = clean_chunks_with_trace(
+        runtime, types.SimpleNamespace(), chapter_idx=0, total_chapters=1,
+        chunks=["one", "longer two", "longest three"], cleaner=cleaner,
+    )
+
+    assert cancelled is True
+    assert processed == ["one"]
 
 
 def test_is_local_cleaner_backend_mlx_and_api():
@@ -113,124 +140,30 @@ def test_build_worker_plan_local_gpu_guard_follows_registered_local_backend(
     assert plan.initial_reason == "local GPU model contention guard"
 
 
-def test_cleaning_stage_uses_local_dispatch_for_mlx():
+def test_cleaning_stage_cleans_cuda_chunks_through_the_local_batch():
     runtime = types.SimpleNamespace(
         check_cancelled=lambda: False,
         log_verbose=lambda *_args, **_kwargs: None,
+        notify_progress=lambda **_kwargs: None,
         config=types.SimpleNamespace(save_cleaning_debug=False),
     )
+    # A CUDA cleaner offers only the serial local batch; an API-style
+    # concurrent batch would fail on the missing async method.
     cleaner = types.SimpleNamespace(
-        config=types.SimpleNamespace(backend="mlx"),
-        clean_chunks_with_trace=lambda chunks: [
+        config=types.SimpleNamespace(backend="cuda"),
+        clean_chunks_with_trace=lambda chunks, cancel_requested=None: [
             CleanTrace(
-                original_text=text,
-                rule_based_text=text,
-                cleaned_text=text,
-                mode="rule_only",
+                original_text=text, rule_based_text=text,
+                cleaned_text=f"clean {text}", mode="llm_success",
             )
             for text in chunks
         ],
     )
-    hooks = types.SimpleNamespace()
 
-    with patch(
-        "modules.pipeline.stages.cleaning._run_sync_trace_batch_cleaning",
-        return_value=([], False),
-    ) as local_dispatch:
-        cleaned, llm_inputs, trace_rows, cancelled = clean_chunks_with_trace(
-            runtime,
-            hooks,
-            chapter_idx=0,
-            total_chapters=1,
-            chunks=["one", "two"],
-            cleaner=cleaner,
-        )
-
-    local_dispatch.assert_called_once()
-    assert cleaned == []
-    assert llm_inputs == []
-    assert trace_rows == []
-    assert cancelled is False
-
-
-def test_cleaning_stage_uses_local_dispatch_for_cuda():
-    runtime = types.SimpleNamespace(
-        check_cancelled=lambda: False,
-        log_verbose=lambda *_args, **_kwargs: None,
-        config=types.SimpleNamespace(save_cleaning_debug=False),
+    cleaned, _inputs, _rows, cancelled = clean_chunks_with_trace(
+        runtime, types.SimpleNamespace(), chapter_idx=0, total_chapters=1,
+        chunks=["one", "two"], cleaner=cleaner,
     )
-    cleaner = types.SimpleNamespace(
-        config=types.SimpleNamespace(backend="cuda"),
-    )
-    hooks = types.SimpleNamespace()
 
-    with (
-        patch(
-            "modules.pipeline.stages.cleaning._run_sync_trace_batch_cleaning",
-            return_value=([], False),
-        ) as local_dispatch,
-        patch(
-            "modules.pipeline.stages.cleaning._run_batch_trace_cleaning",
-        ) as api_batch,
-    ):
-        cleaned, llm_inputs, trace_rows, cancelled = clean_chunks_with_trace(
-            runtime,
-            hooks,
-            chapter_idx=0,
-            total_chapters=1,
-            chunks=["one", "two"],
-            cleaner=cleaner,
-        )
-
-    local_dispatch.assert_called_once()
-    api_batch.assert_not_called()
-    assert cleaned == []
-    assert llm_inputs == []
-    assert trace_rows == []
-    assert cancelled is False
-
-
-def test_cleaning_stage_uses_api_batch_path_for_api_backend():
-    runtime = types.SimpleNamespace(
-        check_cancelled=lambda: False,
-        log_verbose=lambda *_args, **_kwargs: None,
-        config=types.SimpleNamespace(save_cleaning_debug=False),
-    )
-    cleaner = types.SimpleNamespace(
-        config=types.SimpleNamespace(backend="api"),
-    )
-    hooks = types.SimpleNamespace()
-
-    with (
-        patch(
-            "modules.pipeline.stages.cleaning._run_sync_trace_batch_cleaning",
-        ) as local_dispatch,
-        patch(
-            "modules.pipeline.stages.cleaning._run_batch_trace_cleaning",
-            return_value=(
-                [
-                    types.SimpleNamespace(
-                        cleaned_text="one",
-                        llm_input_text="one",
-                        trace_row=None,
-                    )
-                ],
-                False,
-            ),
-        ) as api_batch,
-    ):
-        cleaned, llm_inputs, trace_rows, cancelled = clean_chunks_with_trace(
-            runtime,
-            hooks,
-            chapter_idx=0,
-            total_chapters=1,
-            chunks=["one"],
-            cleaner=cleaner,
-        )
-
-    local_dispatch.assert_not_called()
-    api_batch.assert_called_once()
-    assert cleaned == ["one"]
-    assert llm_inputs == ["one"]
-    assert trace_rows == []
+    assert cleaned == ["clean one", "clean two"]
     assert cancelled is False

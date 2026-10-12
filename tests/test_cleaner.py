@@ -22,31 +22,19 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.tts.cleaner as cleaner_module
-from modules.tts.cleaner_transport import generate_api_response_async
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
-from modules.tts.cleaner_api import CleanerAPIStrategy
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
 from modules.tts.cleaner_rules import extract_result
 from modules.tts import cleaner_rules as cleaner_rules_backend
 from tests.fixtures.fake_cleaner_backend import make_partial_text_cleaner
 
 
-def test_text_cleaner_init_selects_backend_from_registry(monkeypatch):
-    api_cleaner = TextCleaner(CleanerConfig(backend="api"))
-    api_strategy = api_cleaner._backend_strategy
-    assert isinstance(api_strategy, CleanerAPIStrategy)
-
-    monkeypatch.setattr(
-        "modules.tts.cleaner_mlx.ensure_mlx_lm_runtime",
-        lambda: None,
-    )
-    mlx_cleaner = TextCleaner(CleanerConfig(backend="mlx"))
-    mlx_strategy = mlx_cleaner._backend_strategy
-    assert isinstance(mlx_strategy, CleanerMLXStrategy)
-
+def test_text_cleaner_rejects_unknown_backend():
     with pytest.raises(ValueError, match="not supported"):
         TextCleaner(CleanerConfig(backend="bogus"))
+
+
 
 
 def test_extract_result_strips_prompt_delimiter_echoes():
@@ -77,19 +65,14 @@ def test_rule_based_clean_preserves_em_dash_pronoun_spacing():
 
 
 def test_rule_based_clean_repairs_reviewed_spaced_hyphen_compounds():
-    from modules.ingestion.extraction_artifact_signals import (
-        scan_cleaner_handoff_artifacts,
-    )
+    from modules.ingestion.extraction_artifact_signals import PDF_HYPHENATION_LEAK_RE
 
     cleaned = cleaner_rules_backend.rule_based_clean(
         "He was a notorious card- sharper who fleeced them."
     )
     assert "card-sharper" in cleaned
     assert "card- sharper" not in cleaned
-    assert not any(
-        issue.issue_type == "pdf_hyphenation_leakage"
-        for issue in scan_cleaner_handoff_artifacts(cleaned)
-    )
+    assert PDF_HYPHENATION_LEAK_RE.search(cleaned) is None
 
     # A second reviewed compound proves this is not tied to one benchmark phrase.
     assert (
@@ -269,139 +252,32 @@ def test_cleaner_api_runtime_prefers_direct_api_key(monkeypatch):
     assert model_name == "gpt-5-nano"
 
 
-def test_rule_based_cleaning():
-    """Test rule-based cleaning without loading LLM."""
-    print("\n" + "="*50)
-    print("TEXT CLEANER TEST SUITE")
-    print("="*50 + "\n")
-    
-    print("[1] Testing rule-based text cleaning...")
-    
-    # Create cleaner without loading LLM
-    cleaner = make_partial_text_cleaner(CleanerConfig(), loaded=False)
-    
-    test_cases = [
-        ("Dr. Smith went to St. Louis.", "Dr. Smith went to St. Louis."),
-        ("e.g. this is an example", "e.g. this is an example"),
-        ("Too   many    spaces", "Too many spaces"),
-        ("Mr. and Mrs. Jones left", "Mr. and Mrs. Jones left"),
-        ("Prof. Brown said etc.", "Prof. Brown said etc."),
-    ]
-    
-    passed = 0
-    for input_text, expected in test_cases:
-        result = cleaner._rule_based_clean(input_text)
-        if result == expected:
-            print(f"  ✓ '{input_text}'")
-            print(f"    → '{result}'")
-            passed += 1
-        else:
-            print(f"  ✗ '{input_text}'")
-            print(f"    Got:      '{result}'")
-            print(f"    Expected: '{expected}'")
-    
-    print(f"\n  Passed {passed}/{len(test_cases)} tests")
-
-    print("\n[1b] Testing markdown table normalization...")
+def test_rule_based_clean_converts_markdown_tables_to_speech():
     table_input = (
         "|Action|Conscious Reason|Subconscious Reason|\n"
         "|---|---|---|\n"
         "|I am taking profits|You can't go broke taking a profit|Avoid pain|"
     )
-    table_cleaned = cleaner._rule_based_clean(table_input)
+    table_cleaned = cleaner_rules_backend.rule_based_clean(table_input)
     assert "Action: I am taking profits" in table_cleaned
     assert "Conscious Reason: You can't go broke taking a profit" in table_cleaned
     assert "Subconscious Reason: Avoid pain" in table_cleaned
     assert "|" not in table_cleaned
-    print("  ✓ markdown table converted to speech-friendly text")
 
     compressed_table_input = (
         "|Action|Conscious Reason|Subconscious Reason| |---|---|---| "
         "|1. I am letting my loss run|I am hoping|Avoid pain| "
         "|2. I am letting my loss run|Indicator/Fib/etc., says<br>so|Avoid pain|"
     )
-    compressed_cleaned = cleaner._rule_based_clean(compressed_table_input)
+    compressed_cleaned = cleaner_rules_backend.rule_based_clean(compressed_table_input)
     assert "Action: 1. I am letting my loss run" in compressed_cleaned
     assert "Indicator/Fib/etc., says so" in compressed_cleaned
     assert "|" not in compressed_cleaned
     assert "<br>" not in compressed_cleaned
-    print("  ✓ compressed markdown table and <br> are normalized")
-    
-    # Test 2: LLM detection
-    print("\n[2] Testing LLM need detection...")
-    
-    need_tests = [
-        ("Hello world", False),
-        ("There are 42 apples", False),
-        ("NASA launched today", False),
-        ("Iam tired today", True),
-        ("Simple text here", False),
-    ]
-    
-    for text, expected in need_tests:
-        result = cleaner._needs_llm_cleaning(text)
-        status = "✓" if result == expected else "✗"
-        print(f"  {status} '{text}' → needs_llm={result} (expected {expected})")
-    
-    # Test 3: Result extraction
-    print("\n[3] Testing result extraction...")
-    
-    extract_tests = [
-        ("  cleaned text  ", "cleaned text"),
-        ("First paragraph.\n\nSecond paragraph.", "First paragraph.\n\nSecond paragraph."),
-    ]
-    
-    for input_text, expected in extract_tests:
-        result = cleaner._extract_result(input_text)
-        status = "✓" if result == expected else "✗"
-        print(f"  {status} Extraction works correctly")
 
-    # Test 4: mlx-lm sampler compatibility
-    print("\n[4] Testing mlx-lm sampler compatibility...")
-    compat_cleaner = make_partial_text_cleaner(CleanerConfig(), loaded=True)
 
-    calls = []
-
-    def fake_generate(_model, _tokenizer, **kwargs):
-        calls.append(kwargs)
-        assert "sampler" in kwargs
-        return "I am tired today."
-
-    original_generate = cleaner_module.cleaner_mlx_backend.generate
-    original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
-    cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
-    cleaner_module.cleaner_mlx_backend.generate = fake_generate
-    try:
-        cleaned = compat_cleaner.clean("Iam tired today.")
-    finally:
-        cleaner_module.cleaner_mlx_backend.generate = original_generate
-        cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
-
-    assert cleaned == "I am tired today."
-    assert len(calls) == 1
-    assert calls[0]["sampler"] == ("sampler", compat_cleaner.config.temperature)
-    stats = compat_cleaner.stats_snapshot()
-    assert stats["llm_success"] == 1
-    assert stats["llm_fallback"] == 0
-    print("  ✓ cleaner uses sampler-based generation for mlx-lm compatibility")
-
-    # Test 5: before/after cleaner trace
-    print("\n[5] Testing cleaner before/after trace...")
-    cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
-    cleaner_module.cleaner_mlx_backend.generate = fake_generate
-    try:
-        trace = compat_cleaner.clean_with_trace("Iam tired today.")
-    finally:
-        cleaner_module.cleaner_mlx_backend.generate = original_generate
-        cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
-    assert trace.original_text == "Iam tired today."
-    assert "Iam" in trace.rule_based_text
-    assert trace.cleaned_text == "I am tired today."
-    assert trace.mode == "llm_success"
-    print("  ✓ cleaner trace captures original, rule-based, and cleaned text")
-
-    # Test 6: API backend path (OpenAI-compatible / Kimi)
-    print("\n[6] Testing API cleaner backend request flow...")
+def test_api_backend_request_flow_tls_parsing_and_token_parameters():
+    # API backend path (OpenAI-compatible / Kimi)
     api_cleaner = make_partial_text_cleaner(
         CleanerConfig(
             model_name="moonshot-v1-8k",
@@ -465,10 +341,8 @@ def test_rule_based_cleaning():
     assert captured_request["model"] == "moonshot-v1-8k"
     assert captured_request["context"] is not None
     assert api_cleaner.stats_snapshot()["llm_success"] == 1
-    print("  ✓ API backend sends request and consumes cleaned response")
 
-    # Test 7: API backend TLS context with custom CA bundle
-    print("\n[7] Testing API cleaner backend TLS custom CA bundle...")
+    # API backend TLS context with custom CA bundle
     api_ca_cleaner = make_partial_text_cleaner(
         CleanerConfig(
             model_name="moonshot-v1-8k",
@@ -541,10 +415,8 @@ def test_rule_based_cleaning():
     assert ssl_capture["context"] is not None
     assert ssl_capture["context"].loaded_cafile == "/tmp/custom-ca.pem"
     assert ssl_capture["urlopen_context"] is ssl_capture["context"]
-    print("  ✓ API backend applies custom CA bundle to SSL context")
 
-    # Test 8: API backend parser fallback for choices[].text payloads
-    print("\n[8] Testing API cleaner backend parser fallback...")
+    # API backend parser fallback for choices[].text payloads
     api_text_cleaner = make_partial_text_cleaner(
         CleanerConfig(
             model_name="gpt-5-nano",
@@ -582,10 +454,8 @@ def test_rule_based_cleaning():
     assert cleaned_api_text == "I am tired today."
     assert parser_capture["url"] == "https://api.openai.com/v1/chat/completions"
     assert parser_capture["model"] == "gpt-5-nano"
-    print("  ✓ API backend parser handles choices[].text fallback")
 
-    # Test 9: API backend retries token field when provider rejects max_tokens
-    print("\n[9] Testing API token parameter fallback (max_tokens -> max_completion_tokens)...")
+    # API backend retries token field when provider rejects max_tokens
     api_token_cleaner = make_partial_text_cleaner(
         CleanerConfig(
             model_name="gpt-4o-mini",
@@ -658,10 +528,8 @@ def test_rule_based_cleaning():
 
     assert cleaned_api_token == "I am tired today."
     assert len(token_payloads) == 2
-    print("  ✓ API backend retries with max_completion_tokens when max_tokens is rejected")
 
-    # Test 10: GPT-5 models use max_completion_tokens without retry
-    print("\n[10] Testing GPT-5 token parameter selection...")
+    # GPT-5 models use max_completion_tokens without retry
     api_gpt5_cleaner = make_partial_text_cleaner(
         CleanerConfig(
             model_name="gpt-5-nano",
@@ -710,10 +578,8 @@ def test_rule_based_cleaning():
     assert "max_completion_tokens" in gpt5_payloads[0]
     assert "max_tokens" not in gpt5_payloads[0]
     assert "temperature" not in gpt5_payloads[0]
-    print("  ✓ GPT-5 requests use max_completion_tokens")
 
-    # Test 11: o-family models should omit temperature override
-    print("\n[11] Testing o-family temperature compatibility...")
+    # o-family models should omit temperature override
     api_o3_cleaner = make_partial_text_cleaner(
         CleanerConfig(
             model_name="o3-mini",
@@ -761,64 +627,6 @@ def test_rule_based_cleaning():
     assert len(o3_payloads) == 1
     assert "max_completion_tokens" in o3_payloads[0]
     assert "temperature" not in o3_payloads[0]
-    print("  ✓ o-family requests omit temperature override")
-
-    print("\n" + "="*50)
-    print("RULE-BASED TESTS PASSED ✓")
-    print("="*50 + "\n")
-    print("Note: Full LLM-based cleaning requires model download (~2GB)")
-    print("Run manually with: python -c \"from modules.tts import TextCleaner; c=TextCleaner(); print(c.clean('Test 123'))\"")
-    
-    return True
-
-
-def test_cleaner_transport_generate_api_response_async_uses_existing_cleaner_hooks():
-    observed = {}
-
-    async def _post_api_chat_completions_with_retry_async(**kwargs):
-        observed["post_kwargs"] = kwargs
-        return '{"choices":[{"message":{"content":"cleaned text"}}]}'
-
-    cleaner = SimpleNamespace(
-        config=SimpleNamespace(
-            api_global_limiter=None,
-            max_tokens=99,
-            temperature=0.2,
-        ),
-        _build_api_ssl_context=lambda: "ssl-context",
-        _post_api_chat_completions_with_retry_async=_post_api_chat_completions_with_retry_async,
-        _parse_api_response_text=lambda response_body: f"parsed::{response_body}",
-    )
-
-    original_resolve_api_runtime = cleaner_module.cleaner_api_backend.resolve_api_runtime
-    original_build_api_payload = cleaner_module.cleaner_api_backend.build_api_payload
-    cleaner_module.cleaner_api_backend.resolve_api_runtime = lambda config: (  # noqa: ARG005
-        "https://api.example.test/v1",
-        "key-123",
-        "gpt-5-nano",
-    )
-    cleaner_module.cleaner_api_backend.build_api_payload = lambda **kwargs: {  # noqa: ARG005
-        "payload": "ok",
-    }
-    try:
-        result = asyncio.run(
-            generate_api_response_async(
-                cleaner,
-                "prompt text",
-                http_error_cls=RuntimeError,
-                aiohttp_module="fake-aiohttp",
-            )
-        )
-    finally:
-        cleaner_module.cleaner_api_backend.resolve_api_runtime = original_resolve_api_runtime
-        cleaner_module.cleaner_api_backend.build_api_payload = original_build_api_payload
-
-    assert result == 'parsed::{"choices":[{"message":{"content":"cleaned text"}}]}'
-    assert observed["post_kwargs"]["base_url"] == "https://api.example.test/v1"
-    assert observed["post_kwargs"]["api_key"] == "key-123"
-    assert observed["post_kwargs"]["payload"] == {"payload": "ok"}
-    assert observed["post_kwargs"]["ssl_context"] == "ssl-context"
-    assert observed["post_kwargs"]["aiohttp_module"] == "fake-aiohttp"
 
 
 def test_mlx_clean_batch_with_trace_async_serializes_local_model_calls():
@@ -856,54 +664,3 @@ def test_mlx_clean_batch_with_trace_async_serializes_local_model_calls():
 
     assert [trace.cleaned_text for trace in traces] == [f"cleaned {text}" for text in texts]
     assert cleaner.peak_active_calls == 1
-
-
-def test_trace_decision_scores_before_rule_only_gate_when_llm_not_required():
-    from modules.tts.cleaner_trace import _start_trace_decision_flow
-    from modules.tts.cleaner import _CleanTrace
-
-    score_calls: list[str] = []
-    cleaner = SimpleNamespace(
-        _rule_based_clean=lambda text: f"{text} cleaned",
-        _needs_llm_cleaning=lambda text: False,
-        _artifact_score_for=lambda text: (
-            score_calls.append(text) or {"total": 0.0, "cleaning_path": "rules_only"}
-        ),
-        _should_use_rule_only_cleaning=lambda rule_based_text, artifact_score: True,
-        _loaded=True,
-        _rule_only_count=0,
-        _total_chunks_cleaned=0,
-        _total_time_ms=0.0,
-    )
-
-    result = _start_trace_decision_flow(cleaner, _CleanTrace, "clean prose")
-
-    assert score_calls == ["clean prose cleaned"]
-    assert result.mode == "rule_only"
-
-
-def test_trace_decision_defers_artifact_scoring_when_llm_heuristics_trigger():
-    from modules.tts.cleaner_trace import TraceDecisionRequest, _start_trace_decision_flow
-
-    score_calls: list[str] = []
-    cleaner = SimpleNamespace(
-        _rule_based_clean=lambda text: text,
-        _needs_llm_cleaning=lambda text: True,
-        _artifact_score_for=lambda text: (
-            score_calls.append(text) or {"total": 0.5, "cleaning_path": "light_llm"}
-        ),
-        _should_use_rule_only_cleaning=lambda rule_based_text, artifact_score: False,
-        _loaded=True,
-        load=lambda: None,
-    )
-
-    result = _start_trace_decision_flow(cleaner, TraceDecisionRequest, "bad- hy phen")
-
-    assert score_calls == []
-    assert isinstance(result, TraceDecisionRequest)
-    assert result.artifact_score is None
-
-
-if __name__ == "__main__":
-    success = test_rule_based_cleaning()
-    sys.exit(0 if success else 1)

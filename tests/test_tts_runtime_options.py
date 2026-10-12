@@ -344,12 +344,6 @@ def test_spec_options_preserves_typed_runtime_provider_options() -> None:
         runtime_provider_options=(("device_id", 1), ("use_tf32", True)),
     )
 
-    assert options._spec_options() == {  # noqa: SLF001
-        "device_id": 1,
-        "dtype": "fp16",
-        "use_tf32": True,
-    }
-
     spec = options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
 
     assert spec.factory_kwargs()["runtime_options"] == {
@@ -369,7 +363,8 @@ def test_from_serialized_coerces_legacy_provider_options_to_runtime_types() -> N
     )
 
     assert options.runtime_provider_options == (("device_id", 1), ("use_tf32", True))
-    assert options._spec_options() == {"device_id": 1, "use_tf32": True}  # noqa: SLF001
+    spec = options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
+    assert spec.factory_kwargs()["runtime_options"] == {"device_id": 1, "use_tf32": True}
 
 
 def test_pipeline_and_worker_runtime_specs_stay_aligned(tmp_path: Path) -> None:

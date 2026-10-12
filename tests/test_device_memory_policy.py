@@ -66,17 +66,6 @@ def test_mlx_device_memory_policy_missing_mlx_returns_host_snapshot(monkeypatch)
     assert snapshot.peak_bytes == 0
 
 
-def test_mlx_device_memory_policy_worker_environment_uses_active_workers():
-    from modules.tts.device_memory import MLXDeviceMemoryPolicy
-
-    env = MLXDeviceMemoryPolicy().configure_worker_environment(
-        available_bytes=12 * GIB,
-        active_workers=3,
-    )
-
-    assert env == {"MLX_METAL_MEMORY": str(int((12 * GIB / 3) * 0.9))}
-
-
 def test_host_memory_policy_has_no_provider_specific_worker_environment():
     from modules.tts.device_memory import HostMemoryPolicy
 

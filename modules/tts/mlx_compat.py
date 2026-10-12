@@ -6,8 +6,12 @@ import inspect
 import os
 import sys
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from .model_snapshots import installed_model_path, installed_voice_path, require_local_phonemizer
 
 MLX_AVAILABLE = False
 MLX_IMPORT_ERROR: Optional[Exception] = None
@@ -18,63 +22,48 @@ _load_tts_model_fn = None
 _TQDM_LOCK_PATCHED = False
 _GENERATE_AUDIO_SIGNATURE_PARAM_CACHE: dict[Any, frozenset[str]] = {}
 _GENERATE_AUDIO_SIGNATURE_PARAM_CACHE_LOCK = threading.Lock()
+_VOICE_SNAPSHOT: ContextVar[tuple[str, str] | None] = ContextVar("voice_snapshot", default=None)
 
 
-class MLXAudioAdapter:
-    """Normalized adapter over MLX/MLX-audio compatibility helpers."""
+@contextmanager
+def use_installed_voices(model_path: str):
+    """Resolve voice IDs after upstream blend parsing, within this generation."""
+    resolved = installed_model_path(model_path)
+    snapshot = None
+    if MLX_AVAILABLE or "mlx_audio.tts.models.kokoro.pipeline" in sys.modules:
+        from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
 
-    def patch_load_weights_compat(self, module_cls: type) -> bool:
-        return patch_mlx_load_weights_compat(module_cls)
-
-    def patch_generation_result_compat(
-        self,
-        result_cls: type,
-        default_sample_rate: int = 24000,
-    ) -> bool:
-        return patch_mlx_generation_result_compat(
-            result_cls,
-            default_sample_rate=default_sample_rate,
-        )
-
-    def inject_model_arg(
-        self,
-        kwargs: dict[str, Any],
-        model_path: str,
-        loaded_model: Any = None,
-        generate_fn: Optional[Callable] = None,
-    ) -> None:
-        inject_generate_audio_model_arg(
-            kwargs=kwargs,
-            model_path=model_path,
-            loaded_model=loaded_model,
-            generate_fn=generate_fn,
-        )
-
-    def inject_output_args(
-        self,
-        kwargs: dict[str, Any],
-        output_dir: str,
-        file_prefix: str,
-        generate_fn: Optional[Callable] = None,
-    ) -> None:
-        inject_generate_audio_output_args(
-            kwargs=kwargs,
-            output_dir=output_dir,
-            file_prefix=file_prefix,
-            generate_fn=generate_fn,
-        )
-
-    def runtime_error_message(self, import_error: Optional[Exception]) -> str:
-        return mlx_runtime_error_message(import_error)
-
-    def ensure_runtime(self) -> tuple[Any, Any]:
-        return ensure_mlx_runtime()
-
-    def ensure_tqdm_thread_lock(self) -> None:
-        ensure_tqdm_thread_lock()
+        require_local_phonemizer()
+        patch_mlx_voice_loader_compat(KokoroPipeline)
+        snapshot = (model_path, resolved)
+    token = _VOICE_SNAPSHOT.set(snapshot)
+    try:
+        yield
+    finally:
+        _VOICE_SNAPSHOT.reset(token)
 
 
-MLX_AUDIO_ADAPTER = MLXAudioAdapter()
+def patch_mlx_voice_loader_compat(pipeline_cls: type) -> bool:
+    """Route each voice ID to its pinned file without delimiter serialization."""
+    load_single_voice = pipeline_cls.load_single_voice
+    if getattr(load_single_voice, "_audiobook_voice_compat", False):
+        return False
+
+    def _compat_load_single_voice(self, voice: str):
+        snapshot = _VOICE_SNAPSHOT.get()
+        if snapshot is None:
+            return load_single_voice(self, voice)
+        if voice in self.voices:
+            return self.voices[voice]
+        model_path, resolved = snapshot
+        voice_path = installed_voice_path(model_path, voice, snapshot=resolved)
+        pack = load_single_voice(self, voice_path)
+        self.voices[voice] = pack
+        return pack
+
+    setattr(_compat_load_single_voice, "_audiobook_voice_compat", True)
+    pipeline_cls.load_single_voice = _compat_load_single_voice
+    return True
 
 
 def patch_mlx_load_weights_compat(module_cls: type) -> bool:
@@ -153,15 +142,15 @@ def inject_generate_audio_model_arg(
     fn = generate_fn or generate_audio
     params = _get_generate_audio_signature_param_names(fn)
     if params is None:
-        kwargs["model_path"] = model_path
+        kwargs["model_path"] = installed_model_path(model_path)
         return
 
     if "model_path" in params:
-        kwargs["model_path"] = model_path
+        kwargs["model_path"] = installed_model_path(model_path)
     elif "model" in params:
-        kwargs["model"] = loaded_model if loaded_model is not None else model_path
+        kwargs["model"] = loaded_model if loaded_model is not None else installed_model_path(model_path)
     else:
-        kwargs["model_path"] = model_path
+        kwargs["model_path"] = installed_model_path(model_path)
 
 
 def inject_generate_audio_output_args(
@@ -234,23 +223,47 @@ def load_tts_model(model_path: str):
     global _load_tts_model_fn
 
     ensure_mlx_runtime()
-    patch_frozen_espeakng_loader_paths()
+    patch_espeakng_loader_paths()
     if _load_tts_model_fn is None:
         from mlx_audio.tts.utils import load_model as load_model_fn
 
         _load_tts_model_fn = load_model_fn
 
-    return _load_tts_model_fn(model_path=model_path)
+    resolved = installed_model_path(model_path)
+    # Kokoro's config has no model_type, so mlx-audio infers the architecture
+    # from the model name; a snapshot directory is only named after a commit.
+    try:
+        from mlx_audio.utils import get_model_name_parts
+    except ImportError:
+        return _load_tts_model_fn(model_path=Path(resolved))
+    return _load_tts_model_fn(
+        model_path=Path(resolved), model_name_parts=get_model_name_parts(model_path)
+    )
 
 
-def patch_frozen_espeakng_loader_paths() -> None:
-    """Point espeakng-loader at bundled data when running from PyInstaller."""
-    if not getattr(sys, "frozen", False):
-        return
-
+def patch_espeakng_loader_paths() -> None:
+    """Use bundled paths or inherit the launcher's short speech data copy."""
     try:
         import espeakng_loader
     except ImportError:
+        return
+
+    if not getattr(sys, "frozen", False):
+        data_path = Path(espeakng_loader.get_data_path()).resolve()
+        if len(os.fsencode(data_path)) < 160:
+            return
+        for name in ("PHONEMIZER_ESPEAK_DATA_PATH", "ESPEAK_DATA_PATH"):
+            configured = os.environ.get(name)
+            if not configured:
+                continue
+            configured_data = Path(configured).resolve()
+            if (
+                len(os.fsencode(configured_data)) < 160
+                and (configured_data / "phontab").is_file()
+                and (sys.platform != "win32" or str(configured_data).isascii())
+            ):
+                espeakng_loader.get_data_path = lambda: str(configured_data)
+                return
         return
 
     meipass_dir = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
@@ -271,6 +284,19 @@ def patch_frozen_espeakng_loader_paths() -> None:
     if not library_path.is_file() or not data_path.is_dir():
         return
 
+    # The launcher may have copied speech data to fit the native path buffer.
+    # Phonemizer resolves paths, so only preserve a physically short location.
+    try:
+        configured_data = Path(espeakng_loader.get_data_path()).resolve()
+        if (
+            len(os.fsencode(configured_data)) < 160
+            and (configured_data / "phontab").is_file()
+            and (sys.platform != "win32" or str(configured_data).isascii())
+        ):
+            data_path = configured_data
+    except (OSError, RuntimeError):
+        return
+
     espeakng_loader.get_library_path = lambda: str(library_path)
     espeakng_loader.get_data_path = lambda: str(data_path)
 
@@ -286,7 +312,7 @@ def ensure_mlx_runtime() -> tuple[Any, Any]:
 
     os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     os.environ.setdefault("TQDM_DISABLE", "1")
-    patch_frozen_espeakng_loader_paths()
+    patch_espeakng_loader_paths()
 
     try:
         import mlx.core as mx_module

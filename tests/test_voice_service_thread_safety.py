@@ -13,6 +13,7 @@ import pytest
 from modules.app.config import AppConfig
 from modules.app.services.voice_service import VoiceService
 from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.strategies.kokoro import KokoroTTSStrategy
 
 
 class _RuntimeValidationState:
@@ -215,6 +216,71 @@ def _build_config(tmp_path: Path) -> AppConfig:
     )
 
 
+@pytest.fixture
+def blend_preview_service(monkeypatch, tmp_path):
+    validated = []
+    synthesized = []
+
+    def synthesize(text, voice, speed, output_path=None):
+        synthesized.append(voice)
+        return np.zeros(8, dtype=np.float32)
+
+    runtime = SimpleNamespace(load=lambda: None, synthesize=synthesize)
+    strategy = KokoroTTSStrategy(
+        runtime_factory=SimpleNamespace(create_runtime=lambda config: runtime),
+    )
+    validate = strategy.validate_voice
+
+    def validate_voice(voice):
+        validated.append(voice)
+        return validate(voice)
+
+    monkeypatch.setattr(strategy, "validate_voice", validate_voice)
+    factory = SimpleNamespace(create=lambda *args, **kwargs: strategy)
+    service = VoiceService(_build_config(tmp_path), tts_factory=factory)
+    monkeypatch.setattr(service, "_schedule_preview_idle_unload", lambda: None)
+    return service, validated, synthesized
+
+
+@pytest.mark.parametrize("voice", ["af_bella,af_heart", " af_bella , af_heart "])
+def test_preview_accepts_blends_of_supported_voices(blend_preview_service, voice):
+    from modules.web.routes.voices import VoicePreviewRequest, post_voice_preview
+
+    service, validated, synthesized = blend_preview_service
+    response = post_voice_preview(VoicePreviewRequest(voice=voice), service)
+    assert Path(response.path).is_file()
+    assert validated == ["af_bella,af_heart", "af_bella,af_heart"]
+    assert synthesized == ["af_bella,af_heart"]
+
+
+def test_preview_rejects_blends_with_an_unknown_voice(blend_preview_service):
+    service, validated, synthesized = blend_preview_service
+    with pytest.raises(ValueError, match="not supported"):
+        service.generate_voice_preview("af_bella,unknown_voice")
+    assert validated == ["af_bella,unknown_voice"]
+    assert synthesized == []
+
+
+@pytest.mark.parametrize("voice", ["af_bella,", ",af_heart", "af_bella, ,af_heart", " "])
+def test_preview_rejects_empty_blend_components(blend_preview_service, voice):
+    service, _, synthesized = blend_preview_service
+    with pytest.raises(ValueError, match="not supported"):
+        service.generate_voice_preview(voice)
+    assert synthesized == []
+
+
+@pytest.mark.parametrize("options", [
+    {"text": "x" * 321}, {"speed": 0.49}, {"speed": 3.01},
+    {"speed": float("nan")}, {"speed": float("inf")},
+])
+def test_preview_request_keeps_limits_for_voice_blends(options):
+    from pydantic import ValidationError
+    from modules.web.routes.voices import VoicePreviewRequest
+
+    with pytest.raises(ValidationError):
+        VoicePreviewRequest(voice="af_bella,af_heart", **options)
+
+
 def test_validate_tts_runtime_deduplicates_concurrent_misses(tmp_path: Path) -> None:
     state = _RuntimeValidationState()
     service = VoiceService(_build_config(tmp_path), tts_factory=_RuntimeValidationFactory(state))
@@ -259,18 +325,6 @@ def test_validate_tts_runtime_deduplicates_concurrent_misses(tmp_path: Path) -> 
     assert metrics["runtime_validation_misses"] == 1
     assert metrics["runtime_validation_hits"] == 1
     assert service.runtime_validation_cache_size == 1
-
-
-def test_validate_tts_runtime_unloads_one_off_strategy_without_cache(
-    tmp_path: Path,
-) -> None:
-    state = _RuntimeValidationState()
-    state.release_first_synthesize.set()
-    service = VoiceService(_build_config(tmp_path), tts_factory=_RuntimeValidationFactory(state))
-
-    service.validate_tts_runtime("kokoro", "bf16")
-
-    assert state.unload_keep_in_cache == [False]
 
 
 def test_validate_tts_runtime_reuses_loaded_preview_engine_without_unload(

@@ -34,7 +34,6 @@ KOKORO_MLX_DEFAULT_MODEL = "mlx-community/Kokoro-82M"
 # Downloads and cache checks must target the concrete default-variant repo.
 KOKORO_MLX_DEFAULT_MODEL_REPO = f"{KOKORO_MLX_DEFAULT_MODEL}-bf16"
 KOKORO_PACKAGE_DEFAULT_MODEL = "hexgrad/Kokoro-82M"
-KOKORO_DEFAULT_MODEL = KOKORO_MLX_DEFAULT_MODEL
 CLEANER_MLX_DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 CLEANER_CUDA_DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 

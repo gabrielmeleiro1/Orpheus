@@ -203,25 +203,6 @@ class TTSEngineFactory:
         cls._config_types[name.lower()] = config_class
 
     @classmethod
-    def unregister(cls, name: str) -> None:
-        """
-        Unregister a TTS strategy.
-
-        Args:
-            name: Engine identifier to remove
-
-        Raises:
-            KeyError: If engine not registered
-        """
-        name = name.lower()
-        if name not in cls._strategies:
-            raise KeyError(f"Engine '{name}' not registered")
-
-        del cls._strategies[name]
-        if name in cls._config_types:
-            del cls._config_types[name]
-
-    @classmethod
     def available_engines(cls) -> list[str]:
         """
         List available engine names.
@@ -322,23 +303,3 @@ class TTSEngineFactory:
         """
         cls._load_optional_strategies()
         return engine_type.lower() in cls._strategies
-
-    @classmethod
-    def get_default_engine(cls) -> str:
-        """
-        Get the default engine identifier.
-
-        Returns:
-            Default engine name ('kokoro' if available)
-        """
-        cls._load_optional_strategies()
-        if "kokoro" in cls._strategies:
-            return "kokoro"
-
-        available = cls.available_engines()
-        if available:
-            return available[0]
-
-        raise RuntimeError("No TTS engines registered")
-
-

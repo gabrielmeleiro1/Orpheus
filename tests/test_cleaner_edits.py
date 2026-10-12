@@ -10,8 +10,8 @@ import pytest
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
 from modules.tts.cleaner_edits import reconcile_llm_edits
-from modules.tts.cleaner_rules import extract_result, llm_preservation_violation
-from tests.test_cleaner_scanned_text import SCAN
+from modules.tts.cleaner_rules import extract_result
+from tests.test_cleaner_scanned_text import SCAN, _guard_rejects
 
 
 # Exact output of the lead's Qwen 2.5 1.5B CUDA/4bit probe after rule repairs.
@@ -102,9 +102,9 @@ def test_partial_diagnostics_survive_pipeline_jsonl_and_stats(monkeypatch):
     ("Jr.", "Junior"), ("Sr.", "Senior"),
 ])
 def test_only_standard_dotted_abbreviation_expansions_pass(short, expanded):
-    assert llm_preservation_violation(f"See {short} Smith.", f"See {expanded} Smith.") is None
-    assert llm_preservation_violation(f"See {short} Smith.", "See Captain Smith.") is not None
-    assert llm_preservation_violation(f"See {short[:-1]} Smith.", f"See {expanded} Smith.") is not None
+    assert not _guard_rejects(f"See {short} Smith.", f"See {expanded} Smith.")
+    assert _guard_rejects(f"See {short} Smith.", "See Captain Smith.")
+    assert _guard_rejects(f"See {short[:-1]} Smith.", f"See {expanded} Smith.")
 
 
 @pytest.mark.parametrize("before, after", [
@@ -112,12 +112,12 @@ def test_only_standard_dotted_abbreviation_expansions_pass(short, expanded):
     ("Anne", "Hanne"), ("Smith", "Jones"), ("p.m.", "page m."),
 ])
 def test_names_numbers_and_non_abbreviations_remain_protected(before, after):
-    assert llm_preservation_violation(f"They saw {before} today.", f"They saw {after} today.") is not None
+    assert _guard_rejects(f"They saw {before} today.", f"They saw {after} today.")
 
 
 def test_ordinal_repair_preserves_the_number():
-    assert llm_preservation_violation("For the 450 [th] time.", "For the 450th time.") is None
-    assert llm_preservation_violation("For the 450 [th] time.", "For the 451st time.") is not None
+    assert not _guard_rejects("For the 450 [th] time.", "For the 450th time.")
+    assert _guard_rejects("For the 450 [th] time.", "For the 451st time.")
 
 
 def test_short_abbreviation_output_is_not_mistaken_for_length_hallucination(monkeypatch):

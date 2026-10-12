@@ -224,7 +224,7 @@ class KokoroTTSStrategy(TTSStrategy):
 
         Args:
             text: Text to synthesize
-            voice: Voice ID (must be in supported_voices)
+            voice: Voice ID or blend of supported voice IDs
             speed: Speech speed multiplier (0.5-2.0)
             output_path: Optional path to save audio
 
@@ -245,6 +245,8 @@ class KokoroTTSStrategy(TTSStrategy):
             )
 
         speed = self._clamp_speed(speed)
+        if "," in voice:
+            voice = ",".join(component.strip() for component in voice.split(","))
 
         return self._runtime.synthesize(
             text=text,
@@ -296,7 +298,10 @@ class KokoroTTSStrategy(TTSStrategy):
         normalized_items = [
             SynthesisItem(
                 text=item.text,
-                voice=item.voice,
+                voice=(
+                    ",".join(component.strip() for component in item.voice.split(","))
+                    if "," in item.voice else item.voice
+                ),
                 speed=self._clamp_speed(item.speed),
                 index=item.index,
                 output_path=item.output_path,
@@ -307,46 +312,3 @@ class KokoroTTSStrategy(TTSStrategy):
             normalized_items,
             progress_callback=progress_callback,
         )
-
-    # ==================== Utilities ====================
-
-    def estimate_duration(self, text: str, speed: float = 1.0) -> float:
-        """
-        Estimate audio duration based on character count.
-
-        Kokoro averages ~15 characters per second at 1.0 speed.
-
-        Args:
-            text: Text to estimate
-            speed: Speech speed multiplier
-
-        Returns:
-            Estimated duration in seconds
-        """
-        if not text:
-            return 0.0
-
-        speed = self._clamp_speed(speed)
-        chars_per_second = 15.0 * speed
-        estimated = len(text) / chars_per_second
-
-        return max(0.5, estimated)
-
-    def get_stats(self) -> dict[str, object]:
-        """
-        Get synthesis statistics from the underlying engine.
-
-        Returns:
-            Dict with statistics
-        """
-        if self._runtime is None:
-            return {
-                "chunks_processed": 0,
-                "average_chunk_time_ms": 0.0,
-            }
-
-        return {
-            "chunks_processed": self._runtime.chunks_processed,
-            "average_chunk_time_ms": self._runtime.average_chunk_time_ms,
-            "metrics": self._runtime.get_metrics(),
-        }

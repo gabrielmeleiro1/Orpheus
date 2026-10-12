@@ -13,9 +13,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Optional, TypeVar
 import numpy as np
 
-from modules.errors import TTSModelError, SynthesisError, VRAMOverflowError
+from modules.errors import TTSInstallationError, TTSModelError, SynthesisError, VRAMOverflowError
 from modules.tts.strategies.base import SynthesisItem, SynthesisResult
-from modules.tts.voices import kokoro_voice_lookup
 from .engine_config import TTSConfig
 from .cleaner_errors import is_memory_pressure_error
 from . import engine_output, engine_runtime
@@ -36,21 +35,10 @@ except ImportError:
     VRAM_MONITOR_AVAILABLE = False
 
 # MLX runtime - loaded lazily to avoid long startup imports in TUI mode.
-MLX_AVAILABLE = mlx_compat_backend.MLX_AVAILABLE
-MLX_IMPORT_ERROR: Optional[Exception] = mlx_compat_backend.MLX_IMPORT_ERROR
-_MLX_RUNTIME_CHECKED = mlx_compat_backend._MLX_RUNTIME_CHECKED
-mx = mlx_compat_backend.mx
 generate_audio = mlx_compat_backend.generate_audio
-_TQDM_LOCK_PATCHED = mlx_compat_backend._TQDM_LOCK_PATCHED
 
 # Duration of the silence emitted for a chunk whose text cleans away entirely.
 BLANK_TEXT_SILENCE_MS = 50
-
-_patch_mlx_load_weights_compat = mlx_compat_backend.patch_mlx_load_weights_compat
-_patch_mlx_generation_result_compat = (
-    mlx_compat_backend.patch_mlx_generation_result_compat
-)
-_mlx_runtime_error_message = mlx_compat_backend.mlx_runtime_error_message
 
 
 def _inject_generate_audio_model_arg(
@@ -83,11 +71,8 @@ def _inject_generate_audio_output_args(
 
 def _ensure_mlx_runtime() -> None:
     """Import MLX/MLX-Audio on demand."""
-    global MLX_AVAILABLE, MLX_IMPORT_ERROR, _MLX_RUNTIME_CHECKED, mx, generate_audio
-    mx, generate_audio = mlx_compat_backend.ensure_mlx_runtime()
-    MLX_AVAILABLE = mlx_compat_backend.MLX_AVAILABLE
-    MLX_IMPORT_ERROR = mlx_compat_backend.MLX_IMPORT_ERROR
-    _MLX_RUNTIME_CHECKED = mlx_compat_backend._MLX_RUNTIME_CHECKED
+    global generate_audio
+    _mx, generate_audio = mlx_compat_backend.ensure_mlx_runtime()
 
 
 def _ensure_tqdm_thread_lock() -> None:
@@ -98,9 +83,7 @@ def _ensure_tqdm_thread_lock() -> None:
       ValueError: bad value(s) in fds_to_keep
     originating from tqdm's multiprocessing lock setup path.
     """
-    global _TQDM_LOCK_PATCHED
     mlx_compat_backend.ensure_tqdm_thread_lock()
-    _TQDM_LOCK_PATCHED = mlx_compat_backend._TQDM_LOCK_PATCHED
 
 
 BatchItem = SynthesisItem
@@ -115,21 +98,6 @@ def _wav_duration_ms(path: Path, fallback_sample_rate: int) -> int:
             return int(wav_file.getnframes() / max(1, sample_rate) * 1000)
     except Exception:
         return 0
-
-
-def _get_cached_model(model_path: str):
-    """Get model from cache if available."""
-    return model_cache_backend.get_cached_model(model_path)
-
-
-def _set_cached_model(model_path: str, model: any):
-    """Cache a model with LRU eviction."""
-    model_cache_backend.set_cached_model(model_path, model)
-
-
-def _clear_model_cache():
-    """Clear the model cache."""
-    model_cache_backend.clear_model_cache(mx_module=mx, mlx_available=MLX_AVAILABLE)
 
 
 def _adaptive_batch_pause_seconds(memory_manager: Optional[Any]) -> float:
@@ -444,6 +412,9 @@ class TTSEngine:
             except MemoryError:
                 raise VRAMOverflowError(model_name=self._model_path)
 
+            except TTSInstallationError:
+                raise
+
             except (OSError, IOError) as e:
                 error_str = str(e).lower()
                 if self._is_network_error(error_str):
@@ -587,10 +558,6 @@ class TTSEngine:
         if not items:
             return
 
-        # Record activity for idle timeout management
-        if self._memory_manager:
-            self._memory_manager.record_activity()
-
         total = len(items)
         completed = 0
 
@@ -686,7 +653,3 @@ class TTSEngine:
         """Context manager exit - ensures cleanup."""
         self.unload_model(keep_in_cache=False)
         return False
-
-
-# Available voices for Kokoro-82M
-KOKORO_VOICES = kokoro_voice_lookup()

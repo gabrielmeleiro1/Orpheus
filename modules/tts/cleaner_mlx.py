@@ -8,6 +8,8 @@ import threading
 import asyncio
 from typing import Any, Optional
 
+from .model_snapshots import installed_model_path
+
 MLX_LM_AVAILABLE = False
 MLX_LM_IMPORT_ERROR: Optional[Exception] = None
 _MLX_LM_RUNTIME_CHECKED = False
@@ -117,6 +119,7 @@ class CleanerMLXStrategy:
         if cleaner.config.cache_model:
             cached = get_cached_cleaner(cleaner.config.model_name)
             if cached is not None:
+                installed_model_path(cleaner.config.model_name)
                 cleaner._model, cleaner._tokenizer = cached
                 cleaner._loaded = True
                 logger.info("Text cleaner loaded from cache: %s", cleaner.config.model_name)
@@ -124,7 +127,10 @@ class CleanerMLXStrategy:
 
         cleaner._manager.ensure_can_load("text-cleaner")
         logger.info("Loading text cleaner: %s", cleaner.config.model_name)
-        cleaner._model, cleaner._tokenizer = load(cleaner.config.model_name)
+        cleaner._model, cleaner._tokenizer = load(
+            installed_model_path(cleaner.config.model_name),
+            tokenizer_config={"local_files_only": True},
+        )
         cleaner._loaded = True
 
         if cleaner.config.cache_model:

@@ -166,15 +166,6 @@ def test_structured_content_response_is_parsed(monkeypatch) -> None:
     assert parsed["reasoning"] == "Clear and steady."
 
 
-def test_openai_compat_helpers_are_shared_for_model_family_rules() -> None:
-    from modules.openai_compat import completion_token_field, supports_temperature_override
-
-    assert completion_token_field("gpt-5-nano") == "max_completion_tokens"
-    assert completion_token_field("gpt-4o-mini") == "max_tokens"
-    assert supports_temperature_override("gpt-5-nano") is False
-    assert supports_temperature_override("gpt-4o-mini") is True
-
-
 def test_openai_compat_sync_transport_formats_http_and_connection_errors(monkeypatch) -> None:
     from modules.openai_compat import post_chat_completions_via_urlopen
 

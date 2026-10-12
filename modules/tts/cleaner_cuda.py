@@ -144,7 +144,7 @@ def _load_cuda_model(cleaner: Any, torch_module: Any) -> tuple[Any, Any]:
     quantization = normalize_cuda_quantization(cleaner.config.cuda_quantization)
     device_map = _resolve_device_map(device)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
@@ -165,15 +165,37 @@ def _load_cuda_model(cleaner: Any, torch_module: Any) -> tuple[Any, Any]:
             model_name,
             quantization_config=bnb_config,
             device_map=device_map,
+            local_files_only=True,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             dtype=torch_module.float16,
             device_map=device_map,
+            local_files_only=True,
         )
 
     return model, tokenizer
+
+
+def _cancel_stopping_criteria(cancel_requested: Any, torch_module: Any) -> Any:
+    """Stop decoding between tokens once the conversion is cancelled.
+
+    A truncated response fails the cleaner's length guard, so the chunk falls
+    back to rule-based text; the caller then observes the cancellation.
+    """
+    from transformers import StoppingCriteria, StoppingCriteriaList
+
+    class _CancelRequested(StoppingCriteria):
+        def __call__(self, input_ids, scores, **kwargs):
+            return torch_module.full(
+                (input_ids.shape[0],),
+                bool(cancel_requested()),
+                dtype=torch_module.bool,
+                device=input_ids.device,
+            )
+
+    return StoppingCriteriaList([_CancelRequested()])
 
 
 def generate_cuda_response(cleaner: Any, prompt: str) -> str:
@@ -212,6 +234,11 @@ def generate_cuda_response(cleaner: Any, prompt: str) -> str:
                 else tokenizer.eos_token_id
             ),
         }
+        cancel_requested = getattr(cleaner, "generation_cancel_requested", None)
+        if callable(cancel_requested):
+            generation_kwargs["stopping_criteria"] = _cancel_stopping_criteria(
+                cancel_requested, torch_module,
+            )
         try:
             output_ids = model.generate(**inputs, **generation_kwargs)
         except Exception as exc:
@@ -251,6 +278,7 @@ class CleanerCUDAStrategy:
         if cleaner.config.cache_model:
             cached = get_cached_cleaner(cache_key)
             if cached is not None:
+                installed_model_path(cleaner.config.model_name)
                 cleaner._model, cleaner._tokenizer = cached
                 cleaner._loaded = True
                 logger.info("Text cleaner loaded from cache: %s", cache_key)

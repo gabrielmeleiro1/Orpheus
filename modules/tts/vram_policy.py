@@ -17,7 +17,6 @@ class VRAMPressureLevel(Enum):
 @dataclass
 class VRAMSnapshot:
     """Snapshot of VRAM usage at a point in time."""
-    timestamp: float
     active_bytes: int
     peak_bytes: int
     cache_bytes: int
@@ -32,7 +31,6 @@ class DynamicBatchConfig:
     """Configuration for dynamic batch sizing."""
     # Base batch sizes
     base_tts_batch_size: int = 4
-    base_cleaner_batch_size: int = 8
 
     # VRAM thresholds (as percentage of available)
     elevated_threshold: float = 0.70
@@ -46,18 +44,6 @@ class DynamicBatchConfig:
 
     # Minimum batch sizes
     min_tts_batch_size: int = 1
-    min_cleaner_batch_size: int = 2
-
-    # Monitoring interval
-    check_interval_seconds: float = 2.0
 
     # History for trend analysis
     history_size: int = 10
-
-
-@dataclass
-class IdleTimeoutConfig:
-    """Configuration for idle timeout management."""
-    idle_timeout_seconds: float = 300.0  # 5 minutes
-    check_interval_seconds: float = 30.0
-    warning_before_unload_seconds: float = 60.0  # Warn 1 min before

@@ -1,26 +1,20 @@
 """
 VRAM Monitor Module
 ===================
-Real-time VRAM monitoring with dynamic batch sizing and idle timeout unloading.
+VRAM monitoring with dynamic batch sizing.
 
 Features:
-- Monitor VRAM usage in real-time
 - Dynamically reduce batch size when approaching limits
-- Automatically unload models when idle for >5 minutes
-- Thread-safe monitoring and adjustment
+- Thread-safe adjustment
 """
 
 from __future__ import annotations
 
 import gc
-import logging
 import threading
-import time
-from typing import Optional, Callable, TYPE_CHECKING, Any
+from typing import Optional, Callable, Any
 from collections import deque
-import warnings
 
-from .idle_timeout import IdleTimeoutManager
 from .vram_budget import (
     GIB,
     SystemMemoryBudget,
@@ -31,19 +25,14 @@ from .vram_budget import (
 )
 from .vram_policy import (
     DynamicBatchConfig,
-    IdleTimeoutConfig,
     VRAMPressureLevel,
     VRAMSnapshot,
 )
-
-logger = logging.getLogger(__name__)
 
 __all__ = [
     "AdaptiveMemoryManager",
     "DynamicBatchConfig",
     "GIB",
-    "IdleTimeoutConfig",
-    "IdleTimeoutManager",
     "SystemMemoryBudget",
     "VRAMMonitor",
     "VRAMPressureLevel",
@@ -53,9 +42,6 @@ __all__ = [
 
 mx: Any = None
 MLX_AVAILABLE: Optional[bool] = None
-
-if TYPE_CHECKING:
-    pass
 
 
 def _get_mlx_core() -> Any:
@@ -120,19 +106,10 @@ def _sample_system_memory_budget() -> SystemMemoryBudget:
 
 class VRAMMonitor:
     """
-    Real-time VRAM monitor with dynamic batch sizing.
+    VRAM monitor with dynamic batch sizing.
     
-    Continuously monitors VRAM usage and adjusts batch sizes
+    Samples VRAM usage on refresh and adjusts batch sizes
     dynamically based on available memory.
-    
-    Example:
-        monitor = VRAMMonitor(total_vram_gb=16.0)
-        monitor.start_monitoring()
-        
-        # Get current batch size (auto-adjusted based on VRAM)
-        batch_size = monitor.get_tts_batch_size()
-        
-        monitor.stop_monitoring()
     """
     
     _instance: Optional[VRAMMonitor] = None
@@ -178,12 +155,6 @@ class VRAMMonitor:
         
         # Current batch sizes (dynamically adjusted)
         self._current_tts_batch_size = self.config.base_tts_batch_size
-        self._current_cleaner_batch_size = self.config.base_cleaner_batch_size
-        
-        # Monitoring state
-        self._monitoring = False
-        self._monitor_thread: Optional[threading.Thread] = None
-        self._stop_event = threading.Event()
         
         # VRAM history for trend analysis
         self._history: deque[VRAMSnapshot] = deque(maxlen=self.config.history_size)
@@ -192,9 +163,6 @@ class VRAMMonitor:
         # Current pressure level
         self._pressure_level = VRAMPressureLevel.NORMAL
         self._pressure_lock = threading.Lock()
-        
-        # Callbacks for pressure level changes
-        self._pressure_callbacks: list[Callable[[VRAMPressureLevel, VRAMPressureLevel], None]] = []
         
         self._initialized = True
 
@@ -304,36 +272,6 @@ class VRAMMonitor:
         """Refresh memory pressure immediately without waiting for the monitor."""
         self._check_vram()
     
-    def start_monitoring(self) -> None:
-        """Start the VRAM monitoring thread."""
-        if self._monitoring:
-            return
-        
-        self._stop_event.clear()
-        self._monitoring = True
-        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._monitor_thread.start()
-    
-    def stop_monitoring(self) -> None:
-        """Stop the VRAM monitoring thread."""
-        if not self._monitoring:
-            return
-        
-        self._stop_event.set()
-        self._monitoring = False
-        if self._monitor_thread:
-            self._monitor_thread.join(timeout=5.0)
-    
-    def _monitor_loop(self) -> None:
-        """Main monitoring loop."""
-        while not self._stop_event.is_set():
-            try:
-                self._check_vram()
-            except Exception as e:
-                warnings.warn(f"VRAM monitoring error: {e}")
-            
-            self._stop_event.wait(self.config.check_interval_seconds)
-    
     def _check_vram(self) -> None:
         """Check VRAM usage and adjust batch sizes."""
         mlx_core = _get_mlx_core()
@@ -353,7 +291,6 @@ class VRAMMonitor:
             )
             
             snapshot = VRAMSnapshot(
-                timestamp=time.time(),
                 active_bytes=active,
                 peak_bytes=peak,
                 cache_bytes=cache,
@@ -378,7 +315,6 @@ class VRAMMonitor:
                 if new_level != old_level:
                     self._pressure_level = new_level
                     self._adjust_batch_sizes(new_level)
-                    self._notify_pressure_change(old_level, new_level)
                     
         except Exception:
             pass  # Silently ignore MLX errors
@@ -409,13 +345,8 @@ class VRAMMonitor:
             self.config.min_tts_batch_size,
             int(self.config.base_tts_batch_size * multiplier)
         )
-        new_cleaner_size = max(
-            self.config.min_cleaner_batch_size,
-            int(self.config.base_cleaner_batch_size * multiplier)
-        )
         
         self._current_tts_batch_size = new_tts_size
-        self._current_cleaner_batch_size = new_cleaner_size
         
         # Force garbage collection on high/critical
         if level in (VRAMPressureLevel.HIGH, VRAMPressureLevel.CRITICAL):
@@ -427,34 +358,10 @@ class VRAMMonitor:
                 except Exception:
                     pass
     
-    def _notify_pressure_change(
-        self,
-        old_level: VRAMPressureLevel,
-        new_level: VRAMPressureLevel,
-    ) -> None:
-        """Notify callbacks of pressure level change."""
-        for callback in self._pressure_callbacks:
-            try:
-                callback(old_level, new_level)
-            except Exception:
-                pass
-    
-    def on_pressure_change(
-        self,
-        callback: Callable[[VRAMPressureLevel, VRAMPressureLevel], None]
-    ) -> None:
-        """Register a callback for pressure level changes."""
-        self._pressure_callbacks.append(callback)
-    
     def get_tts_batch_size(self) -> int:
         """Get current TTS batch size (dynamically adjusted)."""
         with self._pressure_lock:
             return self._current_tts_batch_size
-    
-    def get_cleaner_batch_size(self) -> int:
-        """Get current cleaner batch size (dynamically adjusted)."""
-        with self._pressure_lock:
-            return self._current_cleaner_batch_size
     
     def get_pressure_level(self) -> VRAMPressureLevel:
         """Get current VRAM pressure level."""
@@ -465,103 +372,28 @@ class VRAMMonitor:
         """Get most recent VRAM snapshot."""
         with self._history_lock:
             return self._history[-1] if self._history else None
-    
-    def get_usage_trend(self) -> float:
-        """
-        Get VRAM usage trend (bytes/second).
-        
-        Returns:
-            Positive means usage increasing, negative means decreasing
-        """
-        with self._history_lock:
-            if len(self._history) < 2:
-                return 0.0
-            
-            recent = list(self._history)[-5:]  # Last 5 samples
-            if len(recent) < 2:
-                return 0.0
-            
-            first = recent[0]
-            last = recent[-1]
-            time_delta = last.timestamp - first.timestamp
-            
-            if time_delta <= 0:
-                return 0.0
-            
-            return (last.active_bytes - first.active_bytes) / time_delta
 
 
 class AdaptiveMemoryManager:
     """
-    Combined memory manager integrating VRAM monitoring and idle timeout.
+    Memory manager integrating VRAM monitoring.
     
     Provides a unified interface for adaptive memory management.
-    
-    Example:
-        manager = AdaptiveMemoryManager(total_vram_gb=16.0)
-        manager.start()
-        
-        # Register models
-        manager.register_for_idle_timeout("tts", tts_engine.unload_model)
-        
-        # Get dynamically adjusted batch sizes
-        batch_size = manager.get_tts_batch_size()
-        
-        manager.stop()
     """
     
     def __init__(
         self,
-        total_vram_gb: Optional[float] = None,
-        idle_timeout_seconds: float = 300.0,
         dynamic_config: Optional[DynamicBatchConfig] = None,
-        idle_config: Optional[IdleTimeoutConfig] = None,
         memory_budget_provider: Optional[Callable[[], Any]] = None,
     ):
         self.vram_monitor = VRAMMonitor(
-            total_vram_gb=total_vram_gb,
             config=dynamic_config,
             memory_budget_provider=memory_budget_provider,
         )
-        self.idle_manager = IdleTimeoutManager(
-            timeout_seconds=idle_timeout_seconds,
-            config=idle_config,
-        )
-        self._started = False
-    
-    def start(self) -> None:
-        """Start all monitoring."""
-        if self._started:
-            return
-        
-        self.vram_monitor.start_monitoring()
-        self.idle_manager.start()
-        self._started = True
-    
-    def stop(self) -> None:
-        """Stop all monitoring."""
-        if not self._started:
-            return
-        
-        self.vram_monitor.stop_monitoring()
-        self.idle_manager.stop()
-        self._started = False
-    
-    def register_for_idle_timeout(self, name: str, unload_fn: Callable[[], None]) -> None:
-        """Register a model for idle timeout management."""
-        self.idle_manager.register_model(name, unload_fn)
-    
-    def record_activity(self) -> None:
-        """Record activity to reset idle timer."""
-        self.idle_manager.record_activity()
     
     def get_tts_batch_size(self) -> int:
         """Get current TTS batch size (dynamically adjusted)."""
         return self.vram_monitor.get_tts_batch_size()
-    
-    def get_cleaner_batch_size(self) -> int:
-        """Get current cleaner batch size (dynamically adjusted)."""
-        return self.vram_monitor.get_cleaner_batch_size()
     
     def get_vram_pressure(self) -> VRAMPressureLevel:
         """Get current VRAM pressure level."""
@@ -570,23 +402,11 @@ class AdaptiveMemoryManager:
     def refresh_memory_pressure(self) -> None:
         """Refresh VRAM pressure from live memory counters."""
         self.vram_monitor.refresh()
-    
-    def get_idle_time(self) -> float:
-        """Get current idle time in seconds."""
-        return self.idle_manager.get_idle_time()
 
 
 # Convenience function
 def get_memory_manager(
-    total_vram_gb: Optional[float] = None,
-    idle_timeout_seconds: float = 300.0,
     dynamic_config: Optional[DynamicBatchConfig] = None,
-    memory_budget_provider: Optional[Callable[[], Any]] = None,
 ) -> AdaptiveMemoryManager:
     """Get the global adaptive memory manager instance."""
-    return AdaptiveMemoryManager(
-        total_vram_gb=total_vram_gb,
-        idle_timeout_seconds=idle_timeout_seconds,
-        dynamic_config=dynamic_config,
-        memory_budget_provider=memory_budget_provider,
-    )
+    return AdaptiveMemoryManager(dynamic_config=dynamic_config)

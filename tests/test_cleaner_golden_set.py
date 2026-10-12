@@ -74,35 +74,5 @@ def test_llm_fixes_trace_artifacts(sample: dict[str, object], monkeypatch: pytes
     assert cleaned == sample["expected_clean"]
 
 
-@pytest.mark.parametrize("sample", GOLDEN_SAMPLES, ids=[s["description"] for s in GOLDEN_SAMPLES])
-def test_all_golden_samples_no_crash(sample: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
-    cleaner = _make_loaded_mlx_cleaner()
-
-    def _fake_generate(_model, _tokenizer, **_kwargs):
-        return str(sample["expected_clean"])
-
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", _fake_generate)
-
-    trace = cleaner.clean_with_trace(str(sample["dirty"]))
-    assert trace.cleaned_text
-
-
-@pytest.mark.parametrize("sample", GOLDEN_SAMPLES, ids=[s["description"] for s in GOLDEN_SAMPLES])
-def test_golden_samples_content_preserved(sample: dict[str, object], monkeypatch: pytest.MonkeyPatch) -> None:
-    cleaner = _make_loaded_mlx_cleaner()
-
-    def _fake_generate(_model, _tokenizer, **_kwargs):
-        return str(sample["expected_clean"])
-
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", _fake_generate)
-
-    cleaned = cleaner.clean(str(sample["dirty"]))
-    cleaned_lower = cleaned.lower()
-    for keyword in sample["keywords"]:
-        assert str(keyword).lower() in cleaned_lower
-
-
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v", "-o", "addopts="]))

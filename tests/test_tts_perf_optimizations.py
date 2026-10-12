@@ -35,13 +35,16 @@ TORCH_COMPILE_ENV = "AUDIOBOOK_TTS_TORCH_COMPILE"
 
 
 @pytest.fixture(autouse=True)
-def _clean_model_cache(monkeypatch: pytest.MonkeyPatch):
+def _clean_model_cache(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    (tmp_path / "voices").mkdir()
+    (tmp_path / "voices" / "am_adam.pt").write_bytes(b"voice")
+    monkeypatch.setattr(kokoro_package, "require_local_phonemizer", lambda: None)
     # Fake pipelines must not discover the developer's installed model snapshots.
     # Local snapshot resolution is exercised in test_model_snapshots.py.
     monkeypatch.setattr(
         kokoro_package,
         "installed_model_path",
-        lambda model_name: model_name,
+        lambda model_name: str(tmp_path),
     )
     model_cache.clear_model_cache()
     yield
@@ -62,12 +65,26 @@ def _package_runtime_config(provider: str = "cpu") -> KokoroRuntimeConfig:
     )
 
 
+class _FakeKModel:
+    def __init__(self, **kwargs):
+        pass
+
+    def to(self, device):
+        return self
+
+    def eval(self):
+        return self
+
+
 class _FakeKPipeline:
     instances = 0
 
     def __init__(self, **kwargs: object) -> None:
         type(self).instances += 1
         self.kwargs = kwargs
+
+    def load_single_voice(self, path):
+        return Path(path).stem
 
     def __call__(self, text: str, *, voice: str, speed: float = 1.0):
         yield text, "phonemes", np.ones(4, dtype=np.float32)
@@ -76,7 +93,7 @@ class _FakeKPipeline:
 @pytest.fixture
 def fake_kokoro(monkeypatch: pytest.MonkeyPatch) -> type[_FakeKPipeline]:
     _FakeKPipeline.instances = 0
-    monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KPipeline=_FakeKPipeline))
+    monkeypatch.setitem(sys.modules, "kokoro", SimpleNamespace(KPipeline=_FakeKPipeline, KModel=_FakeKModel))
     return _FakeKPipeline
 
 
@@ -176,7 +193,7 @@ def test_package_runtime_compile_failure_restores_eager_decoder(
             return super().__call__(text, voice=voice, speed=speed)
 
     monkeypatch.setitem(
-        sys.modules, "kokoro", SimpleNamespace(KPipeline=_FakeModelPipeline)
+        sys.modules, "kokoro", SimpleNamespace(KPipeline=_FakeModelPipeline, KModel=_FakeKModel)
     )
     monkeypatch.setitem(
         sys.modules,
@@ -216,18 +233,6 @@ def test_file_batch_results_only_for_mlx_provider() -> None:
     assert _strategy_with_provider("cpu").supports_file_batch_results is False
     # Unresolved spec defaults to MLX, matching the capabilities property.
     assert _strategy_with_provider(None).supports_file_batch_results is True
-
-
-def test_estimate_duration_clamps_speed_to_synthesis_range() -> None:
-    strategy = _strategy_with_provider("cpu")
-    text = "x" * 120
-
-    assert strategy.estimate_duration(text, speed=0.0) == pytest.approx(
-        strategy.estimate_duration(text, speed=0.5)
-    )
-    assert strategy.estimate_duration(text, speed=3.0) == pytest.approx(
-        strategy.estimate_duration(text, speed=2.0)
-    )
 
 
 # ---------------------------------------------------------------------------

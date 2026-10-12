@@ -10,24 +10,10 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.tts.engine import (
-    _ensure_tqdm_thread_lock,
-    _patch_mlx_load_weights_compat,
-    _patch_mlx_generation_result_compat,
+from modules.tts.mlx_compat import (
+    patch_mlx_generation_result_compat as _patch_mlx_generation_result_compat,
+    patch_mlx_load_weights_compat as _patch_mlx_load_weights_compat,
 )
-
-
-def _test_tqdm_thread_lock_patch_is_safe_and_idempotent() -> None:
-    _ensure_tqdm_thread_lock()
-    _ensure_tqdm_thread_lock()
-
-    from tqdm import tqdm
-
-    lock = tqdm.get_lock()
-    assert lock is not None
-    assert hasattr(lock, "acquire")
-    assert hasattr(lock, "release")
-    print("✓ tqdm lock patch is safe and idempotent")
 
 
 def _test_mlx_load_weights_compat_patch_maps_weights_kwarg() -> None:
@@ -80,7 +66,6 @@ def test_tts_runtime_lock() -> bool:
     print("TTS RUNTIME LOCK TEST SUITE")
     print("=" * 50 + "\n")
 
-    _test_tqdm_thread_lock_patch_is_safe_and_idempotent()
     _test_mlx_load_weights_compat_patch_maps_weights_kwarg()
     _test_mlx_load_weights_compat_patch_skips_legacy_signature()
     _test_generation_result_compat_patch_adds_default_sample_rate()

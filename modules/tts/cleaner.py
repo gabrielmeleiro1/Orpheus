@@ -18,11 +18,12 @@ contention guard (single worker).
 """
 
 import asyncio
+import inspect
 import logging
 import ssl
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 try:
     import aiohttp
@@ -83,6 +84,7 @@ class TextCleaner:
         self._loaded = False
         self._manager = VRAMManager()
         self._model_lock = threading.RLock()
+        self.generation_cancel_requested: Callable[[], bool] | None = None
         self._api_ssl_context_cache = None
         
         # Track statistics
@@ -135,40 +137,59 @@ class TextCleaner:
         configured = int(getattr(self.config, "api_batch_concurrency", 4) or 1)
         return max(1, configured)
 
-    async def clean_batch_with_trace_async(self, texts: list[str]) -> list[_CleanTrace]:
+    async def clean_batch_with_trace_async(
+        self, texts: list[str], cancel_requested: Callable[[], bool] | None = None,
+    ) -> list[_CleanTrace]:
         """
         Clean multiple chunks concurrently while preserving per-chunk trace data.
 
         API backend runs fully async. Local MLX and CUDA backends use a sync
         per-chunk path via ``asyncio.to_thread`` to avoid blocking the event loop.
+        Backends that accept ``cancel_requested`` stop early once it turns true,
+        leaving the remaining traces unset.
         """
-        return await self._backend_strategy.clean_batch_with_trace_async(self, texts)
+        clean_batch = self._backend_strategy.clean_batch_with_trace_async
+        if cancel_requested is None or (
+            "cancel_requested" not in inspect.signature(clean_batch).parameters
+        ):
+            return await clean_batch(self, texts)
+        return await clean_batch(self, texts, cancel_requested=cancel_requested)
 
-    def clean_chunks_with_trace(self, texts: list[str]) -> list[_CleanTrace]:
+    def clean_chunks_with_trace(
+        self, texts: list[str], cancel_requested: Callable[[], bool] | None = None,
+    ) -> list[_CleanTrace]:
         """Synchronous batch-clean interface for local and fallback paths."""
         indexed = list(enumerate(texts))
         indexed.sort(key=lambda item: len(item[1]))
         traces_by_index: dict[int, _CleanTrace] = {}
         llm_cleaning_enabled = True
-        for index, text in indexed:
-            if not llm_cleaning_enabled:
-                start_time = time.time()
-                rule_based_text = self._rule_based_clean(text)
-                traces_by_index[index] = cleaner_trace_backend.make_rule_only_trace(
-                    self,
-                    _CleanTrace,
-                    original_text=text,
-                    rule_based_text=rule_based_text,
-                    start_time=start_time,
-                    artifact_score=self._artifact_score_for(rule_based_text),
-                )
-                continue
+        # Local generation of one chunk can take many seconds; backends that
+        # support it stop decoding as soon as cancellation is requested.
+        self.generation_cancel_requested = cancel_requested
+        try:
+            for index, text in indexed:
+                if cancel_requested is not None and cancel_requested():
+                    break
+                if not llm_cleaning_enabled:
+                    start_time = time.time()
+                    rule_based_text = self._rule_based_clean(text)
+                    traces_by_index[index] = cleaner_trace_backend.make_rule_only_trace(
+                        self,
+                        _CleanTrace,
+                        original_text=text,
+                        rule_based_text=rule_based_text,
+                        start_time=start_time,
+                        artifact_score=self._artifact_score_for(rule_based_text),
+                    )
+                    continue
 
-            trace = self.clean_with_trace(text)
-            traces_by_index[index] = trace
-            if trace.mode == "hallucination_fallback":
-                llm_cleaning_enabled = False
-        return [traces_by_index[index] for index in range(len(texts))]
+                trace = self.clean_with_trace(text)
+                traces_by_index[index] = trace
+                if trace.mode == "hallucination_fallback":
+                    llm_cleaning_enabled = False
+        finally:
+            self.generation_cancel_requested = None
+        return [traces_by_index[index] for index in sorted(traces_by_index)]
 
     def _artifact_score_for(self, text: str) -> dict[str, object]:
         return score_text_artifacts(text).as_trace_dict()
@@ -404,34 +425,3 @@ class TextCleaner:
         self.unload(keep_in_cache=self.config.cache_model)
         return False
 
-
-def test_rule_based_cleaning() -> bool:
-    """Test rule-based cleaning without loading LLM."""
-    print("\nTesting rule-based text cleaning...")
-    
-    cleaner = TextCleaner.__new__(TextCleaner)
-    cleaner.config = _CleanerConfig()
-    cleaner._loaded = False
-    
-    test_cases = [
-        ("Dr. Smith went to St. Louis.", "Dr. Smith went to St. Louis."),
-        ("e.g. this is an example", "e.g. this is an example"),
-        ("Too   many    spaces", "Too many spaces"),
-        ("Hello,world", "Hello, world"),
-    ]
-    
-    passed = 0
-    for input_text, expected in test_cases:
-        result = cleaner._rule_based_clean(input_text)
-        if result == expected:
-            print(f"✓ '{input_text}' → '{result}'")
-            passed += 1
-        else:
-            print(f"✗ '{input_text}' → '{result}' (expected: '{expected}')")
-    
-    print(f"\nPassed {passed}/{len(test_cases)} tests")
-    return passed == len(test_cases)
-
-
-if __name__ == "__main__":
-    test_rule_based_cleaning()

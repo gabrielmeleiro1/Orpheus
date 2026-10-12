@@ -9,12 +9,18 @@ from modules.tts.chunker import TextChunker
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
 from modules.ingestion.text_layout import page_furniture_lines
+from modules.tts.cleaner_edits import reconcile_llm_edits
 from modules.tts.cleaner_rules import (
-    llm_preservation_violation,
     rule_based_clean,
     strip_page_furniture,
 )
 from tests.fixtures.scanned_chapter import SCANNED_CHAPTER
+
+
+def _guard_rejects(source: str, cleaned: str) -> bool:
+    """Whether the production LLM edit guard rejects any span of ``cleaned``."""
+    edits = reconcile_llm_edits(source, cleaned)
+    return bool(edits.alignment_error or edits.rejected_edits)
 
 
 SCAN = """# Chapter One
@@ -178,7 +184,7 @@ def test_scan_fake_llm_trace_accepts_cleaned_text(monkeypatch):
     assert trace.llm_error is None
     assert trace.cleaned_text == CLEANED
     assert trace.rule_based_text == rule_based_clean(SCAN)
-    assert llm_preservation_violation(SCAN, CLEANED) is None
+    assert not _guard_rejects(SCAN, CLEANED)
 
 
 @pytest.mark.parametrize("backend", ["cuda", "mlx", "api"])
@@ -289,7 +295,7 @@ def test_furniture_detector_preserves_prose_dialogue_lists_and_headings(source):
     ("THE KEEPER 12\nThe keep er waited.\n13 THE KEEPER", "THE KEEPER 12 The keeper waited."),
 ])
 def test_guard_allows_only_identified_furniture_and_exact_merges(source, cleaned):
-    assert llm_preservation_violation(source, cleaned) is None
+    assert not _guard_rejects(source, cleaned)
 
 
 @pytest.mark.parametrize("source, cleaned", [
@@ -304,7 +310,7 @@ def test_guard_allows_only_identified_furniture_and_exact_merges(source, cleaned
     ("The keep er climbed the stair- case.", "The keeper climbed the stairs."),
 ])
 def test_guard_still_rejects_content_loss_or_substitution(source, cleaned):
-    assert llm_preservation_violation(source, cleaned) is not None
+    assert _guard_rejects(source, cleaned)
 
 
 @pytest.mark.parametrize("sampler_api", ["sampler", "temp", "temperature"])

@@ -7,7 +7,6 @@ Uses sentence boundary detection to create natural-sounding chunks.
 
 import re
 from dataclasses import dataclass
-from typing import Generator
 
 
 @dataclass
@@ -318,23 +317,3 @@ class TextChunker:
             return [text]
 
         return self._merge_small_chunks(self._split_at_boundaries(text, max_chars), max_chars)
-
-    def chunk_generator(
-        self,
-        text: str,
-        max_tokens: int | None = None
-    ) -> Generator[str, None, None]:
-        """
-        Generate chunks one at a time for memory efficiency.
-
-        Args:
-            text: Input text to chunk
-            max_tokens: Maximum tokens per chunk
-
-        Yields:
-            Text chunks one at a time
-        """
-        for chunk in self.chunk(text, max_tokens):
-            yield chunk
-
-

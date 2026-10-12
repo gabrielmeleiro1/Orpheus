@@ -373,45 +373,21 @@ class TTSStrategy(ABC):
 
     # ==================== Utilities ====================
 
-    @abstractmethod
-    def estimate_duration(self, text: str, speed: float = 1.0) -> float:
-        """
-        Estimate audio duration in seconds.
-
-        Args:
-            text: Text to estimate
-            speed: Speech speed multiplier
-
-        Returns:
-            Estimated duration in seconds
-        """
-
     def validate_voice(self, voice: str) -> bool:
         """
-        Check if a voice ID is supported.
+        Check if a voice ID or comma-separated blend is supported.
 
         Args:
-            voice: Voice ID to validate
+            voice: Voice ID or blend to validate
 
         Returns:
             True if voice is supported
         """
-        return any(v.id == voice for v in self.supported_voices)
-
-    def get_voice(self, voice_id: str) -> Optional[TTSVoice]:
-        """
-        Get voice details by ID.
-
-        Args:
-            voice_id: Voice identifier
-
-        Returns:
-            TTSVoice if found, None otherwise
-        """
-        for voice in self.supported_voices:
-            if voice.id == voice_id:
-                return voice
-        return None
+        if "," not in voice:
+            return any(v.id == voice for v in self.supported_voices)
+        supported = {v.id for v in self.supported_voices}
+        components = [component.strip() for component in voice.split(",")]
+        return all(component and component in supported for component in components)
 
     def _clamp_speed(self, speed: float) -> float:
         """

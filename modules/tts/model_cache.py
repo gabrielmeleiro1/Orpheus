@@ -46,12 +46,6 @@ def set_cached_model(model_path: str, model: Any) -> None:
             _model_cache.popitem(last=False)
 
 
-def pop_cached_model(model_path: str) -> Optional[Any]:
-    """Remove and return a cached model, if present."""
-    with _model_cache_lock:
-        return _model_cache.pop(model_path, None)
-
-
 def discard_cached_model_if_same(
     model_path: str,
     expected_model: Any,

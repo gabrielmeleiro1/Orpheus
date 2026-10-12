@@ -10,7 +10,9 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
 from modules.app.config import AppConfig
+from modules.app.services.model_storage_service import ModelDeletionInProgress, preview_model_use
 from modules.app.voice_recommender import VoiceRecommender
+from modules.errors import SourceFileNotFoundError
 from modules.tts.runtime_options import TTSRuntimeOptions
 from modules.tts.runtime_spec import TTSRuntimeSpec
 
@@ -89,18 +91,22 @@ class VoiceService:
         )
         runtime_key = spec.cache_key()
 
-        with self._runtime_validation_lock:
-            if self._preview_engine is None or self._preview_runtime_key != runtime_key:
-                if self._preview_engine is not None:
-                    self._preview_engine.unload(keep_in_cache=False)
+        with preview_model_use(self), self._runtime_validation_lock:
+            replacing = self._preview_engine is None or self._preview_runtime_key != runtime_key
+            if replacing:
+                self._unload_preview_engine()
                 self._preview_engine = self._create_tts_strategy(spec)
-                self._preview_engine.load()
-                self._preview_runtime_key = runtime_key
-                self._schedule_preview_idle_unload()
-                return self._preview_engine
 
-            if not self._preview_engine.is_loaded:
-                self._preview_engine.load()
+            if replacing or not self._preview_engine.is_loaded:
+                # A partially loaded replacement must never retain the previous
+                # runtime's identity, including when its cleanup also fails.
+                self._preview_runtime_key = None
+                try:
+                    self._preview_engine.load()
+                except BaseException:
+                    self._unload_preview_engine()
+                    raise
+                self._preview_runtime_key = runtime_key
             self._schedule_preview_idle_unload()
             return self._preview_engine
 
@@ -123,7 +129,7 @@ class VoiceService:
             tts_options=tts_options,
         )
         runtime_key = spec.cache_key()
-        with self._runtime_validation_lock:
+        with preview_model_use(self), self._runtime_validation_lock:
             if runtime_key in self._validated_tts_runtimes:
                 self._perf_metrics["runtime_validation_hits"] += 1
                 return
@@ -184,19 +190,20 @@ class VoiceService:
             tts_options=tts_options,
         )
 
-        with self._runtime_validation_lock:
+        with preview_model_use(self), self._runtime_validation_lock:
             preview_engine = self.ensure_preview_engine(
                 runtime_spec=spec,
             )
 
             try:
-                if not preview_engine.validate_voice(voice):
+                normalized_voice = ",".join(component.strip() for component in voice.split(","))
+                if not preview_engine.validate_voice(normalized_voice):
                     raise ValueError(
                         f"Voice '{voice}' not supported. "
                         f"Available: {[v.id for v in preview_engine.supported_voices]}"
                     )
 
-                audio = preview_engine.synthesize(text, voice, speed)
+                audio = preview_engine.synthesize(text, normalized_voice, speed)
                 with tempfile.NamedTemporaryFile(
                     suffix=".wav",
                     delete=False,
@@ -272,7 +279,7 @@ class VoiceService:
         cleaner_api_key: Optional[str] = None,
     ) -> dict[str, Any]:
         if not source_path.exists():
-            raise ValueError(f"Source file not found: {source_path}")
+            raise SourceFileNotFoundError(source_path)
 
         selected_engine = (engine_name or self._config.tts_engine).lower()
         voices = self.get_available_voices(engine_name=selected_engine)
@@ -343,9 +350,15 @@ class VoiceService:
         generation = self._preview_generation
 
         def unload_if_idle() -> None:
-            with self._runtime_validation_lock:
-                if generation == self._preview_generation:
-                    self.cleanup()
+            try:
+                with preview_model_use(self), self._runtime_validation_lock:
+                    if generation == self._preview_generation:
+                        self.cleanup()
+            except ModelDeletionInProgress:
+                with self._runtime_validation_lock:
+                    # Unrelated model deletion can leave this engine loaded.
+                    if generation == self._preview_generation:
+                        self._schedule_preview_idle_unload()
 
         timer = threading.Timer(max(0.0, self._config.tts_idle_timeout_seconds), unload_if_idle)
         timer.daemon = True
@@ -353,12 +366,22 @@ class VoiceService:
         timer.start()
 
     def cleanup(self) -> None:
+        with preview_model_use(self), self._runtime_validation_lock:
+            self._unload_preview_engine()
+
+    def discard_preview_models(self) -> None:
+        """Invalidate runtime state while the caller owns model deletion."""
         with self._runtime_validation_lock:
-            self._preview_generation += 1
-            if self._preview_idle_timer is not None:
-                self._preview_idle_timer.cancel()
-                self._preview_idle_timer = None
-            if self._preview_engine is not None:
-                self._preview_engine.unload(keep_in_cache=False)
-                self._preview_engine = None
-                self._preview_runtime_key = None
+            self._unload_preview_engine()
+            self._validated_tts_runtimes.clear()
+
+    def _unload_preview_engine(self) -> None:
+        """Retire the engine while holding the runtime lock."""
+        self._preview_generation += 1
+        if self._preview_idle_timer is not None:
+            self._preview_idle_timer.cancel()
+            self._preview_idle_timer = None
+        if self._preview_engine is not None:
+            self._preview_engine.unload(keep_in_cache=False)
+            self._preview_engine = None
+            self._preview_runtime_key = None

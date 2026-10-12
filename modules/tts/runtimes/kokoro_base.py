@@ -142,10 +142,6 @@ class KokoroRuntimeFactory:
     ) -> None:
         cls._registry[(provider.strip().lower(), engine.strip().lower())] = builder
 
-    @classmethod
-    def registered_keys(cls) -> tuple[tuple[str, str], ...]:
-        return tuple(sorted(cls._registry))
-
     def create_runtime(self, config: KokoroRuntimeConfig) -> KokoroRuntime:
         runtime_spec = config.runtime_spec
         key = (

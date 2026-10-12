@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import time
 import wave
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Callable, Iterator
 
 import numpy as np
 
+from modules.errors import TTSInstallationError
 from modules.tts import model_cache
-from modules.tts.model_snapshots import installed_model_path
+from modules.tts.model_snapshots import installed_model_path, require_local_phonemizer
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
 from modules.tts.runtimes.kokoro_base import KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.strategies.base import (
@@ -22,6 +24,9 @@ from modules.tts.strategies.base import (
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    import torch
 
 _TORCH_COMPILE_ENV_VAR = "AUDIOBOOK_TTS_TORCH_COMPILE"
 _BLANK_TEXT_SILENCE_MS = 50
@@ -46,6 +51,7 @@ class PackageKokoroRuntime:
         self.sample_rate = config.sample_rate
         self._pipeline = None
         self._last_cached_pipeline = None
+        self._model_dir: Path | None = None
         self._chunks_processed = 0
         self._total_chunk_time_ms = 0.0
 
@@ -94,17 +100,23 @@ class PackageKokoroRuntime:
         kwargs = self._pipeline_kwargs()
         try:
             local_model_dir = self._local_model_dir()
-            if local_model_dir is not None:
-                from kokoro import KModel
+            from kokoro import KModel
 
-                model_path = local_model_dir / "kokoro-v1_0.pth"
-                config_path = local_model_dir / "config.json"
-                kwargs["model"] = KModel(
-                    repo_id="hexgrad/Kokoro-82M",
-                    config=str(config_path),
-                    model=str(model_path),
-                ).to(self._config.runtime_spec.device or self.provider).eval()
-                kwargs.pop("repo_id", None)
+            model_path = local_model_dir / "kokoro-v1_0.pth"
+            config_path = local_model_dir / "config.json"
+            kwargs["model"] = KModel(
+                repo_id="hexgrad/Kokoro-82M",
+                config=str(config_path),
+                model=str(model_path),
+            ).to(self._config.runtime_spec.device or self.provider).eval()
+            kwargs.pop("repo_id", None)
+            require_local_phonemizer()
+        except TTSInstallationError:
+            raise
+        except Exception as exc:
+            raise TTSRuntimeUnavailable(f"Package Kokoro runtime failed to load: {exc}") from exc
+
+        try:
             self._pipeline = KPipeline(**kwargs)
         except TypeError:
             dropped_kwargs = [
@@ -158,14 +170,21 @@ class PackageKokoroRuntime:
             model.decoder = eager_decoder
             logger.warning("torch.compile unavailable; using eager synthesis: %s", exc)
 
-    def _local_model_dir(self) -> Path | None:
+    def _local_model_dir(self) -> Path:
+        # Snapshot resolution re-verifies the download receipt (tens of
+        # milliseconds); voices are resolved per chunk, so verify once per load.
+        if self._model_dir is not None:
+            return self._model_dir
         model_name = self._config.runtime_spec.resolved_model()
         if model_name is None:
-            return None
+            raise TTSInstallationError("No model configured. Reinstall the model from Setup.")
         candidate = Path(installed_model_path(model_name))
         if candidate.is_dir():
+            self._model_dir = candidate
             return candidate
-        return None
+        raise TTSInstallationError(
+            f"Model {model_name} is not installed. Reinstall the model from Setup."
+        )
 
     def _pipeline_kwargs(self) -> dict[str, object]:
         language_code = "a"
@@ -178,14 +197,27 @@ class PackageKokoroRuntime:
         kwargs["device"] = self._config.runtime_spec.device or self.provider
         return kwargs
 
-    def _voice_arg(self, voice: str) -> str:
+    def _voice_arg(self, voice: str) -> str | torch.Tensor:
+        if voice.endswith(".pt"):
+            return self._pipeline.load_single_voice(voice)
         local_model_dir = self._local_model_dir()
-        if local_model_dir is None or voice.endswith(".pt"):
-            return voice
-        voice_path = local_model_dir / "voices" / f"{voice}.pt"
-        if voice_path.is_file():
-            return str(voice_path)
-        return voice
+        voice_paths = [
+            local_model_dir / "voices" / f"{name}.pt" for name in voice.split(",")
+        ]
+        for voice_path in voice_paths:
+            if not voice_path.is_file():
+                raise TTSInstallationError(
+                    f"Voice {voice_path.stem} is missing from the installed snapshot "
+                    f"for {self._config.runtime_spec.resolved_model()}. Reinstall the model from Setup."
+                )
+        # Keep intact filenames out of KPipeline's comma-delimited blend parser.
+        packs = [self._pipeline.load_single_voice(str(path)) for path in voice_paths]
+        if len(packs) == 1:
+            return packs[0]
+
+        import torch
+
+        return torch.mean(torch.stack(packs), dim=0)
 
     def _write_output_audio(self, output_path: Path, audio: np.ndarray) -> None:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -216,6 +248,7 @@ class PackageKokoroRuntime:
         elif keep_in_cache and pipeline is not None:
             self._last_cached_pipeline = pipeline
         self._pipeline = None
+        self._model_dir = None
 
     def warmup(
         self,
@@ -253,14 +286,17 @@ class PackageKokoroRuntime:
         # key (e.g. a voice preview raised during a conversion). KPipeline keeps
         # mutable per-call state, so calls into it must not interleave.
         with model_cache.get_model_lock(self._cache_key()):
-            audio_chunks = [
-                np.asarray(audio, dtype=np.float32)
-                for _graphemes, _phonemes, audio in self._pipeline(
-                    text,
-                    voice=self._voice_arg(voice),
-                    speed=speed,
-                )
-            ]
+            try:
+                audio_chunks = self._run_pipeline(text, voice, speed)
+            except Exception as exc:
+                # The GPU is shared with other applications and with the local
+                # cleaner, so an allocation can fail transiently. Return cached
+                # blocks to the driver and retry the chunk once before failing
+                # the whole chapter.
+                if not self._release_cuda_memory_after_oom(exc):
+                    raise
+                logger.warning("CUDA out of memory during synthesis; retrying chunk once")
+                audio_chunks = self._run_pipeline(text, voice, speed)
         if audio_chunks:
             audio = np.concatenate(audio_chunks)
         else:
@@ -273,13 +309,44 @@ class PackageKokoroRuntime:
         self._total_chunk_time_ms += (time.perf_counter() - started_at) * 1000
         return audio
 
+    def _run_pipeline(self, text: str, voice: str, speed: float) -> list[np.ndarray]:
+        return [
+            np.asarray(audio, dtype=np.float32)
+            for _graphemes, _phonemes, audio in self._pipeline(
+                text,
+                voice=self._voice_arg(voice),
+                speed=speed,
+            )
+        ]
+
+    def _release_cuda_memory_after_oom(self, exc: BaseException) -> bool:
+        """Empty the CUDA caching allocator when ``exc`` is a CUDA OOM."""
+        if self.provider != "cuda":
+            return False
+        torch_module = sys.modules.get("torch")
+        cuda = getattr(torch_module, "cuda", None)
+        oom_error = getattr(cuda, "OutOfMemoryError", None)
+        if not (
+            (isinstance(oom_error, type) and isinstance(exc, oom_error))
+            or "cuda out of memory" in str(exc).lower()
+        ):
+            return False
+        try:
+            cuda.empty_cache()
+        except Exception:
+            logger.debug("torch.cuda.empty_cache failed after OOM", exc_info=True)
+        return True
+
     def iter_synthesize_batch(
         self,
         items: list[SynthesisItem],
         progress_callback: SynthesisProgressCallback | None = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> Iterator[SynthesisResult]:
         total = len(items)
         for offset, item in enumerate(items, start=1):
+            if cancel_requested is not None and cancel_requested():
+                return
             try:
                 audio = self.synthesize(
                     item.text,

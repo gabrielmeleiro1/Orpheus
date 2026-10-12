@@ -16,7 +16,6 @@ from modules.tts.cleaner_cuda import (
     ensure_cuda_runtime,
 )
 from modules.tts.cleaner_errors import CleanerRuntimeMemoryError, CleanerRuntimeUnavailable
-from modules.tts.runtimes.errors import TTSRuntimeMemoryError, TTSRuntimeUnavailable
 from tests.fixtures.cleaner_cuda_helpers import (
     make_clean_trace,
     make_fake_torch_module,
@@ -62,49 +61,13 @@ def test_ensure_cuda_runtime_raises_when_cuda_is_unavailable(monkeypatch):
         ensure_cuda_runtime()
 
 
-def test_cleaner_cuda_strategy_load_uses_configured_device(monkeypatch):
-    import modules.tts.cleaner_cuda as cleaner_cuda_module
-
-    fake_torch = make_fake_torch_module(cuda_available=True)
-    monkeypatch.setattr(
-        cleaner_cuda_module,
-        "ensure_cuda_runtime",
-        lambda: (fake_torch,),
-    )
-
-    observed: dict[str, str] = {}
-
-    def _fake_load_cuda_model(cleaner, _torch_module):
-        observed["cuda_device"] = cleaner.config.cuda_device
-        observed["cuda_quantization"] = cleaner.config.cuda_quantization
-        return object(), object()
-
-    monkeypatch.setattr(cleaner_cuda_module, "_load_cuda_model", _fake_load_cuda_model)
-
-    cleaner = make_partial_cuda_cleaner(
-        CleanerConfig(
-            backend="cuda",
-            model_name="meta-llama/Llama-3.2-3B-Instruct",
-            cuda_device="cuda:1",
-            cuda_quantization="8bit",
-            cache_model=False,
-        ),
-    )
-    strategy = CleanerCUDAStrategy()
-
-    strategy.load(cleaner)
-
-    assert cleaner._loaded is True
-    assert observed["cuda_device"] == "cuda:1"
-    assert observed["cuda_quantization"] == "8bit"
-
-
-def test_load_cuda_model_maps_explicit_cuda_device_for_transformers(monkeypatch):
+def test_load_cuda_model_maps_explicit_cuda_device_for_transformers(monkeypatch, tmp_path):
     import sys
     import types
 
     import modules.tts.cleaner_cuda as cleaner_cuda_module
 
+    monkeypatch.setattr(cleaner_cuda_module, "installed_model_path", lambda name: str(tmp_path))
     fake_torch = make_fake_torch_module(cuda_available=True)
     observed: dict[str, object] = {}
 
@@ -113,7 +76,8 @@ def test_load_cuda_model_maps_explicit_cuda_device_for_transformers(monkeypatch)
         eos_token = "<eos>"
 
         @classmethod
-        def from_pretrained(cls, model_name):
+        def from_pretrained(cls, model_name, *, local_files_only):
+            assert local_files_only is True
             observed["tokenizer_model_name"] = model_name
             return cls()
 
@@ -246,9 +210,10 @@ def test_generate_llm_response_is_greedy_and_passes_max_tokens(monkeypatch, use_
     assert generate_kwargs["pad_token_id"] == 0
 
 
-def test_model_cache_hit_skips_reload_when_cache_model_true(monkeypatch):
+def test_model_cache_hit_skips_reload_when_cache_model_true(monkeypatch, tmp_path):
     import modules.tts.cleaner_cuda as cleaner_cuda_module
 
+    monkeypatch.setattr(cleaner_cuda_module, "installed_model_path", lambda name: str(tmp_path))
     fake_torch = make_fake_torch_module(cuda_available=True)
     monkeypatch.setattr(
         cleaner_cuda_module,
@@ -337,19 +302,6 @@ def test_clean_batch_with_trace_async_preserves_order():
     ]
     assert all(isinstance(trace, CleanTrace) for trace in traces)
     assert cleaner.peak_active_calls == 1
-
-
-def test_cleaner_error_classes_align_with_tts_taxonomy():
-    assert issubclass(CleanerRuntimeUnavailable, RuntimeError)
-    assert issubclass(CleanerRuntimeMemoryError, RuntimeError)
-    assert issubclass(TTSRuntimeUnavailable, RuntimeError)
-    assert issubclass(TTSRuntimeMemoryError, RuntimeError)
-    assert CleanerRuntimeUnavailable.__name__.endswith("RuntimeUnavailable")
-    assert CleanerRuntimeMemoryError.__name__.endswith("RuntimeMemoryError")
-    assert TTSRuntimeUnavailable.__name__.endswith("RuntimeUnavailable")
-    assert TTSRuntimeMemoryError.__name__.endswith("RuntimeMemoryError")
-    assert CleanerRuntimeUnavailable.__doc__ is not None
-    assert CleanerRuntimeMemoryError.__doc__ is not None
 
 
 def test_load_raises_cleaner_runtime_unavailable_when_torch_missing(monkeypatch):

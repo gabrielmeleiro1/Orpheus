@@ -4,18 +4,41 @@ from pathlib import Path
 
 import pytest
 import numpy as np
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from types import SimpleNamespace
 import modules.tts.engine as tts_engine_module
 import modules.tts.cleaner as cleaner_module
-from modules.tts.engine_output import synthesize_to_file as synthesize_to_file_helper
 from modules.tts.engine_output import synthesize_to_output_path as synthesize_to_output_path_helper
 from modules.tts.engine_output import synthesize_to_output_file as synthesize_to_output_file_helper
-from modules.tts.chunker import TextChunker, ChunkConfig
 from modules.tts.cleaner import TextCleaner
 from modules.tts.engine import TTSEngine
 from modules.tts.engine_config import TTSConfig
 from modules.errors import SynthesisError
+
+
+def _write_pcm_wav(path, samples):
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(24000)
+        wav_file.writeframes(np.array(samples, dtype=np.int16).tobytes())
+
+
+def _output_engine(tmp_path, **options):
+    return SimpleNamespace(
+        _model_lock=threading.RLock(),
+        _model_path=str(tmp_path),
+        _model=object(),
+        **options,
+    )
+
+
+def _segment_generator(output_path):
+    def fake_generate_audio(**kwargs):  # noqa: ANN001
+        target = output_path.with_name(f"{output_path.stem}_000.wav")
+        _write_pcm_wav(target, [1, 2, 3])
+
+    return fake_generate_audio
 
 
 @pytest.fixture(autouse=True)
@@ -24,19 +47,6 @@ def _stub_lazy_mlx_runtime(monkeypatch):
     monkeypatch.setattr(tts_engine_module, "_ensure_mlx_runtime", lambda: None)
     monkeypatch.setattr(tts_engine_module, "_ensure_tqdm_thread_lock", lambda: None)
 
-
-class TestTextChunker:
-    def test_chunking(self):
-        config = ChunkConfig(max_tokens=10)
-        chunker = TextChunker(config)
-        text = "This is sentence one. This is sentence two. This is sentence three."
-        chunks = chunker.chunk(text)
-        assert len(chunks) > 0
-        assert all(isinstance(c, str) for c in chunks)
-    
-    def test_empty_text(self):
-        chunker = TextChunker()
-        assert chunker.chunk("") == []
 
 class TestTextCleaner:
     def test_rule_based_cleaning(self):
@@ -84,7 +94,6 @@ class TestTTSEngine:
             sample_rate=24000,
         )
         engine._memory_manager = SimpleNamespace(
-            record_activity=lambda: calls.append("activity"),
             refresh_memory_pressure=lambda: calls.append("refresh"),
             get_tts_batch_size=lambda: 2,
             get_vram_pressure=lambda: SimpleNamespace(name="NORMAL"),
@@ -104,18 +113,8 @@ class TestTTSEngine:
         results = list(engine.iter_synthesize_batch(items))
 
         assert len(results) == 2
-        assert calls == ["activity", "refresh"]
+        assert calls == ["refresh"]
     
-    def test_synthesize(self):
-        engine = TTSEngine()
-        expected = np.array([0.1, 0.2, 0.3], dtype=np.float32)
-
-        with patch.object(engine, "_synthesize_once", return_value=expected):
-            audio = engine.synthesize("Hello world", voice="af_bella", speed=1.0)
-
-        assert audio is not None
-        assert np.array_equal(audio, expected)
-
     def test_quantization_aliases_map_to_expected_model_paths(self):
         engine = TTSEngine.__new__(TTSEngine)
         engine.config = SimpleNamespace(model_name="mlx-community/Kokoro-82M", quantization="q8")
@@ -131,7 +130,7 @@ class TestTTSEngine:
         engine._model = None
         engine._model_path = engine._get_model_path()
 
-        with patch.object(tts_engine_module, "_get_cached_model", return_value=None), patch.object(
+        with patch.object(tts_engine_module.engine_runtime, "_get_cached_model", return_value=None), patch.object(
             tts_engine_module.mlx_compat_backend,
             "load_tts_model",
             side_effect=ValueError("shape mismatch"),
@@ -139,25 +138,6 @@ class TestTTSEngine:
         ):
             with pytest.raises(ValueError, match="shape mismatch"):
                 engine.load_model()
-
-    def test_engine_output_helper_writes_wav_file(self, tmp_path):
-        engine = SimpleNamespace(
-            config=SimpleNamespace(sample_rate=24000),
-            synthesize=MagicMock(return_value=np.array([0.1, 0.2, 0.3], dtype=np.float32)),
-        )
-        output_path = tmp_path / "sample.wav"
-
-        written_path = synthesize_to_file_helper(
-            engine,
-            text="Hello world",
-            output_path=output_path,
-            voice="af_bella",
-            speed=1.0,
-        )
-
-        assert written_path == output_path
-        assert output_path.exists()
-        engine.synthesize.assert_called_once_with("Hello world", "af_bella", 1.0)
 
     def test_engine_output_file_helper_does_not_read_generated_audio(self, tmp_path):
         output_path = tmp_path / "sample.wav"
@@ -167,17 +147,9 @@ class TestTTSEngine:
                 target = Path(kwargs["output_path"]) / f"{kwargs['file_prefix']}.wav"
             else:
                 target = Path(f"{kwargs['file_prefix']}.wav")
-            with wave.open(str(target), "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(24000)
-                wav_file.writeframes((np.array([1, 2, 3], dtype=np.int16)).tobytes())
+            _write_pcm_wav(target, [1, 2, 3])
 
-        engine = SimpleNamespace(
-            _model_lock=threading.RLock(),
-            _model_path="model-path",
-            _model=object(),
-        )
+        engine = _output_engine(tmp_path)
 
         written_path = synthesize_to_output_file_helper(
             engine,
@@ -195,25 +167,11 @@ class TestTTSEngine:
 
     def test_engine_output_file_helper_replaces_stale_output(self, tmp_path):
         output_path = tmp_path / "sample.wav"
-        with wave.open(str(output_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(24000)
-            wav_file.writeframes((np.array([9], dtype=np.int16)).tobytes())
+        _write_pcm_wav(output_path, [9])
 
-        def fake_generate_audio(**kwargs):  # noqa: ANN001
-            target = output_path.with_name(f"{output_path.stem}_000.wav")
-            with wave.open(str(target), "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(24000)
-                wav_file.writeframes((np.array([1, 2, 3], dtype=np.int16)).tobytes())
+        fake_generate_audio = _segment_generator(output_path)
 
-        engine = SimpleNamespace(
-            _model_lock=threading.RLock(),
-            _model_path="model-path",
-            _model=object(),
-        )
+        engine = _output_engine(tmp_path)
 
         written_path = synthesize_to_output_file_helper(
             engine,
@@ -230,26 +188,11 @@ class TestTTSEngine:
 
     def test_engine_output_path_helper_replaces_stale_output_and_consumes_segments(self, tmp_path):
         output_path = tmp_path / "sample.wav"
-        with wave.open(str(output_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(24000)
-            wav_file.writeframes((np.array([9], dtype=np.int16)).tobytes())
+        _write_pcm_wav(output_path, [9])
 
-        def fake_generate_audio(**kwargs):  # noqa: ANN001
-            target = output_path.with_name(f"{output_path.stem}_000.wav")
-            with wave.open(str(target), "wb") as wav_file:
-                wav_file.setnchannels(1)
-                wav_file.setsampwidth(2)
-                wav_file.setframerate(24000)
-                wav_file.writeframes((np.array([1, 2, 3], dtype=np.int16)).tobytes())
+        fake_generate_audio = _segment_generator(output_path)
 
-        engine = SimpleNamespace(
-            _model_lock=threading.RLock(),
-            _model_path="model-path",
-            _model=object(),
-            config=SimpleNamespace(sample_rate=24000),
-        )
+        engine = _output_engine(tmp_path, config=SimpleNamespace(sample_rate=24000))
 
         audio = synthesize_to_output_path_helper(
             engine,
@@ -280,11 +223,7 @@ class TestTTSEngine:
         output_helper,
     ):
         output_path = tmp_path / "sample.wav"
-        with wave.open(str(output_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(24000)
-            wav_file.writeframes(np.array([9], dtype=np.int16).tobytes())
+        _write_pcm_wav(output_path, [9])
 
         generate_calls = []
         original_unlink = Path.unlink
@@ -295,12 +234,7 @@ class TestTTSEngine:
             return original_unlink(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "unlink", locked_unlink)
-        engine = SimpleNamespace(
-            _model_lock=threading.RLock(),
-            _model_path="model-path",
-            _model=object(),
-            config=SimpleNamespace(sample_rate=24000),
-        )
+        engine = _output_engine(tmp_path, config=SimpleNamespace(sample_rate=24000))
 
         with pytest.raises(SynthesisError, match="stale generated audio"):
             output_helper(
@@ -327,11 +261,7 @@ class TestTTSEngine:
     ):
         output_path = tmp_path / "sample.wav"
         segment_path = tmp_path / "sample_000.wav"
-        with wave.open(str(segment_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(24000)
-            wav_file.writeframes(np.array([9], dtype=np.int16).tobytes())
+        _write_pcm_wav(segment_path, [9])
 
         generate_calls = []
         original_unlink = Path.unlink
@@ -342,12 +272,7 @@ class TestTTSEngine:
             return original_unlink(path, *args, **kwargs)
 
         monkeypatch.setattr(Path, "unlink", locked_unlink)
-        engine = SimpleNamespace(
-            _model_lock=threading.RLock(),
-            _model_path="model-path",
-            _model=object(),
-            config=SimpleNamespace(sample_rate=24000),
-        )
+        engine = _output_engine(tmp_path, config=SimpleNamespace(sample_rate=24000))
 
         with pytest.raises(SynthesisError, match="stale generated audio"):
             output_helper(
@@ -462,11 +387,7 @@ class TestMultiSegmentWavAssembly:
                     np.full(frames_per_segment, value, dtype=np.int16),
                 )
 
-        engine = SimpleNamespace(
-            _model_lock=threading.RLock(),
-            _model_path="model-path",
-            _model=object(),
-        )
+        engine = _output_engine(tmp_path)
 
         written_path = synthesize_to_output_file_helper(
             engine,
@@ -501,11 +422,7 @@ class TestMultiSegmentWavAssembly:
                 sample_rate=48000,
             )
 
-        engine = SimpleNamespace(
-            _model_lock=threading.RLock(),
-            _model_path="model-path",
-            _model=object(),
-        )
+        engine = _output_engine(tmp_path)
 
         with pytest.raises(SynthesisError):
             synthesize_to_output_file_helper(

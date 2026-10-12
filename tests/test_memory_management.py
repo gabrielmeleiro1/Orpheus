@@ -1,10 +1,9 @@
 """
 Tests for Memory Management Features
 ====================================
-Tests dynamic batch sizing, idle timeout unloading, and buffer pooling.
+Tests dynamic batch sizing and adaptive memory management.
 """
 
-import time
 import types
 import pytest
 
@@ -12,12 +11,9 @@ import pytest
 try:
     from modules.tts.vram_monitor import (
         VRAMMonitor,
-        IdleTimeoutManager,
         AdaptiveMemoryManager,
         DynamicBatchConfig,
-        IdleTimeoutConfig,
         VRAMPressureLevel,
-        get_memory_manager,
     )
     VRAM_MONITOR_AVAILABLE = True
 except ImportError:
@@ -35,7 +31,6 @@ GIB = 1024**3
 def _reset_vram_singletons() -> None:
     if VRAM_MONITOR_AVAILABLE:
         VRAMMonitor._instance = None
-        IdleTimeoutManager._instance = None
 
 
 class TestVRAMMonitor:
@@ -126,7 +121,6 @@ class TestVRAMMonitor:
         monitor = VRAMMonitor(total_vram_gb=16.0)
         
         assert monitor.get_tts_batch_size() == monitor.config.base_tts_batch_size
-        assert monitor.get_cleaner_batch_size() == monitor.config.base_cleaner_batch_size
     
     def test_pressure_level_calculation(self):
         """Test pressure level calculation from usage ratio."""
@@ -155,67 +149,6 @@ class TestVRAMMonitor:
         normal_size = monitor.get_tts_batch_size()
         assert normal_size >= critical_size
     
-    def test_monitoring_start_stop(self):
-        """Test starting and stopping the monitor."""
-        monitor = VRAMMonitor(total_vram_gb=16.0)
-        
-        monitor.start_monitoring()
-        assert monitor._monitoring is True
-        
-        monitor.stop_monitoring()
-        assert monitor._monitoring is False
-
-
-@pytest.mark.skipif(not VRAM_MONITOR_AVAILABLE, reason="VRAM monitor not available")
-class TestIdleTimeoutManager:
-    """Tests for idle timeout manager."""
-
-    def setup_method(self):
-        _reset_vram_singletons()
-    
-    def test_activity_tracking(self):
-        """Test activity tracking."""
-        config = IdleTimeoutConfig(
-            idle_timeout_seconds=5.0,
-            check_interval_seconds=0.1,
-        )
-        manager = IdleTimeoutManager(config=config)
-        
-        # Initially not idle
-        manager.record_activity()
-        assert manager.get_idle_time() < 1.0
-        
-        # Wait a bit
-        time.sleep(0.2)
-        assert manager.get_idle_time() >= 0.2
-        
-        # Record activity again
-        manager.record_activity()
-        assert manager.get_idle_time() < 0.1
-    
-    def test_idle_timeout_check_logic(self):
-        """Test idle timeout check logic directly."""
-        config = IdleTimeoutConfig(
-            idle_timeout_seconds=0.1,
-            check_interval_seconds=0.05,
-            warning_before_unload_seconds=0.05,
-        )
-        manager = IdleTimeoutManager(config=config)
-        
-        unloaded = []
-        def mock_unload():
-            unloaded.append(True)
-        
-        manager.register_model("test", mock_unload)
-        manager.record_activity()
-        
-        # Manually trigger the check with expired idle time
-        manager._last_activity = time.time() - 0.2  # 0.2 seconds ago
-        manager._unload_all_models()
-        
-        assert len(unloaded) == 1, "Unload should have been called"
-
-
 @pytest.mark.skipif(not VRAM_MONITOR_AVAILABLE, reason="VRAM monitor not available")
 class TestAdaptiveMemoryManager:
     """Tests for adaptive memory manager."""
@@ -244,59 +177,3 @@ class TestAdaptiveMemoryManager:
 
         assert first.vram_monitor is second.vram_monitor
         assert second.get_tts_batch_size() == 9
-    
-    def test_manager_initialization(self):
-        """Test manager initialization."""
-        manager = AdaptiveMemoryManager(
-            total_vram_gb=16.0,
-            idle_timeout_seconds=300.0,
-        )
-        
-        assert manager.vram_monitor is not None
-        assert manager.idle_manager is not None
-    
-    def test_start_stop(self):
-        """Test starting and stopping the manager."""
-        manager = AdaptiveMemoryManager(total_vram_gb=16.0)
-        
-        manager.start()
-        assert manager.vram_monitor._monitoring is True
-        
-        manager.stop()
-        assert manager.vram_monitor._monitoring is False
-    
-    def test_batch_size_access(self):
-        """Test batch size access methods."""
-        manager = AdaptiveMemoryManager(total_vram_gb=16.0)
-        
-        # Should return default values
-        tts_batch = manager.get_tts_batch_size()
-        cleaner_batch = manager.get_cleaner_batch_size()
-        
-        assert tts_batch > 0
-        assert cleaner_batch > 0
-
-
-@pytest.mark.skipif(not VRAM_MONITOR_AVAILABLE, reason="Required modules not available")
-class TestIntegration:
-    """Integration tests for memory management features."""
-
-    def setup_method(self):
-        _reset_vram_singletons()
-
-    def test_memory_manager_integration(self):
-        """Test full memory manager integration."""
-        manager = get_memory_manager(total_vram_gb=16.0)
-        
-        # Start monitoring
-        manager.start()
-        
-        # Simulate activity
-        for _ in range(5):
-            manager.record_activity()
-            batch_size = manager.get_tts_batch_size()
-            assert batch_size > 0
-            time.sleep(0.01)
-        
-        # Stop monitoring
-        manager.stop()

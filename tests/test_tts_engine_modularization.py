@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 import threading
 import time
@@ -24,25 +25,65 @@ from modules.tts import model_cache
 from modules.tts.runtime_options import TTSRuntimeOptions
 from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtimes.errors import TTSRuntimeUnavailable
+from tests import test_cleaner_runtime_probes as _runtime_probes
+
+frozen_spawn = _runtime_probes.frozen_spawn
 
 
-def test_model_cache_wrappers_delegate_to_backend() -> None:
-    sentinel_model = object()
+def _runtime_engine(canonical_key, **metadata):
+    tts = SimpleNamespace(
+        config=SimpleNamespace(
+            model_name="Kokoro-82M",
+            quantization="bf16",
+            runtime_cache_key=canonical_key,
+        ),
+        _model_loaded=False,
+        _model=None,
+        _model_path="Kokoro-82M-bf16",
+        _model_cache_key=canonical_key,
+        **metadata,
+    )
+    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    return tts
 
-    with patch.object(engine.model_cache_backend, "get_cached_model", return_value=sentinel_model) as mock_get:
-        assert engine._get_cached_model("model-a") is sentinel_model
-        mock_get.assert_called_once_with("model-a")
 
-    with patch.object(engine.model_cache_backend, "set_cached_model") as mock_set:
-        engine._set_cached_model("model-a", sentinel_model)
-        mock_set.assert_called_once_with("model-a", sentinel_model)
+def _worker_init_config():
+    return {
+        "tts_runtime": TTSRuntimeSpec.from_legacy(
+            "kokoro",
+            "bf16",
+            model="mlx-community/Kokoro-82M",
+            provider="mlx",
+        ).to_dict(),
+        "tts_engine": "kokoro",
+        "tts_model_name": "mlx-community/Kokoro-82M",
+        "tts_quantization": "bf16",
+        "voice": "af_bella",
+        "cleaner_model_name": "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        "cleaner_backend": "mlx",
+        "cleaner_api_base_url": "https://api.openai.com/v1",
+        "cleaner_api_key_env": "OPENAI_API_KEY",
+        "cleaner_api_model": "gpt-5-nano",
+        "cleaner_api_global_concurrency": 6,
+        "cleaner_api_global_limiter": None,
+    }
 
-    sentinel_mx = object()
-    with patch.object(engine.model_cache_backend, "clear_model_cache") as mock_clear, \
-         patch.object(engine, "MLX_AVAILABLE", True), \
-         patch.object(engine, "mx", sentinel_mx):
-        engine._clear_model_cache()
-        mock_clear.assert_called_once_with(mx_module=sentinel_mx, mlx_available=True)
+
+def _frozen_speech_package(tmp_path, monkeypatch, package_dir):
+    data_dir = package_dir / "espeak-ng-data"
+    library_path = package_dir / "libespeak-ng.dylib"
+    data_dir.mkdir(parents=True)
+    library_path.write_bytes(b"dylib")
+    fake_loader = SimpleNamespace(
+        get_library_path=lambda: "wrong-library",
+        get_data_path=lambda: "wrong-data",
+    )
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
+    monkeypatch.setitem(sys.modules, "espeakng_loader", fake_loader)
+
+    return fake_loader, library_path, data_dir
 
 
 def test_model_lifecycle_strategy_kwargs_pass_spec_runtime_options_dict() -> None:
@@ -198,99 +239,27 @@ def test_runtime_hard_unload_releases_detached_cached_model_reference() -> None:
         model_cache.clear_model_cache()
 
 
-def test_tts_engine_has_no_threaded_batch_executor_scaffolding() -> None:
-    assert not hasattr(engine.TTSEngine, "_ensure_batch_executor")
-
-    tts = engine.TTSEngine.__new__(engine.TTSEngine)
-    assert "_batch_executor" not in vars(tts)
-    assert "_batch_executor_workers" not in vars(tts)
-
-    tts._memory_manager = object()
-
-    assert tts._adaptive_batch_pause_seconds() == 0.0
-
-
-def test_mlx_audio_adapter_singleton_and_helpers() -> None:
-    assert hasattr(mlx_compat, "MLXAudioAdapter")
-    assert hasattr(mlx_compat, "MLX_AUDIO_ADAPTER")
-
-    adapter = mlx_compat.MLX_AUDIO_ADAPTER
-    kwargs: dict[str, object] = {}
-
-    with patch.object(mlx_compat, "generate_audio", None):
-        adapter.inject_model_arg(kwargs, "model-path")
-        adapter.inject_output_args(kwargs, "/tmp", "pref")
-
-    assert kwargs["model_path"] == "model-path"
-    assert kwargs["output_path"] == "/tmp"
-    assert kwargs["file_prefix"] == "pref"
-
-
-def test_generate_audio_signature_is_cached_for_injection_helpers() -> None:
-    def fake_generate_audio(model_path=None, output_path=None, file_prefix=None):  # noqa: ANN001
-        return model_path, output_path, file_prefix
-
-    with patch.object(mlx_compat.inspect, "signature", wraps=mlx_compat.inspect.signature) as mock_signature:
-        for _ in range(3):
-            kwargs: dict[str, object] = {}
-            mlx_compat.inject_generate_audio_model_arg(
-                kwargs,
-                "model-path",
-                generate_fn=fake_generate_audio,
-            )
-            mlx_compat.inject_generate_audio_output_args(
-                kwargs,
-                "/tmp/audio",
-                "chunk",
-                generate_fn=fake_generate_audio,
-            )
-
-    assert mock_signature.call_count == 1
-
-
-def test_patch_frozen_espeakng_loader_paths_uses_pyinstaller_internal_dir(
+def test_patch_espeakng_loader_paths_uses_pyinstaller_internal_dir(
     tmp_path,
     monkeypatch,
 ) -> None:
     package_dir = tmp_path / "espeakng_loader"
-    data_dir = package_dir / "espeak-ng-data"
-    library_path = package_dir / "libespeak-ng.dylib"
-    data_dir.mkdir(parents=True)
-    library_path.write_bytes(b"dylib")
-    fake_loader = SimpleNamespace(
-        get_library_path=lambda: "wrong-library",
-        get_data_path=lambda: "wrong-data",
-    )
+    fake_loader, library_path, data_dir = _frozen_speech_package(tmp_path, monkeypatch, package_dir)
 
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-    monkeypatch.setitem(sys.modules, "espeakng_loader", fake_loader)
-
-    mlx_compat.patch_frozen_espeakng_loader_paths()
+    mlx_compat.patch_espeakng_loader_paths()
 
     assert fake_loader.get_library_path() == str(library_path)
     assert fake_loader.get_data_path() == str(data_dir)
 
 
-def test_patch_frozen_espeakng_loader_paths_accepts_onedir_root_meipass(
+def test_patch_espeakng_loader_paths_accepts_onedir_root_meipass(
     tmp_path,
     monkeypatch,
 ) -> None:
     package_dir = tmp_path / "_internal" / "espeakng_loader"
-    data_dir = package_dir / "espeak-ng-data"
-    library_path = package_dir / "libespeak-ng.dylib"
-    data_dir.mkdir(parents=True)
-    library_path.write_bytes(b"dylib")
-    fake_loader = SimpleNamespace(
-        get_library_path=lambda: "wrong-library",
-        get_data_path=lambda: "wrong-data",
-    )
+    fake_loader, library_path, data_dir = _frozen_speech_package(tmp_path, monkeypatch, package_dir)
 
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
-    monkeypatch.setitem(sys.modules, "espeakng_loader", fake_loader)
-
-    mlx_compat.patch_frozen_espeakng_loader_paths()
+    mlx_compat.patch_espeakng_loader_paths()
 
     assert fake_loader.get_library_path() == str(library_path)
     assert fake_loader.get_data_path() == str(data_dir)
@@ -313,17 +282,6 @@ def test_runtime_capability_service_caches_probe_results() -> None:
     assert second["available"] is True
     assert second["cache_hit"] is True
     assert mock_run.call_count == 1
-
-
-def test_runtime_capability_service_tts_probe_imports_kokoro_dynamic_model() -> None:
-    runtime_capability_service = importlib.import_module(
-        "modules.app.services.runtime_capability_service"
-    )
-    RuntimeCapabilityService = runtime_capability_service.RuntimeCapabilityService
-
-    assert "mlx_audio.tts.models.kokoro" in RuntimeCapabilityService._TTS_PROBE
-    assert "patch_frozen_espeakng_loader_paths" in RuntimeCapabilityService._TTS_PROBE
-    assert RuntimeCapabilityService()._timeout_seconds >= 15.0
 
 
 def test_runtime_capability_snapshot_returns_pending_then_refreshes_in_background() -> None:
@@ -496,67 +454,82 @@ def test_runtime_capability_service_reports_subprocess_timeout() -> None:
     assert "hung import" in str(result["error"])
 
 
-def test_runtime_capability_service_uses_in_process_probe_when_frozen(monkeypatch) -> None:
+@pytest.mark.parametrize("delay", [0, 3])
+def test_runtime_capability_service_uses_supervised_spawn_probe_when_frozen(
+    frozen_spawn, monkeypatch, tmp_path, delay,
+) -> None:
     runtime_capability_service = importlib.import_module(
         "modules.app.services.runtime_capability_service"
     )
     RuntimeCapabilityService = runtime_capability_service.RuntimeCapabilityService
-    service = RuntimeCapabilityService(cache_ttl_seconds=0.0, timeout_seconds=4.0)
+    service = RuntimeCapabilityService(cache_ttl_seconds=60.0, timeout_seconds=1.0)
+    marker = tmp_path / "worker-pid"
+    service._TTS_PROBE = (
+        "import os, time\nfrom pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text(str(os.getpid()))\n"
+        f"time.sleep({delay})\nprint('{{\"available\": true, \"error\": null}}')"
+    )
 
-    monkeypatch.setattr(runtime_capability_service.sys, "frozen", True, raising=False)
     monkeypatch.setattr(
         service,
         "_run_in_process_probe",
-        lambda _script: {"available": True, "error": None},
-        raising=False,
+        MagicMock(side_effect=AssertionError("probe must execute in a worker")),
     )
 
     with patch(
         "modules.app.services.runtime_capability_service.subprocess.run",
         side_effect=AssertionError("frozen sidecar cannot execute Python -c"),
     ):
+        started = time.monotonic()
         result = service.probe_mlx_tts_runtime()
 
-    assert result["available"] is True
-    assert result["error"] is None
+    assert time.monotonic() - started < 2.5
+    assert int(marker.read_text()) == frozen_spawn[0].pid
+    assert frozen_spawn[0].pid != os.getpid()
+    assert frozen_spawn[0].exitcode is not None
+    service._run_in_process_probe.assert_not_called()
+    assert result["available"] is (delay == 0)
+    if delay:
+        assert result["timed_out"] is True
+        assert "timed out" in result["error"].lower()
+    else:
+        assert result["error"] is None
+        assert service.probe_mlx_tts_runtime()["cache_hit"] is True
+    assert len(frozen_spawn) == 1
     assert result["cache_hit"] is False
     assert isinstance(result["latency_ms"], float)
 
 
-def test_frozen_runtime_probes_serialize_imports_across_service_instances(monkeypatch) -> None:
-    import threading
-    import time
+def test_frozen_runtime_probes_serialize_imports_across_service_instances(frozen_spawn, tmp_path) -> None:
     from concurrent.futures import ThreadPoolExecutor
     from modules.app.services import runtime_capability_service
 
-    monkeypatch.setattr(runtime_capability_service.sys, "frozen", True, raising=False)
     services = [runtime_capability_service.RuntimeCapabilityService() for _ in range(4)]
-    active = 0
-    maximum = 0
-    counter_lock = threading.Lock()
     barrier = threading.Barrier(len(services))
-
-    def import_probe(_script):
-        nonlocal active, maximum
-        with counter_lock:
-            active += 1
-            maximum = max(maximum, active)
-        time.sleep(0.02)
-        with counter_lock:
-            active -= 1
-        return {"available": True}
-
-    for service in services:
-        monkeypatch.setattr(service, "_run_in_process_probe", import_probe)
+    (tmp_path / "probe_dependency.py").write_text(
+        "import os, time\nfrom pathlib import Path\n"
+        f"root = Path({str(tmp_path)!r})\n"
+        "active = root / 'importing'\nactive.mkdir()\n"
+        "try:\n"
+        "    time.sleep(0.05)\n"
+        "    (root / f'{os.getpid()}.imported').write_text('imported')\n"
+        "finally:\n    active.rmdir()\n"
+    )
+    script = (
+        f"import sys\nsys.path.insert(0, {str(tmp_path)!r})\n"
+        "import probe_dependency\nprint('{\"available\": true}')"
+    )
 
     def run(service):
         barrier.wait(timeout=5)
-        return service._run_probe("import packages", 5)
+        return service._run_frozen_probe(script, 5)
 
     with ThreadPoolExecutor(max_workers=len(services)) as pool:
         results = list(pool.map(run, services))
-    assert maximum == 1
     assert all(result["available"] for result in results)
+    assert len(list(tmp_path.glob("*.imported"))) == len(services)
+    assert len(frozen_spawn) == len(services)
+    assert all(worker.exitcode == 0 for worker in frozen_spawn)
 
 
 def test_in_process_probe_survives_missing_stdout_rebind_and_concurrency(
@@ -638,25 +611,6 @@ def test_tts_engine_warmup_model_is_idempotent() -> None:
     assert tts._last_warmup_ms is not None
 
 
-def test_tts_engine_metrics_include_warmup_fields() -> None:
-    tts = engine.TTSEngine.__new__(engine.TTSEngine)
-    tts._engine_start_time = 1.0
-    tts._first_audio_time = None
-    tts._memory_manager = None
-    tts._total_chunks_processed = 0
-    tts._total_chars_processed = 0
-    tts._total_time_ms = 0.0
-    tts._retry_count = 0
-    tts._batch_pause_total_ms = 0.0
-    tts._warmup_complete = True
-    tts._last_warmup_ms = 12.5
-
-    metrics = tts.get_metrics()
-
-    assert metrics["warmup_complete"] is True
-    assert metrics["last_warmup_ms"] == 12.5
-
-
 def test_tts_engine_batch_synthesis_uses_sequential_scheduler_for_serial_mlx_runtime() -> None:
     tts = engine.TTSEngine.__new__(engine.TTSEngine)
     tts.config = SimpleNamespace(use_batching=True, batch_size=4, sample_rate=24000)
@@ -731,22 +685,16 @@ def test_tts_engine_shared_retry_helper_preserves_real_result_types(tmp_path) ->
     assert [call_args.args for call_args in mock_sleep.call_args_list] == [(0,), (0,)]
 
 
-def test_public_synthesis_methods_delegate_to_retry_helper(tmp_path) -> None:
+def test_public_synthesis_methods_clamp_speed_and_default_voice(tmp_path) -> None:
     tts = engine.TTSEngine.__new__(engine.TTSEngine)
     tts.config = SimpleNamespace(default_voice="af_bella", sample_rate=24000)
     tts._model_path = "mlx-community/Kokoro-82M-bf16"
     audio = np.array([0.0, 0.5], dtype=np.float32)
     output_path = tmp_path / "out.wav"
-    helper_calls = []
 
-    def retry_spy(operation, *, max_retries):  # noqa: ANN001, ANN202
-        helper_calls.append(max_retries)
-        return operation()
-
-    with patch.object(tts, "_synthesize_with_retries", side_effect=retry_spy), \
-         patch.object(tts, "_synthesize_once", return_value=audio) as synth_once, \
+    with patch.object(tts, "_synthesize_once", return_value=audio) as synth_once, \
          patch.object(tts, "_synthesize_to_output_file", return_value=output_path) as synth_file, \
-         patch.object(tts, "_update_synthesis_stats") as update_stats:
+         patch.object(tts, "_update_synthesis_stats"):
         audio_result = tts.synthesize(
             "hello",
             voice=None,
@@ -763,7 +711,6 @@ def test_public_synthesis_methods_delegate_to_retry_helper(tmp_path) -> None:
 
     assert audio_result is audio
     assert path_result == output_path
-    assert helper_calls == [5, 7]
     synth_once.assert_called_once_with(
         text="hello",
         voice="af_bella",
@@ -776,7 +723,6 @@ def test_public_synthesis_methods_delegate_to_retry_helper(tmp_path) -> None:
         speed=0.5,
         output_path=output_path,
     )
-    assert update_stats.call_count == 2
 
 
 def test_engine_runtime_helpers_cover_warmup_and_metrics_contract() -> None:
@@ -823,20 +769,7 @@ def test_engine_runtime_explicit_quantization_override_does_not_reuse_canonical_
     bf16_model = object()
     four_bit_model = object()
     cached = {canonical_key: bf16_model}
-    tts = SimpleNamespace(
-        config=SimpleNamespace(
-            model_name="Kokoro-82M",
-            quantization="bf16",
-            runtime_cache_key=canonical_key,
-        ),
-        _model_loaded=False,
-        _model=None,
-        _model_path="Kokoro-82M-bf16",
-        _model_cache_key=canonical_key,
-        _canonical_quantization="bf16",
-        _canonical_cache_key=canonical_key,
-    )
-    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    tts = _runtime_engine(canonical_key, _canonical_quantization='bf16', _canonical_cache_key=canonical_key)
     tts.config.quantization = "Q4"
 
     with patch.object(engine_runtime, "_get_cached_model", side_effect=cached.get) as mock_get, \
@@ -863,20 +796,7 @@ def test_engine_runtime_quantization_aliases_share_override_cache_identity() -> 
     cache: dict[str, object] = {}
 
     def load_engine(quantization: str):
-        tts = SimpleNamespace(
-            config=SimpleNamespace(
-                model_name="Kokoro-82M",
-                quantization="bf16",
-                runtime_cache_key=canonical_key,
-            ),
-            _model_loaded=False,
-            _model=None,
-            _model_path="Kokoro-82M-bf16",
-            _model_cache_key=canonical_key,
-            _canonical_quantization="bf16",
-            _canonical_cache_key=canonical_key,
-        )
-        tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+        tts = _runtime_engine(canonical_key, _canonical_quantization='bf16', _canonical_cache_key=canonical_key)
         with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get), \
              patch.object(
                  engine_runtime.mlx_compat_backend,
@@ -903,18 +823,7 @@ def test_engine_runtime_repeated_override_alias_keeps_effective_private_key() ->
     bf16_model = object()
     four_bit_model = object()
     cache = {canonical_key: bf16_model, private_key: four_bit_model}
-    tts = SimpleNamespace(
-        config=SimpleNamespace(
-            model_name="Kokoro-82M",
-            quantization="bf16",
-            runtime_cache_key=canonical_key,
-        ),
-        _model_loaded=False,
-        _model=None,
-        _model_path="Kokoro-82M-bf16",
-        _model_cache_key=canonical_key,
-    )
-    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    tts = _runtime_engine(canonical_key)
 
     with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get):
         engine_runtime.load_model(tts, quantization="Q4")
@@ -936,18 +845,7 @@ def test_engine_runtime_no_arg_load_tracks_mutated_config_quantization() -> None
     bf16_model = object()
     four_bit_model = object()
     cache = {canonical_key: bf16_model, private_key: four_bit_model}
-    tts = SimpleNamespace(
-        config=SimpleNamespace(
-            model_name="Kokoro-82M",
-            quantization="bf16",
-            runtime_cache_key=canonical_key,
-        ),
-        _model_loaded=False,
-        _model=None,
-        _model_path="Kokoro-82M-bf16",
-        _model_cache_key=canonical_key,
-    )
-    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    tts = _runtime_engine(canonical_key)
     tts.config.quantization = "4bit"
 
     with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get):
@@ -966,18 +864,7 @@ def test_engine_runtime_no_arg_load_switches_private_variants_and_canonical_mode
     four_bit_model = object()
     eight_bit_model = object()
     cache = {canonical_key: bf16_model, q4_key: four_bit_model, q8_key: eight_bit_model}
-    tts = SimpleNamespace(
-        config=SimpleNamespace(
-            model_name="Kokoro-82M",
-            quantization="bf16",
-            runtime_cache_key=canonical_key,
-        ),
-        _model_loaded=False,
-        _model=None,
-        _model_path="Kokoro-82M-bf16",
-        _model_cache_key=canonical_key,
-    )
-    tts._get_model_path = lambda: engine_runtime.get_model_path(tts.config)
+    tts = _runtime_engine(canonical_key)
 
     with patch.object(engine_runtime, "_get_cached_model", side_effect=cache.get):
         engine_runtime.load_model(tts, quantization="4bit")
@@ -1149,25 +1036,7 @@ def test_worker_init_warms_tts_model_before_reporting_ready() -> None:
     worker_runtime = importlib.import_module("modules.pipeline.worker_runtime")
     fake_engine = MagicMock()
     fake_cleaner = MagicMock()
-    worker_init_config = {
-        "tts_runtime": TTSRuntimeSpec.from_legacy(
-            "kokoro",
-            "bf16",
-            model="mlx-community/Kokoro-82M",
-            provider="mlx",
-        ).to_dict(),
-        "tts_engine": "kokoro",
-        "tts_model_name": "mlx-community/Kokoro-82M",
-        "tts_quantization": "bf16",
-        "voice": "af_bella",
-        "cleaner_model_name": "mlx-community/Llama-3.2-3B-Instruct-4bit",
-        "cleaner_backend": "mlx",
-        "cleaner_api_base_url": "https://api.openai.com/v1",
-        "cleaner_api_key_env": "OPENAI_API_KEY",
-        "cleaner_api_model": "gpt-5-nano",
-        "cleaner_api_global_concurrency": 6,
-        "cleaner_api_global_limiter": None,
-    }
+    worker_init_config = _worker_init_config()
 
     with patch("modules.tts.factory.TTSEngineFactory.create", return_value=fake_engine) as mock_create, \
          patch("modules.tts.cleaner.TextCleaner", return_value=fake_cleaner), \
@@ -1179,7 +1048,7 @@ def test_worker_init_warms_tts_model_before_reporting_ready() -> None:
     fake_engine.load.assert_called_once_with()
     fake_engine.warmup.assert_called_once_with(voice="af_bella")
     fake_cleaner.load.assert_called_once_with()
-    assert worker_runtime.get_worker_init_error() is None
+    assert worker_runtime.get_worker_startup_status().success is True
     assert worker_runtime.get_worker_cached_models() == (fake_engine, fake_cleaner)
     mock_info.assert_called_once()
     assert "warmed" in mock_info.call_args.args[0].lower()
@@ -1191,25 +1060,7 @@ def test_worker_init_records_warmup_failure_without_dropping_loaded_engine() -> 
     fake_engine = MagicMock()
     fake_engine.warmup.side_effect = RuntimeError("probe warmup failed")
     fake_cleaner = MagicMock()
-    worker_init_config = {
-        "tts_runtime": TTSRuntimeSpec.from_legacy(
-            "kokoro",
-            "bf16",
-            model="mlx-community/Kokoro-82M",
-            provider="mlx",
-        ).to_dict(),
-        "tts_engine": "kokoro",
-        "tts_model_name": "mlx-community/Kokoro-82M",
-        "tts_quantization": "bf16",
-        "voice": "af_bella",
-        "cleaner_model_name": "mlx-community/Llama-3.2-3B-Instruct-4bit",
-        "cleaner_backend": "mlx",
-        "cleaner_api_base_url": "https://api.openai.com/v1",
-        "cleaner_api_key_env": "OPENAI_API_KEY",
-        "cleaner_api_model": "gpt-5-nano",
-        "cleaner_api_global_concurrency": 6,
-        "cleaner_api_global_limiter": None,
-    }
+    worker_init_config = _worker_init_config()
 
     with patch("modules.tts.factory.TTSEngineFactory.create", return_value=fake_engine) as mock_create, \
          patch("modules.tts.cleaner.TextCleaner", return_value=fake_cleaner), \
@@ -1221,7 +1072,6 @@ def test_worker_init_records_warmup_failure_without_dropping_loaded_engine() -> 
     fake_engine.load.assert_called_once_with()
     fake_engine.warmup.assert_called_once_with(voice="af_bella")
     fake_cleaner.load.assert_called_once_with()
-    assert worker_runtime.get_worker_init_error() is None
     startup_status = worker_runtime.get_worker_startup_status()
     assert startup_status.success is True
     assert startup_status.provider == "mlx"

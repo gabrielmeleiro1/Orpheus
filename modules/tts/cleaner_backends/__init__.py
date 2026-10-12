@@ -1,6 +1,5 @@
 """Registry-backed cleaner backend implementations (MLX, CUDA, API)."""
 
-from modules.tts.cleaner_backends.base import CleanerBackend
 from modules.tts.cleaner_backends.registry import (
     available_cleaner_backends,
     get_cleaner_backend,
@@ -10,7 +9,6 @@ from modules.tts.cleaner_backends.registry import (
 )
 
 __all__ = [
-    "CleanerBackend",
     "available_cleaner_backends",
     "get_cleaner_backend",
     "list_cleaner_backend_models",

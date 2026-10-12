@@ -167,8 +167,3 @@ def _build_kokoro_voice_catalog() -> list[dict[str, object]]:
 
 
 KOKORO_VOICE_CATALOG: list[dict[str, object]] = _build_kokoro_voice_catalog()
-
-
-def kokoro_voice_lookup() -> dict[str, str]:
-    """Legacy lookup for engine adapters expecting id->description mapping."""
-    return {str(entry["id"]): str(entry["description"]) for entry in KOKORO_VOICE_CATALOG}

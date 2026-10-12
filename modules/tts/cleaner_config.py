@@ -55,7 +55,8 @@ class CleanerConfig:
     cuda_quantization: str = "4bit"
     api_base_url: str = DEFAULT_API_BASE_URL
     api_key_env: str = "OPENAI_API_KEY"
-    api_key: Optional[str] = None
+    # Kept out of repr so logging or a traceback never prints the secret.
+    api_key: Optional[str] = field(default=None, repr=False)
     api_timeout_seconds: int = 120
     api_model: Optional[str] = DEFAULT_API_MODEL
     api_batch_concurrency: int = 6
@@ -63,7 +64,6 @@ class CleanerConfig:
     api_ca_bundle: Optional[str] = None
     api_allow_insecure_ssl: bool = False
     artifact_gate_light_threshold: float = 0.20
-    artifact_gate_heavy_threshold: float = 0.55
     source_type: Optional[str] = None
 
 

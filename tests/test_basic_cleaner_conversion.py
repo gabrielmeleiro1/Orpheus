@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import pytest
 from fastapi.testclient import TestClient
 
+from modules.runtime_setup import hub_cache
 from modules.app.config import AppConfig
 from modules.app.controller import AppController
 from modules.pipeline.models import PipelineConfig
@@ -42,7 +43,7 @@ def test_basic_conversion_request_runs_rule_only_cleaning(controller, monkeypatc
     def reserve_only(**kwargs):
         submitted.update(kwargs["kwargs"])
         return kwargs["job"]
-    monkeypatch.setattr(service, "_start_pipeline_job", reserve_only)
+    monkeypatch.setattr(service._job_coordinator, "_start_pipeline_job", reserve_only)
     response = TestClient(create_app(controller=controller)).post("/api/conversions", json={
         "source_path": str(source), "runtime_options": {"cleaner_backend": backend},
     })
@@ -61,7 +62,7 @@ def test_basic_conversion_request_runs_rule_only_cleaning(controller, monkeypatc
 
 
 def test_no_local_cleaner_setup_selects_basic(controller, monkeypatch):
-    monkeypatch.setattr("scripts.setup_runtime._read_setup_state", lambda path: ({
+    monkeypatch.setattr("modules.runtime_setup.state._read_setup_state", lambda path: ({
         "model_groups": ["tts-cpu-cuda"], "profile": "cuda", "cleaner_cuda_quantization": "4bit",
     }, None))
     controller.config.apply_setup_preferences()
@@ -118,14 +119,12 @@ def test_basic_cleaner_lifecycle_never_loads_or_advertises_a_model(monkeypatch, 
 
 @pytest.mark.parametrize("downloaded", [False, True])
 def test_no_cleaner_setup_keeps_basic_option_even_with_cached_qwen(tmp_path, monkeypatch, downloaded):
-    from modules.web.routes import setup
-
     state_path = tmp_path / "runtime-setup.json"
     setup_runtime.write_setup_state(
         state_path, profile_id="cuda", model_groups=("tts-cpu-cuda",), accepted_risks=(),
     )
-    monkeypatch.setattr(setup_runtime, "default_state_path", lambda: state_path)
-    monkeypatch.setattr(setup, "_check_model_group_assets", lambda groups, **kwargs: {
+    monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: state_path)
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **kwargs: {
         group: {"ready": downloaded} for group in groups
     })
     controller = SimpleNamespace(

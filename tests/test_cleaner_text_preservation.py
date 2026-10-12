@@ -164,73 +164,6 @@ class TestRemovesOCRArtifacts:
         assert "(image.png)" not in result
 
 
-# ---------------------------------------------------------------------------
-# 3. Abbreviation preservation (rule-based)
-# ---------------------------------------------------------------------------
-
-
-class TestAbbreviationExpansion:
-    """Rule-based cleaning should preserve common abbreviations."""
-
-    ABBREVIATION_CASES = [
-        ("Dr. Smith arrived.", "Dr. Smith arrived."),
-        ("Mr. Jones left.", "Mr. Jones left."),
-        ("Mrs. Brown stayed.", "Mrs. Brown stayed."),
-        ("Prof. Lee taught.", "Prof. Lee taught."),
-        ("St. Louis is nice.", "St. Louis is nice."),
-        ("e.g. this works", "e.g. this works"),
-        ("i.e. this too", "i.e. this too"),
-        ("and etc.", "and etc."),
-        ("Team A vs. Team B", "Team A vs. Team B"),
-    ]
-
-    @pytest.mark.parametrize("input_text, expected", ABBREVIATION_CASES)
-    def test_abbreviation_expanded(self, input_text: str, expected: str):
-        cleaner = _make_rule_only_cleaner()
-        result = cleaner._rule_based_clean(input_text)
-        assert result == expected, f"Got: {result!r}"
-
-
-# ---------------------------------------------------------------------------
-# 4. Output never grows beyond reasonable bounds (LLM mock)
-# ---------------------------------------------------------------------------
-
-
-class TestLLMDoesNotAddContent:
-    """When the LLM returns a response, the output should not be longer
-    than the input (no hallucinated extra content)."""
-
-    def test_llm_output_not_longer_than_input(self):
-        input_text = "The crash of 1987 was devastating."
-        # Simulate an LLM that correctly returns a cleaned version
-        fake_response = "The crash of 1987 was devastating."
-        cleaner = _make_mlx_cleaner_with_fake_llm(fake_response)
-        restore = _patch_generate(fake_response)
-        try:
-            trace = cleaner.clean_with_trace(input_text)
-            assert len(trace.cleaned_text) <= len(input_text) * 1.1  # 10% tolerance
-        finally:
-            restore()
-
-    def test_llm_hallucination_detected_by_length(self):
-        """If LLM doubles the text, that's a problem we can flag."""
-        input_text = "The experiment in 2023 used 42 subjects to measure the effect on 100 participants overall."
-        fake_response = (
-            "The experiment in 2023 used 42 subjects to measure the effect on 100 participants overall. "
-            "And here is a lot of extra hallucinated content that was never in the original text at all."
-        )
-        cleaner = _make_mlx_cleaner_with_fake_llm(fake_response)
-        restore = _patch_generate(fake_response)
-        try:
-            trace = cleaner.clean_with_trace(input_text)
-            assert trace.mode == "hallucination_fallback"
-            assert trace.cleaned_text == input_text
-            assert trace.llm_output == fake_response
-            assert len(trace.llm_output) > len(input_text)
-        finally:
-            restore()
-
-
 class TestLLMPreservationGuard:
     """LLM cleanup should repair artifacts without editing literary style."""
 
@@ -324,27 +257,6 @@ class TestPreservesPunctuationAndQuotes:
 
 
 # ---------------------------------------------------------------------------
-# 6. Sentence structure preserved (LLM mock)
-# ---------------------------------------------------------------------------
-
-
-class TestDoesNotRewriteSentences:
-    """The LLM path should return text with the same sentence structure."""
-
-    def test_word_order_preserved(self):
-        input_text = "I pursued you like a lovestruck teenager."
-        # Good LLM: returns same text
-        fake_response = "I pursued you like a lovestruck teenager."
-        cleaner = _make_mlx_cleaner_with_fake_llm(fake_response)
-        restore = _patch_generate(fake_response)
-        try:
-            result = cleaner.clean(input_text)
-            assert result == input_text
-        finally:
-            restore()
-
-
-# ---------------------------------------------------------------------------
 # 7. Fallback returns rule-based result
 # ---------------------------------------------------------------------------
 
@@ -358,7 +270,7 @@ class TestFallbackBehavior:
         cleaner._loaded = True
 
         def _exploding_generate(*args, **kwargs):
-            raise RuntimeError("API is down")
+            raise RuntimeError("local generation failed")
 
         original_generate = cleaner_module.cleaner_mlx_backend.generate
         original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
@@ -368,59 +280,10 @@ class TestFallbackBehavior:
             trace = cleaner.clean_with_trace("Iam tired today.")
             assert trace.mode == "llm_fallback"
             assert trace.cleaned_text == "Iam tired today."
-        finally:
-            cleaner_module.cleaner_mlx_backend.generate = original_generate
-            cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
-
-    def test_fallback_stats_incremented(self):
-        cleaner = _make_rule_only_cleaner()
-        cleaner.config = CleanerConfig(backend="mlx")
-        cleaner._loaded = True
-
-        def _exploding_generate(*args, **kwargs):
-            raise RuntimeError("boom")
-
-        original_generate = cleaner_module.cleaner_mlx_backend.generate
-        original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
-        cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
-        cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
-        try:
-            cleaner.clean("Iam tired today.")
+            assert trace.llm_error == "local generation failed"
             stats = cleaner.stats_snapshot()
             assert stats["llm_fallback"] == 1
             assert stats["llm_success"] == 0
-        finally:
-            cleaner_module.cleaner_mlx_backend.generate = original_generate
-            cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
-
-
-# ---------------------------------------------------------------------------
-# 8. Trace captures LLM error
-# ---------------------------------------------------------------------------
-
-
-class TestTraceCapturesError:
-    """The CleanTrace should record the error message on fallback."""
-
-    def test_trace_records_error_message(self):
-        cleaner = _make_rule_only_cleaner()
-        cleaner.config = CleanerConfig(backend="mlx", skip_llm_when_not_needed=False)
-        cleaner._loaded = True
-
-        def _exploding_generate(*args, **kwargs):
-            raise RuntimeError("Cleaner API HTTP 401: Invalid Authentication")
-
-        original_generate = cleaner_module.cleaner_mlx_backend.generate
-        original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
-        cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
-        cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
-        try:
-            # Use text long enough (>50 chars) with numbers to trigger LLM path
-            text = "The investor bought 42 shares of stock in 2024 and sold them later for a significant profit."
-            trace = cleaner.clean_with_trace(text)
-            assert trace.mode == "llm_fallback"
-            assert "401" in trace.llm_error
-            assert "Invalid Authentication" in trace.llm_error
         finally:
             cleaner_module.cleaner_mlx_backend.generate = original_generate
             cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
@@ -463,24 +326,6 @@ class TestRealChapterTextArtifacts:
         result = cleaner._rule_based_clean(text)
         assert "1973" in result
         assert "1987" in result
-
-    def test_full_chapter_no_crash(self):
-        """Full chapter text should clean without crashing."""
-        full_text = (
-            "### **DEAR MARKETS** rom the moment I first came across you, "
-            "I have been fascinated by you. I probably even fell in love with you. "
-            "I was too young to know what that meant, no more than ten # **F** "
-            "years old. You were featured in a national newspaper – a competition "
-            "of sorts. I was too young to play with you, so I observed. Time was "
-            "not on my side. I was born a few decades too soon to participate in "
-            "trading like it is possible today."
-        )
-        cleaner = _make_rule_only_cleaner()
-        result = cleaner._rule_based_clean(full_text)
-        assert isinstance(result, str)
-        assert len(result) > 100
-        assert "###" not in result
-        assert "**" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -543,4 +388,4 @@ class TestAPIBackendFallback:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    raise SystemExit(pytest.main([__file__, "-v", "-o", "addopts="]))

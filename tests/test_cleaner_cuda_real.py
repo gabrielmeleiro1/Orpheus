@@ -1,10 +1,12 @@
 """Opt-in, offline Qwen inference checks on a real NVIDIA GPU.
 
-Run with ORPHEUS_TEST_CUDA_CLEANER=1 and pytest -m gpu --no-cov on this file.
+Run with ORPHEUS_TEST_CUDA_CLEANER=1, ORPHEUS_TEST_HF_HOME pointing to a
+dedicated copied model cache, and pytest -m gpu --no-cov on this file.
 Missing dependencies, weights, or hardware fail an explicitly requested run.
 """
 
 import os
+from pathlib import Path
 
 import pytest
 
@@ -25,6 +27,12 @@ pytestmark = [
 @pytest.mark.parametrize("quantization", ["4bit", "8bit", "fp16"])
 @pytest.mark.parametrize("model_id", [DEFAULT_CUDA_MODEL, "Qwen/Qwen2.5-3B-Instruct"])
 def test_qwen_cuda_repairs_artifacts_and_preserves_clean_text(monkeypatch, quantization, model_id):
+    configured_cache = os.environ.get("ORPHEUS_TEST_HF_HOME")
+    if not configured_cache:
+        pytest.fail("ORPHEUS_TEST_HF_HOME must point to a dedicated copied model cache")
+    # The autouse path fixture intentionally clears the normal Hub cache. Only
+    # this explicit opt-in cache may supply public weights to real inference.
+    test_cache = Path(configured_cache).expanduser().resolve() / "hub"
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     monkeypatch.setenv("TRANSFORMERS_OFFLINE", "1")
     from huggingface_hub import snapshot_download
@@ -35,6 +43,7 @@ def test_qwen_cuda_repairs_artifacts_and_preserves_clean_text(monkeypatch, quant
     model_path = snapshot_download(
         repo_id=model_id,
         revision=pinned_revision_for(model_id),
+        cache_dir=test_cache,
         local_files_only=True,
     )
     cleaner = TextCleaner(CleanerConfig(
