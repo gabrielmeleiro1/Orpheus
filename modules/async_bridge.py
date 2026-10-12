@@ -65,15 +65,6 @@ class _LoopThreadRunner:
         if thread is not None and thread.is_alive():
             thread.join(timeout=1.0)
 
-    def debug_snapshot(self) -> dict[str, Any]:
-        with self._lock:
-            thread = self._thread
-            return {
-                "thread_ident": None if thread is None else thread.ident,
-                "thread_alive": bool(thread and thread.is_alive()),
-                "loop_running": bool(self._loop and self._loop.is_running()),
-            }
-
 
 _RUNNER = _LoopThreadRunner()
 
@@ -94,8 +85,3 @@ def run_coroutine_sync(coro: Any) -> Any:
 
 def _reset_runner_for_tests() -> None:
     _RUNNER.reset_for_tests()
-
-
-def _debug_snapshot() -> dict[str, Any]:
-    return _RUNNER.debug_snapshot()
-

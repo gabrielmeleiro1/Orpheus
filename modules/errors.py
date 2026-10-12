@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from typing import Optional
 from pathlib import Path
 
+from modules.contracts.public_errors import PublicError
+
 
 # EPUB archives are inspected from ZIP metadata before any member is
 # decompressed.  These bounds are deliberately generous for ordinary books,
@@ -29,29 +31,18 @@ class ErrorCode(Enum):
     E003 = "File corrupted"
     E004 = "Empty chapter detected"
     E005 = "Chapter too long"
-    E006 = "Unsupported file format"
     E007 = "PDF OCR required"
     
     # TTS errors (E100-E199)
     E100 = "TTS model load failed"
     E101 = "Speech synthesis failed"
-    E102 = "Text cleaning failed"
     
     # Audio errors (E200-E299)
-    E200 = "Audio concatenation failed"
-    E201 = "Audio encoding failed"
-    E202 = "M4B packaging failed"
     E203 = "FFmpeg not found"
     
     # System errors (E300-E399)
     E300 = "VRAM overflow"
-    E301 = "Disk full"
-    E302 = "Model download failed"
-    E303 = "Filename contains invalid characters"
     
-    # Pipeline errors (E400-E499)
-    E400 = "Pipeline cancelled"
-    E401 = "Pipeline timeout"
 
 
 @dataclass
@@ -158,6 +149,57 @@ class OCRRequiredPDFError(AudiobookError):
         )
 
 
+class ConversionCleanupPendingError(RuntimeError):
+    """A start was refused while a terminal job still owns resources."""
+
+    def __init__(self) -> None:
+        super().__init__("The previous conversion is still finishing cleanup.")
+
+    @property
+    def public_error(self) -> PublicError:
+        return PublicError("conversion_cleanup_pending", str(self), 409)
+
+
+class SourceInputError(ValueError):
+    """A source the user chose cannot be used; carries a stable code and plain message."""
+
+    code = "invalid_source"
+
+    def __init__(self, message: str, *, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
+
+    @property
+    def public_error(self) -> PublicError:
+        return PublicError(self.code, str(self), self.status)
+
+
+class SourceFileNotFoundError(SourceInputError):
+    code = "source_not_found"
+
+    def __init__(self, path: Path | str) -> None:
+        super().__init__(f"Orpheus could not find {path}. It may have been moved or deleted.")
+
+
+class UnsupportedSourceTypeError(SourceInputError):
+    code = "unsupported_source_type"
+
+    def __init__(self) -> None:
+        super().__init__("This file type is not supported. Choose a PDF, EPUB, TXT or Markdown file.")
+
+
+class WorkerWarmupUnavailableError(RuntimeError):
+    """A worker warmup was refused because models or storage are in use."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+    @property
+    def public_error(self) -> PublicError:
+        return PublicError(self.code, str(self), 409)
+
+
 class TTSModelError(AudiobookError):
     """Error loading TTS model."""
     def __init__(self, message: str, model_name: str = None):
@@ -166,6 +208,17 @@ class TTSModelError(AudiobookError):
             message=message,
             details=model_name
         )
+
+
+class TTSInstallationError(TTSModelError, RuntimeError):
+    """Repairable installation failure, also catchable by runtime callers."""
+
+    @property
+    def public_error(self) -> PublicError:
+        return PublicError("tts_installation_error", self.message, 409)
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class SynthesisError(AudiobookError):
@@ -199,30 +252,6 @@ After installation, ensure 'ffmpeg' is available in your system PATH."""
         )
 
 
-class M4BPackagingError(AudiobookError):
-    """Error during M4B packaging."""
-    def __init__(self, message: str, details: str = None):
-        super().__init__(
-            code=ErrorCode.E202,
-            message=message,
-            details=details
-        )
-
-
-class DiskFullError(AudiobookError):
-    """Error when disk is full."""
-    def __init__(self, required_bytes: int = None):
-        details = None
-        if required_bytes:
-            gb = required_bytes / (1024 ** 3)
-            details = f"Required: {gb:.2f} GB"
-        super().__init__(
-            code=ErrorCode.E301,
-            message="Insufficient disk space",
-            details=details
-        )
-
-
 class VRAMOverflowError(AudiobookError):
     """Error when VRAM is exhausted."""
     def __init__(self, model_name: str = None):
@@ -230,16 +259,6 @@ class VRAMOverflowError(AudiobookError):
             code=ErrorCode.E300,
             message="VRAM overflow - model too large for available memory",
             details=model_name
-        )
-
-
-class InvalidFilenameError(AudiobookError):
-    """Error when filename contains invalid characters."""
-    def __init__(self, filename: str, invalid_chars: str = None):
-        super().__init__(
-            code=ErrorCode.E303,
-            message=f"Filename contains invalid characters: {filename}",
-            details=f"Invalid characters: {invalid_chars}" if invalid_chars else None
         )
 
 
@@ -425,54 +444,14 @@ def sanitize_filename(filename: str) -> str:
     
     # Limit length (255 bytes for most filesystems, keep some margin)
     if len(sanitized.encode('utf-8')) > 200:
-        # Truncate while preserving extension
+        # Truncate while preserving a real extension. Text after a dot in a
+        # title ("Mr. Smith ...") is not an extension and may exceed the budget.
         name, ext = Path(sanitized).stem, Path(sanitized).suffix
+        if len(ext.encode('utf-8')) > 16 or ' ' in ext:
+            name, ext = sanitized, ''
         max_name_len = 200 - len(ext.encode('utf-8'))
         name = name.encode('utf-8')[:max_name_len].decode('utf-8', errors='ignore')
-        sanitized = name + ext
-    
+        # Windows drops trailing dots and spaces, so the cut must not end on one.
+        sanitized = (name.rstrip(' .') or "untitled") + ext
+
     return sanitized
-
-
-def check_disk_space(path: Path, required_bytes: int) -> bool:
-    """
-    Check if there's enough disk space.
-    
-    Args:
-        path: Path to check (uses its mount point)
-        required_bytes: Required space in bytes
-        
-    Returns:
-        True if enough space, raises DiskFullError otherwise
-    """
-    import shutil
-    
-    # Get disk usage for the path's mount point
-    usage = shutil.disk_usage(path.parent if path.is_file() else path)
-    
-    if usage.free < required_bytes:
-        raise DiskFullError(required_bytes)
-    
-    return True
-
-
-def estimate_audio_size(word_count: int, bitrate_kbps: int = 128) -> int:
-    """
-    Estimate the size of generated audio in bytes.
-    
-    Args:
-        word_count: Number of words
-        bitrate_kbps: Audio bitrate in kbps
-        
-    Returns:
-        Estimated size in bytes
-    """
-    # Average speaking rate: ~150 words per minute
-    duration_minutes = word_count / 150
-    duration_seconds = duration_minutes * 60
-    
-    # Size = bitrate * duration / 8 (convert bits to bytes)
-    size_bytes = (bitrate_kbps * 1000 * duration_seconds) / 8
-    
-    # Add 20% overhead for container format
-    return int(size_bytes * 1.2)

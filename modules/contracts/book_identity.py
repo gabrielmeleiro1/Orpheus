@@ -6,8 +6,9 @@ import re
 
 MAX_BOOK_TITLE_PATH_BYTES = 120
 UNTITLED_BOOK_DIR = "Untitled"
+# Windows also reserves the superscript-digit forms COM¹-³ and LPT¹-³.
 _WINDOWS_RESERVED_BASENAME_RE = re.compile(
-    r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)",
+    r"^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)",
     re.IGNORECASE,
 )
 
