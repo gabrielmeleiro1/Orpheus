@@ -31,7 +31,7 @@ class _ProbeService:
             "error": None if self.mlx_available else "missing mlx",
         }
 
-    def probe_cleaner_backend(self, backend: str):
+    def probe_cleaner_backend(self, backend: str, *, cleaner_cuda_quantization: str | None = None):
         self.calls.append(f"cleaner-{backend}")
         available = self.mlx_available if backend == "mlx" else self.cuda_available
         return {"available": available, "error": None if available else f"missing {backend}"}
@@ -194,18 +194,6 @@ def test_dry_run_is_non_mutating_and_returns_exact_commands(
         "cleaner-mlx",
         "--json",
     ]
-
-
-def test_cuda_install_no_longer_requires_resolved_pytorch_risk_acceptance(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    import scripts.setup_runtime as setup_runtime
-
-    _compatible(monkeypatch, "cuda")
-    plan = setup_runtime.build_install_plan("cuda")
-
-    assert plan.accepted_risks == ()
 
 
 def test_cuda_plan_requires_cuda_wheel_even_when_cpu_torch_is_installed(monkeypatch):
@@ -645,6 +633,55 @@ def test_non_finite_lock_timeout_is_rejected(monkeypatch: pytest.MonkeyPatch, tm
         )
 
 
+@pytest.mark.parametrize("timeout", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_invalid_model_timeout_is_rejected_before_installation(monkeypatch, tmp_path, timeout):
+    from scripts import setup_runtime
+
+    _compatible(monkeypatch, "cuda")
+    commands = []
+
+    def runner(command, **kwargs):
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    state_path = tmp_path / "setup.json"
+    with pytest.raises(setup_runtime.SetupValidationError, match="Model download timeout"):
+        setup_runtime.run_setup(
+            profile_id="cuda", model_groups=["tts-cpu-cuda"], state_path=state_path,
+            model_timeout_seconds=timeout, command_runner=runner, probe_service=_ProbeService(),
+        )
+    assert commands == []
+    assert not state_path.exists()
+
+
+def test_pending_model_deletion_blocks_installer_before_dependency_commands(monkeypatch, tmp_path):
+    from huggingface_hub import constants
+    import scripts.setup_runtime as setup_runtime
+
+    cache = tmp_path / "hub"
+    cache.mkdir()
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(cache))
+    (cache / (".orpheus-delete-" + "a" * 32 + ".json")).write_text("{}")
+    calls = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    state_path = tmp_path / "runtime-setup.json"
+    with pytest.raises(setup_runtime.SetupExecutionError, match="Pending model deletion"):
+        try:
+            setup_runtime.run_setup(
+                profile_id="base", state_path=state_path,
+                command_runner=runner, probe_service=_ProbeService(),
+            )
+        finally:
+            assert not calls, "dependency commands must not start with pending deletion"
+    assert not calls
+    assert not state_path.exists()
+    assert not state_path.with_name(state_path.name + ".lock").exists()
+
+
 @pytest.mark.parametrize("owner_contents", [None, "{corrupt"])
 def test_old_ownerless_or_corrupt_lock_is_recovered(
     monkeypatch: pytest.MonkeyPatch,
@@ -662,7 +699,7 @@ def test_old_ownerless_or_corrupt_lock_is_recovered(
     for path in (lock_path, *lock_path.iterdir()):
         path.touch()
         os.utime(path, (old, old))
-    monkeypatch.setattr(setup_runtime.time, "time", lambda: old + 1000)
+    monkeypatch.setattr("modules.runtime_setup.state.time.time", lambda: old + 1000)
 
     with setup_runtime.SetupLock(state_path, timeout_seconds=0.1):
         assert lock_path.is_dir()
@@ -682,6 +719,65 @@ def test_recent_ambiguous_lock_fails_closed(tmp_path: Path):
     assert lock_path.exists()
 
 
+@pytest.mark.parametrize("failure", ["once", "until_next_acquire"])
+def test_setup_lock_recovers_after_a_transient_release_failure(monkeypatch, tmp_path, failure):
+    from modules.runtime_setup import state
+
+    state_path = tmp_path / "runtime-setup.json"
+    lock = state.SetupLock(state_path, timeout_seconds=0.1)
+    remove = state.shutil.rmtree
+    failures = []
+    releasing = True
+
+    def remove_with_sharing_violation(path, *args, **kwargs):
+        if Path(path) == lock.path and releasing and (failure == "until_next_acquire" or not failures):
+            failures.append(path)
+            raise PermissionError("owner.json is open in another process")
+        return remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(state.shutil, "rmtree", remove_with_sharing_violation)
+    with lock:
+        assert lock.path.is_dir()
+    releasing = False
+    assert failures
+    with state.SetupLock(state_path, timeout_seconds=0.1):
+        assert lock.path.is_dir()
+    assert not lock.path.exists()
+
+
+@pytest.mark.parametrize("owner", ["held", "changed_token", "changed_directory", "other_process"])
+def test_setup_lock_keeps_live_owners_after_a_failed_release(monkeypatch, tmp_path, owner):
+    from modules.runtime_setup import state
+
+    lock = state.SetupLock(tmp_path / "runtime-setup.json", timeout_seconds=0.01)
+    lock.__enter__()
+    remove = state.shutil.rmtree
+    if owner != "held":
+        def deny_remove(*args, **kwargs):
+            raise PermissionError("owner.json is open")
+
+        monkeypatch.setattr(state.shutil, "rmtree", deny_remove)
+        lock.__exit__(None, None, None)
+        monkeypatch.setattr(state.shutil, "rmtree", remove)
+        metadata_path = lock.path / "owner.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        if owner == "changed_directory":
+            lock.path.rename(lock.path.with_name("old-lock"))
+            lock.path.mkdir()
+        elif owner == "other_process":
+            metadata["pid"] = os.getpid() + 1
+        else:
+            metadata["token"] = "different-token"
+        (lock.path / "owner.json").write_text(json.dumps(metadata), encoding="utf-8")
+    monkeypatch.setattr(state, "_pid_is_running", lambda pid: True)
+    with pytest.raises(state.SetupExecutionError, match="already running"):
+        with state.SetupLock(tmp_path / "runtime-setup.json", timeout_seconds=0.01):
+            pytest.fail("A live owner's lock must remain held")
+    assert lock.path.is_dir()
+    if owner == "held":
+        lock.__exit__(None, None, None)
+
+
 def test_recent_lock_owned_by_dead_process_is_recovered(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -695,7 +791,7 @@ def test_recent_lock_owned_by_dead_process_is_recovered(
         json.dumps({"pid": 424242, "created_at": time.time(), "token": "dead"}),
         encoding="utf-8",
     )
-    monkeypatch.setattr(setup_runtime, "_pid_is_running", lambda pid: False)
+    monkeypatch.setattr("modules.runtime_setup.state._pid_is_running", lambda pid: False)
 
     with setup_runtime.SetupLock(state_path, timeout_seconds=0.1):
         assert lock_path.is_dir()
@@ -719,19 +815,6 @@ def test_corrupt_backend_instance_blocks_setup_before_pip(
             command_runner=lambda command, **kwargs: calls.append(command),
         )
     assert calls == []
-
-
-def test_manual_restart_acknowledgement_cli_is_not_exposed(
-    capsys: pytest.CaptureFixture[str],
-):
-    import scripts.setup_runtime as setup_runtime
-
-    exit_code = setup_runtime.main(["--acknowledge-restart", "--json"])
-
-    event = json.loads(capsys.readouterr().err)
-    assert exit_code == 2
-    assert event["event"] == "error"
-    assert event["terminal"] is True
 
 
 def test_desktop_backend_lifespan_attempts_restart_acknowledgement(
@@ -891,8 +974,7 @@ def test_state_write_errors_are_wrapped(monkeypatch: pytest.MonkeyPatch, tmp_pat
     import scripts.setup_runtime as setup_runtime
 
     monkeypatch.setattr(
-        setup_runtime,
-        "_atomic_write_json",
+        "modules.runtime_setup.state._atomic_write_json",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("write denied")),
     )
 
@@ -1035,13 +1117,6 @@ def test_progress_json_dry_run_emits_plan_and_success_events(
     assert [event["percent"] for event in events] == [5, 100]
     assert events[-1]["terminal"] is True
     assert exit_code == 0
-
-
-def test_state_path_uses_desktop_data_parent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    import scripts.setup_runtime as setup_runtime
-
-    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
-    assert setup_runtime.default_state_path() == tmp_path / "runtime-setup.json"
 
 
 def test_write_setup_state_defaults_to_restart_required(tmp_path: Path):

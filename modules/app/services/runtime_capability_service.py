@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import io
 import json
+import multiprocessing
+from multiprocessing.connection import Connection
+import os
 import subprocess
 import sys
 import threading
@@ -22,10 +25,15 @@ from modules.tts.cleaner_backends.registry import (
 
 ProbeResult = dict[str, Any]
 
-# Transformers exposes lazy imports that can fail while a different probe is
-# importing the same package. Frozen probes share one interpreter, including
-# probes owned by different service instances; serialize their import work.
+# Limit concurrent native runtime startup across frozen service instances.
 _FROZEN_PROBE_LOCK = threading.RLock()
+
+
+def _frozen_probe_worker(script: str, connection: Connection) -> None:
+    try:
+        connection.send(RuntimeCapabilityService()._run_in_process_probe(script))
+    finally:
+        connection.close()
 
 
 class RuntimeCapabilityService:
@@ -34,8 +42,8 @@ class RuntimeCapabilityService:
     _TTS_PROBE = """
 import json
 try:
-    from modules.tts.mlx_compat import patch_frozen_espeakng_loader_paths
-    patch_frozen_espeakng_loader_paths()
+    from modules.tts.mlx_compat import patch_espeakng_loader_paths
+    patch_espeakng_loader_paths()
     import mlx.core  # noqa: F401
     import mlx.nn  # noqa: F401
     from mlx_audio.tts.generate import generate_audio  # noqa: F401
@@ -81,7 +89,7 @@ try:
         }))
     else:
         import transformers  # noqa: F401
-        quant = os.getenv("CLEANER_CUDA_QUANTIZATION", "4bit").strip().lower() or "4bit"
+        quant = globals().get("CLEANER_CUDA_QUANTIZATION") or os.getenv("CLEANER_CUDA_QUANTIZATION", "4bit").strip().lower() or "4bit"
         if quant in {"4bit", "8bit"}:
             import bitsandbytes  # noqa: F401
         print(json.dumps({"available": True}))
@@ -98,16 +106,30 @@ except Exception as exc:
         self,
         *,
         cache_ttl_seconds: float = 60.0,
-        timeout_seconds: float = 15.0,
+        timeout_seconds: float | None = None,
+        lock_timeout_seconds: float = 120.0,
     ) -> None:
         self._cache_ttl_seconds = cache_ttl_seconds
-        self._timeout_seconds = timeout_seconds
+        self._timeout_seconds = (
+            (120.0 if getattr(sys, "frozen", False) else 15.0)
+            if timeout_seconds is None else timeout_seconds
+        )
+        self._lock_timeout_seconds = lock_timeout_seconds
         self._cache: dict[str, tuple[float, ProbeResult]] = {}
         self._lock = threading.Lock()
         self._refresh_in_progress = False
 
-    def _cleaner_cache_key(self, backend: str) -> str:
-        return f"cleaner:{validate_cleaner_backend(backend)}"
+    def _cleaner_cache_key(self, backend: str, cleaner_cuda_quantization: str | None = None) -> str:
+        normalized = validate_cleaner_backend(backend)
+        suffix = f":{self._cuda_quantization(cleaner_cuda_quantization)}" if normalized == "cuda" else ""
+        return f"cleaner:{normalized}{suffix}"
+
+    def _cuda_quantization(self, requested: str | None = None) -> str:
+        if requested is not None:
+            if requested not in {"4bit", "8bit", "fp16"}:
+                raise ValueError("Unsupported cleaner quantization.")
+            return requested
+        return os.getenv("CLEANER_CUDA_QUANTIZATION", "4bit").strip().lower() or "4bit"
 
     def _cached_result(self, probe_kind: str) -> ProbeResult | None:
         with self._lock:
@@ -128,13 +150,15 @@ except Exception as exc:
         stored["cache_hit"] = False
         with self._lock:
             self._cache[probe_kind] = (
-                time.monotonic() + self._cache_ttl_seconds,
+                time.monotonic() + (0.0 if stored.get("timed_out") else self._cache_ttl_seconds),
                 stored,
             )
         return dict(stored)
 
-    def _snapshot_probe_kinds(self) -> tuple[str, ...]:
-        kinds = ["tts", "cleaner"]
+    def _snapshot_probe_kinds(self, primary_runtime: str = "mlx") -> tuple[str, ...]:
+        # MLX reports its own TTS and cleaner checks; every other runtime uses
+        # the PyTorch package TTS check and the CUDA cleaner check below.
+        kinds = ["tts", "cleaner"] if primary_runtime == "mlx" else ["tts-package"]
         for backend_name in available_cleaner_backends():
             if is_local_cleaner_backend(backend_name):
                 kinds.append(self._cleaner_cache_key(backend_name))
@@ -144,24 +168,26 @@ except Exception as exc:
         self,
         backend: str,
         result: ProbeResult,
+        cleaner_cuda_quantization: str | None = None,
     ) -> ProbeResult:
         normalized = validate_cleaner_backend(backend)
-        cache_key = self._cleaner_cache_key(normalized)
+        cache_key = self._cleaner_cache_key(normalized, cleaner_cuda_quantization)
         stored = self._store_result(cache_key, result)
         if normalized == "mlx":
-            expires_at = time.monotonic() + self._cache_ttl_seconds
             legacy = dict(stored)
             with self._lock:
-                self._cache["cleaner"] = (expires_at, legacy)
+                self._cache["cleaner"] = (self._cache[cache_key][0], legacy)
         return stored
 
-    def _get_snapshot_cache_state(self) -> tuple[dict[str, ProbeResult | None], str, bool]:
+    def _get_snapshot_cache_state(
+        self, primary_runtime: str = "mlx",
+    ) -> tuple[dict[str, ProbeResult | None], str, bool]:
         now = time.monotonic()
         with self._lock:
             refresh_in_progress = self._refresh_in_progress
             results: dict[str, ProbeResult | None] = {}
             states: list[str] = []
-            for probe_kind in self._snapshot_probe_kinds():
+            for probe_kind in self._snapshot_probe_kinds(primary_runtime):
                 cached = self._cache.get(probe_kind)
                 if cached is None:
                     results[probe_kind] = None
@@ -219,49 +245,47 @@ except Exception as exc:
             "error": result.get("error"),
         }
 
-    def _refresh_runtime_snapshot(self) -> None:
+    def _refresh_runtime_snapshot(self, primary_runtime: str = "mlx") -> None:
         try:
-            tts = self._run_probe(self._TTS_PROBE, self._timeout_seconds)
-            self._store_result("tts", tts)
+            if primary_runtime == "mlx":
+                self.probe_mlx_tts_runtime()
+            else:
+                self.probe_package_tts_runtime()
             for backend_name in available_cleaner_backends():
                 if not is_local_cleaner_backend(backend_name):
                     continue
-                if not get_cleaner_backend(backend_name).requires_model:
-                    self._store_cleaner_backend_result(
-                        backend_name,
-                        {"available": True, "latency_ms": 0.0, "error": None},
-                    )
-                    continue
-                script = self._CLEANER_PROBE_SCRIPTS.get(backend_name)
-                if script is None:
-                    continue
-                result = self._run_probe(script, self._timeout_seconds)
-                self._store_cleaner_backend_result(backend_name, result)
+                self.probe_cleaner_backend(backend_name)
         finally:
             with self._lock:
                 self._refresh_in_progress = False
 
-    def _ensure_background_refresh(self) -> bool:
+    def _ensure_background_refresh(self, primary_runtime: str = "mlx") -> bool:
         with self._lock:
             if self._refresh_in_progress:
                 return False
             self._refresh_in_progress = True
 
-        thread = threading.Thread(
-            target=self._refresh_runtime_snapshot,
-            name="runtime-capability-refresh",
-            daemon=True,
-        )
-        thread.start()
+        try:
+            thread = threading.Thread(
+                target=self._refresh_runtime_snapshot,
+                args=(primary_runtime,),
+                name="runtime-capability-refresh",
+                daemon=True,
+            )
+            thread.start()
+        except BaseException:
+            with self._lock:
+                self._refresh_in_progress = False
+            raise
         return True
 
     def _run_probe(self, script: str, timeout_seconds: float) -> ProbeResult:
         started_at = time.perf_counter()
         if getattr(sys, "frozen", False):
             try:
-                with _FROZEN_PROBE_LOCK:
-                    payload = self._run_in_process_probe(script)
+                payload = self._run_frozen_probe(script, timeout_seconds)
                 return {
+                    **({"results": payload["results"]} if isinstance(payload.get("results"), dict) else {}),
                     **({"device": payload["device"]} if payload.get("device") in {"cpu", "cuda"} else {}),
                     "available": bool(payload.get("available")),
                     "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
@@ -274,6 +298,7 @@ except Exception as exc:
                     "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
                     "error": str(exc),
                     "cache_hit": False,
+                    **({"timed_out": True} if isinstance(exc, TimeoutError) else {}),
                 }
 
         try:
@@ -290,6 +315,7 @@ except Exception as exc:
                 "latency_ms": round((time.perf_counter() - started_at) * 1000, 2),
                 "error": str(exc),
                 "cache_hit": False,
+                "timed_out": True,
             }
         except Exception as exc:
             return {
@@ -322,12 +348,49 @@ except Exception as exc:
             }
 
         return {
+            **({"results": payload["results"]} if isinstance(payload.get("results"), dict) else {}),
             **({"device": payload["device"]} if payload.get("device") in {"cpu", "cuda"} else {}),
             "available": bool(payload.get("available")),
             "latency_ms": latency_ms,
             "error": payload.get("error"),
             "cache_hit": False,
         }
+
+    def _run_frozen_probe(self, script: str, timeout_seconds: float) -> ProbeResult:
+        if not _FROZEN_PROBE_LOCK.acquire(timeout=max(0.0, self._lock_timeout_seconds)):
+            raise TimeoutError(f"Runtime probe lock wait timed out after {self._lock_timeout_seconds} seconds")
+        deadline = time.monotonic() + timeout_seconds
+        receiver = sender = worker = None
+        try:
+            context = multiprocessing.get_context("spawn")
+            receiver, sender = context.Pipe(duplex=False)
+            worker = context.Process(target=_frozen_probe_worker, args=(script, sender))
+            # Native startup must not hold a closing desktop backend alive.
+            worker.daemon = True
+            worker.start()
+            sender.close()
+            if not receiver.poll(max(0.0, deadline - time.monotonic())):
+                raise TimeoutError(f"Runtime probe timed out after {timeout_seconds} seconds")
+            try:
+                return receiver.recv()
+            except EOFError as exc:
+                raise RuntimeError("Runtime probe exited without a result") from exc
+        finally:
+            try:
+                if worker is not None and worker.pid is not None:
+                    worker.join(timeout=max(0.0, deadline - time.monotonic()))
+                    if worker.is_alive():
+                        worker.terminate()
+                        worker.join(timeout=0.5)
+                    if worker.is_alive():
+                        worker.kill()
+                        worker.join(timeout=0.5)
+                if receiver is not None:
+                    receiver.close()
+                if sender is not None:
+                    sender.close()
+            finally:
+                _FROZEN_PROBE_LOCK.release()
 
     def _run_in_process_probe(self, script: str) -> ProbeResult:
         """Execute a probe script in-process without process-global stdout.
@@ -382,6 +445,7 @@ except Exception as exc:
             }
 
         return {
+            **({"results": payload["results"]} if isinstance(payload.get("results"), dict) else {}),
             **({"device": payload["device"]} if payload.get("device") in {"cpu", "cuda"} else {}),
             "available": bool(payload.get("available")),
             "error": payload.get("error"),
@@ -406,10 +470,60 @@ except Exception as exc:
             self._run_probe(self._TTS_PACKAGE_PROBE, self._timeout_seconds),
         )
 
-    def probe_cleaner_backend(self, backend: str) -> ProbeResult:
+    def probe_package_and_cuda_cleaner_runtime(
+        self, *, cleaner_cuda_quantization: str | None = None,
+    ) -> tuple[ProbeResult, ProbeResult]:
+        """Share one torch import across the two configured CUDA checks."""
+        precision = self._cuda_quantization(cleaner_cuda_quantization)
+        cleaner_key = self._cleaner_cache_key("cuda", precision)
+        tts = self._cached_result("tts-package")
+        cleaner = self._cached_result(cleaner_key)
+        if tts is not None or cleaner is not None:
+            return (
+                tts if tts is not None else self.probe_package_tts_runtime(),
+                cleaner if cleaner is not None else self.probe_cleaner_backend(
+                    "cuda", cleaner_cuda_quantization=precision,
+                ),
+            )
+        # Each original script catches its own import/device errors. Capture its
+        # JSON independently so a failed optional cleaner never masks TTS.
+        script = (
+            "import json\nresults = {}\n"
+            f"scripts = {dict(tts=self._TTS_PACKAGE_PROBE, cleaner=self._CLEANER_CUDA_PROBE)!r}\n"
+            "for name, source in scripts.items():\n"
+            "    output = []\n"
+            f"    namespace = {{'CLEANER_CUDA_QUANTIZATION': {precision!r}, 'print': output.append}}\n"
+            "    exec(source, namespace)\n"
+            "    results[name] = json.loads(output[-1])\n"
+            "print(json.dumps({'available': all(r.get('available') for r in results.values()), 'results': results}))\n"
+        )
+        result = self._run_probe(script, 2 * self._timeout_seconds)
+        results = result.get("results")
+        payloads = [
+            results.get(name) if isinstance(results, dict) else None
+            for name in ("tts", "cleaner")
+        ]
+        if not all(isinstance(payload, dict) and isinstance(payload.get("available"), bool) for payload in payloads):
+            # A crash or timeout in the shared process (for example a failing GPU
+            # driver in the cleaner check) must not mark CPU narration unavailable.
+            return (
+                self.probe_package_tts_runtime(),
+                self.probe_cleaner_backend("cuda", cleaner_cuda_quantization=precision),
+            )
+        checks = []
+        for payload in payloads:
+            checks.append({**result, **payload})
+            checks[-1].pop("results", None)
+        return (
+            self._store_result("tts-package", checks[0]),
+            self._store_cleaner_backend_result("cuda", checks[1], precision),
+        )
+
+    def probe_cleaner_backend(self, backend: str, *, cleaner_cuda_quantization: str | None = None) -> ProbeResult:
         """Probe one registered cleaner backend's local runtime availability."""
         normalized = validate_cleaner_backend(backend)
-        cache_key = self._cleaner_cache_key(normalized)
+        precision = self._cuda_quantization(cleaner_cuda_quantization) if normalized == "cuda" else None
+        cache_key = self._cleaner_cache_key(normalized, precision)
         cached = self._cached_result(cache_key)
         if cached is not None:
             return cached
@@ -438,32 +552,37 @@ except Exception as exc:
                 },
             )
 
+        if normalized == "cuda":
+            script = f"CLEANER_CUDA_QUANTIZATION = {precision!r}\n" + script
         return self._store_cleaner_backend_result(
             normalized,
             self._run_probe(script, self._timeout_seconds),
+            precision,
         )
 
-    def probe_local_cleaner_backends(self) -> dict[str, ProbeResult]:
-        """Probe every registered local cleaner backend."""
-        results: dict[str, ProbeResult] = {}
-        for backend_name in available_cleaner_backends():
-            if is_local_cleaner_backend(backend_name):
-                results[backend_name] = self.probe_cleaner_backend(backend_name)
-        return results
+    def get_system_runtime_snapshot(self, primary_runtime: str = "mlx") -> dict[str, Any]:
+        """Report the TTS and local-cleaner checks for the selected runtime.
 
-    def probe_mlx_cleaner_runtime(self) -> ProbeResult:
-        return self.probe_cleaner_backend("mlx")
-
-    def get_system_runtime_snapshot(self) -> dict[str, Any]:
-        results, state, refresh_in_progress = self._get_snapshot_cache_state()
+        On CUDA and CPU runtimes the MLX packages are absent by design, so their
+        import failure is not a reason to show; ``tts`` and ``cleaner`` report
+        the PyTorch package and CUDA cleaner checks instead.
+        """
+        mlx = primary_runtime == "mlx"
+        results, state, refresh_in_progress = self._get_snapshot_cache_state(primary_runtime)
         if state != "fresh":
-            refresh_in_progress = refresh_in_progress or self._ensure_background_refresh()
+            refresh_in_progress = refresh_in_progress or self._ensure_background_refresh(primary_runtime)
+        if mlx:
+            cleaner_key = "cleaner"
+        elif "cuda" in available_cleaner_backends():
+            cleaner_key = self._cleaner_cache_key("cuda")
+        else:
+            cleaner_key = None
         return {
             "mode": "import",
             "cache_ttl_seconds": self._cache_ttl_seconds,
             "cache_hit": state == "fresh",
             "state": state,
             "refresh_in_progress": refresh_in_progress,
-            "tts": self._probe_payload(results.get("tts")),
-            "cleaner": self._probe_payload(results.get("cleaner")),
+            "tts": self._probe_payload(results.get("tts" if mlx else "tts-package")),
+            "cleaner": self._probe_payload(results.get(cleaner_key) if cleaner_key else None),
         }

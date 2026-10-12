@@ -10,6 +10,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from modules.runtime_setup import hub_cache
 from modules.web.server import create_app
 
 
@@ -67,8 +68,7 @@ def test_setup_status_returns_allowlisted_readiness_contract(
     from modules.web.routes import setup as setup_route
 
     monkeypatch.setattr(
-        setup_route.setup_runtime,
-        "get_setup_status",
+        setup_route.setup_status, "get_setup_status",
         lambda **kwargs: {
             "configured": True,
             "profile": "mlx",
@@ -124,7 +124,7 @@ def test_setup_status_returns_allowlisted_readiness_contract(
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "_check_model_group_assets",
         lambda group_ids, **kwargs: {
             "tts-mlx": {"ready": True, "reason": None},
@@ -183,8 +183,7 @@ def test_setup_status_recovers_from_incomplete_or_corrupt_state(monkeypatch) -> 
     from modules.web.routes import setup as setup_route
 
     monkeypatch.setattr(
-        setup_route.setup_runtime,
-        "get_setup_status",
+        setup_route.setup_status, "get_setup_status",
         lambda **kwargs: {
             "configured": False,
             "profile": None,
@@ -248,15 +247,13 @@ def test_setup_status_preserves_missing_invalid_and_unavailable_state_errors(
         fingerprints = iter((("state", 1), ("state", 2), ("state", 3)))
         monkeypatch.setattr(setup_route, "_setup_state_fingerprint", lambda: next(fingerprints))
         monkeypatch.setattr(
-            setup_route.setup_runtime,
-            "get_setup_status",
+            setup_route.setup_status, "get_setup_status",
             lambda **kwargs: base_status,
         )
         missing = client.get("/api/setup/status").json()
 
         monkeypatch.setattr(
-            setup_route.setup_runtime,
-            "get_setup_status",
+            setup_route.setup_status, "get_setup_status",
             lambda **kwargs: {
                 **base_status,
                 "state_error": "Setup state is invalid: bad schema",
@@ -268,7 +265,7 @@ def test_setup_status_preserves_missing_invalid_and_unavailable_state_errors(
             del kwargs
             raise OSError("/private/path cannot be read")
 
-        monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", unavailable)
+        monkeypatch.setattr(setup_route.setup_status, "get_setup_status", unavailable)
         unavailable_payload = client.get("/api/setup/status").json()
 
     assert (missing["state"], missing["state_error"]) == ("unconfigured", None)
@@ -296,25 +293,6 @@ def test_package_readiness_checks_recursive_base_and_missing_dependency(tmp_path
         "missing": [{"name": "shared-package", "expected": "==1.0", "installed": None}],
         "incompatible": [],
     }
-
-
-def test_package_readiness_degrades_when_manifest_missing(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Packaged sidecars without bundled manifests must report not-ready, not raise."""
-    from modules.web.routes import setup as setup_route
-
-    monkeypatch.setattr(
-        setup_route,
-        "get_runtime_profile",
-        lambda profile_id: SimpleNamespace(
-            requirements_file=tmp_path / "absent" / f"{profile_id}.txt"
-        ),
-    )
-
-    status = setup_route._check_selected_profile_packages("mlx")
-
-    assert status == {"ready": False, "missing": [], "incompatible": []}
 
 
 def test_package_readiness_reports_wrong_pinned_version(tmp_path: Path) -> None:
@@ -352,6 +330,24 @@ def test_package_readiness_excludes_false_markers(tmp_path: Path) -> None:
     )
 
     assert status == {"ready": True, "missing": [], "incompatible": []}
+
+
+def test_package_readiness_treats_versionless_metadata_as_missing(tmp_path: Path) -> None:
+    from modules.web.routes import setup as setup_route
+
+    manifest = tmp_path / "base.txt"
+    manifest.write_text("packaging==26.0\n", encoding="utf-8")
+
+    status = setup_route._check_manifest_packages(
+        manifest,
+        version_resolver=lambda name: None,
+    )
+
+    assert status == {
+        "ready": False,
+        "missing": [{"name": "packaging", "expected": "==26.0", "installed": None}],
+        "incompatible": [],
+    }
 
 
 def test_package_readiness_accepts_complete_recursive_manifest_and_named_wheel(
@@ -400,13 +396,12 @@ def test_model_assets_require_complete_existing_cached_files(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from modules.web.routes import setup as setup_route
 
     existing = tmp_path / "model.safetensors"
     existing.write_bytes(b"weights")
     deleted = tmp_path / "deleted.json"
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "resolve_model_groups",
         lambda groups: ("org/complete", "org/deleted", "org/partial", "org/missing"),
     )
@@ -423,7 +418,7 @@ def test_model_assets_require_complete_existing_cached_files(
         warnings=(),
     )
 
-    status = setup_route._check_model_group_assets(
+    status = hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=lambda: cache,
     )
@@ -435,16 +430,15 @@ def test_model_assets_treat_deleted_cached_file_as_incomplete(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from modules.web.routes import setup as setup_route
 
     deleted = tmp_path / "deleted.safetensors"
-    monkeypatch.setattr(setup_route, "resolve_model_groups", lambda groups: ("org/model",))
+    monkeypatch.setattr(hub_cache, "resolve_model_groups", lambda groups: ("org/model",))
     cache = SimpleNamespace(
         repos=[_cache_repo("org/model", [deleted])],
         warnings=(),
     )
 
-    assert setup_route._check_model_group_assets(
+    assert hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=lambda: cache,
     ) == {"group": {"ready": False, "reason": "incomplete"}}
@@ -454,14 +448,13 @@ def test_model_assets_reject_config_only_revision_without_receipt(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from modules.web.routes import setup as setup_route
 
     first = tmp_path / "config.json"
     second = tmp_path / "model.safetensors"
     first.write_text("{}", encoding="utf-8")
     second.write_bytes(b"weights")
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "resolve_model_groups",
         lambda groups: ("org/model",),
     )
@@ -470,18 +463,17 @@ def test_model_assets_reject_config_only_revision_without_receipt(
         warnings=(),
     )
 
-    assert setup_route._check_model_group_assets(
+    assert hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=lambda: cache,
     ) == {"group": {"ready": False, "reason": "incomplete"}}
-    assert setup_route._check_model_group_assets((), cache_scanner=lambda: cache) == {}
+    assert hub_cache._check_model_group_assets((), cache_scanner=lambda: cache) == {}
 
 
 def test_model_assets_accept_revision_with_valid_matching_receipt(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    from modules.web.routes import setup as setup_route
     from scripts.download_models import write_download_receipt
 
     model_id = "org/model"
@@ -499,29 +491,31 @@ def test_model_assets_accept_revision_with_valid_matching_receipt(
         snapshot_path=snapshot,
         commit_hash=revision,
     )
-    monkeypatch.setattr(setup_route, "resolve_model_groups", lambda groups: (model_id,))
+    monkeypatch.setattr(hub_cache, "resolve_model_groups", lambda groups: (model_id,))
     cache = SimpleNamespace(
         repos=[repo],
         warnings=(RuntimeError("unrelated dataset cache warning"),),
     )
 
-    assert setup_route._check_model_group_assets(
+    assert hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=lambda: cache,
     ) == {"group": {"ready": True, "reason": None}}
 
 
-def test_model_assets_accept_any_valid_matching_cached_revision(
+@pytest.mark.parametrize("pinned_is_complete", [False, True])
+def test_model_assets_require_a_valid_receipt_for_the_pinned_revision(
     monkeypatch,
     tmp_path: Path,
+    pinned_is_complete: bool,
 ) -> None:
-    from modules.web.routes import setup as setup_route
-    from scripts.download_models import write_download_receipt
+    from scripts.download_models import MODEL_REVISIONS, write_download_receipt
 
     model_id = "org/model"
     repo_root = tmp_path / "models--org--model" / "snapshots"
     incomplete_revision = "1" * 40
     complete_revision = "2" * 40
+    monkeypatch.setitem(MODEL_REVISIONS, model_id, complete_revision if pinned_is_complete else incomplete_revision)
     incomplete = repo_root / incomplete_revision
     complete = repo_root / complete_revision
     incomplete.mkdir(parents=True)
@@ -552,12 +546,12 @@ def test_model_assets_accept_any_valid_matching_cached_revision(
         repo_type="model",
         revisions=[*invalid_repo.revisions, *valid_repo.revisions],
     )
-    monkeypatch.setattr(setup_route, "resolve_model_groups", lambda groups: (model_id,))
+    monkeypatch.setattr(hub_cache, "resolve_model_groups", lambda groups: (model_id,))
 
-    assert setup_route._check_model_group_assets(
+    assert hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=lambda: SimpleNamespace(repos=[repo], warnings=()),
-    ) == {"group": {"ready": True, "reason": None}}
+    ) == {"group": {"ready": pinned_is_complete, "reason": None if pinned_is_complete else "incomplete"}}
 
 
 @pytest.mark.parametrize(
@@ -581,26 +575,24 @@ def test_model_assets_distinguish_missing_and_partial_cache(
     repos: list[SimpleNamespace],
     expected_reason: str,
 ) -> None:
-    from modules.web.routes import setup as setup_route
 
-    monkeypatch.setattr(setup_route, "resolve_model_groups", lambda groups: ("org/model",))
+    monkeypatch.setattr(hub_cache, "resolve_model_groups", lambda groups: ("org/model",))
     cache = SimpleNamespace(repos=repos, warnings=())
 
-    assert setup_route._check_model_group_assets(
+    assert hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=lambda: cache,
     ) == {"group": {"ready": False, "reason": expected_reason}}
 
 
 def test_model_assets_treat_corrupt_or_inaccessible_cache_as_unavailable(monkeypatch) -> None:
-    from modules.web.routes import setup as setup_route
 
-    monkeypatch.setattr(setup_route, "resolve_model_groups", lambda groups: ("org/model",))
+    monkeypatch.setattr(hub_cache, "resolve_model_groups", lambda groups: ("org/model",))
 
     def inaccessible():
         raise PermissionError("/private/cache")
 
-    assert setup_route._check_model_group_assets(
+    assert hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=inaccessible,
     ) == {"group": {"ready": False, "reason": "unavailable"}}
@@ -608,14 +600,13 @@ def test_model_assets_treat_corrupt_or_inaccessible_cache_as_unavailable(monkeyp
 
 def test_model_assets_treat_absent_cache_as_missing(monkeypatch, tmp_path: Path) -> None:
     from huggingface_hub.errors import CacheNotFound
-    from modules.web.routes import setup as setup_route
 
-    monkeypatch.setattr(setup_route, "resolve_model_groups", lambda groups: ("org/model",))
+    monkeypatch.setattr(hub_cache, "resolve_model_groups", lambda groups: ("org/model",))
 
     def absent():
         raise CacheNotFound("cache does not exist", cache_dir=tmp_path)
 
-    assert setup_route._check_model_group_assets(
+    assert hub_cache._check_model_group_assets(
         ("group",),
         cache_scanner=absent,
     ) == {"group": {"ready": False, "reason": "missing"}}
@@ -663,9 +654,9 @@ def test_status_cache_reuses_probe_and_asset_refresh_within_ttl(monkeypatch) -> 
         calls["assets"] += 1
         return {"tts-mlx": {"ready": True, "reason": None}}
 
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", status)
+    monkeypatch.setattr(setup_route.setup_status, "get_setup_status", status)
     monkeypatch.setattr(setup_route, "_check_selected_profile_packages", packages)
-    monkeypatch.setattr(setup_route, "_check_model_group_assets", assets)
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", assets)
     monkeypatch.setattr(setup_route, "_setup_state_fingerprint", lambda: ("state", 1))
 
     with _client() as client:
@@ -770,7 +761,11 @@ def test_outer_ttl_refresh_reuses_app_scoped_integrity_hash(
     tmp_path: Path,
 ) -> None:
     from modules.web.routes.setup import RuntimeSetupStatusCache
+    from modules.runtime_setup import receipts
     from scripts import download_models
+    import time
+
+    monkeypatch.setattr(receipts, "_now_ns", lambda: time.time_ns() + 3_000_000_000)
 
     model_id = "owner/model"
     revision = "b" * 40
@@ -790,7 +785,7 @@ def test_outer_ttl_refresh_reuses_app_scoped_integrity_hash(
         hash_calls += 1
         return real_hash(path)
 
-    monkeypatch.setattr(download_models, "_file_size_and_sha256", counted_hash)
+    monkeypatch.setattr(receipts, "_file_size_and_sha256", counted_hash)
     now = [0.0]
     cache = RuntimeSetupStatusCache(ttl_seconds=0.1, clock=lambda: now[0])
 
@@ -808,3 +803,137 @@ def test_outer_ttl_refresh_reuses_app_scoped_integrity_hash(
     now[0] = 1.0
     assert cache.get(("state",), build) == {"ready": True}
     assert hash_calls == 1
+
+
+
+def test_status_returns_pending_while_single_flight_probe_continues():
+    from modules.web.setup_status_cache import RuntimeSetupStatusCache
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def build(probes):
+        calls.append(1)
+        started.set()
+        assert release.wait(timeout=3)
+        return {"ready": True}
+
+    cache = RuntimeSetupStatusCache()
+    def pending():
+        return {"checking": True, "ready": False}
+    try:
+        first = cache.get(("state",), build, pending_builder=pending, wait_seconds=0.01)
+        assert started.is_set()
+        second = cache.get(("state",), build, pending_builder=pending, wait_seconds=0.01)
+        assert first == second == {"checking": True, "ready": False}
+        assert calls == [1]
+    finally:
+        release.set()
+    assert cache.get(("state",), build) == {"ready": True}
+    assert calls == [1]
+
+
+def test_status_cache_keeps_completed_readiness_when_unselected_cleaner_times_out() -> None:
+    from modules.web.setup_status_cache import RuntimeSetupStatusCache
+
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+    response = {
+        "state": "ready",
+        "ready": True,
+        "selected_model_groups": [{"id": "tts-cpu-cuda", "ready": True}],
+        "installed_runtime": {
+            "group_availability": {
+                "cleaner-cuda": {"available": False, "state": "timeout"},
+            },
+        },
+    }
+
+    def build(probes):
+        calls.append(1)
+        started.set()
+        assert release.wait(timeout=3)
+        return response
+
+    cache = RuntimeSetupStatusCache()
+    try:
+        first = cache.get(
+            ("state",), build,
+            pending_builder=lambda: {"checking": True, "ready": False},
+            wait_seconds=0.01,
+        )
+        assert started.is_set()
+        assert first == {"checking": True, "ready": False}
+    finally:
+        release.set()
+    assert cache.get(("state",), build) == response
+    assert calls == [1]
+
+
+def test_frozen_setup_status_uses_bounded_pending_response(monkeypatch, tmp_path):
+    from modules.web.routes import setup as setup_route
+
+    monkeypatch.setattr(setup_route.sys, "frozen", True, raising=False)
+    monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: tmp_path / "setup.json")
+    captured = {}
+
+    class Cache:
+        receipt_verifier = object()
+
+        def get(self, key, builder, **kwargs):
+            captured.update(kwargs)
+            return kwargs["pending_builder"]()
+
+    monkeypatch.setattr(setup_route, "_get_status_cache", lambda _: Cache())
+    monkeypatch.setattr(setup_route, "_setup_state_fingerprint", lambda: ("state",))
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(backend_instance_id="one")))
+    payload = setup_route.build_setup_status_response(request)
+    assert 0 < captured["wait_seconds"] < 120
+    assert payload["checking"] is True
+    assert payload["state"] == "checking"
+    assert payload["ready"] is False
+
+
+def test_frozen_pending_status_preserves_saved_configuration(monkeypatch, tmp_path):
+    from modules.web.routes import setup as setup_route
+
+    state_path = tmp_path / "setup.json"
+    setup_route.setup_runtime.write_setup_state(
+        state_path, profile_id="cuda", model_groups=["tts-cpu-cuda", "cleaner-cuda"],
+        accepted_risks=[], restart_required=True, cleaner_cuda_quantization="8bit",
+    )
+    monkeypatch.setattr(setup_route.sys, "frozen", True, raising=False)
+    monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: state_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def build(*args):
+        started.set()
+        assert release.wait(timeout=5)
+        return {"ready": True}
+
+    monkeypatch.setattr(setup_route, "_build_uncached_setup_status_response", build)
+    cache = setup_route.RuntimeSetupStatusCache()
+    monkeypatch.setattr(setup_route, "_get_status_cache", lambda _: cache)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(backend_instance_id="one")))
+    try:
+        payload = setup_route.build_setup_status_response(request)
+        assert started.is_set()
+        assert payload["configured"] is True
+        assert payload["selected_profile"] == "cuda"
+        assert [group["id"] for group in payload["selected_model_groups"]] == ["tts-cpu-cuda", "cleaner-cuda"]
+        assert payload["cleaner_cuda_quantization"] == "8bit"
+        assert payload["restart_required"] is True
+        assert payload["checking"] is True
+        assert payload["state"] == "checking"
+        assert payload["ready"] is False
+        assert payload["probe"] == {"ready": False, "checks": [
+            {"id": "tts-cpu-cuda", "ready": False, "state": "pending"},
+            {"id": "cleaner-cuda", "ready": False, "state": "pending"},
+        ]}
+        assert _contains_forbidden_key(payload) is False
+    finally:
+        release.set()
+        cache.get(("finished",), lambda _: {"ready": True})

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import multiprocessing
+import subprocess
+import sys
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,12 +16,151 @@ from modules.app.controller import AppController
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
 
 
-@pytest.mark.parametrize("gpu", [False, True])
-def test_frozen_package_probe_reports_device_and_cleaner_requirement(monkeypatch, gpu):
-    import sys
+@pytest.fixture
+def frozen_spawn(monkeypatch):
+    context = multiprocessing.get_context("spawn")
+    original_process = context.Process
+    workers = []
 
+    def process(*args, **kwargs):
+        worker = original_process(*args, **kwargs)
+        start = worker.start
+
+        def start_source_worker():
+            # The test interpreter uses Python's CLI instead of a frozen launcher.
+            del worker.start
+            monkeypatch.delattr(sys, "frozen")
+            try:
+                start()
+            finally:
+                monkeypatch.setattr(sys, "frozen", True, raising=False)
+
+        worker.start = start_source_worker
+        workers.append(worker)
+        return worker
+
+    monkeypatch.setattr(context, "Process", process)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setattr(multiprocessing, "get_context", lambda method: context if method == "spawn" else None)
+    yield workers
+    for worker in workers:
+        if worker.is_alive():
+            worker.kill()
+            worker.join(timeout=2)
+        worker.close()
+
+
+def test_frozen_probe_timeout_terminates_worker_and_allows_retry(frozen_spawn, tmp_path):
+    marker = tmp_path / "probe-started"
+    service = RuntimeCapabilityService(timeout_seconds=1.0)
+    service._TTS_PACKAGE_PROBE = (
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('started')\n"
+        "import time\ntime.sleep(3)\nprint('{\"available\": true}')"
+    )
+    started = time.monotonic()
+    first = service.probe_package_tts_runtime()
+    assert time.monotonic() - started < 2.5
+    assert first["available"] is False
+    assert "timed out" in first["error"].lower()
+    assert marker.read_text() == "started"
+    assert len(frozen_spawn) == 1
+    assert frozen_spawn[0].exitcode is not None
+
+    service._TTS_PACKAGE_PROBE = 'print(\'{"available": true, "device": "cpu"}\')'
+    retry = service.probe_package_tts_runtime()
+    assert retry["available"] is True
+    assert retry["device"] == "cpu"
+    assert retry["cache_hit"] is False
+    assert len(frozen_spawn) == 2
+
+
+def test_frozen_probe_allows_cold_imports_beyond_fifteen_seconds(frozen_spawn):
+    service = RuntimeCapabilityService()
+    service._TTS_PACKAGE_PROBE = "import time\ntime.sleep(16)\nprint('{\"available\": true}')"
+    result = service.probe_package_tts_runtime()
+    assert result["available"] is True
+    assert result.get("timed_out") is not True
+
+
+def test_frozen_probe_lock_wait_preserves_worker_deadline(frozen_spawn):
+    from modules.app.services.runtime_capability_service import _FROZEN_PROBE_LOCK
+
+    locked = threading.Event()
+
+    def hold_lock():
+        with _FROZEN_PROBE_LOCK:
+            locked.set()
+            time.sleep(2.2)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=1)
+        result = RuntimeCapabilityService()._run_probe('print(\'{"available": true}\')', 2.0)
+        assert result["available"] is True
+        assert len(frozen_spawn) == 1
+    finally:
+        holder.join(timeout=3)
+
+
+def test_frozen_probe_lock_wait_is_bounded_separately(frozen_spawn):
+    from modules.app.services.runtime_capability_service import _FROZEN_PROBE_LOCK
+
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_lock():
+        with _FROZEN_PROBE_LOCK:
+            locked.set()
+            release.wait(timeout=3)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    try:
+        assert locked.wait(timeout=1)
+        service = RuntimeCapabilityService(lock_timeout_seconds=0.05)
+        result = service._run_probe('print(\'{"available": true}\')', 2.0)
+        assert result["timed_out"] is True
+        assert frozen_spawn == []
+    finally:
+        release.set()
+        holder.join(timeout=1)
+
+
+def test_frozen_probe_reports_worker_exit_without_a_result(frozen_spawn):
+    result = RuntimeCapabilityService()._run_probe("import os\nos._exit(3)", 1.0)
+    assert result["available"] is False
+    assert result["error"] == "Runtime probe exited without a result"
+    assert frozen_spawn[0].exitcode == 3
+
+
+def test_setup_status_retry_after_frozen_probe_timeout(frozen_spawn):
+    from modules.web.setup_status_cache import RuntimeSetupStatusCache
+
+    service = RuntimeCapabilityService(timeout_seconds=0.5)
+    cache = RuntimeSetupStatusCache(probe_service=service)
+    service._TTS_PACKAGE_PROBE = "import time\ntime.sleep(3)"
+
+    def build(probes):
+        # Like the status projection, a timed-out selected probe marks the
+        # whole status as still checking.
+        probe = probes.probe_package_tts_runtime()
+        return {"probe": probe, "checking": bool(probe.get("timed_out"))}
+
+    first = cache.get(("cuda",), build)
+    assert first["probe"]["timed_out"] is True
+    service._TTS_PACKAGE_PROBE = 'print(\'{"available": true}\')'
+    retry = cache.get(("cuda",), build)
+    assert retry["probe"]["available"] is True
+    assert retry["probe"]["cache_hit"] is False
+
+
+@pytest.mark.parametrize("gpu, driver_error", [
+    (False, None), (True, None),
+    (True, "Needs an NVIDIA GPU with a CUDA 12.6 driver"),
+])
+def test_package_probe_scripts_report_device_and_cleaner_requirement(monkeypatch, gpu, driver_error):
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: driver_error)
     tensor = MagicMock()
     tensor.add_.return_value.item.return_value = 2
     ones = MagicMock(return_value=tensor)
@@ -27,7 +171,7 @@ def test_frozen_package_probe_reports_device_and_cleaner_requirement(monkeypatch
     monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
     monkeypatch.setitem(sys.modules, "bitsandbytes", SimpleNamespace())
     service = RuntimeCapabilityService()
-    tts = service.probe_package_tts_runtime()
+    tts = service._run_in_process_probe(service._TTS_PACKAGE_PROBE)
     assert tts["available"] is True
     assert tts["device"] == ("cuda" if gpu else "cpu")
     if gpu:
@@ -36,24 +180,21 @@ def test_frozen_package_probe_reports_device_and_cleaner_requirement(monkeypatch
         tensor.add_.return_value.item.assert_called_once_with()
     else:
         ones.assert_not_called()
-    cleaner = service.probe_cleaner_backend("cuda")
-    assert cleaner["available"] is gpu
-    if not gpu:
+    cleaner = service._run_in_process_probe(service._CLEANER_CUDA_PROBE)
+    assert cleaner["available"] is (gpu and driver_error is None)
+    if not gpu or driver_error:
         assert cleaner["error"] == "Needs an NVIDIA GPU with a CUDA 12.6 driver"
 
 
-def test_cleaner_mlx_probe_script_imports_mlx_lm() -> None:
-    assert "import mlx_lm" in RuntimeCapabilityService._CLEANER_MLX_PROBE
+def test_cleaner_mlx_probe_requires_mlx_lm(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "mlx", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "mlx.core", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "mlx_lm", SimpleNamespace())
+    service = RuntimeCapabilityService()
+    assert service._run_in_process_probe(service._CLEANER_MLX_PROBE)["available"] is True
 
-
-def test_cleaner_cuda_probe_script_checks_torch_cuda_and_transformers() -> None:
-    script = RuntimeCapabilityService._CLEANER_CUDA_PROBE
-    assert "import torch" in script
-    assert "torch.cuda.is_available()" in script
-    assert "import transformers" in script
-    assert "import bitsandbytes" in script
-    assert "CLEANER_CUDA_QUANTIZATION" in script
-    assert "model.load" not in script
+    monkeypatch.setitem(sys.modules, "mlx_lm", None)
+    assert service._run_in_process_probe(service._CLEANER_MLX_PROBE)["available"] is False
 
 
 def test_probe_cleaner_backend_api_is_always_available_without_subprocess() -> None:
@@ -133,37 +274,6 @@ def test_probe_cleaner_backend_cuda_uses_separate_cache_key() -> None:
     assert mock_run.call_count == 2
 
 
-def test_probe_local_cleaner_backends_iterates_registered_local_backends() -> None:
-    service = RuntimeCapabilityService(cache_ttl_seconds=60.0, timeout_seconds=4.0)
-    completed = MagicMock(returncode=0, stdout='{"available": true}', stderr="")
-
-    with patch(
-        "modules.app.services.runtime_capability_service.subprocess.run",
-        return_value=completed,
-    ):
-        results = service.probe_local_cleaner_backends()
-
-    assert set(results) == {"basic", "mlx", "cuda"}
-    assert all(result["available"] is True for result in results.values())
-
-
-def test_probe_mlx_cleaner_runtime_delegates_to_mlx_backend_probe() -> None:
-    service = RuntimeCapabilityService(cache_ttl_seconds=60.0, timeout_seconds=4.0)
-    completed = MagicMock(returncode=0, stdout='{"available": true}', stderr="")
-
-    with patch(
-        "modules.app.services.runtime_capability_service.subprocess.run",
-        return_value=completed,
-    ) as mock_run:
-        alias = service.probe_mlx_cleaner_runtime()
-        direct = service.probe_cleaner_backend("mlx")
-
-    assert alias["available"] is True
-    assert direct["available"] is True
-    assert direct["cache_hit"] is True
-    assert mock_run.call_count == 1
-
-
 def test_probe_cleaner_backend_rejects_unknown_backend() -> None:
     service = RuntimeCapabilityService(cache_ttl_seconds=60.0, timeout_seconds=4.0)
 
@@ -201,10 +311,13 @@ def test_get_system_capabilities_reads_cached_cleaner_availability_without_probe
     with patch(
         "modules.app.controller.TTSEngineFactory.available_conversion_engines",
         return_value=["kokoro"],
+    ), patch(
+        "modules.tts.device_memory.MLXDeviceMemoryPolicy._resolve_mlx_core",
+        return_value=None,
     ):
         payload = controller.get_system_capabilities()
 
-    controller._runtime_capability_service.probe_local_cleaner_backends.assert_not_called()
+    controller._runtime_capability_service.probe_cleaner_backend.assert_not_called()
     availability = payload["cleaner_runtime_availability"]
     assert set(availability) == {"mlx", "cuda", "api"}
     assert availability["mlx"] is True
@@ -232,40 +345,11 @@ def test_refresh_runtime_snapshot_stores_mlx_alias_and_per_backend_cache() -> No
     ):
         service._refresh_runtime_snapshot()
 
-    mlx_cached = service._read_cached_cleaner_backend_result("mlx")
-    cuda_cached = service._read_cached_cleaner_backend_result("cuda")
-    assert mlx_cached is not None and mlx_cached["available"] is True
-    assert cuda_cached is not None and cuda_cached["available"] is False
-
     snapshot = service.get_system_runtime_snapshot()
     assert snapshot["cleaner"]["available"] is True
-    assert service.get_cached_cleaner_backend_availability()["mlx"] is True
-
-
-def test_cuda_probe_reports_unavailable_when_bitsandbytes_missing_for_default_quant(
-    monkeypatch,
-) -> None:
-    service = RuntimeCapabilityService(cache_ttl_seconds=60.0, timeout_seconds=4.0)
-    monkeypatch.delenv("CLEANER_CUDA_QUANTIZATION", raising=False)
-
-    def fake_run(command, **kwargs):
-        script = command[-1]
-        if "bitsandbytes" not in script:
-            raise AssertionError("CUDA probe must validate bitsandbytes for default quant")
-        return MagicMock(
-            returncode=0,
-            stdout='{"available": false, "error": "No module named \'bitsandbytes\'"}',
-            stderr="",
-        )
-
-    with patch(
-        "modules.app.services.runtime_capability_service.subprocess.run",
-        side_effect=fake_run,
-    ):
-        result = service.probe_cleaner_backend("cuda")
-
-    assert result["available"] is False
-    assert "bitsandbytes" in str(result["error"]).lower()
+    availability = service.get_cached_cleaner_backend_availability()
+    assert availability["mlx"] is True
+    assert availability["cuda"] is False
 
 
 def test_cuda_probe_reports_unavailable_when_gpu_absent() -> None:
@@ -283,3 +367,96 @@ def test_cuda_probe_reports_unavailable_when_gpu_absent() -> None:
 
     assert result["available"] is False
     assert result["error"] == "Needs an NVIDIA GPU with a CUDA 12.6 driver"
+
+
+
+@pytest.mark.parametrize("precision", [None, "4bit", "8bit", "fp16"])
+def test_profile_checks_reuse_timed_out_cleaner_probe_for_shared_backend(precision):
+    from scripts import setup_runtime
+
+    service = MagicMock(spec=RuntimeCapabilityService)
+    service.probe_cleaner_backend.return_value = {"available": False, "timed_out": True, "error": "slow import"}
+    result = setup_runtime._probe_profile(
+        ["cleaner-cuda", "cleaner-cuda-large"], service, cleaner_cuda_quantization=precision,
+    )
+    assert [check["state"] for check in result["checks"]] == ["timeout", "timeout"]
+    service.probe_cleaner_backend.assert_called_once_with(
+        "cuda", **({"cleaner_cuda_quantization": precision} if precision is not None else {}),
+    )
+
+
+@pytest.mark.parametrize("requested", ["4bit", "8bit", "fp16"])
+def test_cuda_cleaner_probe_uses_requested_precision_and_separate_cache(monkeypatch, requested):
+    monkeypatch.setenv("CLEANER_CUDA_QUANTIZATION", "fp16")
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "bitsandbytes", None)
+    service = RuntimeCapabilityService()
+    calls = []
+
+    def probe(script, timeout):
+        calls.append(script)
+        return service._run_in_process_probe(script)
+
+    monkeypatch.setattr(service, "_run_probe", probe)
+    assert service.probe_cleaner_backend("cuda", cleaner_cuda_quantization="fp16")["available"]
+    result = service.probe_cleaner_backend("cuda", cleaner_cuda_quantization=requested)
+    assert result["available"] is (requested == "fp16")
+    assert len(calls) == (1 if requested == "fp16" else 2)
+    assert service.probe_cleaner_backend("cuda", cleaner_cuda_quantization=requested)["cache_hit"]
+    assert service.probe_cleaner_backend("cuda", cleaner_cuda_quantization="fp16")["available"]
+
+
+def test_cuda_cleaner_explicit_fp16_does_not_require_environment_quantization_dependencies(monkeypatch):
+    monkeypatch.setenv("CLEANER_CUDA_QUANTIZATION", "4bit")
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "bitsandbytes", None)
+    service = RuntimeCapabilityService()
+    monkeypatch.setattr(service, "_run_probe", lambda script, timeout: service._run_in_process_probe(script))
+    assert not service.probe_cleaner_backend("cuda")["available"]
+    assert service.probe_cleaner_backend("cuda", cleaner_cuda_quantization="fp16")["available"]
+
+
+@pytest.mark.parametrize("precision", ["4bit", "8bit", "fp16"])
+@pytest.mark.parametrize("operation", ["install", "status"])
+def test_setup_verifies_selected_precision_instead_of_environment(monkeypatch, tmp_path, precision, operation):
+    from huggingface_hub import constants as hf_constants
+    from scripts import setup_runtime
+
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setenv("CLEANER_CUDA_QUANTIZATION", "fp16" if precision != "fp16" else "4bit")
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setattr(setup_runtime, "cuda_hardware_error", lambda: None)
+    monkeypatch.setattr(type(setup_runtime.get_runtime_profile("cuda")), "is_compatible", lambda self, **kwargs: True)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "bitsandbytes", None)
+    service = RuntimeCapabilityService()
+    monkeypatch.setattr(service, "_run_probe", lambda script, timeout: service._run_in_process_probe(script))
+    monkeypatch.setattr(service, "probe_package_tts_runtime", lambda: {"available": True})
+    state_path = tmp_path / "runtime-setup.json"
+    selection = {
+        "profile_id": "cuda", "model_groups": ["tts-cpu-cuda", "cleaner-cuda"],
+        "cleaner_cuda_quantization": precision,
+    }
+    if operation == "status":
+        setup_runtime.write_setup_state(state_path, accepted_risks=(), **selection)
+        status = setup_runtime.get_setup_status(state_path=state_path, probe_service=service)
+        assert status["ready"] is (precision == "fp16")
+    else:
+        def install():
+            return setup_runtime.run_setup(
+                **selection, state_path=state_path, probe_service=service,
+                command_runner=lambda command, **kwargs: subprocess.CompletedProcess(command, 0),
+            )
+
+        if precision == "fp16":
+            install()
+            assert setup_runtime.read_setup_state(state_path)["cleaner_cuda_quantization"] == precision
+        else:
+            with pytest.raises(setup_runtime.SetupExecutionError, match="bitsandbytes"):
+                install()
+            assert not state_path.exists()

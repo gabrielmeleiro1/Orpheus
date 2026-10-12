@@ -16,7 +16,7 @@ from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
-VersionResolver = Callable[[str], str]
+VersionResolver = Callable[[str], str | None]
 
 
 def _manifest_requirements(
@@ -111,6 +111,10 @@ def _check_manifest_packages(
         try:
             installed_raw = version_resolver(name)
         except (metadata.PackageNotFoundError, KeyError):
+            installed_raw = None
+        # A dist-info left without a Version field (interrupted install) is
+        # as unusable as an absent package.
+        if installed_raw is None:
             missing.append({"name": name, "expected": expected, "installed": None})
             continue
         installed = _safe_installed_version(installed_raw)

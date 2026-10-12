@@ -5,20 +5,16 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import math
 import os
 from pathlib import Path
 import re
-import shutil
 import signal
 import subprocess
 import sys
 import tempfile
-import time
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
-import uuid
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,25 +22,64 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from modules.app.services.runtime_capability_service import (  # noqa: E402
-    RuntimeCapabilityService,
+    RuntimeCapabilityService as RuntimeCapabilityService,
 )
 from modules.runtime_profiles import (  # noqa: E402
     RuntimeProfile,
     cuda_hardware_error,
-    get_runtime_profile,
-    runtime_profiles,
+    get_runtime_profile as get_runtime_profile,
+    runtime_profiles as runtime_profiles,
+)
+from modules.runtime_setup.errors import (  # noqa: E402
+    SetupValidationError as SetupValidationError,
+    SetupExecutionError as SetupExecutionError,
+)
+from modules.runtime_setup.selection import (  # noqa: E402
+    _normalize_identifier as _normalize_identifier,
+    _validated_profile as _validated_profile,
+    _validated_model_groups as _validated_model_groups,
+    require_voice_model as require_voice_model,
+    validate_model_selection as validate_model_selection,
+)
+from modules.runtime_setup.state import (  # noqa: E402
+    STATE_SCHEMA_VERSION as STATE_SCHEMA_VERSION,
+    STATE_FILENAME as STATE_FILENAME,
+    BACKEND_INSTANCE_FILENAME as BACKEND_INSTANCE_FILENAME,
+    LOCK_STALE_SECONDS as LOCK_STALE_SECONDS,
+    DEFAULT_LOCK_TIMEOUT_SECONDS as DEFAULT_LOCK_TIMEOUT_SECONDS,
+    _LEGACY_PYTORCH_RISK_IDS as _LEGACY_PYTORCH_RISK_IDS,
+    SetupLock as SetupLock,
+    _pid_is_running as _pid_is_running,
+    _windows_pid_is_running as _windows_pid_is_running,
+    default_state_path as default_state_path,
+    _atomic_write_json as _atomic_write_json,
+    pending_model_deletions as pending_model_deletions,
+    write_setup_state as write_setup_state,
+    _read_setup_state as _read_setup_state,
+    read_setup_state as read_setup_state,
+    get_setup_state_cache_key as get_setup_state_cache_key,
+    _backend_instance_path as _backend_instance_path,
+    _read_backend_instance as _read_backend_instance,
+    persist_backend_instance as persist_backend_instance,
+    acknowledge_backend_startup as acknowledge_backend_startup,
+    _compare_and_swap_restart_ack as _compare_and_swap_restart_ack,
+)
+from modules.runtime_setup.diagnostics import (  # noqa: E402
+    DIAGNOSTIC_MAX_CHARS as DIAGNOSTIC_MAX_CHARS,
+    _sanitize_diagnostic as _sanitize_diagnostic,
+)
+from modules.runtime_setup.status import (  # noqa: E402
+    _ProbeService as _ProbeService,
+    _SetupRuntimeCapabilityService as _SetupRuntimeCapabilityService,
+    _combine_probe_checks as _combine_probe_checks,
+    _probe_profile as _probe_profile,
+    get_setup_status as get_setup_status,
 )
 from modules.subprocess_utils import background_process_kwargs  # noqa: E402
 
 
-STATE_SCHEMA_VERSION = 3
-STATE_FILENAME = "runtime-setup.json"
-BACKEND_INSTANCE_FILENAME = "backend-instance.json"
-LOCK_STALE_SECONDS = 300.0
-DEFAULT_LOCK_TIMEOUT_SECONDS = 2.0
 DEFAULT_PIP_TIMEOUT_SECONDS = 900.0
 DEFAULT_MODEL_TIMEOUT_SECONDS = 3600.0
-DIAGNOSTIC_MAX_CHARS = 2000
 TAURI_SUPERVISED_ENV = "ORPHEUS_TAURI_SETUP_SUPERVISED"
 SETUP_PLAN_PERCENT = 5
 SETUP_DEPENDENCY_START_PERCENT = 10
@@ -56,17 +91,6 @@ SETUP_STATE_START_PERCENT = 90
 # main() after run_setup() returns successfully.
 SETUP_STATE_COMPLETE_PERCENT = SETUP_STATE_START_PERCENT
 SETUP_COMPLETE_PERCENT = 100
-_LEGACY_PYTORCH_RISK_IDS = frozenset(
-    {"PYSEC-2026-139/CVE-2026-4538,CVE-2025-3000"}
-)
-
-
-class SetupValidationError(ValueError):
-    """Raised before mutation when a requested setup is not allowlisted."""
-
-
-class SetupExecutionError(RuntimeError):
-    """Raised when a fixed setup subprocess fails."""
 
 
 class _SetupArgumentParser(argparse.ArgumentParser):
@@ -74,23 +98,8 @@ class _SetupArgumentParser(argparse.ArgumentParser):
         raise SetupValidationError(message)
 
 
-class _ProbeService(Protocol):
-    def probe_mlx_tts_runtime(self) -> Mapping[str, Any]: ...
-
-    def probe_package_tts_runtime(self) -> Mapping[str, Any]: ...
-
-    def probe_cleaner_backend(self, backend: str) -> Mapping[str, Any]: ...
-
-
 CommandRunner = Callable[..., subprocess.CompletedProcess[str]]
 EventEmitter = Callable[[Mapping[str, Any]], None]
-
-
-class _SetupRuntimeCapabilityService(RuntimeCapabilityService):
-    def _run_probe(self, script: str, timeout_seconds: float) -> dict[str, Any]:
-        if not getattr(sys, "frozen", False):
-            script = f"import sys\nsys.path.insert(0, {str(REPO_ROOT)!r})\n" + script
-        return super()._run_probe(script, timeout_seconds)
 
 
 @dataclass(frozen=True)
@@ -108,163 +117,6 @@ class InstallPlan:
         if self.model_command is None:
             return (self.pip_command,)
         return (self.pip_command, self.model_command)
-
-
-class SetupLock:
-    """Cross-platform lock-directory guard shared by setup and acknowledgement."""
-
-    def __init__(self, state_path: Path, *, timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS):
-        self.path = state_path.with_name(f"{state_path.name}.lock")
-        self.timeout_seconds = float(timeout_seconds)
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds < 0:
-            raise SetupValidationError("Lock timeout must be a finite non-negative number.")
-        self.token = uuid.uuid4().hex
-        self._owned = False
-
-    def __enter__(self) -> "SetupLock":
-        deadline = time.monotonic() + self.timeout_seconds
-        while True:
-            try:
-                self.path.mkdir(parents=True)
-                try:
-                    _atomic_write_json(
-                        self.path / "owner.json",
-                        {"pid": os.getpid(), "created_at": time.time(), "token": self.token},
-                    )
-                except OSError:
-                    shutil.rmtree(self.path, ignore_errors=True)
-                    raise
-                self._owned = True
-                return self
-            except FileExistsError:
-                self._remove_stale_lock()
-                if time.monotonic() >= deadline:
-                    raise SetupExecutionError("Another runtime setup operation is already running.")
-                time.sleep(0.05)
-            except OSError as exc:
-                raise SetupExecutionError(f"Could not acquire runtime setup lock: {exc}") from exc
-
-    def _remove_stale_lock(self) -> None:
-        try:
-            metadata = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
-            pid = int(metadata["pid"])
-            age = time.time() - float(metadata["created_at"])
-        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
-            try:
-                age = time.time() - self.path.stat().st_mtime
-            except OSError:
-                return
-            pid = -1
-        if age < 0 or (pid > 0 and _pid_is_running(pid)):
-            return
-        # A recorded owner that no longer exists cannot still hold the lock.
-        # Recover it immediately so an interrupted download does not block the
-        # next app launch for the generic ambiguous-lock grace period.
-        if pid <= 0 and age < LOCK_STALE_SECONDS:
-            return
-        stale_path = self.path.with_name(f"{self.path.name}.stale-{uuid.uuid4().hex}")
-        try:
-            os.replace(self.path, stale_path)
-        except OSError:
-            return
-        shutil.rmtree(stale_path, ignore_errors=True)
-
-    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
-        if not self._owned:
-            return
-        try:
-            metadata = json.loads((self.path / "owner.json").read_text(encoding="utf-8"))
-            if metadata.get("token") != self.token:
-                return
-            shutil.rmtree(self.path)
-        except (OSError, json.JSONDecodeError):
-            return
-        finally:
-            self._owned = False
-
-
-def _pid_is_running(pid: int) -> bool:
-    if pid <= 0:
-        return False
-    if os.name == "nt":
-        return _windows_pid_is_running(pid)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _windows_pid_is_running(pid: int) -> bool:
-    # os.kill(pid, 0) is a trap on Windows: signal 0 equals CTRL_C_EVENT, so
-    # instead of probing the pid it broadcasts a console Ctrl+C — and when the
-    # broadcast fails it raises, making a live owner look dead and letting a
-    # concurrent setup steal a held lock. Probe through the process API.
-    import ctypes
-
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    ERROR_ACCESS_DENIED = 5
-    STILL_ACTIVE = 259
-
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not handle:
-        # Denied access still proves the process exists; treat the owner as
-        # alive so the lock is never stolen on an ambiguous answer.
-        return ctypes.get_last_error() == ERROR_ACCESS_DENIED
-    try:
-        exit_code = ctypes.c_ulong()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return True
-        return exit_code.value == STILL_ACTIVE
-    finally:
-        kernel32.CloseHandle(handle)
-
-
-def _normalize_identifier(value: str, *, kind: str) -> str:
-    normalized = str(value or "").strip().lower()
-    if not normalized:
-        raise SetupValidationError(f"{kind} must not be empty.")
-    if any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in normalized):
-        raise SetupValidationError(f"Invalid {kind} identifier: {value!r}.")
-    return normalized
-
-
-def _validated_profile(profile_id: str) -> RuntimeProfile:
-    normalized = _normalize_identifier(profile_id, kind="profile")
-    try:
-        profile = get_runtime_profile(normalized)
-    except ValueError as exc:
-        raise SetupValidationError(str(exc)) from exc
-    if not profile.is_compatible():
-        reason = profile.incompatibility_reason() or "profile is unavailable"
-        raise SetupValidationError(f"Runtime profile {profile.id!r} is unavailable: {reason}")
-    return profile
-
-
-def _validated_model_groups(
-    profile: RuntimeProfile,
-    model_groups: Iterable[str],
-) -> tuple[str, ...]:
-    normalized_groups = tuple(
-        dict.fromkeys(
-            _normalize_identifier(group_id, kind="model group") for group_id in model_groups
-        )
-    )
-    unavailable = [
-        group_id for group_id in normalized_groups if group_id not in profile.model_groups
-    ]
-    if unavailable:
-        available = ", ".join(profile.model_groups) or "none"
-        raise SetupValidationError(
-            f"Model group {unavailable[0]!r} is not available for profile "
-            f"{profile.id!r}. Allowed groups: {available}."
-        )
-    return normalized_groups
 
 
 def _fixed_requirements_path(profile: RuntimeProfile) -> Path:
@@ -331,375 +183,9 @@ def build_install_plan(
     )
 
 
-def default_state_path(*, environ: Mapping[str, str] | None = None) -> Path:
-    """Resolve setup state beside the desktop app's existing data directory."""
-    env = os.environ if environ is None else environ
-    configured_data_dir = str(env.get("AUDIOBOOK_DATA_DIR", "")).strip()
-    if configured_data_dir:
-        return Path(configured_data_dir).expanduser().resolve().parent / STATE_FILENAME
-
-    home = Path.home()
-    if sys.platform == "darwin":
-        root = home / "Library" / "Application Support" / "Orpheus"
-    elif os.name == "nt":
-        root = Path(env.get("LOCALAPPDATA") or home / "AppData" / "Local") / "Orpheus"
-    else:
-        root = Path(env.get("XDG_DATA_HOME") or home / ".local" / "share") / "orpheus"
-    return root / STATE_FILENAME
-
-
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as handle:
-            temporary_path = Path(handle.name)
-            json.dump(payload, handle, sort_keys=True, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, path)
-        try:
-            directory_fd = os.open(path.parent, os.O_RDONLY)
-        except OSError:
-            return
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temporary_path is not None and temporary_path.exists():
-            temporary_path.unlink(missing_ok=True)
-
-
-def require_voice_model(profile_id: str, model_groups: Iterable[str]) -> None:
-    if profile_id != "base" and not any(group.startswith("tts-") for group in model_groups):
-        raise SetupValidationError("Select the Kokoro voice model — it's required to create audio.")
-
-
-def validate_model_selection(model_groups: Iterable[str]) -> None:
-    """Installation may cache many models; an active setup chooses one cleaner."""
-    if sum(group.startswith("cleaner-") for group in model_groups) > 1:
-        raise SetupValidationError("Select one local cleaner. Other models can stay downloaded.")
-
-
-def write_setup_state(
-    state_path: Path,
-    *,
-    profile_id: str,
-    model_groups: Iterable[str],
-    accepted_risks: Iterable[str],
-    installation_id: str | None = None,
-    backend_instance_id: str | None = None,
-    restart_required: bool = True,
-    cleaner_cuda_quantization: str = "4bit",
-) -> dict[str, Any]:
-    """Atomically write the deliberately small, non-secret setup state.
-
-    Installer callers keep ``restart_required=True`` (the backend must reload
-    to pick up freshly installed packages). The adopt flow passes ``False``
-    because the already-running backend has the runtime loaded already.
-    """
-    profile = get_runtime_profile(profile_id)
-    groups = _validated_model_groups(profile, model_groups)
-    validate_model_selection(groups)
-    if cleaner_cuda_quantization not in ("4bit", "8bit", "fp16"):
-        raise SetupValidationError("Unsupported cleaner quantization.")
-    risks = tuple(accepted_risks)
-    if risks:
-        raise SetupValidationError("Setup state contains an unknown risk acknowledgement.")
-    installed_at = datetime.now(timezone.utc)
-    if backend_instance_id is not None and not re.fullmatch(r"[0-9a-f]{32}", backend_instance_id):
-        raise SetupValidationError("Invalid backend instance identity.")
-    payload: dict[str, Any] = {
-        "accepted_risks": list(risks),
-        "installed_at": installed_at.isoformat(),
-        "installation_id": installation_id or uuid.uuid4().hex,
-        "installed_during_backend_instance_id": backend_instance_id,
-        "installed_without_backend_instance": backend_instance_id is None,
-        "model_groups": list(groups),
-        "cleaner_cuda_quantization": cleaner_cuda_quantization,
-        "profile": profile.id,
-        "restart_required": bool(restart_required),
-        "schema_version": STATE_SCHEMA_VERSION,
-    }
-    try:
-        _atomic_write_json(state_path, payload)
-    except OSError as exc:
-        raise SetupExecutionError(f"Could not write runtime setup state: {exc}") from exc
-    return payload
-
-
-def _read_setup_state(state_path: Path) -> tuple[dict[str, Any] | None, str | None]:
-    if not state_path.is_file():
-        return None, None
-    try:
-        raw = json.loads(state_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("schema_version") != STATE_SCHEMA_VERSION:
-            raise ValueError("unsupported setup state schema")
-        profile = get_runtime_profile(str(raw.get("profile", "")))
-        groups = _validated_model_groups(profile, raw.get("model_groups", ()))
-        quantization = raw.get("cleaner_cuda_quantization", "4bit")
-        if quantization not in ("4bit", "8bit", "fp16"):
-            raise ValueError("unsupported cleaner quantization")
-        risks = tuple(str(value) for value in raw.get("accepted_risks", ()))
-        allowed_risks = _LEGACY_PYTORCH_RISK_IDS
-        if any(risk not in allowed_risks for risk in risks):
-            raise ValueError("unknown risk acknowledgement")
-        # Older CUDA state recorded a now-resolved advisory acknowledgement.
-        # Accept it during upgrades but normalize it out of the current state.
-        risks = ()
-        installation_id = str(raw.get("installation_id", ""))
-        if not re.fullmatch(r"[0-9a-f]{32}", installation_id):
-            raise ValueError("invalid installation identity")
-        installed_backend_id = raw.get("installed_during_backend_instance_id")
-        if installed_backend_id is not None and not re.fullmatch(
-            r"[0-9a-f]{32}", str(installed_backend_id)
-        ):
-            raise ValueError("invalid install-time backend identity")
-        installed_without_backend = bool(raw.get("installed_without_backend_instance", False))
-        if installed_without_backend != (installed_backend_id is None):
-            raise ValueError("inconsistent install-time backend identity")
-        return {
-            "accepted_risks": list(risks),
-            "installed_at": str(raw.get("installed_at", "")),
-            "installation_id": installation_id,
-            "installed_during_backend_instance_id": installed_backend_id,
-            "installed_without_backend_instance": installed_without_backend,
-            "model_groups": list(groups),
-            "cleaner_cuda_quantization": quantization,
-            "profile": profile.id,
-            "restart_required": bool(raw.get("restart_required", False)),
-            "schema_version": STATE_SCHEMA_VERSION,
-        }, None
-    except OSError as exc:
-        raise SetupExecutionError(f"Could not read runtime setup state: {exc}") from exc
-    except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        return None, f"Setup state is invalid: {exc}"
-
-
-def read_setup_state(state_path: Path) -> dict[str, Any]:
-    """Return validated state for startup integration and focused diagnostics."""
-    state, error = _read_setup_state(state_path)
-    if state is None:
-        raise SetupExecutionError(error or "Runtime setup state does not exist.")
-    return state
-
-
-def get_setup_state_cache_key(
-    *,
-    state_path: Path | None = None,
-) -> tuple[Any, ...]:
-    """Return a non-secret identity for setup-status cache invalidation."""
-    path = state_path or default_state_path()
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return ("missing",)
-    except OSError:
-        return ("unavailable",)
-    try:
-        state, error = _read_setup_state(path)
-    except SetupExecutionError:
-        return ("unavailable", stat.st_mtime_ns, stat.st_size)
-    if state is None:
-        return ("invalid", stat.st_mtime_ns, stat.st_size, bool(error))
-    return (
-        "configured",
-        stat.st_mtime_ns,
-        stat.st_size,
-        state["installation_id"],
-        state["profile"],
-        tuple(state["model_groups"]),
-    )
-
-
-def _backend_instance_path(state_path: Path) -> Path:
-    return state_path.with_name(BACKEND_INSTANCE_FILENAME)
-
-
-def _read_backend_instance(state_path: Path) -> tuple[str | None, str]:
-    path = _backend_instance_path(state_path)
-    if not path.is_file():
-        return None, "absent"
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        instance_id = str(payload.get("backend_instance_id", ""))
-    except (OSError, AttributeError, json.JSONDecodeError) as exc:
-        raise SetupExecutionError(f"Backend instance state is corrupt: {exc}") from exc
-    if not re.fullmatch(r"[0-9a-f]{32}", instance_id):
-        raise SetupExecutionError("Backend instance state is corrupt: invalid identity.")
-    return instance_id, "valid"
-
-
-def persist_backend_instance(
-    backend_instance_id: str,
-    *,
-    state_path: Path | None = None,
-    lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
-) -> None:
-    """Persist the nonce owned by this desktop backend lifespan."""
-    if not re.fullmatch(r"[0-9a-f]{32}", backend_instance_id):
-        raise SetupValidationError("Invalid backend instance identity.")
-    path = state_path or default_state_path()
-    with SetupLock(path, timeout_seconds=lock_timeout_seconds):
-        try:
-            _atomic_write_json(
-                _backend_instance_path(path),
-                {"backend_instance_id": backend_instance_id},
-            )
-        except OSError as exc:
-            raise SetupExecutionError(f"Could not persist backend instance: {exc}") from exc
-
-
-def acknowledge_backend_startup(
-    backend_instance_id: str,
-    *,
-    state_path: Path | None = None,
-    lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
-) -> bool:
-    """Acknowledge only when this lifespan nonce differs from the install-time nonce."""
-    if not re.fullmatch(r"[0-9a-f]{32}", backend_instance_id):
-        raise SetupValidationError("Invalid backend instance identity.")
-    path = state_path or default_state_path()
-    with SetupLock(path, timeout_seconds=lock_timeout_seconds):
-        persisted_instance_id, status = _read_backend_instance(path)
-        if status != "valid" or persisted_instance_id != backend_instance_id:
-            return False
-        state, error = _read_setup_state(path)
-        if error is not None or state is None:
-            return False
-        if not state["restart_required"]:
-            return True
-        installed_instance_id = state["installed_during_backend_instance_id"]
-        if installed_instance_id == backend_instance_id:
-            return False
-        if installed_instance_id is None and not state["installed_without_backend_instance"]:
-            return False
-        return _compare_and_swap_restart_ack(
-            path,
-            expected_installation_id=state["installation_id"],
-        )
-
-
-def _compare_and_swap_restart_ack(
-    state_path: Path,
-    *,
-    expected_installation_id: str,
-) -> bool:
-    """Update only the installation state that was evaluated by the caller."""
-    current, error = _read_setup_state(state_path)
-    if error is not None or current is None:
-        return False
-    if current["installation_id"] != expected_installation_id:
-        return False
-    if not current["restart_required"]:
-        return True
-    current["restart_required"] = False
-    try:
-        _atomic_write_json(state_path, current)
-    except OSError as exc:
-        raise SetupExecutionError(f"Could not acknowledge backend restart: {exc}") from exc
-    return True
-
-
-def _combine_probe_checks(checks: Sequence[tuple[str, Mapping[str, Any]]]) -> dict[str, Any]:
-    sanitized = [
-        {
-            "id": check_id,
-            **({"device": result["device"]} if result.get("device") in {"cpu", "cuda"} else {}),
-            "available": bool(result.get("available", False)),
-            "error": _sanitize_diagnostic(str(result.get("error")))
-            if result.get("error")
-            else None,
-        }
-        for check_id, result in checks
-    ]
-    return {
-        "available": all(check["available"] for check in sanitized),
-        "checks": sanitized,
-    }
-
-
-def _probe_profile(model_groups: Iterable[str], service: _ProbeService) -> dict[str, Any]:
-    checks: list[tuple[str, Mapping[str, Any]]] = []
-    try:
-        for group_id in model_groups:
-            if group_id == "tts-mlx":
-                checks.append((group_id, service.probe_mlx_tts_runtime()))
-            elif group_id == "tts-cpu-cuda":
-                checks.append((group_id, service.probe_package_tts_runtime()))
-            elif group_id.startswith("cleaner-mlx"):
-                checks.append((group_id, service.probe_cleaner_backend("mlx")))
-            elif group_id.startswith("cleaner-cuda"):
-                checks.append((group_id, service.probe_cleaner_backend("cuda")))
-    except Exception as exc:
-        raise SetupExecutionError(f"Runtime probe failed: {exc}") from exc
-    return _combine_probe_checks(checks)
-
-
-def get_setup_status(
-    *,
-    state_path: Path | None = None,
-    probe_service: _ProbeService | None = None,
-) -> dict[str, Any]:
-    """Read setup state and independently re-probe the selected runtime."""
-    path = state_path or default_state_path()
-    state, state_error = _read_setup_state(path)
-    profiles = [
-        {
-            "id": profile.id,
-            "compatible": profile.is_compatible(),
-            "reason": profile.incompatibility_reason(),
-            "model_groups": list(profile.model_groups),
-            "risk": None,
-        }
-        for profile in runtime_profiles()
-    ]
-    if state is None:
-        return {
-            "configured": False,
-            "profile": None,
-            "model_groups": [],
-            "ready": False,
-            "restart_required": False,
-            "probe": {"available": False, "checks": []},
-            "profiles": profiles,
-            "risk": None,
-            "state_error": state_error,
-        }
-
-    service = probe_service or _SetupRuntimeCapabilityService(
-        cache_ttl_seconds=0.0,
-        timeout_seconds=15.0,
-    )
-    probe = _probe_profile(state["model_groups"], service)
-    selection_error = None
-    try:
-        require_voice_model(state["profile"], state["model_groups"])
-    except SetupValidationError as exc:
-        selection_error = str(exc)
-    risk = None
-    return {
-        "configured": True,
-        "profile": state["profile"],
-        "model_groups": state["model_groups"],
-        "cleaner_cuda_quantization": state["cleaner_cuda_quantization"],
-        "ready": bool(probe["available"]) and selection_error is None,
-        "restart_required": state["restart_required"],
-        "probe": probe,
-        "profiles": profiles,
-        "risk": risk,
-        "state_error": selection_error,
-    }
+def _validate_stage_timeout(stage: str, timeout_seconds: float) -> None:
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+        raise SetupValidationError(f"{stage} timeout must be a finite positive number.")
 
 
 def _run_fixed_command(
@@ -713,6 +199,7 @@ def _run_fixed_command(
     start_percent: int,
     complete_percent: int,
 ) -> None:
+    _validate_stage_timeout(stage, timeout_seconds)
     emit(
         {
             "event": "stage_started",
@@ -721,8 +208,6 @@ def _run_fixed_command(
             "percent": start_percent,
         }
     )
-    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-        raise SetupValidationError(f"{stage} timeout must be a finite positive number.")
     if command_runner is None:
         _supervise_command(command, stage=stage, timeout_seconds=timeout_seconds)
         emit({"event": "stage_complete", "stage": stage, "percent": complete_percent})
@@ -745,26 +230,6 @@ def _run_fixed_command(
         suffix = f" Details: {detail}" if detail else ""
         raise SetupExecutionError(f"{stage} failed with exit code {result.returncode}.{suffix}")
     emit({"event": "stage_complete", "stage": stage, "percent": complete_percent})
-
-
-def _sanitize_diagnostic(value: str, *, max_chars: int = DIAGNOSTIC_MAX_CHARS) -> str:
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", str(value))
-    text = re.sub(r"(?i)\b(sk-[a-z0-9_-]{8,})\b", "[redacted]", text)
-    text = re.sub(
-        r"(?i)\b(api[_-]?key|token|authorization|password)\s*[:=]\s*[^\s,;]+",
-        lambda match: f"{match.group(1)}=[redacted]",
-        text,
-    )
-    text = re.sub(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@", r"\1[redacted]@", text)
-    home = str(Path.home())
-    if home:
-        text = text.replace(home, "<home>")
-    text = re.sub(r"(?<![A-Za-z0-9:])/(?:[^/\s]+/)*[^/\s]*", "<path>", text)
-    text = re.sub(r"(?i)\b[A-Z]:\\(?:[^\\\s]+\\)*[^\\\s]*", "<path>", text)
-    text = text.strip()
-    if len(text) > max_chars:
-        text = "…" + text[-max_chars:]
-    return text
 
 
 def _bounded_file_tail(path: Path, *, max_bytes: int = 8192) -> str:
@@ -893,6 +358,9 @@ def run_setup(
     )
     validate_model_selection(plan.model_groups)
     require_voice_model(plan.profile.id, plan.model_groups)
+    _validate_stage_timeout("Dependency installation", pip_timeout_seconds)
+    if plan.model_command is not None:
+        _validate_stage_timeout("Model download", model_timeout_seconds)
     result: dict[str, Any] = {
         "profile": plan.profile.id,
         "model_groups": list(plan.model_groups),
@@ -913,6 +381,7 @@ def run_setup(
 
     setup_state_path = state_path or default_state_path()
     with SetupLock(setup_state_path, timeout_seconds=lock_timeout_seconds):
+        pending_model_deletions(setup_state_path)
         backend_instance_id, _ = _read_backend_instance(setup_state_path)
         _run_fixed_command(
             plan.pip_command,
@@ -946,6 +415,7 @@ def run_setup(
         probe = _probe_profile(
             plan.model_groups,
             probe_service or _SetupRuntimeCapabilityService(cache_ttl_seconds=0, timeout_seconds=30),
+            cleaner_cuda_quantization=cleaner_cuda_quantization,
         )
         if not probe["available"]:
             details = "; ".join(

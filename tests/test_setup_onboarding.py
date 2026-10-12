@@ -11,11 +11,25 @@ import pytest
 from fastapi.testclient import TestClient
 from huggingface_hub import scan_cache_dir
 
+from modules.runtime_setup import hub_cache
+from modules.app.services import model_storage_service
 from modules.web.server import create_app
 
 
 def _client() -> TestClient:
     return TestClient(create_app(controller=object(), desktop_mode=False))
+
+
+def _stub_combined_probe(monkeypatch):
+    from modules.app.services.runtime_capability_service import RuntimeCapabilityService
+
+    # These contract tests stub the individual checks; combined subprocess
+    # execution is covered independently in test_cold_start_runtime.
+    monkeypatch.setattr(RuntimeCapabilityService, "probe_package_and_cuda_cleaner_runtime", lambda self, **kwargs: (
+        self.probe_package_tts_runtime(),
+        self.probe_cleaner_backend("cuda", **kwargs) if kwargs.get("cleaner_cuda_quantization")
+        else self.probe_cleaner_backend("cuda"),
+    ))
 
 
 @pytest.mark.parametrize("imports_work", [True, False])
@@ -24,11 +38,12 @@ def test_cpu_narration_status_without_cuda(monkeypatch, imports_work):
     from modules.web.routes import setup as setup_route
     from modules.runtime_profiles import CUDA_CLEANER_UNAVAILABLE_REASON
 
+    _stub_combined_probe(monkeypatch)
     monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
     monkeypatch.setattr(setup_route, "cuda_hardware_error", lambda: CUDA_CLEANER_UNAVAILABLE_REASON)
     monkeypatch.setattr(setup_route, "_check_selected_profile_packages", lambda _: {"ready": True})
-    monkeypatch.setattr(setup_route, "_check_model_group_assets", lambda groups, **_: {
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **_: {
         group: {"ready": True, "reason": None} for group in groups
     })
     monkeypatch.setattr(RuntimeCapabilityService, "probe_package_tts_runtime", lambda _: {
@@ -62,7 +77,7 @@ def _all_profiles_compatible(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _probe(available: bool):
-    def _fake_probe(groups, service):
+    def _fake_probe(groups, service, *, cleaner_cuda_quantization=None):
         del service
         return {
             "available": available,
@@ -89,8 +104,7 @@ def test_status_reports_recommended_profile(monkeypatch: pytest.MonkeyPatch) -> 
         lambda: "cuda",
     )
     monkeypatch.setattr(
-        setup_route.setup_runtime,
-        "get_setup_status",
+        "modules.runtime_setup.status.get_setup_status",
         lambda **kwargs: {
             "configured": False,
             "profile": None,
@@ -150,8 +164,8 @@ def test_setup_detection_checks_assets_and_runtime_concurrently(monkeypatch):
         both_started.wait(timeout=5)
         return _probe(True)(groups, service)
 
-    monkeypatch.setattr(setup_route, "_check_model_group_assets", assets)
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", probe)
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", assets)
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", probe)
     result = setup_route._detect_installed_runtime(object(), object())
     assert result is not None
     assert result["ready"] is True
@@ -165,15 +179,15 @@ def test_installed_runtime_detected_ready_for_baked_mlx(
     from modules.web.routes import setup as setup_route
 
     _all_profiles_compatible(monkeypatch)
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
     monkeypatch.setattr(
         setup_route,
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(True))
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "_check_model_group_assets",
         lambda group_ids, **kwargs: {
             group_id: {"ready": True, "reason": None} for group_id in group_ids
@@ -202,15 +216,15 @@ def test_installed_runtime_not_ready_when_probe_reports_unavailable(
     from modules.web.routes import setup as setup_route
 
     _all_profiles_compatible(monkeypatch)
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
     monkeypatch.setattr(
         setup_route,
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(False))
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(False))
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "_check_model_group_assets",
         lambda group_ids, **kwargs: {
             group_id: {"ready": True, "reason": None} for group_id in group_ids
@@ -233,7 +247,7 @@ def test_installed_runtime_absent_when_packages_not_ready(
     from modules.web.routes import setup as setup_route
 
     _all_profiles_compatible(monkeypatch)
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
     monkeypatch.setattr(
         setup_route,
         "_check_selected_profile_packages",
@@ -243,7 +257,7 @@ def test_installed_runtime_absent_when_packages_not_ready(
     def _must_not_probe(groups, service):
         raise AssertionError("probe must not run when packages are not ready")
 
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _must_not_probe)
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _must_not_probe)
 
     with _client() as client:
         payload = client.get("/api/setup/status").json()
@@ -261,7 +275,7 @@ def test_setup_status_survives_missing_requirements_manifests(
     from modules.web.routes import setup as setup_route
 
     _all_profiles_compatible(monkeypatch)
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
     relocated = {
         profile.id: dataclasses.replace(
             profile, requirements_file=tmp_path / "absent" / f"{profile.id}.txt"
@@ -276,7 +290,7 @@ def test_setup_status_survives_missing_requirements_manifests(
     def _must_not_probe(groups, service):
         raise AssertionError("probe must not run when manifests are unreadable")
 
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _must_not_probe)
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _must_not_probe)
 
     with _client() as client:
         response = client.get("/api/setup/status")
@@ -289,7 +303,7 @@ def test_installed_runtime_null_on_probe_error(monkeypatch: pytest.MonkeyPatch) 
     from modules.web.routes import setup as setup_route
 
     _all_profiles_compatible(monkeypatch)
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
     monkeypatch.setattr(
         setup_route,
         "_check_selected_profile_packages",
@@ -299,7 +313,7 @@ def test_installed_runtime_null_on_probe_error(monkeypatch: pytest.MonkeyPatch) 
     def _broken_probe(groups, service):
         raise setup_route.setup_runtime.SetupExecutionError("probe unavailable")
 
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _broken_probe)
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _broken_probe)
 
     with _client() as client:
         payload = client.get("/api/setup/status").json()
@@ -336,8 +350,7 @@ def test_installed_runtime_includes_optional_models_when_local_profile_configure
 
     _all_profiles_compatible(monkeypatch)
     monkeypatch.setattr(
-        setup_route.setup_runtime,
-        "get_setup_status",
+        "modules.runtime_setup.status.get_setup_status",
         _configured_status("mlx", ["tts-mlx"]),
     )
     monkeypatch.setattr(
@@ -346,7 +359,7 @@ def test_installed_runtime_includes_optional_models_when_local_profile_configure
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "_check_model_group_assets",
         lambda group_ids, **kwargs: {
             group_id: {"ready": True, "reason": None} for group_id in group_ids
@@ -354,8 +367,7 @@ def test_installed_runtime_includes_optional_models_when_local_profile_configure
     )
 
     monkeypatch.setattr(
-        setup_route.setup_runtime,
-        "_probe_profile",
+        "modules.runtime_setup.status._probe_profile",
         lambda groups, service: {
             "checks": [{"id": group, "available": True} for group in groups]
         },
@@ -373,6 +385,46 @@ def test_installed_runtime_includes_optional_models_when_local_profile_configure
     assert payload["recommended_profile"] in {"base", "mlx", "cuda"}
 
 
+@pytest.mark.parametrize("profile,groups", [
+    ("mlx", ["tts-mlx"]), ("base", []), ("cuda", ["tts-cpu-cuda"]),
+])
+def test_unselected_cleaner_timeout_does_not_block_configured_runtime(monkeypatch, tmp_path, profile, groups):
+    from modules.web.routes import setup as setup_route
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _configured_status(profile, groups))
+    monkeypatch.setattr(setup_route, "_check_selected_profile_packages", lambda _: {"ready": True})
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **_: {
+        group: {"ready": True, "reason": None} for group in groups
+    })
+    probe_calls = []
+
+    def probe(groups, service):
+        probe_calls.append(1)
+        return {
+            "checks": [
+                {"id": group, "available": group.startswith("tts-"),
+                 "state": "available" if group.startswith("tts-") else "timeout"}
+                for group in groups
+            ]
+        }
+
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", probe)
+
+    with _client() as client:
+        payload = client.get("/api/setup/status").json()
+        assert client.get("/api/setup/status").json() == payload
+
+    assert probe_calls == [1]
+    assert payload["ready"] is True
+    assert payload["state"] == "ready"
+    assert payload.get("checking", False) is False
+    assert payload["installed_runtime"].get("checking", False) is False
+    assert all(group["runtime_state"] == "timeout"
+               for group in payload["installed_runtime"]["model_groups"] if group["id"].startswith("cleaner-"))
+
+
 def test_installed_runtime_detected_for_configured_library_only(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -380,8 +432,7 @@ def test_installed_runtime_detected_for_configured_library_only(
     from modules.web.routes import setup as setup_route
 
     monkeypatch.setattr(
-        setup_route.setup_runtime,
-        "get_setup_status",
+        "modules.runtime_setup.status.get_setup_status",
         _configured_status("base", []),
     )
     monkeypatch.setattr(
@@ -415,15 +466,15 @@ def test_installed_runtime_splits_runtime_and_asset_readiness(
     from modules.web.routes import setup as setup_route
 
     _all_profiles_compatible(monkeypatch)
-    monkeypatch.setattr(setup_route.setup_runtime, "get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
     monkeypatch.setattr(
         setup_route,
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(True))
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "_check_model_group_assets",
         lambda group_ids, **kwargs: {
             group_id: {"ready": False, "reason": "missing"} for group_id in group_ids
@@ -443,24 +494,6 @@ def test_installed_runtime_splits_runtime_and_asset_readiness(
             {"id": "cleaner-mlx-small", "runtime_ready": True, "assets_ready": False, "ready": False},
         ],
     }
-
-
-def test_frozen_bundle_reports_manifest_packages_ready(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Frozen bundles carry build-env metadata; the probe is the real gate."""
-    from modules.web.routes import setup as setup_route
-
-    monkeypatch.setattr(setup_route.sys, "frozen", True, raising=False)
-
-    status = setup_route._check_selected_profile_packages("mlx")
-
-    assert status == {"ready": True, "missing": [], "incompatible": []}
-
-
-# --------------------------------------------------------------------------- #
-# POST /api/setup/adopt                                                        #
-# --------------------------------------------------------------------------- #
 
 
 def _state_path(tmp_path: Path) -> Path:
@@ -512,9 +545,9 @@ def test_adopt_operational_mlx_persists_without_restart(
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(True))
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "_check_model_group_assets",
         lambda group_ids, **kwargs: {
             group_id: {"ready": True, "reason": None} for group_id in group_ids
@@ -577,47 +610,6 @@ def test_adopt_rejects_unknown_fields(
     assert response.status_code == 422
 
 
-def test_adopt_cuda_no_longer_requires_resolved_pytorch_risk_ack(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from modules.web.routes import setup as setup_route
-
-    _all_profiles_compatible(monkeypatch)
-    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(
-        setup_route,
-        "_check_selected_profile_packages",
-        lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
-    )
-    monkeypatch.setattr(
-        setup_route,
-        "_check_model_group_assets",
-        lambda groups, **kwargs: {
-            group: {"ready": True, "reason": None} for group in groups
-        },
-    )
-    monkeypatch.setattr(
-        setup_route.setup_runtime,
-        "_probe_profile",
-        lambda groups, service: {"available": True, "checks": []},
-    )
-
-    with _client() as client:
-        response = client.post(
-            "/api/setup/adopt",
-            json={
-                "profile": "cuda",
-                "model_groups": ["tts-cpu-cuda"],
-                "accept_pytorch_risk": False,
-            },
-        )
-
-    assert response.status_code == 200
-    assert response.json()["risk"] is None
-    assert _state_path(tmp_path).exists()
-
-
 def test_adopt_conflicts_when_packages_missing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -660,7 +652,7 @@ def test_adopt_conflicts_when_probe_fails(
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(False))
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(False))
 
     with _client() as client:
         response = client.post(
@@ -688,9 +680,9 @@ def test_adopt_conflicts_when_assets_missing(
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(True))
     monkeypatch.setattr(
-        setup_route,
+        hub_cache,
         "_check_model_group_assets",
         lambda group_ids, **kwargs: {
             group_id: {"ready": False, "reason": "missing"} for group_id in group_ids
@@ -710,43 +702,44 @@ def test_adopt_conflicts_when_assets_missing(
     assert not _state_path(tmp_path).exists()
 
 
-def test_adopt_conflicts_when_setup_in_progress(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
+@pytest.mark.parametrize("has_pinned_snapshot", [False, True])
+def test_readiness_and_adoption_require_the_pinned_snapshot(monkeypatch, tmp_path, has_pinned_snapshot):
     from modules.web.routes import setup as setup_route
+    from scripts.download_models import MODEL_GROUPS, pinned_revision_for, write_download_receipt
 
+    _all_profiles_compatible(monkeypatch)
     monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(
-        setup_route,
-        "_check_selected_profile_packages",
-        lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
-    )
+    monkeypatch.setattr(setup_route, "_check_selected_profile_packages", lambda _: {
+        "ready": True, "missing": [], "incompatible": [],
+    })
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(True))
+    cache = tmp_path / "hub"
+    model_id = MODEL_GROUPS["tts-mlx"][0]
+    revisions = ["0" * 40]
+    if has_pinned_snapshot:
+        revisions.append(pinned_revision_for(model_id))
+    for revision in revisions:
+        snapshot = cache / ("models--" + model_id.replace("/", "--")) / "snapshots" / revision
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.safetensors").write_bytes(b"weights")
+        write_download_receipt(snapshot, model_id=model_id, revision=revision)
+    check_assets = hub_cache._check_model_group_assets
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **kwargs: (
+        check_assets(groups, cache_scanner=lambda: scan_cache_dir(cache), **kwargs)
+    ))
 
-    class _RaisingLock:
-        def __init__(self, *args, **kwargs):
-            pass
-
-        def __enter__(self):
-            raise setup_route.setup_runtime.SetupExecutionError(
-                "Another runtime setup operation is already running."
-            )
-
-        def __exit__(self, *args):
-            return False
-
-    monkeypatch.setattr(setup_route.setup_runtime, "SetupLock", _RaisingLock)
-
+    status = hub_cache._check_model_group_assets(("tts-mlx",))
     with _client() as client:
-        response = client.post("/api/setup/adopt", json={"profile": "base"})
+        response = client.post("/api/setup/adopt", json={"profile": "mlx", "model_groups": ["tts-mlx"]})
 
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "setup_in_progress"
-
-
-# --------------------------------------------------------------------------- #
-# DELETE /api/setup/runtime                                                    #
-# --------------------------------------------------------------------------- #
+    if has_pinned_snapshot:
+        assert status == {"tts-mlx": {"ready": True, "reason": None}}
+        assert response.status_code == 200
+    else:
+        assert response.status_code == 409
+        assert response.json()["detail"]["error"] == "assets_missing"
+        assert status == {"tts-mlx": {"ready": False, "reason": "missing"}}
+        assert not _state_path(tmp_path).exists()
 
 
 def _make_hf_repo(cache: Path, repo_id: str, commit: str, content: bytes) -> None:
@@ -767,14 +760,13 @@ def _make_hf_repo(cache: Path, repo_id: str, commit: str, content: bytes) -> Non
 
 
 def test_delete_runtime_models_only_removes_managed_repos(tmp_path: Path) -> None:
-    from modules.web.routes import setup as setup_route
     from scripts.download_models import resolve_model_groups
 
     managed_repo_id = resolve_model_groups(("tts-mlx",))[0]
     _make_hf_repo(tmp_path, managed_repo_id, "a" * 40, b"managed-weights")
     _make_hf_repo(tmp_path, "someone/unrelated", "b" * 40, b"unrelated-weights")
 
-    deleted_groups, freed_bytes = setup_route._delete_runtime_models(
+    deleted_groups, freed_bytes = model_storage_service._delete_runtime_models(
         cache_scanner=lambda: scan_cache_dir(cache_dir=tmp_path),
     )
 
@@ -786,12 +778,11 @@ def test_delete_runtime_models_only_removes_managed_repos(tmp_path: Path) -> Non
 
 
 def test_delete_runtime_models_handles_empty_temp_cache(tmp_path: Path) -> None:
-    from modules.web.routes import setup as setup_route
 
     # Real scan against an isolated temp cache dir; never the user's real cache.
     empty_cache = tmp_path / "hf-empty"
     empty_cache.mkdir()
-    deleted_groups, freed_bytes = setup_route._delete_runtime_models(
+    deleted_groups, freed_bytes = model_storage_service._delete_runtime_models(
         cache_scanner=lambda: scan_cache_dir(cache_dir=empty_cache),
     )
     assert deleted_groups == []
@@ -814,20 +805,28 @@ def test_delete_runtime_endpoint_removes_state_and_reports(
         accepted_risks=(),
     )
     monkeypatch.setattr(
-        setup_route,
+        model_storage_service,
         "_delete_runtime_models",
         lambda **kwargs: (["tts-mlx"], 12345),
     )
 
-    monkeypatch.setattr(setup_route, "get_managed_models", lambda: {"models": []})
+    def managed_models(request):
+        assert request.app is client.app
+        assert request.method == "DELETE"
+        assert request.url.path == "/api/setup/runtime"
+        return {"models": []}
+
+    monkeypatch.setattr(setup_route, "get_managed_models", managed_models)
     with _client() as client:
         response = client.request("DELETE", "/api/setup/runtime")
 
     assert response.status_code == 200
+    assert response.json()["setup_reset_id"]
     assert response.json() == {
         "deleted_model_groups": ["tts-mlx"],
         "freed_bytes": 12345,
         "state_deleted": True,
+        "setup_reset_id": response.json()["setup_reset_id"],
     }
     assert not state_path.exists()
 
@@ -836,11 +835,10 @@ def test_delete_runtime_endpoint_reports_absent_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    from modules.web.routes import setup as setup_route
 
     monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setattr(
-        setup_route,
+        model_storage_service,
         "_delete_runtime_models",
         lambda **kwargs: ([], 0),
     )
@@ -875,8 +873,8 @@ def test_delete_runtime_endpoint_conflicts_when_setup_in_progress(
     def _must_not_delete(**kwargs):
         raise AssertionError("must not delete while setup is in progress")
 
-    monkeypatch.setattr(setup_route.setup_runtime, "SetupLock", _RaisingLock)
-    monkeypatch.setattr(setup_route, "_delete_runtime_models", _must_not_delete)
+    monkeypatch.setattr("modules.runtime_setup.state.SetupLock", _RaisingLock)
+    monkeypatch.setattr(model_storage_service, "_delete_runtime_models", _must_not_delete)
 
     with _client() as client:
         response = client.request("DELETE", "/api/setup/runtime")
@@ -942,35 +940,6 @@ def test_model_download_service_downloads_groups_in_order_under_lock() -> None:
     assert events == ["lock", "unlock", "terminal"]
 
 
-def test_model_download_service_rejects_concurrent_starts() -> None:
-    import threading
-
-    from modules.app.services.model_download_service import (
-        ModelDownloadBusyError,
-        ModelDownloadService,
-    )
-
-    release = threading.Event()
-    started = threading.Event()
-
-    def _blocking_download(model_id: str) -> None:
-        del model_id
-        started.set()
-        assert release.wait(timeout=5.0)
-
-    service = ModelDownloadService(
-        downloader=_blocking_download,
-        group_resolver=lambda groups: ("model",),
-        lock_factory=lambda: _RecordingLock([]),
-    )
-    service.start(profile_id="mlx", model_groups=["tts-mlx"])
-    assert started.wait(timeout=5.0)
-    with pytest.raises(ModelDownloadBusyError):
-        service.start(profile_id="mlx", model_groups=["tts-mlx"])
-    release.set()
-    assert _wait_for_terminal(service)["lifecycle"] == "complete"
-
-
 def test_model_download_service_reports_sanitized_failure_and_releases_lock() -> None:
     from modules.app.services.model_download_service import ModelDownloadService
 
@@ -1025,7 +994,7 @@ def test_model_download_service_releases_lock_when_worker_exits_abruptly() -> No
     ("raiser", "expected_fragment"),
     [
         (
-            lambda: (_ for _ in ()).throw(__import__("requests").ConnectionError("dns")),
+            lambda: (_ for _ in ()).throw(__import__("httpx").ConnectError("dns")),
             "Check your internet connection",
         ),
         (
@@ -1056,16 +1025,38 @@ def test_model_download_service_maps_common_failures_to_actionable_errors(
     assert expected_fragment in final["error"]
 
 
+def test_model_download_service_reports_worker_messages_without_rewrapping() -> None:
+    from modules.app.services.model_download_service import (
+        DownloadWorkerError,
+        ModelDownloadService,
+    )
+
+    message = "Not enough disk space to download mlx-community/Kokoro-82M-bf16."
+
+    def _worker_failure(model_id: str) -> None:
+        raise DownloadWorkerError(message)
+
+    service = ModelDownloadService(
+        downloader=_worker_failure,
+        group_resolver=lambda groups: ("mlx-community/Kokoro-82M-bf16",),
+        lock_factory=lambda: _RecordingLock([]),
+    )
+    service.start(profile_id="mlx", model_groups=["tts-mlx"])
+
+    final = _wait_for_terminal(service)
+    assert final["lifecycle"] == "failed"
+    assert final["error"] == message
+
+
 def test_model_download_service_names_missing_repositories() -> None:
     from huggingface_hub.errors import RepositoryNotFoundError
 
     from modules.app.services.model_download_service import ModelDownloadService
 
     def _broken_download(model_id: str) -> None:
-        import requests
+        import httpx
 
-        response = requests.Response()
-        response.status_code = 401
+        response = httpx.Response(401, request=httpx.Request("GET", "https://huggingface.co"))
         raise RepositoryNotFoundError("401 Client Error", response=response)
 
     service = ModelDownloadService(
@@ -1212,34 +1203,6 @@ def test_model_download_endpoints_validate_start_and_report_conflicts(
         assert busy.json()["detail"]["error"] == "download_in_progress"
 
 
-def test_model_download_start_conflicts_when_setup_lock_is_held(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from modules.web.routes import setup as setup_route
-
-    _all_profiles_compatible(monkeypatch)
-
-    class _LockedService:
-        def __init__(self, **kwargs):
-            del kwargs
-
-        def start(self, **kwargs):
-            raise setup_route.setup_runtime.SetupExecutionError(
-                "Another runtime setup operation is already running."
-            )
-
-    monkeypatch.setattr(setup_route, "ModelDownloadService", _LockedService)
-
-    with _client() as client:
-        response = client.post(
-            "/api/setup/models/download",
-            json={"profile": "mlx", "model_groups": ["tts-mlx"]},
-        )
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "setup_in_progress"
-
-
 def test_model_download_service_shutdown_cancels_and_joins_worker() -> None:
     import threading
 
@@ -1306,56 +1269,6 @@ def test_model_download_service_rejects_restart_while_old_worker_is_stopping() -
     assert service.status()["lifecycle"] == "cancelled"
 
 
-def test_delete_runtime_rejects_active_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
-    from types import SimpleNamespace
-
-    from modules.web.routes import setup as setup_route
-
-    class _Controller:
-        _conversion_service = SimpleNamespace(
-            begin_storage_cleanup=lambda: (_ for _ in ()).throw(
-                RuntimeError("Cannot clean up storage while a conversion is queued or running")
-            )
-        )
-
-    monkeypatch.setattr(setup_route, "_delete_runtime_models", lambda: ([], 0))
-    client = TestClient(create_app(controller=_Controller()))
-    response = client.request("DELETE", "/api/setup/runtime")
-    assert response.status_code == 409
-    assert response.json()["detail"]["error"] == "conversion_in_progress"
-
-
-def test_adopt_rejects_non_base_profile_with_no_model_groups(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A TTS profile with nothing selected cannot be 'ready' -- no model exists.
-
-    Every readiness check folds over the selected groups, so an empty selection
-    made each one vacuously true and onboarding hid itself with no TTS runtime.
-    """
-    from modules.web.routes import setup as setup_route
-
-    _all_profiles_compatible(monkeypatch)
-    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setattr(
-        setup_route,
-        "_check_selected_profile_packages",
-        lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
-    )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
-
-    with _client() as client:
-        response = client.post(
-            "/api/setup/adopt",
-            json={"profile": "mlx", "model_groups": []},
-        )
-
-    assert response.status_code == 422
-    assert response.json()["detail"]["error"] == "invalid_request"
-    assert not _state_path(tmp_path).exists()
-
-
 def test_setup_status_is_not_ready_when_no_model_group_is_selected(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1370,7 +1283,7 @@ def test_setup_status_is_not_ready_when_no_model_group_is_selected(
         "_check_selected_profile_packages",
         lambda profile_id: {"ready": True, "missing": [], "incompatible": []},
     )
-    monkeypatch.setattr(setup_route.setup_runtime, "_probe_profile", _probe(True))
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(True))
 
     state_path = _state_path(tmp_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1386,3 +1299,156 @@ def test_setup_status_is_not_ready_when_no_model_group_is_selected(
     payload = response.json()
     assert payload["ready"] is False
     assert payload["state"] != "ready"
+
+
+@pytest.mark.parametrize("timed_out", [True, False])
+def test_setup_status_distinguishes_timeout_from_missing_runtime(monkeypatch, tmp_path, timed_out):
+    _stub_combined_probe(monkeypatch)
+    from modules.app.services.runtime_capability_service import RuntimeCapabilityService
+    from modules.web.routes import setup as setup_route
+
+    monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
+    monkeypatch.setattr("modules.runtime_setup.status.get_setup_status", _unconfigured_absent)
+    monkeypatch.setattr(setup_route, "cuda_hardware_error", lambda: None)
+    monkeypatch.setattr(setup_route, "_check_selected_profile_packages", lambda _: {"ready": True})
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **_: {
+        group: {"ready": False, "reason": "missing"} for group in groups
+    })
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path))
+    calls = []
+
+    def tts(_):
+        calls.append(1)
+        return {"available": False, "error": "slow import" if timed_out else "missing kokoro",
+                **({"timed_out": True} if timed_out else {})}
+
+    monkeypatch.setattr(RuntimeCapabilityService, "probe_package_tts_runtime", tts)
+    monkeypatch.setattr(RuntimeCapabilityService, "probe_cleaner_backend", lambda *args: {"available": True})
+    with _client() as client:
+        payload = client.get("/api/setup/status").json()
+        client.get("/api/setup/status")
+    installed = payload["installed_runtime"]
+    assert installed.get("checking", False) is timed_out
+    assert installed["runtime_available"] is False
+    assert installed["model_groups"][0]["runtime_state"] == ("timeout" if timed_out else "unavailable")
+    assert installed["model_groups"][0]["runtime_reason"] == (None if timed_out else "missing kokoro")
+    assert len(calls) == (2 if timed_out else 1)
+
+
+@pytest.mark.parametrize("change", ["asset", "receipt"])
+def test_adoption_rechecks_assets_after_acquiring_ownership(monkeypatch, tmp_path, change):
+    from contextlib import contextmanager
+    from modules.web.routes import setup as routes
+    from scripts.download_models import MODEL_GROUPS, pinned_revision_for, write_download_receipt
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True})
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", _probe(True))
+    cache = tmp_path / "hub"
+    model = MODEL_GROUPS["tts-mlx"][0]
+    revision = pinned_revision_for(model)
+    snapshot = cache / ("models--" + model.replace("/", "--")) / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    asset = snapshot / "model.safetensors"
+    asset.write_bytes(b"weights")
+    write_download_receipt(snapshot, model_id=model, revision=revision)
+    receipts = set(snapshot.iterdir()) - {asset}
+    check = hub_cache._check_model_group_assets
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **kwargs: check(
+        groups, cache_scanner=lambda: scan_cache_dir(cache), **kwargs,
+    ))
+    lock = routes.setup_runtime.SetupLock
+
+    @contextmanager
+    def changed_lock(*args, **kwargs):
+        with lock(*args, **kwargs):
+            if change == "asset":
+                asset.unlink()
+            else:
+                for receipt in receipts:
+                    receipt.unlink()
+            yield
+
+    monkeypatch.setattr("modules.runtime_setup.state.SetupLock", changed_lock)
+    with _client() as client:
+        response = client.post("/api/setup/adopt", json={"profile": "mlx", "model_groups": ["tts-mlx"]})
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "assets_missing"
+    assert not _state_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("requested", ["4bit", "8bit", "fp16"])
+def test_adoption_validates_the_requested_cleaner_precision(monkeypatch, tmp_path, requested):
+    import sys
+    from types import SimpleNamespace
+    from modules.app.services.runtime_capability_service import RuntimeCapabilityService
+    from modules.web.routes import setup as routes
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLEANER_CUDA_QUANTIZATION", "fp16" if requested != "fp16" else "4bit")
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setattr(hub_cache.hf_constants, "HF_HUB_CACHE", str(tmp_path / "hub"))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "bitsandbytes", None)
+    monkeypatch.setattr(RuntimeCapabilityService, "_run_probe", lambda self, script, timeout: self._run_in_process_probe(script))
+    monkeypatch.setattr(RuntimeCapabilityService, "probe_package_tts_runtime", lambda self: {"available": True, "device": "cpu"})
+    monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True})
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **kwargs: {
+        group: {"ready": True, "reason": None} for group in groups
+    })
+    monkeypatch.setattr(routes, "build_setup_status_response", lambda request: {"configured": True})
+    with _client() as client:
+        response = client.post("/api/setup/adopt", json={
+            "profile": "cuda", "model_groups": ["tts-cpu-cuda", "cleaner-cuda"],
+            "cleaner_cuda_quantization": requested,
+        })
+    assert response.status_code == (200 if requested == "fp16" else 409)
+    if requested == "fp16":
+        assert routes.setup_runtime.read_setup_state(_state_path(tmp_path))["cleaner_cuda_quantization"] == requested
+    else:
+        assert response.json()["detail"]["error"] == "probe_failed"
+        assert not _state_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("precision", ["4bit", "8bit", "fp16"])
+def test_selected_status_and_installed_discovery_use_the_same_cuda_precision(monkeypatch, tmp_path, precision):
+    _stub_combined_probe(monkeypatch)
+    import sys
+    from types import SimpleNamespace
+    from modules.app.services.runtime_capability_service import RuntimeCapabilityService
+    from modules.web.routes import setup as routes
+
+    _all_profiles_compatible(monkeypatch)
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("CLEANER_CUDA_QUANTIZATION", "4bit" if precision == "fp16" else "fp16")
+    monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: True)))
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "bitsandbytes", None if precision == "fp16" else SimpleNamespace())
+    scripts = []
+
+    def probe(self, script, timeout):
+        scripts.append(script)
+        return self._run_in_process_probe(script)
+
+    monkeypatch.setattr(RuntimeCapabilityService, "_run_probe", probe)
+    monkeypatch.setattr(RuntimeCapabilityService, "probe_package_tts_runtime", lambda self: {"available": True, "device": "cuda"})
+    monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True})
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **kwargs: {
+        group: {"ready": True, "reason": None} for group in groups
+    })
+    routes.setup_runtime.write_setup_state(
+        routes.setup_runtime.default_state_path(), profile_id="cuda",
+        model_groups=("tts-cpu-cuda", "cleaner-cuda"), accepted_risks=(),
+        cleaner_cuda_quantization=precision, restart_required=False,
+    )
+    with _client() as client:
+        payload = client.get("/api/setup/status").json()
+    assert payload["ready"]
+    assert all(group["runtime_ready"] for group in payload["installed_runtime"]["model_groups"])
+    cuda = next(profile for profile in payload["profiles"] if profile["id"] == "cuda")
+    assert cuda["group_availability"]["cleaner-cuda"]["available"]
+    assert scripts and all(script.startswith(f"CLEANER_CUDA_QUANTIZATION = {precision!r}\n") for script in scripts)

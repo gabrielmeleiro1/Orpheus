@@ -144,11 +144,6 @@ def runtime_profiles() -> tuple[RuntimeProfile, ...]:
     return _RUNTIME_PROFILES
 
 
-def compatible_runtime_profiles() -> tuple[RuntimeProfile, ...]:
-    """Return profiles supported by the current operating system and CPU."""
-    return tuple(profile for profile in _RUNTIME_PROFILES if profile.is_compatible())
-
-
 def get_runtime_profile(profile_id: str) -> RuntimeProfile:
     """Get a profile by its stable identifier."""
     normalized_id = str(profile_id or "").strip().lower()

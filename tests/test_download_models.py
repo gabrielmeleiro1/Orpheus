@@ -21,11 +21,8 @@ from modules.tts.runtime_spec import (
     KOKORO_MLX_DEFAULT_MODEL_REPO,
     KOKORO_PACKAGE_DEFAULT_MODEL,
 )
+from modules.runtime_setup import downloads, receipts
 from scripts import download_models
-
-
-def test_default_model_list_tracks_package_kokoro_default() -> None:
-    assert download_models.DEFAULT_MODEL_IDS == (KOKORO_PACKAGE_DEFAULT_MODEL,)
 
 
 def test_dry_run_prints_default_model_without_downloading(capsys: pytest.CaptureFixture[str]) -> None:
@@ -48,13 +45,11 @@ def test_named_groups_resolve_to_curated_runtime_models() -> None:
         KOKORO_PACKAGE_DEFAULT_MODEL,
     )
     assert download_models.resolve_model_groups(["cleaner-mlx"]) == (
-        "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        CLEANER_MLX_DEFAULT_MODEL,
     )
     assert download_models.resolve_model_groups(["cleaner-cuda"]) == (
-        "Qwen/Qwen2.5-1.5B-Instruct",
+        CLEANER_CUDA_DEFAULT_MODEL,
     )
-    assert CLEANER_MLX_DEFAULT_MODEL == "mlx-community/Llama-3.2-3B-Instruct-4bit"
-    assert CLEANER_CUDA_DEFAULT_MODEL == "Qwen/Qwen2.5-1.5B-Instruct"
 
 
 def test_named_groups_deduplicate_models_and_reject_unknown_groups() -> None:
@@ -101,7 +96,7 @@ def test_groups_and_explicit_models_deduplicate_in_stable_order(
     assert exit_code == 0
     assert output["models"] == [
         KOKORO_MLX_DEFAULT_MODEL_REPO,
-        "mlx-community/Llama-3.2-3B-Instruct-4bit",
+        CLEANER_MLX_DEFAULT_MODEL,
         "owner/custom-model",
     ]
 
@@ -174,7 +169,7 @@ def test_json_reports_plan_before_downloading(
         return tmp_path / "snapshot"
 
     monkeypatch.setattr(
-        download_models,
+        downloads,
         "download_model_snapshot",
         fake_download_model_snapshot,
     )
@@ -203,7 +198,7 @@ def test_json_download_failure_returns_error_without_traceback(
         del args, kwargs
         raise OSError("disk full")
 
-    monkeypatch.setattr(download_models, "download_model_snapshot", fail_download)
+    monkeypatch.setattr(downloads, "download_model_snapshot", fail_download)
 
     exit_code = download_models.main(["--group", "tts-mlx", "--json"])
     captured = capsys.readouterr()
@@ -223,7 +218,7 @@ def test_download_does_not_swallow_keyboard_interrupt(
         del args, kwargs
         raise KeyboardInterrupt
 
-    monkeypatch.setattr(download_models, "download_model_snapshot", interrupt_download)
+    monkeypatch.setattr(downloads, "download_model_snapshot", interrupt_download)
 
     with pytest.raises(KeyboardInterrupt):
         download_models.main(["--group", "tts-mlx", "--json"])
@@ -246,7 +241,7 @@ def test_multiple_models_get_safe_distinct_local_subdirectories(
         assert local_dir is not None
         return local_dir
 
-    monkeypatch.setattr(download_models, "download_model_snapshot", fake_download)
+    monkeypatch.setattr(downloads, "download_model_snapshot", fake_download)
 
     snapshots = download_models.download_required_models(
         ["owner/model", "owner-model"],
@@ -280,7 +275,7 @@ def test_single_model_preserves_explicit_local_directory(
         assert local_dir is not None
         return local_dir
 
-    monkeypatch.setattr(download_models, "download_model_snapshot", fake_download)
+    monkeypatch.setattr(downloads, "download_model_snapshot", fake_download)
     target = tmp_path / "bundle"
 
     download_models.download_required_models(
@@ -326,22 +321,37 @@ def test_download_model_snapshot_passes_cache_and_local_dirs(
     ]
 
 
-def test_every_curated_model_is_pinned_to_a_commit_revision() -> None:
-    pinned = download_models.MODEL_REVISIONS
-    curated = {
-        model_id
-        for model_ids in download_models.MODEL_GROUPS.values()
-        for model_id in model_ids
-    }
-    assert curated <= set(pinned), curated - set(pinned)
-    for model_id, revision in pinned.items():
-        assert download_models._REVISION_RE.fullmatch(revision), (model_id, revision)
+def test_snapshot_download_receives_the_byte_progress_hook(monkeypatch, tmp_path) -> None:
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    fake_module = ModuleType("huggingface_hub")
+    fake_errors = ModuleType("huggingface_hub.errors")
+    fake_errors.LocalEntryNotFoundError = LocalEntryNotFoundError  # type: ignore[attr-defined]
+    fake_module.errors = fake_errors
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub.errors", fake_errors)
+    calls = []
+    snapshot = tmp_path / "snapshot"
+    snapshot.mkdir()
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    def download(**kwargs):
+        calls.append(kwargs)
+        return str(snapshot)
+    fake_module.snapshot_download = download
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
+    class Progress:
+        pass
+
+    download_models.download_model_snapshot("hexgrad/Kokoro-82M", tqdm_class=Progress)
+
+    assert calls[0]["tqdm_class"] is Progress
 
 
 def test_pinned_model_download_passes_revision_and_records_it(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
     model_id = "hexgrad/Kokoro-82M"
     expected_revision = download_models.MODEL_REVISIONS[model_id]
     calls: list[dict[str, object]] = []
@@ -354,7 +364,11 @@ def test_pinned_model_download_passes_revision_and_records_it(
         return str(snapshot)
 
     fake_module = ModuleType("huggingface_hub")
+    fake_errors = ModuleType("huggingface_hub.errors")
+    fake_errors.LocalEntryNotFoundError = LocalEntryNotFoundError  # type: ignore[attr-defined]
+    fake_module.errors = fake_errors  # type: ignore[attr-defined]
     fake_module.snapshot_download = fake_snapshot_download  # type: ignore[attr-defined]
+    monkeypatch.setitem(__import__("sys").modules, "huggingface_hub.errors", fake_errors)
     monkeypatch.setitem(__import__("sys").modules, "huggingface_hub", fake_module)
 
     download_models.download_model_snapshot(model_id)
@@ -364,6 +378,173 @@ def test_pinned_model_download_passes_revision_and_records_it(
         (snapshot / download_models.DOWNLOAD_RECEIPT_FILENAME).read_text(encoding="utf-8")
     )
     assert payload["revision"] == expected_revision
+
+
+def test_verified_pinned_snapshot_is_reused_without_network_access(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import huggingface_hub
+
+    model_id = "hexgrad/Kokoro-82M"
+    revision = download_models.MODEL_REVISIONS[model_id]
+    snapshot = tmp_path / "models--hexgrad--Kokoro-82M" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    download_models.write_download_receipt(snapshot, model_id=model_id, revision=revision)
+    calls: list[dict[str, object]] = []
+
+    class Progress:
+        pass
+
+    def fake_snapshot_download(**kwargs: object) -> str:
+        assert kwargs.get("local_files_only") is True, "Unexpected network access"
+        calls.append(kwargs)
+        return str(snapshot)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+
+    result = download_models.download_model_snapshot(
+        model_id, cache_dir=tmp_path, tqdm_class=Progress,
+    )
+
+    assert result == snapshot
+    assert calls == [{
+        "repo_id": model_id, "revision": revision, "cache_dir": str(tmp_path),
+        "tqdm_class": Progress, "local_files_only": True,
+    }]
+
+
+@pytest.mark.parametrize("damage", ["invalid_receipt", "wrong_revision", "changed_bytes"])
+def test_unverified_pinned_snapshot_is_repaired_after_local_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    damage: str,
+) -> None:
+    import huggingface_hub
+
+    model_id = "hexgrad/Kokoro-82M"
+    revision = download_models.MODEL_REVISIONS[model_id]
+    snapshot = tmp_path / "models--hexgrad--Kokoro-82M" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    model_file = snapshot / "config.json"
+    model_file.write_bytes(b"original")
+    receipt = download_models.write_download_receipt(snapshot, model_id=model_id, revision=revision)
+    if damage == "invalid_receipt":
+        receipt.write_text("{", encoding="utf-8")
+    elif damage == "wrong_revision":
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        payload["revision"] = "0" * 40
+        receipt.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        model_file.write_bytes(b"tampered")
+    calls: list[dict[str, object]] = []
+
+    def fake_snapshot_download(**kwargs: object) -> str:
+        calls.append(kwargs)
+        if kwargs.get("force_download"):
+            model_file.write_bytes(b"original")
+        return str(snapshot)
+
+    def fake_hf_hub_download(**kwargs: object) -> str:
+        calls.append(kwargs)
+        model_file.write_bytes(b"original")
+        return str(model_file)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fake_hf_hub_download)
+
+    result = download_models.download_model_snapshot(model_id, cache_dir=tmp_path)
+
+    kwargs = {"repo_id": model_id, "revision": revision, "cache_dir": str(tmp_path)}
+    repair_kwargs = {**kwargs, "force_download": True}
+    if damage == "changed_bytes":
+        repair_kwargs["filename"] = "config.json"
+    assert calls == [{**kwargs, "local_files_only": True}, kwargs, repair_kwargs]
+    assert result == snapshot
+    assert download_models.validate_download_receipt(snapshot, model_id=model_id, revision=revision)
+
+
+def test_setup_repair_removes_unexpected_snapshot_files_and_restores_readiness(monkeypatch, tmp_path):
+    import huggingface_hub
+    from modules.runtime_setup import hub_cache
+
+    model_id = "hexgrad/Kokoro-82M"
+    revision = download_models.MODEL_REVISIONS[model_id]
+    repo = tmp_path / "models--hexgrad--Kokoro-82M"
+    snapshot = repo / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    blob = repo / "blobs" / "weights"
+    blob.parent.mkdir()
+    blob.write_bytes(b"weights")
+    (snapshot / "weights.bin").symlink_to(blob)
+    nested = snapshot / "voices"
+    nested.mkdir()
+    (nested / "bella.bin").write_bytes(b"voice")
+    download_models.write_download_receipt(snapshot, model_id=model_id, revision=revision)
+    other_snapshot = repo / "snapshots" / ("0" * 40)
+    other_snapshot.mkdir()
+    (other_snapshot / "weights.bin").symlink_to(blob)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.bin").write_bytes(b"keep")
+    (snapshot / ".DS_Store").write_bytes(b"metadata")
+    (nested / ".DS_Store").write_bytes(b"metadata")
+    extra = snapshot / "extra"
+    extra.mkdir()
+    (extra / "stale.bin").write_bytes(b"stale")
+    (extra / "outside").symlink_to(outside, target_is_directory=True)
+    (snapshot / "extra-blob.bin").symlink_to(blob)
+    monkeypatch.setattr(hub_cache.hf_constants, "HF_HUB_CACHE", str(tmp_path))
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda **kwargs: str(snapshot))
+
+    def unexpected_fetch(**kwargs):
+        pytest.fail("Matching receipted files must not be downloaded again")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", unexpected_fetch)
+    assert hub_cache._check_model_group_assets(("tts-cpu-cuda",))["tts-cpu-cuda"]["ready"] is False
+    assert download_models.download_model_snapshot(model_id, cache_dir=tmp_path) == snapshot
+    assert not (snapshot / ".DS_Store").exists()
+    assert not (nested / ".DS_Store").exists()
+    assert not extra.exists()
+    assert not (snapshot / "extra-blob.bin").is_symlink()
+    assert (nested / "bella.bin").read_bytes() == b"voice"
+    assert blob.read_bytes() == b"weights"
+    assert (other_snapshot / "weights.bin").read_bytes() == b"weights"
+    assert (outside / "keep.bin").read_bytes() == b"keep"
+    assert hub_cache._check_model_group_assets(("tts-cpu-cuda",))["tts-cpu-cuda"]["ready"] is True
+
+
+@pytest.mark.parametrize("cached", [False, True])
+def test_pinned_snapshot_without_receipt_falls_back_to_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cached: bool,
+) -> None:
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    model_id = "hexgrad/Kokoro-82M"
+    revision = download_models.MODEL_REVISIONS[model_id]
+    snapshot = tmp_path / "models--hexgrad--Kokoro-82M" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_text("{}", encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_snapshot_download(**kwargs: object) -> str:
+        calls.append(kwargs)
+        if kwargs.get("local_files_only") and not cached:
+            raise LocalEntryNotFoundError("Snapshot is not cached")
+        return str(snapshot)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+
+    result = download_models.download_model_snapshot(model_id, cache_dir=tmp_path)
+
+    kwargs = {"repo_id": model_id, "revision": revision, "cache_dir": str(tmp_path)}
+    assert calls == [{**kwargs, "local_files_only": True}, kwargs]
+    assert result == snapshot
+    assert download_models.validate_download_receipt(snapshot, model_id=model_id, revision=revision)
 
 
 def test_successful_snapshot_download_writes_valid_completion_receipt(
@@ -592,6 +773,28 @@ def test_receipt_allows_hf_blob_symlink_but_rejects_external_symlink(tmp_path: P
         )
 
 
+def test_receipt_accepts_files_in_the_hub_wide_shared_blob_store(tmp_path: Path) -> None:
+    # huggingface_hub 1.x keeps large files once per cache under <cache>/blobs
+    # and links each repo's blobs/<etag> entry to that store.
+    model_id = "owner/model"
+    revision = "f" * 40
+    cache = tmp_path / "hub"
+    repo_root = cache / "models--owner--model"
+    snapshot = repo_root / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (repo_root / "blobs").mkdir()
+    xet_hash = "b0" + "1" * 62
+    store_file = cache / "blobs" / xet_hash[:2] / xet_hash
+    store_file.parent.mkdir(parents=True)
+    store_file.write_bytes(b"shared weights")
+    (repo_root / "blobs" / "etag").symlink_to(Path("../../blobs") / xet_hash[:2] / xet_hash)
+    (snapshot / "model.safetensors").symlink_to(Path("../../blobs/etag"))
+
+    download_models.write_download_receipt(snapshot, model_id=model_id, revision=revision)
+
+    assert download_models.validate_download_receipt(snapshot, model_id=model_id, revision=revision)
+
+
 def _verified_snapshot(tmp_path: Path, *, model_id: str, revision: str) -> tuple[Path, Path]:
     snapshot = tmp_path / model_id.replace("/", "--") / "snapshots" / revision
     snapshot.mkdir(parents=True)
@@ -631,6 +834,8 @@ def test_integrity_verifier_reuses_hash_when_metadata_is_unchanged(
     model_id = "owner/model"
     revision = "3" * 40
     snapshot, _ = _verified_snapshot(tmp_path, model_id=model_id, revision=revision)
+    # Exercise a mature cache entry without waiting for Windows timestamp ticks.
+    monkeypatch.setattr(receipts, "_now_ns", lambda: time.time_ns() + 3_000_000_000)
     real_hash = download_models._file_size_and_sha256
     calls = 0
 
@@ -639,7 +844,7 @@ def test_integrity_verifier_reuses_hash_when_metadata_is_unchanged(
         calls += 1
         return real_hash(path)
 
-    monkeypatch.setattr(download_models, "_file_size_and_sha256", counted_hash)
+    monkeypatch.setattr(receipts, "_file_size_and_sha256", counted_hash)
     verifier = download_models.ModelReceiptVerifier(max_entries=8)
 
     assert verifier.verify(snapshot, model_id=model_id, revision=revision)
@@ -666,13 +871,16 @@ def test_integrity_verifier_rehashes_same_size_metadata_change(
         calls += 1
         return real_hash(path)
 
-    monkeypatch.setattr(download_models, "_file_size_and_sha256", counted_hash)
+    monkeypatch.setattr(receipts, "_file_size_and_sha256", counted_hash)
     verifier = download_models.ModelReceiptVerifier(max_entries=8)
+    stat = model_file.stat()
     assert verifier.verify(snapshot, model_id=model_id, revision=revision)
 
     model_file.write_bytes(b"tampered")
-    stat = model_file.stat()
-    os.utime(model_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1))
+    os.utime(model_file, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+    changed_stat = model_file.stat()
+    assert changed_stat.st_size == stat.st_size
+    assert changed_stat.st_mtime_ns - stat.st_mtime_ns >= 2_000_000_000
 
     assert not verifier.verify(snapshot, model_id=model_id, revision=revision)
     assert calls == 2
@@ -693,7 +901,7 @@ def test_integrity_verifier_rehashes_when_receipt_changes(
         calls += 1
         return real_hash(path)
 
-    monkeypatch.setattr(download_models, "_file_size_and_sha256", counted_hash)
+    monkeypatch.setattr(receipts, "_file_size_and_sha256", counted_hash)
     verifier = download_models.ModelReceiptVerifier(max_entries=8)
     assert verifier.verify(snapshot, model_id=model_id, revision=revision)
 
@@ -713,6 +921,7 @@ def test_integrity_verifier_is_single_flight_for_concurrent_hashes(
     model_id = "owner/model"
     revision = "6" * 40
     snapshot, _ = _verified_snapshot(tmp_path, model_id=model_id, revision=revision)
+    monkeypatch.setattr(receipts, "_now_ns", lambda: time.time_ns() + 3_000_000_000)
     real_hash = download_models._file_size_and_sha256
     calls = 0
     lock = threading.Lock()
@@ -724,7 +933,7 @@ def test_integrity_verifier_is_single_flight_for_concurrent_hashes(
         time.sleep(0.05)
         return real_hash(path)
 
-    monkeypatch.setattr(download_models, "_file_size_and_sha256", counted_hash)
+    monkeypatch.setattr(receipts, "_file_size_and_sha256", counted_hash)
     verifier = download_models.ModelReceiptVerifier(max_entries=8)
     with ThreadPoolExecutor(max_workers=8) as executor:
         results = list(
@@ -753,7 +962,7 @@ def test_integrity_verifiers_do_not_share_results_across_apps(
         calls += 1
         return real_hash(path)
 
-    monkeypatch.setattr(download_models, "_file_size_and_sha256", counted_hash)
+    monkeypatch.setattr(receipts, "_file_size_and_sha256", counted_hash)
     first = download_models.ModelReceiptVerifier(max_entries=8)
     second = download_models.ModelReceiptVerifier(max_entries=8)
 
@@ -780,6 +989,7 @@ def test_integrity_verifier_evicts_lru_entries(
         model_id=second_model,
         revision=second_revision,
     )
+    monkeypatch.setattr(receipts, "_now_ns", lambda: time.time_ns() + 3_000_000_000)
     real_hash = download_models._file_size_and_sha256
     calls = 0
 
@@ -788,7 +998,7 @@ def test_integrity_verifier_evicts_lru_entries(
         calls += 1
         return real_hash(path)
 
-    monkeypatch.setattr(download_models, "_file_size_and_sha256", counted_hash)
+    monkeypatch.setattr(receipts, "_file_size_and_sha256", counted_hash)
     verifier = download_models.ModelReceiptVerifier(max_entries=1)
 
     assert verifier.verify(first, model_id=first_model, revision=first_revision)

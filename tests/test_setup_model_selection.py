@@ -4,6 +4,8 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from modules.runtime_setup import hub_cache
+from modules.app.services import model_storage_service
 from modules.app.config import AppConfig
 from modules.web.routes import setup as routes
 from modules.web.server import create_app
@@ -15,15 +17,21 @@ from scripts.download_models import MODEL_GROUPS, MODEL_REVISIONS, resolve_model
 def test_selection_round_trip_and_delete_preserves_precision(tmp_path, monkeypatch, quantization):
     monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
     path = tmp_path / "runtime-setup.json"
-    monkeypatch.setattr(setup_runtime, "default_state_path", lambda: path)
+    monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: path)
     monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True})
-    monkeypatch.setattr(setup_runtime, "_probe_profile", lambda groups, _: {"available": True, "checks": []})
-    monkeypatch.setattr(routes, "_check_model_group_assets", lambda groups, **_: {g: {"ready": True, "reason": None} for g in groups})
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", lambda groups, _: {"available": True, "checks": []})
+    monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **_: {g: {"ready": True, "reason": None} for g in groups})
     monkeypatch.setattr(routes, "build_setup_status_response", lambda _: setup_runtime.read_setup_state(path))
-    monkeypatch.setattr(routes, "_delete_runtime_models", lambda **_: (["cleaner-cuda-large"], 100))
-    monkeypatch.setattr(routes, "get_managed_models", lambda: {"models": []})
-    monkeypatch.setattr(routes, "scan_cache_dir", lambda: SimpleNamespace(repos=[]))
-    monkeypatch.setattr(routes.hf_constants, "HF_HUB_CACHE", str(tmp_path / "models"))
+    monkeypatch.setattr(model_storage_service, "_delete_runtime_models", lambda **_: (["cleaner-cuda-large"], 100))
+    def managed_models(request):
+        assert request.app is client.app
+        assert request.method == "DELETE"
+        assert request.url.path == "/api/setup/models/cleaner-cuda-large"
+        return {"models": []}
+
+    monkeypatch.setattr(routes, "get_managed_models", managed_models)
+    monkeypatch.setattr(hub_cache, "scan_cache_dir", lambda: SimpleNamespace(repos=[]))
+    monkeypatch.setattr(hub_cache.hf_constants, "HF_HUB_CACHE", str(tmp_path / "models"))
     config = AppConfig(data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
     with TestClient(create_app(controller=SimpleNamespace(config=config))) as client:
         result = client.post("/api/setup/adopt", json={
@@ -56,7 +64,7 @@ def test_setup_rejects_multiple_active_cleaners_before_probing(monkeypatch):
     monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
     def unexpected_probe(*args, **kwargs):
         pytest.fail("An ambiguous selection must be rejected before probing")
-    monkeypatch.setattr(setup_runtime, "_probe_profile", unexpected_probe)
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", unexpected_probe)
     with TestClient(create_app(controller=object())) as client:
         response = client.post("/api/setup/adopt", json={"profile": "cuda", "model_groups": ["cleaner-cuda", "cleaner-cuda-large"]})
         assert response.status_code == 422

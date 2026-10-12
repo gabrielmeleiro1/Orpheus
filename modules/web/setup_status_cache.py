@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future, wait
 import copy
 import threading
 import time
 from typing import Any, Callable
 
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
-from scripts.download_models import ModelReceiptVerifier
+from modules.runtime_setup.receipts import ModelReceiptVerifier
 
 StatusBuilder = Callable[[RuntimeCapabilityService], dict[str, Any]]
 
@@ -28,7 +29,6 @@ class RuntimeSetupStatusCache:
         self._clock = clock
         self._probe_service = probe_service or RuntimeCapabilityService(
             cache_ttl_seconds=self._ttl_seconds,
-            timeout_seconds=15.0,
         )
         self.receipt_verifier = receipt_verifier or ModelReceiptVerifier()
         self._condition = threading.Condition()
@@ -37,48 +37,90 @@ class RuntimeSetupStatusCache:
         self._expires_at = 0.0
         self._response: dict[str, Any] | None = None
         self._generation = 0
+        self._flight: Future[dict[str, Any]] | None = None
+        self._flight_key: tuple[Any, ...] | None = None
+        self._flight_generation = 0
 
     @property
     def probe_service(self) -> RuntimeCapabilityService:
         """Expose the single-flight probe service for adopt re-validation."""
         return self._probe_service
 
-    def get(
+    @staticmethod
+    def _is_checking(value: Any) -> bool:
+        # The status projection folds selected runtime checks into this state;
+        # optional discovery checks must not prevent caching completed readiness.
+        if isinstance(value, dict):
+            return (
+                bool(value.get("checking") or value.get("timed_out"))
+                or value.get("state") in {"checking", "pending", "timeout"}
+            )
+        return False
+
+    def _refresh(
         self,
         key: tuple[Any, ...],
         builder: StatusBuilder,
-    ) -> dict[str, Any]:
-        while True:
-            with self._condition:
-                now = self._clock()
-                if (
-                    self._response is not None
-                    and self._key == key
-                    and now < self._expires_at
-                ):
-                    return copy.deepcopy(self._response)
-                if not self._refreshing:
-                    self._refreshing = True
-                    generation = self._generation
-                    break
-                self._condition.wait()
+        generation: int,
+        flight: Future[dict[str, Any]],
+    ) -> None:
         try:
             response = builder(self._probe_service)
-        except Exception:
+        except Exception as exc:
             with self._condition:
                 self._refreshing = False
+                flight.set_exception(exc)
                 self._condition.notify_all()
-            raise
+            return
         with self._condition:
-            invalidated = generation != self._generation
-            if not invalidated:
+            if generation == self._generation and not self._is_checking(response):
                 self._key = key
                 self._response = copy.deepcopy(response)
                 self._expires_at = self._clock() + self._ttl_seconds
             self._refreshing = False
+            flight.set_result(response)
             self._condition.notify_all()
-        if invalidated:
-            return self.get(key, builder)
+
+    def get(
+        self,
+        key: tuple[Any, ...],
+        builder: StatusBuilder,
+        *,
+        pending_builder: Callable[[], dict[str, Any]] | None = None,
+        wait_seconds: float = 2.0,
+    ) -> dict[str, Any]:
+        with self._condition:
+            if (
+                self._response is not None
+                and self._key == key
+                and self._clock() < self._expires_at
+            ):
+                return copy.deepcopy(self._response)
+            start_refresh = not self._refreshing
+            if start_refresh:
+                self._refreshing = True
+                self._flight = Future()
+                self._flight_key = key
+                self._flight_generation = self._generation
+            flight = self._flight
+            flight_key = self._flight_key
+            generation = self._flight_generation
+        assert flight is not None
+        if start_refresh:
+            if pending_builder is None:
+                self._refresh(key, builder, generation, flight)
+            else:
+                threading.Thread(
+                    target=self._refresh,
+                    args=(key, builder, generation, flight),
+                    name="setup-status-refresh",
+                    daemon=True,
+                ).start()
+        if pending_builder is not None and not wait([flight], timeout=wait_seconds).done:
+            return pending_builder()
+        response = flight.result()
+        if flight_key != key or generation != self._generation:
+            return self.get(key, builder, pending_builder=pending_builder, wait_seconds=wait_seconds)
         return copy.deepcopy(response)
 
     def invalidate(self) -> None:

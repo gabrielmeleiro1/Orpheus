@@ -178,12 +178,6 @@ def test_entry_configures_before_first_hub_import(tmp_path, module):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_frozen_entry_uses_configured_launcher():
-    spec = (REPO_ROOT / "desktop" / "backend-sidecar.spec").read_text(encoding="utf-8")
-    assert 'entry_script = project_root / "apps" / "launchers" / "desktop_backend.py"' in spec
-    assert "[str(entry_script)]" in spec
-
-
 def test_existing_blob_recovers_missing_snapshot_without_symlinks(monkeypatch, tmp_path):
     from huggingface_hub import constants, hf_hub_download
     from huggingface_hub import file_download

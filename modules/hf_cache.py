@@ -12,6 +12,24 @@ _configured = False
 _configure_lock = threading.Lock()
 
 
+def hf_hub_cache_path() -> Path:
+    """Resolve Hub's cache precedence without importing an installed runtime."""
+    default_home = os.path.join(os.path.expanduser("~"), ".cache")
+    hf_home = os.path.expandvars(
+        os.path.expanduser(
+            os.environ.get(
+                "HF_HOME",
+                os.path.join(os.environ.get("XDG_CACHE_HOME", default_home), "huggingface"),
+            )
+        )
+    )
+    cache = os.environ.get(
+        "HF_HUB_CACHE",
+        os.environ.get("HUGGINGFACE_HUB_CACHE", os.path.join(hf_home, "hub")),
+    )
+    return Path(os.path.expandvars(os.path.expanduser(cache))).resolve()
+
+
 def configure_hf_cache() -> None:
     """Probe once before Hub's parallel downloads can race its symlink check.
 
@@ -26,26 +44,7 @@ def configure_hf_cache() -> None:
             return
         if "HF_HUB_DISABLE_SYMLINKS" not in os.environ:
             try:
-                # Match Hub's cache precedence without importing its constants.
-                default_home = os.path.join(os.path.expanduser("~"), ".cache")
-                hf_home = os.path.expandvars(
-                    os.path.expanduser(
-                        os.environ.get(
-                            "HF_HOME",
-                            os.path.join(
-                                os.environ.get("XDG_CACHE_HOME", default_home), "huggingface"
-                            ),
-                        )
-                    )
-                )
-                cache = os.environ.get(
-                    "HF_HUB_CACHE",
-                    os.environ.get(
-                        "HUGGINGFACE_HUB_CACHE",
-                        os.path.join(hf_home, "hub"),
-                    ),
-                )
-                cache_dir = Path(os.path.expandvars(os.path.expanduser(cache))).resolve()
+                cache_dir = hf_hub_cache_path()
                 cache_dir.mkdir(parents=True, exist_ok=True)
                 # tempfile.mkdtemp retries PermissionError on Windows when the
                 # parent exists, which can stall startup in a restricted cache.

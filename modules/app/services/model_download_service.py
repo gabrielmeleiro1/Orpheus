@@ -9,39 +9,139 @@ download receipts) are missing.
 from __future__ import annotations
 
 import errno
+import logging
 import multiprocessing
+import os
+from pathlib import Path
 import re
 import threading
-from typing import Any, Callable, Iterable
+from time import monotonic
+from typing import TYPE_CHECKING, Any, Callable, Iterable
 
 from modules.hf_cache import configure_hf_cache
 
 # Also runs when multiprocessing spawn imports the download worker's module.
 configure_hf_cache()
 
-import requests  # noqa: E402
-from huggingface_hub.errors import (  # noqa: E402
-    GatedRepoError,
-    HfHubHTTPError,
-    LocalEntryNotFoundError,
-    RepositoryNotFoundError,
-)
+from huggingface_hub import constants as hf_constants  # noqa: E402
 
-from scripts import setup_runtime  # noqa: E402
-from scripts.download_models import download_model_snapshot, resolve_model_groups  # noqa: E402
+if TYPE_CHECKING:
+    from huggingface_hub.utils import tqdm as hf_tqdm
+
+from modules.runtime_setup import state as setup_runtime  # noqa: E402
+from modules.runtime_setup.catalog import pinned_revision_for, resolve_model_groups  # noqa: E402
+from modules.runtime_setup.downloads import download_model_snapshot, verified_cached_model_snapshot  # noqa: E402
 
 # Fail fast when the installer, adopt, or delete already holds the setup lock;
 # the caller surfaces this as a 409 rather than queueing behind a long run.
 _LOCK_ACQUIRE_TIMEOUT_SECONDS = 0.5
+logger = logging.getLogger(__name__)
 
 
 class ModelDownloadBusyError(RuntimeError):
     """A download is already running in this backend."""
 
 
+def _incomplete_blob_names(model_id: str) -> set[str] | None:
+    if pinned_revision_for(model_id) is None:
+        return None
+    blobs = Path(hf_constants.HF_HUB_CACHE).absolute() / ("models--" + model_id.replace("/", "--")) / "blobs"
+    try:
+        if any(path.is_symlink() for path in (blobs, *blobs.parents)):
+            return None
+        with os.scandir(blobs) as entries:
+            return {entry.name for entry in entries if entry.name.endswith(".incomplete")}
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        return None
+
+
+def _remove_incomplete_blobs(model_id: str, existing_names: set[str] | None) -> None:
+    if existing_names is None:
+        return
+    blobs = Path(hf_constants.HF_HUB_CACHE).absolute() / ("models--" + model_id.replace("/", "--")) / "blobs"
+    try:
+        if any(path.is_symlink() for path in (blobs, *blobs.parents)):
+            return
+        with os.scandir(blobs) as entries:
+            for entry in entries:
+                if not entry.name.endswith(".incomplete") or entry.name in existing_names:
+                    continue
+                try:
+                    if entry.is_file(follow_symlinks=False):
+                        Path(entry.path).unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Could not remove an incomplete download for %s", model_id)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Could not remove incomplete downloads for %s", model_id)
+
+
+def _model_byte_metadata(model_id: str) -> tuple[int | None, int]:
+    from huggingface_hub import HfApi
+
+    revision = pinned_revision_for(model_id)
+    if revision is None:
+        return None, 0
+    try:
+        info = HfApi().model_info(model_id, revision=revision, files_metadata=True, timeout=10)
+    except Exception:
+        # Progress metadata must not prevent an otherwise usable cached download.
+        return None, 0
+    files = info.siblings
+    if not files or any(file.size is None for file in files):
+        return None, 0
+    snapshot = Path(hf_constants.HF_HUB_CACHE) / ("models--" + model_id.replace("/", "--")) / "snapshots" / revision
+    cached = 0
+    for file in files:
+        try:
+            if (snapshot / file.rfilename).stat().st_size == file.size:
+                cached += file.size
+        except OSError:
+            pass
+    return sum(file.size for file in files), cached
+
+
+def _byte_progress_class(result: Any, total: int | None, cached: int) -> type[hf_tqdm]:
+    from huggingface_hub.utils import tqdm as hf_tqdm
+
+    mutex = threading.Lock()
+    last_sent = monotonic()
+
+    class ByteProgress(hf_tqdm):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            name = kwargs.get("name", "") or ""
+            self._counts_bytes = kwargs.get("unit") == "B" and not name.endswith(".transfer")
+            super().__init__(*args, **{**kwargs, "disable": True})
+
+        def update(self, n: int | float | None = 1) -> None:
+            nonlocal last_sent
+            # Disabled tqdm bars skip updating n. Track it explicitly, including
+            # resumed HTTP bytes and Xet's reconstructed (uncompressed) bytes.
+            with mutex:
+                self.n += n or 0
+                if not self._counts_bytes or total is None:
+                    return
+                now = monotonic()
+                if now - last_sent >= 1.0:
+                    last_sent = now
+                    result.send({"bytes_total": total, "bytes_done": max(0, min(total, cached + int(self.n)))})
+
+    return ByteProgress
+
+
 def _download_worker(model_id: str, result: Any) -> None:
     try:
-        download_model_snapshot(model_id)
+        if verified_cached_model_snapshot(model_id) is not None:
+            result.send(None)
+            return
+        total, cached = _model_byte_metadata(model_id)
+        result.send({"bytes_total": total, "bytes_done": cached if total is not None else None})
+        download_model_snapshot(model_id, tqdm_class=_byte_progress_class(result, total, cached))
+        if total is not None:
+            result.send({"bytes_total": total, "bytes_done": total})
         result.send(None)
     except BaseException as exc:
         result.send(_user_facing_error(exc, model_id))
@@ -54,8 +154,23 @@ def _sanitized_error(exc: BaseException) -> str:
     return message[:200] or exc.__class__.__name__
 
 
+class DownloadWorkerError(RuntimeError):
+    """A download worker failure whose message is already user-facing."""
+
+
 def _user_facing_error(exc: BaseException, model_id: str | None) -> str:
     """Map raw download failures onto messages a user can act on."""
+    if isinstance(exc, DownloadWorkerError):
+        return str(exc)
+    import httpx
+    from huggingface_hub.errors import (
+        GatedRepoError,
+        HfHubHTTPError,
+        LocalEntryNotFoundError,
+        OfflineModeIsEnabled,
+        RepositoryNotFoundError,
+    )
+
     subject = model_id or "a required model"
     if isinstance(exc, (GatedRepoError, RepositoryNotFoundError)):
         return (
@@ -64,7 +179,7 @@ def _user_facing_error(exc: BaseException, model_id: str | None) -> str:
         )
     if isinstance(
         exc,
-        (requests.ConnectionError, requests.Timeout, LocalEntryNotFoundError),
+        (httpx.NetworkError, httpx.TimeoutException, LocalEntryNotFoundError, OfflineModeIsEnabled),
     ):
         return (
             "Could not reach huggingface.co. "
@@ -84,6 +199,8 @@ def _idle_state() -> dict[str, Any]:
         "model_groups": [],
         "total_models": 0,
         "completed_models": 0,
+        "bytes_total": None,
+        "bytes_done": None,
         "current_model_group": None,
         "current_model": None,
         "error": None,
@@ -147,8 +264,13 @@ class ModelDownloadService:
                 raise ModelDownloadBusyError("A model download is already running.")
             lock = self._lock_factory()
             lock.__enter__()
-            self._cancel_event.clear()
             try:
+                # State writes already reject unfinished deletions. Apply the
+                # same check before recreating a repository owned by a journal.
+                # This only reads metadata while holding SetupLock; recovery
+                # and its preview/conversion ownership belong to the routes.
+                setup_runtime.pending_model_deletions(setup_runtime.default_state_path())
+                self._cancel_event.clear()
                 thread = threading.Thread(
                     target=self._run,
                     args=(plan, lock),
@@ -165,6 +287,8 @@ class ModelDownloadService:
                 "cleaner_cuda_quantization": cleaner_cuda_quantization,
                 "total_models": sum(len(models) for _, models in plan),
                 "completed_models": 0,
+                "bytes_total": None,
+                "bytes_done": None,
                 "current_model_group": groups[0] if groups else None,
                 "current_model": None,
                 "error": None,
@@ -211,6 +335,24 @@ class ModelDownloadService:
         reader, writer = context.Pipe(duplex=False)
         process = context.Process(target=_download_worker, args=(model_id, writer), daemon=True)
         started = False
+        completed = False
+        existing_names = _incomplete_blob_names(model_id)
+        no_result = object()
+        message: Any = no_result
+
+        def receive_updates() -> None:
+            nonlocal message
+            while message is no_result and reader.poll():
+                try:
+                    update = reader.recv()
+                except EOFError:
+                    break
+                if isinstance(update, dict):
+                    with self._mutex:
+                        self._state.update(bytes_total=update["bytes_total"], bytes_done=update["bytes_done"])
+                else:
+                    message = update
+
         try:
             process.start()
             started = True
@@ -219,27 +361,34 @@ class ModelDownloadService:
                 if self._cancel_event.wait(0.1):
                     process.terminate()
                     break
+                receive_updates()
             process.join(timeout=1.0)
             if process.is_alive():
                 process.kill()
                 process.join()
             if self.cancel_requested:
                 return
-            if not reader.poll():
-                raise RuntimeError("The download worker stopped unexpectedly. Try again.")
-            message = reader.recv()
+            receive_updates()
+            if message is no_result:
+                raise DownloadWorkerError("The download worker stopped unexpectedly. Try again.")
             if message:
-                raise RuntimeError(message)
+                raise DownloadWorkerError(message)
             if process.exitcode != 0:
-                raise RuntimeError("The download worker stopped unexpectedly. Try again.")
+                raise DownloadWorkerError("The download worker stopped unexpectedly. Try again.")
+            completed = True
         finally:
             if started and process.is_alive():
                 process.terminate()
-                process.join()
+                process.join(timeout=1.0)
+                if process.is_alive():
+                    process.kill()
+                    process.join()
             reader.close()
             writer.close()
             if started:
                 process.close()
+                if not completed:
+                    _remove_incomplete_blobs(model_id, existing_names)
 
     def _run(
         self,
@@ -259,7 +408,7 @@ class ModelDownloadService:
                         break
                     current_model = model_id
                     with self._mutex:
-                        self._state["current_model"] = model_id
+                        self._state.update(current_model=model_id, bytes_total=None, bytes_done=None)
                     self._downloader(model_id)
                     if self.cancel_requested:
                         break

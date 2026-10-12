@@ -33,7 +33,7 @@ def test_cuda_cleaner_fails_before_install_or_download(monkeypatch, tmp_path):
     assert calls == []
     assert not (tmp_path / "state.json").exists()
     monkeypatch.setattr(routes, "cuda_hardware_error", lambda: "Install the NVIDIA driver.")
-    card = routes._profile_payload("cuda", accepted_profile=None)
+    card = routes._profile_payload("cuda")
     assert card["compatible"] is True
     assert card["device"] == "cpu"
     assert card["group_availability"]["cleaner-cuda"]["available"] is False

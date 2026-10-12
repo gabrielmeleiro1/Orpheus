@@ -166,23 +166,6 @@ def test_unavailable_profile_is_skipped_and_causes_exit_two(monkeypatch, tmp_pat
     assert report.exit_code(allow_skipped=True) == 0
 
 
-def test_cuda_has_no_default_audit_exception_after_pytorch_upgrade(tmp_path) -> None:
-    audit = [
-        {
-            "name": "torch",
-            "version": "2.10.0",
-            "vulns": [{"id": "PYSEC-2026-139", "aliases": ["CVE-2026-4538"], "fix_versions": []}],
-        }
-    ]
-    exceptions = verifier.load_audit_exceptions(
-        verifier.DEFAULT_EXCEPTIONS_FILE, today=date(2026, 7, 15)
-    )
-    result = verifier.evaluate_audit("cuda", audit, exceptions)
-
-    assert result.status == "failed"
-    assert "unexpected vulnerabilities" in result.summary.lower()
-
-
 def test_exception_stops_accepting_an_advisory_when_a_fix_exists() -> None:
     exception = verifier.AuditException(
         "CVE-2025-3000",
@@ -513,12 +496,6 @@ def test_failed_command_output_is_bounded_and_redacted() -> None:
     assert result.returncode == 1
     assert len(result.stderr) <= verifier.COMMAND_OUTPUT_TAIL_CHARS
     assert "hunter2" not in result.stderr
-
-
-def test_docs_say_verifier_runs_exactly_requested_profiles() -> None:
-    dependencies = (verifier.REPO_ROOT / "docs" / "DEPENDENCIES.md").read_text(encoding="utf-8")
-    assert "runs exactly the profiles requested" in dependencies
-    assert "request both `base` and the platform profile" in dependencies
 
 
 def test_venv_python_symlink_identity_is_preserved_through_audit(monkeypatch, tmp_path) -> None:

@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from functools import partial
+from types import SimpleNamespace
 from uuid import uuid4
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import re
-import os
-import shutil
 import sys
 import threading
-from typing import Any, Callable, Mapping
+from typing import Any, Mapping
 
 from fastapi import APIRouter, HTTPException, Request
-from huggingface_hub import scan_cache_dir
-from huggingface_hub import constants as hf_constants
-from huggingface_hub.errors import CacheNotFound
 from pydantic import BaseModel, ConfigDict, Field
 
 from modules.runtime_profiles import (
@@ -30,32 +26,37 @@ from modules.app.services.model_download_service import (
     ModelDownloadBusyError,
     ModelDownloadService,
 )
+from modules.app.services import model_storage_service
 from modules.app.services.runtime_capability_service import RuntimeCapabilityService
-from modules.web.deps import get_controller_from_app
+from modules.contracts.durable_files import atomic_write_bytes, sync_directory
+from modules.contracts.public_errors import PublicError
+from modules.web.deps import public_http_error, get_controller_from_app
 from modules.app.services.library_service import _default_folder_opener
 from modules.storage.maintenance_paths import workspace_root_for_db
-from modules.web.setup_manifest import (
-    VersionResolver,
-    _check_manifest_packages,
-    _expected_requirement,
-    _manifest_requirements,
-    _safe_installed_version,
-    _version_matches,
-)
-from modules.web.setup_status_cache import RuntimeSetupStatusCache, StatusBuilder
-from scripts import setup_runtime
-from scripts.download_models import MODEL_GROUPS, ModelReceiptVerifier, resolve_model_groups
+from modules.web.setup_manifest import _check_manifest_packages
+from modules.web.setup_status_cache import RuntimeSetupStatusCache
+from modules.runtime_setup import hub_cache
+from modules.runtime_setup import selection as setup_selection
+from modules.runtime_setup import state as setup_runtime
+from modules.runtime_setup import status as setup_status
+from modules.runtime_setup.catalog import MODEL_GROUPS, resolve_model_groups
+from modules.runtime_setup.receipts import ModelReceiptVerifier
 
 
 router = APIRouter()
 
 
 @router.get("/api/system/storage")
-def get_storage_folders(request: Request) -> dict[str, str]:
+def get_storage_folders(request: Request) -> dict[str, str | None]:
     config = get_controller_from_app(request.app).config
+    # The desktop shell writes this log; a backend started any other way has
+    # none, so report the path only when the file exists.
+    data_dir = getattr(config, "data_dir", None) or Path(config.db_path).parent
+    log_path = Path(data_dir).resolve() / "logs" / "backend.log"
     return {
         "output_path": str(Path(config.output_dir).resolve()),
         "app_data_path": str(workspace_root_for_db(Path(config.db_path))),
+        "log_path": str(log_path) if log_path.is_file() else None,
     }
 
 
@@ -72,19 +73,16 @@ def open_storage_folder(folder: str, request: Request) -> dict[str, str]:
     return {"folder_path": str(path)}
 
 _RUNTIME_SETUP_STATE_FALLBACK_LOCK = threading.RLock()
+# The shared CUDA check replaces these two probes; replaced ones keep their own semantics.
+_SHARED_CUDA_PROBE_METHODS = {
+    "probe_package_tts_runtime": RuntimeCapabilityService.probe_package_tts_runtime,
+    "probe_cleaner_backend": RuntimeCapabilityService.probe_cleaner_backend,
+}
 
-# Re-exported so existing importers of this module keep resolving unchanged.
 __all__ = [
     "AdoptRuntimeRequest",
     "ModelDownloadRequest",
     "RuntimeSetupStatusCache",
-    "StatusBuilder",
-    "VersionResolver",
-    "_check_manifest_packages",
-    "_expected_requirement",
-    "_manifest_requirements",
-    "_safe_installed_version",
-    "_version_matches",
     "build_setup_status_response",
     "delete_setup_runtime",
     "get_model_download_status",
@@ -119,81 +117,16 @@ def _check_selected_profile_packages(profile_id: str | None) -> dict[str, Any]:
         return {"ready": False, "missing": [], "incompatible": []}
 
 
-def _repo_has_complete_revision(
-    repo: Any,
-    *,
-    model_id: str,
-    receipt_verifier: ModelReceiptVerifier,
-) -> bool:
-    for revision in getattr(repo, "revisions", ()):
-        snapshot_path = getattr(revision, "snapshot_path", None)
-        commit_hash = getattr(revision, "commit_hash", None)
-        if (
-            isinstance(snapshot_path, Path)
-            and isinstance(commit_hash, str)
-            and receipt_verifier.verify(
-                snapshot_path,
-                model_id=model_id,
-                revision=commit_hash,
-            )
-        ):
-            return True
-    return False
-
-
-def _check_model_group_assets(
-    group_ids: tuple[str, ...] | list[str],
-    *,
-    cache_scanner: Callable[[], Any] = scan_cache_dir,
-    receipt_verifier: ModelReceiptVerifier | None = None,
-) -> dict[str, dict[str, Any]]:
-    """Inspect the local HF cache without network access or path disclosure."""
-    if not group_ids:
-        return {}
-    try:
-        cache = cache_scanner()
-    except CacheNotFound:
-        return {
-            group_id: {"ready": False, "reason": "missing"}
-            for group_id in group_ids
-        }
-    except Exception:
-        return {
-            group_id: {"ready": False, "reason": "unavailable"}
-            for group_id in group_ids
-        }
-    repos = {
-        str(repo.repo_id): repo
-        for repo in getattr(cache, "repos", ())
-        if getattr(repo, "repo_type", "model") == "model"
-    }
-    result: dict[str, dict[str, Any]] = {}
-    verifier = receipt_verifier or ModelReceiptVerifier()
-    for group_id in group_ids:
-        model_ids = resolve_model_groups((group_id,))
-        missing = any(model_id not in repos for model_id in model_ids)
-        incomplete = any(
-            model_id in repos
-            and not _repo_has_complete_revision(
-                repos[model_id],
-                model_id=model_id,
-                receipt_verifier=verifier,
-            )
-            for model_id in model_ids
-        )
-        reason = "missing" if missing else "incomplete" if incomplete else None
-        result[group_id] = {"ready": reason is None, "reason": reason}
-    return result
+def _check_model_group_assets(*args: Any, **kwargs: Any) -> dict[str, dict[str, Any]]:
+    return hub_cache._check_model_group_assets(*args, **kwargs)
 
 
 def _profile_payload(
     profile_id: str,
     *,
-    accepted_profile: str | None,
     installed_runtime: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     profile = get_runtime_profile(profile_id)
-    del accepted_profile
     reason = profile.incompatibility_reason()
     capabilities = {}
     if reason is None and profile.id == "cuda":
@@ -201,14 +134,18 @@ def _profile_payload(
             installed_runtime
             if installed_runtime and installed_runtime["profile"] == "cuda" else {}
         )
-        device = detected.get("device") or ("cpu" if cuda_hardware_error() else "cuda")
+        hardware_error = cuda_hardware_error()
+        device = detected.get("device") or ("cpu" if hardware_error else "cuda")
+        # The cleaner has its own driver requirement, so a GPU that runs
+        # narration can still be unable to run a local cleaner.
+        probed = detected.get("group_availability") or {}
         capabilities = {
             "device": device,
             "group_availability": {
-                group: {
-                    "available": not (group.startswith("cleaner-cuda") and device == "cpu"),
+                group: probed.get(group) or {
+                    "available": not (group.startswith("cleaner-cuda") and hardware_error),
                     "unavailable_reason": CUDA_CLEANER_UNAVAILABLE_REASON
-                    if group.startswith("cleaner-cuda") and device == "cpu" else None,
+                    if group.startswith("cleaner-cuda") and hardware_error else None,
                 }
                 for group in profile.model_groups
             },
@@ -235,6 +172,7 @@ def _detect_installed_runtime(
     probe_service: RuntimeCapabilityService,
     receipt_verifier: ModelReceiptVerifier,
     preferred_profile: str | None = None,
+    cleaner_cuda_quantization: str | None = None,
 ) -> dict[str, Any] | None:
     """Detect installed runtimes, including models outside the saved selection.
 
@@ -253,14 +191,27 @@ def _detect_installed_runtime(
         try:
             with ThreadPoolExecutor(max_workers=1) as executor:
                 assets = executor.submit(
-                    _check_model_group_assets,
+                    hub_cache._check_model_group_assets,
                     profile.model_groups,
                     receipt_verifier=receipt_verifier,
                 )
-                probe = setup_runtime._probe_profile(profile.model_groups, probe_service)
+                probe = setup_status._probe_profile(
+                    profile.model_groups, probe_service,
+                    **({"cleaner_cuda_quantization": cleaner_cuda_quantization}
+                       if profile.id == "cuda" and cleaner_cuda_quantization is not None else {}),
+                )
                 asset_status = assets.result()
         except Exception:
             return None
+        checks_by_group = {
+            str(check.get("id")): check for check in probe.get("checks", [])
+            if isinstance(check, Mapping)
+        }
+        tts_groups = _profile_tts_groups(profile.id)
+        checking = any(
+            checks_by_group.get(group_id, {}).get("state") in {"pending", "timeout"}
+            for group_id in tts_groups
+        )
         readiness_by_group = {
             str(check.get("id")): bool(check.get("available"))
             for check in probe.get("checks", [])
@@ -270,13 +221,17 @@ def _detect_installed_runtime(
             {
                 "id": group_id,
                 "runtime_ready": readiness_by_group.get(group_id, False),
+                **({
+                    "runtime_state": checks_by_group.get(group_id, {}).get("state") or "unavailable",
+                    "runtime_reason": None if checks_by_group.get(group_id, {}).get("state") in {"pending", "timeout"}
+                    else checks_by_group.get(group_id, {}).get("error"),
+                } if not readiness_by_group.get(group_id, False) else {}),
                 "assets_ready": bool(asset_status.get(group_id, {}).get("ready")),
                 "ready": bool(asset_status.get(group_id, {}).get("ready"))
                 and readiness_by_group.get(group_id, False),
             }
             for group_id in profile.model_groups
         ]
-        tts_groups = _profile_tts_groups(profile.id)
         # The runtime can be present (baked into a packaged build) while its
         # model assets are not downloaded yet; the frontend offers an in-app
         # download only in that split state.
@@ -291,6 +246,7 @@ def _detect_installed_runtime(
             "profile": profile.id,
             "ready": ready,
             "runtime_available": runtime_available,
+            **({"checking": True} if checking else {}),
             "model_groups": model_groups,
         }
         if profile.id == "cuda":
@@ -298,6 +254,15 @@ def _detect_installed_runtime(
                 (check["device"] for check in probe.get("checks", []) if check.get("device")),
                 "cpu" if cuda_hardware_error() else "cuda",
             )
+            result["group_availability"] = {
+                group_id: {
+                    "available": bool(check.get("available")),
+                    "unavailable_reason": None if check.get("available") or check.get("state") in {"pending", "timeout"}
+                    else check.get("error") or "Cleaner runtime unavailable",
+                    **({"state": check["state"]} if check.get("state") else {}),
+                }
+                for group_id, check in checks_by_group.items() if group_id.startswith("cleaner-")
+            }
         return result
     return None
 
@@ -316,13 +281,18 @@ def _empty_status(
         "selected_profile": None,
         "selected_model_groups": [],
         "packages": {"ready": False, "missing": [], "incompatible": []},
-        "probe": {"ready": False, "checks": []},
+        "probe": {"ready": False, "checks": [
+            {"id": group["id"], "ready": group["runtime_ready"], "state": group["runtime_state"]}
+            for group in (installed_runtime or {}).get("model_groups", [])
+            if group.get("runtime_state") in {"pending", "timeout"}
+        ]},
+        **({"checking": True} if (installed_runtime or {}).get("checking") else {}),
         "ready": False,
         "restart_required": False,
         "recommended_profile": recommended_profile_id(),
         "installed_runtime": installed_runtime,
         "profiles": [
-            _profile_payload(profile.id, accepted_profile=None, installed_runtime=installed_runtime)
+            _profile_payload(profile.id, installed_runtime=installed_runtime)
             for profile in runtime_profiles()
         ],
         "risk": None,
@@ -340,7 +310,7 @@ def _build_uncached_setup_status_response(
 ) -> dict[str, Any]:
     """Project internal setup state onto a stable, non-secret API contract."""
     try:
-        status = setup_runtime.get_setup_status(probe_service=probe_service)
+        status = setup_status.get_setup_status(probe_service=probe_service)
     except Exception:
         return _empty_status(request=request, state_error="unavailable")
 
@@ -372,20 +342,26 @@ def _build_uncached_setup_status_response(
     raw_probe = status.get("probe")
     raw_checks = raw_probe.get("checks", []) if isinstance(raw_probe, Mapping) else []
     readiness_by_group: dict[str, bool] = {}
+    states_by_group: dict[str, str] = {}
     for check in raw_checks:
         if not isinstance(check, Mapping):
             continue
         group_id = str(check.get("id") or "")
         if group_id in selected_group_ids:
             readiness_by_group[group_id] = bool(check.get("available"))
+            if check.get("state") in {"pending", "timeout"}:
+                states_by_group[group_id] = check["state"]
 
     probe_checks = [
-        {"id": group_id, "ready": readiness_by_group.get(group_id, False)}
+        {
+            "id": group_id, "ready": readiness_by_group.get(group_id, False),
+            **({"state": states_by_group[group_id]} if group_id in states_by_group else {}),
+        }
         for group_id in selected_group_ids
     ]
     probe_ready = bool(raw_probe.get("available")) if isinstance(raw_probe, Mapping) else False
     packages = _check_selected_profile_packages(selected_profile)
-    asset_status = _check_model_group_assets(
+    asset_status = hub_cache._check_model_group_assets(
         selected_group_ids,
         receipt_verifier=receipt_verifier,
     )
@@ -416,6 +392,8 @@ def _build_uncached_setup_status_response(
         state = "restart_required"
     elif ready:
         state = "ready"
+    elif any(check.get("state") in {"pending", "timeout"} for check in probe_checks):
+        state = "checking"
     else:
         state = "unavailable"
 
@@ -424,6 +402,7 @@ def _build_uncached_setup_status_response(
     installed_runtime = _detect_installed_runtime(
         probe_service, receipt_verifier,
         preferred_profile=selected_profile if selected_profile != "base" else None,
+        cleaner_cuda_quantization=status.get("cleaner_cuda_quantization"),
     )
 
     return {
@@ -436,13 +415,14 @@ def _build_uncached_setup_status_response(
         "cleaner_cuda_quantization": status.get("cleaner_cuda_quantization", "4bit"),
         "packages": packages,
         "probe": {"ready": probe_ready, "checks": probe_checks},
+        **({"checking": True} if state == "checking" else {}),
         "ready": ready,
         "restart_required": restart_required,
         "recommended_profile": recommended_profile_id(),
         # Settings must also expose optional models outside the saved selection.
         "installed_runtime": installed_runtime,
         "profiles": [
-            _profile_payload(item.id, accepted_profile=selected_profile, installed_runtime=installed_runtime)
+            _profile_payload(item.id, installed_runtime=installed_runtime)
             for item in runtime_profiles()
         ],
         "risk": risk,
@@ -475,22 +455,61 @@ def _get_status_cache(request: Request) -> RuntimeSetupStatusCache:
         )
         cache = RuntimeSetupStatusCache(
             probe_service=shared if isinstance(shared, RuntimeCapabilityService) else None,
+            receipt_verifier=ModelReceiptVerifier(
+                cache_path=setup_runtime.default_state_path().with_name("model-integrity-cache.json")
+                if getattr(request.app.state, "desktop_mode", False) else None,
+            ),
         )
         request.app.state.runtime_setup_status_cache = cache
         return cache
 
 
+def _pending_setup_status_response(request: Request) -> dict[str, Any]:
+    try:
+        state, state_error = setup_runtime._read_setup_state(setup_runtime.default_state_path())
+    except setup_runtime.SetupExecutionError:
+        return _empty_status(request=request, state_error="unavailable")
+    response = _empty_status(request=request, state_error="invalid" if state_error else None)
+    if state_error:
+        return response
+    if state is not None:
+        response.update({
+            "configured": True,
+            "selected_profile": state["profile"],
+            "selected_model_groups": [
+                {"id": group_id, "assets_ready": False, "assets_reason": None,
+                 "runtime_ready": False, "ready": False}
+                for group_id in state["model_groups"]
+            ],
+            "cleaner_cuda_quantization": state["cleaner_cuda_quantization"],
+            "restart_required": state["restart_required"],
+            "probe": {"ready": False, "checks": [
+                {"id": group_id, "ready": False, "state": "pending"}
+                for group_id in state["model_groups"]
+            ]},
+        })
+    response["state"] = "checking"
+    response["checking"] = True
+    return response
+
+
 def build_setup_status_response(request: Request) -> dict[str, Any]:
     cache = _get_status_cache(request)
     key = _setup_state_fingerprint()
-    return cache.get(
+    status = cache.get(
         key,
         lambda service: _build_uncached_setup_status_response(
             request,
             service,
             cache.receipt_verifier,
         ),
+        **({
+            "pending_builder": lambda: _pending_setup_status_response(request),
+            "wait_seconds": 2.0,
+        } if getattr(sys, "frozen", False) else {}),
     )
+    reset_id = getattr(request.app.state, "setup_reset_id", None) or model_storage_service.read_setup_reset_id()
+    return {**status, **({"setup_reset_id": reset_id} if reset_id else {})}
 
 
 @router.get("/api/setup/status")
@@ -520,15 +539,12 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
     """Persist a chosen runtime after server-side re-validation, no installer run."""
     cache = _get_status_cache(request)
     try:
-        profile = setup_runtime._validated_profile(payload.profile)
-        groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
-        setup_runtime.validate_model_selection(groups)
-        setup_runtime.require_voice_model(profile.id, groups)
+        profile = setup_selection._validated_profile(payload.profile)
+        groups = setup_selection._validated_model_groups(profile, payload.model_groups)
+        setup_selection.validate_model_selection(groups)
+        setup_selection.require_voice_model(profile.id, groups)
     except setup_runtime.SetupValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "invalid_request", "message": str(exc)},
-        ) from exc
+        raise public_http_error(PublicError("invalid_request", str(exc), 422), legacy_error=True) from exc
 
     if profile.id != "base":
         # Every readiness check below folds over `groups`, so an empty selection
@@ -536,25 +552,43 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
         # profile with no TTS model installed. post_model_download guards this
         # the same way.
         if not groups:
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": "invalid_request",
-                    "message": "At least one model group is required.",
-                },
+            raise public_http_error(
+                PublicError("invalid_request", "At least one model group is required.", 422),
+                legacy_error=True,
             )
         packages = _check_selected_profile_packages(profile.id)
         if not packages["ready"]:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "packages_not_ready", "packages": packages},
+            raise public_http_error(
+                PublicError(
+                    "packages_not_ready",
+                    "Runtime dependencies are missing. Run runtime setup to repair them.",
+                    409,
+                    details={"packages": packages},
+                ),
+                legacy_error=True,
             )
         try:
-            probe = setup_runtime._probe_profile(groups, cache.probe_service)
+            service = cache.probe_service
+            quantization = payload.cleaner_cuda_quantization
+            adapter = SimpleNamespace(
+                probe_mlx_tts_runtime=service.probe_mlx_tts_runtime,
+                probe_package_tts_runtime=service.probe_package_tts_runtime,
+                probe_cleaner_backend=partial(service.probe_cleaner_backend, cleaner_cuda_quantization=quantization),
+            )
+            if all(
+                getattr(getattr(service, name, None), "__func__", None) is original
+                for name, original in _SHARED_CUDA_PROBE_METHODS.items()
+            ):
+                # One child process imports torch for both CUDA checks; results
+                # from a just-finished "Check runtime" are reused from its cache.
+                adapter.probe_package_and_cuda_cleaner_runtime = lambda **_ignored: (
+                    service.probe_package_and_cuda_cleaner_runtime(cleaner_cuda_quantization=quantization)
+                )
+            probe = setup_status._probe_profile(groups, adapter)
         except Exception as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "probe_unavailable"},
+            raise public_http_error(
+                PublicError("probe_unavailable", "The runtime check could not run. Check runtime and try again.", 409),
+                legacy_error=True,
             ) from exc
         if not probe.get("available"):
             probe_checks = [
@@ -565,11 +599,16 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
                 for check in probe.get("checks", [])
                 if isinstance(check, Mapping)
             ]
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "probe_failed", "probe": {"checks": probe_checks}},
+            raise public_http_error(
+                PublicError(
+                    "probe_failed",
+                    "The selected runtime is unavailable. Check its dependencies and device support.",
+                    409,
+                    details={"probe": {"checks": probe_checks}},
+                ),
+                legacy_error=True,
             )
-        asset_status = _check_model_group_assets(
+        asset_status = hub_cache._check_model_group_assets(
             groups,
             receipt_verifier=cache.receipt_verifier,
         )
@@ -579,15 +618,41 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
             if not asset_status[group_id]["ready"]
         ]
         if missing_assets:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "assets_missing", "model_groups": missing_assets},
+            raise public_http_error(
+                PublicError(
+                    "assets_missing",
+                    "Required model files are missing. Install or repair the selected models.",
+                    409,
+                    details={"model_groups": missing_assets},
+                ),
+                legacy_error=True,
             )
 
     accepted_risks: tuple[str, ...] = ()
     state_path = setup_runtime.default_state_path()
     try:
         with setup_runtime.SetupLock(state_path):
+            model_storage_service._recover_staged_models(
+                on_uninstall_complete=partial(_complete_runtime_uninstall, request),
+            )
+            if groups:
+                # The shared verifier re-checks every file's identity and only
+                # rehashes files that changed since the check above.
+                asset_status = hub_cache._check_model_group_assets(groups, receipt_verifier=cache.receipt_verifier)
+                missing_assets = [
+                    {"id": group_id, "reason": asset_status[group_id]["reason"]}
+                    for group_id in groups if not asset_status[group_id]["ready"]
+                ]
+                if missing_assets:
+                    raise public_http_error(
+                        PublicError(
+                            "assets_missing",
+                            "Required model files are missing. Install or repair the selected models.",
+                            409,
+                            details={"model_groups": missing_assets},
+                        ),
+                        legacy_error=True,
+                    )
             saved_state = setup_runtime.write_setup_state(
                 state_path,
                 profile_id=profile.id,
@@ -602,15 +667,9 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
             if callable(apply_preferences):
                 apply_preferences(state=saved_state)
     except setup_runtime.SetupExecutionError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "setup_in_progress", "message": str(exc)},
-        ) from exc
+        raise public_http_error(PublicError("setup_in_progress", str(exc), 409), legacy_error=True) from exc
     except setup_runtime.SetupValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "invalid_request", "message": str(exc)},
-        ) from exc
+        raise public_http_error(PublicError("invalid_request", str(exc), 422), legacy_error=True) from exc
 
     cache.invalidate()
     return build_setup_status_response(request)
@@ -655,42 +714,37 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
     probe/asset/risk validation in ``POST /api/setup/adopt``.
     """
     try:
-        profile = setup_runtime._validated_profile(payload.profile)
-        groups = setup_runtime._validated_model_groups(profile, payload.model_groups)
+        profile = setup_selection._validated_profile(payload.profile)
+        groups = setup_selection._validated_model_groups(profile, payload.model_groups)
         if payload.configure_runtime:
-            setup_runtime.validate_model_selection(groups)
-            setup_runtime.require_voice_model(profile.id, groups)
+            setup_selection.validate_model_selection(groups)
+            setup_selection.require_voice_model(profile.id, groups)
     except setup_runtime.SetupValidationError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail={"error": "invalid_request", "message": str(exc)},
-        ) from exc
+        raise public_http_error(PublicError("invalid_request", str(exc), 422), legacy_error=True) from exc
     if not groups:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "invalid_request",
-                "message": "At least one model group is required.",
-            },
+        raise public_http_error(
+            PublicError("invalid_request", "At least one model group is required.", 422),
+            legacy_error=True,
         )
 
     service = _get_download_service(request)
     if any(group.startswith("cleaner-cuda") for group in groups):
         reason = cuda_hardware_error()
         if reason:
-            raise HTTPException(422, detail={"error": "invalid_request", "message": reason})
+            raise public_http_error(PublicError("invalid_request", reason, 422), legacy_error=True)
     try:
         return service.start(profile_id=profile.id, model_groups=groups, configure_runtime=payload.configure_runtime, cleaner_cuda_quantization=payload.cleaner_cuda_quantization)
     except ModelDownloadBusyError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "download_in_progress"},
+        raise public_http_error(
+            PublicError(
+                "download_in_progress",
+                "A model download is already running. Wait for it to finish or cancel it.",
+                409,
+            ),
+            legacy_error=True,
         ) from exc
     except setup_runtime.SetupExecutionError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "setup_in_progress", "message": str(exc)},
-        ) from exc
+        raise public_http_error(PublicError("setup_in_progress", str(exc), 409), legacy_error=True) from exc
 
 
 @router.post("/api/setup/models/download/cancel")
@@ -699,136 +753,96 @@ def post_model_download_cancel(request: Request) -> dict[str, Any]:
     return _get_download_service(request).request_cancel()
 
 
-def _managed_model_repo_ids() -> dict[str, str]:
-    """Map each managed HF repo id to the model group that owns it."""
-    owners: dict[str, str] = {}
-    for group_id in MODEL_GROUPS:
-        for model_id in resolve_model_groups((group_id,)):
-            owners.setdefault(str(model_id), group_id)
-    return owners
-
-
-def _managed_cache_paths(cache: Any, *, cache_root: Path | None = None) -> dict[str, Path]:
-    # Only construct names from our fixed model catalog, never request paths or warnings.
-    roots = {Path(repo.repo_path).parent for repo in getattr(cache, "repos", ())}
-    if cache_root is not None:
-        roots = {cache_root}
-    elif not roots:
-        roots = {Path(hf_constants.HF_HUB_CACHE)}
-    return {
-        model_id: root / ("models--" + model_id.replace("/", "--"))
-        for root in roots for model_id in _managed_model_repo_ids()
-    }
-
-
-def _cache_bytes(path: Path) -> int:
-    if path.is_symlink() or path.is_junction():
-        return 0
-    total = 0
-    for root, dirs, files in os.walk(path, followlinks=False):
-        dirs[:] = [name for name in dirs if not (Path(root) / name).is_symlink() and not (Path(root) / name).is_junction()]
-        for name in files:
-            file = Path(root) / name
-            if not file.is_symlink():
-                try:
-                    total += file.stat().st_size
-                except FileNotFoundError:
-                    pass
-    return total
-
-
-@contextmanager
-def _stage_runtime_models(group_id: str):
-    try:
-        cache = scan_cache_dir()
-    except CacheNotFound:
-        cache = None
-    staged: dict[str, Path] = {}
-    originals: dict[str, Path] = {}
-    try:
-        for model_id, path in _managed_cache_paths(cache).items():
-            if model_id not in resolve_model_groups((group_id,)):
-                continue
-            if not path.exists() or path.is_symlink() or path.is_junction():
-                continue
-            destination = path.with_name(f".orpheus-delete-{uuid4().hex}")
-            path.rename(destination)
-            originals[model_id] = path
-            staged[model_id] = destination
-        yield staged
-    finally:
-        # Roll back on a state-write failure; restore residuals for later retries.
-        for model_id, path in staged.items():
-            if path.exists():
-                path.rename(originals[model_id])
-
-
-def _delete_runtime_models(
-    *,
-    cache_scanner: Callable[[], Any] | None = None,
-    model_groups: tuple[str, ...] | None = None,
-    cache_root: Path | None = None,
-    model_paths: dict[str, Path] | None = None,
-) -> tuple[list[str], int]:
-    """Delete only HF cache repos owned by our model groups; leave others intact."""
-    if model_paths is None:
-        try:
-            cache = (cache_scanner or scan_cache_dir)()
-        except CacheNotFound:
-            return [], 0
-        if cache_scanner is not None and not cache.repos and cache_root is None:
-            return [], 0
-        model_paths = _managed_cache_paths(cache, cache_root=cache_root)
-    owners = _managed_model_repo_ids()
-    deleted_groups: set[str] = set()
-    freed = 0
-    for model_id, path in model_paths.items():
-        group_id = owners[model_id]
-        if model_groups is not None and group_id not in model_groups:
-            continue
-        if not path.exists() or path.is_symlink() or path.is_junction():
-            continue
-        before = _cache_bytes(path)
-        try:
-            shutil.rmtree(path)
-        except OSError:
-            pass  # The rescan below reports partial deletion, including locked files.
-        freed += max(0, before - _cache_bytes(path))
-        if not path.exists():
-            deleted_groups.add(group_id)
-    ordered = [group_id for group_id in MODEL_GROUPS if group_id in deleted_groups]
-    return ordered, freed
+def _complete_runtime_uninstall(request: Request, reset_id: str | None = None) -> None:
+    config = getattr(get_controller_from_app(request.app), "config", None)
+    model_storage_service.reset_setup_preferences(config, request.app.state, reset_id)
+    _get_status_cache(request).invalidate()
 
 
 @router.get("/api/setup/models")
-def get_managed_models() -> dict[str, Any]:
+def get_managed_models(request: Request = None) -> dict[str, Any]:
     """List managed cache usage without disclosing filesystem paths."""
+    from huggingface_hub.errors import CacheNotFound
+
+    root = Path(hub_cache.hf_constants.HF_HUB_CACHE)
     try:
-        cache = scan_cache_dir()
+        if model_storage_service._staged_model_manifests(root):
+            try:
+                with setup_runtime.SetupLock(setup_runtime.default_state_path(), timeout_seconds=0.05):
+                    model_storage_service._recover_staged_models(
+                        cache_root=root,
+                        on_uninstall_complete=partial(_complete_runtime_uninstall, request) if request else None,
+                    )
+            except setup_runtime.SetupExecutionError:
+                pass  # A live setup operation owns its stages; show them below.
+        cache = hub_cache.scan_cache_dir()
         repos = cache.repos
+        manifests = model_storage_service._staged_model_manifests(root)
     except CacheNotFound:
         cache = None
         repos = ()
+        manifests = []
     except OSError as exc:
-        raise HTTPException(503, detail={"error": "cache_unavailable", "message": "Model storage could not be read. Try again."}) from exc
+        raise public_http_error(
+            PublicError("cache_unavailable", "Model storage could not be read. Try again.", 503),
+            legacy_error=True,
+        ) from exc
     by_id = {repo.repo_id: repo for repo in repos if repo.repo_type == "model"}
-    paths = _managed_cache_paths(cache)
-    return {"models": [
-        {
-            "id": group,
-            "downloaded": any(paths[model_id].exists() for model_id in resolve_model_groups((group,))),
-            "size_bytes": sum(_cache_bytes(paths[model_id]) for model_id in resolve_model_groups((group,))),
-            **({"damaged": True} if any(paths[model_id].exists() and model_id not in by_id for model_id in resolve_model_groups((group,))) else {}),
-        }
+    paths = hub_cache._managed_cache_paths(cache)
+    staged: dict[str, list[Path]] = {}
+    for model_id, stage, _, _ in manifests:
+        staged.setdefault(model_id, []).append(stage)
+    group_paths = {
+        group: [(model_id, path) for model_id in resolve_model_groups((group,))
+                for path in (paths[model_id], *staged.get(model_id, ()))]
         for group in MODEL_GROUPS
-    ]}
+    }
+    blocker = _model_delete_blocker(request) if request is not None else None
+    models = []
+    for group in MODEL_GROUPS:
+        downloaded = any(path.exists() for _, path in group_paths[group])
+        model = {
+            "id": group,
+            "downloaded": downloaded,
+            "size_bytes": hub_cache._cache_bytes(*(path for _, path in group_paths[group])),
+            **({"damaged": True} if any(path.exists() and (model_id not in by_id or path != paths[model_id]) for model_id, path in group_paths[group]) else {}),
+        }
+        if request is not None:
+            # Lets Settings disable Delete with the reason DELETE would give.
+            model["deletable"] = downloaded and blocker is None
+            model["delete_blocked"] = blocker
+        models.append(model)
+    return {"models": models}
+
+
+_MODEL_DELETE_BLOCKERS = {
+    "conversion_in_progress": "Wait for the current conversion to finish before deleting a model.",
+    "conversion_cleanup_pending": "Wait for the stopped conversion to finish cleaning up before deleting a model.",
+    "maintenance_in_progress": "Wait for library maintenance to finish before deleting a model.",
+    "download_in_progress": "Wait for the model download to finish before deleting a model.",
+    "preview_in_progress": "Wait for the voice preview to finish before deleting a model.",
+}
+
+
+def _model_delete_blocker(request: Request) -> dict[str, str] | None:
+    """Why deleting a model would be refused right now, without reserving anything."""
+    controller = getattr(request.app.state, "controller", None)
+    blocker = getattr(getattr(controller, "_conversion_service", None), "storage_cleanup_blocker", lambda: None)()
+    if blocker is None:
+        downloads = getattr(request.app.state, "model_download_service", None)
+        status = getattr(downloads, "status", None)
+        if callable(status) and status().get("lifecycle") in {"running", "stopping"}:
+            blocker = "download_in_progress"
+    if blocker is None and getattr(model_storage_service, "_preview_users", 0):
+        blocker = "preview_in_progress"
+    return {"code": blocker, "message": _MODEL_DELETE_BLOCKERS[blocker]} if blocker else None
 
 
 @router.delete("/api/setup/models/{group_id}")
 def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
     """Remove exactly one managed model group, preserving other models and settings."""
     if group_id not in MODEL_GROUPS:
-        raise HTTPException(422, detail={"error": "invalid_model", "message": "Unknown managed model."})
+        raise public_http_error(PublicError("invalid_model", "Unknown managed model.", 422), legacy_error=True)
     cache = _get_status_cache(request)
     state_path = setup_runtime.default_state_path()
     controller = get_controller_from_app(request.app)
@@ -842,14 +856,25 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
                 begin()
                 acquired = True
             except RuntimeError as exc:
-                raise HTTPException(409, detail={"error": "conversion_in_progress", "message": "Wait for the current conversion to finish before deleting a model."}) from exc
+                raise public_http_error(
+                    PublicError(
+                        "conversion_in_progress",
+                        "Wait for the current conversion to finish before deleting a model.",
+                        409,
+                    ),
+                    legacy_error=True,
+                ) from exc
         with setup_runtime.SetupLock(state_path, timeout_seconds=0.5):
+            recovered, recovered_bytes = model_storage_service._recover_staged_models(
+                model_groups=(group_id,), on_uninstall_complete=partial(_complete_runtime_uninstall, request),
+            )
             # Read the state first so an unreadable configuration cannot be
             # discovered only after its model files have already been removed.
             state, _ = setup_runtime._read_setup_state(state_path)
             if state and group_id in state["model_groups"] and not group_id.startswith("tts-"):
                 remaining = tuple(group for group in state["model_groups"] if group != group_id)
-                with _stage_runtime_models(group_id) as staged:
+                installation_id = uuid4().hex
+                with model_storage_service._stage_runtime_models(group_id, installation_id=installation_id) as staged:
                     try:
                         saved_state = setup_runtime.write_setup_state(
                             state_path,
@@ -859,33 +884,49 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
                             cleaner_cuda_quantization=state["cleaner_cuda_quantization"],
                             backend_instance_id=_adopt_backend_instance_id(request),
                             restart_required=False,
+                            installation_id=installation_id,
                         )
                     except (setup_runtime.SetupExecutionError, OSError) as exc:
-                        raise HTTPException(503, detail={"error": "setup_state_write_failed", "message": "Model settings could not be saved. Try again."}) from exc
+                        raise public_http_error(
+                            PublicError(
+                                "setup_state_write_failed",
+                                "Model settings could not be saved. Try again.",
+                                503,
+                            ),
+                            legacy_error=True,
+                        ) from exc
+                    model_storage_service._commit_staged_models(staged)
                     config = getattr(controller, "config", None)
                     apply_preferences = getattr(config, "apply_setup_preferences", None)
                     if callable(apply_preferences):
                         apply_preferences(state=saved_state)
-                    deleted, freed = _delete_runtime_models(model_groups=(group_id,), model_paths=staged)
+                    deleted, freed = model_storage_service._delete_runtime_models(model_groups=(group_id,), model_paths=staged)
             else:
-                deleted, freed = _delete_runtime_models(model_groups=(group_id,))
-            residual = [model["id"] for model in get_managed_models()["models"] if model["id"] == group_id and model["downloaded"]]
+                with model_storage_service._stage_runtime_models(group_id, installation_id=uuid4().hex) as staged:
+                    model_storage_service._commit_staged_models(staged)
+                    deleted, freed = model_storage_service._delete_runtime_models(model_groups=(group_id,), model_paths=staged)
+            deleted = [group for group in MODEL_GROUPS if group in set(deleted) | set(recovered)]
+            freed += recovered_bytes
+            residual = [model["id"] for model in get_managed_models(request)["models"] if model["id"] == group_id and model["downloaded"]]
+    except model_storage_service.PreviewInProgress as exc:
+        raise public_http_error(PublicError("preview_in_progress", str(exc), 409), legacy_error=True) from exc
     except setup_runtime.SetupExecutionError as exc:
-        raise HTTPException(409, detail={"error": "setup_in_progress", "message": str(exc)}) from exc
+        raise public_http_error(PublicError("setup_in_progress", str(exc), 409), legacy_error=True) from exc
     except OSError as exc:
-        raise HTTPException(409, detail={"error": "model_delete_failed", "message": "The model could not be deleted. Close any app using it and try again."}) from exc
+        raise public_http_error(
+            PublicError(
+                "model_delete_failed",
+                "The model could not be deleted. Close any app using it and try again.",
+                409,
+            ),
+            legacy_error=True,
+        ) from exc
     finally:
         cache.receipt_verifier.invalidate()
         cache.invalidate()
         if acquired and callable(end):
             end()
-    return {"deleted_model_groups": deleted, "freed_bytes": freed, "state_deleted": False, **_residual_notice(residual)}
-
-
-def _residual_notice(groups: list[str]) -> dict[str, Any]:
-    if not groups:
-        return {}
-    return {"residual_model_groups": groups, "message": "Couldn't delete some files — they may be in use. Close other apps and retry."}
+    return {"deleted_model_groups": deleted, "freed_bytes": freed, "state_deleted": False, **model_storage_service._residual_notice(residual)}
 
 
 @router.delete("/api/setup/runtime")
@@ -903,23 +944,50 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
             begin_cleanup()
             guard_acquired = True
         except RuntimeError as exc:
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "conversion_in_progress", "message": str(exc)},
-            ) from exc
+            raise public_http_error(PublicError("conversion_in_progress", str(exc), 409), legacy_error=True) from exc
     try:
         with setup_runtime.SetupLock(state_path):
-            deleted_groups, freed_bytes = _delete_runtime_models()
-            residual = [model["id"] for model in get_managed_models()["models"] if model["downloaded"]]
+            recovered, recovered_bytes = model_storage_service._recover_staged_models(
+                on_uninstall_complete=partial(_complete_runtime_uninstall, request),
+            )
+            setup_runtime.pending_model_deletions(state_path)
+            previous_state, error = setup_runtime._read_setup_state(state_path)
+            if error:
+                raise setup_runtime.SetupExecutionError(error)
+            previous_bytes = state_path.read_bytes() if previous_state is not None else None
             state_deleted = state_path.exists()
-            if not residual:
+            uninstall_id = uuid4().hex
+            with model_storage_service._stage_runtime_models(
+                None, installation_id=uninstall_id, uninstall_runtime=True,
+            ) as staged:
+                # State absence commits the whole uninstall, including a kill
+                # before flags are written, when a prior state existed. An
+                # unconfigured runtime commits at its first durable flag.
                 state_path.unlink(missing_ok=True)
-            else:
-                state_deleted = False
+                if state_path.parent.exists():
+                    sync_directory(state_path.parent)
+                model_storage_service._commit_staged_models(staged)
+                deleted_groups, freed_bytes = model_storage_service._delete_runtime_models(
+                    model_paths=staged, on_uninstall_complete=partial(_complete_runtime_uninstall, request),
+                )
+                deleted_groups = [group for group in MODEL_GROUPS if group in set(deleted_groups) | set(recovered)]
+                freed_bytes += recovered_bytes
+                residual = [model["id"] for model in get_managed_models(request)["models"] if model["downloaded"]]
+                if not residual:
+                    _complete_runtime_uninstall(request, uninstall_id)
+                else:
+                    # Preserve the existing partial-uninstall response and live
+                    # preferences; committed journals still own the retry.
+                    if previous_bytes is not None:
+                        atomic_write_bytes(state_path, previous_bytes, permissions=0o600)
+                    state_deleted = False
+
     except setup_runtime.SetupExecutionError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": "setup_in_progress", "message": str(exc)},
+        raise public_http_error(PublicError("setup_in_progress", str(exc), 409), legacy_error=True) from exc
+    except OSError as exc:
+        raise public_http_error(
+            PublicError("runtime_uninstall_failed", "Runtime files could not be removed. Close any app using them and try again.", 409),
+            legacy_error=True,
         ) from exc
     finally:
         if guard_acquired and callable(end_cleanup):
@@ -929,5 +997,6 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
         "deleted_model_groups": deleted_groups,
         "freed_bytes": freed_bytes,
         "state_deleted": state_deleted,
-        **_residual_notice(residual),
+        **({"setup_reset_id": request.app.state.setup_reset_id} if not residual else {}),
+        **model_storage_service._residual_notice(residual),
     }
