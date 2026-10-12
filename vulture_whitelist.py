@@ -5,7 +5,6 @@ This file is passed to vulture as an allowlist. It is not imported at runtime.
 """
 
 # Public callback/config/dataclass contracts.
-on_chapter_complete
 updated_at
 chapters_completed
 chapters_total
@@ -14,44 +13,13 @@ supports_voice_cloning
 supports_engine_options
 is_local
 
-# Reserved error code and public error API surface.
-E006
-E102
-E200
-E201
-E302
-E400
-E401
-M4BPackagingError
-InvalidFilenameError
-check_disk_space
-estimate_audio_size
-
 # Dynamic runtime attributes and public compatibility hooks.
-_._doc
 _.row_factory
-_.patch_load_weights_compat
-_.patch_generation_result_compat
-_.runtime_error_message
-_.ensure_runtime
-_.current_model
-_.on_pressure_change
-_.on_unload
-_.on_warning
-_.probe_mlx_cleaner_runtime
 _.get_book_by_source_path
 _.create_chapter
-_.estimate_duration
-_.healthcheck
 _.is_available
-_.get_voice
 _.capture_signals
-_.chunk_generator
-_.model_context
-_.unregister
-_.get_cover
 _.from_dict
-_.get_usage_trend
 
 # FastAPI route handlers and lazy package exports are discovered dynamically.
 get_maintenance_diagnostics
@@ -83,10 +51,7 @@ pytestmark
 EPUB_MIMETYPE
 abbreviation_text
 registry_snapshot
-TestTextChunkerStatefulTests
 _.created_chapters
 _.shutdown_called
 _.raise_for_status
-_.change_config
-_.chunks_are_valid
 _.mock_parser_deps

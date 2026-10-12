@@ -17,12 +17,14 @@ PY
 
 if [[ -x "$ROOT/.venv/bin/python" ]]; then
   PYTHON="$ROOT/.venv/bin/python"
+elif [[ -x "$ROOT/.venv/Scripts/python.exe" ]]; then
+  PYTHON="$ROOT/.venv/Scripts/python.exe"
 elif command -v python >/dev/null 2>&1 && python_supports_validation "$(command -v python)"; then
   PYTHON="$(command -v python)"
 elif command -v python3.12 >/dev/null 2>&1; then
   PYTHON="$(command -v python3.12)"
 else
-  echo "Python 3.12 is required for local validation. Create .venv/bin/python or install python3.12." >&2
+  echo "Python 3.12 is required for local validation. Create the project .venv or install python3.12." >&2
   exit 1
 fi
 
@@ -33,10 +35,14 @@ run_with_timeout() {
 from __future__ import annotations
 
 import subprocess
+import shutil
 import sys
 
 seconds = int(sys.argv[1])
 command = sys.argv[2:]
+# Windows CreateProcess does not apply PATHEXT when given bare "npm".
+# Resolve npm.cmd (and other shims) before launching, without a shell command.
+command[0] = shutil.which(command[0]) or command[0]
 try:
     completed = subprocess.run(command, timeout=seconds)
 except subprocess.TimeoutExpired:
@@ -101,14 +107,14 @@ echo ""
 echo "> Tauri tests"
 (
   cd desktop/src-tauri
-  AR=/usr/bin/ar CC=/usr/bin/clang CARGO_BUILD_JOBS=1 run_with_timeout 900 cargo test
+  CARGO_BUILD_JOBS=1 run_with_timeout 900 cargo test
 )
 
 echo ""
 echo "> Tauri check"
 (
   cd desktop/src-tauri
-  AR=/usr/bin/ar CC=/usr/bin/clang CARGO_BUILD_JOBS=1 run_with_timeout 600 cargo check
+  CARGO_BUILD_JOBS=1 run_with_timeout 600 cargo check
 )
 
 echo ""

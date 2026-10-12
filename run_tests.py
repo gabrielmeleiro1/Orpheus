@@ -12,17 +12,17 @@ from pathlib import Path
 
 SCRIPT = "script"
 PYTEST = "pytest"
-CORE_MARKER_EXPRESSION = "not property and not benchmark and not slow and not ui"
+CORE_MARKER_EXPRESSION = "not property and not benchmark and not slow"
 REPO_ROOT = Path(__file__).resolve().parent
 
 # Smoke modules to run (in order)
 SMOKE_TEST_MODULES: list[tuple[str, str]] = [
     ("tests/test_pdf_parser.py", SCRIPT),
     ("tests/test_epub_parser.py", SCRIPT),
-    ("tests/test_storage_migrations.py", SCRIPT),
-    ("tests/test_storage_repository.py", SCRIPT),
+    ("tests/test_storage_migrations.py", PYTEST),
+    ("tests/test_storage_repository.py", PYTEST),
     ("tests/test_storage_maintenance.py", PYTEST),
-    ("tests/test_cleaner.py", SCRIPT),
+    ("tests/test_cleaner.py", PYTEST),
     ("tests/test_cleaner_golden_set.py", SCRIPT),
     ("tests/test_cleaner_hallucination_guard.py", SCRIPT),
     ("tests/test_cleaner_heuristic.py", SCRIPT),
@@ -31,7 +31,6 @@ SMOKE_TEST_MODULES: list[tuple[str, str]] = [
     ("tests/test_cleaner_api_trace_multichapter.py", SCRIPT),
     ("tests/test_cleaner_text_preservation.py", SCRIPT),
     ("tests/test_pipeline_packaging.py", SCRIPT),
-    ("tests/test_feedback_loop_runner.py", SCRIPT),
     ("tests/test_parallel_fallback.py", SCRIPT),
     ("tests/test_runtime_recovery.py", SCRIPT),
     ("tests/test_tts_runtime_lock.py", SCRIPT),

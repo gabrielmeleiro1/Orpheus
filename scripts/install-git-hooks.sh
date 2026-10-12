@@ -12,7 +12,6 @@ chmod +x \
 mkdir -p "$ROOT/.git/hooks"
 cp "$ROOT/scripts/hooks/pre-push" "$ROOT/.git/hooks/pre-push"
 chmod +x "$ROOT/.git/hooks/pre-push"
-git config --local --unset alias.push >/dev/null 2>&1 || true
 
 cat <<EOF
 Installed Orpheus pre-push validation for this repository clone.
@@ -25,6 +24,7 @@ this clone will run:
   - python -m pytest tests -m "not property and not benchmark and not slow and not ui"
   - npm ci
   - npm run typecheck
+  - npm test -- --run
   - cargo test
   - cargo check
 

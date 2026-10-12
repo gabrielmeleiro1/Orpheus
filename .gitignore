@@ -22,45 +22,42 @@ __pycache__/
 venv/
 .env
 .env.*
-.env.local
 !.env.example
 
-# Local tool state
+# Local tool and editor state
 .artifacts/
-.artifacts/release-qualification/
 .claude/
-scripts/sync_to_desktop.sh
 
-# Local documentation, reports, planning notes, and design review artifacts
-/docs/
-/design/
-
-# Coverage and test output
+# Coverage and logs
 .coverage
 .coverage.*
 coverage.xml
 htmlcov/
+*.log
+
+# Desktop build output
 node_modules/
+*.tsbuildinfo
 desktop/dist/
+desktop/release/
+desktop/src-tauri/target/
 desktop/src-tauri/binaries/*
 !desktop/src-tauri/binaries/.gitkeep
-desktop/src-tauri/target/
-*.tsbuildinfo
-*-crop-check.png
-*.log
+
+# Local runtime state. A backend run from the checkout keeps setup state beside
+# its data directory, so the root-level files belong here too.
+data/*
+!data/README.md
+/backend-instance.json
+/backend-ready.json
+/runtime-setup.json
+/runtime-setup.json.*
 tests/data/*.db
 tests/data/*.db-shm
 tests/data/*.db-wal
-
-# Local runtime state
-data/*.db
-data/*.db-shm
-data/*.db-wal
-data/sources/
 output/
 temp/
 tmp/
-desktop/release/
 
 # Generated media and local source corpora
 *.m4b

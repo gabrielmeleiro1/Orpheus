@@ -1,9 +1,11 @@
 # Orpheus minimal runtime dependencies.
 #
-# This is intentionally the base profile only: it supports document conversion,
-# playback, and cloud cleaning without installing a local ML runtime. Choose one
-# optional local runtime explicitly:
-#   python -m pip install -r requirements/mlx.txt   # Apple Silicon
-#   python -m pip install -r requirements/cuda.txt  # NVIDIA CUDA
+# This is intentionally the base profile only: it supports source inspection,
+# library management, and playback of existing audio. Both conversion modes
+# require a local TTS runtime. Install one with the setup script, which also
+# selects the CUDA PyTorch wheel (a plain `pip install -r requirements/cuda.txt`
+# resolves the CPU-only PyTorch wheel on Windows):
+#   python scripts/setup_runtime.py --profile mlx --group tts-mlx        # Apple Silicon
+#   python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda  # Windows/Linux
 
 -r requirements/base.txt

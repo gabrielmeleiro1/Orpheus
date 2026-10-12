@@ -1,5 +1,6 @@
 # Apple Silicon local runtime. Requires macOS on Apple Silicon.
 -r base.txt
+urllib3>=2.8.0,<3.0
 
 mlx==0.32.0; platform_system == "Darwin" and platform_machine == "arm64"
 mlx-lm==0.31.3; platform_system == "Darwin" and platform_machine == "arm64"
