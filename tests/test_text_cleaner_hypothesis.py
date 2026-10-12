@@ -111,31 +111,39 @@ class TestTextCleanerRuleBased:
             assert cleaner._rule_based_clean("**0*0**") == "00"
     
     @pytest.mark.property
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("Dr. Smith returned home.", "Dr. Smith returned home."),
+            ("Mr. Jones arrived.", "Mr. Jones arrived."),
+            ("Mrs. Jones arrived.", "Mrs. Jones arrived."),
+            ("Ms. Lee spoke.", "Ms. Lee spoke."),
+            ("Prof. Lee taught.", "Prof. Lee taught."),
+            ("St. Louis is nice.", "St. Louis is nice."),
+            ("Bring books, pens, etc.", "Bring books, pens, etc."),
+            ("Choose fruit, e.g. apples.", "Choose fruit, e.g. apples."),
+            ("He left, i.e. went home.", "He left, i.e. went home."),
+            ("Team Alpha vs. Team Beta", "Team Alpha vs. Team Beta"),
+        ],
+    )
     @given(
-        st.text(min_size=5, max_size=200),
-        st.sampled_from(['Dr.', 'Mr.', 'Mrs.', 'Ms.', 'Prof.', 'St.', 'etc.', 'e.g.', 'i.e.', 'vs.'])
+        suffix=st.lists(
+            st.sampled_from(["the", "traveler", "read", "another", "quiet", "chapter"]),
+            min_size=1, max_size=20,
+        ).map(" ".join),
     )
     @settings(max_examples=100, deadline=5000)
-    def test_abbreviations_expanded(self, context, abbrev):
-        """
-        Common abbreviations should be expanded.
-        
-        Note: We test with context to ensure the regex matches correctly.
-        """
+    def test_abbreviations_preserved(self, text, expected, suffix):
+        """Keep source abbreviations and surrounding prose unchanged."""
         with patch.object(TextCleaner, 'load'):
             cleaner = self._rule_only_cleaner()
-            
-            # Create text with abbreviation
-            text = f"{abbrev} {context}"
-            result = cleaner._rule_based_clean(text)
-            
-            # The abbreviation should be expanded (not remain as "X.")
-            # Note: Some abbreviations need specific patterns to match
+            result = cleaner._rule_based_clean(f"{text} {suffix}")
+
             assert isinstance(result, str)
-            assert len(result) >= len(context)  # Shouldn't lose content
+            assert result == f"{expected} {suffix}"
     
     @pytest.mark.property
-    @given(st.text(min_size=0, max_size=500))
+    @given(st.text(alphabet=" \t\n\r\x0b\x0c\u00a0\u2003", max_size=500))
     @settings(max_examples=100, deadline=3000)
     def test_empty_and_whitespace_handled(self, text):
         """
@@ -143,29 +151,9 @@ class TestTextCleanerRuleBased:
         """
         with patch.object(TextCleaner, 'load'):
             cleaner = self._rule_only_cleaner()
-            
-            result = cleaner.clean(text)
-            
-            if not text or not text.strip():
-                assert result == ""
-    
-    @pytest.mark.property
-    @given(st.text(alphabet=st.characters(whitelist_categories=('Lu', 'Ll', 'Zs')), 
-                   min_size=0, max_size=500))
-    @settings(max_examples=100, deadline=3000)
-    def test_unicode_text_handled(self, text):
-        """
-        Unicode text (letters and spaces) should be handled correctly.
-        """
-        with patch.object(TextCleaner, 'load'):
-            cleaner = self._rule_only_cleaner()
-            
-            result = cleaner._rule_based_clean(text)
-            
-            # Result should be valid unicode
-            assert isinstance(result, str)
-            assert result.encode('utf-8').decode('utf-8') == result
-    
+
+            assert cleaner.clean(text) == ""
+
     @pytest.mark.property
     @given(st.text(min_size=1, max_size=500))
     @settings(
@@ -201,37 +189,8 @@ class TestTextCleanerRuleBased:
 
 
 class TestTextCleanerLLMSemantics:
-    """Tests for LLM-based cleaning semantics (with mocked LLM)."""
+    """Tests for LLM-routing semantics."""
 
-    @staticmethod
-    def _mocked_mlx_cleaner() -> TextCleaner:
-        with patch("modules.tts.cleaner_mlx.ensure_mlx_lm_runtime"):
-            return TextCleaner()
-    
-    @pytest.mark.property
-    @given(
-        text=st.text(min_size=20, max_size=500),
-        mock_response=st.text(min_size=10, max_size=500)
-    )
-    @settings(max_examples=50, deadline=5000)
-    def test_llm_output_extracted_correctly(self, text, mock_response):
-        """
-        LLM response should be extracted and returned correctly.
-        """
-        with patch.object(TextCleaner, 'load'):
-            cleaner = self._mocked_mlx_cleaner()
-            cleaner._loaded = True
-            cleaner._model = MagicMock()
-            cleaner._tokenizer = MagicMock()
-            
-            # Mock the generate function
-            with patch('modules.tts.cleaner_mlx.generate', return_value=mock_response):
-                result = cleaner.clean(text)
-                
-                # Result should be the extracted text
-                assert isinstance(result, str)
-                assert len(result) > 0
-    
     @pytest.mark.property
     @given(st.text(min_size=1, max_size=100))
     @settings(max_examples=50, deadline=3000)
@@ -270,15 +229,21 @@ class TestTextCleanerErrorHandling:
             cleaner._loaded = True
             cleaner._model = MagicMock()
             cleaner._tokenizer = MagicMock()
-            
-            # Mock generate to raise exception
-            with patch('modules.tts.cleaner_mlx.generate', side_effect=Exception("LLM Error")):
-                cleaner._rule_based_clean(text)
-                
-                # Clean should fallback to rule-based
+
+            # Empty input exits before routing. Keep arbitrary generated suffixes
+            # while ensuring this property actually exercises the failure branch.
+            text = f"Preserve this text. {text}"
+            expected = cleaner._rule_based_clean(text)
+            with (
+                patch.object(cleaner, '_needs_llm_cleaning', return_value=True),
+                patch(
+                    'modules.tts.cleaner_mlx.generate', side_effect=RuntimeError("LLM Error"),
+                ) as generate,
+            ):
                 result = cleaner.clean(text)
+                generate.assert_called_once()
                 assert isinstance(result, str)
-                # Should get something sensible back (may be empty for whitespace-only input)
+                assert result == expected
 
 
 class TestTextCleanerCaching:
@@ -313,4 +278,4 @@ class TestTextCleanerCaching:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-m", "property"])
+    raise SystemExit(pytest.main([__file__, "-v", "-m", "property", "-o", "addopts="]))

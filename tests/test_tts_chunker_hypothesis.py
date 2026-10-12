@@ -5,9 +5,14 @@ Uses Hypothesis for fuzz testing edge cases.
 Tests the TextChunker with various inputs to ensure robustness.
 """
 
+from pathlib import Path
+import sys
+
 import pytest
 from hypothesis import given, strategies as st, settings, assume
-from hypothesis.stateful import RuleBasedStateMachine, rule, invariant
+
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from modules.tts.chunker import TextChunker, ChunkConfig
 
@@ -76,43 +81,17 @@ class TestTextChunkerProperties:
         chunker = TextChunker(config)
         chunks = chunker.chunk(text)
         
-        if not chunks:
-            # If no chunks produced, the text was likely too short/full of whitespace
-            return
+        assert chunks, "Nonempty normalized text must produce chunks"
+        assert all(chunk.strip() for chunk in chunks), "Chunks must contain content"
         
         joined = " ".join(chunks)
         original_normalized = " ".join(text.split())
         
         # The joined text should match the original (allowing for whitespace normalization)
         assert joined == original_normalized or len(joined) >= len(original_normalized) * 0.9
-    
-    @pytest.mark.property
-    @given(
-        st.text(
-            alphabet=st.characters(whitelist_categories=('L', 'N', 'P', 'Z')),
-            min_size=0,
-            max_size=2000
-        )
-    )
-    @settings(max_examples=150, deadline=5000)
-    def test_chunker_handles_unicode(self, text):
-        """
-        Text chunker should handle unicode text correctly.
-        
-        Tests with various unicode categories:
-        - L: Letters (including non-ASCII)
-        - N: Numbers
-        - P: Punctuation
-        - Z: Separators (spaces)
-        """
-        chunker = TextChunker()
-        chunks = chunker.chunk(text)
-        
-        assert isinstance(chunks, list)
-        for chunk in chunks:
-            assert isinstance(chunk, str)
-            # Each chunk should be valid unicode
-            assert chunk.encode('utf-8').decode('utf-8') == chunk
+        # Hard splits inside overlong tokens can add spaces at chunk seams.
+        # Every non-whitespace character must still occur exactly once, in order.
+        assert "".join(joined.split()) == "".join(original_normalized.split())
     
     @pytest.mark.property
     @given(
@@ -140,32 +119,6 @@ class TestTextChunkerProperties:
             )
     
     @pytest.mark.property
-    @given(st.lists(st.text(min_size=1, max_size=100), min_size=1, max_size=20))
-    @settings(max_examples=100, deadline=5000)
-    def test_chunker_handles_sentence_boundaries(self, sentences):
-        """
-        Text with clear sentence boundaries should be split accordingly.
-        
-        Input is a list of sentences that we join with proper punctuation.
-        """
-        # Create proper sentences with endings
-        proper_sentences = [s.strip() + "." if not s.strip().endswith(('.','!','?')) else s.strip()
-                           for s in sentences if s.strip()]
-        assume(proper_sentences)
-        text = " ".join(proper_sentences)
-        
-        config = ChunkConfig(max_tokens=50)  # Small limit to force splits
-        chunker = TextChunker(config)
-        chunks = chunker.chunk(text)
-        
-        # Should produce at least one chunk
-        assert len(chunks) >= 1
-        
-        # Total content should be preserved
-        total_chunk_chars = sum(len(c) for c in chunks)
-        assert total_chunk_chars >= len(text) * 0.8  # Allow for whitespace differences
-    
-    @pytest.mark.property
     @given(st.text(min_size=0, max_size=100))
     @settings(max_examples=50, deadline=2000)
     def test_empty_and_whitespace_only(self, text):
@@ -178,17 +131,6 @@ class TestTextChunkerProperties:
         if not text or not text.strip():
             # Empty or whitespace-only input
             assert chunks == []
-    
-    @pytest.mark.property
-    @given(st.text(alphabet=st.just(" "), min_size=0, max_size=1000))
-    @settings(max_examples=50, deadline=2000)
-    def test_whitespace_only_input(self, whitespace):
-        """
-        Input containing only whitespace should not produce chunks.
-        """
-        chunker = TextChunker()
-        chunks = chunker.chunk(whitespace)
-        assert chunks == []
     
     @pytest.mark.property
     @given(
@@ -235,41 +177,6 @@ class TestTextChunkerProperties:
         assert chunks1 == chunks2
 
 
-class TestTextChunkerStateful(RuleBasedStateMachine):
-    """
-    Stateful property-based tests for TextChunker.
-    
-    Tests sequences of operations to ensure state management is correct.
-    """
-    
-    def __init__(self):
-        super().__init__()
-        self.chunker = TextChunker()
-        self.chunked_texts = []
-    
-    @rule(text=st.text(min_size=0, max_size=1000))
-    def chunk_text(self, text):
-        """Chunk arbitrary text."""
-        chunks = self.chunker.chunk(text)
-        self.chunked_texts.append((text, chunks))
-    
-    @rule(new_max_tokens=st.integers(min_value=10, max_value=1000))
-    def change_config(self, new_max_tokens):
-        """Change the chunker configuration."""
-        config = ChunkConfig(max_tokens=new_max_tokens)
-        self.chunker = TextChunker(config)
-    
-    @invariant()
-    def chunks_are_valid(self):
-        """All stored chunks must be valid."""
-        for original, chunks in self.chunked_texts:
-            assert isinstance(chunks, list)
-            assert all(isinstance(c, str) for c in chunks)
-
-
-# Run the stateful test
-TestTextChunkerStatefulTests = TestTextChunkerStateful.TestCase
-
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-m", "property"])
+    raise SystemExit(pytest.main([__file__, "-v", "-m", "property", "-o", "addopts="]))

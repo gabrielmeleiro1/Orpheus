@@ -6,11 +6,16 @@ Tests error handling and robustness of PDF and EPUB parsers.
 """
 
 import pytest
+import sys
 import tempfile
 from pathlib import Path
 from hypothesis import given, strategies as st, settings
 from hypothesis.strategies import composite
 
+if __name__ == "__main__":
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from modules.errors import AudiobookError
 from modules.ingestion.pdf_parser import PDFParser
 from modules.ingestion.epub_parser import EPUBParser
 
@@ -86,22 +91,10 @@ class TestPDFParserRobustness:
             temp_path = Path(f.name)
 
         try:
-            # Should raise an error for malformed input. Construction only
-            # runs a cheap header/EOF validation, so garbage that keeps both
-            # markers is rejected when the content is actually parsed.
-            with pytest.raises(Exception) as exc_info:
+            # Construction only runs a cheap header/EOF validation, so garbage
+            # that keeps both markers is rejected when the content is parsed.
+            with pytest.raises(AudiobookError):
                 PDFParser(temp_path).parse()
-
-            # Verify it's one of the expected exception types
-            error_type = type(exc_info.value)
-            assert error_type in [
-                FileNotFoundError,  # If validation fails early
-                ValueError,         # If file extension/signature wrong
-                OSError,            # System-level I/O errors
-                Exception,          # Parent of our custom errors
-            ] or "PDFParsingError" in str(error_type) or "CorruptedFileError" in str(error_type), (
-                f"Unexpected error type: {error_type}"
-            )
         finally:
             temp_path.unlink(missing_ok=True)
     
@@ -139,7 +132,7 @@ class TestPDFParserRobustness:
         
         try:
             # Should fail validation
-            with pytest.raises(Exception):
+            with pytest.raises(AudiobookError):
                 PDFParser(temp_path)
         finally:
             temp_path.unlink(missing_ok=True)
@@ -162,23 +155,8 @@ class TestEPUBParserRobustness:
             temp_path = Path(f.name)
         
         try:
-            # Should raise an error for malformed input
-            with pytest.raises(Exception) as exc_info:
+            with pytest.raises(AudiobookError):
                 EPUBParser(temp_path)
-            
-            # Verify it's one of the expected exception types
-            error_type = type(exc_info.value)
-            # Allow various error types during validation
-            assert error_type in [
-                FileNotFoundError,
-                ValueError,
-                Exception,
-            ] or any(name in str(error_type) for name in [
-                "EPUBParsingError",
-                "CorruptedFileError",
-                "BadZipFile",
-                "zipfile",
-            ]), f"Unexpected error type: {error_type}"
         finally:
             temp_path.unlink(missing_ok=True)
     
@@ -216,11 +194,11 @@ class TestEPUBParserRobustness:
         
         try:
             # Should fail validation
-            with pytest.raises(Exception):
+            with pytest.raises(AudiobookError):
                 EPUBParser(temp_path)
         finally:
             temp_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v", "-m", "property"])
+    raise SystemExit(pytest.main([__file__, "-v", "-m", "property", "-o", "addopts="]))

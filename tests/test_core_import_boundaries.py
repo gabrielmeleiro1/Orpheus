@@ -12,8 +12,10 @@ import pytest
     ("module", "forbidden"),
     [
         ("modules.contracts", ("pydantic", "modules.storage", "modules.pipeline", "modules.tts")),
+        ("modules.app.services.model_storage_service", ("modules.web", "fastapi")),
         ("modules.storage", ("modules.pipeline", "modules.tts")),
         ("modules.tts.cleaner_memory", ("modules.pipeline",)),
+        ("modules.web.server", ("numpy", "torch", "mlx", "httpx", "huggingface_hub.hf_api")),
     ],
 )
 def test_core_imports_do_not_load_higher_layers(module, forbidden):

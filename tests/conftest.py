@@ -1,6 +1,7 @@
 import multiprocessing
 import os
 import threading
+import time
 
 import pytest
 from pathlib import Path
@@ -13,6 +14,43 @@ if PROJECT_ROOT in sys.path:
 sys.path.insert(0, PROJECT_ROOT)
 
 _MARKER_ONLY_COVERAGE_GATES = frozenset({"property", "benchmark", "slow", "ui"})
+_ORIGINAL_HOME = Path.home()
+if sys.platform == "darwin":
+    _ORIGINAL_SETUP_ROOT = _ORIGINAL_HOME / "Library" / "Application Support" / "Orpheus"
+elif os.name == "nt":
+    _ORIGINAL_SETUP_ROOT = Path(
+        os.environ.get("LOCALAPPDATA") or _ORIGINAL_HOME / "AppData" / "Local"
+    ) / "Orpheus"
+else:
+    _ORIGINAL_SETUP_ROOT = Path(
+        os.environ.get("XDG_DATA_HOME") or _ORIGINAL_HOME / ".local" / "share"
+    ) / "orpheus"
+
+
+def _setup_file_snapshot(root):
+    """Record file names and timestamps without reading contents or following links."""
+    def raise_walk_error(error):
+        raise error
+
+    if not root.exists():
+        return {}
+    return {
+        str(path.relative_to(root)): path.lstat().st_mtime_ns
+        for directory, _, names in os.walk(root, onerror=raise_walk_error)
+        for name in names
+        for path in (Path(directory) / name,)
+    }
+
+
+def pytest_sessionstart(session):
+    roots = (
+        ("real user setup", _ORIGINAL_SETUP_ROOT),
+        ("repository data", Path(PROJECT_ROOT) / "data"),
+        ("repository test data", Path(PROJECT_ROOT) / "tests" / "data"),
+    )
+    session._storage_snapshots = [
+        (label, root, _setup_file_snapshot(root)) for label, root in roots
+    ]
 
 
 def _marker_only_coverage_gate(config) -> bool:
@@ -42,7 +80,22 @@ _session_exit_status = 0
 
 def pytest_sessionfinish(session, exitstatus):
     global _session_exit_status
-    _session_exit_status = int(exitstatus)
+    for label, root, before in session._storage_snapshots:
+        try:
+            after = _setup_file_snapshot(root)
+            changed = sorted(name for name, mtime in after.items() if before.get(name) != mtime)
+            removed = sorted(before.keys() - after.keys())
+            if not changed and not removed:
+                continue
+            sys.stderr.write(
+                f"\n[conftest] {label} files added or modified in {root}: "
+                f"{', '.join(changed) or 'none'}; removed: {', '.join(removed) or 'none'}\n"
+            )
+        except OSError as exc:
+            sys.stderr.write(f"\n[conftest] could not inspect {label} files in {root}: {exc}\n")
+        sys.stderr.flush()
+        session.exitstatus = exitstatus or pytest.ExitCode.TESTS_FAILED
+    _session_exit_status = int(session.exitstatus)
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
@@ -53,7 +106,7 @@ def pytest_unconfigure(config):
     single leaked thread turns a fully green session into a process that
     never exits (observed on the Windows CI runner). By this point every
     other unconfigure hook — including coverage reporting — has completed,
-    so name the leakers, dump their stacks, and exit with the real status.
+    so name the leakers, dump their stacks, and make leaks fail the session.
     """
     result = yield
     if os.name == "nt":
@@ -69,14 +122,22 @@ def pytest_unconfigure(config):
         if thread is not threading.main_thread() and not thread.daemon and thread.is_alive()
     ]
     children = multiprocessing.active_children()
+    deadline = time.monotonic() + 0.5
+    for worker in [*lingering, *children]:
+        worker.join(timeout=max(0.0, deadline - time.monotonic()))
+    lingering = [thread for thread in lingering if thread.is_alive()]
+    children = [child for child in children if child.is_alive()]
     try:
         import psutil
 
         def _expected_session_child(child):
             # conhost hosts this process's own hidden console on Windows
             # (run_tests launches the suite with CREATE_NO_WINDOW).
-            if child.name().lower() == "conhost.exe":
-                return True
+            try:
+                if child.name().lower() == "conhost.exe":
+                    return True
+            except psutil.Error:
+                return False
             # multiprocessing's resource tracker is a per-process singleton
             # that lives until interpreter exit by design; the first
             # spawn-context test starts it and nothing can stop it
@@ -92,7 +153,20 @@ def pytest_unconfigure(config):
             for child in psutil.Process().children(recursive=True)
             if not _expected_session_child(child)
         ]
-    except Exception:
+        survivors = []
+        for child in grandchildren:
+            try:
+                child.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except psutil.TimeoutExpired:
+                survivors.append(child)
+            except psutil.NoSuchProcess:
+                pass
+            except psutil.Error:
+                survivors.append(child)
+        grandchildren = survivors
+    except Exception as exc:
+        sys.stderr.write(f"\n[conftest] could not inspect subprocesses: {exc}\n")
+        sys.stderr.flush()
         grandchildren = []
     if grandchildren:
         details = []
@@ -105,7 +179,7 @@ def pytest_unconfigure(config):
             f"\n[conftest] subprocesses alive after the session: {'; '.join(details)}\n"
         )
         sys.stderr.flush()
-    if lingering or children:
+    if lingering or children or grandchildren:
         import faulthandler
 
         names = ", ".join(thread.name for thread in lingering) or "none"
@@ -117,12 +191,70 @@ def pytest_unconfigure(config):
         )
         faulthandler.dump_traceback(file=sys.stderr)
         sys.stderr.flush()
-        os._exit(_session_exit_status)
+        os._exit(_session_exit_status or int(pytest.ExitCode.TESTS_FAILED))
     return result
 
 
+def _isolate_user_paths(monkeypatch, root):
+    root = root.resolve()
+    home = root / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    hf_home = home / ".cache" / "huggingface"
+    paths = {
+        "AUDIOBOOK_DATA_DIR": root / "data",
+        "AUDIOBOOK_OUTPUT_DIR": root / "output",
+        "AUDIOBOOK_TEMP_DIR": root / "temp",
+        "HOME": home,
+        "USERPROFILE": home,
+        "LOCALAPPDATA": home / "AppData" / "Local",
+        "APPDATA": home / "AppData" / "Roaming",
+        "XDG_DATA_HOME": home / ".local" / "share",
+        "XDG_CACHE_HOME": home / ".cache",
+        "HF_HOME": hf_home,
+        "HF_HUB_CACHE": hf_home / "hub",
+        "HUGGINGFACE_HUB_CACHE": hf_home / "hub",
+        "HF_ASSETS_CACHE": hf_home / "assets",
+        "HUGGINGFACE_ASSETS_CACHE": hf_home / "assets",
+        "HF_XET_CACHE": hf_home / "xet",
+        "HF_TOKEN_PATH": hf_home / "token",
+        "HF_STORED_TOKENS_PATH": hf_home / "stored_tokens",
+    }
+    for name, path in paths.items():
+        monkeypatch.setenv(name, str(path))
+    # An empty override derives the database from data_dir and blocks .env.local defaults.
+    monkeypatch.setenv("AUDIOBOOK_DB_PATH", "")
+    for name in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HF_OIDC_RESOURCE", "HF_OIDC_ID_TOKEN"):
+        monkeypatch.delenv(name, raising=False)
+
+    # Do not import Hub here: tests also exercise its first-import behaviour.
+    constants = sys.modules.get("huggingface_hub.constants")
+    if constants is not None:
+        for name, path in paths.items():
+            if hasattr(constants, name):
+                monkeypatch.setattr(constants, name, str(path))
+        for name, path in (
+            ("default_home", home / ".cache"),
+            ("default_cache_path", hf_home / "hub"),
+            ("default_assets_cache_path", hf_home / "assets"),
+            ("default_xet_cache_path", hf_home / "xet"),
+        ):
+            if hasattr(constants, name):
+                monkeypatch.setattr(constants, name, str(path))
+    cache_manager = sys.modules.get("huggingface_hub.utils._cache_manager")
+    if cache_manager is not None:
+        monkeypatch.setattr(cache_manager, "HF_HUB_CACHE", str(hf_home / "hub"))
+
+
 @pytest.fixture(autouse=True)
-def _deterministic_host_memory(monkeypatch):
+def _isolated_user_paths(monkeypatch, tmp_path_factory):
+    """Isolate user defaults while allowing tests to supply their own overrides."""
+    root = tmp_path_factory.mktemp("user-paths")
+    _isolate_user_paths(monkeypatch, root)
+    return root
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_host_memory(monkeypatch, _isolated_user_paths):
     """Pin the host-RAM probe so worker-count math never depends on the machine.
 
     VRAMBudget defaults to 70% of physical RAM; on small CI runners that
@@ -168,8 +300,9 @@ def sample_epub(test_data_dir):
         pytest.fail(f"Missing committed EPUB fixture: {path}")
     return path
 
-@pytest.fixture
-def mock_tts_engine(mocker):
-    """Mock TTS Engine to avoid loading models."""
-    mock = mocker.patch("modules.tts.engine.TTSEngine") 
-    return mock
+# Shared request-only fixtures for the module regression tests. The autouse
+# isolated_paths fixture stays imported by the modules that need it.
+from tests._factories_group2_conversion import conversion  # noqa: E402, F401
+from tests._factories_group2_library import library  # noqa: E402, F401
+from tests._factories_group2_paths import backend, speech_paths  # noqa: E402, F401
+from tests._factories_group2_setup import setup_context  # noqa: E402, F401

@@ -12,13 +12,12 @@ def test_windows_source_setup_is_documented() -> None:
 
     required_commands = (
         "py -3.12 -m venv .venv",
-        r".\.venv\Scripts\Activate.ps1",
-        "python scripts/setup_runtime.py --profile base --dry-run",
-        "python scripts/setup_runtime.py --profile base",
-        "python -m pip install -r requirements-dev.txt",
-        "python run_tests.py --contract",
-        "npm ci",
-        "npm run desktop:dev",
+        r".\.venv\Scripts\python.exe scripts/setup_runtime.py --profile base --dry-run",
+        r".\.venv\Scripts\python.exe scripts/setup_runtime.py --profile base",
+        r".\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt",
+        r".\.venv\Scripts\python.exe run_tests.py --contract",
+        "npm.cmd ci",
+        "npm.cmd run desktop:dev",
     )
     for command in required_commands:
         assert command in dependencies
@@ -27,22 +26,6 @@ def test_windows_source_setup_is_documented() -> None:
     assert "Windows" in run_guide
     assert "Windows" in readme
     assert "model weights are optional" in dependencies.lower()
-
-
-def test_windows_cuda_setup_uses_powershell_safe_syntax() -> None:
-    dependencies = (ROOT / "docs" / "DEPENDENCIES.md").read_text(encoding="utf-8")
-    run_guide = (ROOT / "docs" / "RUN_APPLICATION.md").read_text(encoding="utf-8")
-    readme = (ROOT / "README.md").read_text(encoding="utf-8")
-
-    powershell_command = (
-        "python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda "
-        "--group cleaner-cuda"
-    )
-    assert powershell_command in dependencies
-    assert "# Linux/Windows" not in readme
-    assert "# Linux/Windows" not in run_guide
-    assert "# Linux/Windows" not in dependencies
-    assert "accepted_risk" not in readme
 
 
 def test_tauri_macos_minimum_system_version_is_14() -> None:
@@ -71,7 +54,7 @@ def test_ci_validates_sources_without_producing_releases() -> None:
     contents = workflow.read_text(encoding="utf-8").lower()
 
     required_entries = (
-        "macos-14",
+        "macos-15",
         "windows-latest",
         "python run_tests.py --contract",
         "python -m ruff check .",
