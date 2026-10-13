@@ -22,6 +22,56 @@ from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "cleaner_api_trace_multichapter_samples.json"
 
 
+class _AsyncContext:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        _ = (exc_type, exc, tb)
+        return False
+
+
+class _JSONResponse(_AsyncContext):
+    def __init__(self, payload: dict[str, object]):
+        self._payload = payload
+        self.status = 200
+
+    async def text(self) -> str:
+        return json.dumps(self._payload)
+
+
+class _CleanedTextResponse(_AsyncContext):
+    def __init__(self, cleaned_text: str):
+        self._cleaned_text = cleaned_text
+        self.status = 200
+
+    async def text(self) -> str:
+        return json.dumps({"choices": [{"message": {"content": self._cleaned_text}}]})
+
+
+class _AsyncSession(_AsyncContext):
+    def __init__(self, *args, **kwargs):
+        _ = (args, kwargs)
+
+
+def _install_aiohttp(monkeypatch, session, client_error=Exception):
+    monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(
+        cleaner_module,
+        "aiohttp",
+        type(
+            "_FakeAioHttpModule",
+            (),
+            {
+                "ClientSession": session,
+                "ClientTimeout": lambda **_kwargs: object(),
+                "ClientError": client_error,
+            },
+        ),
+        raising=False,
+    )
+
+
 def _load_samples() -> list[dict[str, object]]:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
@@ -192,32 +242,9 @@ def test_api_transport_forces_identity_encoding_to_avoid_br_decode_failure(
     class _FakeClientError(Exception):
         pass
 
-    class _FakeAioHTTPResponse:
-        def __init__(self, payload: dict[str, object]):
-            self._payload = payload
-            self.status = 200
+    _FakeAioHTTPResponse = _JSONResponse
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-        async def text(self) -> str:
-            return json.dumps(self._payload)
-
-    class _FakeClientSession:
-        def __init__(self, *args, **kwargs):
-            _ = (args, kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
+    class _FakeClientSession(_AsyncSession):
         def post(self, url, *, headers, json, ssl):  # noqa: A002
             _ = (url, json, ssl)
             if headers.get("Accept-Encoding") != "identity":
@@ -225,21 +252,7 @@ def test_api_transport_forces_identity_encoding_to_avoid_br_decode_failure(
             captured_headers.append(dict(headers))
             return _FakeAioHTTPResponse({"choices": [{"message": {"content": "Dr. Smith bought 42 apples."}}]})
 
-    monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        cleaner_module,
-        "aiohttp",
-        type(
-            "_FakeAioHttpModule",
-            (),
-            {
-                "ClientSession": _FakeClientSession,
-                "ClientTimeout": lambda **_kwargs: object(),
-                "ClientError": _FakeClientError,
-            },
-        ),
-        raising=False,
-    )
+    _install_aiohttp(monkeypatch, _FakeClientSession, _FakeClientError)
 
     trace = cleaner.clean_with_trace("Dr. Smith bought 42 apples.")
     assert trace.mode == "llm_success"
@@ -339,35 +352,11 @@ def test_api_clean_batch_async_returns_results_for_all_chunks(
 
     requests: list[dict[str, object]] = []
 
-    class _FakeAioHTTPResponse:
-        def __init__(self, payload: dict[str, object]):
-            self._payload = payload
-            self.status = 200
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-        async def text(self) -> str:
-            return json.dumps(self._payload)
-
+    class _FakeAioHTTPResponse(_JSONResponse):
         def raise_for_status(self) -> None:
             return None
 
-    class _FakeClientSession:
-        def __init__(self, *args, **kwargs):
-            _ = (args, kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
+    class _FakeClientSession(_AsyncSession):
         def post(self, url, *, headers, json, ssl):  # noqa: A002
             _ = (headers, ssl)
             requests.append({"url": url, "payload": json})
@@ -378,21 +367,7 @@ def test_api_clean_batch_async_returns_results_for_all_chunks(
                 cleaned = "TWO Walking"
             return _FakeAioHTTPResponse({"choices": [{"message": {"content": cleaned}}]})
 
-    monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        cleaner_module,
-        "aiohttp",
-        type(
-            "_FakeAioHttpModule",
-            (),
-            {
-                "ClientSession": _FakeClientSession,
-                "ClientTimeout": lambda **_kwargs: object(),
-                "ClientError": Exception,
-            },
-        ),
-        raising=False,
-    )
+    _install_aiohttp(monkeypatch, _FakeClientSession)
 
     outputs = asyncio.run(cleaner.clean_batch_async(inputs))
     assert outputs == ["ONE From", "TWO Walking"]
@@ -409,32 +384,9 @@ def test_api_clean_batch_with_trace_async_returns_trace_rows_in_input_order(
         "### **TWO** |## alking",
     ]
 
-    class _FakeAioHTTPResponse:
-        def __init__(self, payload: dict[str, object]):
-            self._payload = payload
-            self.status = 200
+    _FakeAioHTTPResponse = _JSONResponse
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-        async def text(self) -> str:
-            return json.dumps(self._payload)
-
-    class _FakeClientSession:
-        def __init__(self, *args, **kwargs):
-            _ = (args, kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
+    class _FakeClientSession(_AsyncSession):
         def post(self, url, *, headers, json, ssl):  # noqa: A002
             _ = (url, headers, ssl)
             chunk_text = str(json.get("messages", [{}, {}])[1].get("content", ""))
@@ -444,21 +396,7 @@ def test_api_clean_batch_with_trace_async_returns_trace_rows_in_input_order(
                 cleaned = "TWO Walking"
             return _FakeAioHTTPResponse({"choices": [{"message": {"content": cleaned}}]})
 
-    monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        cleaner_module,
-        "aiohttp",
-        type(
-            "_FakeAioHttpModule",
-            (),
-            {
-                "ClientSession": _FakeClientSession,
-                "ClientTimeout": lambda **_kwargs: object(),
-                "ClientError": Exception,
-            },
-        ),
-        raising=False,
-    )
+    _install_aiohttp(monkeypatch, _FakeClientSession)
 
     traces = asyncio.run(cleaner.clean_batch_with_trace_async(inputs))
     assert [trace.cleaned_text for trace in traces] == ["ONE From", "TWO Walking"]
@@ -475,33 +413,13 @@ def test_api_clean_batch_with_trace_async_reuses_one_aiohttp_session_per_batch(
     inputs = [f"Chunk {idx} content with # artifact" for idx in range(10)]
     session_creations = 0
 
-    class _FakeAioHTTPResponse:
-        def __init__(self, cleaned_text: str):
-            self._cleaned_text = cleaned_text
-            self.status = 200
+    _FakeAioHTTPResponse = _CleanedTextResponse
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
-        async def text(self) -> str:
-            return json.dumps({"choices": [{"message": {"content": self._cleaned_text}}]})
-
-    class _FakeClientSession:
+    class _FakeClientSession(_AsyncSession):
         def __init__(self, *args, **kwargs):
             nonlocal session_creations
             _ = (args, kwargs)
             session_creations += 1
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
 
         def post(self, url, *, headers, json, ssl):  # noqa: A002
             _ = (url, headers, ssl)
@@ -509,21 +427,7 @@ def test_api_clean_batch_with_trace_async_reuses_one_aiohttp_session_per_batch(
             cleaned_text = prompt_text.split("Text to correct:\n---\n", 1)[1].split("\n---", 1)[0]
             return _FakeAioHTTPResponse(cleaned_text)
 
-    monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        cleaner_module,
-        "aiohttp",
-        type(
-            "_FakeAioHttpModule",
-            (),
-            {
-                "ClientSession": _FakeClientSession,
-                "ClientTimeout": lambda **_kwargs: object(),
-                "ClientError": Exception,
-            },
-        ),
-        raising=False,
-    )
+    _install_aiohttp(monkeypatch, _FakeClientSession)
 
     traces = asyncio.run(cleaner.clean_batch_with_trace_async(inputs))
 
@@ -541,11 +445,7 @@ def test_api_clean_batch_with_trace_async_honors_bounded_concurrency(
     active_requests = 0
     peak_concurrency = 0
 
-    class _FakeAioHTTPResponse:
-        def __init__(self, cleaned_text: str):
-            self._cleaned_text = cleaned_text
-            self.status = 200
-
+    class _FakeAioHTTPResponse(_CleanedTextResponse):
         async def __aenter__(self):
             nonlocal active_requests, peak_concurrency
             active_requests += 1
@@ -559,40 +459,13 @@ def test_api_clean_batch_with_trace_async_honors_bounded_concurrency(
             active_requests -= 1
             return False
 
-        async def text(self) -> str:
-            return json.dumps({"choices": [{"message": {"content": self._cleaned_text}}]})
-
-    class _FakeClientSession:
-        def __init__(self, *args, **kwargs):
-            _ = (args, kwargs)
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            _ = (exc_type, exc, tb)
-            return False
-
+    class _FakeClientSession(_AsyncSession):
         def post(self, url, *, headers, json, ssl):  # noqa: A002
             _ = (url, headers, ssl)
             prompt_text = str(json.get("messages", [{}, {}])[1].get("content", ""))
             return _FakeAioHTTPResponse(prompt_text)
 
-    monkeypatch.setenv("TEST_OPENAI_API_KEY", "test-key")
-    monkeypatch.setattr(
-        cleaner_module,
-        "aiohttp",
-        type(
-            "_FakeAioHttpModule",
-            (),
-            {
-                "ClientSession": _FakeClientSession,
-                "ClientTimeout": lambda **_kwargs: object(),
-                "ClientError": Exception,
-            },
-        ),
-        raising=False,
-    )
+    _install_aiohttp(monkeypatch, _FakeClientSession)
 
     traces = asyncio.run(cleaner.clean_batch_with_trace_async(inputs))
     assert len(traces) == len(inputs)

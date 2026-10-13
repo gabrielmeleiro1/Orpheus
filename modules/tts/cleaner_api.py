@@ -9,19 +9,23 @@ import os
 import ssl
 import urllib.error as urlerror
 import urllib.request as urlrequest
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from modules.openai_compat import (
     build_chat_completions_headers,
     build_chat_completions_request,
-    coerce_content_to_text as compat_coerce_content_to_text,
     completion_token_field,
+    open_authenticated_request,
     parse_chat_response_text,
+    redact_api_error,
     supports_temperature_override as compat_supports_temperature_override,
 )
 from modules.tts.cleaner_config import DEFAULT_API_BASE_URL
 
 logger = logging.getLogger(__name__)
+
+# How often a batch checks for cancellation while requests are in flight.
+_CANCEL_POLL_SECONDS = 0.1
 
 
 def _default_aiohttp_module() -> Any:
@@ -40,11 +44,6 @@ def api_token_limit_field(model_name: str) -> str:
 def supports_temperature_override(model_name: str) -> bool:
     """Return True when explicit temperature is supported by model family."""
     return compat_supports_temperature_override(model_name)
-
-
-def coerce_content_to_text(content: object) -> str:
-    """Normalize API content payloads (string or structured list) into plain text."""
-    return compat_coerce_content_to_text(content)
 
 
 def parse_api_response_text(response_body: str) -> str:
@@ -86,7 +85,10 @@ def parse_openai_model_ids(response_body: str) -> list[str]:
 
 def http_error_detail(exc: urlerror.HTTPError) -> str:
     """Decode HTTP error payload safely for diagnostics."""
-    return exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+    try:
+        return exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+    except TimeoutError:
+        return "provider response body timed out"
 
 
 def swap_token_field_payload(
@@ -121,15 +123,15 @@ def swap_token_field_payload(
     return None
 
 
-def raise_api_transport_error(exc: Exception) -> None:
+def raise_api_transport_error(exc: Exception, *, api_key: str = "") -> None:
     """Raise user-facing network/TLS errors for API requests."""
     if "CERTIFICATE_VERIFY_FAILED" in str(exc).upper():
         raise RuntimeError(
             "Cleaner API TLS verification failed. "
             "Set CLEANER_API_CA_BUNDLE to a PEM CA bundle that trusts your network, "
             "or set CLEANER_API_INSECURE_SSL=1 only for temporary troubleshooting."
-        ) from exc
-    raise RuntimeError(f"Cleaner API connection failed: {exc}") from exc
+        ) from None
+    raise RuntimeError(f"Cleaner API connection failed: {redact_api_error(exc, api_key)}") from None
 
 
 def urlopen_is_patched() -> bool:
@@ -206,17 +208,21 @@ def fetch_openai_model_ids(
         base_url=base_url,
     )
     try:
-        with urlrequest.urlopen(
+        with open_authenticated_request(
             request,
             timeout=timeout_seconds,
             context=ssl_context,
         ) as response:
             return parse_openai_model_ids(response.read().decode("utf-8"))
+    except UnicodeDecodeError:
+        raise RuntimeError("OpenAI models: provider returned invalid UTF-8") from None
+    except TimeoutError:
+        raise RuntimeError("OpenAI models: provider response timed out") from None
     except urlerror.HTTPError as exc:
-        detail = http_error_detail(exc)
-        raise RuntimeError(f"OpenAI models HTTP {exc.code}: {detail}") from exc
+        detail = redact_api_error(http_error_detail(exc), normalized_key)
+        raise RuntimeError(f"OpenAI models HTTP {exc.code}: {detail}") from None
     except urlerror.URLError as exc:
-        raise RuntimeError(f"OpenAI models connection failed: {exc}") from exc
+        raise RuntimeError(f"OpenAI models connection failed: {redact_api_error(exc, normalized_key)}") from None
 
 
 def post_api_chat_completions_via_urlopen(
@@ -235,17 +241,21 @@ def post_api_chat_completions_via_urlopen(
         payload=payload,
     )
     try:
-        with urlrequest.urlopen(
+        with open_authenticated_request(
             request,
             timeout=config.api_timeout_seconds,
             context=ssl_context,
         ) as response:
             return response.read().decode("utf-8")
+    except UnicodeDecodeError:
+        raise RuntimeError("Cleaner API: provider returned invalid UTF-8") from None
+    except TimeoutError:
+        raise RuntimeError("Cleaner API: provider response timed out") from None
     except urlerror.HTTPError as exc:
-        detail = http_error_detail(exc)
-        raise http_error_cls(exc.code, detail) from exc
+        detail = redact_api_error(http_error_detail(exc), api_key)
+        raise http_error_cls(exc.code, detail) from None
     except urlerror.URLError as exc:
-        raise_api_transport_error(exc)
+        raise_api_transport_error(exc, api_key=api_key)
 
 
 async def post_api_chat_completions_async(
@@ -288,7 +298,7 @@ async def post_api_chat_completions_async(
         ) as response:
             response_body = await response.text()
             if response.status >= 400:
-                raise http_error_cls(response.status, response_body)
+                raise http_error_cls(response.status, redact_api_error(response_body, api_key))
             return response_body
 
     try:
@@ -299,10 +309,12 @@ async def post_api_chat_completions_async(
         async with aiohttp_runtime.ClientSession(timeout=timeout) as session:
             return await _post_with_session(session)
     except Exception as exc:
+        if isinstance(exc, UnicodeDecodeError):
+            raise RuntimeError("Cleaner API: provider returned invalid UTF-8") from None
         if exc.__class__ is http_error_cls or isinstance(exc, http_error_cls):
             raise
         if aiohttp_runtime is not None and isinstance(exc, aiohttp_runtime.ClientError):
-            raise_api_transport_error(exc)
+            raise_api_transport_error(exc, api_key=api_key)
         if isinstance(exc, asyncio.TimeoutError):
             raise RuntimeError(
                 f"Cleaner API request timed out after {config.api_timeout_seconds}s"
@@ -344,9 +356,10 @@ async def post_api_chat_completions_with_retry_async(
             max_tokens=max_tokens,
         )
         if retry_payload is None:
+            detail = redact_api_error(getattr(exc, "detail", str(exc)), api_key)
             raise RuntimeError(
-                f"Cleaner API HTTP {getattr(exc, 'status_code', 0)}: {getattr(exc, 'detail', str(exc))}"
-            ) from exc
+                f"Cleaner API HTTP {getattr(exc, 'status_code', 0)}: {detail}"
+            ) from None
 
         try:
             return await post_api_chat_completions_async(
@@ -362,9 +375,10 @@ async def post_api_chat_completions_with_retry_async(
         except Exception as retry_exc:
             if not isinstance(retry_exc, http_error_cls):
                 raise
+            detail = redact_api_error(getattr(retry_exc, "detail", str(retry_exc)), api_key)
             raise RuntimeError(
-                f"Cleaner API HTTP {getattr(retry_exc, 'status_code', 0)}: {getattr(retry_exc, 'detail', str(retry_exc))}"
-            ) from retry_exc
+                f"Cleaner API HTTP {getattr(retry_exc, 'status_code', 0)}: {detail}"
+            ) from None
 
 
 def build_api_payload(
@@ -449,20 +463,46 @@ class CleanerAPIStrategy:
         semaphore: asyncio.Semaphore,
         *,
         api_session: Any = None,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> list[Any]:
+        """Clean ``texts`` with bounded concurrency.
+
+        When ``cancel_requested`` turns true, in-flight requests are abandoned
+        and unstarted chunks are skipped; their results stay ``None`` and the
+        caller observes the cancellation instead of waiting out the batch.
+        """
         results: list[Any] = [None] * len(texts)
         iterator = iter(enumerate(texts))
         worker_count = min(len(texts), cleaner._get_api_batch_concurrency())
 
+        def cancelled() -> bool:
+            return cancel_requested is not None and bool(cancel_requested())
+
         async def worker() -> None:
             for idx, text in iterator:
+                if cancelled():
+                    return
                 results[idx] = await cleaner._clean_with_trace_api_async(
                     text,
                     semaphore,
                     api_session=api_session,
                 )
 
-        await asyncio.gather(*(worker() for _ in range(worker_count)))
+        if cancel_requested is None:
+            await asyncio.gather(*(worker() for _ in range(worker_count)))
+            return results
+
+        batch = asyncio.gather(*(worker() for _ in range(worker_count)))
+        try:
+            while not batch.done():
+                if cancelled():
+                    batch.cancel()
+                    break
+                await asyncio.wait({batch}, timeout=_CANCEL_POLL_SECONDS)
+            await batch
+        except asyncio.CancelledError:
+            if not cancelled():
+                raise
         return results
 
     def load(self, cleaner: Any) -> None:
@@ -475,7 +515,12 @@ class CleanerAPIStrategy:
             cleaner.config.api_base_url,
         )
 
-    async def clean_batch_with_trace_async(self, cleaner: Any, texts: list[str]) -> list[Any]:
+    async def clean_batch_with_trace_async(
+        self,
+        cleaner: Any,
+        texts: list[str],
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> list[Any]:
         if not texts:
             return []
         semaphore = asyncio.Semaphore(cleaner._get_api_batch_concurrency())
@@ -485,6 +530,7 @@ class CleanerAPIStrategy:
                 cleaner,
                 texts,
                 semaphore,
+                cancel_requested=cancel_requested,
             )
 
         timeout = aiohttp_runtime.ClientTimeout(total=cleaner.config.api_timeout_seconds)
@@ -494,6 +540,7 @@ class CleanerAPIStrategy:
                 texts,
                 semaphore,
                 api_session=api_session,
+                cancel_requested=cancel_requested,
             )
 
     def generate_llm_response(self, cleaner: Any, prompt: str) -> str:

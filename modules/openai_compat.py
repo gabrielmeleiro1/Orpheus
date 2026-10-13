@@ -5,7 +5,50 @@ from __future__ import annotations
 import json
 import urllib.error as urlerror
 import urllib.request as urlrequest
+from urllib.parse import urlsplit
 from typing import Any, Optional
+
+
+def _request_origin(url: str) -> tuple[str, str | None, int | None]:
+    parts = urlsplit(url)
+    port = parts.port if parts.port is not None else {"http": 80, "https": 443}.get(parts.scheme)
+    return parts.scheme, parts.hostname, port
+
+
+class _AuthenticatedRedirectHandler(urlrequest.HTTPRedirectHandler):
+    """Keep provider credentials on their original HTTP origin."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and _request_origin(req.full_url) != _request_origin(newurl):
+            for name, _ in redirected.header_items():
+                if name.lower() in {"authorization", "proxy-authorization"}:
+                    redirected.remove_header(name)
+        return redirected
+
+
+def open_authenticated_request(request, *, timeout, context=None):
+    """Open a provider request without forwarding credentials to other origins."""
+    # Keep the existing injected-transport seam used by offline callers/tests.
+    # Production urllib needs a per-request opener: installing a global opener
+    # would change unrelated concurrent downloads and requests.
+    if getattr(urlrequest.urlopen, "__module__", "urllib.request") != "urllib.request":
+        return urlrequest.urlopen(request, timeout=timeout, context=context)
+    opener = urlrequest.build_opener(
+        _AuthenticatedRedirectHandler(), urlrequest.HTTPSHandler(context=context),
+    )
+    return opener.open(request, timeout=timeout)
+
+
+def redact_api_error(detail: object, api_key: str) -> str:
+    """Remove the active credential before provider diagnostics leave transport."""
+    message = str(detail)
+    # Providers can trim pasted/environment credentials before echoing them.
+    # Redact both spellings, preserving the request's existing interpretation.
+    for credential in (api_key, api_key.strip()):
+        if credential:
+            message = message.replace(credential, "[REDACTED]")
+    return message
 
 
 def completion_token_field(model_name: str) -> str:
@@ -100,14 +143,16 @@ def parse_chat_response_text(
 
     try:
         data = json.loads(response_body)
-        choices = data.get("choices") or []
-        if not choices:
+        if not isinstance(data, dict):
+            raise RuntimeError("Expected a JSON object")
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
             raise RuntimeError(empty_choices_message)
 
-        content = extract_choice_text(choices[0])
+        content = extract_choice_text(choices[0]).strip()
         if not content:
             raise RuntimeError(empty_content_message)
-        return content.strip()
+        return content
     except (json.JSONDecodeError, RuntimeError) as exc:
         raise RuntimeError(f"{parse_error_prefix}: {exc}") from exc
 
@@ -157,14 +202,23 @@ def post_chat_completions_via_urlopen(
         payload=payload,
     )
     try:
-        with urlrequest.urlopen(
+        with open_authenticated_request(
             request,
             timeout=timeout_seconds,
             context=ssl_context,
         ) as response:
             return response.read().decode("utf-8")
+    except UnicodeDecodeError:
+        raise RuntimeError(f"{http_error_prefix}: provider returned invalid UTF-8") from None
+    except TimeoutError:
+        raise RuntimeError(f"{connection_error_prefix}: provider response timed out") from None
     except urlerror.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
-        raise RuntimeError(f"{http_error_prefix} HTTP {exc.code}: {detail}") from exc
+        try:
+            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+        except TimeoutError:
+            detail = "provider response body timed out"
+        detail = redact_api_error(detail, api_key)
+        raise RuntimeError(f"{http_error_prefix} HTTP {exc.code}: {detail}") from None
     except urlerror.URLError as exc:
-        raise RuntimeError(f"{connection_error_prefix}: {exc}") from exc
+        detail = redact_api_error(exc, api_key)
+        raise RuntimeError(f"{connection_error_prefix}: {detail}") from None

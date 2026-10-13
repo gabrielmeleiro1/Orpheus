@@ -54,6 +54,68 @@ async def _await_task_to_completion(task: asyncio.Task[Any]) -> Any:
     return task.result()
 
 
+def _restore_worker_semaphore(semaphore):
+    return semaphore
+
+
+class _RecoverableSemaphore:
+    """Parent-owned capacity with a fixed semaphore snapshot for each worker pool.
+
+    Only the parent counts its surviving requests. Workers receive the raw
+    semaphore at spawn and never participate in the parent's bookkeeping lock.
+    """
+
+    def __init__(self, capacity: int):
+        self._capacity = capacity
+        self._semaphore = mp.get_context("spawn").BoundedSemaphore(capacity)
+        self._condition = threading.Condition()
+        self._parent_permits = 0
+        self._worker_generation = None
+
+    def __reduce__(self):
+        return _restore_worker_semaphore, (self._semaphore,)
+
+    def acquire(self, block: bool = True, timeout: Optional[float] = None) -> bool:
+        deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        with self._condition:
+            while True:
+                if self._semaphore.acquire(False):
+                    self._parent_permits += 1
+                    return True
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if not block or (remaining is not None and remaining <= 0):
+                    return False
+                # Worker releases cannot notify a parent-thread condition.
+                self._condition.wait(0.01 if remaining is None else min(0.01, remaining))
+
+    def release(self) -> None:
+        with self._condition:
+            if self._parent_permits <= 0:
+                raise ValueError("No parent API limiter permit to release")
+            self._semaphore.release()
+            self._parent_permits -= 1
+            self._condition.notify()
+
+    def begin_worker_generation(self):
+        with self._condition:
+            if self._worker_generation is not None:
+                raise RuntimeError("API worker generation has not quiesced")
+            self._worker_generation = self._semaphore
+            return self._worker_generation
+
+    def retire_worker_generation(self, generation) -> None:
+        """Recover dead workers' permits only after their executor has quiesced."""
+        with self._condition:
+            if self._worker_generation is not generation:
+                return
+            replacement = mp.get_context("spawn").BoundedSemaphore(self._capacity)
+            for _ in range(self._parent_permits):
+                replacement.acquire(False)
+            self._semaphore = replacement
+            self._worker_generation = None
+            self._condition.notify_all()
+
+
 class GlobalAPILimiter:
     """
     Cross-process limiter backed by a multiprocessing semaphore.
@@ -71,7 +133,7 @@ class GlobalAPILimiter:
 
         # Keep construction lightweight while preserving process sharing for
         # process-backed chapter workers. Stats remain local to this process.
-        self._semaphore = mp.get_context("spawn").BoundedSemaphore(self.max_concurrency)
+        self._semaphore = _RecoverableSemaphore(self.max_concurrency)
 
     @property
     def semaphore(self):

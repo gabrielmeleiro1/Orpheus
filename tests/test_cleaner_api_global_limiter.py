@@ -195,7 +195,6 @@ def test_global_api_limiter_semaphore_can_be_sent_to_spawn_pool(monkeypatch) -> 
     try:
         # A semaphore made by the default (fork) context cannot be pickled for
         # a spawn pool on Linux. The limiter must explicitly use spawn.
-        assert limiter.semaphore._is_fork_ctx is False
         context = mp.get_context("spawn")
         with ProcessPoolExecutor(
             max_workers=1,
@@ -340,3 +339,119 @@ def test_global_api_limiter_does_not_retry_internal_type_error() -> None:
     assert semaphore.acquire_calls == 1
     limiter._semaphore = None
     limiter.shutdown()
+
+
+_SPAWN_HOLD_READY = None
+
+
+def _init_pool_limiter_probe(_memory, _workers, config):
+    global _SPAWN_PROBE_SEMAPHORE, _SPAWN_HOLD_READY
+    _SPAWN_PROBE_SEMAPHORE = config["cleaner_api_global_limiter"]
+    _SPAWN_HOLD_READY = config["ready"]
+
+
+def _worker_hold_until_terminated():
+    _SPAWN_PROBE_SEMAPHORE.acquire()
+    _SPAWN_HOLD_READY.set()
+    time.sleep(60)
+
+
+@pytest.mark.parallel
+def test_terminated_pool_recovers_capacity_without_releasing_parent_permit(monkeypatch):
+    import modules.pipeline.pool_manager as pool_module
+
+    limiter = GlobalAPILimiter(2)
+    proxy = limiter.semaphore
+    ready = mp.get_context("spawn").Event()
+    manager = pool_module.SharedWorkerPoolManager(max_workers=1)
+    monkeypatch.setattr(pool_module, "_init_worker", _init_pool_limiter_probe)
+    monkeypatch.setattr(manager, "_run_startup_probes_locked", lambda: None)
+    assert proxy.acquire(False)
+    try:
+        manager.ensure_started("first", worker_init_config={
+            "cleaner_api_global_limiter": proxy, "ready": ready,
+        })
+        manager._state.executor.submit(_worker_hold_until_terminated)
+        assert ready.wait(10)
+        assert not proxy.acquire(False)
+        manager.shutdown(timeout_seconds=0.0)
+        assert manager.shutdown(timeout_seconds=5.0)
+        assert proxy.acquire(False), "terminated worker's permit must be recovered"
+        assert not proxy.acquire(False), "parent request still owns its permit"
+        proxy.release()
+        proxy.release()
+        assert proxy.acquire(False)
+        assert proxy.acquire(False)
+        assert not proxy.acquire(False)
+        proxy.release()
+        proxy.release()
+        manager.ensure_started("second", worker_init_config={
+            "cleaner_api_global_limiter": proxy, "ready": ready,
+        })
+        assert manager._state.executor.submit(_worker_probe_initialized_spawn_semaphore).result(10)
+    finally:
+        manager.shutdown(timeout_seconds=0.0)
+        manager.shutdown(timeout_seconds=5.0)
+        limiter.shutdown()
+
+
+def test_pool_shutdown_does_not_recover_permits_while_worker_is_alive(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError
+    from threading import Event
+    from unittest.mock import Mock
+
+    import modules.pipeline.pool_manager as pool_module
+
+    limiter = GlobalAPILimiter(1)
+    proxy = limiter.semaphore
+    process = Mock(is_alive=Mock(return_value=True))
+    executor = Mock(_processes={1: process})
+    callbacks = []
+    callback_finished = Event()
+    worker_limiters = []
+
+    def start_executor(**kwargs):
+        worker_limiter = kwargs["initargs"][2]["cleaner_api_global_limiter"]
+        assert worker_limiter.acquire(False)
+        worker_limiters.append(worker_limiter)
+        if len(worker_limiters) > 1:
+            worker_limiter.release()
+        return executor
+
+    def shutdown(_executor, *, on_quiesced, **kwargs):
+        callbacks.append(on_quiesced)
+        on_quiesced()
+        callback_finished.set()
+        return True
+
+    monkeypatch.setattr(pool_module, "ProcessPoolExecutor", start_executor)
+    monkeypatch.setattr(pool_module, "_shutdown_executor_bounded", shutdown)
+    manager = pool_module.SharedWorkerPoolManager(max_workers=1)
+    monkeypatch.setattr(manager, "_run_startup_probes_locked", lambda: None)
+    manager.ensure_started("first", worker_init_config={"cleaner_api_global_limiter": proxy})
+    successor = ThreadPoolExecutor(max_workers=1)
+    try:
+        finished = manager.shutdown(timeout_seconds=0.0)
+        assert callback_finished.wait(5.0)
+        assert not proxy.acquire(False), "a live worker still owns the only permit"
+        assert not finished
+        assert not manager.shutdown(timeout_seconds=0.0)
+        pending = successor.submit(
+            manager.ensure_started, "second",
+            worker_init_config={"cleaner_api_global_limiter": proxy},
+        )
+        with pytest.raises(TimeoutError):
+            pending.result(timeout=0.05)
+        process.is_alive.return_value = False
+        callbacks[-1]()
+        pending.result(timeout=5.0)
+        assert manager.shutdown(timeout_seconds=5.0)
+        assert proxy.acquire(False)
+        proxy.release()
+    finally:
+        process.is_alive.return_value = False
+        if callbacks:
+            callbacks[-1]()
+        successor.shutdown(wait=True)
+        manager.shutdown(timeout_seconds=0.0)
+        limiter.shutdown()
