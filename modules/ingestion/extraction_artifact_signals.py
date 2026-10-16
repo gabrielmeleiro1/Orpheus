@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 
 PDF_HYPHENATION_LEAK_RE = re.compile(
@@ -40,47 +39,6 @@ JOINED_FIRST_PERSON_LEAK_RE = re.compile(
     r"suppose|think|want|wanted|was|went|were|will|wish|would"
     r")\b"
 )
-PROMPT_DELIMITER_RE = re.compile(
-    r"(?im)(?:^\s*-{3,}\s*$|\.---|prompt delimiter|<\|/?(?:system|user|assistant)\|>)"
-)
-MODEL_COMMENTARY_RE = re.compile(
-    r"(?i)\b("
-    r"as an ai|"
-    r"cleaned text:|"
-    r"here is the cleaned|"
-    r"i (?:have )?corrected\s+(?:the\s+)?(?:text|formatting|artifacts?|markdown|line breaks?)|"
-    r"i removed\s+(?:the\s+)?(?:text|formatting|artifacts?|markdown|headers?|footers?|citations?|references?|line breaks?)|"
-    r"note:|"
-    r"the text has been"
-    r")\b"
-)
-EPUB_SOCIAL_BOILERPLATE_RE = re.compile(
-    r"(?i)\b(?:"
-    r"follow\s+(?:the\s+)?penguin|"
-    r"penguin(?:books|classics)|"
-    r"youtube\.com/penguin|"
-    r"facebook\.com/penguin|"
-    r"soundcloud\.com/penguin|"
-    r"@penguin(?:uk)?books"
-    r")\b"
-)
-GARBLED_REPEATED_TOKEN_RE = re.compile(
-    r"(?i)\b(?:"
-    r"Firstop{3,}mry|"
-    r"lltllll|"
-    r"iVttLiiii|"
-    r"Peeeeeeee|"
-    r"bhedmeeeeta|"
-    r"evidelllly|"
-    r"i{10}"
-    r")\b"
-)
-
-
-@dataclass(frozen=True)
-class ExtractionArtifactIssue:
-    issue_type: str
-    excerpt: str
 
 
 def has_pdf_hyphenation_leakage(text: str) -> bool:
@@ -100,70 +58,3 @@ def has_pdf_joined_dash_leakage(text: str) -> bool:
 
 def has_joined_first_person_leakage(text: str) -> bool:
     return JOINED_FIRST_PERSON_LEAK_RE.search(text) is not None
-
-
-_PDF_ARTIFACT_ISSUES = frozenset(
-    {
-        "pdf_hyphenation_leakage",
-        "pdf_internal_hyphen_fragment",
-        "pdf_page_footnote_leakage",
-        "pdf_joined_dash_leakage",
-    }
-)
-_LLM_OUTPUT_ISSUES = frozenset(
-    {
-        "prompt_delimiter_leakage",
-        "model_commentary_leakage",
-    }
-)
-
-
-def _normalized_source_type(source_type: str | None) -> str | None:
-    if source_type is None:
-        return None
-    return str(source_type).strip().lower().lstrip(".") or None
-
-
-def scan_cleaner_handoff_artifacts(
-    text: str,
-    *,
-    source_type: str | None = None,
-    llm_output: bool = True,
-) -> list[ExtractionArtifactIssue]:
-    """Return leakage issues detected in cleaned or TTS handoff text.
-
-    PDF artifact checks only run for known PDF sources. ``source_type=None``
-    preserves legacy behavior for callers that cannot identify the source.
-    LLM-output failure detectors are skipped when ``llm_output`` is false.
-    """
-    issues: list[ExtractionArtifactIssue] = []
-    normalized_source_type = _normalized_source_type(source_type)
-    checks: tuple[tuple[str, re.Pattern[str]], ...] = (
-        ("prompt_delimiter_leakage", PROMPT_DELIMITER_RE),
-        ("model_commentary_leakage", MODEL_COMMENTARY_RE),
-        ("pdf_hyphenation_leakage", PDF_HYPHENATION_LEAK_RE),
-        ("pdf_internal_hyphen_fragment", PDF_INTERNAL_HYPHEN_FRAGMENT_RE),
-        ("pdf_page_footnote_leakage", PDF_PAGE_FOOTNOTE_LEAK_RE),
-        ("pdf_joined_dash_leakage", PDF_JOINED_DASH_LEAK_RE),
-        ("epub_social_boilerplate", EPUB_SOCIAL_BOILERPLATE_RE),
-        ("joined_word_leakage", JOINED_FIRST_PERSON_LEAK_RE),
-        ("garbled_repeated_token_leakage", GARBLED_REPEATED_TOKEN_RE),
-    )
-    for issue_type, pattern in checks:
-        if (
-            normalized_source_type is not None
-            and normalized_source_type != "pdf"
-            and issue_type in _PDF_ARTIFACT_ISSUES
-        ):
-            continue
-        if not llm_output and issue_type in _LLM_OUTPUT_ISSUES:
-            continue
-        match = pattern.search(text)
-        if match:
-            issues.append(
-                ExtractionArtifactIssue(
-                    issue_type=issue_type,
-                    excerpt=match.group(0)[:160],
-                )
-            )
-    return issues

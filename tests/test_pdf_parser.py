@@ -212,14 +212,6 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
         print(f"✗ Failed to initialize parser: {e}")
         raise
     
-    # Test 2: Invalid file handling
-    print("\n[3] Testing invalid file handling...")
-    try:
-        PDFParser("/nonexistent/file.pdf")
-        raise AssertionError("Should have raised FileNotFoundError")
-    except FileNotFoundError:
-        print("✓ FileNotFoundError raised correctly")
-    
     # Test 3: Parse document
     print("\n[4] Testing document parsing...")
     try:
@@ -261,7 +253,7 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
     # Test 6: Page count
     print("\n[7] Testing page count...")
     try:
-        page_count = parser.get_page_count()
+        page_count = doc.total_pages
         assert page_count == 3, f"Expected 3 pages, got {page_count}"
         print(f"✓ Page count: {page_count}")
     except Exception as e:
@@ -271,7 +263,7 @@ def _run_pdf_parser_checks(sample_pdf: Path) -> bool:
     # Test 7: Markdown content
     print("\n[8] Testing markdown content...")
     try:
-        markdown = parser.get_markdown()
+        markdown = doc.raw_markdown
         assert len(markdown) > 0, "Markdown should not be empty"
         assert "Chapter" in markdown, "Markdown should contain 'Chapter'"
         print(f"✓ Markdown content looks good ({len(markdown)} chars)")

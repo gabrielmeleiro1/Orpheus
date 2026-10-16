@@ -15,7 +15,10 @@ from .text_layout import repair_text_layout
 from modules.errors import CorruptedFileError
 
 
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+# Callers strip the title. Leaving surrounding whitespace in the group keeps
+# matching linear: a lazy title followed by ``\s*$`` rescans every trailing
+# whitespace run once per character of title.
+HEADING_RE = re.compile(r"^(#{1,6})\s(.+)$")
 _FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
 
@@ -68,6 +71,45 @@ def iter_markdown_lines(raw_text: str) -> Iterator[tuple[str, str | None]]:
         yield line, title
 
 
+_BYLINE_RE = re.compile(r"^[*_]{0,3}\s*by\s+(?P<author>[^*_\n]+?)\s*[*_]{0,3}$", re.IGNORECASE)
+
+
+def _strip_emphasis(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[*_`]", "", text)).strip()
+
+
+def detect_title_block(raw_text: str) -> tuple[str, str | None] | None:
+    """Return (title, author) when the document opens with a title block.
+
+    A title block is a level-1 heading whose body holds nothing but an optional
+    byline ("*by Author*"), followed by the first real section. It is book
+    metadata, not a chapter to narrate. Without a byline, the next heading must
+    be a lower level ("# Book" then "## Chapter"), so a book of top-level
+    chapters keeps its first one.
+    """
+    title: str | None = None
+    author: str | None = None
+    for line, heading in iter_markdown_lines(raw_text):
+        stripped = line.strip()
+        if heading is not None:
+            level = len(HEADING_RE.match(line).group(1))
+            if title is None:
+                if level != 1:
+                    return None
+                title = _strip_emphasis(heading)
+                continue
+            if author is None and level == 1:
+                return None
+            return title, author
+        if title is None or not stripped:
+            continue
+        byline = _BYLINE_RE.match(stripped)
+        if byline is None or author is not None:
+            return None
+        author = _strip_emphasis(byline.group("author")) or None
+    return None
+
+
 def markdown_headings(raw_text: str) -> list[tuple[int, str]]:
     """Return heading lines outside fenced code blocks."""
     return [
@@ -92,6 +134,20 @@ class MarkdownParser:
         content_text = strip_leading_front_matter(raw_text)
         sections = self._split_sections(content_text)
         title = sections[0].title if sections else self.file_path.stem
+        author = None
+        title_block = detect_title_block(content_text)
+        if (
+            title_block is not None
+            and len(sections) > 1
+            and (not sections[0].content.strip() or _BYLINE_RE.match(sections[0].content.strip()))
+        ):
+            # The title block is metadata; narrating it would add a chapter
+            # that only reads the title and byline.
+            title, author = title_block
+            sections = [
+                Chapter(number=index, title=section.title, content=section.content)
+                for index, section in enumerate(sections[1:], start=1)
+            ]
         chapters = sections or [
             Chapter(number=1, title=self.file_path.stem, content=content_text.strip())
         ]
@@ -99,12 +155,15 @@ class MarkdownParser:
             chapter.content = repair_text_layout(chapter.content).strip()
         if not any(chapter.content.strip() for chapter in chapters):
             raise CorruptedFileError(
-                message="Markdown file contains no readable text",
+                message=(
+                    "The file is empty." if self.file_path.stat().st_size == 0
+                    else "Markdown file contains no readable text"
+                ),
                 file_path=self.file_path,
             )
         return Document(
             title=title,
-            author=None,
+            author=author,
             chapters=chapters,
             raw_markdown=raw_text,
         )

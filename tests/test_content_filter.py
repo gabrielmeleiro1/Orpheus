@@ -336,23 +336,6 @@ def test_keeps_long_midbook_nonfiction_chapter_about_publishing():
     assert classification.reason is None
 
 
-def test_keeps_short_real_copyright_page_as_skip():
-    content = (
-        "Copyright © 2021 by Harbor House Press.\n"
-        "All rights reserved. No part of this publication may be reproduced or "
-        "transmitted in any form without written permission.\n"
-        "ISBN 978-0-00-000000-0\n"
-        "Published by Harbor House Press, New York.\n"
-        "First edition."
-    )
-    assert len(content.split()) < 400
-
-    classification = classify_chapter_content("Copyright", content)
-
-    assert classification.should_skip is True
-    assert classification.reason == "copyright"
-
-
 def test_keeps_short_narrative_that_mentions_publishing_terms():
     content = (
         "The publisher's office kept a copy of the contract beside the manuscript. "

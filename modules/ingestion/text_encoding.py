@@ -45,7 +45,15 @@ def _looks_like_utf16(data: bytes) -> str | None:
 
 
 def decode_source_text(data: bytes) -> str:
-    """Decode user-provided text bytes without preserving UTF-16 NUL artifacts."""
+    """Decode user-provided text bytes without preserving UTF-16 NUL artifacts.
+
+    NUL characters are dropped: they carry no speech, and C-string consumers
+    downstream (FFmpeg metadata, phonemizers) truncate text at them.
+    """
+    return _decode_source_bytes(data).replace("\x00", "")
+
+
+def _decode_source_bytes(data: bytes) -> str:
     if not data:
         return ""
 

@@ -109,6 +109,7 @@ def test_preflight_plain_text_reports_metadata_sample_and_tiny_warning(tmp_path:
     assert payload["author"] is None
     assert payload["source_type"] == "txt"
     assert payload["chapter_count"] == 1
+    assert payload["chapter_titles"] == ["brief_notes"]
     assert payload["sample"] == "A very small note."
     assert any("very small" in warning for warning in payload["warnings"])
 
@@ -125,6 +126,7 @@ def test_preflight_markdown_uses_first_heading_and_counts_sections(tmp_path: Pat
     assert payload["title"] == "Guide Title"
     assert payload["source_type"] == "md"
     assert payload["chapter_count"] == 3
+    assert payload["chapter_titles"] == ["Guide Title", "Install", "Run"]
     assert "Opening context." in payload["sample"]
     assert payload["warnings"] == []
 
@@ -141,6 +143,7 @@ def test_preflight_markdown_ignores_headings_inside_fenced_code(tmp_path: Path) 
 
         assert payload["title"] == "Guide"
         assert payload["chapter_count"] == 2
+        assert payload["chapter_titles"] == ["Guide", "Real chapter"]
         assert "## Not a chapter" in payload["sample"]
 
 
@@ -191,7 +194,58 @@ def test_pdf_text_layer_preflight_classifies_native_text_pdf(tmp_path: Path) -> 
     assert payload["requires_ocr"] is False
     assert payload["pdf_text_layer"]["classification"] == "native_text"
     assert payload["pdf_text_layer"]["confidence"] >= 0.8
+    assert payload["chapter_titles"] == []
     assert not any("OCR required" in warning for warning in payload["warnings"])
+
+
+def test_pdf_preflight_finds_prose_after_leading_blank_pages(tmp_path: Path) -> None:
+    import fitz
+
+    source = tmp_path / "leading-blanks.pdf"
+    with fitz.open() as document:
+        for page_number in range(20):
+            page = document.new_page()
+            if page_number >= 5:
+                page.insert_textbox(
+                    fitz.Rect(72, 72, 540, 720),
+                    "Readable prose begins after the blank introductory pages. " * 40,
+                )
+        document.save(source)
+
+    payload = preflight_source(source)
+
+    assert payload["requires_ocr"] is False
+    assert payload["chapter_count"] == 1
+    assert payload["sample"].startswith("Readable prose")
+    assert not any("No readable text" in warning for warning in payload["warnings"])
+
+
+def test_pdf_preflight_chapter_availability_does_not_depend_on_preview_length(tmp_path: Path) -> None:
+    source = tmp_path / "native-text.pdf"
+    _create_pdf_with_text(source, "Readable prose for conversion. " * 80)
+
+    payload = preflight_source(source, max_sample_chars=0)
+
+    assert payload["requires_ocr"] is False
+    assert payload["chapter_count"] == 1
+    assert payload["sample"] == ""
+    assert not any("No readable text" in warning for warning in payload["warnings"])
+
+
+def test_pdf_preflight_rejects_a_document_with_only_blank_pages(tmp_path: Path) -> None:
+    import fitz
+
+    source = tmp_path / "blank.pdf"
+    with fitz.open() as document:
+        for _ in range(20):
+            document.new_page()
+        document.save(source)
+
+    payload = preflight_source(source)
+
+    assert payload["requires_ocr"] is True
+    assert payload["chapter_count"] == 0
+    assert payload["sample"] == ""
 
 
 def test_pdf_text_layer_preflight_accepts_short_complete_native_text(tmp_path: Path) -> None:
@@ -289,6 +343,7 @@ def test_preflight_epub_counts_story_sections_not_structural_pages(tmp_path: Pat
     assert payload["source_type"] == "epub"
     assert payload["chapter_count"] == 2
     assert "First story sample text" in payload["sample"]
+    assert payload["chapter_titles"] == ["First Story", "Second Story"]
     assert "Second story sample text" in payload["sample"]
     assert "Copyright metadata" not in payload["sample"]
     assert "Biography text" not in payload["sample"]
@@ -304,6 +359,67 @@ def test_preflight_rejects_unsupported_source_type(tmp_path: Path) -> None:
         assert "Unsupported source type" in str(exc)
     else:
         raise AssertionError("expected unsupported source to fail")
+
+
+def test_pdf_preflight_reports_outline_titles(tmp_path: Path) -> None:
+    import fitz
+
+    source = tmp_path / "outlined.pdf"
+    _create_pdf_with_text(source, "Readable PDF chapter prose. " * 80)
+    with fitz.open(source) as document:
+        document.set_toc([[1, "Opening", 1], [1, "Next chapter", 2]])
+        document.saveIncr()
+
+    payload = preflight_source(source)
+
+    assert payload["chapter_count"] == 2
+    assert payload["chapter_titles"] == ["Opening", "Next chapter"]
+
+
+def test_pdf_preflight_untitled_source_uses_filename(tmp_path: Path) -> None:
+    import fitz
+
+    source = tmp_path / "untitled.pdf"
+    _create_pdf_with_text(source, "Readable PDF chapter prose. " * 80)
+    with fitz.open(source) as document:
+        document.set_metadata({"title": ""})
+        document.saveIncr()
+
+    payload = preflight_source(source)
+
+    assert payload["chapter_count"] == 1
+    assert payload["chapter_titles"] == ["untitled"]
+
+
+def test_preflight_bounds_chapter_titles_without_changing_count(tmp_path: Path) -> None:
+    source = tmp_path / "many-chapters.md"
+    source.write_text("\n\n".join(f"# {index} " + "x" * 200 for index in range(205)), encoding="utf-8")
+
+    payload = preflight_source(source)
+
+    assert payload["chapter_count"] == 205
+    assert len(payload["chapter_titles"]) == 200
+    assert all(len(title) == 160 for title in payload["chapter_titles"])
+    assert payload["chapter_titles"][0].startswith("0 ")
+    assert payload["chapter_titles"][-1].startswith("199 ")
+
+
+def test_preflight_untitled_text_uses_filename_and_unknown_source_has_no_titles(tmp_path: Path) -> None:
+    source = tmp_path / "untitled.md"
+    source.write_text("Readable prose without a heading.", encoding="utf-8")
+    assert preflight_source(source)["chapter_titles"] == ["untitled"]
+    source = tmp_path / "empty.txt"
+    source.write_text("", encoding="utf-8")
+    assert preflight_source(source)["chapter_titles"] == []
+    source = tmp_path / "malformed.epub"
+    source.write_text("This is not an EPUB archive.", encoding="utf-8")
+    assert preflight_source(source)["chapter_titles"] == []
+
+
+def test_preflight_text_caps_fallback_title(tmp_path: Path) -> None:
+    source = tmp_path / "notes.txt"
+    source.write_text("Readable prose.", encoding="utf-8")
+    assert preflight_source(source, fallback_title="x" * 200)["chapter_titles"] == ["x" * 160]
 
 
 def test_heading_heavy_preflight_does_not_materialize_all_lines(tmp_path):

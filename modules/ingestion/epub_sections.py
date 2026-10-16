@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from copy import deepcopy
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 import codecs
@@ -13,7 +13,7 @@ from urllib.parse import unquote
 
 import ebooklib
 from bs4 import BeautifulSoup
-from bs4.element import PageElement, Tag
+from bs4.element import NavigableString, PageElement, PreformattedString, Tag
 
 from .text_layout import repair_text_layout
 
@@ -142,18 +142,80 @@ def extract_title_from_soup(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 
-def soup_to_epub_text(soup: BeautifulSoup) -> str:
-    """Convert parsed EPUB markup to clean block-separated text."""
-    soup = deepcopy(soup)
-    for element in soup(["script", "style", "nav", "header", "footer"]):
-        element.decompose()
+_EPUB_REMOVED_TAGS = frozenset({"script", "style", "nav", "header", "footer"})
+_EPUB_INLINE_TAGS = frozenset({"a", "span", "b", "strong", "i", "em", "small", "sup", "sub"})
 
-    # Inline markup is not a page/line boundary: an emphasized number in prose
-    # must not become a standalone folio when get_text inserts separators.
-    for element in soup(["a", "span", "b", "strong", "i", "em", "small", "sup", "sub"]):
-        element.unwrap()
-    soup.smooth()
-    text = soup.get_text(separator="\n", strip=True)
+
+def _epub_text_runs(soup: Tag) -> list[str]:
+    """Model removal, inline unwrapping and BeautifulSoup smoothing without edits.
+
+    Unwrapped inline elements share their parent's adjacent-string run. Every
+    retained tag, including an empty tag, remains a boundary. Preformatted
+    strings (comments, CDATA and processing instructions) also remain boundaries,
+    even when get_text would omit their contents. Stripping happens after a run
+    is joined, so whitespace surrounding emphasis is not lost.
+    """
+    # get_text() applies the requested root's filter to all descendants. In the
+    # pinned BeautifulSoup version, None includes every NavigableString subtype.
+    accepted_types = soup.interesting_string_types
+    runs: list[str] = []
+    pieces: list[str] = []
+    single_type: type[NavigableString] = NavigableString
+
+    def emit(text: str, string_type: type[NavigableString]) -> None:
+        if accepted_types is not None:
+            if isinstance(accepted_types, type):
+                if string_type is not accepted_types:
+                    return
+            elif string_type not in accepted_types:
+                return
+        stripped = text.strip()
+        if stripped:
+            runs.append(stripped)
+
+    def flush() -> None:
+        if pieces:
+            # smooth() replaces two or more adjacent non-preformatted strings
+            # with a plain NavigableString, even when they began as subclasses.
+            emit("".join(pieces), single_type if len(pieces) == 1 else NavigableString)
+            pieces.clear()
+
+    # The root itself is never removed/unwrapped: BeautifulSoup.find_all searches
+    # its descendants, and callers also pass individual heading Tags here.
+    frames: list[tuple[Iterator[PageElement], bool]] = [(iter(soup.children), True)]
+    while frames:
+        children, boundary = frames[-1]
+        child = next(children, None)
+        if child is None:
+            frames.pop()
+            if boundary:
+                flush()
+            continue
+        if isinstance(child, Tag):
+            if child.name in _EPUB_REMOVED_TAGS:
+                continue
+            retained = child.name not in _EPUB_INLINE_TAGS
+            if retained:
+                flush()
+            frames.append((iter(child.children), retained))
+        elif isinstance(child, NavigableString):
+            if isinstance(child, PreformattedString):
+                flush()
+                emit(str(child), type(child))
+            else:
+                if not pieces:
+                    single_type = type(child)
+                # Empty ordinary strings still participate in smooth()'s
+                # promotion of adjacent subclasses to plain NavigableString.
+                pieces.append(str(child))
+        else:
+            flush()
+    return runs
+
+
+def soup_to_epub_text(soup: BeautifulSoup) -> str:
+    """Convert parsed EPUB markup to clean block-separated text without editing it."""
+    text = "\n".join(_epub_text_runs(soup))
     text = repair_text_layout(text)
     lines = [line.strip() for line in text.split("\n") if line.strip()]
     return "\n\n".join(lines)
@@ -201,9 +263,9 @@ class _EPUBSectionBuilder:
         if not documents:
             return []
 
+        excluded_sources, excluded_fragments = self._structural_toc_exclusions(documents)
         sections = self._sections_from_toc(documents)
         if sections:
-            excluded_sources, excluded_fragments = self._structural_toc_exclusions(documents)
             sections = self._merge_unclaimed_spine_documents(
                 sections,
                 documents,
@@ -212,11 +274,23 @@ class _EPUBSectionBuilder:
             )
             return self._renumber(sections)
 
-        sections = self._sections_from_document_headings(documents)
-        if sections:
-            return self._renumber(sections)
-
-        return self._renumber(self._fallback_document_sections(documents))
+        # A structural-only TOC still supplies exclusions. Recover its mixed
+        # documents through the fragment-aware merge instead of treating those
+        # headings as fresh narrative chapters.
+        fallback_documents = [
+            document for document in documents
+            if document.source_name not in excluded_sources
+            and document.source_name not in excluded_fragments
+        ]
+        sections = self._sections_from_document_headings(fallback_documents)
+        if not sections:
+            sections = self._fallback_document_sections(fallback_documents)
+        # Splitting one XHTML document must not discard the other spine
+        # documents that already represent complete chapters.
+        sections = self._merge_unclaimed_spine_documents(
+            sections, documents, excluded_sources, excluded_fragments,
+        )
+        return self._renumber(sections)
 
     def _read_spine_documents(self) -> list[_DocumentPart]:
         ordered_items: list[tuple[Any, bool]] = []
@@ -281,11 +355,10 @@ class _EPUBSectionBuilder:
         index = 0
         while index < len(resolved_entries):
             entry, document = resolved_entries[index]
-            if _is_structural_title(entry.title, entry.source_name):
-                index += 1
-                continue
-
             if not self._has_readable_content(document):
+                if _is_structural_title(entry.title, entry.source_name):
+                    index += 1
+                    continue
                 next_document = self._next_toc_document_after(resolved_entries, index)
                 recovered = self._section_from_unreadable_toc_marker(
                     entry,
@@ -298,15 +371,13 @@ class _EPUBSectionBuilder:
                 index += 1
                 continue
 
+            # Structural entries still delimit neighboring narrative sections.
+            # Keep them through splitting; _filter_sections removes their bodies.
             entries_for_document = [entry]
             index += 1
             while (
                 index < len(resolved_entries)
                 and resolved_entries[index][1].source_name == document.source_name
-                and not _is_structural_title(
-                    resolved_entries[index][0].title,
-                    resolved_entries[index][0].source_name,
-                )
             ):
                 entries_for_document.append(resolved_entries[index][0])
                 index += 1
@@ -477,8 +548,6 @@ class _EPUBSectionBuilder:
         for document in documents:
             if not self._has_readable_content(document):
                 continue
-            if _is_structural_title(document.title, document.source_name):
-                continue
 
             headings = _find_split_headings(document.soup)
             if len(headings) < 2:
@@ -492,7 +561,6 @@ class _EPUBSectionBuilder:
                 (heading.get_text(" ", strip=True), heading)
                 for heading in headings
                 if heading.get_text(" ", strip=True)
-                and not _is_structural_title(heading.get_text(" ", strip=True), document.source_name)
             ]
             if len(markers) < 2:
                 continue
@@ -512,12 +580,25 @@ class _EPUBSectionBuilder:
     def _sections_from_fragment_excluded_document(
         self,
         document: _DocumentPart,
+        excluded_fragments: set[str],
     ) -> list[EPUBSection]:
-        markers = [
+        # TOC labels can identify structural material whose visible heading is
+        # descriptive (e.g. "Publisher Statement"). Add those boundaries first
+        # so the TOC classification wins when both markers occupy one block.
+        markers: list[tuple[str, Tag]] = []
+        for entry in self._read_toc_entries():
+            if entry.fragment not in excluded_fragments:
+                continue
+            if not _is_structural_title(entry.title, entry.source_name):
+                continue
+            marker = _find_fragment_marker(document.soup, entry.fragment)
+            if marker is not None:
+                markers.append((entry.title, marker))
+        markers.extend(
             (heading.get_text(" ", strip=True), heading)
             for heading in _find_split_headings(document.soup)
             if heading.get_text(" ", strip=True)
-        ]
+        )
         if not any(
             not _is_structural_title(title, document.source_name)
             for title, _ in markers
@@ -551,7 +632,9 @@ class _EPUBSectionBuilder:
             ):
                 continue
             if document.source_name in excluded_fragments:
-                sections.extend(self._sections_from_fragment_excluded_document(document))
+                sections.extend(self._sections_from_fragment_excluded_document(
+                    document, excluded_fragments[document.source_name],
+                ))
                 continue
             if not self._has_readable_content(document):
                 continue

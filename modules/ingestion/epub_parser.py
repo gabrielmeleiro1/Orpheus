@@ -9,13 +9,13 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 import re
-import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup
 
 from .models import Chapter as IngestionChapter
 from .models import Document as IngestionDocument
 from .text_layout import opening_heading_text
+from .epub_structure import read_epub_book
 from .epub_sections import (
     EPUBSection,
     build_epub_sections,
@@ -31,6 +31,60 @@ from modules.errors import (
     EmptyChapterError,
     ChapterTooLongError,
 )
+
+
+# Font obfuscation (IDPF and Adobe) is declared in encryption.xml too, but it
+# only mangles embedded fonts; every other algorithm means encrypted content.
+_FONT_OBFUSCATION_ALGORITHMS = frozenset({
+    "http://www.idpf.org/2008/embedding",
+    "http://ns.adobe.com/pdf/enc#RC",
+})
+
+
+def encrypted_epub_resources(file_path: Path | str) -> list[str]:
+    """Return archive members an EPUB declares as encrypted (DRM), fonts excluded.
+
+    Call after ``validate_epub`` so the member size limits already apply.
+    """
+    import zipfile
+
+    from lxml import etree
+
+    with zipfile.ZipFile(file_path) as archive:
+        try:
+            payload = archive.read("META-INF/encryption.xml")
+        except KeyError:
+            return []
+    parser = etree.XMLParser(resolve_entities=False, no_network=True, load_dtd=False)
+    try:
+        root = etree.fromstring(payload, parser=parser)
+    except etree.XMLSyntaxError:
+        # Unreadable encryption metadata cannot vouch for readable content.
+        return ["META-INF/encryption.xml"]
+    encrypted: list[str] = []
+    for data in root.iter("{*}EncryptedData"):
+        method = data.find("{*}EncryptionMethod")
+        algorithm = (method.get("Algorithm") if method is not None else "") or ""
+        if algorithm.strip() in _FONT_OBFUSCATION_ALGORITHMS:
+            continue
+        reference = data.find(".//{*}CipherReference")
+        encrypted.append((reference.get("URI") if reference is not None else "") or "?")
+    return encrypted
+
+
+def raise_if_drm_protected(file_path: Path) -> None:
+    """Refuse DRM-encrypted EPUBs instead of narrating ciphertext as text."""
+    encrypted = encrypted_epub_resources(file_path)
+    if encrypted:
+        shown = ", ".join(encrypted[:3]) + (" ..." if len(encrypted) > 3 else "")
+        raise EPUBParsingError(
+            message=(
+                "This EPUB is DRM-protected (its content is encrypted) and cannot be "
+                "converted. Use a DRM-free copy of the book."
+            ),
+            details=f"Encrypted resources: {shown}",
+            file_path=file_path,
+        )
 
 
 @dataclass
@@ -92,7 +146,8 @@ class EPUBParser:
                 # bypass ZIP metadata limits by opting out of constructor
                 # validation.
                 validate_epub(self.file_path)
-                self._book = epub.read_epub(str(self.file_path))
+                raise_if_drm_protected(self.file_path)
+                self._book = read_epub_book(self.file_path)
             except (CorruptedFileError, EPUBParsingError) as e:
                 raise EPUBParsingError(
                     message=e.message,
@@ -100,10 +155,12 @@ class EPUBParser:
                     file_path=self.file_path,
                 )
             except Exception as e:
+                # Keep the raw exception for diagnostics, not in the message.
                 raise EPUBParsingError(
-                    message=f"Failed to read EPUB: {str(e)}",
-                    file_path=self.file_path
-                )
+                    message="The EPUB could not be read; the file is damaged or not a valid EPUB.",
+                    details=f"{type(e).__name__}: {e}",
+                    file_path=self.file_path,
+                ) from e
         return self._book
     
     def parse(self) -> Document:
@@ -248,23 +305,3 @@ class EPUBParser:
         EPUB chapter documents are commonly XHTML/XML; those should use the XML parser.
         """
         return parse_epub_markup(markup)
-
-    def get_cover(self) -> Optional[bytes]:
-        """
-        Extract cover image from EPUB if available.
-        
-        Returns:
-            Cover image bytes or None
-        """
-        book = self._load_book()
-        
-        for item in book.get_items():
-            if item.get_type() == ebooklib.ITEM_COVER:
-                return item.get_content()
-        
-        # Try to find by name
-        for item in book.get_items_of_type(ebooklib.ITEM_IMAGE):
-            if "cover" in item.get_name().lower():
-                return item.get_content()
-        
-        return None

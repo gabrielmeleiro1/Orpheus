@@ -29,7 +29,10 @@ class TextParser:
         content = repair_text_layout(raw_text).strip()
         if not content:
             raise CorruptedFileError(
-                message="Text file contains no readable text",
+                message=(
+                    "The file is empty." if self.file_path.stat().st_size == 0
+                    else "Text file contains no readable text"
+                ),
                 file_path=self.file_path,
             )
         return Document(

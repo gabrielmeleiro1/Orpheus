@@ -11,10 +11,27 @@ def opening_heading_text(content: str, title: str) -> str:
     def key(value: str) -> str:
         return re.sub(r"\s+", " ", re.sub(r"[#*_`]", "", value)).strip().casefold()
 
+    def words(value: str) -> list[str]:
+        return re.findall(r"\w+", value.casefold())
+
+    def without_repeated_label(prefix_words: list[str], title_words: list[str]) -> list[str]:
+        # PDF pages often repeat the title's label ("Chapter 1") as a running
+        # header right above the printed heading ("CHAPTER 1 / The Title").
+        for size in range(1, len(title_words)):
+            label = title_words[:size]
+            while prefix_words[:size] == label and prefix_words[size:2 * size] == label:
+                prefix_words = prefix_words[size:]
+        return prefix_words
+
     lines = content.splitlines(keepends=True)
-    for count in range(1, min(4, len(lines)) + 1):
+    title_words = words(title)
+    for count in range(1, min(5, len(lines)) + 1):
         prefix = "".join(lines[:count])
         if key(prefix) == key(title):
+            return prefix.rstrip()
+        # Punctuation and line breaks differ between an outline title
+        # ("Chapter 1: Title") and its printed heading ("CHAPTER 1\nTitle").
+        if title_words and without_repeated_label(words(prefix), title_words) == title_words:
             return prefix.rstrip()
     return ""
 
@@ -45,8 +62,19 @@ def should_join_hyphenated_word(left: str, right: str, word_forms: set[str]) -> 
     return left.casefold() not in _COMPOUND_PREFIXES and not (left.casefold() == "co" and right[:1] in "aeiou")
 
 
+# Whitespace runs are matched only from their first character. Starting at
+# every position of a long run (as a bare ``\s+`` does) is quadratic.
+_LEADING_FOLIO_RE = re.compile(r"^\d+\s+")
+_TRAILING_FOLIO_RE = re.compile(r"(?<!\s)\s+(\d+)$")
+# Wrapped words start only at the beginning of a letter run, for the same reason.
+_LINE_BREAK_HYPHEN_RE = re.compile(
+    r"(?<![^\W\d_])(?P<left>[^\W\d_]+)-[ \t]*\r?\n[ \t]*(?P<right>[^\W\d_]+)\b"
+)
+
+
 def numbered_folio_title(line: str) -> str:
-    return re.sub(r"^\d+\s+|\s+\d+$", "", line.strip()).strip()
+    title = _LEADING_FOLIO_RE.sub("", line.strip(), count=1)
+    return _TRAILING_FOLIO_RE.sub("", title, count=1).strip()
 
 
 def corroborated_folio_titles(lines: list[str]) -> set[str]:
@@ -59,10 +87,12 @@ def corroborated_folio_titles(lines: list[str]) -> set[str]:
         match = re.match(r"^(\d+)\s+(.+)$", stripped)
         side = "left"
         if match is None:
-            match = re.match(r"^(.+?)\s+(\d+)$", stripped)
+            # ``stripped`` starts with a non-space, so a trailing folio always
+            # has a title before it.
+            match = _TRAILING_FOLIO_RE.search(stripped)
             side = "right"
         if match:
-            number = match.group(1 if side == "left" else 2)
+            number = match.group(1)
             title = numbered_folio_title(stripped).casefold()
             candidates[title].append((number, side, bool(re.search(r"\s{2,}", stripped))))
     return {
@@ -139,11 +169,7 @@ def repair_line_break_hyphenation(text: str, *, word_forms: set[str] | None = No
             return match.group(0)
         return left + "-" + right
 
-    return re.sub(
-        r"(?P<left>[^\W\d_]+)-[ \t]*\r?\n[ \t]*(?P<right>[^\W\d_]+)\b",
-        _join,
-        text,
-    )
+    return _LINE_BREAK_HYPHEN_RE.sub(_join, text)
 
 
 def repair_text_layout(text: str) -> str:

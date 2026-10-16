@@ -95,9 +95,8 @@ class PDFParser:
                 for plain text PDFs, ``pymupdf4llm`` preserves legacy markdown
                 extraction, and ``auto`` falls back to ``fitz`` when markdown
                 coverage is clearly incomplete.
-            artifact_policies: Optional artifact normalization policy override
-                (e.g. KNOWN_CORPUS_PDF_ARTIFACT_POLICIES for the benchmark
-                corpus). Defaults to the parser-safe default policies.
+            artifact_policies: Optional artifact normalization policy override.
+                Defaults to the parser-safe default policies.
         """
         self.file_path = Path(file_path)
         if not self.file_path.exists():
@@ -107,6 +106,13 @@ class PDFParser:
         
         # Validate PDF structure
         if validate:
+            from .source_problems import file_problem
+
+            problem = file_problem(self.file_path)
+            if problem is not None:
+                raise PDFParsingError(
+                    message=problem.message, details=problem.details, file_path=self.file_path,
+                )
             try:
                 validate_pdf(self.file_path)
             except CorruptedFileError as e:
@@ -168,6 +174,15 @@ class PDFParser:
                 pending.extend(
                     cause for cause in (error.__cause__, error.__context__) if cause is not None
                 )
+            # Name the actual problem (password, damaged file) instead of the
+            # library's "document closed or encrypted" wording.
+            from .source_problems import pdf_problem
+
+            problem = pdf_problem(self.file_path, require_pages=False)
+            if problem is not None:
+                raise PDFParsingError(
+                    message=problem.message, details=problem.details, file_path=self.file_path,
+                ) from None
             raise PDFParsingError(
                 message=f"Failed to extract markdown: {str(e)}",
                 file_path=self.file_path
@@ -534,21 +549,3 @@ class PDFParser:
             ]
 
         return self._chapters_from_entries(entries, total_pages)
-    
-    def get_page_count(self) -> int:
-        """Get the total number of pages in the PDF."""
-        import fitz
-        with fitz.open(self.file_path) as doc:
-            return len(doc)
-    
-    def get_markdown(self) -> str:
-        """
-        Get the full markdown content.
-        
-        Returns:
-            Markdown string of entire document
-        """
-        if self._markdown is None:
-            pages_data = normalize_pdf_artifacts(self._extract_pages())
-            self._markdown = "\n\n".join(str(page.get("text", "")) for page in pages_data)
-        return self._markdown

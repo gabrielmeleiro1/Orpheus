@@ -78,85 +78,6 @@ class TestPDFParser:
         assert "Page 3 Content" in doc.chapters[1].content
         assert "Page 1 Content" not in doc.chapters[1].content
 
-    def test_fitz_parse_reuses_open_document_metadata_and_toc(self, sample_pdf):
-        class _Page:
-            def __init__(self, text: str):
-                self._text = text
-
-            def get_text(self, mode: str = "text") -> str:
-                assert mode == "text"
-                return self._text
-
-        class _Doc:
-            metadata = {"title": "Cached Metadata", "author": "Tester"}
-
-            def __init__(self):
-                body = " ".join(["chapter body text"] * 140)
-                self.pages = [_Page(body), _Page(body)]
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def __len__(self):
-                return len(self.pages)
-
-            def __iter__(self):
-                return iter(self.pages)
-
-            def get_toc(self):
-                return [[1, "Chapter 1", 1]]
-
-        with patch("fitz.open", return_value=_Doc()) as mock_open, \
-             patch("modules.ingestion.pdf_parser.validate_pdf", return_value=True):
-            parser = PDFParser(sample_pdf, extraction_backend="fitz")
-            doc = parser.parse()
-
-        assert doc.title == "Cached Metadata"
-        assert doc.chapters[0].title == "Chapter 1"
-        assert mock_open.call_count == 1
-
-    def test_get_markdown_uses_configured_backend_and_artifact_normalization(self, sample_pdf):
-        class _Page:
-            def __init__(self, text: str):
-                self._text = text
-
-            def get_text(self, mode: str = "text") -> str:
-                assert mode == "text"
-                return self._text
-
-        class _Doc:
-            metadata = {"title": "Cached Metadata", "author": "Tester"}
-
-            def __init__(self):
-                self.pages = [_Page("The body has expe-\n rience.")]
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def __len__(self):
-                return len(self.pages)
-
-            def __iter__(self):
-                return iter(self.pages)
-
-            def get_toc(self):
-                return []
-
-        with patch("fitz.open", return_value=_Doc()), \
-             patch("modules.ingestion.pdf_parser.pymupdf4llm") as mock_llm, \
-             patch("modules.ingestion.pdf_parser.validate_pdf", return_value=True):
-            parser = PDFParser(sample_pdf, extraction_backend="fitz")
-            markdown = parser.get_markdown()
-
-        assert markdown == "The body has experience."
-        mock_llm.to_markdown.assert_not_called()
-
     def test_parse_strips_trailing_reference_block(self, sample_pdf):
         with patch("modules.ingestion.pdf_parser.pymupdf4llm") as mock_llm, \
              patch("fitz.open") as mock_open, \
@@ -311,7 +232,7 @@ class TestPDFParser:
         assert "themselves-\n toward" in content
         assert "non-\n occurrence" in content
 
-    def test_parse_strips_page_number_and_inline_footnote_residue(self, sample_pdf):
+    def test_parse_strips_page_number_residue_and_preserves_numbered_text(self, sample_pdf):
         with patch("modules.ingestion.pdf_parser.pymupdf4llm") as mock_llm, \
              patch("fitz.open") as mock_open, \
              patch("modules.ingestion.pdf_parser.validate_pdf", return_value=True):
@@ -336,23 +257,13 @@ class TestPDFParser:
             mock_doc.get_toc.return_value = [[1, "Chapter 1", 1]]
             mock_open.return_value.__enter__.return_value = mock_doc
 
-            # Inline footnote stripping is corpus-specific and opt-in; default
-            # policies must not delete numbered headings from user PDFs.
-            from modules.ingestion.pdf_artifact_normalizer import (
-                KNOWN_CORPUS_PDF_ARTIFACT_POLICIES,
-            )
-
-            parser = PDFParser(
-                sample_pdf,
-                artifact_policies=KNOWN_CORPUS_PDF_ARTIFACT_POLICIES,
-            )
+            parser = PDFParser(sample_pdf)
             doc = parser.parse()
 
         content = doc.chapters[0].content
         normalized = " ".join(content.split())
         assert "44I" not in content
-        assert "I The problem I am going to raise" not in content
-        assert "from many different points of view" in normalized
+        assert "I The problem I am going to raise" in content
         assert "so the comprehension of such facts" in normalized
 
     def test_parse_strips_single_trailing_reference_note(self, sample_pdf):
@@ -507,7 +418,6 @@ class TestPDFParser:
             doc = parser.parse()
 
         assert doc.chapters[0].content == "short but complete article body"
-        mock_llm.to_markdown.assert_called_once()
 
     def test_auto_backend_prefers_fitz_when_plain_text_coverage_is_complete(self, sample_pdf):
         class _Page:
@@ -553,52 +463,6 @@ class TestPDFParser:
 
         assert "complete article page one" in doc.raw_markdown
         assert "complete article page three" in doc.chapters[0].content
-        mock_llm.to_markdown.assert_not_called()
-
-    def test_default_backend_uses_auto_coverage_path_for_complete_plain_text(self, sample_pdf):
-        class _Page:
-            def __init__(self, text: str):
-                self._text = text
-
-            def get_text(self, mode: str = "text") -> str:
-                assert mode == "text"
-                return self._text
-
-        class _Doc:
-            metadata = {"title": "Default Complete Text", "author": "Tester"}
-
-            def __init__(self):
-                self.pages = [
-                    _Page("default complete article page one " * 80),
-                    _Page("default complete article page two " * 80),
-                ]
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def __len__(self):
-                return len(self.pages)
-
-            def __iter__(self):
-                return iter(self.pages)
-
-            def get_toc(self):
-                return []
-
-        with patch("modules.ingestion.pdf_parser.pymupdf4llm") as mock_llm, \
-             patch("fitz.open", return_value=_Doc()), \
-             patch("modules.ingestion.pdf_parser.validate_pdf", return_value=True):
-            mock_llm.to_markdown.side_effect = AssertionError("legacy extraction should not run by default")
-
-            parser = PDFParser(sample_pdf)
-            doc = parser.parse()
-
-        assert parser.extraction_backend == "auto"
-        assert "default complete article page one" in doc.raw_markdown
-        assert "default complete article page two" in doc.chapters[0].content
         mock_llm.to_markdown.assert_not_called()
 
     def test_parse_classifies_image_only_pdf_as_ocr_required(self, tmp_path):

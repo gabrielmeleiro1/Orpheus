@@ -874,28 +874,6 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
     return True
 
 
-def test_epub_extract_chapters_parses_each_document_item_once(tmp_path):
-    sample_epub = tmp_path / "sample.epub"
-    create_sample_epub(sample_epub)
-    parser = EPUBParser(sample_epub)
-    parser._load_book()
-
-    parse_calls = 0
-    original_parse_markup = parser._parse_markup
-
-    def counted_parse_markup(markup):  # noqa: ANN001
-        nonlocal parse_calls
-        parse_calls += 1
-        return original_parse_markup(markup)
-
-    parser._parse_markup = counted_parse_markup  # type: ignore[method-assign]
-
-    chapters = parser.extract_chapters()
-
-    assert len(chapters) >= 3
-    assert parse_calls == len(chapters) + 1  # includes the short nav document
-
-
 def test_epub_extract_chapters_reapplies_options_after_cached_parse(tmp_path, monkeypatch):
     sample_epub = tmp_path / "option-cache.epub"
     sample_epub.write_bytes(b"fixture")

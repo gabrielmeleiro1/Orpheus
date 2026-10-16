@@ -1,9 +1,6 @@
 import logging
 import re
 
-import pytest
-
-from modules.errors import ChapterTooLongError
 from modules.ingestion.models import Chapter, Document
 from modules.text.document_normalizer import normalize_extracted_document
 
@@ -414,15 +411,14 @@ def test_normalizer_splits_overlong_single_paragraph_at_sentence_boundaries():
         assert f"Sentence number {index}" in joined
 
 
-def test_normalizer_splits_overlong_dialogue_with_curly_quotes():
-    cap = 24
-    dialogue = " ".join(
-        f"“This is dialogue sentence number {index}.” “The reply remains readable too.”"
-        for index in range(1, 20)
-    )
+def test_normalizer_splits_unpunctuated_text_into_bounded_parts():
+    # A huge paste with no sentence boundaries used to fail late with
+    # ChapterTooLongError; it is now split into word-bounded parts.
+    cap = 10
+    content = "word " * 60  # 60 words, no sentence boundaries at all
     document = Document(
-        title="Dialogue",
-        chapters=[Chapter(number=1, title="Dialogue", content=dialogue)],
+        title="Blob",
+        chapters=[Chapter(number=1, title="Blob", content=content.strip())],
     )
 
     normalized = normalize_extracted_document(
@@ -432,28 +428,10 @@ def test_normalizer_splits_overlong_dialogue_with_curly_quotes():
         skip_non_prose_sections=False,
     )
 
-    assert len(normalized.chapters) >= 2
+    assert len(normalized.chapters) == 6
     assert all(len(chapter.content.split()) <= cap for chapter in normalized.chapters)
-    joined = " ".join(chapter.content for chapter in normalized.chapters)
-    assert "dialogue sentence number 1" in joined
-    assert "dialogue sentence number 19" in joined
-
-
-def test_normalizer_still_raises_for_single_overlong_sentence():
-    cap = 10
-    content = "word " * 60  # 60 words, no sentence boundaries at all
-    document = Document(
-        title="Blob",
-        chapters=[Chapter(number=1, title="Blob", content=content.strip())],
-    )
-
-    with pytest.raises(ChapterTooLongError):
-        normalize_extracted_document(
-            document,
-            source_type="txt",
-            max_chapter_words=cap,
-            skip_non_prose_sections=False,
-        )
+    assert sum(len(chapter.content.split()) for chapter in normalized.chapters) == 60
+    assert normalized.chapters[1].title == "Blob (part 2)"
 
 
 def test_normalizer_disables_low_prose_rule_for_verse_heavy_books():

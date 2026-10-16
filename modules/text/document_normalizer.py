@@ -8,7 +8,6 @@ import logging
 import re
 import string
 
-from modules.errors import ChapterTooLongError
 from modules.ingestion.models import Chapter, Document
 from modules.ingestion.text_layout import repair_line_break_hyphenation
 from modules.ingestion.content_filter import (
@@ -48,11 +47,28 @@ def _is_page_number(line: str) -> bool:
         return True
     return bool(_ROMAN_PAGE_NUMBER_RE.fullmatch(stripped))
 _BACKLINK_RE = re.compile(
-    r"(?im)(?:^\s*|\s+)(?:back to (?:top|contents)|return to (?:top|contents))\s*[↩\u21a9]?\s*$"
+    r"(?i)(?<!\S)(?:back|return) to (?:top|contents)[^\S\n]*(?:\u21a9[^\S\n]*)?(?=\n|\Z)"
 )
 _PUBLISHER_BOILERPLATE_RE = re.compile(
-    r"(?im)^\s*(?:publisher boilerplate|copyright page|all rights reserved).*$"
+    r"(?im)^[^\S\n]*(?:publisher boilerplate|copyright page|all rights reserved).*$"
 )
+
+
+def _remove_backlinks(text: str) -> str:
+    """Drop end-of-line "back to top" links together with the whitespace before them.
+
+    Matching starts at the phrase, not at the whitespace before it: a leading
+    whitespace pattern would rescan a long whitespace run from each of its positions.
+    """
+    pieces: list[str] = []
+    position = 0
+    for match in _BACKLINK_RE.finditer(text):
+        pieces.append(text[position:match.start()].rstrip())
+        position = match.end()
+    pieces.append(text[position:])
+    return "".join(pieces)
+
+
 _NAV_TITLE_RE = re.compile(r"(?i)\b(?:table of contents|contents|toc|nav(?:igation)?|landmarks?)\b")
 _EPUB_NON_NARRATIVE_TITLE_RE = re.compile(
     r"^(?:"
@@ -190,8 +206,15 @@ def _is_page_number_adjacent(lines: list[str], index: int) -> bool:
     return False
 
 
-def _is_page_edge_position(lines: list[str], index: int) -> bool:
-    """True when a line sits at a chapter/page edge rather than mid-prose."""
+def _is_page_edge_position(
+    lines: list[str], index: int, content_edges: tuple[int, int],
+) -> bool:
+    """True when a line sits at a chapter/page edge rather than mid-prose.
+
+    ``content_edges`` holds the first and last non-blank line indices; callers
+    compute it once per chapter because rescanning every line for each
+    candidate made header detection quadratic in chapter length.
+    """
     previous_blank = index == 0 or not lines[index - 1].strip()
     next_blank = index == len(lines) - 1 or not lines[index + 1].strip()
     if not (previous_blank or next_blank):
@@ -201,8 +224,7 @@ def _is_page_edge_position(lines: list[str], index: int) -> bool:
     if _is_page_number_adjacent(lines, index):
         return True
 
-    non_empty = [i for i, line in enumerate(lines) if line.strip()]
-    if index == non_empty[0] or index == non_empty[-1]:
+    if index in content_edges:
         return True
 
     # Isolated blank-surrounded lines often mark page breaks in PDF text.
@@ -218,12 +240,16 @@ def _standalone_header_like_lines(content: str) -> list[tuple[str, bool]]:
     cannot, by itself, promote a body refrain into the running-header set.
     """
     lines = content.splitlines()
+    non_blank = [index for index, line in enumerate(lines) if line.strip()]
+    if not non_blank:
+        return []
+    content_edges = (non_blank[0], non_blank[-1])
     candidates: list[tuple[str, bool]] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
         if not _is_plausible_page_edge_header(stripped):
             continue
-        if not _is_page_edge_position(lines, index):
+        if not _is_page_edge_position(lines, index, content_edges):
             continue
         strong = _looks_like_strong_header_text(stripped) or _is_page_number_adjacent(
             lines, index
@@ -317,7 +343,20 @@ def _reflow_lines(text: str) -> str:
     return "\n\n".join(reflowed)
 
 
-def _normalize_pdf_chapter(text: str, repeated_headers: set[str]) -> str:
+_CHAPTER_LABEL_RE = re.compile(
+    r"^(?:chapter|part|section|book)\s+(?:\d+|[ivxlcdm]+|[a-z]+)\b", re.IGNORECASE,
+)
+
+
+def _chapter_running_header(title: str) -> str | None:
+    """The label ("Chapter 3") a PDF prints as this chapter's page header, if any."""
+    match = _CHAPTER_LABEL_RE.match(str(title or "").strip())
+    return match.group(0).casefold() if match else None
+
+
+def _normalize_pdf_chapter(
+    text: str, repeated_headers: set[str], *, running_header: str | None = None,
+) -> str:
     kept_lines: list[str] = []
     for line in text.splitlines():
         stripped = line.strip()
@@ -329,6 +368,11 @@ def _normalize_pdf_chapter(text: str, repeated_headers: set[str]) -> str:
         normalized = _normalize_repeated_candidate(stripped)
         if normalized in repeated_headers:
             continue
+        # The chapter's own label alone on a line is its running page header;
+        # header detection keeps "Chapter N" lines because the number varies
+        # between chapters. The printed heading was split off before this.
+        if running_header is not None and re.sub(r"\s+", " ", stripped).casefold() == running_header:
+            continue
         kept_lines.append(line.rstrip())
 
     cleaned = "\n".join(kept_lines)
@@ -339,7 +383,7 @@ def _normalize_pdf_chapter(text: str, repeated_headers: set[str]) -> str:
 
 
 def _normalize_epub_chapter(text: str) -> str:
-    cleaned = _BACKLINK_RE.sub("", text)
+    cleaned = _remove_backlinks(text)
     cleaned = _PUBLISHER_BOILERPLATE_RE.sub("", cleaned)
     cleaned = re.sub(r"[ \t]+", " ", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
@@ -378,7 +422,7 @@ def _paragraphs_for_split(content: str) -> list[str]:
 # paragraph (OCR/export text without blank lines) can still be split rather than
 # aborting the whole conversion.
 _SENTENCE_BOUNDARY_RE = re.compile(
-    r'(?<=[.!?])["\'”’]?\s+(?=[A-Z"\'“‘])'
+    r'(?:(?<=[.!?])|(?<=[.!?]["\'”’]))\s+(?=[A-Z"\'“‘])'
 )
 
 
@@ -393,26 +437,27 @@ def _sentences_for_split(paragraph: str) -> list[str]:
 def _split_units_for_overlong_chapter(
     chapter: Chapter, paragraphs: list[str], *, max_chapter_words: int
 ) -> list[str]:
-    """Return packable units, falling back to sentence splitting for a single
-    over-cap paragraph. Only a lone sentence above the cap is still fatal."""
+    """Return packable units no larger than the cap.
+
+    An over-cap paragraph splits at sentence boundaries, an over-cap sentence
+    at line breaks, and unbroken text (a huge paste without punctuation or
+    newlines) into word windows, so oversized input becomes bounded parts
+    instead of failing late in the conversion.
+    """
+    _ = chapter
     units: list[str] = []
     for paragraph in paragraphs:
         if len(paragraph.split()) <= max_chapter_words:
             units.append(paragraph)
             continue
-
-        sentences = _sentences_for_split(paragraph)
-        if len(sentences) <= 1:
-            raise ChapterTooLongError(
-                chapter.number, len(paragraph.split()), max_chapter_words
-            )
-        for sentence in sentences:
-            sentence_words = len(sentence.split())
-            if sentence_words > max_chapter_words:
-                raise ChapterTooLongError(
-                    chapter.number, sentence_words, max_chapter_words
-                )
-            units.append(sentence)
+        for sentence in _sentences_for_split(paragraph):
+            if len(sentence.split()) <= max_chapter_words:
+                units.append(sentence)
+                continue
+            for line in (line.strip() for line in sentence.splitlines()):
+                words = line.split()
+                for start in range(0, len(words), max_chapter_words):
+                    units.append(" ".join(words[start:start + max_chapter_words]))
     return units
 
 
@@ -470,9 +515,9 @@ def normalize_extracted_document(
     """Return a copy of ``document`` after parser-specific deterministic cleanup.
 
     Chapters above ``max_chapter_words`` are split at paragraph boundaries
-    before downstream chunking/validation; a single over-cap paragraph falls
-    back to sentence-boundary splitting. Only a single sentence above the cap
-    remains pathological and raises ``ChapterTooLongError``.
+    before downstream chunking/validation; an over-cap paragraph falls back
+    to sentences, then line breaks, then word windows, so every part is
+    bounded.
     """
     if not is_dataclass(document):
         return document
@@ -622,7 +667,9 @@ def _normalize_chapters(
         else:
             heading = ""
         if source_type == "pdf":
-            content = _normalize_pdf_chapter(content, repeated_headers)
+            content = _normalize_pdf_chapter(
+                content, repeated_headers, running_header=_chapter_running_header(title),
+            )
         elif source_type == "epub":
             content = _normalize_epub_chapter(content)
         elif source_type == "md":

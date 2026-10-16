@@ -1,49 +1,15 @@
 from modules.ingestion.extraction_artifact_signals import (
     has_joined_first_person_leakage,
     has_pdf_hyphenation_leakage,
-    scan_cleaner_handoff_artifacts,
+    has_pdf_page_footnote_leakage,
 )
 from modules.ingestion.models import Chapter, Document
 from modules.text.document_normalizer import normalize_extracted_document
 
 
-def test_scan_cleaner_handoff_artifacts_flags_pdf_residue():
-    issues = scan_cleaner_handoff_artifacts(
+def test_has_pdf_page_footnote_leakage_flags_pdf_residue():
+    assert has_pdf_page_footnote_leakage(
         "This content downloaded from an old mirror should be flagged."
-    )
-    assert any(issue.issue_type == "pdf_page_footnote_leakage" for issue in issues)
-
-
-def test_scan_cleaner_handoff_artifacts_scopes_pdf_checks_to_pdf_sources():
-    text = "Hel- lo and inde-pendence. This content downloaded from an old mirror."
-
-    assert {
-        issue.issue_type
-        for issue in scan_cleaner_handoff_artifacts(text, source_type="pdf")
-    } >= {
-        "pdf_hyphenation_leakage",
-        "pdf_internal_hyphen_fragment",
-        "pdf_page_footnote_leakage",
-    }
-    assert not any(
-        issue.issue_type.startswith("pdf_")
-        for source_type in ("epub", "txt", "md")
-        for issue in scan_cleaner_handoff_artifacts(text, source_type=source_type)
-    )
-    assert any(
-        issue.issue_type.startswith("pdf_")
-        for issue in scan_cleaner_handoff_artifacts(text, source_type=None)
-    )
-
-
-def test_scan_cleaner_handoff_artifacts_skips_llm_only_checks_for_rule_text():
-    issues = scan_cleaner_handoff_artifacts(
-        "In this commentary, the text has been transmitted carefully. ---",
-        llm_output=False,
-    )
-
-    assert {issue.issue_type for issue in issues}.isdisjoint(
-        {"model_commentary_leakage", "prompt_delimiter_leakage"}
     )
 
 
@@ -52,12 +18,10 @@ def test_has_pdf_hyphenation_leakage_ignores_suspended_compounds():
     assert has_pdf_hyphenation_leakage("The conver- sation continued") is True
 
 
-def test_scan_cleaner_handoff_artifacts_flags_internal_hyphen_fragments():
-    issues = scan_cleaner_handoff_artifacts(
+def test_has_pdf_hyphenation_leakage_flags_internal_hyphen_fragments():
+    assert has_pdf_hyphenation_leakage(
         "The text still says inde-pendence, expe-rience, experi-ence, and gover-nment."
     )
-
-    assert any(issue.issue_type == "pdf_internal_hyphen_fragment" for issue in issues)
 
 
 def test_internal_hyphen_fragment_detector_allows_common_compounds():
@@ -68,10 +32,7 @@ def test_internal_hyphen_fragment_detector_allows_common_compounds():
         "micro-organisms, inter-action, and mind-bending work."
     )
 
-    assert not any(
-        issue.issue_type == "pdf_internal_hyphen_fragment"
-        for issue in scan_cleaner_handoff_artifacts(text)
-    )
+    assert has_pdf_hyphenation_leakage(text) is False
 
 
 def test_internal_hyphen_fragment_detector_allows_capitalized_compounds():
@@ -83,15 +44,9 @@ def test_internal_hyphen_fragment_detector_allows_capitalized_compounds():
         "and long-expected far-sighted full-preparation."
     )
 
-    assert not any(
-        issue.issue_type == "pdf_internal_hyphen_fragment"
-        for issue in scan_cleaner_handoff_artifacts(text)
-    )
+    assert has_pdf_hyphenation_leakage(text) is False
     # Sentence-start hyphenation artifacts are still caught.
-    assert any(
-        issue.issue_type == "pdf_internal_hyphen_fragment"
-        for issue in scan_cleaner_handoff_artifacts("Gover-nment matters here.")
-    )
+    assert has_pdf_hyphenation_leakage("Gover-nment matters here.") is True
 
 
 def test_has_joined_first_person_leakage_detects_joined_words():
