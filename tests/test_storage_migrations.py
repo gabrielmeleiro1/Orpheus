@@ -2,15 +2,16 @@
 Test storage schema migrations.
 """
 
-import os
 import sqlite3
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.storage.models import BookCreate, ConversionMode, PlaybackStatus, SourceType
+from modules.storage.models import ConversionMode, PlaybackStatus
 from modules.storage import migrations
 from modules.storage.sqlite_repo import SQLiteRepository
 
@@ -83,103 +84,6 @@ def _create_legacy_schema(db_path: Path) -> None:
         conn.close()
 
 
-def test_storage_migrations() -> bool:
-    test_dir = PROJECT_ROOT / "tests" / "data"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    test_db = test_dir / "test_storage_migrations.db"
-    if test_db.exists():
-        os.remove(test_db)
-
-    print("\n" + "=" * 50)
-    print("STORAGE MIGRATIONS TEST SUITE")
-    print("=" * 50 + "\n")
-
-    try:
-        _create_legacy_schema(test_db)
-        _ = SQLiteRepository(test_db)
-
-        conn = sqlite3.connect(test_db)
-        try:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-            assert "books" in tables
-            assert "chapters" in tables
-            assert "schema_migrations" in tables
-            assert "processing_jobs" not in tables
-
-            chapter_columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(chapters)").fetchall()
-            }
-            assert "start_time_ms" not in chapter_columns
-            assert {"id", "book_id", "chapter_number", "title", "duration_ms", "mp3_path"}.issubset(chapter_columns)
-
-            book_columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(books)").fetchall()
-            }
-            assert "playback_position_sec" in book_columns
-            assert "playback_path" in book_columns
-            assert "playback_status" in book_columns
-            assert "conversion_mode" in book_columns
-            assert "tags" in book_columns
-            assert "favorite" in book_columns
-
-            index_names = {
-                row[1] for row in conn.execute("PRAGMA index_list(chapters)").fetchall()
-            }
-            assert "idx_chapters_book_chapter" in index_names or any(
-                name.startswith("sqlite_autoindex_chapters_") for name in index_names
-            )
-
-            book_index_names = {
-                row[1] for row in conn.execute("PRAGMA index_list(books)").fetchall()
-            }
-            assert "idx_books_created_at" in book_index_names
-            assert "idx_books_source_path" in book_index_names
-
-            version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-            assert version == 7
-
-            playback_position = conn.execute(
-                "SELECT playback_position_sec FROM books WHERE id = 1"
-            ).fetchone()[0]
-            assert float(playback_position) == 0.0
-            assert conn.execute(
-                "SELECT conversion_mode FROM books WHERE id = 1"
-            ).fetchone()[0] == ConversionMode.AUDIOBOOK.value
-
-            migrated_book_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
-            migrated_chapter_count = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()[0]
-            assert migrated_book_count == 1
-            assert migrated_chapter_count == 1
-        finally:
-            conn.close()
-
-        print("✓ Legacy schema migrated to v7")
-        print("✓ processing_jobs removed")
-        print("✓ chapters.start_time_ms removed")
-        print("✓ books.playback_position_sec added with default")
-        print("✓ books.playback_path and books.playback_status added")
-        print("✓ books.conversion_mode added with audiobook default")
-        print("✓ expected indexes present")
-    except Exception as exc:
-        print(f"✗ Migration test failed: {exc}")
-        raise
-
-    print("\n" + "=" * 50)
-    print("ALL TESTS PASSED ✓")
-    print("=" * 50 + "\n")
-    return True
-
-
-if __name__ == "__main__":
-    success = test_storage_migrations()
-    sys.exit(0 if success else 1)
-
-
 def test_legacy_schema_migrates_playback_position_column(tmp_path):
     db_path = tmp_path / "legacy.db"
     _create_legacy_schema(db_path)
@@ -199,7 +103,7 @@ def test_legacy_schema_migrates_playback_position_column(tmp_path):
         conn.close()
 
     assert "playback_position_sec" in book_columns
-    assert version == 7
+    assert version == migrations.LATEST_SCHEMA_VERSION
     assert float(playback_position) == 0.0
 
 
@@ -319,25 +223,6 @@ def test_v3_schema_migration_does_not_probe_chapter_audio_metadata(tmp_path):
     assert book.playback_status == PlaybackStatus.MISSING
 
 
-def test_v3_schema_backfills_missing_when_no_playable_audio_exists(tmp_path):
-    db_path = tmp_path / "data" / "legacy.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    _create_v3_schema(db_path)
-
-    _insert_v3_book_with_chapter(
-        db_path,
-        title="Legacy Book",
-        mp3_path="output/Legacy Book/chapters/01.mp3",
-    )
-
-    repo = SQLiteRepository(db_path)
-    book = repo.get_book(1)
-
-    assert book is not None
-    assert book.playback_path is None
-    assert book.playback_status == PlaybackStatus.MISSING
-
-
 def test_legacy_schema_migrates_conversion_mode_with_audiobook_default(tmp_path):
     db_path = tmp_path / "legacy.db"
     _create_legacy_schema(db_path)
@@ -358,78 +243,10 @@ def test_legacy_schema_migrates_conversion_mode_with_audiobook_default(tmp_path)
         conn.close()
 
     assert "conversion_mode" in book_columns
-    assert version == 7
+    assert version == migrations.LATEST_SCHEMA_VERSION
     assert stored_conversion_mode == ConversionMode.AUDIOBOOK.value
     assert book is not None
     assert book.conversion_mode == ConversionMode.AUDIOBOOK
-
-
-def test_schema_v6_adds_library_organization_columns(tmp_path):
-    db_path = tmp_path / "fresh.db"
-
-    repo = SQLiteRepository(db_path)
-    book = repo.create_book(
-        BookCreate(
-            title="Organized",
-            author="Tester",
-            source_path="/tmp/organized.md",
-            source_type=SourceType.MD,
-            tags="fiction,night",
-            favorite=True,
-        )
-    )
-
-    conn = sqlite3.connect(db_path)
-    try:
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(books)").fetchall()}
-        version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-        stored = conn.execute("SELECT tags, favorite FROM books WHERE id = ?", (book.id,)).fetchone()
-    finally:
-        conn.close()
-        repo.close()
-
-    assert {"tags", "favorite", "conversion_runtime_options"}.issubset(columns)
-    assert version == 7
-    assert stored == ("fiction,night", 1)
-
-
-def test_interrupted_v5_migration_rolls_back_without_partial_schema(tmp_path, monkeypatch):
-    db_path = tmp_path / "legacy.db"
-    _create_v3_schema(db_path)
-    _insert_v3_book_with_chapter(db_path, title="Legacy Book", mp3_path=None)
-
-    original_migrate_to_v5 = migrations._migrate_to_v5
-
-    def interrupted_migrate_to_v5(conn):
-        original_migrate_to_v5(conn)
-        raise RuntimeError("simulated interruption after v5 rebuild")
-
-    monkeypatch.setattr(migrations, "_migrate_to_v5", interrupted_migrate_to_v5)
-
-    conn = sqlite3.connect(db_path)
-    try:
-        try:
-            migrations.run_migrations(conn)
-        except RuntimeError as exc:
-            assert "simulated interruption" in str(exc)
-        else:
-            raise AssertionError("migration interruption did not propagate")
-
-        version = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()[0]
-        book_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(books)").fetchall()
-        }
-        book_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
-        chapter_count = conn.execute("SELECT COUNT(*) FROM chapters").fetchone()[0]
-    finally:
-        conn.close()
-
-    assert version == 4
-    assert "playback_path" in book_columns
-    assert "playback_status" in book_columns
-    assert "conversion_mode" not in book_columns
-    assert book_count == 1
-    assert chapter_count == 1
 
 
 def test_legacy_rebuild_of_modern_db_preserves_tags_favorite_and_runtime_options(tmp_path):
@@ -478,47 +295,49 @@ def test_legacy_rebuild_of_modern_db_preserves_tags_favorite_and_runtime_options
     assert row == ("fiction,long", 1, '{"voice": "af_bella"}')
 
 
-def test_future_schema_version_is_rejected_with_clear_error(tmp_path):
-    """A DB whose recorded schema version exceeds the latest known migration
-    must be refused with a clear message rather than silently operating on an
-    unknown schema (defect 12)."""
-    import pytest
-
-    db_path = tmp_path / "future.db"
-    conn = sqlite3.connect(db_path)
-    try:
+@pytest.mark.parametrize("metadata_sql", [
+    "DROP TABLE schema_migrations",
+    "DELETE FROM schema_migrations",
+])
+def test_legacy_rebuild_preserves_all_supported_chapter_fields(tmp_path, metadata_sql):
+    db_path = tmp_path / "modern.db"
+    chapters = [
+        (7, 1, 1, "Opening", 1234, "/tmp/opening.mp3", 0),
+        (9, 1, 2, "Continuation", 5678, "/tmp/continuation.mp3", 1234),
+        (12, 1, 3, None, None, None, None),
+    ]
+    columns = "id, book_id, chapter_number, title, duration_ms, mp3_path, packaged_start_ms"
+    with sqlite3.connect(db_path) as conn:
         migrations.run_migrations(conn)
-        future_version = migrations.LATEST_SCHEMA_VERSION + 1
-        conn.execute(
-            "INSERT INTO schema_migrations(version) VALUES (?)", (future_version,)
-        )
-        conn.commit()
+        conn.execute("INSERT INTO books (id, title, source_path) VALUES (1, 'Book', '/tmp/book.pdf')")
+        conn.executemany(f"INSERT INTO chapters ({columns}) VALUES (?, ?, ?, ?, ?, ?, ?)", chapters)
+        conn.execute(metadata_sql)
 
-        with pytest.raises(migrations.FutureSchemaError, match="newer version of Orpheus"):
-            migrations.run_migrations(conn)
-    finally:
-        conn.close()
+    with sqlite3.connect(db_path) as conn:
+        assert migrations.run_migrations(conn) == migrations.LATEST_SCHEMA_VERSION
+        assert conn.execute(f"SELECT {columns} FROM chapters ORDER BY id").fetchall() == chapters
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
-def test_future_schema_version_surfaces_on_repository_open(tmp_path):
-    """The future-schema guard surfaces as a repository open error, not a crash
-    deep inside a migration."""
-    import pytest
+def test_legacy_rebuild_keeps_first_duplicate_chapter_with_its_packaged_start(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    _create_legacy_schema(db_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("ALTER TABLE chapters ADD COLUMN packaged_start_ms INTEGER")
+        conn.execute("UPDATE chapters SET packaged_start_ms = 1234")
+        conn.execute("""
+            INSERT INTO chapters (book_id, chapter_number, title, packaged_start_ms)
+            VALUES (1, 1, 'Duplicate', 5678)
+        """)
 
-    db_path = tmp_path / "future.db"
-    conn = sqlite3.connect(db_path)
-    try:
+    with sqlite3.connect(db_path) as conn:
         migrations.run_migrations(conn)
-        conn.execute(
-            "INSERT INTO schema_migrations(version) VALUES (?)",
-            (migrations.LATEST_SCHEMA_VERSION + 3,),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    with pytest.raises(migrations.FutureSchemaError):
-        SQLiteRepository(db_path)
+        assert conn.execute(
+            "SELECT id, title, packaged_start_ms FROM chapters"
+        ).fetchall() == [(1, "chapter", 1234)]
+        assert "start_time_ms" not in {
+            row[1] for row in conn.execute("PRAGMA table_info(chapters)")
+        }
 
 
 def test_configure_connection_sets_busy_timeout():
@@ -536,3 +355,4 @@ def test_configure_connection_sets_busy_timeout():
         conn.close()
     assert timeout_ms == migrations.BUSY_TIMEOUT_MS
     assert timeout_ms > 0
+

@@ -8,19 +8,24 @@ Read-only counterpart to the prune half of
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sqlite3
 import time
 from typing import Any, Optional
 
+from modules.storage.deletion import read_delete_transaction
 from modules.storage.maintenance_paths import (
     DEFAULT_CLEANUP_GRACE_SECONDS,
     RESERVED_OUTPUT_DIR_NAMES,
     _connect,
     canonical_sources_dir,
-    is_app_owned_durable_source,
     resolve_stored_path,
     workspace_root_for_db,
 )
+
+
+def _path_comparison_key(path: Path | str) -> str:
+    return os.path.normcase(str(path)).casefold()
 
 
 def _newest_mtime(path: Path) -> float:
@@ -66,9 +71,14 @@ def audit_storage_state(
     temp_root = resolve_stored_path(str(temp_dir), workspace_root)
     assert output_root is not None
     assert temp_root is not None
+    # Keep each audit's canonical comparison roots fixed. Resolving them for
+    # every row repeats the same filesystem work on large libraries.
+    canonical_output_root = output_root.resolve()
     durable_sources_root = canonical_sources_dir(db_file).resolve()
+    output_root_key = Path(_path_comparison_key(canonical_output_root))
+    durable_sources_root_key = Path(_path_comparison_key(durable_sources_root))
 
-    conn = _connect(db_file)
+    conn = _connect(db_file, read_only=True)
     conn.row_factory = sqlite3.Row
     try:
         row_counts = {
@@ -100,7 +110,9 @@ def audit_storage_state(
             if resolved_path is None:
                 return None
             try:
-                relative = resolved_path.resolve().relative_to(output_root.resolve())
+                relative = Path(_path_comparison_key(resolved_path.resolve())).relative_to(
+                    output_root_key
+                )
             except ValueError:
                 return resolved_path
             if relative.parts:
@@ -108,17 +120,27 @@ def audit_storage_state(
                 # whole entry would dereference a symlinked book directory and
                 # stop it matching the listing below.
                 referenced_output_dirs.add(
-                    str(output_root.resolve() / relative.parts[0])
+                    _path_comparison_key(canonical_output_root / relative.parts[0])
                 )
             return resolved_path
 
         playable_book_ids: set[int] = set()
         recoverable_book_ids: set[int] = set()
+        delete_staging_root = temp_root / "delete_staging"
+        if delete_staging_root.is_dir() and not delete_staging_root.is_symlink():
+            for entry in delete_staging_root.iterdir():
+                try:
+                    book_id, _artifacts = read_delete_transaction(
+                        entry, allowed_roots=(output_root, temp_root, durable_sources_root),
+                    )
+                    recoverable_book_ids.add(book_id)
+                except (OSError, ValueError, TypeError, KeyError, AttributeError):
+                    continue
         for row in books:
             # Interrupted conversions can own only their durable source/inventory.
             source_path = add_output_reference(row["source_path"])
             if source_path is not None:
-                from modules.pipeline.recovery import recovery_audio_paths
+                from modules.contracts.recovery_inventory import recovery_audio_paths
 
                 if source_path.is_file() or recovery_audio_paths(source_path):
                     recoverable_book_ids.add(int(row["id"]))
@@ -174,10 +196,13 @@ def audit_storage_state(
                         "source_path": row["source_path"],
                     }
                 )
-            if "web_uploads" in source_path.parts:
-                temp_upload_refs.add(source_path.resolve())
-            if is_app_owned_durable_source(source_path, durable_sources_root):
-                durable_source_refs.add(source_path.resolve())
+            canonical_source = source_path.resolve()
+            if "web_uploads" in Path(_path_comparison_key(source_path)).parts:
+                temp_upload_refs.add(canonical_source)
+            if Path(_path_comparison_key(canonical_source)).is_relative_to(
+                durable_sources_root_key
+            ):
+                durable_source_refs.add(canonical_source)
 
         # Classify by each entry's own (non-dereferenced) path. A symlink is
         # reported by its link path — never resolved to its target — so the
@@ -188,7 +213,7 @@ def audit_storage_state(
         # delete phase still acts on the undereferenced path.
         actual_output_dirs = (
             {
-                str(output_root.resolve() / p.name): str(p)
+                str(canonical_output_root / p.name): str(p)
                 for p in output_root.iterdir()
                 if (p.is_symlink() or p.is_dir())
                 and p.name not in RESERVED_OUTPUT_DIR_NAMES
@@ -201,7 +226,7 @@ def audit_storage_state(
             (
                 entry_path
                 for key, entry_path in actual_output_dirs.items()
-                if key not in referenced_output_dirs
+                if _path_comparison_key(key) not in referenced_output_dirs
             ),
             recency_cutoff,
         )
@@ -212,17 +237,30 @@ def audit_storage_state(
             if temp_upload_dir.exists()
             else set()
         )
+        temp_upload_ref_keys = {_path_comparison_key(path) for path in temp_upload_refs}
+        canonical_temp_upload_dir = temp_upload_dir.resolve()
         stale_temp_uploads = _recency_filter(
-            actual_temp_uploads - temp_upload_refs, recency_cutoff
+            (
+                path for path in actual_temp_uploads
+                if _path_comparison_key(canonical_temp_upload_dir / path.name)
+                not in temp_upload_ref_keys
+            ),
+            recency_cutoff,
         )
 
         actual_durable_sources = (
-            {p for p in durable_sources_root.iterdir() if p.is_symlink() or p.is_file()}
+            {p for p in durable_sources_root.iterdir()
+             if not p.name.startswith(".orpheus-") and (p.is_symlink() or p.is_file())}
             if durable_sources_root.exists()
             else set()
         )
+        durable_source_ref_keys = {_path_comparison_key(path) for path in durable_source_refs}
         orphan_durable_sources = _recency_filter(
-            actual_durable_sources - durable_source_refs, recency_cutoff
+            (
+                path for path in actual_durable_sources
+                if _path_comparison_key(path) not in durable_source_ref_keys
+            ),
+            recency_cutoff,
         )
 
         stale_temp_stage_dirs = _recency_filter(
@@ -239,7 +277,9 @@ def audit_storage_state(
             (
                 path
                 for path in delete_staging_root.iterdir()
-                if path.is_symlink() or path.is_dir()
+                if path.is_dir() and not path.is_symlink() and not path.is_junction()
+                and (path / ".committed").is_file()
+                and not (path / ".committed").is_symlink()
             ),
             recency_cutoff,
         ) if delete_staging_root.exists() else []

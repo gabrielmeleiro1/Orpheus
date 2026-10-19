@@ -4,15 +4,63 @@ SQLite schema migrations for storage layer.
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import uuid
+import os
+from pathlib import Path
 
-LATEST_SCHEMA_VERSION = 7
+LATEST_SCHEMA_VERSION = 9
+MANAGED_ROOT_KEYS = ("sources", "output", "temp")
 
 # Wait this long for a competing writer's lock before surfacing
 # 'database is locked'. Maintenance opens its own connections outside the
 # repository lock, so without a busy_timeout a backup taken during an active
 # conversion commit fails immediately.
 BUSY_TIMEOUT_MS = 5000
+
+
+def remap_absolute_path(raw: str, roots: list[tuple[Path, Path]]) -> str:
+    """Move only absolute descendants, without following filesystem links."""
+    path = Path(raw)
+    if not path.is_absolute():
+        return raw
+    normalized = Path(os.path.normcase(os.path.normpath(raw)))
+    for old, new in sorted(roots, key=lambda pair: len(pair[0].parts), reverse=True):
+        old = Path(os.path.normcase(os.path.normpath(str(old))))
+        try:
+            relative = normalized.relative_to(old)
+        except ValueError:
+            continue
+        if not relative.parts:
+            continue
+        # Preserve filename case even when Windows compares roots without it.
+        suffix = Path(*Path(os.path.normpath(raw)).parts[len(old.parts):])
+        return str(new / suffix)
+    return raw
+
+
+def remap_stored_paths(conn: sqlite3.Connection, roots: list[tuple[Path, Path]]) -> None:
+    """Rewrite the stored path columns in the caller's transaction."""
+    if not roots:
+        return
+    for table, columns in (("books", ("source_path", "playback_path")), ("chapters", ("mp3_path",))):
+        for column in columns:
+            if not _column_exists(conn, table, column):
+                continue
+            for row_id, raw in conn.execute(f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL").fetchall():
+                remapped = remap_absolute_path(raw, roots)
+                if remapped != raw:
+                    conn.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (remapped, row_id))
+
+
+def store_managed_roots(conn: sqlite3.Connection, roots: tuple[Path, ...]) -> None:
+    layout = dict(zip(MANAGED_ROOT_KEYS, map(str, roots), strict=True))
+    conn.execute(
+        "INSERT INTO library_metadata(key, value) VALUES ('managed_roots', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (json.dumps(layout),),
+    )
 
 
 class FutureSchemaError(RuntimeError):
@@ -93,6 +141,7 @@ def _bootstrap_schema_v5(conn: sqlite3.Connection) -> None:
             title TEXT,
             duration_ms INTEGER,
             mp3_path TEXT,
+            packaged_start_ms INTEGER,
             FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
             UNIQUE(book_id, chapter_number)
         )
@@ -138,6 +187,7 @@ def _apply_bootstrap(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN IMMEDIATE")
     try:
         _bootstrap_schema_v5(conn)
+        _migrate_to_v9(conn)
         conn.execute("INSERT INTO schema_migrations(version) VALUES (?)", (LATEST_SCHEMA_VERSION,))
         conn.commit()
     except Exception:
@@ -183,17 +233,24 @@ def _migrate_to_v2(conn: sqlite3.Connection) -> None:
                 title TEXT,
                 duration_ms INTEGER,
                 mp3_path TEXT,
+                packaged_start_ms INTEGER,
                 FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
                 UNIQUE(book_id, chapter_number)
             )
             """
         )
+        existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(chapters)")}
+        copied_columns = ", ".join(
+            row[1]
+            for row in conn.execute("PRAGMA table_info(chapters_new)")
+            if row[1] in existing_columns
+        )
         conn.execute(
-            """
+            f"""
             INSERT OR IGNORE INTO chapters_new (
-                id, book_id, chapter_number, title, duration_ms, mp3_path
+                {copied_columns}
             )
-            SELECT id, book_id, chapter_number, title, duration_ms, mp3_path
+            SELECT {copied_columns}
             FROM chapters
             ORDER BY id
             """
@@ -342,14 +399,8 @@ def _migrate_to_v5(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_books_created_at ON books(created_at DESC)")
 
 
-def run_migrations(conn: sqlite3.Connection) -> int:
-    """
-    Apply storage migrations and return resulting schema version.
-    """
-    configure_connection(conn)
-    _ensure_migrations_table(conn)
-    version = _current_version(conn)
-
+def check_schema_version(conn: sqlite3.Connection) -> int:
+    version = _current_version(conn) if _table_exists(conn, "schema_migrations") else 0
     # A database written by a newer build passes every ``version < N`` gate
     # untouched, leaving the app operating on a schema it does not understand.
     # Refuse to open it with a clear message instead of silently proceeding.
@@ -359,46 +410,27 @@ def run_migrations(conn: sqlite3.Connection) -> int:
             f"(schema version {version}); this build supports up to schema "
             f"version {LATEST_SCHEMA_VERSION}. Please update Orpheus to open it."
         )
+    return version
 
-    # Legacy database without migration metadata.
-    if version == 0 and (_table_exists(conn, "books") or _table_exists(conn, "chapters")):
-        _apply_migration(conn, 2, _migrate_to_v2)
-        _apply_migration(conn, 3, _migrate_to_v3)
-        _apply_migration(conn, 4, _migrate_to_v4)
-        _apply_migration(conn, 5, _migrate_to_v5, disable_foreign_keys=True)
-        _apply_migration(conn, 6, _migrate_to_v6)
-        _apply_migration(conn, 7, _migrate_to_v7)
-        return LATEST_SCHEMA_VERSION
 
-    # Fresh database path.
-    if version == 0:
+def run_migrations(conn: sqlite3.Connection) -> int:
+    """
+    Apply storage migrations and return resulting schema version.
+    """
+    configure_connection(conn)
+    _ensure_migrations_table(conn)
+    version = check_schema_version(conn)
+
+    # Fresh database path. A legacy database without migration metadata
+    # (version 0 with tables) takes every step below.
+    if version == 0 and not (_table_exists(conn, "books") or _table_exists(conn, "chapters")):
         _apply_bootstrap(conn)
         return LATEST_SCHEMA_VERSION
 
-    if version < 2:
-        _apply_migration(conn, 2, _migrate_to_v2)
-        version = 2
-
-    if version < 3:
-        _apply_migration(conn, 3, _migrate_to_v3)
-        version = 3
-
-    if version < 4:
-        _apply_migration(conn, 4, _migrate_to_v4)
-        version = 4
-
-    if version < 5:
-        _apply_migration(conn, 5, _migrate_to_v5, disable_foreign_keys=True)
-        version = 5
-
-    if version < 6:
-        _apply_migration(conn, 6, _migrate_to_v6)
-        version = 6
-
-    if version < 7:
-        _apply_migration(conn, 7, _migrate_to_v7)
-        version = 7
-
+    for target, disable_foreign_keys in MIGRATIONS:
+        if version < target:
+            _apply_migration(conn, target, migration_step(target), disable_foreign_keys=disable_foreign_keys)
+            version = target
     return version
 
 
@@ -438,3 +470,58 @@ def _migrate_to_v7(conn: sqlite3.Connection) -> None:
             ADD COLUMN conversion_runtime_options TEXT
             """
         )
+
+
+def _migrate_to_v8(conn: sqlite3.Connection) -> None:
+    """Persist chapter starts on the packaged audio timeline."""
+    if not _column_exists(conn, "chapters", "packaged_start_ms"):
+        conn.execute("ALTER TABLE chapters ADD COLUMN packaged_start_ms INTEGER")
+
+
+def _migrate_to_v9(conn: sqlite3.Connection) -> None:
+    """Give existing and new libraries a durable identity and replacement epoch."""
+    conn.execute("CREATE TABLE IF NOT EXISTS library_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.executemany(
+        "INSERT OR IGNORE INTO library_metadata(key, value) VALUES (?, ?)",
+        [(key, uuid.uuid4().hex) for key in ("library_id", "library_epoch")],
+    )
+
+
+# Ordered (version, disable_foreign_keys) steps; step N runs ``_migrate_to_vN``
+# in its own transaction together with its schema_migrations row.
+MIGRATIONS = ((2, False), (3, False), (4, False), (5, True), (6, False), (7, False), (8, False), (9, False))
+
+
+def migration_step(version: int):
+    """Return the migration function for ``version``, looked up at call time."""
+    return globals()[f"_migrate_to_v{version}"]
+
+
+def prepare_restore_identity(
+    conn: sqlite3.Connection, epoch: str, live_library_id: str | None = None,
+) -> None:
+    """Repair identity in private staging while retaining the saved library ID."""
+    conn.execute("CREATE TABLE IF NOT EXISTS library_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    identities = conn.execute("SELECT value FROM library_metadata WHERE key='library_id'").fetchall()
+    if len(identities) > 1:
+        raise ValueError("Backup has an ambiguous library identity")
+    library_id = identities[0][0] if identities else None
+    if not isinstance(library_id, str) or not library_id.strip():
+        library_id = (
+            live_library_id if isinstance(live_library_id, str) and live_library_id.strip()
+            else uuid.uuid4().hex
+        )
+        conn.execute(
+            "INSERT INTO library_metadata(key, value) VALUES ('library_id', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (library_id,),
+        )
+    conn.execute(
+        "INSERT INTO library_metadata(key, value) VALUES ('library_epoch', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (epoch,),
+    )
+    for key, expected in (("library_id", library_id), ("library_epoch", epoch)):
+        rows = conn.execute("SELECT value FROM library_metadata WHERE key=?", (key,)).fetchall()
+        if len(rows) != 1 or rows[0][0] != expected:
+            raise ValueError("Backup cannot preserve a valid library identity")

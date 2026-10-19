@@ -7,29 +7,81 @@ Used by the audit, reconciliation and prune halves of
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+import errno
 from pathlib import Path
 import sqlite3
 from typing import Optional
 
+from modules.storage.db_ownership import acquire_database, canonical_database_path
 from modules.storage.migrations import BUSY_TIMEOUT_MS
+from modules.storage.deletion import LOCAL_DELETE_STAGING
+from modules.storage.restore_recovery import rollback_intent_path
+from modules.storage.sqlite_uri import readonly_sqlite_uri
 
 
-def _connect(db_path: Path | str) -> sqlite3.Connection:
-    """Open a maintenance-owned SQLite connection.
+class _OwnedConnection(sqlite3.Connection):
+    def __init__(self, *args, ownership, **kwargs):
+        self._ownership = ownership
+        super().__init__(*args, **kwargs)
 
-    Maintenance bypasses the repository's shared connection/lock, so it must
-    set its own ``busy_timeout``; otherwise a maintenance read/backup taken
-    while a conversion holds the write lock fails immediately with
-    'database is locked'.
+    def close(self) -> None:
+        super().close()
+        if self._ownership is not None:
+            self._ownership.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except (AttributeError, sqlite3.Error):
+            pass
+
+
+def _connect(db_path: Path | str, *, read_only: bool = False) -> sqlite3.Connection:
+    """Retain process ownership until this maintenance connection closes.
+
+    Creation remains available for backup destinations. A pending quarantine
+    must be recovered by the repository before any maintenance connection opens.
+    Read-only connections can proceed without ownership only when the lock file
+    is absent and filesystem permissions prevent creating it.
     """
-    conn = sqlite3.connect(db_path)
-    conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
-    return conn
+    path = canonical_database_path(db_path)
+    try:
+        ownership = acquire_database(path)
+    except OSError as exc:
+        if not read_only or isinstance(exc, BlockingIOError) or not (
+            isinstance(exc, PermissionError) or exc.errno in (errno.EROFS, errno.EACCES)
+        ):
+            raise
+        if Path(str(path) + ".lock").exists():
+            raise
+        ownership = None
+    try:
+        with ownership.lock if ownership is not None else nullcontext():
+            if rollback_intent_path(path).exists() or rollback_intent_path(path).is_symlink():
+                raise RuntimeError("Database restore rollback recovery is pending")
+            if Path(str(path) + ".quarantine-intent.json").exists():
+                raise RuntimeError("Database quarantine recovery is pending")
+            conn = sqlite3.connect(
+                readonly_sqlite_uri(path) if read_only else path,
+                uri=read_only,
+                factory=lambda *args, **kwargs: _OwnedConnection(*args, ownership=ownership, **kwargs),
+            )
+            try:
+                conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+            except BaseException:
+                conn.close()
+                raise
+            return conn
+    except BaseException:
+        if ownership is not None:
+            ownership.close()
+        raise
 
 # Output sub-directories owned by the maintenance tooling itself (e.g. prune
 # report JSON). These must never be treated as orphan/stale artifacts, otherwise
 # a later prune run would delete the prior run's own audit history.
-RESERVED_OUTPUT_DIR_NAMES = frozenset({"reports"})
+RESERVED_OUTPUT_DIR_NAMES = frozenset({"reports", LOCAL_DELETE_STAGING})
 
 # Artifacts newer than this are presumed to belong to queued or in-flight work
 # (uploads awaiting conversion, freshly copied sources, output being written)

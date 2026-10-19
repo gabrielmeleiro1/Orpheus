@@ -15,6 +15,53 @@ from modules.web.server import create_app
 from tests.test_web_api import _make_client_with_controller
 
 
+@pytest.mark.parametrize("locked_artifact", ["book", "source"])
+def test_delete_keeps_all_files_and_book_when_an_artifact_is_locked(tmp_path, monkeypatch, locked_artifact):
+    output = tmp_path / "output"
+    book_dir = output / "Book"
+    source = tmp_path / "data" / "sources" / "book.txt"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"original source")
+    originals = {
+        source: b"original source",
+        book_dir / ".orpheus-recovery.json": b"inventory",
+        book_dir / ".orpheus-source" / "book.txt": b"recovery source",
+        book_dir / "chapters" / "chapter_01.mp3": b"first chapter",
+        book_dir / "Book.m4b": b"audiobook",
+    }
+    for path, content in originals.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    repo = SQLiteRepository(tmp_path / "data" / "library.db")
+    service = LibraryService(repo, output_dir=output, temp_dir=tmp_path / "temp")
+    try:
+        book = repo.create_book(BookCreate(
+            title="Book", source_path=str(source), source_type=SourceType.TXT,
+            playback_path=str(book_dir / "Book.m4b"),
+        ))
+        locked = book_dir if locked_artifact == "book" else source
+        rename = os.rename
+        replace = os.replace
+
+        def fail_when_locked(operation):
+            def move(src, dst, *args, **kwargs):
+                if os.fspath(src) == str(locked):
+                    raise PermissionError("File is in use")
+                return operation(src, dst, *args, **kwargs)
+            return move
+
+        monkeypatch.setattr(os, "rename", fail_when_locked(rename))
+        monkeypatch.setattr(os, "replace", fail_when_locked(replace))
+        response = _make_client_with_controller(service).delete(f"/api/library/{book.id}")
+        assert response.status_code == 409
+        assert response.json()["detail"] == "Some files are in use. Stop playback and try again."
+        assert all(path.read_bytes() == content for path, content in originals.items())
+        assert not any((tmp_path / "temp" / "delete_staging").iterdir())
+        assert repo.get_book(book.id) is not None
+    finally:
+        repo.close()
+
+
 @pytest.mark.parametrize("first_audio", [False, True])
 @pytest.mark.parametrize("source_exists", [False, True])
 def test_cleanup_keeps_repair_inventory(tmp_path, first_audio, source_exists):
@@ -69,8 +116,6 @@ def test_patch_clears_explicit_null_but_preserves_omitted_metadata(tmp_path):
         assert unchanged.status_code == 200
         assert unchanged.json()["title"] == "Title"
         assert unchanged.json()["author"] == "Edited"
-        for title in ("", "   "):
-            assert client.patch(f"/api/library/{book.id}", json={"title": title}).status_code == 422
     finally:
         repo.close()
 
@@ -142,21 +187,6 @@ def test_startup_sweeps_old_delete_staging_but_keeps_recent_entries(tmp_path):
     assert recent.exists()
 
 
-@pytest.mark.parametrize("title", [None, "omitted", "Updated title"])
-def test_metadata_patch_allows_unchanged_title(title):
-    update = Mock(return_value={"id": 1, "title": "Existing title"})
-    controller = SimpleNamespace(update_book_metadata=update)
-    payload = {"author": "New author", "tags": "edited"}
-    if title != "omitted":
-        payload["title"] = title
-    with TestClient(create_app(controller=controller)) as client:
-        assert client.patch("/api/library/1", json=payload).status_code == 200
-    update.assert_called_once_with(
-        1, title=None if title == "omitted" else title,
-        author="New author", tags="edited", favorite=None,
-    )
-
-
 @pytest.mark.parametrize("title", ["", "   ", "\t\n"])
 def test_metadata_patch_rejects_blank_title(title):
     update = Mock()
@@ -165,3 +195,91 @@ def test_metadata_patch_rejects_blank_title(title):
     assert response.status_code == 422
     assert response.json()["detail"][0]["msg"] == "Value error, Title is required"
     update.assert_not_called()
+
+
+@pytest.mark.parametrize("packaged", [False, True])
+def test_v3_upgrade_is_immediately_playable(tmp_path, packaged):
+    from tests.test_storage_migrations import _create_v3_schema, _insert_v3_book_with_chapter
+
+    db = tmp_path / "data" / "library.db"
+    db.parent.mkdir()
+    _create_v3_schema(db)
+    book_dir = tmp_path / "output" / "Original directory"
+    chapter = book_dir / "chapters" / "01.mp3"
+    chapter.parent.mkdir(parents=True)
+    chapter.write_bytes(b"chapter audio")
+    playback = book_dir / "Original.m4b" if packaged else chapter
+    playback.write_bytes(b"playable audio")
+    _insert_v3_book_with_chapter(db, title="Edited title", mp3_path=str(chapter))
+    repo = SQLiteRepository(db)
+    try:
+        service = LibraryService(repo, output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
+        client = _make_client_with_controller(service)
+        response = client.get("/api/library/1")
+        assert response.status_code == 200
+        assert response.json()["playback_status"] == ("packaged" if packaged else "chapter_audio")
+        assert response.json()["playback_url"] == "/api/library/1/audio"
+        audio = client.get(response.json()["playback_url"])
+        assert audio.status_code == 200
+        assert audio.content == playback.read_bytes()
+    finally:
+        repo.close()
+
+
+@pytest.mark.parametrize("first_audio", [False, True])
+def test_cleanup_preserves_renamed_partial_book_and_chapter_identities(tmp_path, first_audio):
+    output = tmp_path / "output"
+    book_dir = output / "Interrupted"
+    chapters_dir = book_dir / "chapters"
+    chapters_dir.mkdir(parents=True)
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"original source")
+    inventory_chapters = [SimpleNamespace(number=n, title=f"Chapter {n}") for n in (1, 2)]
+    durable = prepare_recovery_source(
+        source, SimpleNamespace(output_dir=book_dir, chapters_dir=chapters_dir),
+        inventory_chapters, emit_mp3=True,
+    )
+    audio = chapters_dir / "01_Chapter 1.mp3"
+    if first_audio:
+        audio.write_bytes(b"completed chapter")
+    db = tmp_path / "data" / "library.db"
+    repo = SQLiteRepository(db)
+    try:
+        book, chapters = repo.create_book_with_chapters(
+            BookCreate(title="Interrupted", source_path=str(durable), source_type=SourceType.TXT, total_chapters=2),
+            [ChapterCreate(book_id=0, chapter_number=n, title=f"Chapter {n}", mp3_path=str(audio) if n == 1 and first_audio else None) for n in (1, 2)],
+        )
+        moved = output / "Renamed"
+        book_dir.rename(moved)
+        report = prune_stale_records_and_files(db, output, tmp_path / "temp", aggressive=True, grace_seconds=0)
+        detail = repo.get_book_with_chapters(book.id)
+        assert detail is not None
+        assert [c.id for c in detail[1]] == [c.id for c in chapters]
+        assert [c.chapter_number for c in detail[1]] == [1, 2]
+        assert report["actions"]["deleted_chapter_rows"] == []
+        assert (moved / ".orpheus-recovery.json").is_file()
+        assert (moved / ".orpheus-source" / durable.name).read_bytes() == b"original source"
+        moved.rename(book_dir)
+        assert repo.get_book_with_chapters(book.id)[1] == chapters
+    finally:
+        repo.close()
+
+
+def test_legacy_playback_does_not_guess_a_directory_from_the_title(tmp_path):
+    from tests.test_storage_migrations import _create_v3_schema, _insert_v3_book_with_chapter
+
+    db = tmp_path / "data" / "library.db"
+    db.parent.mkdir()
+    _create_v3_schema(db)
+    _insert_v3_book_with_chapter(db, title="Same title", mp3_path=None)
+    unrelated = tmp_path / "output" / "Same title" / "audio.m4b"
+    unrelated.parent.mkdir(parents=True)
+    unrelated.write_bytes(b"another book")
+    repo = SQLiteRepository(db)
+    try:
+        service = LibraryService(repo, output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
+        client = _make_client_with_controller(service)
+        assert client.get("/api/library/1").json()["playback_url"] is None
+        assert client.get("/api/library/1/audio").status_code == 404
+    finally:
+        repo.close()

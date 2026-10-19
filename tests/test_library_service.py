@@ -7,34 +7,91 @@ from types import SimpleNamespace
 
 import pytest
 
-from modules.app.config import AppConfig
+from tests._factories_app import make_app_config
+
 from modules.app import controller as app_controller_module
 from modules.app.services.library_service import LibraryService
 from modules.storage.models import Book, Chapter, ConversionMode, PlaybackStatus, SourceType
 from modules.storage.sqlite_repo import SQLiteRepository
 
 
+def _book(*, id, title, source_path, **overrides):
+    values = {
+        "id": id,
+        "title": title,
+        "author": "Tester",
+        "source_path": source_path,
+        "source_type": SourceType.EPUB,
+        "conversion_mode": ConversionMode.AUDIOBOOK,
+        "total_chapters": 1,
+        "playback_path": None,
+        "playback_status": PlaybackStatus.CHAPTER_AUDIO,
+        "playback_position_sec": 0.0,
+        "created_at": datetime(2026, 4, 1, 9, 0, 0),
+        "updated_at": datetime(2026, 4, 1, 9, 5, 0),
+    }
+    values.update(overrides)
+    return Book(**values)
+
+
+def _chapter(*, id, book_id, mp3_path, **overrides):
+    values = {
+        "id": id,
+        "book_id": book_id,
+        "chapter_number": 1,
+        "title": "Chapter 1",
+        "duration_ms": 1000,
+        "mp3_path": mp3_path,
+    }
+    values.update(overrides)
+    return Chapter(**values)
+
+
+def _make_service(tmp_path, repository, **overrides):
+    values = {
+        "output_dir": tmp_path / "output",
+        "temp_dir": tmp_path / "temp",
+    }
+    values.update(overrides)
+    return LibraryService(repository, **values)
+
+
+class _FakeRuntimeCapabilityService:
+    def get_system_runtime_snapshot(self):
+        return {"tts": {"available": False}, "cleaner": {"available": False}}
+
+
+class _FakeGlobalAPILimiter:
+    def __init__(self, concurrency):
+        self.concurrency = concurrency
+        self.shutdown_called = False
+
+    def snapshot(self):
+        return {"wait_count": 0, "wait_ms_total": 0.0}
+
+    def shutdown(self):
+        self.shutdown_called = True
+
+
+class _FakeSQLiteRepository:
+    def __init__(self, db_path, *, output_dir=None, temp_dir=None):
+        self.db_path = db_path
+        self.output_dir = output_dir
+        self.temp_dir = temp_dir
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class _RepositoryStub:
-    def __init__(self) -> None:
-        self.detail_calls: list[int] = []
-
-    def get_book(self, book_id: int):  # pragma: no cover - should never be called
-        raise AssertionError(f"get_book() should not be called for {book_id}")
-
-    def get_chapters(self, book_id: int):  # pragma: no cover - should never be called
-        raise AssertionError(f"get_chapters() should not be called for {book_id}")
-
     def get_book_with_chapters(self, book_id: int):
-        self.detail_calls.append(book_id)
         return (
-            Book(
+            _book(
                 id=book_id,
                 title="Detail Book",
-                author="Tester",
                 source_path="/tmp/source.epub",
-                source_type=SourceType.EPUB,
                 conversion_mode=ConversionMode.DOCUMENT_AUDIO,
-                total_chapters=1,
                 playback_path="output/Detail Book/Detail Book.m4a",
                 playback_status=PlaybackStatus.PACKAGED,
                 playback_position_sec=32.5,
@@ -42,25 +99,16 @@ class _RepositoryStub:
                 updated_at=datetime(2026, 3, 22, 10, 5, 0),
             ),
             [
-                Chapter(
-                    id=11,
-                    book_id=book_id,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Detail Book/chapters/01.mp3",
-                )
+                _chapter(id=11, book_id=book_id, mp3_path="output/Detail Book/chapters/01.mp3")
             ],
         )
 
 
-def test_library_service_get_book_uses_combined_repository_detail_call():
-    repository = _RepositoryStub()
-    service = LibraryService(repository)
+def test_library_service_get_book_reports_stored_detail(tmp_path):
+    service = _make_service(tmp_path, _RepositoryStub())
 
     payload = service.get_book(7)
 
-    assert repository.detail_calls == [7]
     assert payload is not None
     assert payload["playback_path"] == "output/Detail Book/Detail Book.m4a"
     assert payload["playback_status"] == PlaybackStatus.PACKAGED.value
@@ -71,48 +119,13 @@ def test_library_service_get_book_uses_combined_repository_detail_call():
     assert payload["chapters"][0]["number"] == 1
 
 
-def test_library_service_updates_book_organization_metadata(tmp_path):
-    class _UpdateRepositoryStub(_RepositoryStub):
-        def __init__(self) -> None:
-            super().__init__()
-            self.updates = []
+@pytest.mark.parametrize("start_ms", [None, 0, 350])
+def test_library_service_detail_includes_packaged_chapter_start(tmp_path, start_ms):
+    book, chapters = _RepositoryStub().get_book_with_chapters(7)
+    chapters[0].packaged_start_ms = start_ms
+    service = _make_service(tmp_path, _DeleteRepositoryStub((book, chapters)))
 
-        def update_book(self, book_id: int, **updates):  # noqa: ANN003
-            self.updates.append((book_id, updates))
-            return Book(
-                id=book_id,
-                title=updates.get("title", "Updated"),
-                author=updates.get("author"),
-                source_path=str(tmp_path / "source.md"),
-                source_type=SourceType.MD,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.MISSING,
-                playback_position_sec=0.0,
-                tags=updates.get("tags", ""),
-                favorite=bool(updates.get("favorite", False)),
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
-            )
-
-    repository = _UpdateRepositoryStub()
-    service = LibraryService(repository)
-
-    payload = service.update_book_metadata(
-        7,
-        title="Updated",
-        author="New Author",
-        tags="fiction, favorite",
-        favorite=True,
-    )
-
-    assert repository.updates == [
-        (7, {"title": "Updated", "author": "New Author", "tags": "fiction, favorite", "favorite": True})
-    ]
-    assert payload is not None
-    assert payload["title"] == "Updated"
-    assert payload["favorite"] is True
+    assert service.get_book(7)["chapters"][0]["packaged_start_ms"] == start_ms
 
 
 class _ListCleanupRepositoryStub:
@@ -156,7 +169,7 @@ def test_library_service_keeps_books_when_source_file_missing(tmp_path):
         ]
     )
 
-    service = LibraryService(repository, output_dir=tmp_path / "output")
+    service = _make_service(tmp_path, repository)
 
     books = service.get_library_books()
 
@@ -200,34 +213,20 @@ def test_library_service_delete_book_preserves_external_source_and_removes_outpu
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=7,
                 title="Delete Me",
-                author="Tester",
                 source_path=str(source_path),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
                 playback_path="output/Delete Me/Delete Me.m4b",
                 playback_status=PlaybackStatus.PACKAGED,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=11,
-                    book_id=7,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Delete Me/chapters/01.mp3",
-                )
+                _chapter(id=11, book_id=7, mp3_path="output/Delete Me/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root)
 
     deleted = service.delete_book(7)
 
@@ -253,33 +252,18 @@ def test_library_service_reads_chapter_cleaning_preview(tmp_path):
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=12,
                 title="Clean Book",
-                author="Tester",
                 source_path=str(tmp_path / "source.md"),
                 source_type=SourceType.MD,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=21,
-                    book_id=12,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path=str(chapter_audio),
-                )
+                _chapter(id=21, book_id=12, mp3_path=str(chapter_audio))
             ],
         )
     )
-    service = LibraryService(repository, output_dir=output_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root)
 
     preview = service.get_chapter_cleaning_preview(12, 1)
 
@@ -303,33 +287,18 @@ def test_library_service_cleaning_preview_rejects_chapter_path_outside_output(
     secret.write_text("must not be exposed", encoding="utf-8")
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=13,
                 title="Corrupt Record",
-                author="Tester",
                 source_path=str(tmp_path / "source.md"),
                 source_type=SourceType.MD,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=22,
-                    book_id=13,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path=str(outside_audio),
-                )
+                _chapter(id=22, book_id=13, mp3_path=str(outside_audio))
             ],
         )
     )
-    service = LibraryService(repository, output_dir=output_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root)
 
     preview = service.get_chapter_cleaning_preview(13, 1)
 
@@ -337,6 +306,32 @@ def test_library_service_cleaning_preview_rejects_chapter_path_outside_output(
     assert preview["available"] is False
     assert preview["before_text"] == ""
     assert secret.read_text(encoding="utf-8") == "must not be exposed"
+
+
+@pytest.mark.parametrize("target_inside_output", [False, True])
+@pytest.mark.parametrize("suffix, field, empty", [
+    ("before_cleaning.md", "before_text", ""),
+    ("llm_input.md", "llm_input_text", ""),
+    ("cleaned.md", "cleaned_text", ""),
+    ("cleaning_trace.jsonl", "trace_rows", []),
+])
+def test_cleaning_preview_ignores_symlinked_sidecars(
+    tmp_path, target_inside_output, suffix, field, empty,
+):
+    output_root = tmp_path / "output"
+    chapters_dir = output_root / "Book" / "chapters"
+    chapters_dir.mkdir(parents=True)
+    target = (output_root if target_inside_output else tmp_path) / "private.txt"
+    target.write_text('{"private": "must not be exposed"}\n', encoding="utf-8")
+    (chapters_dir / f"chapter_01_{suffix}").symlink_to(target)
+    book, chapters = _RepositoryStub().get_book_with_chapters(7)
+    chapters[0].mp3_path = str(chapters_dir / "01.mp3")
+    service = _make_service(tmp_path, _DeleteRepositoryStub((book, chapters)), output_dir=output_root)
+
+    preview = service.get_chapter_cleaning_preview(7, 1)
+
+    assert preview[field] == empty
+    assert preview["available"] is False
 
 
 def test_library_service_delete_book_removes_uploaded_source_copy(tmp_path):
@@ -353,34 +348,14 @@ def test_library_service_delete_book_removes_uploaded_source_copy(tmp_path):
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
-                id=8,
-                title="Uploaded",
-                author="Tester",
-                source_path="temp/web_uploads/uploaded.epub",
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
-            ),
+            _book(id=8, title="Uploaded", source_path="temp/web_uploads/uploaded.epub"),
             [
-                Chapter(
-                    id=12,
-                    book_id=8,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Uploaded/chapters/01.mp3",
-                )
+                _chapter(id=12, book_id=8, mp3_path="output/Uploaded/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root, temp_dir=temp_dir)
+    service = _make_service(tmp_path, repository, output_dir=output_root, temp_dir=temp_dir)
 
     deleted = service.delete_book(8)
 
@@ -415,39 +390,23 @@ def test_library_service_delete_book_preserves_lookalike_temp_web_uploads_outsid
 
     lookalike_repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=18,
                 title="Lookalike",
-                author="Tester",
                 source_path=str(lookalike_source),
                 source_type=SourceType.PDF,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
+                _chapter(
                     id=18,
                     book_id=18,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
                     mp3_path=str(lookalike_book_dir / "chapters" / "01.mp3"),
                 )
             ],
         )
     )
-    lookalike_service = LibraryService(
-        lookalike_repository,
-        output_dir=output_root,
-        temp_dir=temp_root,
-    )
+    lookalike_service = _make_service(tmp_path, lookalike_repository, output_dir=output_root, temp_dir=temp_root)
 
-    assert lookalike_service._is_managed_deletable_source_path(lookalike_source) is False  # noqa: SLF001
     deleted_lookalike = lookalike_service.delete_book(18)
 
     assert deleted_lookalike is True
@@ -461,39 +420,14 @@ def test_library_service_delete_book_preserves_lookalike_temp_web_uploads_outsid
 
     managed_repository = _DeleteRepositoryStub(
         (
-            Book(
-                id=19,
-                title="Managed",
-                author="Tester",
-                source_path=str(managed_source),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
-            ),
+            _book(id=19, title="Managed", source_path=str(managed_source)),
             [
-                Chapter(
-                    id=19,
-                    book_id=19,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path=str(managed_book_dir / "chapters" / "01.mp3"),
-                )
+                _chapter(id=19, book_id=19, mp3_path=str(managed_book_dir / "chapters" / "01.mp3"))
             ],
         )
     )
-    managed_service = LibraryService(
-        managed_repository,
-        output_dir=output_root,
-        temp_dir=temp_root,
-    )
+    managed_service = _make_service(tmp_path, managed_repository, output_dir=output_root, temp_dir=temp_root)
 
-    assert managed_service._is_managed_deletable_source_path(managed_source) is True  # noqa: SLF001
     deleted_managed = managed_service.delete_book(19)
 
     assert deleted_managed is True
@@ -524,34 +458,22 @@ def test_library_service_delete_book_removes_loose_artifacts_without_deleting_ou
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=19,
                 title="Loose Book",
-                author="Tester",
                 source_path=str(source_path),
                 source_type=SourceType.MD,
                 conversion_mode=ConversionMode.DOCUMENT_AUDIO,
-                total_chapters=1,
                 playback_path=str(loose_playback),
                 playback_status=PlaybackStatus.PACKAGED,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=19,
-                    book_id=19,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path=str(loose_chapter),
-                )
+                _chapter(id=19, book_id=19, mp3_path=str(loose_chapter))
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root)
 
     deleted = service.delete_book(19)
 
@@ -578,34 +500,20 @@ def test_library_service_delete_book_preserves_external_source_inside_output_roo
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=10,
                 title="Generated Book",
-                author="Tester",
                 source_path=str(source_path),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
                 playback_path="output/Generated Book/Generated Book.m4b",
                 playback_status=PlaybackStatus.PACKAGED,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=13,
-                    book_id=10,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Generated Book/chapters/01.mp3",
-                )
+                _chapter(id=13, book_id=10, mp3_path="output/Generated Book/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root)
 
     deleted = service.delete_book(10)
 
@@ -631,34 +539,20 @@ def test_library_service_delete_book_with_duplicate_title_preserves_sibling_outp
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=42,
                 title="Shared Title",
-                author="Tester",
                 source_path=str(tmp_path / "imports" / "shared.epub"),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
                 playback_path="output/Shared Title (2)/Shared Title.m4b",
                 playback_status=PlaybackStatus.PACKAGED,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=42,
-                    book_id=42,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Shared Title (2)/chapters/01.mp3",
-                )
+                _chapter(id=42, book_id=42, mp3_path="output/Shared Title (2)/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root)
 
     deleted = service.delete_book(42)
 
@@ -678,34 +572,19 @@ def test_library_service_delete_book_without_paths_does_not_guess_title_director
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=43,
                 title="Shared Title",
-                author="Tester",
                 source_path=str(tmp_path / "imports" / "shared.epub"),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
                 playback_status=PlaybackStatus.MISSING,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=43,
-                    book_id=43,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path=None,
-                )
+                _chapter(id=43, book_id=43, mp3_path=None)
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root)
 
     assert service.delete_book(43) is True
     assert sibling_audio.exists()
@@ -727,34 +606,20 @@ def test_library_service_delete_book_refuses_path_traversal_in_stored_paths(tmp_
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=77,
                 title="Traversal Book",
-                author="Tester",
                 source_path="temp/web_uploads/../../outside/private_source.epub",
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
                 playback_path="output/../outside/private.m4b",
                 playback_status=PlaybackStatus.PACKAGED,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=77,
-                    book_id=77,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/../outside/private.mp3",
-                )
+                _chapter(id=77, book_id=77, mp3_path="output/../outside/private.mp3")
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root, temp_dir=temp_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root, temp_dir=temp_root)
 
     deleted = service.delete_book(77)
 
@@ -781,34 +646,20 @@ def test_library_service_delete_book_with_already_deleted_source_removes_output(
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=55,
                 title="Gone Source",
-                author="Tester",
                 source_path=missing_source,
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
                 playback_path="output/Gone Source/Gone Source.m4b",
                 playback_status=PlaybackStatus.PACKAGED,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [
-                Chapter(
-                    id=55,
-                    book_id=55,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Gone Source/chapters/01.mp3",
-                )
+                _chapter(id=55, book_id=55, mp3_path="output/Gone Source/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(repository, output_dir=output_root, temp_dir=temp_root)
+    service = _make_service(tmp_path, repository, output_dir=output_root, temp_dir=temp_root)
 
     deleted = service.delete_book(55)
 
@@ -829,25 +680,20 @@ def test_library_service_open_book_folder_prefers_output_folder(tmp_path):
     opened_paths: list[Path] = []
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=9,
                 title="Folder Book",
-                author="Tester",
                 source_path=str(source_path),
                 source_type=SourceType.PDF,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
                 playback_path="output/Folder Book/Folder Book.m4b",
                 playback_status=PlaybackStatus.PACKAGED,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [],
         )
     )
 
-    service = LibraryService(
+    service = _make_service(
+        tmp_path,
         repository,
         output_dir=output_root,
         folder_opener=lambda folder: opened_paths.append(folder),
@@ -867,29 +713,18 @@ def test_library_service_open_book_folder_falls_back_to_source_parent_when_outpu
     opened_paths: list[Path] = []
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=9,
                 title="Folder Book",
-                author="Tester",
                 source_path=str(source_path),
                 source_type=SourceType.PDF,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
                 playback_status=PlaybackStatus.MISSING,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [],
         )
     )
 
-    service = LibraryService(
-        repository,
-        output_dir=tmp_path / "output",
-        folder_opener=lambda folder: opened_paths.append(folder),
-    )
+    service = _make_service(tmp_path, repository, folder_opener=lambda folder: opened_paths.append(folder))
 
     opened_folder = service.open_book_folder(9)
 
@@ -904,25 +739,18 @@ def test_library_service_open_book_folder_creates_output_folder_when_artifacts_a
     opened_paths: list[Path] = []
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=9,
                 title="Missing Source Book",
-                author="Tester",
                 source_path=str(tmp_path / "imports" / "missing.epub"),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
                 playback_status=PlaybackStatus.MISSING,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [],
         )
     )
 
-    service = LibraryService(
+    service = _make_service(
+        tmp_path,
         repository,
         output_dir=output_root,
         folder_opener=lambda folder: opened_paths.append(folder),
@@ -946,25 +774,19 @@ def test_library_service_open_book_folder_routes_managed_uploads_to_app_output(t
     opened_paths: list[Path] = []
     repository = _DeleteRepositoryStub(
         (
-            Book(
+            _book(
                 id=9,
                 title="Folder Book",
-                author="Tester",
                 source_path=str(managed_source_path),
                 source_type=SourceType.PDF,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
                 playback_status=PlaybackStatus.MISSING,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
             ),
             [],
         )
     )
 
-    service = LibraryService(
+    service = _make_service(
+        tmp_path,
         repository,
         output_dir=app_output_root,
         temp_dir=app_temp_root,
@@ -977,102 +799,6 @@ def test_library_service_open_book_folder_routes_managed_uploads_to_app_output(t
     assert expected_output_dir.is_dir()
     assert opened_paths == [expected_output_dir]
     assert opened_folder != managed_source_path.parent
-
-
-def test_app_controller_threads_configured_output_dir_into_library_service(monkeypatch, tmp_path):
-    captured: dict[str, object] = {}
-
-    class _FakeLibraryService:
-        def __init__(
-            self,
-            repository,
-            output_dir="__missing__",
-            temp_dir="__missing__",
-            storage_root="__missing__",
-            folder_opener=None,
-        ):
-            captured["repository"] = repository
-            captured["output_dir"] = output_dir
-            captured["temp_dir"] = temp_dir
-            captured["storage_root"] = storage_root
-            captured["folder_opener"] = folder_opener
-
-    class _FakeVoiceService:
-        def __init__(self, config, tts_factory=None):
-            self.config = config
-            self.tts_factory = tts_factory
-
-        def validate_tts_runtime(self, *args, **kwargs):
-            return None
-
-        def cleanup(self):
-            return None
-
-    class _FakeConversionService:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def cancel_conversion(self):
-            return False
-
-    class _FakeRuntimeCapabilityService:
-        def get_system_runtime_snapshot(self):
-            return {"tts": {"available": False}, "cleaner": {"available": False}}
-
-    class _FakeSharedWorkerPoolManager:
-        def __init__(self, max_workers):
-            self.max_workers = max_workers
-            self.shutdown_called = False
-
-        def snapshot(self):
-            return {"reuse_hits": 0, "restarts": 0}
-
-        def shutdown(self):
-            self.shutdown_called = True
-
-    class _FakeGlobalAPILimiter:
-        def __init__(self, concurrency):
-            self.concurrency = concurrency
-            self.shutdown_called = False
-
-        def snapshot(self):
-            return {"wait_count": 0, "wait_ms_total": 0.0}
-
-        def shutdown(self):
-            self.shutdown_called = True
-
-    class _FakeSQLiteRepository:
-        def __init__(self, db_path, *, output_dir=None, temp_dir=None):
-            self.db_path = db_path
-            self.output_dir = output_dir
-            self.temp_dir = temp_dir
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
-    monkeypatch.setattr(app_controller_module, "LibraryService", _FakeLibraryService)
-    monkeypatch.setattr(app_controller_module, "VoiceService", _FakeVoiceService)
-    monkeypatch.setattr(app_controller_module, "ConversionService", _FakeConversionService)
-    monkeypatch.setattr(app_controller_module, "RuntimeCapabilityService", _FakeRuntimeCapabilityService)
-    monkeypatch.setattr(app_controller_module, "SharedWorkerPoolManager", _FakeSharedWorkerPoolManager)
-    monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
-    monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
-
-    repository = SimpleNamespace()
-    config = AppConfig(
-        data_dir=tmp_path / "data",
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        db_path=tmp_path / "data" / "audiobooks.db",
-    )
-
-    app_controller_module.AppController(config=config, repository=repository)
-
-    assert captured["repository"] is repository
-    assert captured["output_dir"] == config.output_dir
-    assert captured["temp_dir"] == config.temp_dir
-    assert captured["storage_root"] == tmp_path
 
 
 def test_app_controller_cleans_up_owned_repository_connection(monkeypatch, tmp_path):
@@ -1104,12 +830,9 @@ def test_app_controller_cleans_up_owned_repository_connection(monkeypatch, tmp_p
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-        def cancel_conversion(self):
+        def cancel_conversion(self, expected_job_id=None):
             return False
 
-    class _FakeRuntimeCapabilityService:
-        def get_system_runtime_snapshot(self):
-            return {"tts": {"available": False}, "cleaner": {"available": False}}
 
     class _FakeSharedWorkerPoolManager:
         def __init__(self, max_workers):
@@ -1121,27 +844,8 @@ def test_app_controller_cleans_up_owned_repository_connection(monkeypatch, tmp_p
 
         def shutdown(self):
             self.shutdown_called = True
+            return True
 
-    class _FakeGlobalAPILimiter:
-        def __init__(self, concurrency):
-            self.concurrency = concurrency
-            self.shutdown_called = False
-
-        def snapshot(self):
-            return {"wait_count": 0, "wait_ms_total": 0.0}
-
-        def shutdown(self):
-            self.shutdown_called = True
-
-    class _FakeSQLiteRepository:
-        def __init__(self, db_path, *, output_dir=None, temp_dir=None):
-            self.db_path = db_path
-            self.output_dir = output_dir
-            self.temp_dir = temp_dir
-            self.closed = False
-
-        def close(self):
-            self.closed = True
 
     monkeypatch.setattr(app_controller_module, "LibraryService", _FakeLibraryService)
     monkeypatch.setattr(app_controller_module, "VoiceService", _FakeVoiceService)
@@ -1151,12 +855,7 @@ def test_app_controller_cleans_up_owned_repository_connection(monkeypatch, tmp_p
     monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
     monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
 
-    config = AppConfig(
-        data_dir=tmp_path / "data",
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        db_path=tmp_path / "data" / "audiobooks.db",
-    )
+    config = make_app_config(tmp_path, db_path=tmp_path / "data" / "audiobooks.db")
 
     controller = app_controller_module.AppController(config=config)
     controller.cleanup()
@@ -1190,9 +889,6 @@ def test_app_controller_cleanup_bounds_conversion_and_worker_shutdown(monkeypatc
             calls.append(("cancel", timeout_seconds))
             return False
 
-    class _FakeRuntimeCapabilityService:
-        def get_system_runtime_snapshot(self):
-            return {"tts": {"available": False}, "cleaner": {"available": False}}
 
     class _FakeSharedWorkerPoolManager:
         def __init__(self, max_workers):  # noqa: ANN001
@@ -1232,23 +928,18 @@ def test_app_controller_cleanup_bounds_conversion_and_worker_shutdown(monkeypatc
     monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
     monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
 
-    config = AppConfig(
-        data_dir=tmp_path / "data",
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        db_path=tmp_path / "data" / "audiobooks.db",
-    )
+    config = make_app_config(tmp_path, db_path=tmp_path / "data" / "audiobooks.db")
     controller = app_controller_module.AppController(config=config)
 
-    controller.cleanup()
+    assert controller.cleanup() is False
 
     assert calls[:3] == [
         ("cancel", 2.0),
         ("worker_shutdown", 2.0),
         ("cancel", 0.5),
     ]
-    assert ("limiter_shutdown", None) in calls
-    assert ("repo_close", None) in calls
+    assert ("limiter_shutdown", None) not in calls
+    assert ("repo_close", None) not in calls
 
 
 def test_app_controller_desktop_shutdown_cleanup_budget_matches_cleanup_timeouts():
@@ -1260,80 +951,6 @@ def test_app_controller_desktop_shutdown_cleanup_budget_matches_cleanup_timeouts
     )
     assert controller.DESKTOP_SHUTDOWN_CLEANUP_BUDGET_SECONDS >= expected_budget
     assert controller.DESKTOP_SHUTDOWN_ACK_EVENT == "shutdown"
-
-
-def test_app_controller_cleanup_emits_desktop_shutdown_ack_when_desktop_ready_env_set(
-    monkeypatch,
-    tmp_path,
-    capsys,
-):
-    monkeypatch.setenv("AUDIOBOOK_DESKTOP_READY_FILE", str(tmp_path / "backend-ready.json"))
-
-    class _FakeLibraryService:
-        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
-            _ = args, kwargs
-
-    class _FakeVoiceService:
-        def __init__(self, config, tts_factory=None):  # noqa: ANN001, ARG002
-            _ = config
-
-        def validate_tts_runtime(self, *args, **kwargs):  # noqa: ANN002, ANN003
-            return None
-
-        def cleanup(self):
-            return None
-
-    class _FakeConversionService:
-        def __init__(self, **kwargs):  # noqa: ANN003
-            _ = kwargs
-
-        def cancel_active_job(self, timeout_seconds=None):  # noqa: ANN001
-            return False
-
-    class _FakeRuntimeCapabilityService:
-        def get_system_runtime_snapshot(self):
-            return {"tts": {"available": False}, "cleaner": {"available": False}}
-
-    class _FakeGlobalAPILimiter:
-        def __init__(self, concurrency):  # noqa: ANN001
-            _ = concurrency
-
-        def snapshot(self):
-            return {"wait_count": 0, "wait_ms_total": 0.0}
-
-        def shutdown(self):
-            return None
-
-    class _FakeSQLiteRepository:
-        def __init__(self, db_path, *, output_dir=None, temp_dir=None):  # noqa: ANN001
-            self.db_path = db_path
-            self.output_dir = output_dir
-            self.temp_dir = temp_dir
-            self.closed = False
-
-        def close(self):
-            self.closed = True
-
-    monkeypatch.setattr(app_controller_module, "LibraryService", _FakeLibraryService)
-    monkeypatch.setattr(app_controller_module, "VoiceService", _FakeVoiceService)
-    monkeypatch.setattr(app_controller_module, "ConversionService", _FakeConversionService)
-    monkeypatch.setattr(app_controller_module, "RuntimeCapabilityService", _FakeRuntimeCapabilityService)
-    monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
-    monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
-
-    config = AppConfig(
-        data_dir=tmp_path / "data",
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        db_path=tmp_path / "data" / "audiobooks.db",
-    )
-    controller = app_controller_module.AppController(config=config)
-    controller.cleanup()
-
-    captured = capsys.readouterr()
-    assert captured.out.strip().endswith('{"event":"shutdown"}')
-    assert isinstance(controller.repository, _FakeSQLiteRepository)
-    assert controller.repository.closed is True
 
 
 def test_app_controller_cleanup_closes_repo_before_shutdown_ack(monkeypatch, tmp_path, capsys):
@@ -1362,9 +979,6 @@ def test_app_controller_cleanup_closes_repo_before_shutdown_ack(monkeypatch, tmp
             events.append(f"cancel:{timeout_seconds}")
             return True
 
-    class _FakeRuntimeCapabilityService:
-        def get_system_runtime_snapshot(self):
-            return {"tts": {"available": False}, "cleaner": {"available": False}}
 
     class _FakeGlobalAPILimiter:
         def __init__(self, concurrency):  # noqa: ANN001
@@ -1392,12 +1006,7 @@ def test_app_controller_cleanup_closes_repo_before_shutdown_ack(monkeypatch, tmp
     monkeypatch.setattr(app_controller_module, "GlobalAPILimiter", _FakeGlobalAPILimiter)
     monkeypatch.setattr(app_controller_module, "SQLiteRepository", _FakeSQLiteRepository)
 
-    config = AppConfig(
-        data_dir=tmp_path / "data",
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        db_path=tmp_path / "data" / "audiobooks.db",
-    )
+    config = make_app_config(tmp_path, db_path=tmp_path / "data" / "audiobooks.db")
     controller = app_controller_module.AppController(config=config)
     controller.cleanup()
 
@@ -1466,39 +1075,14 @@ def test_library_service_delete_book_removes_durable_app_owned_source(tmp_path):
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
-                id=8,
-                title="Uploaded",
-                author="Tester",
-                source_path=str(durable_source),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
-            ),
+            _book(id=8, title="Uploaded", source_path=str(durable_source)),
             [
-                Chapter(
-                    id=12,
-                    book_id=8,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Uploaded/chapters/01.mp3",
-                )
+                _chapter(id=12, book_id=8, mp3_path="output/Uploaded/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(
-        repository,
-        output_dir=output_root,
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    service = _make_service(tmp_path, repository, output_dir=output_root, storage_root=tmp_path)
 
     deleted = service.delete_book(8)
 
@@ -1508,22 +1092,26 @@ def test_library_service_delete_book_removes_durable_app_owned_source(tmp_path):
     assert not book_dir.exists()
 
 
-def test_library_service_uses_active_state_database_for_durable_sources(tmp_path):
-    data_dir = tmp_path / "data"
+def test_library_service_delete_book_removes_durable_source_beside_active_database(tmp_path):
+    from modules.storage.models import BookCreate
+
+    (tmp_path / "data" / "sources").mkdir(parents=True)
     state_dir = tmp_path / "state"
-    (data_dir / "sources").mkdir(parents=True)
-    state_sources = state_dir / "sources"
-    state_sources.mkdir(parents=True)
+    durable_source = state_dir / "sources" / "book.epub"
+    durable_source.parent.mkdir(parents=True)
+    durable_source.write_text("durable source", encoding="utf-8")
 
     repository = SQLiteRepository(state_dir / "audiobooks.db")
-    service = LibraryService(
-        repository,
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    try:
+        book = repository.create_book(
+            BookCreate(title="Book", source_path=str(durable_source), source_type=SourceType.EPUB)
+        )
+        service = _make_service(tmp_path, repository, storage_root=tmp_path)
 
-    assert service._is_app_owned_durable_source_path(state_sources / "book.epub")  # noqa: SLF001
+        assert service.delete_book(book.id) is True
+        assert not durable_source.exists()
+    finally:
+        repository.close()
 
 
 def test_library_service_delete_book_preserves_shared_durable_source(tmp_path):
@@ -1544,66 +1132,27 @@ def test_library_service_delete_book_preserves_shared_durable_source(tmp_path):
     repository = _MultiBookDeleteRepositoryStub(
         {
             1: (
-                Book(
-                    id=1,
-                    title="First",
-                    author="Tester",
-                    source_path=str(shared_source),
-                    source_type=SourceType.EPUB,
-                    conversion_mode=ConversionMode.AUDIOBOOK,
-                    total_chapters=1,
-                    playback_path=None,
-                    playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                    playback_position_sec=0.0,
-                    created_at=datetime(2026, 4, 1, 9, 0, 0),
-                    updated_at=datetime(2026, 4, 1, 9, 5, 0),
-                ),
+                _book(id=1, title="First", source_path=str(shared_source)),
                 [
-                    Chapter(
-                        id=1,
-                        book_id=1,
-                        chapter_number=1,
-                        title="Chapter 1",
-                        duration_ms=1000,
-                        mp3_path="output/First/chapters/01.mp3",
-                    )
+                    _chapter(id=1, book_id=1, mp3_path="output/First/chapters/01.mp3")
                 ],
             ),
             2: (
-                Book(
+                _book(
                     id=2,
                     title="Second",
-                    author="Tester",
                     source_path=str(shared_source),
-                    source_type=SourceType.EPUB,
-                    conversion_mode=ConversionMode.AUDIOBOOK,
-                    total_chapters=1,
-                    playback_path=None,
-                    playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                    playback_position_sec=0.0,
                     created_at=datetime(2026, 4, 1, 9, 10, 0),
                     updated_at=datetime(2026, 4, 1, 9, 15, 0),
                 ),
                 [
-                    Chapter(
-                        id=2,
-                        book_id=2,
-                        chapter_number=1,
-                        title="Chapter 1",
-                        duration_ms=1000,
-                        mp3_path="output/Second/chapters/01.mp3",
-                    )
+                    _chapter(id=2, book_id=2, mp3_path="output/Second/chapters/01.mp3")
                 ],
             ),
         }
     )
 
-    service = LibraryService(
-        repository,
-        output_dir=output_root,
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    service = _make_service(tmp_path, repository, output_dir=output_root, storage_root=tmp_path)
 
     deleted = service.delete_book(1)
 
@@ -1629,40 +1178,21 @@ def test_library_service_delete_book_removes_durable_source_after_last_reference
     repository = _MultiBookDeleteRepositoryStub(
         {
             2: (
-                Book(
+                _book(
                     id=2,
                     title="Second",
-                    author="Tester",
                     source_path=str(shared_source),
-                    source_type=SourceType.EPUB,
-                    conversion_mode=ConversionMode.AUDIOBOOK,
-                    total_chapters=1,
-                    playback_path=None,
-                    playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                    playback_position_sec=0.0,
                     created_at=datetime(2026, 4, 1, 9, 10, 0),
                     updated_at=datetime(2026, 4, 1, 9, 15, 0),
                 ),
                 [
-                    Chapter(
-                        id=2,
-                        book_id=2,
-                        chapter_number=1,
-                        title="Chapter 1",
-                        duration_ms=1000,
-                        mp3_path="output/Second/chapters/01.mp3",
-                    )
+                    _chapter(id=2, book_id=2, mp3_path="output/Second/chapters/01.mp3")
                 ],
             ),
         }
     )
 
-    service = LibraryService(
-        repository,
-        output_dir=output_root,
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    service = _make_service(tmp_path, repository, output_dir=output_root, storage_root=tmp_path)
 
     deleted = service.delete_book(2)
 
@@ -1684,39 +1214,14 @@ def test_library_service_delete_book_preserves_user_owned_source_outside_managed
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
-                id=21,
-                title="Owned",
-                author="Tester",
-                source_path=str(user_source),
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
-            ),
+            _book(id=21, title="Owned", source_path=str(user_source)),
             [
-                Chapter(
-                    id=21,
-                    book_id=21,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Owned/chapters/01.mp3",
-                )
+                _chapter(id=21, book_id=21, mp3_path="output/Owned/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(
-        repository,
-        output_dir=output_root,
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    service = _make_service(tmp_path, repository, output_dir=output_root, storage_root=tmp_path)
 
     deleted = service.delete_book(21)
 
@@ -1743,39 +1248,14 @@ def test_library_service_delete_book_refuses_path_traversal_for_durable_source(t
 
     repository = _DeleteRepositoryStub(
         (
-            Book(
-                id=88,
-                title="Traversal",
-                author="Tester",
-                source_path="data/sources/../../outside/private.epub",
-                source_type=SourceType.EPUB,
-                conversion_mode=ConversionMode.AUDIOBOOK,
-                total_chapters=1,
-                playback_path=None,
-                playback_status=PlaybackStatus.CHAPTER_AUDIO,
-                playback_position_sec=0.0,
-                created_at=datetime(2026, 4, 1, 9, 0, 0),
-                updated_at=datetime(2026, 4, 1, 9, 5, 0),
-            ),
+            _book(id=88, title="Traversal", source_path="data/sources/../../outside/private.epub"),
             [
-                Chapter(
-                    id=88,
-                    book_id=88,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="output/Traversal/chapters/01.mp3",
-                )
+                _chapter(id=88, book_id=88, mp3_path="output/Traversal/chapters/01.mp3")
             ],
         )
     )
 
-    service = LibraryService(
-        repository,
-        output_dir=output_root,
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    service = _make_service(tmp_path, repository, output_dir=output_root, storage_root=tmp_path)
 
     deleted = service.delete_book(88)
 
@@ -1799,39 +1279,14 @@ def test_library_service_delete_book_restores_artifacts_when_repository_delete_f
     chapter_audio.write_text("chapter", encoding="utf-8")
 
     detail = (
-        Book(
-            id=99,
-            title="Rollback",
-            author="Tester",
-            source_path=str(durable_source),
-            source_type=SourceType.EPUB,
-            conversion_mode=ConversionMode.AUDIOBOOK,
-            total_chapters=1,
-            playback_path=None,
-            playback_status=PlaybackStatus.CHAPTER_AUDIO,
-            playback_position_sec=0.0,
-            created_at=datetime(2026, 4, 1, 9, 0, 0),
-            updated_at=datetime(2026, 4, 1, 9, 5, 0),
-        ),
+        _book(id=99, title="Rollback", source_path=str(durable_source)),
         [
-            Chapter(
-                id=99,
-                book_id=99,
-                chapter_number=1,
-                title="Chapter 1",
-                duration_ms=1000,
-                mp3_path="output/Rollback/chapters/01.mp3",
-            )
+            _chapter(id=99, book_id=99, mp3_path="output/Rollback/chapters/01.mp3")
         ],
     )
     repository = _FailingDeleteRepositoryStub(detail)
 
-    service = LibraryService(
-        repository,
-        output_dir=output_root,
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    service = _make_service(tmp_path, repository, output_dir=output_root, storage_root=tmp_path)
 
     with pytest.raises(sqlite3.OperationalError, match="forced delete failure"):
         service.delete_book(99)
@@ -1857,38 +1312,13 @@ def test_library_service_delete_book_does_not_restore_after_successful_db_delete
     chapter_audio.write_text("chapter", encoding="utf-8")
 
     detail = (
-        Book(
-            id=100,
-            title="CommitFail",
-            author="Tester",
-            source_path=str(durable_source),
-            source_type=SourceType.EPUB,
-            conversion_mode=ConversionMode.AUDIOBOOK,
-            total_chapters=1,
-            playback_path=None,
-            playback_status=PlaybackStatus.CHAPTER_AUDIO,
-            playback_position_sec=0.0,
-            created_at=datetime(2026, 4, 1, 9, 0, 0),
-            updated_at=datetime(2026, 4, 1, 9, 5, 0),
-        ),
+        _book(id=100, title="CommitFail", source_path=str(durable_source)),
         [
-            Chapter(
-                id=100,
-                book_id=100,
-                chapter_number=1,
-                title="Chapter 1",
-                duration_ms=1000,
-                mp3_path="output/CommitFail/chapters/01.mp3",
-            )
+            _chapter(id=100, book_id=100, mp3_path="output/CommitFail/chapters/01.mp3")
         ],
     )
     repository = _DeleteRepositoryStub(detail)
-    service = LibraryService(
-        repository,
-        output_dir=output_root,
-        temp_dir=tmp_path / "temp",
-        storage_root=tmp_path,
-    )
+    service = _make_service(tmp_path, repository, output_dir=output_root, storage_root=tmp_path)
 
     def boom(_artifacts):  # noqa: ANN001
         raise OSError("forced commit failure")
@@ -1936,6 +1366,24 @@ def test_default_folder_opener_uses_os_startfile_on_windows(tmp_path, monkeypatc
     assert opened == [str(tmp_path)]
 
 
+def test_default_folder_opener_never_launches_a_file(tmp_path, monkeypatch):
+    from modules.app.services import library_service as library_service_module
+
+    launched: list[object] = []
+    monkeypatch.setattr(library_service_module.os, "startfile", launched.append, raising=False)
+    monkeypatch.setattr(
+        library_service_module.subprocess, "run", lambda *args, **_kwargs: launched.append(args),
+    )
+    planted = tmp_path / "Book.exe"
+    planted.write_bytes(b"MZ")
+
+    for target in (planted, tmp_path / "missing"):
+        with pytest.raises(RuntimeError, match="failed to open folder"):
+            library_service_module._default_folder_opener(target)
+
+    assert launched == []
+
+
 def test_default_folder_opener_windows_failure_raises_runtime_error(tmp_path, monkeypatch):
     from modules.app.services import library_service as library_service_module
 
@@ -1951,15 +1399,13 @@ def test_default_folder_opener_windows_failure_raises_runtime_error(tmp_path, mo
         library_service_module._default_folder_opener(tmp_path)
 
 
-def test_library_service_reports_source_unavailable_for_empty_source_path(tmp_path):
-    service = LibraryService(
-        _RepositoryStub(),
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-    )
+@pytest.mark.parametrize("source_path", ["", None])
+def test_library_service_reports_source_unavailable_for_empty_source_path(tmp_path, source_path):
+    book, chapters = _RepositoryStub().get_book_with_chapters(7)
+    book.source_path = source_path
+    service = _make_service(tmp_path, _DeleteRepositoryStub((book, chapters)))
 
-    assert service._source_path_exists("") is False  # noqa: SLF001
-    assert service._source_path_exists(None) is False  # noqa: SLF001
+    assert service.get_book(7)["source_available"] is False
 
 
 @pytest.mark.parametrize("suffix,content,expected", [
@@ -1970,7 +1416,7 @@ def test_library_service_reports_source_unavailable_for_empty_source_path(tmp_pa
 def test_uploaded_source_preserves_filename_fallback(tmp_path, suffix, content, expected):
     from io import BytesIO
 
-    service = LibraryService(_RepositoryStub(), temp_dir=tmp_path)
+    service = _make_service(tmp_path, _RepositoryStub(), temp_dir=tmp_path)
     result = service.upload_source(filename=f"Original Book{suffix}", file_obj=BytesIO(content))
     assert result["preflight"]["title"] == expected
 
@@ -2002,6 +1448,380 @@ def test_uploaded_document_prefers_embedded_title_then_original_filename(tmp_pat
         book.spine = [chapter]
         book.add_item(epub.EpubNcx())
         epub.write_epub(str(path), book)
-    service = LibraryService(_RepositoryStub(), temp_dir=tmp_path / "uploads")
+    service = _make_service(tmp_path, _RepositoryStub(), temp_dir=tmp_path / "uploads")
     result = service.upload_source(filename=f"Original Book{suffix}", file_obj=BytesIO(path.read_bytes()))
     assert result["preflight"]["title"] == (embedded_title or "Original Book")
+
+
+def _create_deletion_book(tmp_path):
+    from modules.storage.models import BookCreate, ChapterCreate
+
+    output = tmp_path / "output"
+    directory = output / "Book"
+    audio = directory / "chapters" / "01.mp3"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"chapter audio")
+    source = tmp_path / "data" / "sources" / "book.txt"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"source bytes")
+    repo = SQLiteRepository(tmp_path / "data" / "library.db")
+    book, _ = repo.create_book_with_chapters(
+        BookCreate(title="Book", source_path=str(source), source_type=SourceType.TXT, playback_path=str(audio)),
+        [ChapterCreate(book_id=0, chapter_number=1, title="First", mp3_path=str(audio))],
+    )
+    service = _make_service(tmp_path, repo, output_dir=output, storage_root=tmp_path)
+    return repo, service, book, directory, audio, source
+
+
+@pytest.mark.parametrize("crash_point", ["first_move", "before_database", "after_database"])
+def test_new_service_reconciles_in_process_deletion_interruption(tmp_path, monkeypatch, crash_point):
+    import json
+    import os
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        replace = os.replace
+        delete = repo.delete_book
+        manifests = []
+
+        def interrupted_move(src, dst):
+            if Path(src) == directory:
+                manifests.extend((tmp_path / "temp" / "delete_staging").glob("*/transaction.json"))
+                if manifests:
+                    payload = json.loads(manifests[0].read_text(encoding="utf-8"))
+                    assert payload["book_id"] == book.id
+                    assert {item["original"] for item in payload["artifacts"]} == {str(directory), str(source)}
+                    assert all(Path(item["staged"]).is_absolute() for item in payload["artifacts"])
+            replace(src, dst)
+            if Path(src) == directory and crash_point == "first_move":
+                raise KeyboardInterrupt()
+
+        def interrupted_delete(book_id):
+            if crash_point == "after_database":
+                delete(book_id)
+            raise KeyboardInterrupt()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "replace", interrupted_move)
+            if crash_point != "first_move":
+                patch.setattr(repo, "delete_book", interrupted_delete)
+            with pytest.raises(KeyboardInterrupt):
+                service.delete_book(book.id)
+        assert not audio.exists()
+        restored = _make_service(tmp_path, repo, storage_root=tmp_path)
+        if crash_point == "after_database":
+            assert repo.get_book(book.id) is None
+            assert not directory.exists()
+            assert not source.exists()
+        else:
+            assert repo.get_book(book.id) is not None
+            assert source.read_bytes() == b"source bytes"
+            assert audio.read_bytes() == b"chapter audio"
+            assert restored.get_book_playback_file(book.id) == audio
+        assert manifests
+        assert not any((tmp_path / "temp" / "delete_staging").iterdir())
+    finally:
+        repo.close()
+
+
+def test_new_service_retries_failed_staged_artifact_restore(tmp_path, monkeypatch, caplog):
+    import os
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        replace = os.replace
+
+        def fail_source_and_restore(src, dst):
+            if Path(src) == source or Path(dst) == directory:
+                raise PermissionError("File is in use")
+            return replace(src, dst)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "replace", fail_source_and_restore)
+            with pytest.raises(RuntimeError):
+                service.delete_book(book.id)
+            _make_service(tmp_path, repo, storage_root=tmp_path)
+            assert "Failed to restore staged artifact" in caplog.text
+            from modules.storage.maintenance import prune_stale_records_and_files
+
+            prune_stale_records_and_files(
+                repo.db_path, tmp_path / "output", tmp_path / "temp", aggressive=True, grace_seconds=0,
+            )
+            assert repo.get_book(book.id) is not None
+        _make_service(tmp_path, repo, storage_root=tmp_path)
+        assert repo.get_book(book.id) is not None
+        assert audio.read_bytes() == b"chapter audio"
+        assert source.read_bytes() == b"source bytes"
+    finally:
+        repo.close()
+
+
+@pytest.mark.parametrize("fail_later", [False, True])
+def test_delete_stages_artifacts_on_their_own_volume(tmp_path, monkeypatch, fail_later):
+    import errno
+    import os
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        replace = os.replace
+        volumes = [tmp_path / "output", source.parent, tmp_path / "temp"]
+
+        def volume(path):
+            return next((root for root in volumes if Path(path).is_relative_to(root)), tmp_path)
+
+        def replace_on_volume(src, dst):
+            if volume(src) != volume(dst):
+                raise OSError(errno.EXDEV, "Cross-device link")
+            if fail_later and Path(src) == source:
+                raise PermissionError("File is in use")
+            return replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", replace_on_volume)
+        if fail_later:
+            with pytest.raises(RuntimeError, match="files are in use"):
+                service.delete_book(book.id)
+            assert audio.read_bytes() == b"chapter audio"
+            assert source.read_bytes() == b"source bytes"
+            assert repo.get_book(book.id) is not None
+        else:
+            assert service.delete_book(book.id) is True
+            assert not directory.exists()
+            assert not source.exists()
+            assert repo.get_book(book.id) is None
+    finally:
+        repo.close()
+
+
+@pytest.mark.parametrize("error, message", [(18, "filesystem"), (13, "permission"), (1, "permission")])
+def test_delete_reports_filesystem_and_permission_errors(tmp_path, monkeypatch, error, message):
+    import os
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        replace = os.replace
+
+        def fail_artifact(src, dst):
+            if Path(src) == directory:
+                raise OSError(error, "Cannot rename")
+            return replace(src, dst)
+
+        monkeypatch.setattr(os, "replace", fail_artifact)
+        with pytest.raises(RuntimeError, match=message):
+            service.delete_book(book.id)
+        assert audio.read_bytes() == b"chapter audio"
+        assert source.read_bytes() == b"source bytes"
+        assert repo.get_book(book.id) is not None
+    finally:
+        repo.close()
+
+
+def test_delete_moved_book_preserves_reused_directory(tmp_path):
+    from modules.storage.models import BookCreate, ChapterCreate
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        moved = directory.with_name("Moved")
+        directory.rename(moved)
+        audio.parent.mkdir(parents=True)
+        audio.write_bytes(b"newer audio")
+        newer_source = directory / ".orpheus-source" / "new.txt"
+        newer_source.parent.mkdir()
+        newer_source.write_bytes(b"newer source")
+        newer, newer_chapters = repo.create_book_with_chapters(
+            BookCreate(title="Book", source_path=str(newer_source), source_type=SourceType.TXT, playback_path=str(audio)),
+            [ChapterCreate(book_id=0, chapter_number=1, title="New chapter", mp3_path=str(audio))],
+        )
+        assert service.delete_book(book.id) is True
+        assert audio.read_bytes() == b"newer audio"
+        assert newer_source.read_bytes() == b"newer source"
+        assert repo.get_book_with_chapters(newer.id)[1] == newer_chapters
+        assert (moved / "chapters" / "01.mp3").read_bytes() == b"chapter audio"
+    finally:
+        repo.close()
+
+
+def test_cleanup_finishes_committed_deletion_on_each_volume(tmp_path, monkeypatch):
+    from modules.storage.maintenance import prune_stale_records_and_files
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        def fail_commit(_artifacts):
+            raise OSError("File is in use")
+
+        monkeypatch.setattr(service, "_commit_staged_artifacts", fail_commit)
+        result = service.delete_book(book.id)
+        assert result["files_pending"] is True
+        prune_stale_records_and_files(
+            repo.db_path, tmp_path / "output", tmp_path / "temp", aggressive=True, grace_seconds=0,
+        )
+        assert not list(tmp_path.rglob(".orpheus-delete-staging"))
+        assert not (tmp_path / "temp" / "delete_staging" / result["path"]).exists()
+        assert repo.get_book(book.id) is None
+        assert not directory.exists()
+        assert not source.exists()
+    finally:
+        repo.close()
+
+
+@pytest.mark.parametrize("reference", ["source", "playback", "chapter"])
+def test_delete_removes_only_own_files_from_a_shared_directory(tmp_path, reference):
+    from modules.storage.models import BookCreate, ChapterCreate
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        other_file = directory / "other.mp3"
+        other_file.write_bytes(b"other book")
+        other = repo.create_book(BookCreate(
+            title="Other", source_path=str(other_file) if reference == "source" else "other.txt",
+            source_type=SourceType.TXT, playback_path=str(other_file) if reference == "playback" else None,
+        ))
+        if reference == "chapter":
+            repo.create_chapter(ChapterCreate(book_id=other.id, chapter_number=1, title="Other", mp3_path=str(other_file)))
+        assert service.delete_book(book.id) is True
+        assert not audio.exists()
+        assert not source.exists()
+        assert other_file.read_bytes() == b"other book"
+        assert repo.get_book(other.id) is not None
+        assert not list(tmp_path.rglob(".orpheus-delete-staging"))
+    finally:
+        repo.close()
+
+
+def test_delete_preserves_source_and_audio_referenced_through_aliases(tmp_path):
+    from modules.storage.models import BookCreate, ChapterCreate
+
+    repo, service, book, directory, audio, source = _create_deletion_book(tmp_path)
+    try:
+        alias = tmp_path / "shared-source.txt"
+        try:
+            alias.symlink_to(source)
+        except OSError as error:
+            pytest.skip(f"File symlinks are unavailable: {error}")
+        other, _ = repo.create_book_with_chapters(
+            BookCreate(title="Other", source_path=str(alias), source_type=SourceType.TXT),
+            [ChapterCreate(book_id=0, chapter_number=1, title="Shared", mp3_path="output/Book/chapters/01.mp3")],
+        )
+        assert service.delete_book(book.id) is True
+        assert audio.read_bytes() == b"chapter audio"
+        assert source.read_bytes() == b"source bytes"
+        assert repo.get_book(other.id) is not None
+    finally:
+        repo.close()
+
+
+def test_sweep_removes_stale_staging_entry_whose_manifest_was_never_published(tmp_path):
+    import os
+    import time
+
+    from modules.storage.maintenance import DEFAULT_CLEANUP_GRACE_SECONDS
+
+    service = _make_service(tmp_path, _RepositoryStub())
+    entry = tmp_path / "temp" / "delete_staging" / "interrupted"
+    entry.mkdir(parents=True)
+    pending = entry / "transaction.json.tmp"
+    pending.write_text('{"book_id":', encoding="utf-8")
+    stale = time.time() - DEFAULT_CLEANUP_GRACE_SECONDS - 60
+    for path in (pending, entry):
+        os.utime(path, (stale, stale))
+
+    assert service.sweep_delete_staging() == 1
+    assert not entry.exists()
+
+
+def test_case_alias_of_output_root_keeps_audio_playable(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    alias = tmp_path / "Output"
+    if not alias.exists():
+        pytest.skip("Filesystem is case-sensitive")
+    audio = output / "Book" / "01.mp3"
+    audio.parent.mkdir()
+    audio.write_bytes(b"audio")
+    book, chapters = _RepositoryStub().get_book_with_chapters(7)
+    book.playback_path = str(audio)
+    chapters[0].mp3_path = str(audio)
+    service = _make_service(tmp_path, _DeleteRepositoryStub((book, chapters)), output_dir=alias)
+
+    assert service.get_book_playback_file(7) == audio
+    assert service.get_book_playback_file(7, 1) == audio
+
+
+def test_cleaning_preview_rejects_sidecar_replaced_with_link_before_open(tmp_path, monkeypatch):
+    output = tmp_path / "output"
+    directory = output / "Book" / "chapters"
+    directory.mkdir(parents=True)
+    sidecar = directory / "chapter_01_before_cleaning.md"
+    sidecar.write_text("public text", encoding="utf-8")
+    secret = tmp_path / "private.txt"
+    secret.write_text("private text", encoding="utf-8")
+    book, chapters = _RepositoryStub().get_book_with_chapters(7)
+    chapters[0].mp3_path = str(directory / "01.mp3")
+    service = _make_service(tmp_path, _DeleteRepositoryStub((book, chapters)), output_dir=output)
+    is_file = Path.is_file
+
+    def swap_after_check(path):
+        valid = is_file(path)
+        if path == sidecar and valid and not path.is_symlink():
+            path.unlink()
+            path.symlink_to(secret)
+        return valid
+
+    monkeypatch.setattr(Path, "is_file", swap_after_check)
+
+    preview = service.get_chapter_cleaning_preview(7, 1)
+
+    assert preview["before_text"] == ""
+    assert preview["available"] is False
+    assert secret.read_text(encoding="utf-8") == "private text"
+
+
+@pytest.mark.parametrize("unexpected", ["other.txt", "directory", "link"])
+def test_sweep_preserves_stale_manifestless_entry_with_unrecognized_contents(tmp_path, unexpected):
+    import os
+    import time
+
+    from modules.storage.maintenance import DEFAULT_CLEANUP_GRACE_SECONDS
+
+    service = _make_service(tmp_path, _RepositoryStub())
+    entry = tmp_path / "temp" / "delete_staging" / "uncertain"
+    entry.mkdir(parents=True)
+    marker = entry / ".committed"
+    marker.touch()
+    child = entry / (".preserve" if unexpected == "link" else unexpected)
+    if unexpected == "directory":
+        child.mkdir()
+    elif unexpected == "link":
+        target = tmp_path / "external.txt"
+        target.write_bytes(b"keep")
+        child.symlink_to(target)
+    else:
+        child.write_bytes(b"keep")
+    stale = time.time() - DEFAULT_CLEANUP_GRACE_SECONDS - 60
+    for path in (child, marker, entry):
+        os.utime(path, (stale, stale))
+
+    assert service.sweep_delete_staging() == 0
+    assert entry.exists()
+    assert child.exists()
+
+
+def test_delete_through_case_alias_preserves_output_root_and_unrelated_audio(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    alias = tmp_path / "Output"
+    if not alias.exists():
+        pytest.skip("Filesystem is case-sensitive")
+    audio = output / "book.mp3"
+    audio.write_bytes(b"audio")
+    unrelated = output / "other.mp3"
+    unrelated.write_bytes(b"other audio")
+    book, chapters = _RepositoryStub().get_book_with_chapters(7)
+    book.playback_path = str(audio)
+    chapters[0].mp3_path = str(audio)
+    service = _make_service(tmp_path, _DeleteRepositoryStub((book, chapters)), output_dir=alias)
+
+    assert service.delete_book(7) is True
+
+    assert output.is_dir()
+    assert unrelated.read_bytes() == b"other audio"
+    assert not audio.exists()

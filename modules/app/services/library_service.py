@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+
 import os
+import errno
 import json
 import logging
 import re
-import shutil
+import sqlite3
+import stat
 import subprocess
 import sys
+import threading
 import time
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -19,16 +23,33 @@ from uuid import uuid4
 from modules.contracts.limits import MAX_UPLOAD_BYTES
 from modules.contracts.source_extensions import SUPPORTED_SOURCE_SUFFIXES
 from modules.contracts.upload_errors import UploadTooLargeError
-from modules.errors import sanitize_filename
+from modules.errors import UnsupportedSourceTypeError, sanitize_filename
+from modules.ingestion.cover_art import CoverImage, extract_cover
+from modules.ingestion.filenames import source_filename
 from modules.ingestion.preflight import preflight_source as inspect_source
 from modules.pipeline.book_workspace import sanitize_book_title
+from modules.storage.deletion import (
+    DELETE_MANIFEST,
+    DELETE_PRESERVE_MARKER,
+    LOCAL_DELETE_STAGING,
+    UNOWNED_FOLDER_BOOK_ID,
+    delete_staging_policy,
+    finish_delete_transaction,
+    mark_delete_transaction_committed,
+    preserve_delete_transaction,
+    read_delete_transaction,
+    remove_staged_artifacts,
+    restore_staged_artifacts,
+    sync_directory,
+    write_delete_transaction,
+)
 from modules.storage.maintenance import (
+    _find_ondisk_playback_artifact,
     is_app_owned_durable_source,
     resolve_app_owned_sources_root,
     resolve_stored_path,
-    unique_destination_path,
 )
-from modules.storage.models import BookFilters, BookSummary, ConversionMode
+from modules.storage.models import BookFilters, BookSummary, ConversionMode, PlaybackStatus
 from modules.storage.repository import IBookRepository
 from modules.storage.permissions import ensure_owner_only_directory, owner_only
 
@@ -50,13 +71,53 @@ WEB_UPLOAD_TTL_SECONDS = 7 * 24 * 60 * 60
 # ``modules.contracts``.
 __all__ = ["MAX_UPLOAD_BYTES", "UploadTooLargeError", "LibraryService"]
 
+# Path.resolve() opens every component on Windows. A deletion's containment
+# analysis compares hundreds of chapter paths against the same few roots while
+# it holds the repository lock, so it resolves each path once per analysis.
+_resolution_memo = threading.local()
+
+
+@contextmanager
+def _memoized_path_resolution(seed: dict[Path, Path] | None = None):
+    if getattr(_resolution_memo, "paths", None) is not None:
+        yield
+        return
+    _resolution_memo.paths = seed if seed is not None else {}
+    try:
+        yield
+    finally:
+        _resolution_memo.paths = None
+
+
+def _resolve(path: Path) -> Path:
+    paths = getattr(_resolution_memo, "paths", None)
+    if paths is None:
+        return path.resolve()
+    resolved = paths.get(path)
+    if resolved is None:
+        resolved = paths[path] = path.resolve()
+        # Resolution is idempotent; callers often re-check resolved paths.
+        paths.setdefault(resolved, resolved)
+    return resolved
+
 
 def _default_folder_opener(folder: Path) -> None:
+    # The shell "open" verb launches files with their associated program (and
+    # runs executables), so it must only ever receive an existing directory.
+    if not os.path.isdir(folder):
+        raise RuntimeError(f"failed to open folder: {folder}")
     if os.name == "nt":
         # ``explorer.exe`` exits non-zero even when it opens the folder, so a
         # checked subprocess call would report failure on every success.
+        # Canonical filesystem paths can use a verbatim prefix that the shell
+        # cannot interpret. Change only the shell argument, not stored paths.
+        shell_path = str(folder)
+        if shell_path.startswith("\\\\?\\UNC\\"):
+            shell_path = "\\\\" + shell_path[8:]
+        elif shell_path.startswith("\\\\?\\") and shell_path[5:7] == ":\\":
+            shell_path = shell_path[4:]
         try:
-            os.startfile(str(folder))  # noqa: S606 - opening a local folder
+            os.startfile(shell_path)  # noqa: S606 - opening a local folder
         except OSError as exc:
             raise RuntimeError(f"failed to open folder: {folder}") from exc
         return
@@ -89,46 +150,132 @@ class LibraryService:
         folder_opener=None,
     ):
         self._repository = repository
-        self._output_dir = Path(output_dir).expanduser()
-        self._temp_dir = Path(temp_dir).expanduser()
+        self._output_dir = Path(output_dir).expanduser().resolve()
+        self._temp_dir = Path(temp_dir).expanduser().resolve()
         self._storage_root = (
-            Path(storage_root).expanduser()
+            Path(storage_root).expanduser().resolve()
             if storage_root is not None
             else self._output_dir.resolve().parent
         )
+        from modules.storage.managed_roots import claim_managed_roots
+
+        database = getattr(repository, "db_path", None)
+        if database is not None:
+            claim_managed_roots(database, self._output_dir, self._temp_dir)
         ensure_owner_only_directory(self._output_dir)
         ensure_owner_only_directory(self._temp_dir)
         self._folder_opener = folder_opener or _default_folder_opener
         self.sweep_delete_staging()
 
     def sweep_delete_staging(self) -> int:
+        self._verify_storage_ownership()
         from modules.storage.maintenance import (
-            DEFAULT_CLEANUP_GRACE_SECONDS, _delete_orphan_entry, _recency_filter,
+            AUDIO_ARTIFACT_SUFFIXES, DEFAULT_CLEANUP_GRACE_SECONDS, _recency_filter,
         )
 
         root = self._delete_staging_root()
-        if not root.is_dir() or root.is_symlink():
+        if not root.is_dir() or root.is_symlink() or root.is_junction():
             return 0
         removed = 0
         try:
-            stale = _recency_filter(root.iterdir(), time.time() - DEFAULT_CLEANUP_GRACE_SECONDS)
-            for raw in stale:
+            for entry in list(root.iterdir()):
+                if not (entry / DELETE_MANIFEST).exists():
+                    continue
+                references_checked = False
                 try:
-                    entry = Path(raw)
-                    marker = entry / DELETE_COMMIT_MARKER
-                    if entry.is_symlink() or entry.is_junction() or marker.is_symlink() or not marker.is_file():
+                    book_id, artifacts = read_delete_transaction(
+                        entry, allowed_roots=(self._output_dir, self._temp_dir, self._app_owned_sources_root()),
+                    )
+                    with self.library_snapshot():
+                        detail = self._repository.get_book_with_chapters(book_id)
+                        paths = self._other_book_artifact_paths(book_id)
+                        book_paths = set()
+                        if detail is not None:
+                            book, chapters = detail
+                            book_paths.update(
+                                path for raw in [book.source_path, book.playback_path, *(chapter.mp3_path for chapter in chapters)]
+                                if (path := self._resolve_stored_path(raw)) is not None
+                            )
+                            paths.update(book_paths)
+                        decision, referenced, protected = delete_staging_policy(
+                            entry, artifacts, paths, book_exists=detail is not None,
+                            book_has_paths=bool(book_paths),
+                            database_replaced=getattr(self._repository, "database_replaced", False),
+                        )
+                        references_checked = True
+                        if decision == "preserve":
+                            preserve_delete_transaction(entry)
+                            continue
+                        if decision == "restore":
+                            preserve_delete_transaction(entry)
+                            self._restore_staged_artifacts(referenced)
+                            if (entry / DELETE_COMMIT_MARKER).is_file():
+                                self._make_delete_durable(entry)
+                                self._commit_staged_artifacts([
+                                    artifact for artifact in artifacts
+                                    if artifact not in referenced and artifact not in protected
+                                ])
+                            if any(staged.exists() for _, staged in artifacts):
+                                continue
+                        else:
+                            self._make_delete_durable(entry)
+                            self._commit_staged_artifacts(artifacts)
+                        removed += int(finish_delete_transaction(entry, artifacts))
+                except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error):
+                    logger.warning("Failed to reconcile deletion transaction: %s", entry, exc_info=True)
+                    try:
+                        preserve = entry / DELETE_PRESERVE_MARKER
+                        if (
+                            not references_checked and entry.is_dir() and not entry.is_symlink() and not entry.is_junction()
+                            and not preserve.is_symlink() and not preserve.is_junction()
+                        ):
+                            preserve_delete_transaction(entry)
+                    except OSError:
+                        logger.warning("Failed to preserve deletion transaction: %s", entry, exc_info=True)
+            cutoff = time.time() - DEFAULT_CLEANUP_GRACE_SECONDS
+            for entry in root.iterdir():
+                try:
+                    if entry.is_symlink() or entry.is_junction() or not entry.is_dir():
                         continue
-                    removed += int(_delete_orphan_entry(entry, root, expect_dir=True))
-                except OSError:
-                    logger.debug("Failed to sweep deletion staging: %s", raw, exc_info=True)
+                    if (entry / DELETE_MANIFEST).exists() or not _recency_filter([entry], cutoff):
+                        continue
+                    with self.library_snapshot():
+                        paths = self._other_book_artifact_paths(0)
+                        decision, _, _ = delete_staging_policy(
+                            entry, None, paths, audio_suffixes=AUDIO_ARTIFACT_SUFFIXES,
+                        )
+                        if decision != "remove":
+                            continue
+                        for child in entry.iterdir():
+                            child.unlink()
+                        entry.rmdir()
+                        sync_directory(root)
+                        removed += 1
+                except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error):
+                    logger.debug("Failed to sweep deletion staging: %s", entry, exc_info=True)
         except OSError:
             logger.debug("Failed to list deletion staging", exc_info=True)
         return removed
+
+    def _verify_storage_ownership(self) -> None:
+        from modules.storage.managed_roots import claim_managed_roots
+
+        database = getattr(self._repository, "db_path", None)
+        if database is not None:
+            claim_managed_roots(database, self._output_dir, self._temp_dir, self._app_owned_sources_root())
 
     def _workspace_root(self) -> Path:
         return self._storage_root.resolve()
 
     def _resolve_stored_path(self, raw_path: Optional[str]) -> Optional[Path]:
+        if not raw_path:
+            return None
+        # Absolute stored paths do not depend on the workspace. Preserve their
+        # lexical form here; callers retain their existing canonicalization and
+        # ownership checks before accessing or deleting artifacts.
+        path = Path(raw_path).expanduser()
+        if path.is_absolute():
+            return path
         return resolve_stored_path(
             raw_path,
             self._workspace_root(),
@@ -209,9 +356,9 @@ class LibraryService:
 
     @staticmethod
     def _safe_markdown_filename(title: str) -> str:
-        safe_title = sanitize_filename(title).strip()
-        safe_stem = Path(safe_title).stem or "pasted_document"
-        return f"{safe_stem}.md"
+        # A title is not a file name: "Mr. Smith" has no extension to strip.
+        safe_stem = sanitize_filename(title).strip() or "pasted_document"
+        return source_filename(f"{safe_stem}.md")
 
     @staticmethod
     def _normalize_pasted_markdown(text: str, title: str) -> str:
@@ -266,9 +413,7 @@ class LibraryService:
 
         suffix = Path(original_name).suffix.lower()
         if suffix not in SUPPORTED_UPLOAD_SUFFIXES:
-            raise ValueError(
-                "Unsupported source type. Upload .pdf, .epub, .txt, or .md"
-            )
+            raise UnsupportedSourceTypeError()
 
         destination_root = self._upload_root()
         ensure_owner_only_directory(destination_root)
@@ -291,6 +436,7 @@ class LibraryService:
             "original_name": original_name,
             "size_bytes": size_bytes,
             "preflight": preflight,
+            "existing_books": self.find_existing_books(stored_path, (preflight or {}).get("title")),
         }
 
     def upload_text_source(
@@ -316,7 +462,9 @@ class LibraryService:
         destination_root = self._upload_root()
         ensure_owner_only_directory(destination_root)
         original_name = self._safe_markdown_filename(normalized_title)
-        stored_name = f"{int(datetime.now().timestamp())}_{uuid4().hex[:8]}_{original_name}"
+        stored_name = source_filename(
+            original_name, prefix=f"{int(datetime.now().timestamp())}_{uuid4().hex[:8]}_",
+        )
         stored_path = destination_root / stored_name
         stored_path.write_bytes(source_bytes)
         owner_only(stored_path)
@@ -327,11 +475,19 @@ class LibraryService:
             "original_name": original_name,
             "size_bytes": size_bytes,
             "preflight": preflight,
+            "existing_books": self.find_existing_books(stored_path, normalized_title),
         }
 
     @staticmethod
     def preflight_source(source_path: Path | str) -> dict:
         return inspect_source(source_path)
+
+    def get_book_cover(self, book_id: int) -> CoverImage | None:
+        with self.library_snapshot():
+            book = self._repository.get_book(book_id)
+            if book is None:
+                raise FileNotFoundError("Book not found")
+            return extract_cover(self._resolve_stored_path(book.source_path))
 
     def get_book_playback_file(self, book_id: int, chapter_number: int | None = None) -> Optional[Path]:
         detail = self._get_book_record(book_id)
@@ -358,19 +514,65 @@ class LibraryService:
         source_path = self._resolve_stored_path(raw_path)
         return bool(source_path and source_path.exists())
 
+    def _audio_file_available(self, raw_path: Optional[str]) -> bool:
+        path = self._resolve_stored_path(raw_path)
+        return bool(path is not None and path.is_file() and self._is_within_output_root(path))
+
+    def _published_recovery_chapters(self, raw_source_path: Optional[str]) -> int:
+        """Count chapter files an interrupted conversion already published.
+
+        Each atomically published chapter is a recovery checkpoint even before
+        SQLite records it, so the library reports it as ready.
+        """
+        from modules.contracts.recovery_inventory import recovery_audio_paths
+
+        source = self._resolve_stored_path(raw_source_path)
+        if source is None:
+            return 0
+        return sum(
+            1 for path in recovery_audio_paths(source).values()
+            if path.is_file() and self._is_within_output_root(path)
+        )
+
+    def _ready_chapter_count(self, recorded: int, total: int, raw_source_path: Optional[str]) -> int:
+        if total and recorded < total:
+            return min(total, max(recorded, self._published_recovery_chapters(raw_source_path)))
+        return recorded
+
     @staticmethod
     def _is_within_root(path: Path, root: Path) -> bool:
+        resolved = _resolve(path)
+        resolved_root = _resolve(root)
+        folded_path = str(resolved).casefold()
+        folded_root = str(resolved_root).casefold()
+        # Containment implies a case-folded string prefix. Rejecting on the
+        # string first avoids pathlib's per-part comparison, which dominates
+        # when a deletion checks every library path against its directories.
+        if folded_path != folded_root and not folded_path.startswith(folded_root.rstrip(os.sep) + os.sep):
+            return False
         try:
-            path.resolve().relative_to(root.resolve())
+            resolved.relative_to(resolved_root)
             return True
         except ValueError:
+            if resolved.exists() and resolved_root.exists():
+                for parent in (resolved, *resolved.parents):
+                    try:
+                        if os.path.samefile(parent, resolved_root):
+                            return True
+                    except OSError:
+                        continue
             return False
 
     def _is_within_output_root(self, path: Path) -> bool:
         return self._is_within_root(path, self._output_dir)
 
     def _is_output_root(self, path: Path) -> bool:
-        return path.resolve() == self._output_dir.resolve()
+        if _resolve(path) == _resolve(self._output_dir):
+            return True
+        try:
+            return os.path.samefile(path, self._output_dir)
+        except OSError:
+            return False
 
     def _is_managed_source_path(self, path: Path) -> bool:
         return self._is_within_root(
@@ -398,6 +600,15 @@ class LibraryService:
         *,
         exclude_book_id: int | None = None,
     ) -> bool:
+        source_paths = getattr(self._repository, "list_source_paths", None)
+        if callable(source_paths):
+            target = source_path.resolve()
+            return any(
+                path.resolve() == target
+                for raw in source_paths(exclude_book_id)
+                if (path := self._resolve_stored_path(raw)) is not None
+            )
+
         list_books = getattr(self._repository, "list_books", None)
         if list_books is None:
             return False
@@ -422,69 +633,90 @@ class LibraryService:
                 return False
             offset += page_size
 
-    def _is_source_referenced_by_other_books(
-        self,
-        source_path: Path,
-        *,
-        exclude_book_id: int,
-    ) -> bool:
-        return self._is_source_referenced_by_books(
-            source_path,
-            exclude_book_id=exclude_book_id,
-        )
-
-    def _should_delete_managed_source(self, source_path: Path, *, exclude_book_id: int) -> bool:
-        if not self._is_managed_deletable_source_path(source_path):
-            return False
-        return not self._is_source_referenced_by_other_books(
-            source_path,
-            exclude_book_id=exclude_book_id,
-        )
-
     def _delete_staging_root(self) -> Path:
         return self._temp_dir / DELETE_STAGING_DIR_NAME
 
-    def _stage_artifact_for_deletion(self, path: Path, staging_root: Path) -> Path:
+    def _other_book_artifact_paths(self, book_id: int) -> set[Path]:
+        artifact_paths = getattr(self._repository, "list_artifact_paths", None)
+        if callable(artifact_paths):
+            return {
+                _resolve(path)
+                for raw in artifact_paths(book_id)
+                if (path := self._resolve_stored_path(raw)) is not None
+            }
+
+        list_books = getattr(self._repository, "list_books", None)
+        if list_books is None:
+            return set()
+        paths: set[Path] = set()
+        offset = 0
+        while True:
+            books = list_books(BookFilters(limit=1000, offset=offset))
+            for summary in books:
+                if summary.id == book_id:
+                    continue
+                detail = self._repository.get_book_with_chapters(summary.id)
+                if detail is None:
+                    continue
+                book, chapters = detail
+                raw_paths = [book.source_path, book.playback_path, *(chapter.mp3_path for chapter in chapters)]
+                for raw in raw_paths:
+                    path = self._resolve_stored_path(raw)
+                    if path is not None:
+                        paths.add(path.resolve())
+            if len(books) < 1000:
+                return paths
+            offset += 1000
+
+    def _stage_artifact_for_deletion(self, path: Path, destination: Path) -> Path:
         if not path.exists():
             return path
 
-        destination = unique_destination_path(staging_root / path.name)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(path), str(destination))
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            for directory in (destination.parent, destination.parent.parent, path.parent):
+                sync_directory(directory)
+            os.replace(path, destination)
+            sync_directory(path.parent)
+            sync_directory(destination.parent)
+        except OSError as exc:
+            if exc.errno == errno.EXDEV:
+                raise RuntimeError("Cannot stage audiobook files across filesystem boundaries.") from exc
+            if getattr(exc, "winerror", None) == 5 and path.is_dir() and not path.is_junction():
+                # Windows refuses to move a folder holding an open file with
+                # ERROR_ACCESS_DENIED rather than a sharing violation.
+                raise RuntimeError(
+                    "Some files are in use or protected. Stop playback and try again."
+                ) from exc
+            if exc.errno in {errno.EACCES, errno.EPERM} and getattr(exc, "winerror", None) not in {32, 33}:
+                raise RuntimeError("Cannot delete audiobook files: permission denied.") from exc
+            if exc.errno not in {None, errno.EBUSY, errno.ETXTBSY, errno.EACCES, errno.EPERM}:
+                raise RuntimeError(f"Cannot stage audiobook files: {exc.strerror or exc}.") from exc
+            raise RuntimeError("Some files are in use. Stop playback and try again.") from exc
         return destination
 
     def _restore_staged_artifacts(self, staged: list[tuple[Path, Path]]) -> None:
-        for original, staged_path in reversed(staged):
-            if not staged_path.exists():
-                continue
-            original.parent.mkdir(parents=True, exist_ok=True)
-            if original.exists():
-                logger.warning(
-                    "Skipping staged restore because destination already exists: %s",
-                    original,
-                )
-                continue
+        restore_staged_artifacts(staged)
+
+    def _make_delete_durable(self, entry: Path) -> None:
+        connection = getattr(self._repository, "_connection", None)
+        if connection is not None:
             try:
-                shutil.move(str(staged_path), str(original))
-            except OSError:
-                logger.warning(
-                    "Failed to restore staged artifact from %s to %s",
-                    staged_path,
-                    original,
-                    exc_info=True,
-                )
+                with connection() as conn:
+                    # FULL checkpoints sync WAL and database even under NORMAL:
+                    # https://www.sqlite.org/pragma.html#pragma_wal_checkpoint
+                    result = conn.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+                    if result[0] or result[1] < 0 or result[1] != result[2]:
+                        raise RuntimeError("Cannot make book deletion durable: checkpoint incomplete")
+            except sqlite3.Error as exc:
+                raise RuntimeError("Cannot make book deletion durable") from exc
+        mark_delete_transaction_committed(entry)
 
     def _commit_staged_artifacts(self, staged: list[tuple[Path, Path]]) -> None:
-        for _original, staged_path in staged:
-            if not staged_path.exists():
-                continue
-            try:
-                if staged_path.is_dir():
-                    shutil.rmtree(staged_path)
-                else:
-                    staged_path.unlink(missing_ok=True)
-            except OSError as exc:
-                raise RuntimeError(f"failed to delete staged audiobook artifact: {staged_path}") from exc
+        try:
+            remove_staged_artifacts(staged)
+        except OSError as exc:
+            raise RuntimeError("failed to delete staged audiobook artifacts") from exc
 
     def _recovery_output_dir(self, book) -> Optional[Path]:
         from modules.pipeline.recovery import recovery_audio_paths
@@ -587,8 +819,49 @@ class LibraryService:
                     break
                 current = current.parent
 
+    def book_cleanup_paths(self, book_id: int) -> list[tuple[Path, bool]]:
+        """Potential deletion files and directory trees for admission fencing."""
+        with self.library_snapshot():
+            detail = self._get_book_record(book_id)
+            if detail is None:
+                return []
+            book, chapters = detail
+            directories, files = self._output_artifacts_for_deletion(book, chapters)
+            source = self._resolve_stored_path(book.source_path)
+            if source is not None and self._is_managed_deletable_source_path(source):
+                files.add(source)
+            return [(path, True) for path in directories] + [(path, False) for path in files]
+
     def _get_book_record(self, book_id: int):
-        return self._repository.get_book_with_chapters(book_id)
+        detail = self._repository.get_book_with_chapters(book_id)
+        if detail is None:
+            return None
+        book, chapters = detail
+        if not book.playback_path:
+            artifact = _find_ondisk_playback_artifact(
+                title=None,
+                playback_raw=None,
+                chapter_raw_paths=[chapter.mp3_path for chapter in chapters],
+                workspace_root=self._workspace_root(),
+                output_root=self._output_dir,
+                temp_root=self._temp_dir,
+                allow_title_fallback=False,
+            )
+            if artifact is not None:
+                book.playback_path = str(artifact[0])
+                book.playback_status = PlaybackStatus(artifact[1])
+            else:
+                for chapter in chapters:
+                    path = self._resolve_stored_path(chapter.mp3_path)
+                    if path is not None and self._is_within_output_root(path) and path.is_file():
+                        book.playback_path = str(path)
+                        book.playback_status = PlaybackStatus.CHAPTER_AUDIO
+                        break
+        return book, chapters
+
+    def library_snapshot(self, expected_epoch: str | None = None, *, mutation: bool = False):
+        snapshot = getattr(self._repository, "library_snapshot", None)
+        return snapshot(expected_epoch, mutation=mutation) if callable(snapshot) else nullcontext({})
 
     def get_library_books(
         self,
@@ -615,43 +888,139 @@ class LibraryService:
         books = self._repository.list_books(filters)
         for book in books:
             book.source_available = self._source_path_exists(book.source_path)
+            book.completed_chapters = self._ready_chapter_count(
+                book.completed_chapters or 0, book.total_chapters or 0, book.source_path,
+            )
+            # Restored or moved rows can outlive their audio; say so instead of
+            # listing a book that cannot play.
+            book.audio_available = (
+                self._audio_file_available(book.playback_path)
+                if getattr(book, "playback_path", None) else bool(book.completed_chapters)
+            )
         return books
 
     def get_library_count(self) -> int:
         return self._repository.count_books()
 
-    def get_book(self, book_id: int) -> Optional[dict]:
-        detail = self._get_book_record(book_id)
-        if detail is None:
-            return None
+    def find_existing_books(self, source_path: Path | str, title: str | None = None) -> list[dict]:
+        """Books already made from the same file contents or with the same title.
 
-        book, chapters = detail
-        return {
-            "id": book.id,
-            "title": book.title,
-            "author": book.author,
-            "source_path": book.source_path,
-            "source_type": book.source_type.value,
-            "conversion_mode": book.conversion_mode.value,
-            "total_chapters": book.total_chapters,
-            "playback_path": book.playback_path,
-            "playback_status": book.playback_status.value,
-            "playback_position_sec": book.playback_position_sec,
-            "tags": getattr(book, "tags", "") or "",
-            "favorite": bool(getattr(book, "favorite", False)),
-            "source_available": self._source_path_exists(book.source_path),
-            "created_at": book.created_at,
-            "chapters": [
-                {
-                    "id": chapter.id,
-                    "number": chapter.chapter_number,
-                    "title": chapter.title,
-                    "duration_ms": chapter.duration_ms,
-                    "mp3_path": chapter.mp3_path,
-                }
-                for chapter in chapters
-            ],
-        }
+        Converting again (for example with other settings) stays allowed; this
+        only gives the UI the facts to say so. Contents are compared by size
+        first, so a file is hashed only when another source has its exact size.
+        """
+        import hashlib
+
+        if not callable(getattr(self._repository, "list_books", None)):
+            return []
+        candidate = Path(source_path)
+        try:
+            candidate_size = candidate.stat().st_size
+        except OSError:
+            candidate_size = None
+        candidate_digest: str | None = None
+        wanted_title = (title or "").strip().casefold()
+
+        def digest(path: Path) -> str | None:
+            try:
+                with path.open("rb") as stream:
+                    return hashlib.file_digest(stream, "sha256").hexdigest()
+            except OSError:
+                return None
+
+        matches: list[dict] = []
+        offset = 0
+        while True:
+            page = self._repository.list_books(BookFilters(limit=1000, offset=offset))
+            for book in page:
+                match = None
+                stored = self._resolve_stored_path(book.source_path)
+                if stored is not None and candidate_size is not None:
+                    try:
+                        same_size = stored.is_file() and stored.stat().st_size == candidate_size
+                    except OSError:
+                        same_size = False
+                    if same_size:
+                        if candidate_digest is None:
+                            candidate_digest = digest(candidate) or ""
+                        if candidate_digest and digest(stored) == candidate_digest:
+                            match = "same_file"
+                if match is None and wanted_title and (book.title or "").strip().casefold() == wanted_title:
+                    match = "same_title"
+                if match is not None:
+                    matches.append({"id": book.id, "title": book.title, "match": match})
+            if len(page) < 1000:
+                return matches
+            offset += 1000
+
+    def books_with_missing_files(self) -> dict:
+        """List rows whose audio or source file is gone; nothing is changed."""
+        missing_audio: list[dict] = []
+        missing_source: list[dict] = []
+        books = 0
+        with self.library_snapshot():
+            offset = 0
+            while True:
+                page = self._repository.list_books(BookFilters(limit=1000, offset=offset))
+                for summary in page:
+                    detail = self._get_book_record(summary.id)
+                    if detail is None:
+                        continue
+                    books += 1
+                    book, _chapters = detail
+                    entry = {"id": book.id, "title": book.title}
+                    if not self._audio_file_available(book.playback_path):
+                        missing_audio.append(entry)
+                    if not self._source_path_exists(book.source_path):
+                        missing_source.append(entry)
+                if len(page) < 1000:
+                    break
+                offset += 1000
+        return {"books": books, "missing_audio": missing_audio, "missing_source": missing_source}
+
+    def get_book(self, book_id: int) -> Optional[dict]:
+        with self.library_snapshot() as identity:
+            detail = self._get_book_record(book_id)
+            if detail is None:
+                return None
+
+            book, chapters = detail
+            return {
+                **identity,
+                "id": book.id,
+                "title": book.title,
+                "author": book.author,
+                "source_path": book.source_path,
+                "source_type": book.source_type.value,
+                "conversion_mode": book.conversion_mode.value,
+                "total_chapters": book.total_chapters,
+                "playback_path": book.playback_path,
+                "playback_status": book.playback_status.value,
+                "playback_position_sec": book.playback_position_sec,
+                "tags": getattr(book, "tags", "") or "",
+                "favorite": bool(getattr(book, "favorite", False)),
+                "source_available": self._source_path_exists(book.source_path),
+                "audio_available": self._audio_file_available(book.playback_path),
+                # Same rule as the library list: a packaged book is complete.
+                "completed_chapters": self._ready_chapter_count(
+                    (book.total_chapters or 0)
+                    if book.playback_status == PlaybackStatus.PACKAGED and book.playback_path
+                    else sum(1 for chapter in chapters if chapter.mp3_path),
+                    book.total_chapters or 0, book.source_path,
+                ),
+                "created_at": book.created_at,
+                "chapters": [
+                    {
+                        "id": chapter.id,
+                        "number": chapter.chapter_number,
+                        "title": chapter.title,
+                        "duration_ms": chapter.duration_ms,
+                        "mp3_path": chapter.mp3_path,
+                        "packaged_start_ms": chapter.packaged_start_ms,
+                    }
+                    for chapter in chapters
+                ],
+            }
 
     def update_book_metadata(
         self,
@@ -661,52 +1030,74 @@ class LibraryService:
         author: Optional[str] = None,
         tags: Optional[str] = None,
         favorite: Optional[bool] = None,
+        expected_epoch: str | None = None,
     ) -> Optional[dict]:
-        updates = {}
-        if title is not None:
-            normalized_title = title.strip()
-            if normalized_title:
-                updates["title"] = normalized_title
-        if author is not None:
-            updates["author"] = author.strip() or None
-        if tags is not None:
-            updates["tags"] = tags.strip()
-        if favorite is not None:
-            updates["favorite"] = bool(favorite)
+        with self.library_snapshot(expected_epoch, mutation=True) as identity:
+            updates = {}
+            if title is not None:
+                normalized_title = title.strip()
+                if normalized_title:
+                    updates["title"] = normalized_title
+            if author is not None:
+                updates["author"] = author.strip() or None
+            if tags is not None:
+                updates["tags"] = tags.strip()
+            if favorite is not None:
+                updates["favorite"] = bool(favorite)
 
-        updated = self._repository.update_book(book_id, **updates)
-        if updated is None:
-            return None
-        return {
-            "id": updated.id,
-            "title": updated.title,
-            "author": updated.author,
-            "source_path": updated.source_path,
-            "source_type": updated.source_type.value,
-            "conversion_mode": updated.conversion_mode.value,
-            "total_chapters": updated.total_chapters,
-            "playback_path": updated.playback_path,
-            "playback_status": updated.playback_status.value,
-            "playback_position_sec": updated.playback_position_sec,
-            "tags": getattr(updated, "tags", "") or "",
-            "favorite": bool(getattr(updated, "favorite", False)),
-            "source_available": self._source_path_exists(updated.source_path),
-            "created_at": updated.created_at,
-            "chapters": [],
-        }
+            updated = self._repository.update_book(book_id, **updates)
+            if updated is None:
+                return None
+            return {
+                **identity,
+                "id": updated.id,
+                "title": updated.title,
+                "author": updated.author,
+                "source_path": updated.source_path,
+                "source_type": updated.source_type.value,
+                "conversion_mode": updated.conversion_mode.value,
+                "total_chapters": updated.total_chapters,
+                "playback_path": updated.playback_path,
+                "playback_status": updated.playback_status.value,
+                "playback_position_sec": updated.playback_position_sec,
+                "tags": getattr(updated, "tags", "") or "",
+                "favorite": bool(getattr(updated, "favorite", False)),
+                "source_available": self._source_path_exists(updated.source_path),
+                "created_at": updated.created_at,
+                "chapters": [],
+            }
 
-    @staticmethod
-    def _read_text_if_exists(path: Path) -> str:
-        if not path.exists() or not path.is_file():
+    def _read_text_if_exists(self, path: Path) -> str:
+        try:
+            parent = path.parent.resolve(strict=True)
+            if path.is_symlink() or not self._is_within_output_root(parent) or not self._is_within_output_root(path):
+                return ""
+            validated = os.lstat(parent / path.name)
+            if (
+                not stat.S_ISREG(validated.st_mode)
+                or getattr(validated, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                or not path.is_file()
+            ):
+                return ""
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0)
+            descriptor = os.open(parent / path.name, flags)
+            with os.fdopen(descriptor, "r", encoding="utf-8", errors="replace") as stream:
+                opened = os.fstat(stream.fileno())
+                current = os.lstat(parent / path.name)
+                if (
+                    not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode)
+                    or getattr(current, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                    or (opened.st_dev, opened.st_ino) != (validated.st_dev, validated.st_ino)
+                    or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+                ):
+                    return ""
+                return stream.read()
+        except (OSError, RuntimeError):
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")
 
-    @staticmethod
-    def _read_trace_rows(path: Path) -> list[dict]:
-        if not path.exists() or not path.is_file():
-            return []
+    def _read_trace_rows(self, path: Path) -> list[dict]:
         rows = []
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in self._read_text_if_exists(path).splitlines():
             line = line.strip()
             if not line:
                 continue
@@ -766,83 +1157,207 @@ class LibraryService:
             "trace_rows": trace_rows,
         }
 
-    def update_book_playback_position(self, book_id: int, position_sec: float) -> Optional[float]:
-        updated_book = self._repository.update_book_playback_position(book_id, position_sec)
-        if updated_book is None:
-            return None
-        return updated_book.playback_position_sec
+    def update_book_playback_position(self, book_id: int, position_sec: float, expected_epoch: str | None = None) -> Optional[float]:
+        with self.library_snapshot(expected_epoch, mutation=True):
+            updated_book = self._repository.update_book_playback_position(book_id, position_sec)
+            if updated_book is None:
+                return None
+            return updated_book.playback_position_sec
 
-    def delete_book(self, book_id: int) -> bool | dict:
-        detail = self._get_book_record(book_id)
-        if detail is None:
-            return False
+    def _prefetch_artifact_resolutions(self, book_id: int) -> dict[Path, Path]:
+        """Resolve the paths a deletion will compare before the repository lock.
 
-        book, chapters = detail
-        staging_root = self._delete_staging_root() / uuid4().hex
-        staging_root.mkdir(parents=True, exist_ok=True)
-        staged_artifacts: list[tuple[Path, Path]] = []
-        staged_output_files: set[Path] = set()
-        db_deleted = False
-
+        That is one filesystem round trip per stored path, which dominates a
+        deletion of a long book or in a large library. The deletion re-reads the
+        records under the lock and resolves only paths added meanwhile; the
+        book's own record cannot change while its deletion is reserved.
+        """
+        resolutions: dict[Path, Path] = {}
         try:
-            output_dirs, output_files = self._output_artifacts_for_deletion(book, chapters)
+            with _memoized_path_resolution(resolutions):
+                artifact_paths = getattr(self._repository, "list_artifact_paths", None)
+                if callable(artifact_paths):
+                    self._other_book_artifact_paths(book_id)
+                detail = self._get_book_record(book_id)
+                if detail is not None:
+                    output_dirs, output_files = self._output_artifacts_for_deletion(*detail)
+                    for path in (*output_dirs, *output_files):
+                        _resolve(path)
+        except OSError:
+            # Only a cache: the locked analysis resolves whatever is missing.
+            pass
+        return resolutions
 
-            for output_dir in sorted(output_dirs, key=lambda path: len(path.parts), reverse=True):
-                if self._is_output_root(output_dir):
-                    continue
-                if output_dir.exists():
-                    staged_path = self._stage_artifact_for_deletion(output_dir, staging_root)
-                    staged_artifacts.append((output_dir, staged_path))
+    def remove_unowned_output_folder(self, folder: Path) -> None:
+        """Remove an output folder no book owns, through a staged deletion.
 
-            for output_file in sorted(output_files):
-                if any(self._is_within_root(output_file, output_dir) for output_dir in output_dirs):
-                    continue
-                if output_file.exists():
-                    staged_path = self._stage_artifact_for_deletion(output_file, staging_root)
-                    staged_artifacts.append((output_file, staged_path))
-                    staged_output_files.add(output_file)
+        The caller holds the storage-cleanup reservation, so no conversion,
+        restore or book deletion runs meanwhile. The folder must be a direct,
+        real child of the output root that no library path points into.
+        """
+        if (folder.is_symlink() or folder.is_junction() or not folder.is_dir()
+                or _resolve(folder).parent != _resolve(self._output_dir)):
+            raise ValueError("Only a folder directly inside the output folder can be removed.")
+        staging_root = self._delete_staging_root() / uuid4().hex
+        original = _resolve(folder)
+        staged = [(original, original.parent / LOCAL_DELETE_STAGING / staging_root.name / f"0-{original.name}")]
+        with self.library_snapshot(mutation=True):
+            if any(self._is_within_root(path, original) for path in self._other_book_artifact_paths(UNOWNED_FOLDER_BOOK_ID)):
+                raise RuntimeError("A library book uses this folder; delete the book instead.")
+            staging_root.mkdir(parents=True, exist_ok=True)
+            try:
+                write_delete_transaction(staging_root, UNOWNED_FOLDER_BOOK_ID, staged)
+                self._stage_artifact_for_deletion(*staged[0])
+                self._make_delete_durable(staging_root)
+            except Exception:
+                self._restore_staged_artifacts(staged)
+                try:
+                    finish_delete_transaction(staging_root, staged)
+                except OSError:
+                    pass
+                raise
+        try:
+            self._commit_staged_artifacts(staged)
+            finish_delete_transaction(staging_root, staged)
+        except Exception:
+            self._deletion_files_pending(UNOWNED_FOLDER_BOOK_ID, staging_root)
+            raise
 
-            source_path = self._resolve_stored_path(book.source_path)
-            if source_path is not None and self._should_delete_managed_source(
-                source_path,
-                exclude_book_id=book_id,
+    def _plan_book_deletion(
+        self, book_id: int, book, chapters, staging_root: Path,
+    ) -> tuple[list[tuple[Path, Path]], set[Path]]:
+        """Choose the artifacts a deletion stages, and where each one goes."""
+        staged_output_files: set[Path] = set()
+        output_dirs, output_files = self._output_artifacts_for_deletion(book, chapters)
+        other_paths = self._other_book_artifact_paths(book_id)
+        shared_dirs = {
+            directory for directory in output_dirs
+            if any(self._is_within_root(path, directory) for path in other_paths)
+        }
+        output_dirs -= shared_dirs
+        own_paths = {
+            _resolve(path) for raw in [book.playback_path, *(chapter.mp3_path for chapter in chapters)]
+            if (path := self._resolve_stored_path(raw)) is not None
+        }
+        artifacts: list[Path] = []
+        for output_dir in sorted(output_dirs, key=lambda path: len(path.parts)):
+            if output_dir.exists() and not any(self._is_within_root(output_dir, parent) for parent in artifacts):
+                artifacts.append(output_dir)
+
+        for output_file in sorted(output_files):
+            if any(self._is_within_root(output_file, output_dir) for output_dir in output_dirs):
+                continue
+            if _resolve(output_file) in other_paths:
+                continue
+            if _resolve(output_file) not in own_paths and any(self._is_within_root(output_file, directory) for directory in shared_dirs):
+                continue
+            if output_file.exists():
+                artifacts.append(output_file)
+                staged_output_files.add(output_file)
+
+        source_path = self._resolve_stored_path(book.source_path)
+        # other_paths already includes every remaining source as well
+        # as audio references; scanning the library again adds no
+        # protection while this deletion holds its library snapshot.
+        if source_path is not None and self._is_managed_deletable_source_path(source_path):
+            if source_path.exists() and _resolve(source_path) not in other_paths and not any(
+                self._is_within_root(source_path, artifact) for artifact in artifacts
             ):
-                if source_path.exists():
-                    staged_path = self._stage_artifact_for_deletion(source_path, staging_root)
-                    staged_artifacts.append((source_path, staged_path))
+                artifacts.append(source_path)
 
-            deleted = self._repository.delete_book(book_id)
-            if not deleted:
-                self._restore_staged_artifacts(staged_artifacts)
+        staged_artifacts = [
+            (_resolve(path), _resolve(path).parent / LOCAL_DELETE_STAGING / staging_root.name / f"{index}-{path.name}")
+            for index, path in enumerate(artifacts)
+        ]
+        return staged_artifacts, staged_output_files
+
+    def delete_book(self, book_id: int, expected_epoch: str | None = None) -> bool | dict:
+        """Delete a book row and its owned files through a staged transaction.
+
+        Callers hold the book's JobCoordinator reservation (see
+        ``AppController.delete_book_with_identity``): it excludes restore,
+        storage cleanup, a repair of this book, and conversions of its files
+        while the staged files are removed after the repository lock is released.
+        """
+        resolutions = self._prefetch_artifact_resolutions(book_id)
+        with self.library_snapshot(expected_epoch, mutation=True):
+            self._verify_storage_ownership()
+            detail = self._get_book_record(book_id)
+            if detail is None:
                 return False
 
-            db_deleted = True
+            book, chapters = detail
+            staging_root = self._delete_staging_root() / uuid4().hex
+            staging_root.mkdir(parents=True, exist_ok=True)
+            staged_artifacts: list[tuple[Path, Path]] = []
+            staged_output_files: set[Path] = set()
+            db_deleted = False
+            committed = False
+
             try:
-                # Unmarked transactions may contain the only copy after a failed rollback.
-                (staging_root / DELETE_COMMIT_MARKER).touch()
-                self._commit_staged_artifacts(staged_artifacts)
-                (staging_root / DELETE_COMMIT_MARKER).unlink()
+                # Nothing is moved until the analysis ends, so each path
+                # resolves once.
+                with _memoized_path_resolution(resolutions):
+                    staged_artifacts, staged_output_files = self._plan_book_deletion(
+                        book_id, book, chapters, staging_root,
+                    )
+                write_delete_transaction(staging_root, book_id, staged_artifacts)
+                for original, destination in staged_artifacts:
+                    self._stage_artifact_for_deletion(original, destination)
+
+                deleted = self._repository.delete_book(book_id)
+                if not deleted:
+                    self._restore_staged_artifacts(staged_artifacts)
+                    return False
+
+                db_deleted = True
+                try:
+                    # Unmarked transactions may contain the only copy after a failed rollback.
+                    self._make_delete_durable(staging_root)
+                except Exception:
+                    return self._deletion_files_pending(book_id, staging_root)
+                committed = True
             except Exception:
-                # The library removal succeeded; report files left for maintenance.
-                logger.exception(
-                    "Failed to permanently remove staged artifacts after deleting book %s; "
-                    "leaving trash under %s for maintenance",
-                    book_id,
-                    staging_root,
-                )
-                return {"deleted": True, "files_pending": True, "path": staging_root.name}
+                if not db_deleted:
+                    self._restore_staged_artifacts(staged_artifacts)
+                raise
+            finally:
+                try:
+                    if not committed and staging_root.exists():
+                        finish_delete_transaction(staging_root, staged_artifacts)
+                except OSError:
+                    pass
+
+        # The row is gone and the transaction is marked committed, so removing
+        # the staged files no longer needs the repository lock: other library
+        # reads and writes proceed meanwhile. Callers hold the book's
+        # JobCoordinator reservation, which keeps restore and storage cleanup
+        # (the other staging owners) out until this finishes.
+        try:
+            try:
+                self._commit_staged_artifacts(staged_artifacts)
+                finish_delete_transaction(staging_root, staged_artifacts)
+            except Exception:
+                return self._deletion_files_pending(book_id, staging_root)
             self._prune_empty_output_dirs(staged_output_files)
             return True
-        except Exception:
-            if not db_deleted:
-                self._restore_staged_artifacts(staged_artifacts)
-            raise
         finally:
             try:
-                if staging_root.exists() and not any(staging_root.iterdir()):
-                    staging_root.rmdir()
+                if staging_root.exists():
+                    finish_delete_transaction(staging_root, staged_artifacts)
             except OSError:
                 pass
+
+    @staticmethod
+    def _deletion_files_pending(book_id: int, staging_root: Path) -> dict:
+        # The library removal succeeded; report files left for maintenance.
+        logger.exception(
+            "Failed to permanently remove staged artifacts after deleting book %s; "
+            "leaving trash under %s for maintenance",
+            book_id,
+            staging_root,
+        )
+        return {"deleted": True, "files_pending": True, "path": staging_root.name}
 
     def open_book_folder(self, book_id: int) -> Optional[Path]:
         detail = self._get_book_record(book_id)

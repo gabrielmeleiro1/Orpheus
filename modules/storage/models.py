@@ -78,6 +78,8 @@ class BookSummary:
     tags: str = ""
     favorite: bool = False
     source_available: Optional[bool] = None
+    playback_path: Optional[str] = None
+    audio_available: Optional[bool] = None
 
 
 @dataclass
@@ -88,6 +90,7 @@ class ChapterCreate:
     title: str
     duration_ms: Optional[int] = None
     mp3_path: Optional[str] = None
+    packaged_start_ms: Optional[int] = None
 
 
 @dataclass
@@ -99,6 +102,7 @@ class Chapter:
     title: str
     duration_ms: Optional[int]
     mp3_path: Optional[str]
+    packaged_start_ms: Optional[int] = None
 
 
 @dataclass

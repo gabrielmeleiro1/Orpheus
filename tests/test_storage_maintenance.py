@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import modules.storage.maintenance as maintenance_module
+from modules.storage.maintenance_reconcile import _move_referenced_upload_sources
 from modules.storage.models import BookCreate, ChapterCreate, SourceType
 from modules.storage.models import PlaybackStatus
 from modules.storage.sqlite_repo import SQLiteRepository
@@ -23,6 +24,22 @@ from modules.storage.maintenance import (
     backup_database,
     prune_stale_records_and_files,
 )
+
+
+def _storage_paths(root):
+    return root / "data" / "audiobooks.db", root / "output", root / "temp"
+
+
+def _book_create(*, title, source_path, **overrides):
+    values = {
+        "title": title,
+        "author": "Author",
+        "source_path": source_path,
+        "source_type": SourceType.PDF,
+        "total_chapters": 1,
+    }
+    values.update(overrides)
+    return BookCreate(**values)
 
 
 def test_storage_maintenance() -> bool:
@@ -54,13 +71,7 @@ def test_storage_maintenance() -> bool:
             keep_source.write_bytes(b"%PDF-1.4 keep")
 
             keep_book, _ = repo.create_book_with_chapters(
-                BookCreate(
-                    title="Keep Book",
-                    author="Author",
-                    source_path=str(keep_source),
-                    source_type=SourceType.PDF,
-                    total_chapters=1,
-                ),
+                _book_create(title="Keep Book", source_path=str(keep_source)),
                 [
                     ChapterCreate(
                         book_id=0,
@@ -74,13 +85,7 @@ def test_storage_maintenance() -> bool:
 
             # Stale-book artifacts.
             stale_book, _ = repo.create_book_with_chapters(
-                BookCreate(
-                    title="Stale Book",
-                    author="Author",
-                    source_path=str(root / "missing_source.pdf"),
-                    source_type=SourceType.PDF,
-                    total_chapters=1,
-                ),
+                _book_create(title="Stale Book", source_path=str(root / "missing_source.pdf")),
                 [
                     ChapterCreate(
                         book_id=0,
@@ -111,7 +116,7 @@ def test_storage_maintenance() -> bool:
             # The fixture artifacts are created milliseconds ago, so the default
             # 24h recency grace would exempt every one of them. Opt out of it to
             # exercise the stale-artifact path; the grace itself is covered by
-            # test_storage_maintenance_preserves_recent_unreferenced_artifacts.
+            # test_recent_unreferenced_artifacts_survive_default_grace.
             audit_before = audit_storage_state(
                 db_path=db_path,
                 output_dir=output_dir,
@@ -169,44 +174,6 @@ def test_storage_maintenance() -> bool:
     return True
 
 
-def test_storage_maintenance_preserves_recent_unreferenced_artifacts(tmp_path):
-    """The recency grace is the guard against pruning an in-flight conversion.
-
-    An unreferenced directory that was written seconds ago belongs to a run the
-    database has not recorded yet, so an aggressive prune must leave it alone.
-    """
-    output_dir = tmp_path / "output"
-    temp_dir = tmp_path / "temp"
-    data_dir = tmp_path / "data"
-    for directory in (output_dir, temp_dir, data_dir):
-        directory.mkdir(parents=True, exist_ok=True)
-
-    db_path = data_dir / "audiobooks.db"
-    SQLiteRepository(db_path)
-
-    in_flight = output_dir / "In Flight Book"
-    in_flight.mkdir(parents=True, exist_ok=True)
-    in_flight_audio = in_flight / "chapter_01.wav"
-    in_flight_audio.write_bytes(b"RIFFin-flight")
-
-    audit = audit_storage_state(
-        db_path=db_path,
-        output_dir=output_dir,
-        temp_dir=temp_dir,
-    )
-    assert not any("In Flight Book" in entry for entry in audit["orphan_output_dirs"])
-
-    prune_stale_records_and_files(
-        db_path=db_path,
-        output_dir=output_dir,
-        temp_dir=temp_dir,
-        aggressive=True,
-    )
-
-    assert in_flight_audio.exists()
-    assert in_flight_audio.read_bytes() == b"RIFFin-flight"
-
-
 def test_storage_maintenance_keeps_referenced_books_under_symlinked_output_root(tmp_path):
     """A symlinked library root must not turn every referenced book into an orphan.
 
@@ -234,13 +201,7 @@ def test_storage_maintenance_keeps_referenced_books_under_symlinked_output_root(
     chapter_audio.write_bytes(b"ID3 referenced audio")
 
     repo.create_book_with_chapters(
-        BookCreate(
-            title="My Book",
-            author="Author",
-            source_path=str(real_root / "source.pdf"),
-            source_type=SourceType.PDF,
-            total_chapters=1,
-        ),
+        _book_create(title="My Book", source_path=str(real_root / "source.pdf")),
         [
             ChapterCreate(
                 book_id=0,
@@ -292,13 +253,7 @@ def test_storage_maintenance_respects_custom_output_root(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
-                title="Keep Book",
-                author="Author",
-                source_path="temp/web_uploads/keep_source.pdf",
-                source_type=SourceType.PDF,
-                total_chapters=1,
-            ),
+            _book_create(title="Keep Book", source_path="temp/web_uploads/keep_source.pdf"),
             [
                 ChapterCreate(
                     book_id=0,
@@ -320,7 +275,9 @@ def test_storage_maintenance_respects_custom_output_root(tmp_path):
             aggressive=True,
         )
 
-        assert Path(report["report_path"]).parent == (output_dir / "reports").resolve()
+        # Reports are app data: beside the database, never in the audiobook folder.
+        assert Path(report["report_path"]).parent == (Path(db_path).parent / "reports").resolve()
+        assert not (output_dir / "reports").exists()
         assert keep_chapter.exists()
     finally:
         repo.close()
@@ -330,13 +287,7 @@ def test_backup_database_includes_committed_wal_pages_and_uses_unique_names(tmp_
     db_path = tmp_path / "data" / "audiobooks.db"
     repo = SQLiteRepository(db_path)
     created = repo.create_book(
-        BookCreate(
-            title="WAL Backed",
-            author="Author",
-            source_path="/tmp/source.pdf",
-            source_type=SourceType.PDF,
-            total_chapters=1,
-        )
+        _book_create(title="WAL Backed", source_path="/tmp/source.pdf")
     )
 
     first_backup = backup_database(db_path)
@@ -355,9 +306,7 @@ def test_backup_database_includes_committed_wal_pages_and_uses_unique_names(tmp_
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not portable")
 def test_prune_backup_and_report_are_owner_only(tmp_path):
-    db_path = tmp_path / "data" / "audiobooks.db"
-    output_dir = tmp_path / "output"
-    temp_dir = tmp_path / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(tmp_path)
     SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir).close()
 
     previous_umask = os.umask(0o022)
@@ -381,9 +330,7 @@ def test_prune_backup_and_report_are_owner_only(tmp_path):
 
 def test_prune_preserves_packaged_only_books_and_output_dirs(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     source = root / "source.pdf"
     packaged = output_dir / "Packaged Only" / "Packaged Only.m4b"
     source.parent.mkdir(parents=True, exist_ok=True)
@@ -395,11 +342,9 @@ def test_prune_preserves_packaged_only_books_and_output_dirs(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         book, _chapters = repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Packaged Only",
-                author="Author",
                 source_path=str(source),
-                source_type=SourceType.PDF,
                 total_chapters=2,
                 playback_path=str(packaged),
                 playback_status=PlaybackStatus.PACKAGED,
@@ -436,9 +381,7 @@ def test_prune_preserves_packaged_only_books_and_output_dirs(tmp_path):
 
 def test_prune_preserves_external_user_source_files(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     # User source kept in a personal library folder, not a managed upload.
@@ -453,12 +396,10 @@ def test_prune_preserves_external_user_source_files(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Owned Book",
-                author="Author",
                 source_path=str(external_source),
                 source_type=SourceType.EPUB,
-                total_chapters=1,
                 playback_path=str(packaged),
                 playback_status=PlaybackStatus.PACKAGED,
             ),
@@ -484,9 +425,7 @@ def test_prune_preserves_external_user_source_files(tmp_path):
 
 def test_prune_is_safe_against_path_traversal_in_stored_paths(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -500,12 +439,10 @@ def test_prune_is_safe_against_path_traversal_in_stored_paths(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Traversal Book",
-                author="Author",
                 source_path="temp/web_uploads/../../outside/secret_source.epub",
                 source_type=SourceType.EPUB,
-                total_chapters=1,
                 playback_path="output/../outside/secret.m4b",
                 playback_status=PlaybackStatus.PACKAGED,
             ),
@@ -536,9 +473,7 @@ def test_prune_is_safe_against_path_traversal_in_stored_paths(tmp_path):
 def test_prune_does_not_move_absolute_path_with_web_uploads_name(tmp_path):
     """Only files inside the managed upload root may be promoted to durable storage."""
     workspace = tmp_path / "workspace"
-    db_path = workspace / "data" / "audiobooks.db"
-    output_dir = workspace / "output"
-    temp_dir = workspace / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(workspace)
     (output_dir).mkdir(parents=True, exist_ok=True)
     (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
 
@@ -552,13 +487,7 @@ def test_prune_does_not_move_absolute_path_with_web_uploads_name(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
-                title="User Source",
-                author="Author",
-                source_path=str(lookalike),
-                source_type=SourceType.EPUB,
-                total_chapters=1,
-            ),
+            _book_create(title="User Source", source_path=str(lookalike), source_type=SourceType.EPUB),
             [ChapterCreate(book_id=0, chapter_number=1, title="One", mp3_path=str(chapter_path))],
         )
     finally:
@@ -578,9 +507,7 @@ def test_prune_does_not_move_absolute_path_with_web_uploads_name(tmp_path):
 
 def test_prune_is_idempotent_and_preserves_live_artifacts_on_repeated_runs(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     source = root / "library" / "source.pdf"
@@ -593,12 +520,9 @@ def test_prune_is_idempotent_and_preserves_live_artifacts_on_repeated_runs(tmp_p
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         book, _chapters = repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Live Book",
-                author="Author",
                 source_path=str(source),
-                source_type=SourceType.PDF,
-                total_chapters=1,
                 playback_path=str(packaged),
                 playback_status=PlaybackStatus.PACKAGED,
             ),
@@ -632,9 +556,7 @@ def test_prune_is_idempotent_and_preserves_live_artifacts_on_repeated_runs(tmp_p
 
 def test_prune_does_not_move_upload_sources_until_db_prune_commits(tmp_path, monkeypatch):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     upload_dir = temp_dir / "web_uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -645,13 +567,7 @@ def test_prune_does_not_move_upload_sources_until_db_prune_commits(tmp_path, mon
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
-                title="Rollback Book",
-                author="Author",
-                source_path=str(upload_source),
-                source_type=SourceType.PDF,
-                total_chapters=1,
-            ),
+            _book_create(title="Rollback Book", source_path=str(upload_source)),
             [
                 ChapterCreate(
                     book_id=0,
@@ -724,9 +640,7 @@ def test_prune_does_not_move_upload_sources_until_db_prune_commits(tmp_path, mon
 
 def test_prune_verifies_directory_deletion_before_recording_action(tmp_path, monkeypatch):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     orphan_output = output_dir / "Orphan Book"
 
     orphan_output.mkdir(parents=True, exist_ok=True)
@@ -752,9 +666,7 @@ def test_prune_verifies_directory_deletion_before_recording_action(tmp_path, mon
 
 def test_audit_detects_orphan_durable_app_owned_sources(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     sources_dir = db_path.parent / "sources"
     sources_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
@@ -768,12 +680,10 @@ def test_audit_detects_orphan_durable_app_owned_sources(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Referenced Book",
-                author="Author",
                 source_path=str(referenced_source),
                 source_type=SourceType.EPUB,
-                total_chapters=1,
             ),
             [ChapterCreate(book_id=0, chapter_number=1, title="One")],
         )
@@ -792,9 +702,7 @@ def test_audit_detects_orphan_durable_app_owned_sources(tmp_path):
 
 def test_prune_deletes_orphan_durable_app_owned_sources(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     sources_dir = db_path.parent / "sources"
     sources_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
@@ -811,12 +719,10 @@ def test_prune_deletes_orphan_durable_app_owned_sources(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Referenced Book",
-                author="Author",
                 source_path=str(referenced_source),
                 source_type=SourceType.EPUB,
-                total_chapters=1,
             ),
             [
                 ChapterCreate(
@@ -846,9 +752,7 @@ def test_prune_deletes_orphan_durable_app_owned_sources(tmp_path):
 
 def test_audit_does_not_flag_user_owned_source_as_orphan_durable(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True)
     temp_dir.mkdir(parents=True)
 
@@ -859,13 +763,7 @@ def test_audit_does_not_flag_user_owned_source_as_orphan_durable(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
-                title="Owned Book",
-                author="Author",
-                source_path=str(user_source),
-                source_type=SourceType.EPUB,
-                total_chapters=1,
-            ),
+            _book_create(title="Owned Book", source_path=str(user_source), source_type=SourceType.EPUB),
             [ChapterCreate(book_id=0, chapter_number=1, title="One")],
         )
     finally:
@@ -889,9 +787,7 @@ def test_recent_unreferenced_artifacts_survive_default_grace(tmp_path):
     """Queued uploads and in-flight artifacts have no DB reference yet; the
     default grace window must keep audit/prune away from them until they age."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True)
     temp_dir.mkdir(parents=True)
 
@@ -944,11 +840,9 @@ def test_recent_unreferenced_artifacts_survive_default_grace(tmp_path):
     assert [Path(p).name for p in report["actions"]["deleted_temp_uploads"]] == ["queued.epub"]
 
 
-def test_audit_and_prune_recover_orphan_delete_staging(tmp_path):
+def test_audit_and_prune_remove_only_committed_delete_staging(tmp_path):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True)
     temp_dir.mkdir(parents=True)
 
@@ -956,16 +850,21 @@ def test_audit_and_prune_recover_orphan_delete_staging(tmp_path):
     staged_file = staging_dir / "chapters" / "01.mp3"
     staged_file.parent.mkdir(parents=True)
     staged_file.write_bytes(b"ID3trash")
+    committed_dir = temp_dir / "delete_staging" / "book_43"
+    committed_dir.mkdir()
+    (committed_dir / "01.mp3").write_bytes(b"ID3trash")
+    (committed_dir / ".committed").touch()
+    expired = time.time() - (maintenance_module.DEFAULT_CLEANUP_GRACE_SECONDS + 60)
+    _backdate_tree(staging_dir, expired)
+    _backdate_tree(committed_dir, expired)
 
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Alive Book",
-                author="Author",
                 source_path=str(root / "alive.epub"),
                 source_type=SourceType.EPUB,
-                total_chapters=1,
             ),
             [ChapterCreate(book_id=0, chapter_number=1, title="One")],
         )
@@ -973,23 +872,20 @@ def test_audit_and_prune_recover_orphan_delete_staging(tmp_path):
         repo.close()
 
     audit = audit_storage_state(
-        db_path=db_path, output_dir=output_dir, temp_dir=temp_dir, grace_seconds=0.0
+        db_path=db_path, output_dir=output_dir, temp_dir=temp_dir
     )
-    assert str(staging_dir.resolve()) in audit["orphan_delete_staging_dirs"]
+    assert audit["orphan_delete_staging_dirs"] == [str(committed_dir.resolve())]
 
     report = prune_stale_records_and_files(
         db_path=db_path,
         output_dir=output_dir,
         temp_dir=temp_dir,
         aggressive=True,
-        grace_seconds=0.0,
     )
 
-    assert not staging_dir.exists()
-    assert str(staging_dir.resolve()) in report["actions"]["deleted_delete_staging_dirs"]
-    assert not (temp_dir / "delete_staging").exists() or not any(
-        (temp_dir / "delete_staging").iterdir()
-    )
+    assert staged_file.read_bytes() == b"ID3trash"
+    assert not committed_dir.exists()
+    assert report["actions"]["deleted_delete_staging_dirs"] == [str(committed_dir.resolve())]
 
 
 def test_prune_preserves_migrated_packaged_book_with_only_ondisk_audio(tmp_path):
@@ -999,9 +895,7 @@ def test_prune_preserves_migrated_packaged_book_with_only_ondisk_audio(tmp_path)
     not delete the row nor rmtree the output dir, and should reconcile the playback
     metadata back to the on-disk artifact."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     # External source kept by the user (mirrors a migrated legacy library).
@@ -1016,9 +910,8 @@ def test_prune_preserves_migrated_packaged_book_with_only_ondisk_audio(tmp_path)
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         book, _chapters = repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Migrated Packaged",
-                author="Author",
                 source_path=str(source),
                 source_type=SourceType.EPUB,
                 total_chapters=2,
@@ -1070,9 +963,7 @@ def test_prune_preserves_migrated_book_with_only_ondisk_chapter_m4a(tmp_path):
     DB has no playback pointer and chapter mp3_path values are NULL, reconciling to
     chapter-audio playback."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     source = root / "library" / "chaptered.epub"
@@ -1088,9 +979,8 @@ def test_prune_preserves_migrated_book_with_only_ondisk_chapter_m4a(tmp_path):
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         book, _chapters = repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Chaptered Book",
-                author="Author",
                 source_path=str(source),
                 source_type=SourceType.EPUB,
                 total_chapters=2,
@@ -1138,21 +1028,17 @@ def test_prune_still_deletes_migrated_book_without_ondisk_audio(tmp_path):
     genuinely orphaned and must still be pruned; the on-disk survival path must not
     weaken deletion of true orphans."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         book, _chapters = repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Migrated Orphan",
-                author="Author",
                 source_path=str(root / "gone.epub"),
                 source_type=SourceType.EPUB,
-                total_chapters=1,
                 playback_path=None,
                 playback_status=PlaybackStatus.MISSING,
             ),
@@ -1189,9 +1075,7 @@ def test_prune_does_not_cross_wire_duplicate_title_book_or_destroy_audio(tmp_pat
     decoy ``Dup Title`` (the exact title-derived guess) holds unrelated audio.
     """
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1259,9 +1143,7 @@ def test_prune_preserves_renamed_book_row_and_audio_when_unlinkable(tmp_path):
     must keep its row and its audio: an unclaimed finished-audio directory means we
     cannot be confident the book is orphaned."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1309,9 +1191,7 @@ def test_prune_never_rmtrees_output_dir_holding_chapter_mp3_audio(tmp_path):
     """The orphan sweep must protect a directory whose only audio is per-chapter
     ``.mp3`` renders, not just packaged ``.m4b`` files."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True, exist_ok=True)
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1348,9 +1228,7 @@ def test_prune_fails_closed_when_audio_directory_cannot_be_fully_inspected(
     tmp_path, monkeypatch
 ):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     output_dir.mkdir(parents=True)
     temp_dir.mkdir(parents=True)
 
@@ -1455,9 +1333,7 @@ if __name__ == "__main__":
 
 def test_prune_retains_upload_source_file_until_source_move_commits(tmp_path, monkeypatch):
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     upload_dir = temp_dir / "web_uploads"
     upload_dir.mkdir(parents=True, exist_ok=True)
     book_dir = output_dir / "Durable Book"
@@ -1471,11 +1347,9 @@ def test_prune_retains_upload_source_file_until_source_move_commits(tmp_path, mo
     repo = SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir)
     try:
         book = repo.create_book(
-            BookCreate(
+            _book_create(
                 title="Durable Book",
-                author="Author",
                 source_path=str(upload_source),
-                source_type=SourceType.PDF,
                 total_chapters=0,
                 playback_path=str(playback),
                 playback_status=PlaybackStatus.PACKAGED,
@@ -1553,6 +1427,102 @@ def test_prune_retains_upload_source_file_until_source_move_commits(tmp_path, mo
     assert Path(stored) == moved[0]
 
 
+def _create_shared_upload_books(root, aliases):
+    db_path = root / "data" / "audiobooks.db"
+    source = root / "temp" / "web_uploads" / "shared.pdf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"%PDF shared source")
+    link = source.with_name("alias.pdf")
+    link.symlink_to(source)
+    paths = {
+        "absolute": str(source),
+        "relative": "temp/web_uploads/shared.pdf",
+        "symlink": str(link),
+    }
+    raw_paths = [paths[alias] for alias in aliases]
+    SQLiteRepository(db_path).close()
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO books (title, source_path) VALUES (?, ?)",
+            [(f"Book {index}", raw) for index, raw in enumerate(raw_paths)],
+        )
+    return db_path, source, raw_paths
+
+
+@pytest.mark.parametrize("aliases", [
+    ("absolute", "absolute"),
+    ("absolute", "relative", "symlink"),
+])
+def test_source_relocation_commits_every_owner_before_unlinking(tmp_path, monkeypatch, aliases):
+    db_path, source, _ = _create_shared_upload_books(tmp_path, aliases)
+    sources_dir = db_path.parent / "sources"
+    real_unlink = Path.unlink
+    observed = []
+
+    def check_owners_before_unlink(path, *args, **kwargs):
+        if path == source:
+            with sqlite3.connect(db_path) as conn:
+                stored = conn.execute("SELECT source_path FROM books ORDER BY id").fetchall()
+            assert stored == [(str(sources_dir / source.name),)] * len(aliases)
+            observed.append(path)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", check_owners_before_unlink)
+    moved = _move_referenced_upload_sources(
+        db_path, tmp_path, tmp_path / "output", tmp_path / "temp", sources_dir,
+    )
+
+    assert observed == [source]
+    assert not source.exists()
+    assert sorted(p.name for p in sources_dir.iterdir() if p.name not in {".orpheus-storage-owner.json", ".orpheus-source-relocations.json"}) == [source.name]
+    assert (sources_dir / source.name).read_bytes() == b"%PDF shared source"
+    assert sorted(moved, key=lambda item: item["book_id"]) == [
+        {"book_id": index + 1, "from": str(source), "to": str(sources_dir / source.name)}
+        for index in range(len(aliases))
+    ]
+    assert _move_referenced_upload_sources(
+        db_path, tmp_path, tmp_path / "output", tmp_path / "temp", sources_dir,
+    ) == []
+
+
+def test_source_relocation_rolls_back_all_owners_and_can_retry(tmp_path):
+    db_path, source, raw_paths = _create_shared_upload_books(
+        tmp_path, ("absolute", "relative", "symlink"),
+    )
+    sources_dir = db_path.parent / "sources"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("""
+            CREATE TRIGGER reject_source_update BEFORE UPDATE OF source_path ON books
+            WHEN OLD.id = 2
+            BEGIN
+                SELECT RAISE(ABORT, 'source update failed');
+            END
+        """)
+
+    with pytest.raises(sqlite3.IntegrityError, match="source update failed"):
+        _move_referenced_upload_sources(
+            db_path, tmp_path, tmp_path / "output", tmp_path / "temp", sources_dir,
+        )
+
+    assert source.read_bytes() == b"%PDF shared source"
+    assert not [p for p in sources_dir.iterdir() if p.name not in {".orpheus-storage-owner.json", ".orpheus-source-relocations.json"}]
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT source_path FROM books ORDER BY id").fetchall() == [
+            (raw,) for raw in raw_paths
+        ]
+        conn.execute("DROP TRIGGER reject_source_update")
+
+    moved = _move_referenced_upload_sources(
+        db_path, tmp_path, tmp_path / "output", tmp_path / "temp", sources_dir,
+    )
+    assert len(moved) == len(raw_paths)
+    assert not source.exists()
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT source_path FROM books ORDER BY id").fetchall() == [
+            (str(sources_dir / source.name),)
+        ] * len(raw_paths)
+
+
 def _seed_playable_book(db_path: Path, output_dir: Path) -> None:
     """Create a fully-playable book so prune has no reason to touch its dir."""
     keep_dir = output_dir / "Keep Book"
@@ -1562,12 +1532,10 @@ def _seed_playable_book(db_path: Path, output_dir: Path) -> None:
     repo = SQLiteRepository(db_path, output_dir=output_dir)
     try:
         repo.create_book_with_chapters(
-            BookCreate(
+            _book_create(
                 title="Keep Book",
-                author="Author",
                 source_path=str(packaged),
                 source_type=SourceType.EPUB,
-                total_chapters=1,
                 playback_path=str(packaged),
                 playback_status=PlaybackStatus.PACKAGED,
             ),
@@ -1581,9 +1549,7 @@ def test_prune_deletes_orphan_symlink_without_following_to_external_target(tmp_p
     """A symlink under output/ pointing outside the managed roots must be
     unlinked as an orphan without deleting whatever it targets (data-loss)."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     _seed_playable_book(db_path, output_dir)
@@ -1618,9 +1584,7 @@ def test_prune_deletes_orphan_symlink_file_under_durable_sources(tmp_path):
     """A symlink file under the durable sources root is unlinked without
     following it to an external file target."""
     root = tmp_path
-    db_path = root / "data" / "audiobooks.db"
-    output_dir = root / "output"
-    temp_dir = root / "temp"
+    db_path, output_dir, temp_dir = _storage_paths(root)
     (temp_dir / "web_uploads").mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     _seed_playable_book(db_path, output_dir)

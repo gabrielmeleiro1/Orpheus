@@ -10,10 +10,15 @@ from __future__ import annotations
 
 from pathlib import Path
 from shutil import copy2
+import hashlib
+import json
+import os
+import re
 import sqlite3
 from typing import Any, Optional
 
 from modules.contracts.book_identity import sanitize_book_title
+from modules.contracts.durable_files import atomic_write_json, sync_directory, sync_file, unlink_file
 from modules.storage.maintenance_paths import (
     RESERVED_OUTPUT_DIR_NAMES,
     _connect,
@@ -22,6 +27,118 @@ from modules.storage.maintenance_paths import (
     unique_destination_path,
 )
 from modules.storage.models import PlaybackStatus
+from modules.storage.managed_roots import stored_path_remappings
+from modules.storage.migrations import remap_absolute_path
+
+
+def _source_relocations_path(db_file: Path) -> Path:
+    # Keep history with the owned sources across database renames and restores.
+    return db_file.parent / "sources" / ".orpheus-source-relocations.json"
+
+
+def _read_source_relocations(db_file: Path) -> dict[str, str | dict[str, str]]:
+    path = _source_relocations_path(db_file)
+    legacy = db_file.with_name(db_file.name + ".source-relocations.json")
+
+    def read(record_path: Path) -> dict[str, str | dict[str, str]]:
+        if record_path.is_symlink():
+            raise ValueError("Source relocation history must not be a link")
+        if not record_path.exists():
+            return {}
+        try:
+            records = json.loads(record_path.read_text(encoding="utf-8"))
+        except (ValueError, OSError) as error:
+            raise ValueError("Cannot read source relocation history") from error
+        if not isinstance(records, dict):
+            raise ValueError("Invalid source relocation history")
+        for source, record in records.items():
+            name = record.get("name") if isinstance(record, dict) else record
+            if (not isinstance(source, str) or not isinstance(name, str)
+                    or not name or name in (".", "..") or Path(name).name != name
+                    or name.startswith(".orpheus-")):
+                raise ValueError("Invalid source relocation history")
+            if isinstance(record, dict) and (
+                not isinstance(record.get("sha256"), str)
+                or re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) is None
+            ):
+                raise ValueError("Invalid source relocation history")
+        return records
+
+    records = read(legacy)
+    records.update(read(path))
+    if legacy.exists():
+        atomic_write_json(path, records, sync_parent=sync_directory)
+        legacy.unlink()
+        sync_directory(legacy.parent)
+    return records
+
+
+def _source_digest(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _repair_relocated_upload_sources(
+    conn: sqlite3.Connection,
+    db_file: Path,
+    workspace_root: Path,
+    output_root: Path,
+    temp_root: Path,
+    sources_dir: Path,
+) -> tuple[set[Path], set[int]]:
+    """Repoint missing uploads and protect copies whose origin is ambiguous."""
+    records = _read_source_relocations(db_file)
+    mappings = stored_path_remappings(db_file, temp_root)
+    records = {os.path.normcase(remap_absolute_path(key, mappings)): value for key, value in records.items()}
+    copies = [
+        path for path in sources_dir.iterdir()
+        if not path.name.startswith(".orpheus-") and not path.is_symlink() and path.is_file()
+    ] if sources_dir.exists() else []
+    protected: set[Path] = set()
+    recoverable: set[int] = set()
+    for book_id, raw_source in conn.execute("SELECT id, source_path FROM books").fetchall():
+        source = resolve_stored_path(
+            raw_source, workspace_root, output_root=output_root, temp_root=temp_root,
+        )
+        if source is None:
+            continue
+        source = source.resolve()
+        if source.exists():
+            continue
+        name_pattern = re.compile(
+            re.escape(os.path.normcase(source.stem)) + r"(?:_[1-9]\d*)?"
+            + re.escape(os.path.normcase(source.suffix))
+        )
+        candidates = [path for path in copies if name_pattern.fullmatch(os.path.normcase(path.name))] if (
+            path_is_within_root(source, temp_root / "web_uploads")
+            or (Path(raw_source).is_absolute() and not any(
+                path_is_within_root(source, root) for root in (sources_dir, output_root, temp_root)
+            ))
+        ) else []
+        recorded = records.get(os.path.normcase(str(source)))
+        name = recorded.get("name") if isinstance(recorded, dict) else recorded
+        destination = sources_dir / name if name is not None else None
+        # Legacy records lack a digest, so their copies can only be protected.
+        if destination in copies:
+            protected.add(destination.resolve())
+            recoverable.add(book_id)
+        if (destination not in copies or not isinstance(recorded, dict)
+                or _source_digest(destination) != recorded["sha256"]):
+            destination = None
+        protected.update(path.resolve() for path in candidates)
+        if candidates:
+            recoverable.add(book_id)
+        if destination is not None:
+            protected.add(destination.resolve())
+            cursor = conn.execute(
+                "UPDATE books SET source_path=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE id=? AND source_path=?",
+                (str(destination), book_id, raw_source),
+            )
+            if cursor.rowcount != 1:
+                raise sqlite3.OperationalError(f"Source repair affected {cursor.rowcount} rows for book {book_id}")
+            recoverable.add(book_id)
+    return protected, recoverable
 
 
 def _move_referenced_upload_sources(
@@ -47,6 +164,7 @@ def _move_referenced_upload_sources(
             )
             if source_path is None:
                 continue
+            source_path = source_path.resolve()
             if not source_path.exists():
                 continue
             if not path_is_within_root(source_path, Path(temp_root) / "web_uploads"):
@@ -54,37 +172,64 @@ def _move_referenced_upload_sources(
 
             destination = unique_destination_path(canonical_sources_dir / source_path.name)
             destination.parent.mkdir(parents=True, exist_ok=True)
-            # Copy first and delete the upload only after the DB commit: a
-            # crash between the file transfer and the commit must leave the
-            # row's source_path pointing at a file that still exists.
-            copy2(str(source_path), str(destination))
             try:
-                cursor = conn.execute(
-                    """
-                    UPDATE books
-                    SET source_path = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ? AND source_path = ?
-                    """,
-                    (str(destination), row["id"], raw_source_path),
-                )
-                if cursor.rowcount != 1:
-                    raise sqlite3.OperationalError(
-                        f"Source move update affected {cursor.rowcount} rows for book {row['id']}"
+                # Lock before collecting owners so aliases and newly committed
+                # references are repointed together before the upload is removed.
+                conn.execute("BEGIN IMMEDIATE")
+                owners = []
+                for owner in conn.execute("SELECT id, source_path FROM books").fetchall():
+                    owner_path = resolve_stored_path(
+                        owner["source_path"],
+                        workspace_root,
+                        output_root=output_root,
+                        temp_root=temp_root,
                     )
+                    if owner_path is not None and owner_path.resolve() == source_path:
+                        owners.append(owner)
+                if not owners:
+                    conn.rollback()
+                    continue
+
+                # Keep the upload until every owner's new pointer is committed.
+                copy2(str(source_path), str(destination))
+                destination.chmod(0o600)
+                sync_file(destination)
+                sync_directory(destination.parent)
+                records = _read_source_relocations(db_file)
+                records[os.path.normcase(str(source_path))] = {
+                    "name": destination.name, "sha256": _source_digest(destination),
+                }
+                atomic_write_json(
+                    _source_relocations_path(db_file), records, sync_parent=sync_directory,
+                )
+                for owner in owners:
+                    cursor = conn.execute(
+                        """
+                        UPDATE books
+                        SET source_path = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ? AND source_path = ?
+                        """,
+                        (str(destination), owner["id"], owner["source_path"]),
+                    )
+                    if cursor.rowcount != 1:
+                        raise sqlite3.OperationalError(
+                            f"Source move update affected {cursor.rowcount} rows for book {owner['id']}"
+                        )
                 conn.commit()
             except Exception:
                 conn.rollback()
                 destination.unlink(missing_ok=True)
                 raise
             try:
-                source_path.unlink()
+                unlink_file(source_path)
             except OSError:
                 # Best-effort: the committed copy is canonical; a leftover
                 # upload is swept later as a stale temp upload.
                 pass
 
-            moved_sources.append(
-                {"book_id": row["id"], "from": str(source_path), "to": str(destination)}
+            moved_sources.extend(
+                {"book_id": owner["id"], "from": str(source_path), "to": str(destination)}
+                for owner in owners
             )
     finally:
         conn.close()
@@ -182,10 +327,25 @@ def _referenced_output_dir_keys(
     return keys
 
 
+def _dir_contains_recovery_inventory(directory: Path) -> bool:
+    from modules.contracts.recovery_inventory import INVENTORY_NAME, SOURCE_DIRECTORY, recovery_audio_paths
+
+    if directory.is_symlink() or directory.is_junction() or not directory.is_dir():
+        return False
+    try:
+        payload = json.loads((directory / INVENTORY_NAME).read_text(encoding="utf-8"))
+        name = payload["source"]
+        if not isinstance(name, str) or Path(name).name != name or name in {".", ".."} or "/" in name or "\\" in name:
+            return False
+        return bool(recovery_audio_paths(directory / SOURCE_DIRECTORY / name))
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+
+
 def _unclaimed_finished_audio_dirs(
     output_root: Path, referenced_keys: set[str]
 ) -> list[str]:
-    """List real output subdirectories that hold finished audio yet no book claims.
+    """List unclaimed output directories holding audio or a recovery inventory.
 
     Such a directory may be a moved/renamed book's audio that lost its DB linkage;
     its existence means we are *not* confident any fileless book row is truly
@@ -203,7 +363,7 @@ def _unclaimed_finished_audio_dirs(
         key = str(output_root_resolved / entry.name)
         if key in referenced_keys:
             continue
-        if _dir_contains_finished_audio(entry):
+        if _dir_contains_finished_audio(entry) or _dir_contains_recovery_inventory(entry):
             unclaimed.append(str(entry.resolve()))
     return sorted(unclaimed)
 

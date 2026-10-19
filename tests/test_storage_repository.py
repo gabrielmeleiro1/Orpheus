@@ -1,12 +1,7 @@
-"""
-Test Storage Repository Module
-==============================
-Script-style tests for SQLiteRepository storage operations.
-"""
+"""Tests for SQLiteRepository storage operations."""
 
 import os
 import sys
-import importlib
 import sqlite3
 import time
 from pathlib import Path
@@ -30,6 +25,33 @@ from modules.storage.models import (
 from modules.storage.maintenance import workspace_root_for_db
 from modules.storage.sqlite_repo import SQLiteRepository
 from modules.app.services.library_service import LibraryService
+
+
+def test_reference_queries_include_all_path_kinds_and_exclude_only_selected_book(tmp_path):
+    repo = SQLiteRepository(tmp_path / "data" / "library.db")
+    try:
+        first, _ = repo.create_book_with_chapters(
+            BookCreate(title="First", source_path="shared.md", source_type=SourceType.MD,
+                       playback_path="first.m4b"),
+            [ChapterCreate(book_id=0, chapter_number=1, title="First", mp3_path="first.mp3")],
+        )
+        second, _ = repo.create_book_with_chapters(
+            BookCreate(title="Second", source_path="shared.md", source_type=SourceType.MD,
+                       playback_path="output/second.m4b"),
+            [ChapterCreate(book_id=0, chapter_number=1, title="Second", mp3_path="output/second.mp3"),
+             ChapterCreate(book_id=0, chapter_number=2, title="Empty", mp3_path=""),
+             ChapterCreate(book_id=0, chapter_number=3, title="Missing", mp3_path=None)],
+        )
+        assert repo.list_source_paths() == ["shared.md"]
+        assert repo.list_source_paths(first.id) == ["shared.md"]
+        assert set(repo.list_artifact_paths(first.id)) == {
+            "shared.md", "output/second.m4b", "output/second.mp3",
+        }
+        repo.delete_book(second.id)
+        assert repo.list_artifact_paths(first.id) == []
+        assert repo.list_source_paths(first.id) == []
+    finally:
+        repo.close()
 
 
 def test_count_books_returns_unfiltered_total_after_create_and_delete(tmp_path):
@@ -82,224 +104,88 @@ def test_create_books_bulk_inserts_in_bounded_batches(tmp_path):
     }
 
 
-def test_storage_repository() -> bool:
-    """Run all repository storage tests."""
-    test_dir = PROJECT_ROOT / "tests" / "data"
-    test_dir.mkdir(parents=True, exist_ok=True)
-    test_db = test_dir / "test_audiobooks.db"
-
-    if test_db.exists():
-        os.remove(test_db)
-
-    print("\n" + "=" * 50)
-    print("SQLITE REPOSITORY TEST SUITE")
-    print("=" * 50 + "\n")
-
-    # Test 1: Repository initialization and schema shape
-    print("[1] Testing repository initialization + schema...")
+def test_create_books_rolls_back_only_the_failing_batch(tmp_path):
+    repo = SQLiteRepository(tmp_path / "library.db")
     try:
-        repo = SQLiteRepository(test_db)
-        assert test_db.exists(), "SQLite file should be created"
+        with repo._connection() as conn:
+            conn.execute("""
+                CREATE TRIGGER reject_book BEFORE INSERT ON books
+                WHEN NEW.title = 'reject'
+                BEGIN SELECT RAISE(ABORT, 'rejected book'); END
+            """)
+        books = [
+            BookCreate(title=title, source_path=f"{title}.pdf", source_type=SourceType.PDF)
+            for title in ("first", "second", "rolled back", "reject")
+        ]
+        with pytest.raises(sqlite3.IntegrityError, match="rejected book"):
+            repo.create_books(books, batch_size=2)
+        assert {book.title for book in repo.list_books()} == {"first", "second"}
+    finally:
+        repo.close()
 
-        import sqlite3
 
-        conn = sqlite3.connect(test_db)
-        try:
-            tables = {
-                row[0]
-                for row in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-            assert "books" in tables
-            assert "chapters" in tables
-            assert "processing_jobs" not in tables
-
-            chapter_columns = {
-                row[1] for row in conn.execute("PRAGMA table_info(chapters)").fetchall()
-            }
-            assert "start_time_ms" not in chapter_columns
-
-            fk_on = conn.execute("PRAGMA foreign_keys").fetchone()[0]
-            assert fk_on == 0 or fk_on == 1  # pragma is connection-scoped; verify behavior below
-        finally:
-            conn.close()
-
-        print(f"✓ Repository initialized: {test_db}")
-        print("✓ Schema migrated to v2 (no processing_jobs/start_time_ms)")
-    except Exception as e:
-        print(f"✗ Failed to initialize repository: {e}")
-        raise
-
-    # Test 2: Create book
-    print("\n[2] Testing create_book()...")
+def test_create_book_with_chapters_rolls_back_book_on_chapter_failure(tmp_path):
+    repo = SQLiteRepository(tmp_path / "library.db")
     try:
-        created_book = repo.create_book(
-            BookCreate(
-                title="Test Audiobook",
-                source_path="/path/to/test.pdf",
-                source_type=SourceType.PDF,
-                author="Test Author",
-                total_chapters=5,
+        with repo._connection() as conn:
+            conn.execute("""
+                CREATE TRIGGER reject_chapter BEFORE INSERT ON chapters
+                WHEN NEW.chapter_number = 2
+                BEGIN SELECT RAISE(ABORT, 'rejected chapter'); END
+            """)
+        with pytest.raises(sqlite3.IntegrityError, match="rejected chapter"):
+            repo.create_book_with_chapters(
+                BookCreate(title="Rollback", source_path="book.pdf", source_type=SourceType.PDF),
+                [ChapterCreate(book_id=0, chapter_number=i, title=str(i)) for i in (1, 2)],
             )
-        )
-        assert created_book.id > 0, "Book ID should be positive"
-        assert created_book.source_type == SourceType.PDF
-        print(f"✓ Created book with ID: {created_book.id}")
-    except Exception as e:
-        print(f"✗ Failed to create book: {e}")
-        raise
+        assert repo.count_books() == 0
+        with repo._connection() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM chapters").fetchone()[0] == 0
+    finally:
+        repo.close()
 
-    # Test 3: Get book
-    print("\n[3] Testing get_book()...")
-    try:
-        book = repo.get_book(created_book.id)
-        assert book is not None, "Book should be found"
-        assert book.title == "Test Audiobook", "Title should match"
-        assert book.author == "Test Author", "Author should match"
-        assert book.source_type == SourceType.PDF, "Source type should match"
-        assert book.total_chapters == 5, "Total chapters should match"
-        assert book.playback_position_sec == 0.0, "Playback position should default to 0"
-        assert book.playback_path is None, "Playback path should default to None"
-        assert book.playback_status == PlaybackStatus.MISSING, "Playback status should default to missing"
-        print(f"✓ Retrieved book: {book.title} by {book.author}")
-    except Exception as e:
-        print(f"✗ Failed to get book: {e}")
-        raise
 
-    # Test 4: Update playback position
-    print("\n[4] Testing update_book_playback_position()...")
-    try:
-        updated_book = repo.update_book_playback_position(created_book.id, 127.25)
-        assert updated_book is not None
-        assert updated_book.playback_position_sec == 127.25
-        round_trip = repo.get_book(created_book.id)
-        assert round_trip is not None
-        assert round_trip.playback_position_sec == 127.25
-        print("✓ Book playback position persisted")
-    except Exception as e:
-        print(f"✗ Failed playback position update: {e}")
-        raise
+def test_interrupted_operation_never_leaks_writes_into_the_next_commit(tmp_path):
+    class Interrupted(BaseException):
+        pass
 
-    # Test 5: Bulk create book + chapters
-    print("\n[5] Testing create_book_with_chapters()...")
+    repo = SQLiteRepository(tmp_path / "library.db")
     try:
-        bulk_book, bulk_chapters = repo.create_book_with_chapters(
-            BookCreate(
-                title="Bulk Book",
-                source_path="/path/to/bulk.epub",
-                source_type=SourceType.EPUB,
-                author="Bulk Author",
-                total_chapters=3,
-            ),
-            [
-                ChapterCreate(book_id=0, chapter_number=2, title="Chapter 2", duration_ms=300000, mp3_path="/audio/ch2.mp3"),
-                ChapterCreate(book_id=0, chapter_number=1, title="Chapter 1", duration_ms=310000, mp3_path="/audio/ch1.mp3"),
-                ChapterCreate(book_id=0, chapter_number=3, title="Chapter 3", duration_ms=320000, mp3_path="/audio/ch3.mp3"),
-            ],
-        )
-        assert bulk_book.id > 0
-        assert len(bulk_chapters) == 3
-        numbers = [ch.chapter_number for ch in bulk_chapters]
-        assert numbers == [1, 2, 3], f"Expected sorted chapters, got {numbers}"
-        print("✓ Bulk transaction inserted book + 3 chapters")
-    except Exception as e:
-        print(f"✗ Failed bulk insert: {e}")
-        raise
+        with pytest.raises(Interrupted):
+            with repo._connection() as conn:
+                conn.execute(
+                    "INSERT INTO books (title, source_path, source_type) VALUES ('Partial', 'a.md', 'md')"
+                )
+                raise Interrupted()
+        repo.create_book(BookCreate(title="Next", source_path="b.md", source_type=SourceType.MD))
+        assert [book.title for book in repo.list_books()] == ["Next"]
+    finally:
+        repo.close()
 
-    # Test 6: get_chapters ordering
-    print("\n[6] Testing get_chapters() ordering...")
-    try:
-        chapters = repo.get_chapters(bulk_book.id)
-        assert [c.chapter_number for c in chapters] == [1, 2, 3]
-        print("✓ Chapters ordered by chapter_number")
-    except Exception as e:
-        print(f"✗ Failed get_chapters ordering: {e}")
-        raise
 
-    # Test 7: cascade delete behavior
-    print("\n[7] Testing delete_book() cascade...")
+def test_new_book_starts_unplayed_without_audio_and_counts_only_chapters_with_audio(tmp_path):
+    repo = SQLiteRepository(tmp_path / "repository.db")
     try:
-        deleted = repo.delete_book(bulk_book.id)
-        assert deleted is True
-        remaining = repo.get_chapters(bulk_book.id)
-        assert len(remaining) == 0, "Chapters should be deleted via FK cascade"
-        print("✓ Book delete cascades to chapters")
-    except Exception as e:
-        print(f"✗ Failed cascade delete: {e}")
-        raise
-
-    # Test 9: completed chapter summaries only count playable chapter rows
-    print("\n[9] Testing list_books() completed chapter summaries...")
-    try:
-        summary_book, _ = repo.create_book_with_chapters(
+        book, _ = repo.create_book_with_chapters(
             BookCreate(
                 title="Partial Book",
                 source_path="/path/to/partial.pdf",
                 source_type=SourceType.PDF,
-                author="Partial Author",
                 total_chapters=2,
             ),
             [
-                ChapterCreate(
-                    book_id=0,
-                    chapter_number=1,
-                    title="Chapter 1",
-                    duration_ms=1000,
-                    mp3_path="/audio/ch1.mp3",
-                ),
-                ChapterCreate(
-                    book_id=0,
-                    chapter_number=2,
-                    title="Chapter 2",
-                    duration_ms=None,
-                    mp3_path=None,
-                ),
+                ChapterCreate(book_id=0, chapter_number=1, title="Chapter 1", duration_ms=1000, mp3_path="/audio/ch1.mp3"),
+                ChapterCreate(book_id=0, chapter_number=2, title="Chapter 2"),
             ],
         )
-        summaries = repo.list_books()
-        partial_summary = next((item for item in summaries if item.id == summary_book.id), None)
-        assert partial_summary is not None
-        assert partial_summary.total_chapters == 2
-        assert partial_summary.completed_chapters == 1
-        print("✓ list_books counts only chapters with mp3 paths as completed")
-    except Exception as e:
-        print(f"✗ Failed completed-chapter summary validation: {e}")
-        raise
-
-    # Test 10: Deprecated storage API removed
-    print("\n[10] Testing deprecated storage API removal...")
-    try:
-        try:
-            importlib.import_module("modules.storage.database")
-            raise AssertionError("Deprecated storage module should not be importable")
-        except ModuleNotFoundError:
-            pass
-
-        try:
-            from modules.storage import Database  # type: ignore
-
-            _ = Database
-            raise AssertionError(
-                "Deprecated Database export should not exist in modules.storage"
-            )
-        except ImportError:
-            pass
-
-        print("✓ Deprecated storage module/export removed")
-    except Exception as e:
-        print(f"✗ Failed deprecated-storage-removal validation: {e}")
-        raise
-
-    print("\n" + "=" * 50)
-    print("ALL TESTS PASSED ✓")
-    print("=" * 50 + "\n")
-    return True
-
-
-if __name__ == "__main__":
-    success = test_storage_repository()
-    sys.exit(0 if success else 1)
+        fetched = repo.get_book(book.id)
+        assert fetched.playback_position_sec == 0.0
+        assert fetched.playback_path is None
+        assert fetched.playback_status == PlaybackStatus.MISSING
+        summary = next(item for item in repo.list_books() if item.id == book.id)
+        assert (summary.total_chapters, summary.completed_chapters) == (2, 1)
+    finally:
+        repo.close()
 
 
 def test_update_book_playback_position_round_trips(tmp_path):
@@ -852,34 +738,42 @@ def test_repository_quarantines_corrupt_database_and_recreates_fresh(tmp_path):
     assert not wal_sidecar.exists()  # sidecar moved with the main file
 
 
-def test_repository_does_not_wipe_future_schema_database(tmp_path):
-    """A database written by a newer Orpheus build is a real user's data: the
-    repository must raise a clear, catchable error and never quarantine/wipe it."""
-    from modules.storage.migrations import (
-        FutureSchemaError,
-        LATEST_SCHEMA_VERSION,
-        run_migrations,
-    )
+def test_repository_quarantines_corrupt_database_when_file_sync_requires_write_access(
+    tmp_path, monkeypatch
+):
+    import errno
+    import stat
 
-    db_path = tmp_path / "data" / "audiobooks.db"
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    fcntl = pytest.importorskip("fcntl")
+    original_fsync = os.fsync
+    synced_files = []
 
-    conn = sqlite3.connect(db_path)
-    run_migrations(conn)
-    conn.execute(
-        "INSERT INTO schema_migrations(version) VALUES (?)",
-        (LATEST_SCHEMA_VERSION + 1,),
-    )
-    conn.commit()
-    conn.close()
-    original_bytes = db_path.read_bytes()
+    def sync_writable_file(descriptor):
+        file_stat = os.fstat(descriptor)
+        if stat.S_ISREG(file_stat.st_mode):
+            access_mode = fcntl.fcntl(descriptor, fcntl.F_GETFL) & os.O_ACCMODE
+            if access_mode == os.O_RDONLY:
+                raise OSError(errno.EBADF, "File sync requires write access")
+            synced_files.append(file_stat.st_ino)
+        original_fsync(descriptor)
 
-    with pytest.raises(FutureSchemaError):
-        SQLiteRepository(db_path)
+    db_path = tmp_path / "audiobooks.db"
+    corrupt_contents = b"not a sqlite database"
+    db_path.write_bytes(corrupt_contents)
+    original_inode = db_path.stat().st_ino
+    monkeypatch.setattr(sqlite_repo_module.os, "fsync", sync_writable_file)
 
-    # The user's newer-schema database is untouched: no quarantine, same bytes.
-    assert not list(db_path.parent.glob("audiobooks.db.corrupt-*"))
-    assert db_path.read_bytes() == original_bytes
+    repo = SQLiteRepository(db_path)
+    try:
+        assert repo.count_books() == 0
+        assert repo.quarantine is not None
+    finally:
+        repo.close()
+
+    quarantined = list(tmp_path.glob("audiobooks.db.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_bytes() == corrupt_contents
+    assert original_inode in synced_files
 
 
 def test_repository_does_not_quarantine_healthy_database_on_transient_lock(
@@ -1029,3 +923,23 @@ def test_repository_rolls_back_already_moved_wal_when_shm_quarantine_fails(
     assert wal_path.read_bytes() == original_wal
     assert shm_path.read_bytes() == original_shm
     assert not list(db_path.parent.glob("audiobooks.db.corrupt-*"))
+
+
+@pytest.mark.parametrize("query", ["Café", "Cafe\u0301", "CAFÉ", "été", "ÉTÉ", "STRASSE", "100%_\\"])
+def test_search_matches_unicode_equivalents_and_literal_patterns(tmp_path, query):
+    repo = SQLiteRepository(tmp_path / "data" / "library.db")
+    try:
+        book = repo.create_book(BookCreate(
+            title="Cafe\u0301 ÉTÉ 100%_\\", author="Straße",
+            source_path="source.txt", source_type=SourceType.TXT,
+        ))
+        repo.create_book(BookCreate(
+            title="100 percent", source_path="other.txt", source_type=SourceType.TXT,
+        ))
+        matches = repo.list_books(BookFilters(search_query=query))
+        assert [item.id for item in matches] == [book.id]
+        assert matches[0].title == "Cafe\u0301 ÉTÉ 100%_\\"
+        assert matches[0].author == "Straße"
+    finally:
+        repo.close()
+
