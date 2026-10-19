@@ -19,11 +19,13 @@ from ..subprocess_utils import background_process_kwargs
 
 from .ffmpeg import (
     atomic_output_path,
+    ffmpeg_failure,
     ffmpeg_timeout_seconds,
     kill_ffmpeg_process,
     require_ffmpeg_binary,
     run_ffmpeg_command,
     wait_for_ffmpeg_process,
+    wav_duration_seconds,
 )
 
 
@@ -116,6 +118,7 @@ class AudioEncoder:
                 cmd,
                 failure_message=failure_message,
                 cancel_requested=cancel_requested,
+                audio_seconds=wav_duration_seconds(input_path),
             )
 
         return output_path
@@ -193,7 +196,7 @@ class AudioEncoder:
             try:
                 if process.stdin is None:  # pragma: no cover - defensive guard
                     raise RuntimeError("FFmpeg stdin pipe is unavailable")
-                timeout = ffmpeg_timeout_seconds()
+                timeout = ffmpeg_timeout_seconds(audio_seconds=len(pcm) / in_sample_rate)
                 deadline = time.monotonic() + timeout
                 write_error: list[BaseException] = []
 
@@ -259,7 +262,7 @@ class AudioEncoder:
 
             if return_code != 0:
                 stderr = stderr_bytes.decode("utf-8", errors="replace")
-                error = RuntimeError(f"{failure_message}: {stderr}")
+                error = ffmpeg_failure(failure_message, stderr)
                 if write_error:
                     raise error from write_error[0]
                 raise error
@@ -305,7 +308,9 @@ class AudioEncoder:
             failure_message="FFmpeg AAC encoding from array failed",
         )
     
-    def get_duration(self, file_path: Path | str) -> float:
+    def get_duration(
+        self, file_path: Path | str, *, cancel_requested: Callable[[], bool] | None = None,
+    ) -> float:
         """
         Get audio file duration in seconds.
         
@@ -332,7 +337,11 @@ class AudioEncoder:
             str(file_path)
         ]
         
-        result = run_ffmpeg_command(cmd, failure_message="FFprobe failed")
+        # Reading the container header takes no time proportional to its length.
+        result = run_ffmpeg_command(
+            cmd, failure_message="FFprobe failed", cancel_requested=cancel_requested,
+            audio_seconds=0.0,
+        )
         
         data = json.loads(result.stdout)
         return float(data["format"]["duration"])

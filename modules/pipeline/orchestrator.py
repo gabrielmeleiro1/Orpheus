@@ -12,8 +12,8 @@ Supports both sequential and parallel processing modes:
 from __future__ import annotations
 
 import logging
+import re
 import shutil
-import time
 from pathlib import Path
 from typing import Optional, Callable, Union, Any
 
@@ -77,6 +77,26 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# Uploaded and pasted sources are stored as "<timestamp>_<hash>_<name>.<ext>".
+_UPLOAD_HANDLE_PREFIX = re.compile(r"^\d{6,}_[0-9a-f]{6,}(?:_|$)")
+
+
+def _display_source_name(source_path: Path) -> str:
+    """The user's file name, without the upload handle the app stores it under."""
+    name = _UPLOAD_HANDLE_PREFIX.sub("", source_path.stem).strip()
+    return f"{name}{source_path.suffix}" if name else f"the {source_path.suffix.lstrip('.').upper()} source"
+
+
+def _remove_temp_artifact(path: Path) -> None:
+    try:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        elif path.is_file():
+            path.unlink()
+    except OSError:
+        logger.debug("Could not remove temporary artifact %s", path, exc_info=True)
+
+
 class _RunStateField:
     """Compatibility descriptor for legacy private-field tests and callers."""
 
@@ -98,18 +118,6 @@ class _RunStateField:
         if self.coerce is not None:
             value = self.coerce(value)
         setattr(instance._run_state, self.name, value)
-
-
-def _coerce_int(value: Any) -> int:
-    return int(value or 0)
-
-
-def _coerce_float(value: Any) -> float:
-    return float(value or 0.0)
-
-
-def _coerce_bool(value: Any) -> bool:
-    return bool(value)
 
 
 def _coerce_worker_count(value: Any) -> int:
@@ -134,37 +142,10 @@ class ConversionPipeline:
         6. PACKAGING - Create M4B with chapters
     """
 
-    _stage = _RunStateField("stage")
-    _cancelled = _RunStateField("cancelled", coerce=_coerce_bool)
-    _total_chars = _RunStateField("total_chars", coerce=_coerce_int)
     _tts_engine = _RunStateField("tts_engine")
-    _text_cleaner = _RunStateField("text_cleaner")
-    _parallel_execution_active = _RunStateField(
-        "parallel_execution_active",
-        coerce=_coerce_bool,
-    )
     _selected_parallel_chapters = _RunStateField(
         "selected_parallel_chapters",
         coerce=_coerce_worker_count,
-    )
-    _selected_parallel_worker_count_reason = _RunStateField(
-        "selected_parallel_worker_count_reason",
-    )
-    _performance_tts_chars = _RunStateField(
-        "performance_tts_chars",
-        coerce=_coerce_int,
-    )
-    _performance_tts_seconds = _RunStateField(
-        "performance_tts_seconds",
-        coerce=_coerce_float,
-    )
-    _performance_encode_chapters = _RunStateField(
-        "performance_encode_chapters",
-        coerce=_coerce_int,
-    )
-    _performance_encode_seconds = _RunStateField(
-        "performance_encode_seconds",
-        coerce=_coerce_float,
     )
 
     def __init__(
@@ -346,11 +327,12 @@ class ConversionPipeline:
         Returns:
             ConversionResult with output paths and status
         """
-        pipeline_start = time.time()
         source_path = Path(source_path)
         self._begin_conversion_run()
+        self._run_state.source_path = source_path
         recovery_source = None
         recovery_registered = False
+        workspace = None
         chapter_results = []
         book_title, book_author = title or "", author
         recovery_callback = getattr(self, "_recovery_callback", None)
@@ -360,7 +342,9 @@ class ConversionPipeline:
 
             # Stage 1: Ingest
             self._runtime.set_stage(PipelineStage.INGESTING)
-            self._notify_progress(message=f"Parsing {source_path.name}...")
+            self._notify_progress(
+                message=f"Reading {title or _display_source_name(source_path)}...",
+            )
 
             document = self.stages.ingest(source_path)
             if self._check_cancelled():
@@ -419,7 +403,6 @@ class ConversionPipeline:
                     "error",
                 )
                 self._runtime.set_stage(PipelineStage.ERROR)
-                processing_time = time.time() - pipeline_start
                 return ConversionResult(
                     success=False,
                     title=book_title,
@@ -427,7 +410,6 @@ class ConversionPipeline:
                     chapters=chapter_results,
                     total_duration_ms=sum(r.duration_ms for r in chapter_results),
                     error=f"Structural mismatch; packaging skipped. {failure_summary}",
-                    processing_time_seconds=processing_time,
                 )
 
             incomplete_chapter_notes = summarize_incomplete_chapters(chapter_results)
@@ -439,7 +421,6 @@ class ConversionPipeline:
                     "error",
                 )
                 self._runtime.set_stage(PipelineStage.ERROR)
-                processing_time = time.time() - pipeline_start
                 return ConversionResult(
                     success=False,
                     title=book_title,
@@ -447,7 +428,6 @@ class ConversionPipeline:
                     chapters=chapter_results,
                     total_duration_ms=sum(r.duration_ms for r in chapter_results),
                     error=f"Incomplete conversion; packaging skipped. {failure_summary}",
-                    processing_time_seconds=processing_time,
                 )
 
             # Stage 5: Package final audio artifact
@@ -477,7 +457,6 @@ class ConversionPipeline:
                 output_path=final_output_path,
                 chapters=chapter_results,
                 total_duration_ms=total_duration,
-                processing_time_seconds=time.time() - pipeline_start,
             )
             artifact_validation = validate_conversion_success_artifacts(
                 success_result,
@@ -490,7 +469,6 @@ class ConversionPipeline:
                     failure_notes.insert(0, artifact_validation.packaged_output_note)
                 failure_summary = format_failure_notes(failure_notes)
                 self._runtime.set_stage(PipelineStage.ERROR)
-                processing_time = time.time() - pipeline_start
                 return ConversionResult(
                     success=False,
                     title=book_title,
@@ -498,7 +476,6 @@ class ConversionPipeline:
                     chapters=chapter_results,
                     total_duration_ms=total_duration,
                     error=f"Invalid conversion artifacts. {failure_summary}",
-                    processing_time_seconds=processing_time,
                 )
 
             # Complete
@@ -512,6 +489,17 @@ class ConversionPipeline:
             return success_result
 
         except Exception as e:
+            if self._check_cancelled():
+                # Stages abort a cancelled subprocess (FFmpeg, probes) by raising;
+                # that is the requested cancellation, not a conversion failure.
+                logger.info("Pipeline conversion cancelled: %s", e)
+                return ConversionResult(
+                    success=False,
+                    title=book_title,
+                    author=book_author,
+                    chapters=chapter_results,
+                    error="Cancelled",
+                )
             self._runtime.set_stage(PipelineStage.ERROR)
             logger.exception("Pipeline conversion failed")
             return ConversionResult(
@@ -522,7 +510,19 @@ class ConversionPipeline:
                 error=str(e),
             )
         finally:
+            was_cancelled = self._check_cancelled()
+            pool_stopped = True
+            if was_cancelled:
+                manager = self.config.shared_worker_pool_manager
+                shutdown = getattr(manager, "shutdown", None)
+                if callable(shutdown):
+                    pool_stopped = shutdown() is not False
             self._finish_conversion_run()
+            if was_cancelled and pool_stopped and workspace is not None:
+                from modules.audio.ffmpeg import cleanup_abandoned_atomic_outputs
+
+                for directory in (workspace.output_dir, workspace.chapters_dir):
+                    cleanup_abandoned_atomic_outputs(directory)
             if recovery_registered:
                 try:
                     recovery_callback(recovery_source, recovery_snapshot(
@@ -572,6 +572,8 @@ class ConversionPipeline:
                 cancel_requested=cancel_requested,
             )
 
+        self._run_state.source_path = Path(plan.source_path)
+
         def set_stage(stage: PipelineStage) -> None:
             self._runtime.set_stage(stage)
 
@@ -605,55 +607,38 @@ class ConversionPipeline:
         """Pipeline stage execution collaborator."""
         return self._stages
 
-    def _track_temp_cleanup_path(self, path: Path) -> None:
-        """Track a temp artifact created by this pipeline run."""
-        self._runtime.track_temp_cleanup_path(path)
-
-    def _cleanup_temp(self):
-        """Clean up temporary files."""
+    def _cleanup_temp(self) -> None:
+        """Best-effort removal of this run's temporary chapter artifacts."""
+        tracked = self._run_state.temp_cleanup_paths
         try:
-            if self._run_state.temp_cleanup_paths:
-                for item in sorted(
-                    self._run_state.temp_cleanup_paths,
-                    key=lambda candidate: len(candidate.parts),
-                    reverse=True,
-                ):
-                    try:
-                        if item.is_dir():
-                            shutil.rmtree(item, ignore_errors=True)
-                        elif item.is_file():
-                            item.unlink()
-                    except Exception:
-                        pass
-                self._run_state.temp_cleanup_paths.clear()
-                return
-
-            if self.config.temp_dir.exists():
-                for item in self.config.temp_dir.iterdir():
-                    if item.is_dir() and (
-                        item.name.startswith("ch_") or item.name == "chapter_masters"
-                    ):
-                        try:
-                            shutil.rmtree(item, ignore_errors=True)
-                        except Exception:
-                            pass
-                        continue
-
-                    if not item.is_file():
-                        continue
-
-                    if (
-                        item.name.startswith("chapter_")
-                        and item.suffix.lower() == ".wav"
-                    ):
-                        try:
-                            item.unlink()
-                        except Exception:
-                            pass
-        except Exception:
-            pass  # Best effort cleanup
+            if tracked:
+                # Deepest paths first, so files go before their directories.
+                candidates = sorted(tracked, key=lambda path: len(path.parts), reverse=True)
+            else:
+                candidates = self._untracked_chapter_temp_artifacts()
+            for item in candidates:
+                _remove_temp_artifact(item)
         finally:
-            self._run_state.temp_cleanup_paths.clear()
+            tracked.clear()
+
+    def _untracked_chapter_temp_artifacts(self) -> list[Path]:
+        """Chapter scratch under temp_dir, for runs that ended before tracking any."""
+        try:
+            return [
+                item
+                for item in self.config.temp_dir.iterdir()
+                if (
+                    item.is_dir()
+                    and (item.name.startswith("ch_") or item.name == "chapter_masters")
+                )
+                or (
+                    item.is_file()
+                    and item.name.startswith("chapter_")
+                    and item.suffix.lower() == ".wav"
+                )
+            ]
+        except OSError:
+            return []
 
     def _log_verbose(self, message: str, log_type: str = "info"):
         """Emit verbose log if callback present."""

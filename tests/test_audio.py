@@ -5,6 +5,7 @@ import numpy as np
 import subprocess
 import sys
 import json
+import re
 import shutil
 import time
 import wave
@@ -593,8 +594,6 @@ class TestDocumentAudioPackager:
     @patch("subprocess.run")
     @patch("shutil.which")
     def test_create_m4a(self, mock_which, mock_run, tmp_path):
-        assert hasattr(audio_module, "DocumentAudioPackager")
-
         mock_which.return_value = "/usr/bin/ffmpeg"
         mock_run.side_effect = _successful_ffmpeg_run
 
@@ -620,8 +619,7 @@ class TestDocumentAudioPackager:
         assert "aac" in args
         temp_output = Path(args[-1])
         assert temp_output.parent == output.parent
-        assert temp_output.name.startswith(f".{output.name}.")
-        assert temp_output.name.endswith(f".tmp{output.suffix}")
+        assert re.fullmatch(r"\.[0-9a-f]{32}\.tmp" + re.escape(output.suffix), temp_output.name)
 
     @patch("subprocess.run")
     @patch("shutil.which")
@@ -655,8 +653,7 @@ class TestDocumentAudioPackager:
         assert "title=Document" in final_args
         temp_output = Path(final_args[-1])
         assert temp_output.parent == output.parent
-        assert temp_output.name.startswith(f".{output.name}.")
-        assert temp_output.name.endswith(f".tmp{output.suffix}")
+        assert re.fullmatch(r"\.[0-9a-f]{32}\.tmp" + re.escape(output.suffix), temp_output.name)
 
     def test_create_m4a_reencode_avoids_streamcopy_accumulated_gap(self, tmp_path):
         # Real-ffmpeg: continuous prose sections encoded to .m4a, then joined.
@@ -733,11 +730,6 @@ class TestDocumentAudioPackager:
         assert final_args[final_args.index("-b:a") + 1] == "96k"
 
 class TestM4BPackager:
-    def test_chapter_marker_creation(self):
-        marker = ChapterMarker("Chapter 1", 0, 10000)
-        assert marker.start_seconds == 0.0
-        assert marker.end_seconds == 10.0
-        
     @patch("subprocess.run")
     @patch("shutil.which")
     def test_create_m4b_without_cover_uses_single_pass_metadata_mux(self, mock_which, mock_run, tmp_path):
@@ -791,8 +783,7 @@ class TestM4BPackager:
             str(temp_output),
         ]
         assert temp_output.parent == output.parent
-        assert temp_output.name.startswith(f".{output.name}.")
-        assert temp_output.name.endswith(f".tmp{output.suffix}")
+        assert re.fullmatch(r"\.[0-9a-f]{32}\.tmp" + re.escape(output.suffix), temp_output.name)
 
     @patch("subprocess.run")
     @patch("shutil.which")
@@ -852,8 +843,7 @@ class TestM4BPackager:
         assert mux_cmd[mux_cmd.index("-map_chapters") + 1] == "1"
         temp_output = Path(mux_cmd[-1])
         assert temp_output.parent == output.parent
-        assert temp_output.name.startswith(f".{output.name}.")
-        assert temp_output.name.endswith(f".tmp{output.suffix}")
+        assert re.fullmatch(r"\.[0-9a-f]{32}\.tmp" + re.escape(output.suffix), temp_output.name)
 
     def test_create_m4b_stream_copy_markers_match_encoded_timeline(self, tmp_path):
         # Real-ffmpeg: stream-copied chapter markers must land on the actual
@@ -907,14 +897,14 @@ class TestM4BPackager:
             idx += count
         container_ms = float(_ffprobe_json_cli(output, "-show_format")["format"]["duration"]) * 1000.0
 
-        marker = M4BPackager().get_chapters(output)
-        marker_starts = [m.start_ms for m in marker]
+        chapters = _ffprobe_json_cli(output, "-show_chapters")["chapters"]
+        marker_starts = [int(float(ch["start_time"]) * 1000) for ch in chapters]
 
         # Fixed markers track the real encoded offsets within a few ms.
         for real, got in zip(true_start_ms, marker_starts):
             assert abs(got - real) <= 12, f"chapter marker {got}ms drifted from real offset {real}ms"
         # Last chapter END tracks the true joined duration, not the source-duration sum.
-        assert abs(marker[-1].end_ms - container_ms) <= 15
+        assert abs(int(float(chapters[-1]["end_time"]) * 1000) - container_ms) <= 15
 
         # Sanity: naive source-WAV-duration markers genuinely drift here, so this
         # assertion set actually distinguishes the fix from the regression.
@@ -1314,37 +1304,6 @@ class TestM4BPackager:
         ]
         assert any("duration" in record.getMessage().lower() for record in caplog.records)
 
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    @pytest.mark.skipif(os.name == "nt", reason="backslash is a path separator on Windows")
-    def test_create_m4b_escapes_concat_paths_for_ffmpeg(self, mock_which, mock_run, tmp_path):
-        mock_which.return_value = "/usr/bin/ffmpeg"
-
-        audio_file = tmp_path / "chapter one's \\ intro.mp3"
-        audio_file.write_bytes(b"mp3")
-        packager = M4BPackager()
-        metadata = AudiobookMetadata(title="Test", author="Author")
-        concat_contents: dict[str, str] = {}
-
-        def capture_concat_file(cmd, **_kwargs):  # noqa: ANN001
-            if "-f" in cmd and cmd[cmd.index("-f") + 1] == "concat":
-                concat_contents["text"] = Path(cmd[cmd.index("-i") + 1]).read_text(encoding="utf-8")
-            output_path = Path(cmd[-1])
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(b"audio")
-            return MagicMock(returncode=0, stderr="")
-
-        mock_run.side_effect = capture_concat_file
-
-        with patch.object(packager, "_generate_chapter_markers", return_value=[]), \
-             patch.object(packager, "_write_ffmetadata"):
-            packager.create_m4b([audio_file], ["Intro"], metadata, tmp_path / "out.m4b")
-
-        # Bytes inside single quotes are copied verbatim by the concat demuxer:
-        # apostrophes are escaped by quote splicing, backslashes stay untouched.
-        escaped_path = str(audio_file.absolute()).replace("'", "'\\''")
-        assert concat_contents["text"] == f"file '{escaped_path}'\n"
-
     @pytest.mark.skipif(os.name == "nt", reason="backslash is a path separator on Windows")
     def test_create_m4b_real_ffmpeg_concats_paths_with_backslash_and_apostrophe(self, tmp_path):
         # Regression: doubling backslashes inside single-quoted concat entries makes
@@ -1494,22 +1453,3 @@ print("modules.audio.encoder" in sys.modules, "modules.audio.packager" in sys.mo
     )
 
     assert result.stdout.strip() == "False False"
-
-
-def test_importing_packager_module_does_not_import_pydub():
-    code = """
-import sys
-from modules.audio.packager import M4BPackager
-_ = M4BPackager
-print("pydub" in sys.modules)
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        capture_output=True,
-        text=True,
-        cwd=PROJECT_ROOT,
-        check=True,
-        timeout=30,
-    )
-
-    assert result.stdout.strip() == "False"

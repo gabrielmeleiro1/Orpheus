@@ -10,6 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable, Optional
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from collections import deque
 import json
 import logging
 import re
@@ -26,9 +28,15 @@ from .ffmpeg import (
     require_ffmpeg_binary,
     run_ffmpeg_command,
     wait_for_ffmpeg_process,
+    wav_duration_seconds,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_if_cancelled(cancel_requested: Callable[[], bool] | None) -> None:
+    if cancel_requested is not None and cancel_requested():
+        raise RuntimeError("M4B creation failed: cancelled")
 
 
 def quote_ffmpeg_concat_path(path: Path | str) -> str:
@@ -48,6 +56,25 @@ def write_ffmpeg_concat_file(concat_file: Path, audio_files: list[Path]) -> None
     with open(concat_file, "w", encoding="utf-8") as handle:
         for audio_file in audio_files:
             handle.write(f"file {quote_ffmpeg_concat_path(audio_file)}\n")
+
+
+def expected_audio_seconds(
+    audio_files: list[Path], chapter_durations_ms: Optional[list[int]] = None,
+) -> float | None:
+    """Total length of the chapters being packaged, or None when unknown.
+
+    Uses known chapter durations, else WAV headers; compressed inputs without
+    known durations leave it unknown (the fixed FFmpeg deadline then applies).
+    """
+    if chapter_durations_ms is not None and len(chapter_durations_ms) == len(audio_files):
+        return sum(max(0, int(ms)) for ms in chapter_durations_ms) / 1000
+    total = 0.0
+    for audio_file in audio_files:
+        seconds = wav_duration_seconds(audio_file) if audio_file.suffix.lower() == ".wav" else None
+        if seconds is None:
+            return None
+        total += seconds
+    return total
 
 
 def audio_files_support_stream_copy(audio_files: list[Path]) -> bool:
@@ -78,14 +105,6 @@ class ChapterMarker:
     title: str
     start_ms: int
     end_ms: int
-    
-    @property
-    def start_seconds(self) -> float:
-        return self.start_ms / 1000.0
-    
-    @property
-    def end_seconds(self) -> float:
-        return self.end_ms / 1000.0
 
 
 @dataclass
@@ -111,6 +130,10 @@ class M4BPackager:
     def __init__(self):
         """Initialize the M4B packager."""
         self.ffmpeg_path = require_ffmpeg_binary("ffmpeg")
+        self.chapter_markers: list[ChapterMarker] = []
+        # Length of the book being packaged, when known; FFmpeg deadlines for
+        # the concat, probes, and final mux scale with it.
+        self._audio_seconds: float | None = None
     
     def create_m4b(
         self,
@@ -135,6 +158,7 @@ class M4BPackager:
         Returns:
             Path to generated M4B file
         """
+        self.chapter_markers = []
         if not mp3_files:
             raise ValueError("mp3_files must not be empty")
         if len(mp3_files) != len(chapter_names):
@@ -145,6 +169,7 @@ class M4BPackager:
         audio_files = [Path(f) for f in mp3_files]
         output_path = Path(output_path)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._audio_seconds = expected_audio_seconds(audio_files, chapter_durations_ms)
         
         # Verify all input files exist
         for audio_file in audio_files:
@@ -182,6 +207,7 @@ class M4BPackager:
                     concat_cmd,
                     failure_message="M4B stream-copy concat failed",
                     cancel_requested=cancel_requested,
+                    audio_seconds=self._audio_seconds,
                 )
 
                 chapters = self._stream_copy_chapter_markers(
@@ -219,6 +245,7 @@ class M4BPackager:
                     audio_files,
                     chapter_names,
                     chapter_durations_ms=chapter_durations_ms,
+                    cancel_requested=cancel_requested,
                 )
                 chapter_file = temp_path / "chapters.txt"
                 self._write_ffmetadata(chapter_file, chapters, metadata)
@@ -249,8 +276,10 @@ class M4BPackager:
                     final_cmd,
                     failure_message="M4B creation failed",
                     cancel_requested=cancel_requested,
+                    audio_seconds=self._audio_seconds,
                 )
 
+        self.chapter_markers = chapters
         return output_path
 
     def _generate_chapter_markers(
@@ -258,14 +287,18 @@ class M4BPackager:
         audio_files: list[Path],
         chapter_names: list[str],
         chapter_durations_ms: Optional[list[int]] = None,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> list[ChapterMarker]:
         """Generate chapter markers from audio file durations."""
+        _raise_if_cancelled(cancel_requested)
         chapters = []
         current_ms = 0
 
         if chapter_durations_ms is not None:
             durations = [max(0, int(ms)) for ms in chapter_durations_ms]
             for chapter_name, duration_ms in zip(chapter_names, durations):
+                _raise_if_cancelled(cancel_requested)
                 chapters.append(ChapterMarker(
                     title=chapter_name,
                     start_ms=current_ms,
@@ -278,9 +311,14 @@ class M4BPackager:
         encoder = AudioEncoder()
 
         for audio_file, chapter_name in zip(audio_files, chapter_names):
+            _raise_if_cancelled(cancel_requested)
             try:
-                duration_sec = encoder.get_duration(audio_file)
+                if cancel_requested is None:
+                    duration_sec = encoder.get_duration(audio_file)
+                else:
+                    duration_sec = encoder.get_duration(audio_file, cancel_requested=cancel_requested)
             except (RuntimeError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                _raise_if_cancelled(cancel_requested)
                 logger.warning(
                     "Could not probe duration of %s (%s); marking chapter %r with a "
                     "zero-length span so packaging can continue",
@@ -289,6 +327,7 @@ class M4BPackager:
                     chapter_name,
                 )
                 duration_sec = 0.0
+            _raise_if_cancelled(cancel_requested)
             duration_ms = int(duration_sec * 1000)
             
             chapters.append(ChapterMarker(
@@ -320,6 +359,7 @@ class M4BPackager:
         offsets = self._probe_stream_copy_offsets_ms(
             concat_path, audio_files, cancel_requested=cancel_requested
         )
+        _raise_if_cancelled(cancel_requested)
         if offsets is None:
             logger.warning(
                 "Could not probe stream-copied chapter timeline for %s; "
@@ -330,6 +370,7 @@ class M4BPackager:
                 audio_files,
                 chapter_names,
                 chapter_durations_ms=fallback_durations_ms,
+                cancel_requested=cancel_requested,
             )
 
         starts_ms, total_ms = offsets
@@ -360,26 +401,9 @@ class M4BPackager:
         try:
             ffprobe = require_ffmpeg_binary("ffprobe")
 
-            segment_packet_counts: list[int] = []
-            for audio_file in audio_files:
-                count_result = run_ffmpeg_command(
-                    [
-                        ffprobe, "-v", "error",
-                        "-select_streams", "a",
-                        "-count_packets",
-                        "-show_entries", "stream=nb_read_packets",
-                        "-of", "csv=p=0",
-                        str(audio_file),
-                    ],
-                    failure_message="FFprobe failed",
-                    cancel_requested=cancel_requested,
-                )
-                count_lines = [
-                    line.strip() for line in count_result.stdout.splitlines() if line.strip()
-                ]
-                if not count_lines:
-                    return None
-                segment_packet_counts.append(int(count_lines[0]))
+            segment_packet_counts = self._probe_segment_packet_counts(
+                ffprobe, audio_files, cancel_requested, self._audio_seconds
+            )
 
             # One boundary packet index per chapter, in chapter order. A chapter
             # with zero audio packets shares its successor's boundary index, so a
@@ -411,6 +435,7 @@ class M4BPackager:
                 ],
                 failure_message="FFprobe failed",
                 cancel_requested=cancel_requested,
+                audio_seconds=self._audio_seconds,
             )
             total_ms = int(round(float(duration_result.stdout.strip()) * 1000))
 
@@ -428,10 +453,77 @@ class M4BPackager:
             MemoryError,
             json.JSONDecodeError,
         ) as exc:
+            # A failed probe can use source durations; a user cancellation must
+            # stop packaging before any fallback probes or final mux begin.
+            _raise_if_cancelled(cancel_requested)
             logger.warning(
                 "Stream-copy chapter timeline probe failed for %s: %s", concat_path, exc
             )
             return None
+
+    @staticmethod
+    def _probe_segment_packet_counts(
+        ffprobe: str,
+        audio_files: list[Path],
+        cancel_requested: Callable[[], bool] | None,
+        audio_seconds: float | None = None,
+    ) -> list[int]:
+        """Count independently encoded chapters with at most two active probes.
+
+        Counts remain in chapter order. Keep only two futures queued so a long
+        book does not create an unbounded task list, and stop the sibling probe
+        before falling back if a count fails or cancellation is requested.
+        """
+        stopped = threading.Event()
+        parallel_probes = len(audio_files) >= 4
+
+        def cancelled() -> bool:
+            return stopped.is_set() or bool(cancel_requested and cancel_requested())
+
+        def count_packets(audio_file: Path) -> int:
+            try:
+                if cancelled():
+                    raise RuntimeError("FFprobe failed: cancelled")
+                result = run_ffmpeg_command(
+                    [
+                        ffprobe, "-v", "error", "-select_streams", "a",
+                        "-count_packets", "-show_entries", "stream=nb_read_packets",
+                        "-of", "csv=p=0", str(audio_file),
+                    ],
+                    failure_message="FFprobe failed",
+                    cancel_requested=cancelled if parallel_probes else cancel_requested,
+                    # Each chapter is part of the book, so the book length bounds it.
+                    audio_seconds=audio_seconds,
+                )
+                lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+                if not lines:
+                    raise ValueError(f"Missing audio packet count: {audio_file}")
+                count = int(lines[0])
+                if count < 0:
+                    raise ValueError(f"Invalid audio packet count: {audio_file}")
+                return count
+            except BaseException:
+                stopped.set()
+                raise
+
+        if not parallel_probes:
+            return [count_packets(path) for path in audio_files]
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="chapter-probe") as executor:
+            paths = iter(audio_files)
+            pending = deque(executor.submit(count_packets, next(paths)) for _ in range(2))
+            counts = []
+            try:
+                while pending:
+                    counts.append(pending.popleft().result())
+                    path = next(paths, None)
+                    if path is not None:
+                        pending.append(executor.submit(count_packets, path))
+                return counts
+            finally:
+                stopped.set()
+                for future in pending:
+                    future.cancel()
 
     def _probe_concat_packet_starts(
         self,
@@ -487,7 +579,7 @@ class M4BPackager:
         # forever. Drain on a background thread and enforce the module timeout,
         # killing the process (which closes stdout and unwinds the reader) if it
         # exceeds the deadline.
-        timeout = ffmpeg_timeout_seconds()
+        timeout = ffmpeg_timeout_seconds(audio_seconds=getattr(self, "_audio_seconds", None))
         reader = threading.Thread(target=consume_stdout, daemon=True)
         reader.start()
         deadline = time.monotonic() + timeout
@@ -528,7 +620,8 @@ class M4BPackager:
         
         # Add metadata
         lines.append(f"title={_escape_ffmetadata_value(metadata.title)}")
-        lines.append(f"artist={_escape_ffmetadata_value(metadata.author)}")
+        if str(metadata.author or "").strip():
+            lines.append(f"artist={_escape_ffmetadata_value(metadata.author)}")
         lines.append(f"album={_escape_ffmetadata_value(metadata.title)}")
         lines.append(f"genre={_escape_ffmetadata_value(metadata.genre)}")
 
@@ -550,40 +643,3 @@ class M4BPackager:
 
         with open(output_path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
-    
-    def get_chapters(self, m4b_path: Path | str) -> list[ChapterMarker]:
-        """
-        Extract chapter markers from existing M4B file.
-        
-        Args:
-            m4b_path: Path to M4B file
-            
-        Returns:
-            List of ChapterMarker objects
-        """
-        m4b_path = Path(m4b_path)
-        
-        if not m4b_path.exists():
-            raise FileNotFoundError(f"M4B file not found: {m4b_path}")
-        
-        cmd = [
-            require_ffmpeg_binary("ffprobe"),
-            "-v", "quiet",
-            "-print_format", "json",
-            "-show_chapters",
-            str(m4b_path)
-        ]
-        
-        result = run_ffmpeg_command(cmd, failure_message="FFprobe failed")
-        
-        data = json.loads(result.stdout)
-        chapters = []
-        
-        for ch in data.get("chapters", []):
-            chapters.append(ChapterMarker(
-                title=ch.get("tags", {}).get("title", "Chapter"),
-                start_ms=int(float(ch["start_time"]) * 1000),
-                end_ms=int(float(ch["end_time"]) * 1000)
-            ))
-        
-        return chapters

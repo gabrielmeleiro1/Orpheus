@@ -8,7 +8,8 @@ from unittest.mock import patch
 
 import pytest
 
-from modules.app.controller import AppController
+from modules.app.services.voice_service import VoiceService
+from modules.app.config import AppConfig
 
 
 @pytest.mark.benchmark
@@ -36,15 +37,17 @@ class TestPerformanceSmoke:
                 time.sleep(0.01)
                 return [0.0]
 
-        controller = AppController(config=None)
+        service = VoiceService(config=AppConfig(
+            data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
+        ))
 
-        with patch("modules.app.controller.TTSEngineFactory.create", return_value=_FakeStrategy()):
+        with patch("modules.tts.factory.TTSEngineFactory.create", return_value=_FakeStrategy()):
             t0 = time.perf_counter()
-            controller._validate_tts_runtime("kokoro", "bf16")
+            service.validate_tts_runtime("kokoro", "bf16")
             first_ms = (time.perf_counter() - t0) * 1000
 
             t1 = time.perf_counter()
-            controller._validate_tts_runtime("kokoro", "bf16")
+            service.validate_tts_runtime("kokoro", "bf16")
             second_ms = (time.perf_counter() - t1) * 1000
 
         assert first_ms > 5.0

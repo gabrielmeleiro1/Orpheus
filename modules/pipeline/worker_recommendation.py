@@ -85,10 +85,7 @@ def build_parallel_worker_recommendation(
     """Return UI-safe worker recommendation details from the memory policy."""
     requested_max = max(1, int(requested_max or 1))
     if snapshot is None:
-        try:
-            snapshot = sample_memory_snapshot(device_memory_policy=device_memory_policy)
-        except TypeError:
-            snapshot = sample_memory_snapshot()
+        snapshot = sample_memory_snapshot(device_memory_policy=device_memory_policy)
     static_estimate = STATIC_WORKER_ESTIMATE_BYTES
     worker_estimate = max(1, int(estimated_worker_bytes or static_estimate))
     unavailable_reason = (

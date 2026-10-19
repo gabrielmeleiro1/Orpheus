@@ -121,6 +121,8 @@ class PipelineRunState:
     chapter_aac_executor: ThreadPoolExecutor | None = None
     chapter_aac_pending_future: Any | None = None
     background_workers: set[threading.Thread] = field(default_factory=set)
+    # Original source of the current run; packaging embeds its cover art.
+    source_path: Path | None = None
 
     def reset_for_conversion(self, *, selected_parallel_chapters: int) -> None:
         if self.chapter_aac_executor is not None:

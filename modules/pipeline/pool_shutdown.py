@@ -12,7 +12,17 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+import psutil
+
 logger = logging.getLogger(__name__)
+
+
+def shutdown_shared_worker_pool(config: Any) -> None:
+    """Release worker-owned models before loading models in the parent process."""
+    manager = getattr(config, "shared_worker_pool_manager", None)
+    shutdown = getattr(manager, "shutdown", None)
+    if callable(shutdown) and shutdown() is False:
+        raise RuntimeError("Worker pool has not stopped; cannot load sequential models")
 
 
 def _call_executor_shutdown(
@@ -37,6 +47,25 @@ def _executor_processes(executor: Any) -> list[Any]:
 
 
 def _terminate_processes(processes: list[Any]) -> None:
+    descendants: list[Any] = []
+    for process in processes:
+        pid = getattr(process, "pid", None)
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        try:
+            descendants.extend(psutil.Process(pid).children(recursive=True))
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.Error, OSError):
+            logger.exception("Failed to inspect shared worker descendants")
+    for child in reversed(descendants):
+        try:
+            child.terminate()
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.Error, OSError):
+            logger.exception("Failed to terminate shared worker descendant")
+
     for process in processes:
         is_alive = getattr(process, "is_alive", None)
         if callable(is_alive) and not is_alive():
@@ -70,6 +99,23 @@ def _terminate_processes(processes: list[Any]) -> None:
             except Exception:
                 logger.exception("Failed to kill shared worker process")
 
+    _gone, alive = psutil.wait_procs(descendants, timeout=0.25)
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.Error, OSError):
+            logger.exception("Failed to kill shared worker descendant")
+    psutil.wait_procs(alive, timeout=0.25)
+    for process in processes:
+        join = getattr(process, "join", None)
+        if callable(join):
+            try:
+                join(timeout=0.25)
+            except Exception:
+                logger.exception("Failed while joining killed shared worker process")
+
 
 def _shutdown_executor_bounded(
     executor: Any,
@@ -80,20 +126,22 @@ def _shutdown_executor_bounded(
 ) -> bool:
     """Shut an executor down within ``timeout_seconds``.
 
-    ``on_quiesced`` marks an executor whose workers cannot be force
-    terminated: shutdown always runs with ``wait=True``, the callback fires
-    only once that call confirms quiescence, and exceeding the timeout
-    leaves the worker unwinding instead of killing processes.
+    ``on_quiesced`` fires only after ``shutdown(wait=True)`` confirms quiescence.
+    Process workers may be force-terminated; thread workers keep unwinding.
     """
     worker_processes = _executor_processes(executor)
-    if on_quiesced is None and timeout_seconds is not None and timeout_seconds <= 0:
+    force_immediately = timeout_seconds is not None and timeout_seconds <= 0
+    if force_immediately and (worker_processes or on_quiesced is None):
         _call_executor_shutdown(
             executor,
             wait=False,
             cancel_futures=cancel_futures,
         )
         _terminate_processes(worker_processes)
-        return False
+        if on_quiesced is None:
+            return False
+
+    shutdown_succeeded = threading.Event()
 
     def _shutdown() -> None:
         try:
@@ -105,6 +153,7 @@ def _shutdown_executor_bounded(
         except Exception:
             logger.exception("Shared worker executor shutdown failed")
             return
+        shutdown_succeeded.set()
         if on_quiesced is not None:
             on_quiesced()
 
@@ -115,9 +164,11 @@ def _shutdown_executor_bounded(
     )
     shutdown_thread.start()
     shutdown_thread.join(timeout=timeout_seconds)
+    if force_immediately:
+        return False
     if not shutdown_thread.is_alive():
-        return True
-    if on_quiesced is not None:
+        return shutdown_succeeded.is_set()
+    if on_quiesced is not None and not worker_processes:
         return False
 
     logger.warning(
@@ -126,4 +177,4 @@ def _shutdown_executor_bounded(
     )
     _terminate_processes(worker_processes)
     shutdown_thread.join(timeout=0.25)
-    return not shutdown_thread.is_alive()
+    return not shutdown_thread.is_alive() and shutdown_succeeded.is_set()

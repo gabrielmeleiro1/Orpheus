@@ -160,6 +160,8 @@ def retry_batch_results_serially(
 
     recovered_results: list[Any] = []
     for item in batch_items:
+        if runtime.check_cancelled():
+            break
         try:
             audio = runtime.tts_engine.synthesize(
                 text=item.text,
@@ -185,6 +187,8 @@ def retry_batch_results_serially(
                 )
             )
 
+        if runtime.check_cancelled():
+            break
         on_batch_progress(item.index + 1, total_chunks)
 
     return recovered_results

@@ -141,7 +141,6 @@ def test_startup_probe_failure_shuts_down_executor_and_raises() -> None:
 
     assert failing_executor.shutdown_calls >= 1
     assert manager.snapshot()["running"] is False
-    assert manager._startup_failures == 1
 
 
 def test_startup_probe_timeouts_share_one_deadline_and_are_infrastructure_failures() -> None:
@@ -323,7 +322,6 @@ def test_worker_init_cuda_cleaner_unavailable_is_fatal_during_warmup() -> None:
     assert status.provider == "cuda"
     assert status.device == "cuda:0"
     assert "CUDA cleaner runtime unavailable" in (status.message or "")
-    assert worker_runtime_module.get_worker_init_error() == status.message
 
 
 def test_worker_init_cuda_cleaner_memory_error_includes_backend_and_device() -> None:

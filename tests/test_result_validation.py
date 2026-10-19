@@ -206,3 +206,19 @@ def test_success_artifacts_reject_a_chapter_whose_audio_file_is_gone(tmp_path) -
 
     assert validation.is_valid is False
     assert validation.chapter_notes
+
+
+def test_pending_background_encode_counts_as_chapter_audio(tmp_path):
+    # The background encoder releases the chapter's WAV master once its AAC is
+    # written; the AAC path is attached only when packaging collects the future.
+    from concurrent.futures import Future
+
+    from modules.pipeline.models import ChapterResult
+    from modules.pipeline.result_validation import summarize_incomplete_chapters
+
+    pending = Future()
+    pending.set_result(tmp_path / "01_One.m4a")
+    result = ChapterResult(1, "One", duration_ms=1000)
+    result.aac_future = pending
+
+    assert summarize_incomplete_chapters([result]) == []

@@ -52,7 +52,6 @@ class WorkerPlan:
     worker_mode: str = "auto"
     worker_auto_mode: str = "memory_safe"
     process_safe: bool = False
-    use_memory_policy: bool = False
     enforce_vram_budget: bool = True
     initial_reason: Optional[str] = None
 
@@ -116,7 +115,15 @@ def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
     if not parallel_requested:
         initial_reason = "parallel disabled"
     elif worker_mode == "manual":
+        # A manual count is a ceiling, not an override of device safety: each
+        # worker loads its own models, and oversubscribing one GPU makes every
+        # worker page device memory instead of running faster. Free device
+        # memory is checked when chapters are dispatched (see
+        # chapter_dispatch.effective_workers), not when the config is built.
         initial_reason = "manual worker count"
+        if _cuda_tts_cleaner_same_device_contention(config):
+            max_workers = 1
+            initial_reason = "the TTS model and the CUDA cleaner share one GPU"
     elif worker_auto_mode == "cpu_cores" and process_safe:
         initial_reason = "process-safe CPU-core auto worker policy"
     elif worker_auto_mode == "sequential":
@@ -146,7 +153,6 @@ def build_worker_plan(config: "PipelineConfig") -> WorkerPlan:
         worker_mode=worker_mode,
         worker_auto_mode=worker_auto_mode,
         process_safe=process_safe,
-        use_memory_policy=config.memory_policy is not None,
         enforce_vram_budget=not (
             worker_mode == "manual"
             or (worker_auto_mode == "cpu_cores" and process_safe)
@@ -175,7 +181,8 @@ class PipelineConfig:
     cleaner_cuda_quantization: str = "4bit"
     cleaner_api_base_url: str = "https://api.openai.com/v1"
     cleaner_api_key_env: str = "OPENAI_API_KEY"
-    cleaner_api_key: Optional[str] = None
+    # Kept out of repr so logging or a traceback never prints the secret.
+    cleaner_api_key: Optional[str] = field(default=None, repr=False)
     cleaner_api_model: Optional[str] = "gpt-5-nano"
     save_cleaning_debug: bool = False
     cleaner_skip_llm_when_not_needed: bool = True
@@ -192,7 +199,6 @@ class PipelineConfig:
     normalize_volume: bool = True
     target_dbfs: float = -16.0
     chunk_size: int = 700
-    chapter_start: int = 1
 
     # Parallel processing settings
     enable_parallel: bool = True
@@ -213,10 +219,8 @@ class PipelineConfig:
     shared_worker_pool_manager: Optional[Any] = None
     memory_policy: Optional[Any] = None
     device_memory_policy: Optional[DeviceMemoryPolicy] = None
-    chapter_limit: Optional[int] = None
     pre_chunk_document_cleanup: bool = True
     skip_non_prose_sections: bool = True
-    artifact_gated_cleaning: bool = True
     speech_normalization: bool = False
     worker_plan: WorkerPlan = field(init=False)
 
@@ -279,6 +283,7 @@ class ChapterResult:
     # PCM16 RMS of the streamed chapter WAV, recorded during synthesis so
     # encoding can derive the normalization gain without rescanning the file.
     pcm_rms: Optional[float] = None
+    packaged_start_ms: Optional[int] = None
 
 
 @dataclass
@@ -292,7 +297,6 @@ class ConversionResult:
     chapters: list[ChapterResult] = field(default_factory=list)
     total_duration_ms: int = 0
     error: Optional[str] = None
-    processing_time_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -307,6 +311,7 @@ class RepairedChapterUpdate:
     chapter_id: int
     duration_ms: Optional[int]
     mp3_path: Optional[str]
+    packaged_start_ms: Optional[int] = None
 
 
 @dataclass(frozen=True)

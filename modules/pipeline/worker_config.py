@@ -65,7 +65,6 @@ def _serialize_pipeline_config_dict(config: PipelineConfig) -> dict[str, Any]:
         "normalize_volume": config.normalize_volume,
         "target_dbfs": config.target_dbfs,
         "chunk_size": config.chunk_size,
-        "chapter_start": config.chapter_start,
         "enable_pipelining": config.enable_pipelining,
         "enable_chunk_overlap": config.enable_chunk_overlap,
         "enable_tts_file_batch_results": config.enable_tts_file_batch_results,
@@ -74,10 +73,8 @@ def _serialize_pipeline_config_dict(config: PipelineConfig) -> dict[str, Any]:
         ),
         "keep_tts_engine_warm": False,
         "tts_idle_timeout_seconds": config.tts_idle_timeout_seconds,
-        "chapter_limit": config.chapter_limit,
         "pre_chunk_document_cleanup": config.pre_chunk_document_cleanup,
         "skip_non_prose_sections": config.skip_non_prose_sections,
-        "artifact_gated_cleaning": config.artifact_gated_cleaning,
         "speech_normalization": config.speech_normalization,
     }
 
@@ -156,7 +153,6 @@ def build_worker_pipeline_config(
         normalize_volume=serialized_config["normalize_volume"],
         target_dbfs=serialized_config["target_dbfs"],
         chunk_size=serialized_config["chunk_size"],
-        chapter_start=serialized_config.get("chapter_start", 1),
         enable_parallel=False,
         enable_pipelining=serialized_config["enable_pipelining"],
         enable_chunk_overlap=serialized_config["enable_chunk_overlap"],
@@ -173,7 +169,6 @@ def build_worker_pipeline_config(
             "tts_idle_timeout_seconds",
             300.0,
         ),
-        chapter_limit=serialized_config.get("chapter_limit"),
         cleaner_api_global_concurrency=serialized_config[
             "cleaner_api_global_concurrency"
         ],
@@ -185,10 +180,6 @@ def build_worker_pipeline_config(
         ),
         skip_non_prose_sections=serialized_config.get(
             "skip_non_prose_sections",
-            True,
-        ),
-        artifact_gated_cleaning=serialized_config.get(
-            "artifact_gated_cleaning",
             True,
         ),
         speech_normalization=serialized_config.get("speech_normalization", False),

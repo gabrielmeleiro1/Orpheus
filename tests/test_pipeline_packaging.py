@@ -12,7 +12,6 @@ from unittest.mock import patch
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import modules.audio as audio_module
 from modules.pipeline.orchestrator import ChapterResult, ConversionPipeline, PipelineConfig
 
 
@@ -203,59 +202,6 @@ def _test_package_rejects_directory_audio_artifacts() -> None:
     print("✓ package rejects directory audio artifacts")
 
 
-def _test_package_outputs_m4a_for_document_audio_mode() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-            conversion_mode="document_audio",
-        )
-        pipeline = ConversionPipeline(config=cfg)
-        cfg.output_dir.mkdir(parents=True, exist_ok=True)
-
-        chapter_one = cfg.output_dir / "01_one.mp3"
-        chapter_two = cfg.output_dir / "02_two.mp3"
-        chapter_one.write_bytes(b"one")
-        chapter_two.write_bytes(b"two")
-
-        chapter_results = [
-            ChapterResult(
-                chapter_number=1,
-                chapter_title="One",
-                mp3_path=chapter_one,
-                duration_ms=1111,
-            ),
-            ChapterResult(
-                chapter_number=2,
-                chapter_title="Two",
-                mp3_path=chapter_two,
-                duration_ms=2222,
-            ),
-        ]
-
-        assert hasattr(audio_module, "DocumentAudioPackager")
-
-        with patch("modules.audio.document_packager.DocumentAudioPackager") as packager_cls:
-            packager = packager_cls.return_value
-            expected_out = cfg.output_dir / "Book.m4a"
-            packager.create_m4a.return_value = expected_out
-
-            output = pipeline.stages.package(  # noqa: SLF001 - intentional direct test
-                chapter_results=chapter_results,
-                title="Book",
-                author="Author",
-                output_dir=cfg.output_dir,
-            )
-
-            assert output == expected_out
-            assert output.suffix == ".m4a"
-            assert packager.create_m4a.call_count == 1
-
-    print("✓ package switches document audio output to m4a")
-
-
 def _test_package_rejects_incomplete_chapter_sets() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -308,7 +254,6 @@ def test_pipeline_packaging() -> bool:
     _test_package_passes_known_chapter_durations_to_packager()
     _test_package_prefers_wav_masters_over_mp3_chapter_artifacts()
     _test_package_rejects_directory_audio_artifacts()
-    _test_package_outputs_m4a_for_document_audio_mode()
     _test_package_rejects_incomplete_chapter_sets()
 
     print("\n" + "=" * 50)

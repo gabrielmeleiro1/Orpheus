@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -189,90 +188,3 @@ class SafeMemoryPolicy:
         headroom_bytes = max(0, snapshot.available_bytes - self.reserve_bytes(snapshot))
         self.safe_mode_reason = None
         return headroom_bytes >= active_workers * self.estimated_worker_bytes
-
-
-def _sysconf_memory_snapshot() -> Optional[tuple[int, int]]:
-    try:
-        page_size = int(os.sysconf("SC_PAGE_SIZE"))
-        total_pages = int(os.sysconf("SC_PHYS_PAGES"))
-        available_pages = int(os.sysconf("SC_AVPHYS_PAGES"))
-    except (AttributeError, OSError, TypeError, ValueError):
-        return None
-
-    if page_size <= 0 or total_pages <= 0 or available_pages < 0:
-        return None
-    return total_pages * page_size, available_pages * page_size
-
-
-def _mlx_memory_bytes(mlx_core: Any) -> tuple[int, int, int]:
-    if not mlx_core:
-        return 0, 0, 0
-
-    def read_byte_count(*names: str) -> int:
-        for name in names:
-            probe = getattr(mlx_core, name, None)
-            if not callable(probe):
-                continue
-            try:
-                return max(0, int(probe()))
-            except Exception:
-                return 0
-        return 0
-
-    return (
-        read_byte_count("get_active_memory", "active_memory"),
-        read_byte_count("get_cache_memory", "cache_memory"),
-        read_byte_count("get_peak_memory", "peak_memory"),
-    )
-
-
-def sample_memory_snapshot(
-    *,
-    virtual_memory: Optional[Callable[[], Any]] = None,
-    process_factory: Optional[Callable[[], Any]] = None,
-    mlx_core: Any = None,
-) -> Optional[MemorySnapshot]:
-    """Return a best-effort memory snapshot, or ``None`` when headroom is unknown."""
-    if virtual_memory is None:
-        try:
-            import psutil
-
-            virtual_memory = psutil.virtual_memory
-            process_factory = process_factory or psutil.Process
-        except Exception:
-            virtual_memory = None
-
-    total_bytes: Optional[int] = None
-    available_bytes: Optional[int] = None
-    if virtual_memory is not None:
-        try:
-            memory = virtual_memory()
-            total_bytes = int(memory.total)
-            available_bytes = int(memory.available)
-        except Exception:
-            return None
-
-    if total_bytes is None or available_bytes is None:
-        sysconf_snapshot = _sysconf_memory_snapshot()
-        if sysconf_snapshot is None:
-            return None
-        total_bytes, available_bytes = sysconf_snapshot
-
-    process_rss_bytes = 0
-    if process_factory is not None:
-        try:
-            process = process_factory()
-            if process is not None:
-                process_rss_bytes = max(0, int(process.memory_info().rss))
-        except Exception:
-            process_rss_bytes = 0
-
-    mlx_active_bytes, mlx_cache_bytes, mlx_peak_bytes = _mlx_memory_bytes(mlx_core)
-    return MemorySnapshot(
-        total_bytes=max(0, int(total_bytes)),
-        available_bytes=max(0, int(available_bytes)),
-        process_rss_bytes=process_rss_bytes,
-        mlx_active_bytes=mlx_active_bytes,
-        mlx_cache_bytes=mlx_cache_bytes,
-        mlx_peak_bytes=mlx_peak_bytes,
-    )

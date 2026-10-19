@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .models import WorkerPlan
+from .pool_shutdown import shutdown_shared_worker_pool
 from .runtime import PipelineRuntimeProtocol
 
 
@@ -16,7 +17,6 @@ class WorkerSelection:
 
     count: int
     requested: int
-    planned: int
     reason: str | None = None
 
 
@@ -147,12 +147,11 @@ def effective_workers(
     worker_plan: WorkerPlan,
     total_chapters: int,
     total_chars: int,
-    memory_policy: Any = None,
     parallel_capacity: int | None = None,
     adaptive_selector: Callable[..., int] = adaptive_parallel_workers,
+    memory_policy: Any = None,
 ) -> WorkerSelection:
     """Resolve the dispatch worker count from the canonical WorkerPlan."""
-    _ = memory_policy
     requested_workers = max(1, int(worker_plan.requested_workers or 1))
     planned_workers = max(1, int(worker_plan.max_workers or 1))
     capacity = max(1, int(parallel_capacity or planned_workers))
@@ -177,10 +176,28 @@ def effective_workers(
         )
 
     selected_workers = min(max(1, int(selected_workers or 1)), planned_workers, capacity)
+    if (
+        worker_mode == "manual"
+        and worker_plan.enable_parallel
+        and selected_workers > 1
+        and not (worker_auto_mode == "cpu_cores" and worker_plan.process_safe)
+        and callable(getattr(memory_policy, "allowed_workers", None))
+    ):
+        # A manual count is a ceiling: each worker loads its own models, so it is
+        # limited to what free device memory allows at the moment of dispatch.
+        allowed = max(1, int(memory_policy.allowed_workers(selected_workers)))
+        if allowed < selected_workers:
+            return WorkerSelection(
+                count=allowed,
+                requested=requested_workers,
+                reason=(
+                    getattr(memory_policy, "selected_worker_count_reason", None)
+                    or "device memory allows fewer workers"
+                ),
+            )
     return WorkerSelection(
         count=selected_workers,
         requested=requested_workers,
-        planned=planned_workers,
         reason=_worker_selection_reason(
             worker_plan,
             selected_workers,
@@ -205,18 +222,20 @@ def dispatch_chapters(
         worker_plan=worker_plan,
         total_chapters=total_chapters,
         total_chars=total_chars,
-        memory_policy=getattr(context.config, "memory_policy", None),
         parallel_capacity=parallel_capacity,
+        memory_policy=getattr(context.config, "memory_policy", None),
     )
     selected_workers = selection.count
     context.set_selected_parallel_chapters(selected_workers)
     context.set_selected_parallel_worker_count_reason(selection.reason)
-    if selected_workers < selection.requested:
+    if worker_plan.enable_parallel and selected_workers < selection.requested:
         avg_chapter_chars = int(total_chars / max(total_chapters, 1))
+        reason = selection.reason or f"avg chapter size {avg_chapter_chars} chars"
+        noun = "worker" if selected_workers == 1 else "workers"
         context.log_verbose(
-            f"[PARALLEL] Adaptive worker guard: {selection.requested} -> "
-            f"{selected_workers} (avg chapter size {avg_chapter_chars} chars)",
-            "info",
+            f"[PARALLEL] Using {selected_workers} {noun} of {selection.requested} "
+            f"requested: {reason}",
+            "warning" if worker_plan.worker_mode == "manual" else "info",
         )
 
     use_parallel = (
@@ -230,6 +249,7 @@ def dispatch_chapters(
         return []
 
     if not use_parallel and total_chapters > 0:
+        shutdown_shared_worker_pool(context.config)
         runner.warmup_models()
         if context.check_cancelled():
             return []
@@ -289,6 +309,7 @@ def dispatch_chapters(
                     "warning",
                 )
                 if not use_parallel:
+                    shutdown_shared_worker_pool(context.config)
                     runner.warmup_models()
                     if context.check_cancelled():
                         return []

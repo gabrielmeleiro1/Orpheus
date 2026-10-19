@@ -257,11 +257,6 @@ class WorkerStartupError(Exception):
         super().__init__(message)
         self.statuses = list(statuses or [])
 
-    @property
-    def primary_status(self) -> Optional[WorkerStartupStatus]:
-        return self.statuses[0] if self.statuses else None
-
-
 class WorkerRuntimeLoadError(Exception):
     """Raised when a worker cannot load its runtime or models."""
 

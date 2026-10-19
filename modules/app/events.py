@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Union
+from typing import Any
 
 
 class EventType(str, Enum):
@@ -172,9 +172,6 @@ class StateEvent:
     state: JobState
     job_id: str
     message: str = ""
-
-
-AppEvent = Union[ProgressEvent, LogEvent, StateEvent]
 
 
 def make_progress_event(

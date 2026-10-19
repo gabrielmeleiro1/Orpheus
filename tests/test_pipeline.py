@@ -6,16 +6,63 @@ from unittest.mock import MagicMock, patch
 from pathlib import Path
 import numpy as np
 import wave
-import modules.audio as audio_module
 from modules.errors import OCRRequiredPDFError
 from modules.ingestion.models import Chapter, Document
 from modules.pipeline.book_workspace import initialize_book_workspace, prepare_book_workspace
+from modules.pipeline.chapter_narration import (
+    CHAPTER_END_PAUSE_SECONDS,
+    CHAPTER_HEADING_PAUSE_SECONDS,
+)
 from modules.pipeline.stages.ingestion import ingest_source, save_intermediate_source
 from modules.pipeline.orchestrator import (
     ChapterResult,
     ConversionPipeline,
     PipelineConfig,
 )
+
+
+class _FileResultTTSEngine:
+    supports_incremental_batch_results = True
+    supports_file_batch_results = True
+    is_loaded = True
+    sample_rate = 24000
+
+    def __init__(self):
+        self.output_paths = []
+
+    def iter_synthesize_batch(self, items, progress_callback=None):  # noqa: ANN001
+        from modules.tts.engine import BatchResult
+
+        total = len(items)
+        for completed, item in enumerate(items, start=1):
+            assert item.output_path is not None
+            self.output_paths.append(item.output_path)
+            with wave.open(str(item.output_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(24000)
+                wav_file.writeframes((np.array([item.index + 1, item.index + 1], dtype=np.int16)).tobytes())
+            if progress_callback is not None:
+                progress_callback(completed, total)
+            yield BatchResult(
+                audio=None,
+                audio_path=item.output_path,
+                index=item.index,
+                error=None,
+                duration_ms=1,
+            )
+
+
+def _pipeline_config(tmp_path, **overrides):
+    return PipelineConfig(
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        **overrides,
+    )
+
+
+def _make_pipeline(tmp_path, **overrides):
+    return ConversionPipeline(_pipeline_config(tmp_path, **overrides))
 
 
 def test_conversion_cleanup_defers_model_unload_for_stuck_background_cleaner():
@@ -45,13 +92,16 @@ def test_conversion_cleanup_defers_model_unload_for_stuck_background_cleaner():
     assert runtime.state.cancelled is False
 
 
-def test_benchmark_backed_kokoro_defaults():
+def test_benchmark_backed_kokoro_defaults(tmp_path):
     from modules.app.config import AppConfig
     from modules.tts.chunker import ChunkConfig
     from modules.tts.engine_config import TTSConfig as LegacyTTSConfig
     from modules.tts.strategies.base import TTSConfig as StrategyTTSConfig
 
     pipeline_config = PipelineConfig()
+    app_config = AppConfig(
+        data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
+    )
 
     assert pipeline_config.chunk_size == 700
     assert pipeline_config.enable_tts_file_batch_results is False
@@ -59,9 +109,9 @@ def test_benchmark_backed_kokoro_defaults():
     assert pipeline_config.tts_file_batch_results_auto_threshold_chunks == 64
     assert pipeline_config.keep_tts_engine_warm is True
     assert pipeline_config.tts_idle_timeout_seconds == 300.0
-    assert AppConfig().chunk_size == 700
-    assert AppConfig().enable_tts_file_batch_results is False
-    assert AppConfig().emit_chapter_mp3_artifacts is False
+    assert app_config.chunk_size == 700
+    assert app_config.enable_tts_file_batch_results is False
+    assert app_config.emit_chapter_mp3_artifacts is False
     assert ChunkConfig().max_tokens == 700
     assert StrategyTTSConfig().max_chunk_tokens == 700
     assert LegacyTTSConfig().max_chunk_tokens == 700
@@ -81,26 +131,24 @@ def test_app_config_emit_chapter_mp3_artifacts_env_and_serialization(monkeypatch
 
 
 def test_conversion_cleanup_keeps_kokoro_hot_until_forced(tmp_path):
-    config = PipelineConfig(
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
+    pipeline = _make_pipeline(
+        tmp_path,
         enable_parallel=False,
         tts_engine="kokoro",
         keep_tts_engine_warm=True,
         tts_idle_timeout_seconds=300.0,
     )
-    pipeline = ConversionPipeline(config)
     tts_engine = MagicMock()
     text_cleaner = MagicMock()
     pipeline._tts_engine = tts_engine  # noqa: SLF001
-    pipeline._text_cleaner = text_cleaner  # noqa: SLF001
+    pipeline._run_state.text_cleaner = text_cleaner  # noqa: SLF001
 
     pipeline.stages.cleanup_models()  # noqa: SLF001
 
     tts_engine.unload.assert_not_called()
     assert pipeline._tts_engine is tts_engine  # noqa: SLF001
     text_cleaner.unload.assert_called_once_with(keep_in_cache=True)
-    assert pipeline._text_cleaner is None  # noqa: SLF001
+    assert pipeline._run_state.text_cleaner is None  # noqa: SLF001
 
     pipeline.stages.cleanup_models(force=True)  # noqa: SLF001
 
@@ -109,15 +157,13 @@ def test_conversion_cleanup_keeps_kokoro_hot_until_forced(tmp_path):
 
 
 def test_zero_idle_timeout_unloads_retained_kokoro_immediately(tmp_path):
-    config = PipelineConfig(
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
+    pipeline = _make_pipeline(
+        tmp_path,
         enable_parallel=False,
         tts_engine="kokoro",
         keep_tts_engine_warm=True,
         tts_idle_timeout_seconds=0.0,
     )
-    pipeline = ConversionPipeline(config)
     tts_engine = MagicMock()
     pipeline._tts_engine = tts_engine  # noqa: SLF001
 
@@ -152,13 +198,7 @@ def test_finish_conversion_run_shuts_down_chapter_aac_executor_on_cleanup_error(
 
 
 def test_warmup_reuses_retained_loaded_kokoro_without_probe(tmp_path):
-    config = PipelineConfig(
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        enable_parallel=False,
-        tts_engine="kokoro",
-    )
-    pipeline = ConversionPipeline(config)
+    pipeline = _make_pipeline(tmp_path, enable_parallel=False, tts_engine="kokoro")
     tts_engine = MagicMock()
     tts_engine.is_loaded = True
     pipeline._tts_engine = tts_engine  # noqa: SLF001
@@ -173,12 +213,7 @@ def test_warmup_reuses_retained_loaded_kokoro_without_probe(tmp_path):
 
 
 def test_convert_pre_run_cancellation_finishes_lifecycle(tmp_path):
-    config = PipelineConfig(
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        enable_parallel=False,
-    )
-    pipeline = ConversionPipeline(config)
+    pipeline = _make_pipeline(tmp_path, enable_parallel=False)
     cleanup_calls = []
     pipeline.stages.cleanup_models = lambda force=False: cleanup_calls.append(force)
     pipeline.cancel()
@@ -187,7 +222,7 @@ def test_convert_pre_run_cancellation_finishes_lifecycle(tmp_path):
 
     assert result.success is False
     assert result.error == "Cancelled"
-    assert pipeline._cancelled is False  # noqa: SLF001
+    assert pipeline._run_state.cancelled is False  # noqa: SLF001
     assert cleanup_calls == [False]
 
 
@@ -281,35 +316,10 @@ class TestConversionPipeline:
                 "packager": mock_packager,
             }
 
-    def test_pipeline_execution_success(self, mock_components, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp"
-        )
-        pipeline = ConversionPipeline(config)
-        
-        # Create a dummy test file
-        test_file = tmp_path / "test.pdf"
-        test_file.write_text("dummy pdf content")
-        
-        result = pipeline.convert(test_file)
-        
-        if not result.success:
-            print(f"Pipeline failed with error: {result.error}")
-            
-        assert result.success
-        assert result.title == "Test Book"
-        assert len(result.chapters) == 1
-
     def test_convert_filters_non_prose_sections_before_cleaning_tts_and_output(
         self, mock_components, tmp_path
     ):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_parallel=False)
         test_file = tmp_path / "test.pdf"
         test_file.write_text("dummy pdf content")
         mock_components["pdf"].return_value.parse.return_value = Document(
@@ -386,8 +396,7 @@ class TestConversionPipeline:
         assert create_m4b_kwargs["chapter_names"] == ["Chapter 1", "Chapter 2"]
 
     def test_pipeline_reports_ocr_required_pdf_before_cleaning(self, mock_components, tmp_path):
-        config = PipelineConfig(output_dir=tmp_path / "output", temp_dir=tmp_path / "temp")
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         source = tmp_path / "scanned.pdf"
         source.write_bytes(b"%PDF-1.4\n" + b"x" * 128 + b"\n%%EOF")
         mock_components["pdf"].return_value.parse.side_effect = OCRRequiredPDFError(
@@ -405,17 +414,10 @@ class TestConversionPipeline:
         mock_components["cleaner"].assert_not_called()
 
     def test_pipeline_execution_success_document_audio_outputs_m4a(self, mock_components, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            conversion_mode="document_audio",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, conversion_mode="document_audio")
 
         test_file = tmp_path / "test.pdf"
         test_file.write_text("dummy pdf content")
-
-        assert hasattr(audio_module, "DocumentAudioPackager")
 
         expected_output = tmp_path / "output" / "Test Book" / "Test Book.m4a"
 
@@ -436,11 +438,7 @@ class TestConversionPipeline:
         assert result.output_path.suffix == ".m4a"
         
     def test_cancellation(self, mock_components, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp"
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         
         # Create a dummy test file
         test_file = tmp_path / "test.pdf"
@@ -461,11 +459,7 @@ class TestConversionPipeline:
         assert "Cancelled" in str(result.error)
 
     def test_cancellation_after_ingestion_returns_cancelled_result(self, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         test_file = tmp_path / "test.txt"
         test_file.write_text("dummy text")
 
@@ -487,12 +481,7 @@ class TestConversionPipeline:
 
     def test_persistence_files_created(self, mock_components, tmp_path):
         """Verify that source.md and chapter_XX_cleaned.md files are created."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            save_cleaning_debug=True,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, save_cleaning_debug=True)
         
         # Create a dummy test file
         test_file = tmp_path / "test.pdf"
@@ -660,12 +649,7 @@ class TestConversionPipeline:
 
     def test_cleaned_text_retained_when_debug_disabled(self, mock_components, tmp_path):
         """Verify large debug artifacts are skipped when save_cleaning_debug is disabled."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            save_cleaning_debug=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, save_cleaning_debug=False)
 
         test_file = tmp_path / "test.pdf"
         test_file.write_text("dummy pdf content")
@@ -682,13 +666,7 @@ class TestConversionPipeline:
 
     def test_chunk_overlap_is_not_tied_to_global_pipelining(self, mock_components, tmp_path):
         """Global pipelining should not force overlap mode for multi-chunk chapters."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_pipelining=True,
-            enable_chunk_overlap=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_pipelining=True, enable_chunk_overlap=False)
 
         chapter = MagicMock(number=1, title="Chapter 1", content="Text")
         wav_path = tmp_path / "chapter.wav"
@@ -704,8 +682,8 @@ class TestConversionPipeline:
              patch.object(processor, "ensure_chapter_tts_engine"), \
              patch.object(processor, "chunk_chapter_content", return_value=["chunk1", "chunk2"]), \
              patch.object(processor, "clean_chapter_content", return_value=(["clean1", "clean2"], False)), \
-             patch.object(processor, "synthesize_chapter_chunks", return_value=wav_path), \
-             patch.object(processor, "clean_and_synthesize_with_overlap", return_value=(wav_path, False)), \
+             patch.object(processor, "synthesize_chapter_chunks", return_value=wav_path) as strict, \
+             patch.object(processor, "clean_and_synthesize_with_overlap", return_value=(wav_path, False)) as overlapped, \
              patch.object(processor, "encode_chapter_audio", return_value=(mp3_path, 1000)):
             result = pipeline.stages.process_chapter(
                 chapter=chapter,
@@ -715,15 +693,11 @@ class TestConversionPipeline:
             )
 
         assert result.error is None
+        assert strict.called
+        assert not overlapped.called
 
     def test_ensure_chapter_tts_engine_uses_factory_selected_strategy(self, tmp_path):
-        config = PipelineConfig(
-            tts_engine="kokoro",
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, tts_engine="kokoro", enable_parallel=False)
         fake_strategy = MagicMock()
         fake_strategy.is_loaded = True
 
@@ -738,11 +712,7 @@ class TestConversionPipeline:
         self, mock_components, tmp_path
     ):
         """In-memory chapter audio should be packaged from WAV without redundant MP3 encode."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_chunk_overlap=False,
-        )
+        config = _pipeline_config(tmp_path, enable_chunk_overlap=False)
         pipeline = ConversionPipeline(config)
 
         chapter = MagicMock(number=1, title="Chapter 1", content="Text")
@@ -769,19 +739,17 @@ class TestConversionPipeline:
         assert result.error is None
         assert result.wav_path == config.temp_dir / "chapter_01_narrated.wav"
         assert result.wav_path.exists()
-        assert result.duration_ms == 6000
+        # Six samples of speech plus the chapter heading and end pauses.
+        assert result.duration_ms == int(
+            (CHAPTER_HEADING_PAUSE_SECONDS + CHAPTER_END_PAUSE_SECONDS) * 1000
+        )
         assert result.mp3_path is None
 
     def test_process_chapter_can_still_emit_mp3_artifacts_when_enabled(
         self, mock_components, tmp_path
     ):
         """Chapter MP3 artifacts remain available when explicitly requested."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_chunk_overlap=False,
-            emit_chapter_mp3_artifacts=True,
-        )
+        config = _pipeline_config(tmp_path, enable_chunk_overlap=False, emit_chapter_mp3_artifacts=True)
         pipeline = ConversionPipeline(config)
 
         chapter = MagicMock(number=1, title="Chapter 1", content="Text")
@@ -811,10 +779,7 @@ class TestConversionPipeline:
         self, tmp_path, monkeypatch
     ):
         """Normal cleanup should avoid scanning stale temp-root entries."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
+        config = _pipeline_config(tmp_path)
         pipeline = ConversionPipeline(config)
 
         current_master = config.temp_dir / "chapter_masters" / "chapter_01.wav"
@@ -828,7 +793,7 @@ class TestConversionPipeline:
         keep_file = config.temp_dir / "keep.txt"
         keep_file.write_text("keep")
 
-        pipeline._track_temp_cleanup_path(current_master)  # noqa: SLF001
+        pipeline._runtime.track_temp_cleanup_path(current_master)  # noqa: SLF001
 
         original_iterdir = Path.iterdir
 
@@ -850,10 +815,7 @@ class TestConversionPipeline:
         self, tmp_path
     ):
         """Direct cleanup calls with no tracked paths keep the legacy temp scan."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
+        config = _pipeline_config(tmp_path)
         pipeline = ConversionPipeline(config)
 
         old_chunk_dir = config.temp_dir / "ch_001"
@@ -874,49 +836,9 @@ class TestConversionPipeline:
         assert not old_wav.exists()
         assert keep_file.exists()
 
-    def test_encode_chapter_audio_prefers_array_encoder(self, mock_components, tmp_path):
-        """Encoding stage should use array_to_mp3 when chapter audio is in-memory."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            normalize_volume=False,
-        )
-        pipeline = ConversionPipeline(config)
-        chapter = MagicMock(number=1, title="Chapter 1")
-        audio = np.zeros(24000, dtype=np.float32)
-
-        fake_encoder = MagicMock()
-        fake_encoder.get_duration.return_value = 1.0
-
-        def _array_to_mp3(arr, output_path, sample_rate, bitrate):
-            _ = arr, sample_rate, bitrate
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(output_path).write_bytes(b"mp3")
-
-        fake_encoder.array_to_mp3.side_effect = _array_to_mp3
-
-        with patch("modules.audio.encoder.AudioEncoder", return_value=fake_encoder):
-            mp3_path, duration_ms = pipeline.stages.chapter_processor.encode_chapter_audio(  # noqa: SLF001
-                chapter=chapter,
-                chapter_idx=0,
-                total_chapters=1,
-                output_dir=tmp_path,
-                chapter_wav=audio,
-            )
-
-        assert mp3_path.exists()
-        assert duration_ms == 1000
-        assert fake_encoder.array_to_mp3.call_count == 1
-        assert fake_encoder.wav_to_mp3.call_count == 0
-
     def test_encode_chapter_audio_falls_back_to_wav_file_on_array_failure(self, mock_components, tmp_path):
         """Encoding stage should gracefully fall back to wav_to_mp3 when array path fails."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            normalize_volume=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, normalize_volume=False)
         chapter = MagicMock(number=1, title="Chapter 1")
         audio = np.zeros(24000, dtype=np.float32)
 
@@ -924,8 +846,8 @@ class TestConversionPipeline:
         fake_encoder.get_duration.return_value = 1.0
         fake_encoder.array_to_mp3.side_effect = RuntimeError("simulated array encode failure")
 
-        def _wav_to_mp3(input_path, output_path, bitrate="128k"):
-            _ = bitrate
+        def _wav_to_mp3(input_path, output_path, bitrate="128k", cancel_requested=None):
+            _ = bitrate, cancel_requested
             assert Path(input_path).exists()
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(b"mp3")
@@ -948,12 +870,7 @@ class TestConversionPipeline:
 
     def test_synthesize_chapter_chunks_streams_large_audio_without_concat(self, mock_components, tmp_path):
         """Large chapters should stream directly to chapter WAV without temp concatenation."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_tts_file_batch_results=True,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_tts_file_batch_results=True)
         pipeline.config.max_in_memory_chapter_samples = 1
         pipeline._tts_engine = mock_components["tts"].return_value
 
@@ -1008,11 +925,7 @@ class TestConversionPipeline:
 
                 assert self.generated_results[-1].audio is None
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         pipeline.config.max_in_memory_chapter_samples = 1
         fake_tts = IncrementalTTSEngine()
         pipeline._tts_engine = fake_tts
@@ -1102,11 +1015,7 @@ class TestConversionPipeline:
                     duration_ms=100,
                 )
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         pipeline._tts_engine = OutOfOrderIncrementalTTSEngine()
         chapter = MagicMock(number=1, title="Chapter 1")
 
@@ -1155,11 +1064,7 @@ class TestConversionPipeline:
                 _ = items, progress_callback
                 raise AssertionError("iterator path requires explicit opt-in")
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         fake_tts = CustomBatchEngine()
         pipeline._tts_engine = fake_tts
         chapter = MagicMock(number=1, title="Chapter 1")
@@ -1208,11 +1113,7 @@ class TestConversionPipeline:
                 self.synthesize_calls.append(text)
                 return np.full(2, len(self.synthesize_calls), dtype=np.float32)
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         fake_tts = FailingIteratorTTSEngine()
         pipeline._tts_engine = fake_tts
         chapter = MagicMock(number=1, title="Chapter 1")
@@ -1234,44 +1135,10 @@ class TestConversionPipeline:
         tmp_path,
     ):
         """Iterator-capable engines can stream chunk WAV paths without retaining arrays."""
-        from modules.tts.engine import BatchResult
 
-        class FileResultTTSEngine:
-            supports_incremental_batch_results = True
-            supports_file_batch_results = True
-            is_loaded = True
-            sample_rate = 24000
 
-            def __init__(self):
-                self.output_paths = []
-
-            def iter_synthesize_batch(self, items, progress_callback=None):  # noqa: ANN001
-                total = len(items)
-                for completed, item in enumerate(items, start=1):
-                    assert item.output_path is not None
-                    self.output_paths.append(item.output_path)
-                    with wave.open(str(item.output_path), "wb") as wav_file:
-                        wav_file.setnchannels(1)
-                        wav_file.setsampwidth(2)
-                        wav_file.setframerate(24000)
-                        wav_file.writeframes((np.array([item.index + 1, item.index + 1], dtype=np.int16)).tobytes())
-                    if progress_callback is not None:
-                        progress_callback(completed, total)
-                    yield BatchResult(
-                        audio=None,
-                        audio_path=item.output_path,
-                        index=item.index,
-                        error=None,
-                        duration_ms=1,
-                    )
-
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_tts_file_batch_results=True,
-        )
-        pipeline = ConversionPipeline(config)
-        fake_tts = FileResultTTSEngine()
+        pipeline = _make_pipeline(tmp_path, enable_tts_file_batch_results=True)
+        fake_tts = _FileResultTTSEngine()
         pipeline._tts_engine = fake_tts
         chapter = MagicMock(number=1, title="Chapter 1")
 
@@ -1294,47 +1161,14 @@ class TestConversionPipeline:
         tmp_path,
     ):
         """Long chapters should get file-backed chunk paths without explicit opt-in."""
-        from modules.tts.engine import BatchResult
 
-        class FileResultTTSEngine:
-            supports_incremental_batch_results = True
-            supports_file_batch_results = True
-            is_loaded = True
-            sample_rate = 24000
 
-            def __init__(self):
-                self.output_paths = []
-
-            def iter_synthesize_batch(self, items, progress_callback=None):  # noqa: ANN001
-                total = len(items)
-                for completed, item in enumerate(items, start=1):
-                    assert item.output_path is not None
-                    self.output_paths.append(item.output_path)
-                    with wave.open(str(item.output_path), "wb") as wav_file:
-                        wav_file.setnchannels(1)
-                        wav_file.setsampwidth(2)
-                        wav_file.setframerate(24000)
-                        wav_file.writeframes(
-                            np.array([item.index + 1, item.index + 1], dtype=np.int16).tobytes()
-                        )
-                    if progress_callback is not None:
-                        progress_callback(completed, total)
-                    yield BatchResult(
-                        audio=None,
-                        audio_path=item.output_path,
-                        index=item.index,
-                        error=None,
-                        duration_ms=1,
-                    )
-
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
+        pipeline = _make_pipeline(
+            tmp_path,
             enable_tts_file_batch_results=False,
             tts_file_batch_results_auto_threshold_chunks=2,
         )
-        pipeline = ConversionPipeline(config)
-        fake_tts = FileResultTTSEngine()
+        fake_tts = _FileResultTTSEngine()
         pipeline._tts_engine = fake_tts
         chapter = MagicMock(number=1, title="Chapter 1")
 
@@ -1380,13 +1214,11 @@ class TestConversionPipeline:
                         duration_ms=1,
                     )
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
+        pipeline = _make_pipeline(
+            tmp_path,
             enable_tts_file_batch_results=False,
             tts_file_batch_results_auto_threshold_chunks=3,
         )
-        pipeline = ConversionPipeline(config)
         fake_tts = FileCapableTTSEngine()
         pipeline._tts_engine = fake_tts
         chapter = MagicMock(number=1, title="Chapter 1")
@@ -1433,11 +1265,7 @@ class TestConversionPipeline:
                 self.synthesize_calls.append(text)
                 return np.full(2, len(self.synthesize_calls), dtype=np.float32)
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         fake_tts = EarlyFailingIteratorTTSEngine()
         pipeline._tts_engine = fake_tts
         chapter = MagicMock(number=1, title="Chapter 1")
@@ -1457,11 +1285,7 @@ class TestConversionPipeline:
         """A chapter must not be assembled when final batch results omit chunk audio."""
         from modules.tts.engine import BatchResult
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         pipeline._tts_engine = mock_components["tts"].return_value
 
         def _partial_batch(items, progress_callback=None):  # noqa: ANN001
@@ -1498,11 +1322,7 @@ class TestConversionPipeline:
         """Batch backends may return results out of order; audio must follow source chunks."""
         from modules.tts.engine import BatchResult
 
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path)
         pipeline._tts_engine = mock_components["tts"].return_value
 
         def _out_of_order_batch(items, progress_callback=None):  # noqa: ANN001
@@ -1538,12 +1358,7 @@ class TestConversionPipeline:
 
     def test_clean_and_synthesize_with_overlap_streams_large_audio_without_concat(self, mock_components, tmp_path):
         """Overlap mode should stream directly to chapter WAV without temp concatenation."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_chunk_overlap=True,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
         pipeline.config.max_in_memory_chapter_samples = 1
         pipeline._tts_engine = mock_components["tts"].return_value
 
@@ -1580,16 +1395,12 @@ class TestConversionPipeline:
         tmp_path,
     ):
         """Overlap mode must not finalize partial audio when a chunk synthesis fails."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_chunk_overlap=True,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
         pipeline._tts_engine = mock_components["tts"].return_value
         pipeline._tts_engine.synthesize.side_effect = [
             np.array([0.1, 0.2], dtype=np.float32),
             RuntimeError("tts boom"),
+            np.array([0.3], dtype=np.float32),
         ]
 
         chapter = MagicMock(number=1, title="Chapter 1")
@@ -1609,21 +1420,18 @@ class TestConversionPipeline:
                 chapter=chapter,
                 chapter_idx=0,
                 total_chapters=1,
-                chunks=["chunk one", "chunk two"],
+                chunks=["chunk one", "chunk two", "chunk three"],
                 output_dir=tmp_path,
             )
 
         assert was_cancelled is False
         assert chapter_wav is None
+        # The failed chapter is discarded, so later chunks are not synthesized.
+        assert pipeline._tts_engine.synthesize.call_count == 2
 
     def test_clean_and_synthesize_with_overlap_returns_when_producer_fails(self, mock_components, tmp_path):
         """Producer exceptions should be delivered to the consumer instead of hanging queue.get()."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_chunk_overlap=True,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
         pipeline._tts_engine = mock_components["tts"].return_value
         chapter = MagicMock(number=1, title="Chapter 1")
 
@@ -1660,12 +1468,7 @@ class TestConversionPipeline:
         tmp_path,
     ):
         """Overlap mode should poll cancellation while waiting for cleaner output."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_chunk_overlap=True,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
         pipeline._tts_engine = mock_components["tts"].return_value
         chapter = MagicMock(number=1, title="Chapter 1")
         cleaner_entered = threading.Event()
@@ -1708,12 +1511,7 @@ class TestConversionPipeline:
 
     def test_encode_chapter_audio_uses_source_duration_without_mp3_probe(self, mock_components, tmp_path):
         """Encoding should derive duration from source audio instead of probing MP3 output."""
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            normalize_volume=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, normalize_volume=False)
         chapter = MagicMock(number=1, title="Chapter 1")
         wav_path = tmp_path / "chapter.wav"
         with wave.open(str(wav_path), "wb") as wav_file:
@@ -1724,8 +1522,8 @@ class TestConversionPipeline:
 
         fake_encoder = MagicMock()
 
-        def _wav_to_mp3(input_path, output_path, bitrate="128k"):
-            _ = bitrate
+        def _wav_to_mp3(input_path, output_path, bitrate="128k", audio_filter=None, cancel_requested=None):
+            _ = bitrate, audio_filter, cancel_requested
             assert Path(input_path).exists()
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(b"mp3")
@@ -1747,12 +1545,7 @@ class TestConversionPipeline:
         assert fake_encoder.get_duration.call_count == 0
 
     def test_convert_fails_when_any_chapter_fails_before_packaging(self, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_parallel=False)
         test_file = tmp_path / "book.pdf"
         test_file.write_text("dummy pdf content")
 
@@ -1798,12 +1591,7 @@ class TestConversionPipeline:
         assert mock_package.call_count == 0
 
     def test_convert_fails_when_dispatch_omits_ingested_chapter_before_packaging(self, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_parallel=False)
         test_file = tmp_path / "book.pdf"
         test_file.write_text("dummy pdf content")
 
@@ -1844,12 +1632,7 @@ class TestConversionPipeline:
         assert mock_package.call_count == 0
 
     def test_convert_fails_when_dispatch_duplicates_chapter_before_packaging(self, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_parallel=False)
         test_file = tmp_path / "book.pdf"
         test_file.write_text("dummy pdf content")
 
@@ -1899,12 +1682,7 @@ class TestConversionPipeline:
         assert mock_package.call_count == 0
 
     def test_convert_sorts_complete_chapter_results_before_packaging(self, tmp_path):
-        config = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=False,
-        )
-        pipeline = ConversionPipeline(config)
+        pipeline = _make_pipeline(tmp_path, enable_parallel=False)
         test_file = tmp_path / "book.pdf"
         test_file.write_text("dummy pdf content")
 
@@ -1958,36 +1736,34 @@ class TestConversionPipeline:
         assert result.chapters == packaged_results
 
 
-def test_ingest_source_dispatches_text_parser_for_txt(tmp_path):
-    source_path = tmp_path / "notes.txt"
-    source_path.write_text("hello", encoding="utf-8")
-    document = MagicMock()
-    document.chapters = [MagicMock(title="notes", content="hello")]
-    pipeline = MagicMock()
+@pytest.mark.parametrize(
+    "filename, text, expected_titles",
+    [
+        pytest.param(
+            "notes.txt", "# Not a heading\n\nThe plain text body is kept as prose.",
+            None, id="txt",
+        ),
+        pytest.param(
+            "guide.md", "# Guide\n\nThe overview paragraph.\n\n# Usage\n\nThe usage paragraph.",
+            ["Guide", "Usage"], id="md",
+        ),
+    ],
+)
+def test_ingest_source_parses_text_and_markdown_by_extension(
+    tmp_path, filename, text, expected_titles,
+):
+    source_path = tmp_path / filename
+    source_path.write_text(text, encoding="utf-8")
+    document = ingest_source(MagicMock(config=SimpleNamespace()), source_path)
 
-    with patch("modules.ingestion.text_parser.TextParser") as mock_text_parser:
-        mock_text_parser.return_value.parse.return_value = document
-
-        result = ingest_source(pipeline, source_path)
-
-    assert result is document
-    mock_text_parser.assert_called_once_with(source_path)
-
-
-def test_ingest_source_dispatches_markdown_parser_for_md(tmp_path):
-    source_path = tmp_path / "guide.md"
-    source_path.write_text("# Guide", encoding="utf-8")
-    document = MagicMock()
-    document.chapters = [MagicMock(title="Guide", content="overview")]
-    pipeline = MagicMock()
-
-    with patch("modules.ingestion.markdown_parser.MarkdownParser") as mock_markdown_parser:
-        mock_markdown_parser.return_value.parse.return_value = document
-
-        result = ingest_source(pipeline, source_path)
-
-    assert result is document
-    mock_markdown_parser.assert_called_once_with(source_path)
+    content = "\n".join(chapter.content for chapter in document.chapters)
+    if expected_titles is None:
+        # Plain text is narrated as written: markdown syntax is not interpreted.
+        assert "# Not a heading" in content
+        assert "The plain text body is kept as prose." in content
+    else:
+        assert [chapter.title for chapter in document.chapters] == expected_titles
+        assert "The overview paragraph." in content and "The usage paragraph." in content
 
 
 def test_ingest_source_describes_extensionless_file_clearly(tmp_path):

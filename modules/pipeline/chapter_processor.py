@@ -7,14 +7,17 @@ import logging
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-import numpy as np
+if TYPE_CHECKING:
+    import numpy as np
 
 from modules.async_bridge import run_coroutine_sync as _run_coroutine_sync
+from modules.contracts.recovery_inventory import chapter_audio_path
 
 from .models import ChapterResult, PipelineStage
 from .runtime import PipelineRuntime
+from .progress import chapter_progress_message
 from .stage_metrics import timed_stage
 
 logger = logging.getLogger(__name__)
@@ -143,7 +146,7 @@ class ChapterProcessor:
         self.runtime.notify_progress(
             chapter_idx=chapter_idx,
             total_chapters=total_chapters,
-            message=f"Chunking: {chapter.title}",
+            message=chapter_progress_message(chapter_idx, total_chapters, "chunking"),
         )
 
         chunk_config = ChunkConfig(max_tokens=self.runtime.config.chunk_size)
@@ -453,11 +456,7 @@ class ChapterProcessor:
         """
         if self.runtime.config.emit_chapter_mp3_artifacts:
             return self.runtime.config.temp_dir / f"chapter_{chapter.number:02d}.m4a"
-        safe_title = "".join(
-            c if c.isalnum() or c in " -_" else "_"
-            for c in str(getattr(chapter, "title", "") or "")
-        )[:50]
-        return output_dir / f"{int(chapter.number):02d}_{safe_title}.m4a"
+        return chapter_audio_path(chapter, output_dir, ".m4a")
 
     def _await_chapter_aac_slot(self) -> None:
         """Wait for the in-flight background AAC encode before queueing another."""
@@ -488,6 +487,7 @@ class ChapterProcessor:
                 and result.mp3_path is None
             ):
                 result.mp3_path = result.aac_path
+            self._release_chapter_master(result, encoding_source)
             return
 
         from .stages.encoding import EncodingStageContext, encode_chapter_aac
@@ -506,13 +506,16 @@ class ChapterProcessor:
                 log_verbose=self.runtime.log_verbose,
                 cancel_requested=self.runtime.check_cancelled,
             )
-            return encode_chapter_aac(
+            encoded = encode_chapter_aac(
                 context=context,
                 chapter=chapter,
                 chapter_wav=encoding_source,
                 precomputed_rms=result.pcm_rms,
                 output_path=aac_output,
             )
+            if encoded.is_file():
+                self._release_chapter_master(result, encoding_source)
+            return encoded
 
         if bool(getattr(self.runtime.config, "enable_background_chapter_aac_encoding", True)):
             if self.runtime.check_cancelled():
@@ -535,6 +538,12 @@ class ChapterProcessor:
         if durable_chapter_audio:
             result.mp3_path = result.aac_path
         self.runtime.track_temp_cleanup_path(result.aac_path)
+
+    def _release_chapter_master(self, result: ChapterResult, master: Path) -> None:
+        """Release temporary PCM after every required encode has succeeded."""
+        if master.resolve().is_relative_to(self.runtime.config.temp_dir.resolve()):
+            master.unlink(missing_ok=True)
+            result.wav_path = None
 
     def prepare_chapter_audio(
         self,
@@ -576,6 +585,8 @@ class ChapterProcessor:
                 from .chapter_narration import add_chapter_narration, chapter_body
 
                 if getattr(chapter, "heading_text", "") and not chapter_body(chapter).strip():
+                    import numpy as np
+
                     narrated = add_chapter_narration(
                         self.runtime, chapter, np.empty(0, dtype=np.float32), result,
                     )

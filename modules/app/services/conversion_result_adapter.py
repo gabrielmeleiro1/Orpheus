@@ -5,12 +5,35 @@ from __future__ import annotations
 from typing import Optional
 
 from modules.pipeline.models import ConversionResult as PipelineConversionResult
+from modules.pipeline.models import RepairResult, RepairedChapterUpdate
 from modules.pipeline.result_validation import (
     ConversionArtifactValidation,
     format_failure_notes,
     validate_conversion_success_artifacts,
 )
 from modules.storage.models import ConversionResult as ControllerConversionResult
+from modules.storage.models import Chapter
+
+
+def repair_chapter_updates(
+    pipeline_result: RepairResult,
+    stored_chapters: list[Chapter],
+) -> list[RepairedChapterUpdate]:
+    """Include packaged starts for retained chapters as well as regenerated ones."""
+    updates = {update.chapter_id: update for update in pipeline_result.repaired_chapter_updates}
+    by_number = {chapter.chapter_number: chapter for chapter in pipeline_result.chapters}
+    for stored in stored_chapters:
+        chapter = by_number.get(stored.chapter_number)
+        if chapter is None or chapter.packaged_start_ms is None:
+            continue
+        repaired = updates.get(stored.id)
+        updates[stored.id] = RepairedChapterUpdate(
+            chapter_id=stored.id,
+            duration_ms=repaired.duration_ms if repaired else None,
+            mp3_path=repaired.mp3_path if repaired else stored.mp3_path,
+            packaged_start_ms=chapter.packaged_start_ms,
+        )
+    return list(updates.values())
 
 
 def success_artifact_error(

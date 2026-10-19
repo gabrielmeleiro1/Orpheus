@@ -7,10 +7,7 @@ import pickle
 import pytest
 from pydantic import ValidationError
 
-from modules.contracts.conversion_runtime_options import (
-    ConversionRuntimeOptions,
-    conversion_runtime_option_field_names,
-)
+from modules.contracts.conversion_runtime_options import ConversionRuntimeOptions
 from modules.web.routes.options import ParallelWarmupRequest
 from modules.web.schemas.conversions import ConversionRuntimeOptionsRequest
 
@@ -18,12 +15,6 @@ from modules.web.schemas.conversions import ConversionRuntimeOptionsRequest
 def test_conversion_runtime_options_survive_worker_serialization() -> None:
     options = ConversionRuntimeOptions(voice="af_heart", tts_options={"device": "cpu"})
     assert pickle.loads(pickle.dumps(options)) == options
-
-
-def test_conversion_runtime_option_name_helper_matches_dataclass_fields() -> None:
-    dataclass_names = frozenset(ConversionRuntimeOptions.__dataclass_fields__)
-
-    assert conversion_runtime_option_field_names() == dataclass_names
 
 
 def test_conversion_runtime_options_request_matches_dataclass_fields() -> None:
@@ -97,4 +88,21 @@ def test_parallel_warmup_request_uses_contract_subset() -> None:
     )
 
     assert warmup_names == expected_names
-    assert warmup_names <= conversion_runtime_option_field_names()
+    assert warmup_names <= frozenset(ConversionRuntimeOptions.__dataclass_fields__)
+
+
+def test_api_keys_never_appear_in_option_or_request_reprs() -> None:
+    from modules.web.routes.options import OpenAIModelListRequest
+    from modules.web.schemas.conversions import StartConversionRequest
+
+    secret = "sk-test-not-for-logs"
+    values = (
+        ConversionRuntimeOptions(cleaner_api_key=secret),
+        ConversionRuntimeOptionsRequest(cleaner_api_key=secret),
+        StartConversionRequest(source_path="book.txt", cleaner_api_key=secret),
+        ParallelWarmupRequest(cleaner_api_key=secret),
+        OpenAIModelListRequest(api_key=secret),
+    )
+    for value in values:
+        assert secret not in repr(value)
+    assert ConversionRuntimeOptions(cleaner_api_key=secret).cleaner_api_key == secret

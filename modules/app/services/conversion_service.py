@@ -3,22 +3,25 @@
 from __future__ import annotations
 
 import json
+import re
+import hashlib
 import logging
-import shutil
 import threading
+import shutil
 import time
-from itertools import count
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from modules.app.config import AppConfig
-from modules.app.events import JobState, make_log_event, make_progress_event, make_state_event
+from modules.app.events import make_log_event, make_progress_event
+from modules.errors import SourceFileNotFoundError
 from modules.app.services.conversion_paths import (
     playback_metadata_for_pipeline_result,
     repair_output_dirs,
+    resolve_conversion_stored_path,
 )
-from modules.app.services.conversion_result_adapter import pipeline_to_controller_result
+from modules.app.services.conversion_result_adapter import pipeline_to_controller_result, repair_chapter_updates
 from modules.app.services.conversion_commands import (
     ConversionRunCommand,
     PipelineJobCommand,
@@ -36,6 +39,7 @@ from modules.app.services.repair_runtime import (
     serialize_persisted_runtime_options,
 )
 from modules.app.services.progress_math import build_progress_snapshot
+from modules.app.services.job_coordinator import JobCoordinator
 from modules.app.services.tts_session import TtsEngineSession
 from modules.pipeline.models import ConversionResult as PipelineConversionResult
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig
@@ -43,24 +47,85 @@ from modules.pipeline.progress import estimate_eta_from_progress
 from modules.storage.models import (
     BookCreate,
     ChapterCreate,
-    ConversionResult,
     ConversionMode,
     SourceType,
 )
 from modules.storage.repository import IBookRepository
+from modules.storage.sqlite_repo import LibraryReplacedError
 from modules.storage.permissions import ensure_owner_only_directory, owner_only
 from modules.tts.api_rate_limit import GlobalAPILimiter
 
 logger = logging.getLogger(__name__)
 
 
-_NormalizedConversionRuntimeOptions = NormalizedConversionRuntimeOptions
+# ``str(OSError)`` reads "[WinError 5] Access is denied: 'C:\\\\path'": the path
+# is repr()'d, so its backslashes arrive doubled.
+_ACCESS_DENIED_RE = re.compile(
+    r"(?:\[WinError 5\]|\[Errno 13\]|Access is denied|Permission denied)[^']*'(?P<path>[^']+)'"
+)
+
+
+def describe_conversion_failure(message: str, *, output_dir: Path, temp_dir: Path) -> str:
+    """Name the cause of a permission failure in plain words; keep other messages."""
+    match = _ACCESS_DENIED_RE.search(str(message or ""))
+    if match is None:
+        return message
+    path = Path(match["path"].replace("\\\\", "\\"))
+    for root, label in ((Path(output_dir), "output folder"), (Path(temp_dir), "working folder")):
+        try:
+            path.resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            continue
+        return (
+            f"Orpheus cannot write to the {label} {root}. Check that the folder exists and "
+            "that you are allowed to change it, then try again."
+        )
+    return f"Orpheus was not allowed to open {path}. Check its permissions, then try again."
+
+
+def _file_identity(path: Path) -> tuple[int, int] | None:
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return None
+    return stat_result.st_size, stat_result.st_mtime_ns
+
+
+def _prehash_recovery_source(upload_source: Path | None, recovery_source: Path) -> tuple | None:
+    """Digest a recovery source outside the job lock: (path, identity, sha256).
+
+    The result is used only if the file still has the same resolved path, size
+    and modification time when the caller re-checks it under the lock.
+    """
+    if upload_source is None or recovery_source.is_symlink() or not recovery_source.is_file():
+        return None
+    before = _file_identity(recovery_source)
+    try:
+        with recovery_source.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        resolved = recovery_source.resolve()
+    except OSError:
+        return None
+    if before is None or _file_identity(recovery_source) != before:
+        return None
+    return resolved, before, digest
+
+
+def _matching_prehash(prehashed: tuple | None, recovery_source: Path) -> str | None:
+    if prehashed is None:
+        return None
+    resolved, identity, digest = prehashed
+    try:
+        if recovery_source.resolve() != resolved:
+            return None
+    except OSError:
+        return None
+    return digest if _file_identity(recovery_source) == identity else None
 
 
 class ConversionService:
-    """Owns conversion job lifecycle, threading, and pipeline execution."""
+    """Orchestrates conversion pipelines with coordinated job ownership."""
 
-    _DEFAULT_CANCEL_WAIT_SECONDS = 2.0
     _PROGRESS_EMIT_INTERVAL_SECONDS = 0.25
     _PROGRESS_EMIT_EPSILON_SECONDS = 1e-9
 
@@ -75,160 +140,92 @@ class ConversionService:
         runtime_validator: Callable[[str, Optional[str]], None],
         shared_worker_pool_manager: Optional[Any] = None,
         pipeline_cls: type = ConversionPipeline,
+        book_cleanup_paths_resolver: Callable[[int], list[tuple[Path, bool]]] | None = None,
     ) -> None:
         self._config = config
         self._repository = repository
-        self._job_cls = job_cls
         self._status = status_enum
         self._cleaner_api_limiter = cleaner_api_limiter
         self._runtime_validator = runtime_validator
         self._shared_worker_pool_manager = shared_worker_pool_manager
         self._pipeline_cls = pipeline_cls
+        self._book_cleanup_paths_resolver = book_cleanup_paths_resolver
         self._runtime_options_resolver = RuntimeOptionsResolver(
             config=config,
             cleaner_api_limiter=cleaner_api_limiter,
             runtime_validator=runtime_validator,
             shared_worker_pool_manager=shared_worker_pool_manager,
         )
-        self._active_job = None
-        self._job_lock = threading.Lock()
-        self._job_sequence = count()
-        self._storage_cleanup_active = False
-        self._storage_cleanup_owner: int | None = None
-        # book id -> owning thread ident; only the owner may end the reservation.
-        self._book_cleanup_ids: dict[int, int] = {}
+        self._job_coordinator = JobCoordinator(
+            job_cls=job_cls,
+            status_enum=status_enum,
+            shared_worker_pool_manager=shared_worker_pool_manager,
+        )
+        self._recovered_upload_sources: dict[Path, tuple[int, Path, str, int]] = {}
         self._tts_session = TtsEngineSession()
         self.upload_reference_checker: Callable[[Path], bool] | None = None
 
-    @contextmanager
+    @property
+    def _active_job(self) -> Any:
+        return self._job_coordinator._active_job
+
+    @_active_job.setter
+    def _active_job(self, job: Any) -> None:
+        self._job_coordinator._active_job = job
+
+    @property
+    def _job_lock(self):
+        return self._job_coordinator._job_lock
+
+    @property
+    def _storage_cleanup_active(self) -> bool:
+        return self._job_coordinator._storage_cleanup_active
+
+    @property
+    def _book_cleanup_ids(self) -> dict[int, int]:
+        return self._job_coordinator._book_cleanup_ids
+
     def upload_cleanup_guard(self, source_path: Path | None = None):
-        with self._job_lock:
-            if self._storage_cleanup_active:
-                raise RuntimeError("Storage cleanup is in progress")
-            job = self._active_job
-            if job is not None and self._job_is_active_or_pending(job):
-                active_source = getattr(job, "upload_source_path", None)
-                if source_path is None or active_source is None or active_source == source_path.resolve():
-                    raise RuntimeError("An active conversion still references this upload")
-            yield
+        return self._job_coordinator.upload_cleanup_guard(source_path)
 
-    def _job_is_active_or_pending(self, job: Any) -> bool:
-        status = getattr(job, "status", None)
-        if status in {self._status.IDLE, self._status.RUNNING}:
-            return True
-        is_active = getattr(job, "is_active", None)
-        if callable(is_active):
-            try:
-                return bool(is_active())
-            except Exception:
-                logger.debug("Failed to inspect active conversion job state", exc_info=True)
-        return False
-
-    def _request_job_cancel(self, job: Any) -> bool:
-        cancel = getattr(job, "cancel", None)
-        if callable(cancel):
-            try:
-                if bool(cancel()):
-                    return True
-            except Exception:
-                logger.exception("Failed to request conversion job cancellation")
-                return False
-
-        if not self._job_is_active_or_pending(job):
-            return False
-
-        setattr(job, "cancel_requested", True)
-        pipeline = getattr(job, "pipeline", None)
-        pipeline_cancel = getattr(pipeline, "cancel", None)
-        if callable(pipeline_cancel):
-            pipeline_cancel()
-        return True
+    def begin_shutdown(self) -> None:
+        return self._job_coordinator.begin_shutdown()
 
     def cleanup(self) -> None:
         self._tts_session.cleanup()
 
-    def _ensure_job_slot_available_locked(self) -> None:
-        """Refuse new jobs while one is active or a storage cleanup runs.
-
-        Caller must hold ``self._job_lock``.
-        """
-        if self._storage_cleanup_active:
-            raise RuntimeError("A storage cleanup is in progress")
-        if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
-            raise RuntimeError("A conversion is already in progress")
-
     def _preflight_job_slot_available(self, *, book_id: int | None = None) -> None:
-        """Fail fast before potentially expensive runtime validation.
-
-        The caller must still reserve the slot under ``_job_lock`` before
-        validation because another request can start in between.
-        """
-        with self._job_lock:
-            if book_id is not None and int(book_id) in self._book_cleanup_ids:
-                raise RuntimeError("Book cleanup is in progress")
-            self._ensure_job_slot_available_locked()
+        return self._job_coordinator._preflight_job_slot_available(book_id=book_id)
 
     def begin_storage_cleanup(self) -> None:
-        """Atomically verify no job is active and block new starts until
-        :meth:`end_storage_cleanup` — closes the check-then-prune race."""
-        with self._job_lock:
-            if self._storage_cleanup_active:
-                raise RuntimeError("Storage cleanup is already in progress")
-            if self._active_job is not None and self._job_is_active_or_pending(self._active_job):
-                raise RuntimeError(
-                    "Cannot clean up storage while a conversion is queued or running"
-                )
-            if self._book_cleanup_ids:
-                raise RuntimeError(
-                    "Cannot start storage cleanup while a book cleanup is in progress"
-                )
-            self._storage_cleanup_active = True
-            self._storage_cleanup_owner = threading.get_ident()
+        return self._job_coordinator.begin_storage_cleanup()
+
+    def storage_cleanup_blocker(self) -> str | None:
+        return self._job_coordinator.storage_cleanup_blocker()
 
     def end_storage_cleanup(self) -> None:
-        with self._job_lock:
-            if not self._storage_cleanup_active:
-                return
-            if self._storage_cleanup_owner != threading.get_ident():
-                raise RuntimeError(
-                    "Cannot end storage cleanup reserved by another owner"
-                )
-            self._storage_cleanup_active = False
-            self._storage_cleanup_owner = None
+        return self._job_coordinator.end_storage_cleanup()
 
     def begin_book_cleanup(self, book_id: int) -> None:
-        """Reserve a book for deletion while preventing a same-book job start."""
-        normalized_book_id = int(book_id)
-        with self._job_lock:
-            if self._storage_cleanup_active:
-                raise RuntimeError(
-                    "Cannot start book cleanup while storage cleanup is in progress"
-                )
-            if normalized_book_id in self._book_cleanup_ids:
-                raise RuntimeError(
-                    f"Book cleanup for {normalized_book_id} is already in progress"
-                )
-            active_job = self._active_job
-            if (
-                active_job is not None
-                and getattr(active_job, "book_id", None) == normalized_book_id
-                and self._job_is_active_or_pending(active_job)
-            ):
-                raise RuntimeError(
-                    "Cannot delete a book while it is being converted or repaired"
-                )
-            self._book_cleanup_ids[normalized_book_id] = threading.get_ident()
+        def resolve_cleanup_paths() -> list[tuple[Path, bool]]:
+            if self._book_cleanup_paths_resolver is not None:
+                return self._book_cleanup_paths_resolver(book_id)
+            book = self._repository.get_book(book_id)
+            raw_path = getattr(book, "source_path", None)
+            if not isinstance(raw_path, (str, Path)):
+                return []
+            source = resolve_conversion_stored_path(
+                str(raw_path), db_path=Path(self._config.db_path),
+                output_dir=self._config.output_dir, temp_dir=self._config.temp_dir,
+            )
+            return [(source, False)] if source is not None else []
+
+        return self._job_coordinator.begin_book_cleanup(
+            book_id, resolve_cleanup_paths=resolve_cleanup_paths,
+        )
 
     def end_book_cleanup(self, book_id: int) -> None:
-        with self._job_lock:
-            normalized_book_id = int(book_id)
-            if normalized_book_id not in self._book_cleanup_ids:
-                return
-            if self._book_cleanup_ids[normalized_book_id] != threading.get_ident():
-                raise RuntimeError(
-                    f"Cannot end book cleanup for {normalized_book_id} reserved by another owner"
-                )
-            self._book_cleanup_ids.pop(normalized_book_id)
+        return self._job_coordinator.end_book_cleanup(book_id)
 
     def start_conversion(
         self,
@@ -238,24 +235,16 @@ class ConversionService:
         title: Optional[str] = None,
         author: Optional[str] = None,
         runtime_options: Optional[ConversionRuntimeOptions] = None,
+        client_request_id: str | None = None,
     ) -> Any:
         if not source_path.exists():
-            raise ValueError(f"Source file not found: {source_path}")
+            raise SourceFileNotFoundError(source_path)
+        if not source_path.is_file():
+            raise ValueError("Choose a source file, not a folder or another non-file item.")
 
         self._preflight_job_slot_available()
         runtime_options = runtime_options or ConversionRuntimeOptions()
-        with self._job_lock:
-            self._ensure_job_slot_available_locked()
-            job_id = f"conv_{time.time_ns()}_{next(self._job_sequence)}"
-            job = self._job_cls(
-                id=job_id,
-                book_id=None,
-                status=self._status.IDLE,
-                title=title,
-                author=author,
-            )
-            job.upload_source_path = source_path.resolve()
-            self._active_job = job
+        job = self._job_coordinator.reserve_conversion(source_path, title, author, client_request_id)
 
         # Copying a large upload into durable storage must not run under the
         # job lock: status reads (/active), cancel, and cleanup guards would
@@ -266,9 +255,7 @@ class ConversionService:
             self._validate_requested_tts_runtime(runtime_options=runtime_options)
             source_path = self._durable_source_path_for_conversion(source_path)
         except Exception:
-            with self._job_lock:
-                if self._active_job is job:
-                    self._active_job = None
+            self._job_coordinator.release_reservation(job)
             raise
 
         return self._start_pipeline_job(
@@ -307,22 +294,22 @@ class ConversionService:
         index = 1
         while True:
             try:
-                with durable_path.open("xb") as destination_file:
-                    with source_path.open("rb") as source_file:
-                        shutil.copyfileobj(source_file, destination_file)
-                try:
-                    shutil.copystat(source_path, durable_path)
-                except Exception:
-                    self._cleanup_partial_durable_source(durable_path)
-                    raise
-                owner_only(durable_path)
-                return durable_path
+                destination_file = durable_path.open("xb")
             except FileExistsError:
                 durable_path = sources_dir / f"{source_path.stem}_{index}{source_path.suffix}"
                 index += 1
-            except Exception:
+                continue
+            # Only a file this call created may be removed on failure: any other
+            # entry at this name can be another book's durable source.
+            try:
+                with destination_file, source_path.open("rb") as source_file:
+                    shutil.copyfileobj(source_file, destination_file)
+                shutil.copystat(source_path, durable_path)
+                owner_only(durable_path)
+            except BaseException:
                 self._cleanup_partial_durable_source(durable_path)
                 raise
+            return durable_path
 
     @staticmethod
     def _cleanup_partial_durable_source(path: Path) -> None:
@@ -331,16 +318,38 @@ class ConversionService:
         except OSError:
             logger.warning("Failed to remove partial durable source copy: %s", path, exc_info=True)
 
+    @contextmanager
+    def repair_reservation(self, book_id: int):
+        self._preflight_job_slot_available(book_id=book_id)
+        job = self._job_coordinator.reserve_repair(book_id, None)
+        try:
+            yield job
+        except BaseException:
+            self._job_coordinator.release_reservation(job)
+            raise
+
     def start_repair(
         self,
         book_id: int,
         callbacks: Optional[Any] = None,
         runtime_options: Optional[ConversionRuntimeOptions] = None,
         runtime_fields_set: Optional[set[str] | frozenset[str]] = None,
+        *,
+        reserved_job: Any = None,
+        expected_generation: int | None = None,
     ) -> Any:
         request_options = runtime_options or ConversionRuntimeOptions()
 
-        self._preflight_job_slot_available(book_id=book_id)
+        if reserved_job is None:
+            with self.repair_reservation(book_id) as job:
+                return self.start_repair(
+                    book_id, callbacks, runtime_options, runtime_fields_set,
+                    reserved_job=job,
+                    expected_generation=getattr(self._repository, "library_generation", 0),
+                )
+
+        if expected_generation is None:
+            expected_generation = getattr(self._repository, "library_generation", 0)
 
         # None means "no explicit overrides" (controller/direct callers), same as
         # an empty HTTP payload's fields_set — reuse persisted v7 / app defaults.
@@ -351,47 +360,54 @@ class ConversionService:
         if detail is None:
             raise ValueError("Book not found")
         book, _chapters = detail
-        with self._job_lock:
-            if int(book_id) in self._book_cleanup_ids:
-                raise RuntimeError("Book cleanup is in progress")
-            self._ensure_job_slot_available_locked()
-            job_id = f"repair_{book_id}_{time.time_ns()}_{next(self._job_sequence)}"
-            job = self._job_cls(
-                id=job_id,
-                book_id=book_id,
-                status=self._status.IDLE,
-                title=getattr(book, "title", None),
-                author=getattr(book, "author", None),
-            )
-            self._active_job = job
+        job = reserved_job
+        job.title = getattr(book, "title", None)
+        job.author = getattr(book, "author", None)
+        resolved_options = resolve_repair_runtime_options(
+            book=book,
+            request_options=request_options,
+            request_fields_set=fields_set,
+            app_config=self._config,
+        )
+        resolved_options = self._runtime_options_resolver.with_setup_defaults(resolved_options)
+        self._validate_requested_tts_runtime(runtime_options=resolved_options)
 
-        try:
-            resolved_options = resolve_repair_runtime_options(
-                book=book,
-                request_options=request_options,
-                request_fields_set=fields_set,
-                app_config=self._config,
-            )
-            resolved_options = self._runtime_options_resolver.with_setup_defaults(resolved_options)
-            self._validate_requested_tts_runtime(runtime_options=resolved_options)
-        except Exception:
-            with self._job_lock:
+        snapshot = getattr(self._repository, "library_snapshot", None)
+        start_gate = threading.Event()
+        launch_error = None
+        # Launch behind a gate so replacement stays excluded through launch,
+        # while observers run without the job or repository lock held.
+        with self._job_lock, snapshot() if callable(snapshot) else nullcontext():
+            if expected_generation != getattr(self._repository, "library_generation", 0):
                 if self._active_job is job:
                     self._active_job = None
-            raise
-
-        return self._start_pipeline_job(
-            job=job,
-            target=self._run_repair,
-            kwargs={
-                "job": job,
-                "book_id": book_id,
-                "callbacks": callbacks,
-                "runtime_options": resolved_options,
-            },
-            callbacks=callbacks,
-            started_message="repair started",
-        )
+                raise LibraryReplacedError()
+            try:
+                self._start_pipeline_job(
+                    job=job,
+                    target=self._run_repair,
+                    kwargs={
+                        "job": job,
+                        "book_id": book_id,
+                        "callbacks": callbacks,
+                        "runtime_options": resolved_options,
+                    },
+                    callbacks=None,
+                    started_message="repair started",
+                    start_gate=start_gate,
+                )
+            except Exception as exc:
+                launch_error = exc
+        if launch_error is not None:
+            self._handle_conversion_failure(job=job, error_message=str(launch_error), callbacks=callbacks)
+            raise launch_error
+        try:
+            self._job_coordinator.publish_running(
+                job=job, callbacks=callbacks, started_message="repair started",
+            )
+        finally:
+            start_gate.set()
+        return job
 
     def _validate_requested_tts_runtime(
         self,
@@ -411,117 +427,35 @@ class ConversionService:
         started_message: str,
         args: tuple[Any, ...] = (),
         kwargs: Optional[dict[str, Any]] = None,
+        start_gate: threading.Event | None = None,
     ) -> Any:
-        thread = threading.Thread(
+        return self._job_coordinator._start_pipeline_job(
+            job=job,
             target=target,
+            callbacks=callbacks,
+            started_message=started_message,
             args=args,
-            kwargs=kwargs or {},
-            daemon=True,
+            kwargs=kwargs,
+            start_gate=start_gate,
         )
-        begin_running = getattr(job, "begin_running", None)
-        if callable(begin_running):
-            begin_running(thread)
-        else:
-            job._thread = thread
-            job.status = self._status.RUNNING
-        # Publish RUNNING before the worker thread can emit a terminal state;
-        # otherwise an instantly-failing job would surface FAILED then RUNNING.
-        if callbacks and callbacks.on_event:
-            callbacks.on_event(make_state_event(JobState.RUNNING, job.id, started_message))
-        thread.start()
-        return job
 
     def _normalize_runtime_options(
         self,
         runtime_options: ConversionRuntimeOptions,
-    ) -> _NormalizedConversionRuntimeOptions:
+    ) -> NormalizedConversionRuntimeOptions:
         return self._runtime_options_resolver.normalize(runtime_options)
 
     def get_active_job(self) -> Any:
-        with self._job_lock:
-            return self._active_job
+        return self._job_coordinator.get_active_job()
 
     def has_active_job(self) -> bool:
-        with self._job_lock:
-            return self._active_job is not None and self._job_is_active_or_pending(
-                self._active_job
-            )
+        return self._job_coordinator.has_active_job()
 
-    def cancel_conversion(self) -> bool:
-        # Take the job out under the lock, then release it: the pool shutdown
-        # below can block for the worker-startup probe window, and holding
-        # _job_lock across it would stall every job-status read too.
-        with self._job_lock:
-            job = (
-                self._active_job
-                if self._active_job and self._job_is_active_or_pending(self._active_job)
-                else None
-            )
-
-        if job is None:
-            return False
-
-        cancelled = self._request_job_cancel(job)
-        if cancelled:
-            self._shutdown_shared_worker_pool_for_cancel()
-        return cancelled
-
-    def _shutdown_shared_worker_pool_for_cancel(self) -> None:
-        if self._shared_worker_pool_manager is None:
-            return
-
-        shutdown = getattr(self._shared_worker_pool_manager, "shutdown", None)
-        if not callable(shutdown):
-            return
-
-        try:
-            shutdown(timeout_seconds=0.0, cancel_futures=True)
-        except TypeError:
-            try:
-                shutdown(timeout_seconds=0.0)
-            except TypeError:
-                shutdown()
-        except Exception:
-            logger.exception("Failed to shut down shared worker pool during cancellation")
+    def cancel_conversion(self, expected_job_id: str | None = None) -> bool:
+        return self._job_coordinator.cancel_conversion(expected_job_id)
 
     def cancel_active_job(self, timeout_seconds: Optional[float] = None) -> bool:
-        """
-        Request cancellation for the active job and wait only up to the deadline.
-
-        Returns True when there is no active job or the active job finishes before
-        the timeout. Returns False when cancellation was requested but the job is
-        still running after the bounded wait.
-        """
-        with self._job_lock:
-            job = (
-                self._active_job
-                if self._active_job and self._job_is_active_or_pending(self._active_job)
-                else None
-            )
-
-        if job is None:
-            return True
-
-        self._request_job_cancel(job)
-        self._shutdown_shared_worker_pool_for_cancel()
-        timeout = (
-            self._DEFAULT_CANCEL_WAIT_SECONDS
-            if timeout_seconds is None
-            else max(0.0, float(timeout_seconds))
-        )
-        wait = getattr(job, "wait", None)
-        if callable(wait):
-            try:
-                return bool(wait(timeout=timeout))
-            except Exception:
-                logger.exception("Failed while waiting for conversion job cancellation")
-                return False
-
-        thread = getattr(job, "_thread", None)
-        if thread is None:
-            return True
-        thread.join(timeout=timeout)
-        return not thread.is_alive()
+        return self._job_coordinator.cancel_active_job(timeout_seconds)
 
     def _create_pipeline_config(
         self,
@@ -687,6 +621,7 @@ class ConversionService:
                     title=chapter.chapter_title,
                     duration_ms=chapter.duration_ms,
                     mp3_path=str(chapter.mp3_path) if chapter.mp3_path else None,
+                    packaged_start_ms=chapter.packaged_start_ms,
                 )
                 for chapter in pipeline_result.chapters
             ],
@@ -694,6 +629,9 @@ class ConversionService:
         return book.id
 
     def _checkpoint_conversion(self, command: ConversionRunCommand, source_path: Path, result: PipelineConversionResult) -> None:
+        # Hash the (up to MAX_UPLOAD_BYTES) recovery source before taking the
+        # job lock, which status reads and cancellation also need.
+        prehashed = _prehash_recovery_source(getattr(command.job, "upload_source_path", None), source_path)
         # Registration and reservation share the job lock: deletion must never
         # see the new book before it has become owned by the active job.
         with self._job_lock:
@@ -704,7 +642,8 @@ class ConversionService:
                     runtime_options=command.runtime_options,
                 )
                 command.job.book_id = book_id
-                self._remove_recoverable_upload(command.job)
+                self._remove_intermediate_upload_source(command, source_path)
+                self._remove_recoverable_upload(command.job, book_id, prehashed)
                 return
         self._update_conversion_library_records(book_id, result)
 
@@ -723,6 +662,7 @@ class ConversionService:
                     "duration_ms": by_number[stored.chapter_number].duration_ms,
                     "mp3_path": str(by_number[stored.chapter_number].mp3_path)
                     if by_number[stored.chapter_number].mp3_path else None,
+                    "packaged_start_ms": by_number[stored.chapter_number].packaged_start_ms,
                 }
                 for stored in stored_chapters if stored.chapter_number in by_number
             ],
@@ -751,28 +691,105 @@ class ConversionService:
             )
         else:
             self._update_conversion_library_records(book_id, pipeline_result)
-        self._remove_recoverable_upload(job)
-        complete = getattr(job, "complete", None)
-        if callable(complete):
-            complete(book_id)
-        else:
-            job.status = self._status.COMPLETED
-            job.book_id = book_id
-        if callbacks and callbacks.on_complete and job.result is not None:
-            callbacks.on_complete(job.result)
-        if callbacks and callbacks.on_event:
-            callbacks.on_event(make_state_event(JobState.COMPLETED, job.id, "conversion completed"))
+        prehashed = _prehash_recovery_source(getattr(job, "upload_source_path", None), source_path)
+        with self._job_lock:
+            self._remove_recoverable_upload(job, book_id, prehashed)
+        self._job_coordinator.publish_success(job=job, book_id=book_id, callbacks=callbacks)
 
-    def _remove_recoverable_upload(self, job: Any) -> None:
-        source = getattr(job, "upload_source_path", None)
-        if source is None or not source.is_relative_to((self._config.temp_dir / "web_uploads").resolve()):
+    def _remove_intermediate_upload_source(self, command: ConversionRunCommand, recovery_source: Path) -> None:
+        upload = getattr(command.job, "upload_source_path", None)
+        upload_root = (self._config.temp_dir / "web_uploads").resolve()
+        if upload is None or not upload.resolve().is_relative_to(upload_root):
+            return
+        source = getattr(command, "source_path", None)
+        sources_root = (Path(self._config.db_path).parent / "sources").resolve()
+        if source is None or source.is_symlink() or not source.resolve().is_relative_to(sources_root):
+            return
+        if source.resolve() == recovery_source.resolve() or not recovery_source.is_file():
             return
         if self.upload_reference_checker is None or self.upload_reference_checker(source):
             return
         try:
             source.unlink(missing_ok=True)
         except OSError:
+            logger.warning("Failed to remove intermediate upload copy: %s", source)
+
+    def resolve_recovered_upload(self, upload_path: Path) -> Path | None:
+        """Resolve only uploads transferred to a registered recovery book."""
+        upload_path = upload_path.resolve()
+        with self._job_lock:
+            registered = self._registered_recovery_source_locked(upload_path)
+        if registered is None:
+            return None
+        source, identity = registered
+        # Hash outside the job lock; the registration and the file identity are
+        # checked again under it, so a restore, deletion or rewrite meanwhile
+        # still refuses the handle.
+        prehashed = _prehash_recovery_source(upload_path, source)
+        if prehashed is None or prehashed[2] != identity[2]:
+            return None
+        with self._job_lock:
+            if self._registered_recovery_source_locked(upload_path) != registered:
+                return None
+            if _matching_prehash(prehashed, source) is None:
+                return None
+            return source
+
+    def _registered_recovery_source_locked(self, upload_path: Path) -> tuple[Path, tuple] | None:
+        identity = self._recovered_upload_sources.get(upload_path)
+        if identity is None:
+            return None
+        book_id, original_source, _digest, generation = identity
+        if book_id in self._book_cleanup_ids:
+            return None
+        if generation != getattr(self._repository, "library_generation", 0):
+            self._recovered_upload_sources.pop(upload_path, None)
+            return None
+        book = self._repository.get_book(book_id)
+        if book is None:
+            self._recovered_upload_sources.pop(upload_path, None)
+            return None
+        source = Path(book.source_path)
+        if source.is_symlink() or not source.is_file() or source.resolve() != original_source:
+            return None
+        return source, identity
+
+    def invalidate_recovered_uploads(self) -> None:
+        with self._job_lock:
+            self._recovered_upload_sources.clear()
+
+    def _remove_recoverable_upload(self, job: Any, book_id: int, prehashed: tuple | None = None) -> None:
+        source = getattr(job, "upload_source_path", None)
+        if source is None or not source.is_relative_to((self._config.temp_dir / "web_uploads").resolve()):
+            return
+        if self.upload_reference_checker is None or self.upload_reference_checker(source):
+            return
+        book = self._repository.get_book(book_id)
+        if book is None:
+            return
+        recovery_source = Path(book.source_path)
+        if recovery_source.is_symlink() or not recovery_source.is_file():
+            return
+        digest = _matching_prehash(prehashed, recovery_source)
+        if digest is None:
+            try:
+                with recovery_source.open("rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            except OSError:
+                return
+        # A book id can be reused by a restored library; retain the source identity.
+        self._recovered_upload_sources[source.resolve()] = (
+            book_id, recovery_source.resolve(), digest,
+            getattr(self._repository, "library_generation", 0),
+        )
+        try:
+            source.unlink(missing_ok=True)
+        except OSError:
             logger.warning("Failed to remove copied upload: %s", source)
+
+    @staticmethod
+    def _deliver_observer(callback: Callable[..., None] | None, *args: Any) -> None:
+        return JobCoordinator._deliver_observer(callback, *args)
 
     def _handle_conversion_failure(
         self,
@@ -781,27 +798,13 @@ class ConversionService:
         error_message: str,
         callbacks: Optional[Any],
     ) -> None:
-        failure_result = ConversionResult(
-            success=False,
-            output_path=None,
-            total_duration_ms=0,
-            error_message=error_message,
-            chapters_completed=0,
-            chapters_total=0,
+        return self._job_coordinator._handle_conversion_failure(
+            job=job,
+            error_message=describe_conversion_failure(
+                error_message, output_dir=self._config.output_dir, temp_dir=self._config.temp_dir,
+            ),
+            callbacks=callbacks,
         )
-        fail = getattr(job, "fail", None)
-        if callable(fail):
-            fail(error_message, failure_result)
-        else:
-            job.status = self._status.FAILED
-            job.error = error_message
-            existing_result = getattr(job, "result", None)
-            if existing_result is None or bool(getattr(existing_result, "success", False)):
-                job.result = failure_result
-        if callbacks and callbacks.on_error:
-            callbacks.on_error(error_message)
-        if callbacks and callbacks.on_event:
-            callbacks.on_event(make_state_event(JobState.FAILED, job.id, error_message))
 
     def _handle_conversion_cancelled(
         self,
@@ -810,14 +813,9 @@ class ConversionService:
         callbacks: Optional[Any],
         message: str = "conversion cancelled",
     ) -> None:
-        mark_cancelled = getattr(job, "mark_cancelled", None)
-        if callable(mark_cancelled):
-            mark_cancelled(message)
-        else:
-            job.status = self._status.CANCELLED
-            job.error = message
-        if callbacks and callbacks.on_event:
-            callbacks.on_event(make_state_event(JobState.CANCELLED, job.id, message))
+        return self._job_coordinator._handle_conversion_cancelled(
+            job=job, callbacks=callbacks, message=message,
+        )
 
     def _emit_conversion_summary(
         self,
@@ -842,12 +840,13 @@ class ConversionService:
         )
         logger.info(message)
         if callbacks and callbacks.on_log:
-            callbacks.on_log(message, "info")
+            self._deliver_observer(callbacks.on_log, message, "info")
         if callbacks and callbacks.on_event:
             # No performance payload here: the pool snapshot describes the idle
             # worker pool (parallel mode, zero counters), and clients treat any
             # attached snapshot as the job's final performance numbers.
-            callbacks.on_event(
+            self._deliver_observer(
+                callbacks.on_event,
                 make_log_event(
                     message=message,
                     level="info",
@@ -895,7 +894,7 @@ class ConversionService:
                 self._handle_conversion_cancelled(job=job, callbacks=callbacks)
                 return
 
-            pipeline_result = command.run(pipeline, pipeline_config)
+            pipeline_result = command.run(pipeline)
             controller_result = pipeline_to_controller_result(
                 pipeline_result,
                 emit_chapter_mp3_artifacts=pipeline_config.emit_chapter_mp3_artifacts,
@@ -926,13 +925,21 @@ class ConversionService:
                 )
                 return
 
-            command.handle_success(self, pipeline_result, controller_result, pipeline_config)
+            if isinstance(command, RepairRunCommand):
+                pipeline_result.repaired_chapter_updates = repair_chapter_updates(
+                    pipeline_result, command.repair_context.chapters,
+                )
+            command.handle_success(self, pipeline_result, controller_result)
         except Exception as exc:
-            self._handle_conversion_failure(
-                job=job,
-                error_message=str(exc),
-                callbacks=callbacks,
-            )
+            if job.status == self._status.COMPLETED:
+                # Repair commands also deliver their terminal event after commit.
+                logger.exception("Conversion observer delivery failed after completion")
+            else:
+                self._handle_conversion_failure(
+                    job=job,
+                    error_message=str(exc),
+                    callbacks=callbacks,
+                )
         finally:
             self._tts_session.release(
                 pipeline,
@@ -943,27 +950,15 @@ class ConversionService:
 
     @staticmethod
     def _attach_pipeline_to_job(job: Any, pipeline: Any) -> bool:
-        attach_pipeline = getattr(job, "attach_pipeline", None)
-        if callable(attach_pipeline):
-            return bool(attach_pipeline(pipeline))
-        job.pipeline = pipeline
-        return bool(getattr(job, "cancel_requested", False))
+        return JobCoordinator._attach_pipeline_to_job(job, pipeline)
 
     @staticmethod
     def _detach_pipeline_from_job(job: Any) -> None:
-        detach_pipeline = getattr(job, "detach_pipeline", None)
-        if callable(detach_pipeline):
-            detach_pipeline()
-        else:
-            job.pipeline = None
+        return JobCoordinator._detach_pipeline_from_job(job)
 
     @staticmethod
     def _set_job_result(job: Any, result: Any) -> None:
-        set_result = getattr(job, "set_result", None)
-        if callable(set_result):
-            set_result(result)
-        else:
-            job.result = result
+        return JobCoordinator._set_job_result(job, result)
 
     def _run_repair(
         self,

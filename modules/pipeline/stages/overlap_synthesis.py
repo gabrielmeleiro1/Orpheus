@@ -11,6 +11,7 @@ from typing import Any, Optional, Protocol
 import numpy as np
 
 from modules.pipeline.models import PipelineStage
+from modules.pipeline.progress import chapter_progress_message
 from modules.pipeline.runtime import PipelineRuntimeProtocol
 
 
@@ -156,7 +157,9 @@ def _notify_overlap_synthesis_progress(
         total_chapters=total_chapters,
         chunk_idx=chunk_idx,
         total_chunks=total_chunks,
-        message=f"Synthesizing chunk {chunk_idx + 1}/{total_chunks}",
+        message=chapter_progress_message(
+            chapter_idx, total_chapters, f"synthesizing chunk {chunk_idx + 1}/{total_chunks}",
+        ),
     )
 
 
@@ -165,11 +168,13 @@ def _synthesize_overlap_chunk_audio(
     *,
     chunk_idx: int,
     cleaned_chunk: str,
+    source: str = "",
 ) -> Optional[np.ndarray]:
     from modules.tts.speech_normalizer import SpeechNormalizationConfig, normalize_for_speech
+    from modules.tts.speech_typography import normalize_speech_typography
 
     speech_text = normalize_for_speech(
-        cleaned_chunk,
+        normalize_speech_typography(cleaned_chunk, source),
         SpeechNormalizationConfig(
             enabled=bool(getattr(runtime.config, "speech_normalization", False))
         ),
@@ -245,8 +250,10 @@ class OverlapSynthesisRunner:
 
         producer_thread = self._start_cleaner_producer(cleaner)
         _start_tts_stage(self.runtime, self.hooks)
+        chapter_wav = self.runtime.config.temp_dir / f"chapter_{self.chapter.number:02d}.wav"
+        self.runtime.track_temp_cleanup_path(chapter_wav)
         accumulator = ChapterAudioAccumulator(
-            output_path=self.runtime.config.temp_dir / f"chapter_{self.chapter.number:02d}.wav",
+            output_path=chapter_wav,
             sample_rate=_pipeline_sample_rate(self.runtime),
             max_in_memory_samples=_max_in_memory_chapter_samples(self.runtime),
         )
@@ -278,6 +285,11 @@ class OverlapSynthesisRunner:
                     llm_input_chunks=llm_input_chunks,
                     cleaning_trace_rows=cleaning_trace_rows,
                 )
+                if synthesis_failed:
+                    # The chapter is already incomplete and will be discarded;
+                    # keep draining cleaned text for artifacts but spend no
+                    # more TTS time on it.
+                    continue
                 _notify_overlap_synthesis_progress(
                     self.runtime,
                     chapter_idx=self.chapter_idx,
@@ -290,6 +302,7 @@ class OverlapSynthesisRunner:
                     self.runtime,
                     chunk_idx=record.chunk_idx,
                     cleaned_chunk=record.cleaned_chunk,
+                    source=str(getattr(self.chapter, "content", "") or ""),
                 )
                 if audio_array is None or len(audio_array) == 0:
                     synthesis_failed = True

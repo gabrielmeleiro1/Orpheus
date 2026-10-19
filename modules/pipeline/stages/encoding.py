@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import inspect
 import tempfile
 import wave
 from pathlib import Path
 from typing import Any, Callable
 
 import numpy as np
+
+from modules.contracts.recovery_inventory import chapter_audio_path
+from modules.pipeline.progress import chapter_progress_message
 
 _WAV_RMS_CHUNK_FRAMES = 65536
 
@@ -25,54 +27,6 @@ class EncodingStageContext:
     notify_progress: Callable[..., None]
     log_verbose: Callable[[str, str], None]
     cancel_requested: Callable[[], bool] | None = None
-
-
-def _coerce_encoding_context(context: EncodingStageContext | Any) -> EncodingStageContext:
-    if isinstance(context, EncodingStageContext):
-        return context
-
-    stage_enum = type(context._stage)
-    sample_rate = int(getattr(getattr(context, "_tts_engine", None), "sample_rate", 24000) or 24000)
-    return EncodingStageContext(
-        config=context.config,
-        sample_rate=sample_rate,
-        encoding_stage=stage_enum.ENCODING,
-        set_stage=lambda stage: setattr(context, "_stage", stage),
-        notify_progress=context._notify_progress,
-        log_verbose=context._log_verbose,
-        cancel_requested=getattr(context, "check_cancelled", None),
-    )
-
-
-def _context_cancel_requested(context: EncodingStageContext) -> Callable[[], bool] | None:
-    if context.cancel_requested is not None:
-        return context.cancel_requested
-    owner = getattr(context.set_stage, "__self__", None)
-    predicate = getattr(owner, "check_cancelled", None)
-    return predicate if callable(predicate) else None
-
-
-def _call_encoder(method: Any, *args: Any, cancel_requested: Callable[[], bool] | None, **kwargs: Any) -> Any:
-    """Call an encoder while keeping compatibility with legacy test/double methods."""
-    if cancel_requested is None:
-        return method(*args, **kwargs)
-    candidate = getattr(method, "side_effect", None) or method
-    try:
-        signature = inspect.signature(candidate)
-        accepts_cancel = "cancel_requested" in signature.parameters or any(
-            parameter.kind is inspect.Parameter.VAR_KEYWORD
-            for parameter in signature.parameters.values()
-        )
-    except (TypeError, ValueError):
-        accepts_cancel = True
-    if not accepts_cancel:
-        return method(*args, **kwargs)
-    try:
-        return method(*args, cancel_requested=cancel_requested, **kwargs)
-    except TypeError as exc:
-        if "cancel_requested" not in str(exc):
-            raise
-        return method(*args, **kwargs)
 
 
 def _measure_source_duration_ms(chapter_wav: Path | np.ndarray, *, sample_rate: int) -> int:
@@ -141,6 +95,17 @@ def _measure_pcm16_wav_rms(wav_path: Path, *, chunk_frames: int = _WAV_RMS_CHUNK
     return float(np.sqrt(total_square / total_samples) / 32768.0)
 
 
+# Raising speech to the loudness target pushes its peaks past full scale, and
+# AAC adds inter-sample overshoot on top. A lookahead limiter holds sample
+# peaks at -2 dBFS so the decoded audio stays below about -1 dBTP; it acts only
+# on peaks, leaving the loudness target and the voice unchanged.
+PEAK_LIMIT_DBFS = -2.0
+_PEAK_LIMITER = (
+    f"alimiter=limit={10 ** (PEAK_LIMIT_DBFS / 20):.4f}:attack=5:release=50"
+    ":level=disabled:latency=enabled"
+)
+
+
 def _normalization_filter_from_rms(rms: float, *, target_dBFS: float) -> str | None:
     if rms <= 0.0:
         return None
@@ -148,8 +113,8 @@ def _normalization_filter_from_rms(rms: float, *, target_dBFS: float) -> str | N
     current_dBFS = 20.0 * np.log10(rms)
     gain_db = float(target_dBFS - current_dBFS)
     if abs(gain_db) < 1e-6:
-        return None
-    return f"volume={gain_db:.6f}dB"
+        return _PEAK_LIMITER
+    return f"volume={gain_db:.6f}dB,{_PEAK_LIMITER}"
 
 
 def _normalization_filter_for_wav(
@@ -196,29 +161,8 @@ def _write_temp_wav_from_array(audio: np.ndarray, *, sample_rate: int) -> Path:
     return temp_wav
 
 
-def _wav_to_mp3(
-    encoder: Any,
-    input_path: Path,
-    output_path: Path,
-    *,
-    bitrate: str,
-    audio_filter: str | None = None,
-    cancel_requested: Callable[[], bool] | None = None,
-) -> Path:
-    kwargs = {"bitrate": bitrate}
-    if audio_filter is not None:
-        kwargs["audio_filter"] = audio_filter
-    return _call_encoder(
-        encoder.wav_to_mp3,
-        input_path,
-        output_path,
-        cancel_requested=cancel_requested,
-        **kwargs,
-    )
-
-
 def encode_chapter_audio(
-    context: EncodingStageContext | Any,
+    context: EncodingStageContext,
     chapter: Any,
     chapter_idx: int,
     total_chapters: int,
@@ -230,13 +174,12 @@ def encode_chapter_audio(
     """Encode chapter WAV to MP3 and return (mp3_path, duration_ms)."""
     from modules.audio.encoder import AudioEncoder
 
-    context = _coerce_encoding_context(context)
-    cancel_requested = _context_cancel_requested(context)
+    cancel_requested = context.cancel_requested
     context.set_stage(context.encoding_stage)
     context.notify_progress(
         chapter_idx=chapter_idx,
         total_chapters=total_chapters,
-        message=f"Encoding: {chapter.title}",
+        message=chapter_progress_message(chapter_idx, total_chapters, "encoding"),
     )
     context.log_verbose("[ENCODER] Encoding to MP3...", "process")
     sample_rate = int(context.sample_rate or 24000)
@@ -267,58 +210,48 @@ def encode_chapter_audio(
             target_dBFS=context.config.target_dbfs,
         )
 
-    # Encode to MP3.
-    safe_title = "".join(
-        c if c.isalnum() or c in " -_" else "_"
-        for c in chapter.title
-    )[:50]
-    chapter_mp3 = output_dir / f"{chapter.number:02d}_{safe_title}.mp3"
+    # Recovery inventories record this same name before synthesis starts.
+    chapter_mp3 = chapter_audio_path(chapter, output_dir, ".mp3")
 
     encoder = AudioEncoder()
-    array_to_mp3 = getattr(encoder, "array_to_mp3", None)
-    if audio_array is not None and callable(array_to_mp3):
-        try:
-            _call_encoder(
-                array_to_mp3,
-                audio_array,
-                chapter_mp3,
-                cancel_requested=cancel_requested,
-                sample_rate=sample_rate,
-                bitrate=context.config.mp3_bitrate,
-            )
-        except Exception as exc:
-            context.log_verbose(
-                f"[ENCODER] array_to_mp3 failed ({exc}); falling back to wav_to_mp3",
-                "warning",
-            )
-            temp_wav = _write_temp_wav_from_array(audio_array, sample_rate=sample_rate)
-            try:
-                _wav_to_mp3(
-                    encoder,
-                    temp_wav,
-                    chapter_mp3,
-                    bitrate=context.config.mp3_bitrate,
-                    cancel_requested=cancel_requested,
-                )
-            finally:
-                try:
-                    temp_wav.unlink()
-                except Exception:
-                    pass
-    else:
-        _wav_to_mp3(
-            encoder,
+    bitrate = context.config.mp3_bitrate
+    if audio_array is None:
+        encoder.wav_to_mp3(
             chapter_wav,
             chapter_mp3,
-            bitrate=context.config.mp3_bitrate,
+            bitrate=bitrate,
             audio_filter=audio_filter,
             cancel_requested=cancel_requested,
         )
+        return chapter_mp3, source_duration_ms
+
+    try:
+        encoder.array_to_mp3(
+            audio_array,
+            chapter_mp3,
+            sample_rate=sample_rate,
+            bitrate=bitrate,
+            cancel_requested=cancel_requested,
+        )
+    except Exception as exc:
+        if cancel_requested is not None and cancel_requested():
+            raise
+        context.log_verbose(
+            f"[ENCODER] array_to_mp3 failed ({exc}); falling back to wav_to_mp3",
+            "warning",
+        )
+        temp_wav = _write_temp_wav_from_array(audio_array, sample_rate=sample_rate)
+        try:
+            encoder.wav_to_mp3(
+                temp_wav, chapter_mp3, bitrate=bitrate, cancel_requested=cancel_requested,
+            )
+        finally:
+            temp_wav.unlink(missing_ok=True)
     return chapter_mp3, source_duration_ms
 
 
 def encode_chapter_aac(
-    context: EncodingStageContext | Any,
+    context: EncodingStageContext,
     chapter: Any,
     chapter_wav: Path | np.ndarray,
     *,
@@ -332,8 +265,7 @@ def encode_chapter_aac(
     """
     from modules.audio.encoder import AudioEncoder
 
-    context = _coerce_encoding_context(context)
-    cancel_requested = _context_cancel_requested(context)
+    cancel_requested = context.cancel_requested
     sample_rate = int(context.sample_rate or 24000)
 
     audio_array: np.ndarray | None = None
@@ -362,23 +294,20 @@ def encode_chapter_aac(
         bitrate=context.config.mp3_bitrate,
         sample_rate=sample_rate,
     )
-    array_to_aac = getattr(encoder, "array_to_aac", None)
-    if audio_array is not None and callable(array_to_aac):
-        _call_encoder(
-            array_to_aac,
+    if audio_array is not None:
+        encoder.array_to_aac(
             audio_array,
             chapter_aac,
-            cancel_requested=cancel_requested,
             sample_rate=sample_rate,
             bitrate=context.config.mp3_bitrate,
+            cancel_requested=cancel_requested,
         )
     else:
-        _call_encoder(
-            encoder.wav_to_aac,
+        encoder.wav_to_aac(
             chapter_wav,
             chapter_aac,
-            cancel_requested=cancel_requested,
             bitrate=context.config.mp3_bitrate,
             audio_filter=audio_filter,
+            cancel_requested=cancel_requested,
         )
     return chapter_aac

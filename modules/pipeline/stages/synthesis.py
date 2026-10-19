@@ -11,6 +11,7 @@ from typing import Any, Iterator, Optional, Protocol
 import numpy as np
 
 from modules.pipeline.models import PipelineStage
+from modules.pipeline.progress import chapter_progress_message
 from modules.pipeline.runtime import PipelineRuntimeProtocol
 
 _DEFAULT_MAX_IN_MEMORY_CHAPTER_SAMPLES = 30_000_000  # ~120MB float32 audio buffer
@@ -79,6 +80,8 @@ class ChapterAudioAccumulator:
 
     def add_segment(self, audio: np.ndarray) -> None:
         audio_array = np.asarray(audio, dtype=np.float32)
+        if not np.isfinite(audio_array).all():
+            raise ValueError("Audio segment contains non-finite samples")
         if self.is_streaming:
             self._track_pcm16(_write_audio_segment(self._writer, audio_array))
             return
@@ -110,7 +113,7 @@ class ChapterAudioAccumulator:
 
     def finalize(self) -> Optional[Path | np.ndarray]:
         if self.is_streaming:
-            self.close()
+            self._close_writer()
             return self.output_path
         if not self._segments:
             return None
@@ -118,15 +121,17 @@ class ChapterAudioAccumulator:
             return self._segments[0]
         return np.concatenate(self._segments)
 
+    def _close_writer(self) -> None:
+        writer, self._writer = self._writer, None
+        if writer is not None:
+            writer.close()
+
     def close(self) -> None:
-        if self._writer is None:
-            return
+        """Best-effort cleanup; successful finalization requires a strict close."""
         try:
-            self._writer.close()
+            self._close_writer()
         except Exception:
             pass
-        finally:
-            self._writer = None
 
 
 def _max_in_memory_chapter_samples(runtime: PipelineRuntimeProtocol) -> int:
@@ -153,7 +158,10 @@ def _open_chapter_wav_writer(output_path: Path, sample_rate: int = 24000):
 
 def _write_audio_segment(writer: Any, audio: np.ndarray) -> np.ndarray:
     """Write one mono segment to a streamed WAV writer and return its PCM16 samples."""
-    pcm = np.clip(np.asarray(audio, dtype=np.float32).reshape(-1), -1.0, 1.0)
+    audio_array = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if not np.isfinite(audio_array).all():
+        raise ValueError("Audio segment contains non-finite samples")
+    pcm = np.clip(audio_array, -1.0, 1.0)
     pcm16 = (pcm * 32767.0).astype(np.int16, copy=False)
     writer.writeframes(pcm16.tobytes())
     return pcm16
@@ -192,7 +200,7 @@ def _wav_file_sample_count(audio_path: Path) -> int:
 
 def _batch_result_has_audio(batch_result: Any) -> bool:
     if getattr(batch_result, "audio", None) is not None and len(batch_result.audio) > 0:
-        return True
+        return bool(np.isfinite(batch_result.audio).all())
     audio_path = getattr(batch_result, "audio_path", None)
     return (
         isinstance(audio_path, Path)
@@ -229,7 +237,7 @@ def _collect_valid_batch_results(
             runtime.log_verbose(f"[TTS] Error on chunk {i + 1}: {batch_result.error}", "error")
             continue
         if not _batch_result_has_audio(batch_result):
-            runtime.log_verbose(f"[TTS] Empty audio on chunk {i + 1}; skipping", "warning")
+            runtime.log_verbose(f"[TTS] Empty or non-finite audio on chunk {i + 1}; skipping", "warning")
             continue
         valid_results.append(batch_result)
         total_samples += _batch_result_sample_count(batch_result)
@@ -290,7 +298,7 @@ def _validate_complete_batch_results(
 
         if not _batch_result_has_audio(batch_result):
             runtime.log_verbose(
-                f"[TTS] Empty audio on chunk {result_index + 1}; failing chapter",
+                f"[TTS] Empty or non-finite audio on chunk {result_index + 1}; failing chapter",
                 "error",
             )
             valid = False
@@ -373,7 +381,7 @@ def _validate_incremental_batch_result(
 
     if not _batch_result_has_audio(batch_result):
         runtime.log_verbose(
-            f"[TTS] Empty audio on chunk {result_index + 1}; failing chapter",
+            f"[TTS] Empty or non-finite audio on chunk {result_index + 1}; failing chapter",
             "error",
         )
         return False
@@ -505,6 +513,7 @@ def _create_batch_audio_accumulator(
     sample_rate: int,
     total_samples: int,
 ) -> ChapterAudioAccumulator:
+    runtime.track_temp_cleanup_path(chapter_wav)
     accumulator = ChapterAudioAccumulator(
         output_path=chapter_wav,
         sample_rate=sample_rate,
@@ -521,9 +530,12 @@ def _finalize_chapter_audio(
     accumulator: ChapterAudioAccumulator,
     chapter_result: Any | None = None,
 ) -> Optional[Path | np.ndarray]:
+    was_streaming = accumulator.is_streaming
     try:
         return accumulator.finalize()
-    except Exception as exc:
+    except MemoryError as exc:
+        if was_streaming:
+            raise
         runtime.log_verbose(
             f"[TTS] In-memory concatenation failed ({exc}); streaming to chapter WAV",
             "warning",
@@ -538,10 +550,11 @@ def _finalize_chapter_audio(
             chapter_result.pcm_rms = accumulator.pcm16_rms()
 
 
-def build_batch_items(runtime: PipelineRuntimeProtocol, *, chunks: list[str]):
+def build_batch_items(runtime: PipelineRuntimeProtocol, *, chunks: list[str], source: str = ""):
     """Build TTS batch items from cleaned chunks."""
     from modules.tts.strategies.base import SynthesisItem
     from modules.tts.speech_normalizer import SpeechNormalizationConfig, normalize_for_speech
+    from modules.tts.speech_typography import normalize_speech_typography
 
     speech_config = SpeechNormalizationConfig(
         enabled=bool(getattr(runtime.config, "speech_normalization", False))
@@ -549,7 +562,7 @@ def build_batch_items(runtime: PipelineRuntimeProtocol, *, chunks: list[str]):
 
     return [
         SynthesisItem(
-            text=normalize_for_speech(chunk, speech_config),
+            text=normalize_for_speech(normalize_speech_typography(chunk, source), speech_config),
             voice=runtime.config.voice,
             speed=runtime.config.speed,
             index=i,
@@ -579,7 +592,9 @@ def make_batch_progress_callback(
             total_chapters=total_chapters,
             chunk_idx=chunk_idx,
             total_chunks=total_chunks,
-            message=f"Synthesizing chunk {chunk_idx + 1}/{total_chunks}",
+            message=chapter_progress_message(
+            chapter_idx, total_chapters, f"synthesizing chunk {chunk_idx + 1}/{total_chunks}",
+        ),
         )
 
         text_preview = chunks[chunk_idx][:40].replace("\n", " ")
@@ -659,8 +674,12 @@ def _synthesize_chapter_chunks_incrementally(
 ) -> Optional[Path | np.ndarray]:
     """Consume iterator-returned TTS results without retaining the full result list."""
     chapter_wav = runtime.config.temp_dir / f"chapter_{chapter.number:02d}.wav"
+    # A cancelled or failed chapter never reaches narration/encoding, where
+    # completed artifacts are otherwise registered for end-of-run cleanup.
+    runtime.track_temp_cleanup_path(chapter_wav)
     sample_rate = _pipeline_sample_rate(runtime)
     accumulator: ChapterAudioAccumulator | None = None
+    batch_iterator: Any = None
     try:
         accumulator = ChapterAudioAccumulator(
             output_path=chapter_wav,
@@ -675,12 +694,27 @@ def _synthesize_chapter_chunks_incrementally(
         pending_results: dict[int, Any] = {}
         next_index_to_consume = 0
 
-        for position, batch_result in enumerate(
-            iter_synthesize_batch(
-                items=batch_items,
-                progress_callback=on_batch_progress,
-            )
-        ):
+        iterator_kwargs = {}
+        if "cancel_requested" in inspect.signature(iter_synthesize_batch).parameters:
+            iterator_kwargs["cancel_requested"] = runtime.check_cancelled
+        batch_iterator = iter(iter_synthesize_batch(
+            items=batch_items,
+            progress_callback=on_batch_progress,
+            **iterator_kwargs,
+        ))
+        while True:
+            if runtime.check_cancelled():
+                accumulator.close()
+                return None
+            try:
+                batch_result = next(batch_iterator)
+            except StopIteration:
+                break
+            if runtime.check_cancelled():
+                batch_result.audio = None
+                accumulator.close()
+                return None
+            position = result_count
             streamed_results.append(batch_result)
             result_count = position + 1
             result_valid = _validate_incremental_batch_result(
@@ -742,6 +776,10 @@ def _synthesize_chapter_chunks_incrementally(
         if accumulator is not None:
             accumulator.close()
         raise
+    finally:
+        close = getattr(batch_iterator, "close", None)
+        if callable(close):
+            close()
 
 
 def synthesize_chapter_chunks(
@@ -760,7 +798,7 @@ def synthesize_chapter_chunks(
     batch_items = _with_batch_output_paths(
         runtime,
         chapter=chapter,
-        batch_items=build_batch_items(runtime, chunks=chunks),
+        batch_items=build_batch_items(runtime, chunks=chunks, source=str(getattr(chapter, "content", "") or "")),
     )
     on_batch_progress = make_batch_progress_callback(
         runtime,

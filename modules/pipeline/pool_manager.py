@@ -62,6 +62,7 @@ class SharedWorkerPoolManager:
         available_device_memory_gb: Optional[float] = None,
         shutdown_timeout_seconds: float = 2.0,
         startup_probe_timeout_seconds: float = 30.0,
+        idle_shutdown_seconds: float = 120.0,
     ) -> None:
         if available_device_memory_gb is not None and float(available_vram_gb) != 8.0:
             raise ValueError(
@@ -85,6 +86,7 @@ class SharedWorkerPoolManager:
         # replacement.  Serialize run ownership while retaining worker-level
         # chapter parallelism inside each run.
         self._run_lock = threading.Lock()
+        self._limiter_generations: dict[Any, tuple[Any, Any]] = {}
         self._reuse_hits = 0
         self._restarts = 0
         self._health_failures = 0
@@ -105,13 +107,77 @@ class SharedWorkerPoolManager:
         self._stopping_executor: Any | None = None
         self._stopping_done = threading.Event()
         self._stopping_done.set()
+        self._stop_requested = threading.Event()
+        self._shutdown_waiter_lock = threading.Lock()
+        # Idle workers keep their models resident (gigabytes of device memory
+        # per worker), so an unused pool is torn down after a bounded wait.
+        self._idle_shutdown_seconds = max(0.0, float(idle_shutdown_seconds))
+        self._idle_timer: threading.Timer | None = None
+        self._idle_lock = threading.Lock()
+
+    def _cancel_idle_shutdown(self) -> None:
+        with self._idle_lock:
+            timer, self._idle_timer = self._idle_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _schedule_idle_shutdown(self) -> None:
+        if self._idle_shutdown_seconds <= 0:
+            return
+        timer = threading.Timer(self._idle_shutdown_seconds, self._shutdown_if_idle)
+        timer.daemon = True
+        with self._idle_lock:
+            previous, self._idle_timer = self._idle_timer, timer
+        if previous is not None:
+            previous.cancel()
+        timer.start()
+
+    def _shutdown_if_idle(self) -> None:
+        # A run holds the run lock from startup to its last result; never tear
+        # down under it. The finishing run schedules a fresh idle timer.
+        if not self._run_lock.acquire(blocking=False):
+            return
+        try:
+            with self._idle_lock:
+                if self._idle_timer is None or self._idle_timer is not threading.current_thread():
+                    return
+                self._idle_timer = None
+            with self._lock:
+                running = self._state.executor is not None
+            if running:
+                logger.info("Shutting down idle worker pool to release model memory")
+                self.shutdown()
+        finally:
+            self._run_lock.release()
+
+    @property
+    def cleanup_pending(self) -> bool:
+        """Inspect exclusion without waiting for a worker startup lock."""
+        return self._stop_requested.is_set() or not self._stopping_done.is_set()
 
     # Executor teardown primitives live in ``pool_shutdown``; they are bound
     # here so existing ``self._…`` call sites keep resolving unchanged.
     _call_executor_shutdown = staticmethod(_call_executor_shutdown)
     _executor_processes = staticmethod(_executor_processes)
     _terminate_processes = staticmethod(_terminate_processes)
-    _shutdown_executor_bounded = staticmethod(_shutdown_executor_bounded)
+
+    def _shutdown_executor_bounded(self, executor, *, on_quiesced=None, **kwargs):
+        ownership = self._limiter_generations.get(executor)
+        if ownership is None:
+            return _shutdown_executor_bounded(executor, on_quiesced=on_quiesced, **kwargs)
+        processes = _executor_processes(executor)
+
+        def retire():
+            if any(process.is_alive() for process in processes):
+                logger.error("API worker generation still has live processes")
+                return
+            limiter, generation = ownership
+            limiter.retire_worker_generation(generation)
+            self._limiter_generations.pop(executor, None)
+            if on_quiesced is not None:
+                on_quiesced()
+
+        return _shutdown_executor_bounded(executor, on_quiesced=retire, **kwargs)
 
     # Worker-boundary normalizers live in ``pool_results``.
     _result_has_error = staticmethod(_result_has_error)
@@ -151,6 +217,8 @@ class SharedWorkerPoolManager:
         with self._lock:
             if self._stopping_executor is executor:
                 self._stopping_executor = None
+                if not self._shutdown_waiter_lock.locked():
+                    self._stop_requested.clear()
                 self._stopping_done.set()
 
     def _finish_thread_executor_shutdown(self, executor: Any) -> None:
@@ -188,8 +256,8 @@ class SharedWorkerPoolManager:
                 executor,
                 timeout_seconds=self._shutdown_timeout_seconds,
                 cancel_futures=True,
+                on_quiesced=lambda: self._release_stopping_barrier(executor),
             )
-            self._release_stopping_barrier(executor)
             return
 
         threading.Thread(
@@ -299,13 +367,28 @@ class SharedWorkerPoolManager:
         worker_init_config: Optional[dict[str, Any]],
     ) -> None:
         if self._use_processes:
+            from modules.tts.api_rate_limit import _RecoverableSemaphore
+
+            init_config = dict(worker_init_config or {})
+            limiter = init_config.get("cleaner_api_global_limiter")
+            generation = None
+            if isinstance(limiter, _RecoverableSemaphore):
+                generation = limiter.begin_worker_generation()
+                init_config["cleaner_api_global_limiter"] = generation
             mp_context = mp.get_context("spawn")
-            self._state.executor = ProcessPoolExecutor(
-                max_workers=max_workers,
-                mp_context=mp_context,
-                initializer=_init_worker,
-                initargs=(available_vram_gb, max_workers, worker_init_config),
-            )
+            try:
+                self._state.executor = ProcessPoolExecutor(
+                    max_workers=max_workers,
+                    mp_context=mp_context,
+                    initializer=_init_worker,
+                    initargs=(available_vram_gb, max_workers, init_config),
+                )
+            except Exception:
+                if generation is not None:
+                    limiter.retire_worker_generation(generation)
+                raise
+            if generation is not None:
+                self._limiter_generations[self._state.executor] = (limiter, generation)
         else:
             self._state.executor = ThreadPoolExecutor(
                 max_workers=max_workers,
@@ -331,10 +414,19 @@ class SharedWorkerPoolManager:
             executor.submit(_worker_startup_probe) for _ in range(probe_count)
         ]
         failures: list[WorkerStartupStatus] = []
-        _done, pending = wait(
-            futures,
-            timeout=self._startup_probe_timeout_seconds,
-        )
+        deadline = time.monotonic() + self._startup_probe_timeout_seconds
+        pending = set(futures)
+        while pending:
+            if self._stop_requested.is_set():
+                self._begin_shutdown_locked(timeout_seconds=0.0, cancel_futures=True)
+                raise RuntimeError("Worker startup cancelled")
+            remaining = max(0.0, deadline - time.monotonic())
+            _done, pending = wait(pending, timeout=min(0.05, remaining))
+            if remaining == 0:
+                break
+        if self._stop_requested.is_set():
+            self._begin_shutdown_locked(timeout_seconds=0.0, cancel_futures=True)
+            raise RuntimeError("Worker startup cancelled")
         runtime_config = (self._state.worker_init_config or {}).get("tts_runtime")
         provider = "unknown"
         device = None
@@ -383,20 +475,23 @@ class SharedWorkerPoolManager:
         self._startup_failures += 1
         primary = failures[0]
         self._last_startup_error = primary.format_failure()
-        executor_to_shutdown = self._state.executor
-        self._state.executor = None
-        self._state.config_fingerprint = None
-        self._shutdown_executor_bounded(
-            executor_to_shutdown,
-            timeout_seconds=self._shutdown_timeout_seconds,
-            cancel_futures=True,
-        )
         raise WorkerStartupError(
             self._last_startup_error,
             statuses=failures,
         )
 
-    def ensure_started(
+    def ensure_started(self, config_fingerprint: Any, **kwargs: Any) -> None:
+        """
+        Ensure an executor is running for the provided configuration fingerprint.
+
+        Restarts the pool when fingerprint or worker count changes. A started
+        pool that then sits unused is shut down after the idle timeout.
+        """
+        self._cancel_idle_shutdown()
+        self._ensure_started_impl(config_fingerprint, **kwargs)
+        self._schedule_idle_shutdown()
+
+    def _ensure_started_impl(
         self,
         config_fingerprint: Any,
         *,
@@ -405,11 +500,6 @@ class SharedWorkerPoolManager:
         available_device_memory_gb: Optional[float] = None,
         worker_init_config: Optional[dict[str, Any]] = None,
     ) -> None:
-        """
-        Ensure an executor is running for the provided configuration fingerprint.
-
-        Restarts the pool when fingerprint or worker count changes.
-        """
         # Cancellation of a thread-backed run returns before an uncooperative
         # worker necessarily exits.  Do not let a successor overlap that
         # worker's artifact writes; the cancellation path releases this
@@ -432,37 +522,61 @@ class SharedWorkerPoolManager:
         )
         requested_init = dict(worker_init_config or {})
 
-        with self._lock:
-            reuse_ready = (
-                self._state.executor is not None
-                and self._state.config_fingerprint == config_fingerprint
-                and self._state.max_workers == requested_workers
-                and self._state.available_vram_gb == requested_vram
-                and (self._state.worker_init_config or {}) == requested_init
-                and self._state.use_processes == self._use_processes
-            )
-            if reuse_ready:
-                if self._is_executor_healthy_locked():
+        while True:
+            with self._lock:
+                if self._stop_requested.is_set():
+                    raise RuntimeError("Worker pool cleanup is still in progress")
+                reuse_ready = (
+                    self._state.executor is not None
+                    and self._state.config_fingerprint == config_fingerprint
+                    and self._state.max_workers == requested_workers
+                    and self._state.available_vram_gb == requested_vram
+                    and (self._state.worker_init_config or {}) == requested_init
+                    and self._state.use_processes == self._use_processes
+                )
+                if reuse_ready and self._is_executor_healthy_locked():
                     self._reuse_hits += 1
                     return
 
-            if self._state.executor is not None:
-                self._shutdown_executor_bounded(
-                    self._state.executor,
-                    timeout_seconds=self._shutdown_timeout_seconds,
-                    cancel_futures=True,
-                )
-                self._state.executor = None
-                self._state.config_fingerprint = None
-                self._restarts += 1
+                if self._state.executor is not None:
+                    retiring_executor, retirement_done = self._detach_executor_locked()
+                    self._restarts += 1
+                else:
+                    self._start_executor_locked(
+                        config_fingerprint=config_fingerprint,
+                        max_workers=requested_workers,
+                        available_vram_gb=requested_vram,
+                        worker_init_config=requested_init,
+                    )
+                    try:
+                        self._run_startup_probes_locked()
+                    except WorkerStartupError as exc:
+                        startup_error = exc
+                        failed_executor, _done = self._detach_executor_locked()
+                        break
+                    else:
+                        return
 
-            self._start_executor_locked(
-                config_fingerprint=config_fingerprint,
-                max_workers=requested_workers,
-                available_vram_gb=requested_vram,
-                worker_init_config=requested_init,
+            # Replacement must observe the same quiescence barrier as cancellation.
+            # Wait outside the lifecycle lock so the teardown callback can release it.
+            self._shutdown_executor_bounded(
+                retiring_executor,
+                timeout_seconds=self._shutdown_timeout_seconds,
+                cancel_futures=True,
+                on_quiesced=lambda executor=retiring_executor: self._release_stopping_barrier(executor),
             )
-            self._run_startup_probes_locked()
+            if not retirement_done.is_set():
+                raise RuntimeError("Worker pool has not stopped; cannot replace worker runtime")
+
+        # Release the lifecycle lock so cleanup can confirm quiescence before
+        # the caller decides whether to load sequential models.
+        self._shutdown_executor_bounded(
+            failed_executor,
+            timeout_seconds=self._shutdown_timeout_seconds,
+            cancel_futures=True,
+            on_quiesced=lambda: self._release_stopping_barrier(failed_executor),
+        )
+        raise startup_error
 
     def run_parallel(
         self,
@@ -480,18 +594,22 @@ class SharedWorkerPoolManager:
     ) -> list[ChapterResult]:
         """Run one chapter batch while owning the shared executor lifecycle."""
         with self._run_lock:
-            return self._run_parallel_impl(
-                chapters=chapters,
-                process_func=process_func,
-                progress_callback=progress_callback,
-                config_fingerprint=config_fingerprint,
-                max_workers=max_workers,
-                available_vram_gb=available_vram_gb,
-                available_device_memory_gb=available_device_memory_gb,
-                worker_init_config=worker_init_config,
-                memory_policy=memory_policy,
-                cancel_requested=cancel_requested,
-            )
+            try:
+                return self._run_parallel_impl(
+                    chapters=chapters,
+                    process_func=process_func,
+                    progress_callback=progress_callback,
+                    config_fingerprint=config_fingerprint,
+                    max_workers=max_workers,
+                    available_vram_gb=available_vram_gb,
+                    available_device_memory_gb=available_device_memory_gb,
+                    worker_init_config=worker_init_config,
+                    memory_policy=memory_policy,
+                    cancel_requested=cancel_requested,
+                )
+            finally:
+                # The idle clock starts when the run releases the pool.
+                self._schedule_idle_shutdown()
 
     def _run_parallel_impl(
         self,
@@ -508,7 +626,10 @@ class SharedWorkerPoolManager:
         cancel_requested: Callable[[], bool] | None = None,
     ) -> list[ChapterResult]:
         """Run chapter processing using the shared process pool."""
-        self.ensure_started(
+        # The run owns the pool until it returns; run_parallel restarts the
+        # idle clock afterwards.
+        self._cancel_idle_shutdown()
+        self._ensure_started_impl(
             config_fingerprint,
             max_workers=max_workers,
             available_vram_gb=available_vram_gb,
@@ -641,19 +762,42 @@ class SharedWorkerPoolManager:
 
         return [result for result in results if result is not None]
 
-    def healthcheck(self, timeout_seconds: float = 2.0) -> bool:
-        """Return whether the current worker pool can execute a trivial task."""
-        with self._lock:
-            executor = self._state.executor
+    def _detach_executor_locked(self) -> tuple[Any | None, threading.Event]:
+        if self._stopping_executor is not None:
+            return None, self._stopping_done
+        executor = self._state.executor
+        self._state = _PoolState(
+            executor=None,
+            config_fingerprint=None,
+            max_workers=self._state.max_workers or 1,
+            available_vram_gb=self._state.available_vram_gb,
+            worker_init_config=None,
+            use_processes=self._state.use_processes,
+        )
         if executor is None:
-            return False
+            if not self._shutdown_waiter_lock.locked():
+                self._stop_requested.clear()
+            return None, self._stopping_done
+        self._stop_requested.set()
+        self._stopping_executor = executor
+        self._stopping_done = threading.Event()
+        return executor, self._stopping_done
 
-        try:
-            future = executor.submit(_health_ping)
-            return bool(future.result(timeout=timeout_seconds))
-        except Exception:
-            self._health_failures += 1
-            return False
+    def _begin_shutdown_locked(self, *, timeout_seconds: float, cancel_futures: bool) -> threading.Event:
+        executor, done = self._detach_executor_locked()
+        if executor is None:
+            return done
+
+        def finish():
+            self._shutdown_executor_bounded(
+                executor,
+                timeout_seconds=timeout_seconds,
+                cancel_futures=cancel_futures,
+                on_quiesced=lambda: self._release_stopping_barrier(executor),
+            )
+
+        threading.Thread(target=finish, name="worker-pool-shutdown", daemon=True).start()
+        return done
 
     def shutdown(
         self,
@@ -661,66 +805,48 @@ class SharedWorkerPoolManager:
         timeout_seconds: Optional[float] = None,
         cancel_futures: bool = True,
     ) -> bool:
-        """Shutdown the shared pool and reset lifecycle state with a bounded wait."""
-        # A cancelled thread executor may be outside ``_state`` while its
-        # worker is still unwinding.  Respect that stopping barrier instead of
-        # reporting success and allowing a later ensure_started() to overlap
-        # it.  A zero timeout remains a non-blocking probe.
-        with self._lock:
-            stopping_done = self._stopping_done if self._stopping_executor is not None else None
-        if stopping_done is not None:
-            timeout = (
-                self._shutdown_timeout_seconds
-                if timeout_seconds is None
-                else max(0.0, float(timeout_seconds))
-            )
-            return stopping_done.wait(timeout=timeout)
-
-        with self._lock:
-            executor = self._state.executor
-            use_processes = self._state.use_processes
-            if executor is not None and not use_processes:
-                # Thread workers cannot be force-terminated after a bounded
-                # wait. Keep a barrier until the asynchronous wait=True
-                # shutdown confirms that the executor has quiesced.
-                self._stopping_executor = executor
-                self._stopping_done.clear()
-            self._state = _PoolState(
-                executor=None,
-                config_fingerprint=None,
-                max_workers=self._state.max_workers or 1,
-                available_vram_gb=self._state.available_vram_gb,
-                worker_init_config=None,
-                use_processes=self._state.use_processes,
-            )
-        if executor is None:
-            return True
-
+        """Request teardown, keeping exclusion until workers confirm quiescence."""
+        self._cancel_idle_shutdown()
         timeout = (
             self._shutdown_timeout_seconds
             if timeout_seconds is None
             else max(0.0, float(timeout_seconds))
         )
-        if not use_processes:
-            quiesced = threading.Event()
+        deadline = time.monotonic() + timeout
+        owns_waiter = self._shutdown_waiter_lock.acquire(blocking=False)
+        self._stop_requested.set()
+        if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            # Startup observes the request; this also covers a lock held by
+            # another lifecycle operation that has no startup probe to interrupt.
+            def finish_when_available():
+                with self._lock:
+                    try:
+                        self._begin_shutdown_locked(timeout_seconds=0.0, cancel_futures=cancel_futures)
+                    finally:
+                        self._shutdown_waiter_lock.release()
+                        if self._stopping_executor is None:
+                            self._stop_requested.clear()
 
-            def _mark_quiesced() -> None:
-                self._release_stopping_barrier(executor)
-                quiesced.set()
-
-            finished = self._shutdown_executor_bounded(
-                executor,
-                timeout_seconds=timeout,
+            if owns_waiter:
+                threading.Thread(
+                    target=finish_when_available, name="pending-worker-pool-shutdown", daemon=True,
+                ).start()
+            return False
+        try:
+            started_teardown = self._state.executor is not None
+            done = self._begin_shutdown_locked(
+                timeout_seconds=max(0.0, deadline - time.monotonic()),
                 cancel_futures=cancel_futures,
-                on_quiesced=_mark_quiesced,
             )
-            return finished and quiesced.is_set()
-
-        return self._shutdown_executor_bounded(
-            executor,
-            timeout_seconds=timeout,
-            cancel_futures=cancel_futures,
-        )
+        finally:
+            if owns_waiter:
+                self._shutdown_waiter_lock.release()
+                if self._stopping_executor is None:
+                    self._stop_requested.clear()
+            self._lock.release()
+        if timeout == 0 and started_teardown:
+            return False
+        return done.wait(timeout=max(0.0, deadline - time.monotonic()))
 
     def snapshot(self) -> dict[str, Any]:
         """Expose lifecycle counters for observability."""

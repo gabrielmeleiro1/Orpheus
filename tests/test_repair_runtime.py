@@ -8,7 +8,6 @@ import pytest
 from modules.app.services.conversion_runtime import ConversionRuntimeOptions
 from modules.app.services.repair_runtime import (
     RepairRuntimeUnavailableError,
-    apply_repair_worker_defaults,
     effective_runtime_options_for_persistence,
     resolve_repair_runtime_options,
     serialize_persisted_runtime_options,
@@ -88,22 +87,6 @@ def test_serialize_persisted_runtime_options_strips_nested_credentials() -> None
     }
 
 
-def test_apply_repair_worker_defaults_uses_safe_auto_planning() -> None:
-    resolved = apply_repair_worker_defaults(
-        ConversionRuntimeOptions(
-            voice="af_bella",
-            speed=1.0,
-            parallel_worker_mode="manual",
-            enable_parallel=True,
-            max_parallel_chapters=4,
-        )
-    )
-
-    assert resolved.parallel_worker_mode == "auto"
-    assert resolved.enable_parallel is None
-    assert resolved.max_parallel_chapters is None
-
-
 def test_resolve_repair_runtime_options_uses_persisted_settings_when_request_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -138,10 +121,11 @@ def test_resolve_repair_runtime_options_uses_persisted_settings_when_request_is_
     assert resolved.max_parallel_chapters is None
 
 
-def test_resolve_repair_runtime_options_falls_back_to_app_defaults_without_history() -> None:
+def test_resolve_repair_runtime_options_falls_back_to_app_defaults_without_history(tmp_path) -> None:
     from modules.app.config import AppConfig
 
     config = AppConfig(
+        data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
         default_voice="am_adam",
         default_speed=1.0,
         tts_engine="kokoro",
@@ -225,12 +209,13 @@ def test_resolve_repair_runtime_options_allows_explicit_override_without_history
     assert resolved.parallel_worker_mode == "auto"
 
 
-def test_legacy_partial_override_falls_back_to_app_config_for_unspecified_fields() -> None:
+def test_legacy_partial_override_falls_back_to_app_config_for_unspecified_fields(tmp_path) -> None:
     """BUG3: legacy books must not fill unspecified narration fields from
     ConversionRuntimeOptions() defaults when any field is explicit."""
     from modules.app.config import AppConfig
 
     config = AppConfig(
+        data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
         default_voice="am_echo",
         default_speed=1.4,
         tts_engine="kokoro",

@@ -53,6 +53,17 @@ def estimate_eta_from_progress(
     return max(0.0, elapsed * ((1.0 - progress_value) / progress_value))
 
 
+def chapter_progress_message(chapter_idx: int, total_chapters: int, activity: str) -> str:
+    """Prefix chapter-local progress with its chapter ("Chapter 3/8: cleaning chunk 1/4").
+
+    Chunk counters restart in every chapter, so without the chapter they read
+    as whole-book progress.
+    """
+    if total_chapters <= 0:
+        return activity[:1].upper() + activity[1:]
+    return f"Chapter {chapter_idx + 1}/{total_chapters}: {activity}"
+
+
 class PipelineProgressTracker:
     """Tracks coarse-grained progress state for a conversion pipeline instance."""
 

@@ -9,19 +9,11 @@ from __future__ import annotations
 from importlib import import_module
 
 _EXPORT_MAP = {
-    "AudioEncoder": ("modules.audio.encoder", "AudioEncoder"),
-    "M4BPackager": ("modules.audio.packager", "M4BPackager"),
     "DocumentAudioPackager": ("modules.audio.document_packager", "DocumentAudioPackager"),
-    "AudiobookMetadata": ("modules.audio.packager", "AudiobookMetadata"),
-    "ChapterMarker": ("modules.audio.packager", "ChapterMarker"),
 }
 
 __all__ = [
-    "AudioEncoder",
-    "M4BPackager",
     "DocumentAudioPackager",
-    "AudiobookMetadata",
-    "ChapterMarker",
 ]
 
 

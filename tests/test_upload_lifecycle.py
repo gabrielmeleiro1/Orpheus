@@ -120,8 +120,13 @@ def test_upload_sweep_does_not_follow_symlink_targets(tmp_path) -> None:
     link = root / "old-link.txt"
     link.symlink_to(outside)
     expired_mtime = time.time() - WEB_UPLOAD_TTL_SECONDS - 60
-    os.utime(link, (expired_mtime, expired_mtime), follow_symlinks=False)
+    os.utime(outside, (expired_mtime, expired_mtime))
+    if os.utime in os.supports_follow_symlinks:
+        os.utime(link, (expired_mtime, expired_mtime), follow_symlinks=False)
+    target_stat = outside.stat()
 
     assert service.sweep_stale_uploads() == 0
     assert link.is_symlink()
     assert outside.read_text(encoding="utf-8") == "private"
+    assert outside.stat().st_mtime_ns == target_stat.st_mtime_ns
+    assert outside.stat().st_mode == target_stat.st_mode

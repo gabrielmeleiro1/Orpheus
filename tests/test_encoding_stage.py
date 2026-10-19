@@ -22,17 +22,21 @@ def _write_pcm16_wav(path: Path, samples: np.ndarray, *, sample_rate: int = 2400
         wav_file.writeframes(np.asarray(samples, dtype=np.int16).tobytes())
 
 
-def _pipeline(*, target_dbfs: float = -16.0) -> SimpleNamespace:
-    return SimpleNamespace(
-        _stage=PipelineStage.IDLE,
-        _tts_engine=SimpleNamespace(sample_rate=24000),
+def _pipeline(
+    *, target_dbfs: float = -16.0, cancel_requested=None,
+) -> encoding.EncodingStageContext:
+    return encoding.EncodingStageContext(
         config=SimpleNamespace(
             normalize_volume=True,
             target_dbfs=target_dbfs,
             mp3_bitrate="128k",
         ),
-        _notify_progress=lambda **_kwargs: None,
-        _log_verbose=lambda *_args, **_kwargs: None,
+        sample_rate=24000,
+        encoding_stage=PipelineStage.ENCODING,
+        set_stage=lambda _stage: None,
+        notify_progress=lambda **_kwargs: None,
+        log_verbose=lambda *_args, **_kwargs: None,
+        cancel_requested=cancel_requested,
     )
 
 
@@ -53,6 +57,7 @@ def test_file_backed_normalization_uses_ffmpeg_filter(
             *,
             bitrate: str = "128k",
             audio_filter: str | None = None,
+            cancel_requested=None,
         ) -> Path:
             captured["input_path"] = Path(input_path)
             captured["bitrate"] = bitrate
@@ -78,9 +83,11 @@ def test_file_backed_normalization_uses_ffmpeg_filter(
 
     audio_filter = captured["audio_filter"]
     assert isinstance(audio_filter, str)
-    assert audio_filter.startswith("volume=")
-    assert audio_filter.endswith("dB")
-    gain_db = float(audio_filter.removeprefix("volume=").removesuffix("dB"))
+    volume, limiter = audio_filter.split(",", 1)
+    assert volume.startswith("volume=")
+    assert volume.endswith("dB")
+    assert limiter.startswith("alimiter=limit=0.7943")
+    gain_db = float(volume.removeprefix("volume=").removesuffix("dB"))
     expected_gain_db = -6.0 - (20.0 * math.log10(8192 / 32768))
     assert gain_db == pytest.approx(expected_gain_db, abs=1e-4)
 
@@ -102,6 +109,7 @@ def test_silent_file_backed_normalization_skips_filter(
             *,
             bitrate: str = "128k",
             audio_filter: str | None = None,
+            cancel_requested=None,
         ) -> Path:
             captured["input_path"] = Path(input_path)
             captured["audio_filter"] = audio_filter
@@ -160,3 +168,59 @@ def test_encode_chapter_aac_uses_single_encode_for_short_wav(
     assert mock_run.call_count == 1
     encode_args = mock_run.call_args_list[0].args[0]
     assert encode_args[encode_args.index("-c:a") + 1] == "aac"
+
+
+def test_cancelled_array_encode_does_not_fall_back_to_a_second_encode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+
+    class FakeEncoder:
+        def array_to_mp3(self, *_args, cancel_requested=None, **_kwargs) -> Path:
+            calls.append("array")
+            assert cancel_requested is not None and cancel_requested()
+            raise RuntimeError("FFmpeg encoding from array failed: cancelled")
+
+        def wav_to_mp3(self, *_args, **_kwargs) -> Path:  # pragma: no cover - regression guard
+            calls.append("wav")
+            raise AssertionError("cancelled encode must not retry through a temp WAV")
+
+    monkeypatch.setattr(audio_encoder_module, "AudioEncoder", FakeEncoder)
+
+    with pytest.raises(RuntimeError, match="cancelled"):
+        encoding.encode_chapter_audio(
+            _pipeline(cancel_requested=lambda: True),
+            SimpleNamespace(number=1, title="Chapter 1"),
+            chapter_idx=0,
+            total_chapters=1,
+            output_dir=tmp_path,
+            chapter_wav=np.zeros(2400, dtype=np.float32),
+        )
+
+    assert calls == ["array"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_chapter_audio_names_match_the_recovery_inventory(tmp_path: Path) -> None:
+    from modules.contracts.recovery_inventory import chapter_audio_path
+
+    chapter = SimpleNamespace(number=3, title='Who? "Me": a/b|c*')
+    expected = chapter_audio_path(chapter, tmp_path, ".mp3")
+
+    class FakeEncoder:
+        def wav_to_mp3(self, _input, output_path, **_kwargs) -> Path:
+            Path(output_path).write_bytes(b"mp3")
+            return Path(output_path)
+
+    wav_path = tmp_path / "chapter.wav"
+    _write_pcm16_wav(wav_path, np.zeros(2400, dtype=np.int16))
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(audio_encoder_module, "AudioEncoder", FakeEncoder)
+        mp3_path, _ = encoding.encode_chapter_audio(
+            _pipeline(), chapter, chapter_idx=0, total_chapters=1,
+            output_dir=tmp_path, chapter_wav=wav_path,
+        )
+
+    assert mp3_path == expected
+    assert mp3_path.name == "03_Who_ _Me__ a_b_c_.mp3"

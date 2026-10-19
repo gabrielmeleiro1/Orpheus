@@ -9,6 +9,7 @@ import soundfile as sf
 
 from modules.ingestion.models import Chapter
 from modules.pipeline.chapter_narration import (
+    CHAPTER_END_PAUSE_SECONDS, CHAPTER_HEADING_PAUSE_SECONDS,
     add_chapter_narration, chapter_announcement, chapter_body,
 )
 
@@ -55,7 +56,7 @@ def test_document_section_label_survives_worker_configuration_roundtrip():
 
 @pytest.mark.parametrize("file_backed", [False, True])
 @pytest.mark.parametrize("sample_rate", [24000, 16000])
-def test_audio_has_exact_three_second_gaps_and_updated_rms(tmp_path, file_backed, sample_rate):
+def test_audio_has_exact_documented_gaps_and_updated_rms(tmp_path, file_backed, sample_rate):
     intro = np.full(sample_rate // 2, 0.25, dtype=np.float32)
     body = np.full(sample_rate, -0.25, dtype=np.float32)
     source = body
@@ -72,13 +73,15 @@ def test_audio_has_exact_three_second_gaps_and_updated_rms(tmp_path, file_backed
     result = SimpleNamespace(pcm_rms=999)
     output = add_chapter_narration(runtime, Chapter(1, "Arrival", "Body."), source, result)
     audio, rate = sf.read(output, dtype="float32")
-    gap = 3 * sample_rate
+    # Both pauses are documented as 1.5 seconds (README, docs/ARCHITECTURE.md).
+    gap = int(1.5 * sample_rate)
+    tail = int(1.5 * sample_rate)
     assert rate == sample_rate
-    assert len(audio) == len(intro) + gap + len(body) + gap
+    assert len(audio) == len(intro) + gap + len(body) + tail
     np.testing.assert_allclose(audio[:len(intro)], intro, atol=1 / 32768)
     np.testing.assert_array_equal(audio[len(intro):len(intro) + gap], 0)
-    np.testing.assert_allclose(audio[len(intro) + gap:-gap], body, atol=1 / 32768)
-    np.testing.assert_array_equal(audio[-gap:], 0)
+    np.testing.assert_allclose(audio[len(intro) + gap:-tail], body, atol=1 / 32768)
+    np.testing.assert_array_equal(audio[-tail:], 0)
     assert result.pcm_rms == pytest.approx(float(np.sqrt(np.mean(audio.astype(float) ** 2))))
     runtime.synthesize_speech.assert_called_once_with(
         text="Chapter number 1. Arrival.", voice="test", speed=1.4,
@@ -115,7 +118,10 @@ def test_processor_includes_introduction_for_both_synthesis_paths(tmp_path, over
         )
     assert result.error is None
     assert not cancelled
-    assert sf.info(output).frames == 180000  # 0.5s intro + 3s + 1s body + 3s
+    # 0.5 s intro + heading pause + 1 s body + end pause
+    assert sf.info(output).frames == 12000 + int(
+        (CHAPTER_HEADING_PAUSE_SECONDS + CHAPTER_END_PAUSE_SECONDS) * 24000
+    ) + 24000
     assert overlapped.called is overlap
     assert strict.called is not overlap
     assert speak.call_args.kwargs["text"] == "Chapter number 1. Arrival."

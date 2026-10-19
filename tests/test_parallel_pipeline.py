@@ -15,7 +15,8 @@ from unittest.mock import MagicMock, patch
 from dataclasses import dataclass
 
 import pytest
-import modules.pipeline as pipeline_module
+
+from tests._factories_group2_pipeline import PermissiveMemoryPolicy as _PermissiveMemoryPolicy, cuda_runtime_spec
 import numpy as np
 
 from modules.pipeline.chapter_dispatch import (
@@ -67,6 +68,34 @@ from modules.tts.runtime_options import TTSRuntimeOptions
 from modules.tts.runtime_spec import TTSRuntimeSpec
 
 
+def _worker_config_dict(c):
+    return {
+        "tts_engine": c.tts_engine,
+        "tts_model_name": c.tts_model_name,
+        "tts_quantization": c.tts_quantization,
+        "cleaner_model_name": c.cleaner_model_name,
+        "cleaner_backend": c.cleaner_backend,
+        "cleaner_api_base_url": c.cleaner_api_base_url,
+        "cleaner_api_key_env": c.cleaner_api_key_env,
+        "cleaner_api_model": c.cleaner_api_model,
+        "save_cleaning_debug": c.save_cleaning_debug,
+        "voice": c.voice,
+        "speed": c.speed,
+        "output_dir": c.output_dir,
+        "temp_dir": c.temp_dir,
+        "mp3_bitrate": c.mp3_bitrate,
+        "emit_chapter_mp3_artifacts": c.emit_chapter_mp3_artifacts,
+        "normalize_volume": c.normalize_volume,
+        "target_dbfs": c.target_dbfs,
+        "chunk_size": c.chunk_size,
+        "enable_pipelining": c.enable_pipelining,
+        "enable_chunk_overlap": c.enable_chunk_overlap,
+        "cleaner_api_global_concurrency": c.cleaner_api_global_concurrency,
+        "cleaner_api_global_limiter": c.cleaner_api_global_limiter,
+        "shared_worker_pool_manager": c.shared_worker_pool_manager,
+    }
+
+
 def test_memory_policy_unknown_memory_allows_one_worker():
     from modules.pipeline.memory_policy import SafeMemoryPolicy
 
@@ -108,53 +137,6 @@ def test_memory_policy_conservative_unknown_worker_estimate_allows_two_with_head
     assert policy.allowed_workers(requested_max=3) == 3
     assert policy.allowed_workers(requested_max=2) == 2
     assert policy.safe_mode_reason is None
-
-
-def test_memory_sampler_returns_snapshot_when_psutil_probe_works():
-    from modules.pipeline.memory_policy import sample_memory_snapshot
-
-    process = MagicMock()
-    process.memory_info.return_value = types.SimpleNamespace(rss=3 * 1024**3)
-
-    snapshot = sample_memory_snapshot(
-        virtual_memory=lambda: types.SimpleNamespace(
-            total=32 * 1024**3,
-            available=20 * 1024**3,
-        ),
-        process_factory=lambda: process,
-    )
-
-    assert snapshot is not None
-    assert snapshot.total_bytes == 32 * 1024**3
-    assert snapshot.available_bytes == 20 * 1024**3
-    assert snapshot.process_rss_bytes == 3 * 1024**3
-
-
-def test_memory_sampler_returns_none_when_detection_fails():
-    from modules.pipeline.memory_policy import sample_memory_snapshot
-
-    def fail_virtual_memory():
-        raise RuntimeError("memory probe failed")
-
-    assert sample_memory_snapshot(virtual_memory=fail_virtual_memory) is None
-
-
-def test_memory_sampler_defaults_mlx_fields_to_zero_when_unavailable():
-    from modules.pipeline.memory_policy import sample_memory_snapshot
-
-    snapshot = sample_memory_snapshot(
-        virtual_memory=lambda: types.SimpleNamespace(
-            total=16 * 1024**3,
-            available=12 * 1024**3,
-        ),
-        process_factory=lambda: None,
-        mlx_core=False,
-    )
-
-    assert snapshot is not None
-    assert snapshot.mlx_active_bytes == 0
-    assert snapshot.mlx_cache_bytes == 0
-    assert snapshot.mlx_peak_bytes == 0
 
 
 def test_memory_policy_calibration_limits_workers_by_observed_cost():
@@ -249,17 +231,6 @@ def test_memory_policy_record_memory_error_forces_one_worker():
 
     assert policy.allowed_workers(requested_max=4) == 1
     assert policy.safe_mode_reason == "memory pressure error"
-
-
-class _PermissiveMemoryPolicy:
-    safe_mode_reason = None
-
-    def allowed_workers(self, requested_max: int) -> int:
-        return requested_max
-
-    def should_submit_more(self, active_workers: int) -> bool:
-        _ = active_workers
-        return True
 
 
 @dataclass
@@ -495,13 +466,6 @@ class TestParallelConfig:
         assert config.max_workers >= 1
         assert config.max_workers <= 4
         assert config.use_processes is True
-        assert set(ParallelConfig.__dataclass_fields__) == {
-            "max_workers",
-            "use_processes",
-            "vram_budget",
-            "worker_init_config",
-            "enforce_vram_budget",
-        }
 
     def test_create_parallel_config(self):
         """Test helper function for creating config."""
@@ -528,18 +492,6 @@ class TestParallelConfig:
 
 class TestParallelPipelineOrchestrator:
     """Tests for parallel pipeline orchestrator."""
-
-    @pytest.mark.asyncio
-    async def test_orchestrator_initialization(self):
-        """Test orchestrator initialization."""
-        if not PARALLEL_AVAILABLE:
-            pytest.skip("Parallel module not available")
-
-        config = ParallelConfig(max_workers=2)
-        orchestrator = ParallelPipelineOrchestrator(config)
-
-        assert orchestrator.config == config
-        assert orchestrator._cancelled is False
 
     def test_process_chapters_parallel(self):
         """Test parallel chapter processing."""
@@ -579,13 +531,20 @@ class TestParallelPipelineOrchestrator:
         assert [result.chapter_number for result in results] == [1, 2, 3]
         assert [result.duration_ms for result in results] == [1, 2, 3]
 
-    def test_orchestrator_cancel(self):
-        """Test orchestrator cancellation."""
-        config = ParallelConfig()
+    def test_orchestrator_cancel_skips_later_processing(self):
+        """A cancelled orchestrator processes no further chapters."""
+        config = ParallelConfig(max_workers=1, use_processes=False)
         orchestrator = ParallelPipelineOrchestrator(config)
+        processed = []
 
         orchestrator.cancel()
-        assert orchestrator._cancelled is True
+        results = orchestrator.process_chapters_parallel(
+            chapters=[MockChapter(1, "One", "alpha")],
+            process_func=lambda ch, idx, _fm: processed.append(idx),  # noqa: ARG005
+        )
+
+        assert results == []
+        assert processed == []
 
 
 class TestPipelineIntegration:
@@ -671,13 +630,7 @@ class TestPipelineIntegration:
         assert pipeline.is_parallel is True
 
     def test_build_worker_plan_cuda_same_device_contention_guard(self):
-        runtime_spec = TTSRuntimeSpec(
-            provider="cuda",
-            engine="kokoro",
-            model="Kokoro-82M",
-            quantization="bf16",
-            device="cuda:0",
-        )
+        runtime_spec = cuda_runtime_spec()
         config = PipelineConfig(
             enable_parallel=True,
             requested_parallel_chapters=3,
@@ -699,13 +652,7 @@ class TestPipelineIntegration:
         )
 
     def test_build_worker_plan_cuda_different_devices_skips_same_device_guard(self):
-        runtime_spec = TTSRuntimeSpec(
-            provider="cuda",
-            engine="kokoro",
-            model="Kokoro-82M",
-            quantization="bf16",
-            device="cuda:0",
-        )
+        runtime_spec = cuda_runtime_spec()
         config = PipelineConfig(
             enable_parallel=True,
             requested_parallel_chapters=3,
@@ -728,13 +675,7 @@ class TestPipelineIntegration:
     ):
         from modules.tts.device_memory import CombinedDeviceMemoryPolicy
 
-        runtime_spec = TTSRuntimeSpec(
-            provider="cuda",
-            engine="kokoro",
-            model="Kokoro-82M",
-            quantization="bf16",
-            device="cuda:0",
-        )
+        runtime_spec = cuda_runtime_spec()
         config = PipelineConfig(
             output_dir=tmp_path / "output",
             temp_dir=tmp_path / "temp",
@@ -750,13 +691,7 @@ class TestPipelineIntegration:
     def test_worker_config_rebuilds_combined_device_memory_policy(self, tmp_path):
         from modules.tts.device_memory import CombinedDeviceMemoryPolicy
 
-        runtime_spec = TTSRuntimeSpec(
-            provider="cuda",
-            engine="kokoro",
-            model="Kokoro-82M",
-            quantization="bf16",
-            device="cuda:0",
-        )
+        runtime_spec = cuda_runtime_spec()
         config = PipelineConfig(
             output_dir=tmp_path / "output",
             temp_dir=tmp_path / "temp",
@@ -1071,23 +1006,6 @@ class TestParallelOrchestratorFacade:
         assert created[0].shutdown_calls == 1
 
 
-class TestParallelPublicSurface:
-    """Tests for the surviving public parallel API."""
-
-    def test_parallel_modules_do_not_export_legacy_symbols(self):
-        parallel_module = importlib.import_module("modules.pipeline.parallel")
-
-        for name in [
-            "AsyncFileManager",
-            "PipelinedStage",
-            "ChapterWorkerPool",
-            "PipelineTask",
-            "StageStatus",
-        ]:
-            assert not hasattr(parallel_module, name)
-            assert name not in pipeline_module.__all__
-
-
 class TestPipelineConfigOptions:
     """Tests for pipeline configuration options."""
 
@@ -1106,8 +1024,6 @@ class TestPipelineConfigOptions:
         assert config.tts_idle_timeout_seconds == 300.0
         assert config.emit_chapter_mp3_artifacts is False
         assert config.total_vram_gb >= 2.0
-        assert "use_process_pool" not in PipelineConfig.__dataclass_fields__
-        assert "enable_async_io" not in PipelineConfig.__dataclass_fields__
 
     def test_config_custom_values(self):
         """Test custom configuration values."""
@@ -1424,7 +1340,9 @@ class TestPipelineAdaptiveWorkers:
         )
         assert ("warmup", "info") in calls
 
-    def test_manual_worker_mode_preserves_requested_workers_despite_memory_policy(self, tmp_path):
+    def test_manual_worker_count_is_a_ceiling_clamped_by_the_memory_policy(self, tmp_path):
+        # Each worker loads its own models; a manual request cannot oversubscribe
+        # device memory (two workers on one 8 GB GPU paged and ran ~7x slower).
         class _ClampMemoryPolicy:
             safe_mode_reason = "memory headroom below safe reserve"
             selected_worker_count_reason = "memory headroom below safe reserve"
@@ -1432,7 +1350,7 @@ class TestPipelineAdaptiveWorkers:
             estimated_per_worker_memory_bytes = 4 * 1024**3
 
             def allowed_workers(self, requested_max):
-                raise AssertionError("manual worker mode should not ask memory policy to clamp workers")
+                return 1
 
         cfg = PipelineConfig(
             output_dir=tmp_path / "output",
@@ -1444,15 +1362,31 @@ class TestPipelineAdaptiveWorkers:
             memory_policy=_ClampMemoryPolicy(),
         )
         pipeline = ConversionPipeline(cfg)
+        # Free device memory is judged when chapters are dispatched, not when the
+        # config is built: the plan keeps the requested ceiling until then.
+        assert pipeline.config.worker_plan.max_workers == 3
 
-        snapshot = pipeline._runtime.performance_snapshot()  # noqa: SLF001
+        calls = []
+        probe = types.SimpleNamespace(
+            _total_chars=300_000,
+            config=pipeline.config,
+            _parallel_config=types.SimpleNamespace(max_workers=3),
+            is_parallel=True,
+            _parallel_execution_active=False,
+            _log_verbose=lambda message, level="info": calls.append((message, level)),
+        )
+        _attach_dispatch_stage_runner(probe, calls)
+        chapters = [MockChapter(n, str(n), "x" * 100_000) for n in (1, 2, 3)]
 
-        assert snapshot["parallel_worker_mode"] == "manual"
-        assert snapshot["requested_parallel_chapters"] == 3
-        assert snapshot["effective_parallel_chapters"] == 3
-        assert snapshot["max_workers"] == 3
-        assert snapshot["memory_safe_mode"] is False
-        assert "safe_mode_reason" not in snapshot
+        results = dispatch_chapters(probe, chapters, tmp_path / "chapters")
+
+        assert results == [("sequential", 3, tmp_path / "chapters")]
+        assert probe._selected_parallel_chapters == 1
+        assert probe._selected_parallel_worker_count_reason == "memory headroom below safe reserve"
+        assert (
+            "[PARALLEL] Using 1 worker of 3 requested: memory headroom below safe reserve",
+            "warning",
+        ) in calls
 
     def test_manual_worker_mode_does_not_throttle_shared_pool_submissions_with_memory_policy(self, tmp_path):
         captured: dict[str, object] = {}
@@ -1656,10 +1590,10 @@ class TestPipelineAdaptiveWorkers:
             enable_parallel=False,
         )
         pipeline = ConversionPipeline(cfg)
-        pipeline._performance_tts_chars = 1_000  # noqa: SLF001
-        pipeline._performance_tts_seconds = 2.0  # noqa: SLF001
-        pipeline._performance_encode_chapters = 3  # noqa: SLF001
-        pipeline._performance_encode_seconds = 6.0  # noqa: SLF001
+        pipeline._run_state.performance_tts_chars = 1_000  # noqa: SLF001
+        pipeline._run_state.performance_tts_seconds = 2.0  # noqa: SLF001
+        pipeline._run_state.performance_encode_chapters = 3  # noqa: SLF001
+        pipeline._run_state.performance_encode_seconds = 6.0  # noqa: SLF001
 
         snapshot = pipeline._runtime.performance_snapshot()  # noqa: SLF001
 
@@ -1817,14 +1751,11 @@ class TestWorkerProgressTotals:
         worker_config = build_worker_pipeline_config(worker_init_config["pipeline_config"])
 
         assert worker_init_config["tts_runtime"] == runtime_spec.to_dict()
-        assert "worker_environment" not in worker_init_config
-        assert "tts_runtime_cache_key" not in worker_init_config
         assert worker_init_config["pipeline_config"]["tts_runtime"] == runtime_spec.to_dict()
         assert worker_init_config["pipeline_config"]["device_memory_policy"] == {
             "provider": "cuda",
             "device": "cuda:0",
         }
-        assert "tts_runtime_cache_key" not in worker_init_config["pipeline_config"]
         derived_cache_key = TTSRuntimeSpec.from_serialized(
             worker_init_config["tts_runtime"],
         ).cache_key()
@@ -1850,7 +1781,6 @@ class TestWorkerProgressTotals:
 
         worker_init_config = pipeline._build_worker_init_config()  # noqa: SLF001
 
-        assert "worker_environment" not in worker_init_config
         assert worker_init_config["pipeline_config"]["device_memory_policy"] == {
             "provider": "mlx",
             "device": None,
@@ -2155,38 +2085,11 @@ class TestWorkerProgressTotals:
             seen_total["value"] = total_chapters
             return ChapterResult(chapter_number=3, chapter_title="Three")
 
-        def _config_dict(c):
-            return {
-                "tts_engine": c.tts_engine,
-                "tts_model_name": c.tts_model_name,
-                "tts_quantization": c.tts_quantization,
-                "cleaner_model_name": c.cleaner_model_name,
-                "cleaner_backend": c.cleaner_backend,
-                "cleaner_api_base_url": c.cleaner_api_base_url,
-                "cleaner_api_key_env": c.cleaner_api_key_env,
-                "cleaner_api_model": c.cleaner_api_model,
-                "save_cleaning_debug": c.save_cleaning_debug,
-                "voice": c.voice,
-                "speed": c.speed,
-                "output_dir": c.output_dir,
-                "temp_dir": c.temp_dir,
-                "mp3_bitrate": c.mp3_bitrate,
-                "emit_chapter_mp3_artifacts": c.emit_chapter_mp3_artifacts,
-                "normalize_volume": c.normalize_volume,
-                "target_dbfs": c.target_dbfs,
-                "chunk_size": c.chunk_size,
-                "enable_pipelining": c.enable_pipelining,
-                "enable_chunk_overlap": c.enable_chunk_overlap,
-                "cleaner_api_global_concurrency": c.cleaner_api_global_concurrency,
-                "cleaner_api_global_limiter": c.cleaner_api_global_limiter,
-                "shared_worker_pool_manager": c.shared_worker_pool_manager,
-            }
-
         with (
             patch.object(PipelineStages, "process_chapter", _fake_process),
             patch(
                 "modules.pipeline.orchestrator.get_worker_cached_config",
-                return_value=_config_dict(cfg),
+                return_value=_worker_config_dict(cfg),
             ),
         ):
             PipelineStages.process_chapter_worker(
@@ -2208,33 +2111,6 @@ class TestWorkerProgressTotals:
         )
         chapter = MockChapter(1, "One", "body")
 
-        def _config_dict(c):
-            return {
-                "tts_engine": c.tts_engine,
-                "tts_model_name": c.tts_model_name,
-                "tts_quantization": c.tts_quantization,
-                "cleaner_model_name": c.cleaner_model_name,
-                "cleaner_backend": c.cleaner_backend,
-                "cleaner_api_base_url": c.cleaner_api_base_url,
-                "cleaner_api_key_env": c.cleaner_api_key_env,
-                "cleaner_api_model": c.cleaner_api_model,
-                "save_cleaning_debug": c.save_cleaning_debug,
-                "voice": c.voice,
-                "speed": c.speed,
-                "output_dir": c.output_dir,
-                "temp_dir": c.temp_dir,
-                "mp3_bitrate": c.mp3_bitrate,
-                "emit_chapter_mp3_artifacts": c.emit_chapter_mp3_artifacts,
-                "normalize_volume": c.normalize_volume,
-                "target_dbfs": c.target_dbfs,
-                "chunk_size": c.chunk_size,
-                "enable_pipelining": c.enable_pipelining,
-                "enable_chunk_overlap": c.enable_chunk_overlap,
-                "cleaner_api_global_concurrency": c.cleaner_api_global_concurrency,
-                "cleaner_api_global_limiter": c.cleaner_api_global_limiter,
-                "shared_worker_pool_manager": c.shared_worker_pool_manager,
-            }
-
         def _fake_ensure_tts_engine(_pipeline):  # noqa: ANN001
             time.sleep(0.001)
 
@@ -2249,7 +2125,7 @@ class TestWorkerProgressTotals:
         with (
             patch(
                 "modules.pipeline.orchestrator.get_worker_cached_config",
-                return_value=_config_dict(cfg),
+                return_value=_worker_config_dict(cfg),
             ),
             patch(
                 "modules.pipeline.model_lifecycle.ensure_chapter_tts_engine",
@@ -2288,18 +2164,20 @@ class TestAsyncBridge:
 
         async_bridge._reset_runner_for_tests()
 
-        async def _run() -> tuple[int, int, dict[str, object], dict[str, object]]:
-            first_value = async_bridge.run_coroutine_sync(asyncio.sleep(0, result=1))
-            first_snapshot = async_bridge._debug_snapshot()
-            second_value = async_bridge.run_coroutine_sync(asyncio.sleep(0, result=2))
-            second_snapshot = async_bridge._debug_snapshot()
-            return first_value, second_value, first_snapshot, second_snapshot
+        async def _identify(value: int) -> tuple[int, int, asyncio.AbstractEventLoop]:
+            return value, threading.get_ident(), asyncio.get_running_loop()
 
-        first, second, snap1, snap2 = asyncio.run(_run())
-        assert first == 1
-        assert second == 2
-        assert snap1["thread_ident"] is not None
-        assert snap1["thread_ident"] == snap2["thread_ident"]
+        async def _run():
+            first = async_bridge.run_coroutine_sync(_identify(1))
+            second = async_bridge.run_coroutine_sync(_identify(2))
+            return first, second
+
+        first, second = asyncio.run(_run())
+        assert first[0] == 1
+        assert second[0] == 2
+        assert first[1] != threading.get_ident()
+        assert first[1] == second[1]
+        assert first[2] is second[2]
 
     def test_bridge_preserves_exception_propagation(self):
         from modules import async_bridge
@@ -2344,25 +2222,3 @@ class TestEdgeCases:
             process_func=lambda ch, idx, _fm: None,
         )
         assert results == []
-
-    def test_single_chapter(self):
-        """Test handling of single chapter."""
-        config = ParallelConfig(
-            use_processes=False
-        )  # Use threads to avoid pickling issues
-        orchestrator = ParallelPipelineOrchestrator(config)
-
-        chapters = [MockChapter(1, "Only Chapter")]
-
-        results = orchestrator.process_chapters_parallel(
-            chapters=chapters,
-            process_func=lambda ch, idx, _fm: ChapterResult(  # noqa: ARG005
-                chapter_number=ch.number,
-                chapter_title=ch.title,
-                duration_ms=idx + 1,
-            ),
-        )
-        assert len(results) == 1
-        assert isinstance(results[0], ChapterResult)
-        assert results[0].chapter_number == 1
-        assert results[0].duration_ms == 1

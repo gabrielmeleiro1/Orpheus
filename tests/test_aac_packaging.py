@@ -6,9 +6,10 @@ import gc
 import threading
 import weakref
 from concurrent.futures import Future
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -116,6 +117,16 @@ class TestStreamCopyDetection:
 
 
 class TestBackgroundChapterAacEncoding:
+    @pytest.fixture(autouse=True)
+    def _close_chapter_aac_executors(self):
+        self._pipelines = []
+        yield
+        for pipeline in self._pipelines:
+            executor = pipeline.stages.runtime.state.chapter_aac_executor
+            if executor is not None:
+                executor.shutdown(wait=True)
+                pipeline.stages.runtime.state.chapter_aac_executor = None
+
     def _pipeline(self, tmp_path: Path) -> ConversionPipeline:
         cfg = PipelineConfig(
             output_dir=tmp_path / "output",
@@ -127,6 +138,7 @@ class TestBackgroundChapterAacEncoding:
         )
         pipeline = ConversionPipeline(cfg)
         pipeline._tts_engine = SimpleNamespace(sample_rate=24_000)
+        self._pipelines.append(pipeline)
         return pipeline
 
     def test_background_aac_future_does_not_retain_chapter_numpy_array(
@@ -397,7 +409,8 @@ class TestDurableChapterAacForRepair:
 
 
 class TestTempChapterAacCleanupTracking:
-    def _pipeline(self, tmp_path: Path, *, emit_mp3: bool) -> ConversionPipeline:
+    @contextmanager
+    def _pipeline(self, tmp_path: Path, *, emit_mp3: bool):
         cfg = PipelineConfig(
             output_dir=tmp_path / "output",
             temp_dir=tmp_path / "temp",
@@ -408,7 +421,13 @@ class TestTempChapterAacCleanupTracking:
         )
         pipeline = ConversionPipeline(cfg)
         pipeline._tts_engine = SimpleNamespace(sample_rate=24_000)
-        return pipeline
+        try:
+            yield pipeline
+        finally:
+            executor = pipeline.stages.runtime.state.chapter_aac_executor
+            if executor is not None:
+                executor.shutdown(wait=True)
+                pipeline.stages.runtime.state.chapter_aac_executor = None
 
     @staticmethod
     def _encode_writing_output(*, context, chapter, chapter_wav, precomputed_rms=None, output_path=None):
@@ -429,30 +448,30 @@ class TestTempChapterAacCleanupTracking:
         packaging (the only other place that tracks them), and the tracked-paths
         cleanup branch does not sweep the temp root.
         """
-        pipeline = self._pipeline(tmp_path, emit_mp3=True)
-        monkeypatch.setattr(encoding_stage, "encode_chapter_aac", self._encode_writing_output)
-        temp_dir = pipeline.config.temp_dir
-        temp_dir.mkdir(parents=True, exist_ok=True)
+        with self._pipeline(tmp_path, emit_mp3=True) as pipeline:
+            monkeypatch.setattr(encoding_stage, "encode_chapter_aac", self._encode_writing_output)
+            temp_dir = pipeline.config.temp_dir
+            temp_dir.mkdir(parents=True, exist_ok=True)
 
-        wav = temp_dir / "chapter_01.wav"
-        wav.write_bytes(b"wav")
-        pipeline.stages.runtime.track_temp_cleanup_path(wav)
+            wav = temp_dir / "chapter_01.wav"
+            wav.write_bytes(b"wav")
+            pipeline.stages.runtime.track_temp_cleanup_path(wav)
 
-        result = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
-        pipeline.stages.chapter_processor._ensure_chapter_aac(  # noqa: SLF001
-            result=result,
-            chapter=SimpleNamespace(number=1, title="Chapter 1"),
-            encoding_source=wav,
-            output_dir=pipeline.config.output_dir,
-        )
-        assert result.aac_future is not None
-        assert result.aac_future.result(timeout=2.0).exists()
+            result = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
+            pipeline.stages.chapter_processor._ensure_chapter_aac(  # noqa: SLF001
+                result=result,
+                chapter=SimpleNamespace(number=1, title="Chapter 1"),
+                encoding_source=wav,
+                output_dir=pipeline.config.output_dir,
+            )
+            assert result.aac_future is not None
+            assert result.aac_future.result(timeout=2.0).exists()
 
-        # The run fails before packaging resolves the future; cleanup must not
-        # leave the encoded chapter .m4a behind in the temp root.
-        pipeline._cleanup_temp()  # noqa: SLF001
+            # The run fails before packaging resolves the future; cleanup must not
+            # leave the encoded chapter .m4a behind in the temp root.
+            pipeline._cleanup_temp()  # noqa: SLF001
 
-        assert not list(temp_dir.glob("*.m4a"))
+            assert not list(temp_dir.glob("*.m4a"))
 
     def test_durable_chapter_aac_survives_temp_cleanup(
         self,
@@ -460,31 +479,31 @@ class TestTempChapterAacCleanupTracking:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Submit-time tracking must not sweep durable repair chapter audio."""
-        pipeline = self._pipeline(tmp_path, emit_mp3=False)
-        monkeypatch.setattr(encoding_stage, "encode_chapter_aac", self._encode_writing_output)
-        temp_dir = pipeline.config.temp_dir
-        temp_dir.mkdir(parents=True, exist_ok=True)
-        chapters_dir = tmp_path / "output" / "Book" / "chapters"
-        chapters_dir.mkdir(parents=True)
+        with self._pipeline(tmp_path, emit_mp3=False) as pipeline:
+            monkeypatch.setattr(encoding_stage, "encode_chapter_aac", self._encode_writing_output)
+            temp_dir = pipeline.config.temp_dir
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            chapters_dir = tmp_path / "output" / "Book" / "chapters"
+            chapters_dir.mkdir(parents=True)
 
-        wav = temp_dir / "chapter_01.wav"
-        wav.write_bytes(b"wav")
-        pipeline.stages.runtime.track_temp_cleanup_path(wav)
+            wav = temp_dir / "chapter_01.wav"
+            wav.write_bytes(b"wav")
+            pipeline.stages.runtime.track_temp_cleanup_path(wav)
 
-        result = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
-        pipeline.stages.chapter_processor._ensure_chapter_aac(  # noqa: SLF001
-            result=result,
-            chapter=SimpleNamespace(number=1, title="Chapter 1"),
-            encoding_source=wav,
-            output_dir=chapters_dir,
-        )
-        assert result.aac_future is not None
-        aac_path = result.aac_future.result(timeout=2.0)
-        assert temp_dir not in aac_path.parents
+            result = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
+            pipeline.stages.chapter_processor._ensure_chapter_aac(  # noqa: SLF001
+                result=result,
+                chapter=SimpleNamespace(number=1, title="Chapter 1"),
+                encoding_source=wav,
+                output_dir=chapters_dir,
+            )
+            assert result.aac_future is not None
+            aac_path = result.aac_future.result(timeout=2.0)
+            assert temp_dir not in aac_path.parents
 
-        pipeline._cleanup_temp()  # noqa: SLF001
+            pipeline._cleanup_temp()  # noqa: SLF001
 
-        assert aac_path.exists()
+            assert aac_path.exists()
 
 
 class TestPackagingSafeTitle:
@@ -568,43 +587,3 @@ class TestPackagingSafeTitle:
         assert m4b_path.name.casefold() != "con.m4b"
         assert m4b_path.stem.casefold() != "con"
 
-
-class TestDocumentAudioPackagerReencode:
-    @patch("subprocess.run")
-    @patch("shutil.which")
-    def test_create_m4a_reencodes_homogeneous_m4a_inputs(
-        self,
-        mock_which,
-        mock_run,
-        tmp_path,
-    ):
-        # document_audio prose is continuous, so joining independently encoded .m4a
-        # sections with stream copy re-bakes AAC priming/padding at each seam and
-        # produces audible mid-narration gaps. The packager must single-pass
-        # re-encode instead of stream-copying.
-        from modules.audio.document_packager import DocumentAudioPackager
-        from modules.audio.packager import AudiobookMetadata
-
-        mock_which.return_value = "/usr/bin/ffmpeg"
-
-        def fake_run(cmd, **_kwargs):  # noqa: ANN001, ANN202
-            Path(cmd[-1]).write_bytes(b"audio")
-            return MagicMock(returncode=0, stdout="", stderr="")
-
-        mock_run.side_effect = fake_run
-
-        first = tmp_path / "one.m4a"
-        second = tmp_path / "two.m4a"
-        first.write_bytes(b"one")
-        second.write_bytes(b"two")
-
-        packager = DocumentAudioPackager()
-        metadata = AudiobookMetadata(title="Doc", author="Author")
-        output = tmp_path / "out.m4a"
-
-        packager.create_m4a([first, second], metadata, output)
-
-        final_args = mock_run.call_args_list[0].args[0]
-        assert final_args[final_args.index("-c:a") + 1] == "aac"
-        assert "-b:a" in final_args
-        assert "copy" not in final_args

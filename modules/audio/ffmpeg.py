@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -29,8 +30,18 @@ _BINARY_ENV_VARS = {
     "ffprobe": ("AUDIOBOOK_FFPROBE_PATH", "FFPROBE_PATH"),
 }
 _DEFAULT_TIMEOUT_ENV_VAR = "AUDIOBOOK_FFMPEG_TIMEOUT_SECONDS"
+# Used only when the audio length of a job is unknown.
 _DEFAULT_TIMEOUT_SECONDS = 2 * 60 * 60
+# With a known audio length the deadline scales with it. Encoding, muxing, and
+# probing 24 kHz mono speech run at hundreds of times real time, so allowing
+# half of real time (and never less than two minutes) only trips on an FFmpeg
+# that has genuinely stalled, while a short chapter no longer waits two hours.
+_TIMEOUT_FLOOR_SECONDS = 120.0
+_TIMEOUT_SECONDS_PER_AUDIO_SECOND = 0.5
 _KILL_WAIT_SECONDS = 5.0
+# FFmpeg prints its banner and stream details first and the cause last; keep
+# failure messages (which reach job errors) bounded to that tail.
+_STDERR_EXCERPT_CHARS = 2000
 
 
 def _is_executable_file(path: Path) -> bool:
@@ -120,8 +131,24 @@ def require_ffmpeg_binary(binary_name: str) -> str:
     return resolved
 
 
-def ffmpeg_timeout_seconds(timeout_seconds: float | None = None) -> float:
-    """Return a positive timeout for FFmpeg-family subprocess calls."""
+def ffmpeg_failure(failure_message: str, stderr: str | None) -> RuntimeError:
+    """Build a bounded failure error from an FFmpeg-family stderr capture."""
+    detail = (stderr or "").strip()
+    if len(detail) > _STDERR_EXCERPT_CHARS:
+        detail = "..." + detail[-_STDERR_EXCERPT_CHARS:]
+    return RuntimeError(f"{failure_message}: {detail}")
+
+
+def ffmpeg_timeout_seconds(
+    timeout_seconds: float | None = None, *, audio_seconds: float | None = None,
+) -> float:
+    """Return a positive timeout for FFmpeg-family subprocess calls.
+
+    Precedence: an explicit ``timeout_seconds``, then the
+    ``AUDIOBOOK_FFMPEG_TIMEOUT_SECONDS`` override, then a deadline proportional
+    to ``audio_seconds`` (the length of audio the call reads or writes), and
+    finally a fixed default when that length is unknown.
+    """
     if timeout_seconds is not None:
         return max(0.001, float(timeout_seconds))
 
@@ -131,7 +158,21 @@ def ffmpeg_timeout_seconds(timeout_seconds: float | None = None) -> float:
             return max(0.001, float(configured))
         except ValueError:
             pass
+    if audio_seconds is not None and audio_seconds >= 0:
+        return max(_TIMEOUT_FLOOR_SECONDS, float(audio_seconds) * _TIMEOUT_SECONDS_PER_AUDIO_SECOND)
     return float(_DEFAULT_TIMEOUT_SECONDS)
+
+
+def wav_duration_seconds(path: Path | str) -> float | None:
+    """Read a PCM WAV's duration from its header, or None when it is not one."""
+    import wave
+
+    try:
+        with wave.open(str(path), "rb") as wav_file:
+            rate = wav_file.getframerate()
+            return wav_file.getnframes() / rate if rate > 0 else None
+    except (OSError, EOFError, wave.Error):
+        return None
 
 
 def run_ffmpeg_command(
@@ -140,9 +181,10 @@ def run_ffmpeg_command(
     failure_message: str,
     timeout_seconds: float | None = None,
     cancel_requested: Callable[[], bool] | None = None,
+    audio_seconds: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run an FFmpeg-family command with bounded execution and stderr handling."""
-    timeout = ffmpeg_timeout_seconds(timeout_seconds)
+    timeout = ffmpeg_timeout_seconds(timeout_seconds, audio_seconds=audio_seconds)
     if cancel_requested is not None:
         process = subprocess.Popen(
             list(cmd),
@@ -180,7 +222,7 @@ def run_ffmpeg_command(
             kill_ffmpeg_process(process)
             raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s") from exc
         if return_code != 0:
-            raise RuntimeError(f"{failure_message}: {stderr or ''}")
+            raise ffmpeg_failure(failure_message, stderr)
         return subprocess.CompletedProcess(list(cmd), return_code, stdout, stderr)
     try:
         result = subprocess.run(
@@ -196,8 +238,7 @@ def run_ffmpeg_command(
         raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s") from exc
 
     if result.returncode != 0:
-        stderr = result.stderr or ""
-        raise RuntimeError(f"{failure_message}: {stderr}")
+        raise ffmpeg_failure(failure_message, result.stderr)
     return result
 
 
@@ -240,6 +281,17 @@ def kill_ffmpeg_process(process: subprocess.Popen) -> None:
         process.wait(timeout=_KILL_WAIT_SECONDS)
 
 
+def cleanup_abandoned_atomic_outputs(directory: Path | str) -> None:
+    """Remove private encode outputs after their owning processes have stopped."""
+    directory = Path(directory)
+    if not directory.is_dir():
+        return
+    for path in directory.iterdir():
+        if re.fullmatch(r"\.[0-9a-f]{32}\.tmp\.[^.]+", path.name) and path.is_file():
+            with contextlib.suppress(FileNotFoundError):
+                path.unlink()
+
+
 @contextlib.contextmanager
 def atomic_output_path(output_path: Path | str) -> Iterator[Path]:
     """
@@ -251,7 +303,7 @@ def atomic_output_path(output_path: Path | str) -> Iterator[Path]:
     final_path = Path(output_path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     temp_path = final_path.with_name(
-        f".{final_path.name}.{uuid.uuid4().hex}.tmp{final_path.suffix}"
+        f".{uuid.uuid4().hex}.tmp{final_path.suffix}"
     )
     try:
         yield temp_path

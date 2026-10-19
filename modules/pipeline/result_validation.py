@@ -174,7 +174,15 @@ def summarize_incomplete_chapters(
     chapter_results: list[ChapterResult],
 ) -> list[str]:
     """Return notes for chapters that failed or lack usable package audio."""
-    return summarize_packaging_input_failures(chapter_results)
+    # A background encode may already have released the chapter's WAV master;
+    # its AAC path is attached, or its failure raised, when packaging collects it.
+    return summarize_packaging_input_failures(
+        [
+            result
+            for result in chapter_results
+            if getattr(result, "error", None) or getattr(result, "aac_future", None) is None
+        ]
+    )
 
 
 def validate_conversion_success_artifacts(

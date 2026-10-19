@@ -13,10 +13,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 import pytest
 
+
 PROJECT_ROOT = Path(__file__).parent.parent
 TESTS_DIR = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(TESTS_DIR))
+
+from tests._factories_group2_pipeline import PermissiveMemoryPolicy as _PermissiveMemoryPolicy
 
 from modules.pipeline.orchestrator import (
     ChapterResult,
@@ -43,6 +46,36 @@ from worker_pool_test_helpers import (
 )
 
 
+def _cleaner_trace(text, cleaned_text):
+    return SimpleNamespace(
+        original_text=text,
+        rule_based_text=text,
+        cleaned_text=cleaned_text,
+        mode="llm_success",
+        llm_output=None,
+        llm_error=None,
+    )
+
+
+def _clean_probe_chapter(tmp_path, cleaner, *, backend="api", progress_callback=None):
+    cfg = PipelineConfig(
+        output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp",
+        cleaner_backend=backend,
+        save_cleaning_debug=False,
+    )
+    pipeline = ConversionPipeline(config=cfg, progress_callback=progress_callback)
+    pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
+    chapter = _Chapter(number=1, title="One", content="alpha")
+    return pipeline.stages._chapter_processor.clean_chapter_content(
+        chapter=chapter,
+        chapter_idx=0,
+        total_chapters=1,
+        chunks=["## alpha", "## beta"],
+        output_dir=tmp_path / "chapters",
+    )
+
+
 @dataclass
 class _Chapter:
     number: int
@@ -50,18 +83,7 @@ class _Chapter:
     content: str
 
 
-class _PermissiveMemoryPolicy:
-    safe_mode_reason = None
-
-    def allowed_workers(self, requested_max: int) -> int:
-        return requested_max
-
-    def should_submit_more(self, active_workers: int) -> bool:
-        _ = active_workers
-        return True
-
-
-class _FallbackProbePipeline(ConversionPipeline):
+class _SequentialProbePipeline(ConversionPipeline):
     def __init__(self, config: PipelineConfig):
         super().__init__(config=config)
         self.runtime_flags_seen: list[bool] = []
@@ -71,15 +93,6 @@ class _FallbackProbePipeline(ConversionPipeline):
         self.stages._parallel_runner.process_chapters_sequential = (
             self.stage_process_chapters_sequential
         )
-        self.stages.process_chapters_parallel = self.stage_process_chapters_parallel
-
-    def stage_process_chapters_parallel(
-        self, chapters: list, output_dir: Path
-    ) -> list[ChapterResult]:
-        _ = chapters
-        _ = output_dir
-        self._parallel_execution_active = False
-        return self.stage_process_chapters_sequential(chapters, output_dir)
 
     def stage_process_chapters_sequential(
         self, chapters: list, output_dir: Path
@@ -104,7 +117,7 @@ class _FallbackProbePipeline(ConversionPipeline):
         _ = chapter_idx
         _ = total_chapters
         _ = output_dir
-        self.runtime_flags_seen.append(self._parallel_execution_active)  # noqa: SLF001
+        self.runtime_flags_seen.append(self._run_state.parallel_execution_active)  # noqa: SLF001
         return ChapterResult(
             chapter_number=chapter.number,
             chapter_title=chapter.title,
@@ -112,66 +125,11 @@ class _FallbackProbePipeline(ConversionPipeline):
         )
 
 
-class _InfrastructureErrorProbePipeline(_FallbackProbePipeline):
-    def stage_process_chapters_parallel(
-        self, chapters: list, output_dir: Path
-    ) -> list[ChapterResult]:
-        _ = output_dir
-        self._parallel_execution_active = False
-        return self.stage_process_chapters_sequential(chapters, output_dir)
-
-
-class _AllErrorProbePipeline(_FallbackProbePipeline):
-    def stage_process_chapters_parallel(
-        self, chapters: list, output_dir: Path
-    ) -> list[ChapterResult]:
-        _ = output_dir
-        self._parallel_execution_active = False
-        return self.stage_process_chapters_sequential(chapters, output_dir)
-
-
-class _SharedManagerProbePipeline(ConversionPipeline):
+class _SharedManagerProbePipeline(_SequentialProbePipeline):
     def __init__(self, config: PipelineConfig):
         if config.memory_policy is None:
             config.memory_policy = _PermissiveMemoryPolicy()
         super().__init__(config=config)
-        self.runtime_flags_seen: list[bool] = []
-        self.stages.process_chapter = self.stage_process_chapter
-        self.stages.process_chapters_sequential = self.stage_process_chapters_sequential
-        self.stages._parallel_runner.process_chapter = self.stage_process_chapter
-        self.stages._parallel_runner.process_chapters_sequential = (
-            self.stage_process_chapters_sequential
-        )
-
-    def stage_process_chapters_sequential(
-        self, chapters: list, output_dir: Path
-    ) -> list[ChapterResult]:
-        return [
-            self.stage_process_chapter(
-                chapter=chapter,
-                chapter_idx=index,
-                total_chapters=len(chapters),
-                output_dir=output_dir,
-            )
-            for index, chapter in enumerate(chapters)
-        ]
-
-    def stage_process_chapter(
-        self,
-        chapter,
-        chapter_idx: int,
-        total_chapters: int,
-        output_dir: Path,
-    ) -> ChapterResult:
-        _ = chapter_idx
-        _ = total_chapters
-        _ = output_dir
-        self.runtime_flags_seen.append(self._parallel_execution_active)  # noqa: SLF001
-        return ChapterResult(
-            chapter_number=chapter.number,
-            chapter_title=chapter.title,
-            duration_ms=1000,
-        )
 
 
 class _ExplodingSharedManager:
@@ -331,30 +289,6 @@ class _AdaptiveGuardProbePipeline(ConversionPipeline):
         return output_path
 
 
-def _test_parallel_fallback_switches_to_sequential_chapter_mode() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=True,
-            max_parallel_chapters=2,
-            memory_policy=_PermissiveMemoryPolicy(),
-        )
-        pipeline = _FallbackProbePipeline(config=cfg)
-        chapters = [
-            _Chapter(number=1, title="One", content="alpha"),
-            _Chapter(number=2, title="Two", content="beta"),
-        ]
-
-        results = pipeline.stages.process_chapters_parallel(chapters, cfg.output_dir)
-
-        assert len(results) == 2
-        assert pipeline.runtime_flags_seen == [False, False]
-
-    print("✓ parallel fallback switches to sequential chapter mode")
-
-
 def _test_parallel_path_forwards_total_chapters_to_worker_partial() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
@@ -477,54 +411,6 @@ def test_parallel_progress_forwards_worker_performance_snapshot() -> None:
         and payload.get("active_chapter_titles") == ["One", "Two"]
         for payload in progress_payloads
     )
-
-
-def _test_infrastructure_errors_retry_sequential_mode() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=True,
-            max_parallel_chapters=2,
-        )
-        pipeline = _InfrastructureErrorProbePipeline(config=cfg)
-        chapters = [
-            _Chapter(number=1, title="One", content="alpha"),
-            _Chapter(number=2, title="Two", content="beta"),
-        ]
-
-        results = pipeline.stages.process_chapters_parallel(chapters, cfg.output_dir)
-
-        assert len(results) == 2
-        assert all(result.error is None for result in results)
-        assert pipeline.runtime_flags_seen == [False, False]
-
-    print("✓ infrastructure parallel errors retry sequential mode")
-
-
-def _test_all_parallel_chapter_failures_retry_sequential_mode() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            enable_parallel=True,
-            max_parallel_chapters=2,
-        )
-        pipeline = _AllErrorProbePipeline(config=cfg)
-        chapters = [
-            _Chapter(number=1, title="One", content="alpha"),
-            _Chapter(number=2, title="Two", content="beta"),
-        ]
-
-        results = pipeline.stages.process_chapters_parallel(chapters, cfg.output_dir)
-
-        assert len(results) == 2
-        assert all(result.error is None for result in results)
-        assert pipeline.runtime_flags_seen == [False, False]
-
-    print("✓ all-error parallel chapters retry sequential mode")
 
 
 def _test_shared_manager_exception_retries_sequential_mode() -> None:
@@ -951,6 +837,58 @@ def test_memory_error_degrades_to_sequential() -> None:
     )
 
 
+def test_memory_fallback_stops_shared_pool_before_sequential_models(tmp_path, monkeypatch):
+    events = []
+
+    class Manager(_MemoryErrorSharedManager):
+        def shutdown(self):
+            events.append("pool stopped")
+            return True
+
+    config = PipelineConfig(
+        output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
+        enable_parallel=True, max_parallel_chapters=2,
+        shared_worker_pool_manager=Manager(), memory_policy=RecordMemoryPolicy(),
+        tts_engine="other", cleaner_backend="api",
+    )
+    pipeline = _SharedManagerProbePipeline(config)
+    runner = pipeline.stages._parallel_runner
+
+    def sequential(chapters, output_dir):
+        assert events == ["pool stopped"]
+        events.append("sequential models loaded")
+        return []
+
+    monkeypatch.setattr(runner, "process_chapters_sequential", sequential)
+    runner.process_chapters(
+        [_Chapter(1, "One", "alpha"), _Chapter(2, "Two", "beta")], config.output_dir,
+    )
+
+    assert events == ["pool stopped", "sequential models loaded"]
+
+
+def test_single_worker_dispatch_stops_shared_pool_before_warmup(tmp_path, monkeypatch):
+    from modules.pipeline.chapter_dispatch import dispatch_chapters
+
+    events = []
+
+    class Manager:
+        def shutdown(self):
+            events.append("pool stopped")
+            return True
+
+    pipeline = ConversionPipeline(PipelineConfig(
+        output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
+        enable_parallel=False, shared_worker_pool_manager=Manager(),
+    ))
+    monkeypatch.setattr(pipeline.stages, "warmup_models", lambda: events.append("warmup"))
+    monkeypatch.setattr(pipeline.stages, "process_chapters_sequential", lambda *_args: [])
+
+    dispatch_chapters(pipeline.dispatch_context, [_Chapter(1, "One", "alpha")], tmp_path)
+
+    assert events == ["pool stopped", "warmup"]
+
+
 def test_parallel_fallback_helper_emits_snapshot_and_runs_sequential(tmp_path) -> None:
     logs: list[tuple[str, str]] = []
     progress_payloads: list[dict] = []
@@ -985,7 +923,7 @@ def test_parallel_fallback_helper_emits_snapshot_and_runs_sequential(tmp_path) -
         return sequential_results
 
     pipeline.stages._parallel_runner.process_chapters_sequential = _sequential  # type: ignore[method-assign]
-    pipeline._parallel_execution_active = True  # noqa: SLF001
+    pipeline._run_state.parallel_execution_active = True  # noqa: SLF001
 
     results = pipeline.stages._parallel_runner._parallel_fallback(
         chapters,
@@ -999,7 +937,7 @@ def test_parallel_fallback_helper_emits_snapshot_and_runs_sequential(tmp_path) -
 
     assert results == sequential_results
     assert calls == [(chapters, tmp_path / "chapters")]
-    assert pipeline._parallel_execution_active is False  # noqa: SLF001
+    assert pipeline._run_state.parallel_execution_active is False  # noqa: SLF001
     assert logs[-1] == (
         "[PARALLEL] No chapter results returned; retrying sequential mode",
         "warning",
@@ -1023,7 +961,7 @@ def test_parallel_fallback_helper_honors_cancellation(tmp_path) -> None:
         memory_policy=_PermissiveMemoryPolicy(),
     )
     pipeline = ConversionPipeline(config=cfg)
-    pipeline._parallel_execution_active = True  # noqa: SLF001
+    pipeline._run_state.parallel_execution_active = True  # noqa: SLF001
     pipeline.cancel()
 
     def _sequential(chapters_arg: list, output_dir_arg: Path) -> list[ChapterResult]:
@@ -1043,7 +981,7 @@ def test_parallel_fallback_helper_honors_cancellation(tmp_path) -> None:
     )
 
     assert results == []
-    assert pipeline._parallel_execution_active is True  # noqa: SLF001
+    assert pipeline._run_state.parallel_execution_active is True  # noqa: SLF001
 
 
 def test_parallel_fallback_helper_forwards_safe_mode_reason(tmp_path) -> None:
@@ -1176,29 +1114,6 @@ def _test_shared_manager_mixed_results_retry_failed_chapters() -> None:
     print("✓ shared manager mixed results retry failed chapters sequentially")
 
 
-def _test_as_completed_path_avoids_polling_sleep() -> None:
-    config = ParallelConfig(max_workers=2, use_processes=False)
-    orchestrator = ParallelPipelineOrchestrator(config)
-    chapters = [
-        _Chapter(number=1, title="One", content="alpha"),
-        _Chapter(number=2, title="Two", content="beta"),
-    ]
-
-    results = orchestrator.process_chapters_parallel(
-        chapters=chapters,
-        process_func=lambda ch, idx, _fm: ChapterResult(  # noqa: ARG005
-            chapter_number=ch.number,
-            chapter_title=ch.title,
-            duration_ms=idx + 1,
-        ),
-    )
-    assert len(results) == 2
-    assert all(isinstance(result, ChapterResult) for result in results)
-    assert [result.chapter_number for result in results] == [1, 2]
-
-    print("✓ orchestrator completion uses direct path without polling")
-
-
 def _test_parallel_orchestrator_does_not_hang_on_error_only_workers() -> None:
     config = ParallelConfig(max_workers=2, use_processes=False)
     orchestrator = ParallelPipelineOrchestrator(config)
@@ -1233,34 +1148,13 @@ def _test_api_backend_prefers_batch_cleaning() -> None:
 
         def clean_with_trace(self, text):
             self.single_calls += 1
-            return SimpleNamespace(
-                original_text=text,
-                rule_based_text=text,
-                cleaned_text=text,
-                mode="llm_success",
-                llm_output=None,
-                llm_error=None,
-            )
+            return _cleaner_trace(text, text)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            cleaner_backend="api",
-            save_cleaning_debug=False,
-        )
-        pipeline = ConversionPipeline(config=cfg)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
-
-        chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
-            chapter=chapter,
-            chapter_idx=0,
-            total_chapters=1,
-            chunks=["## alpha", "## beta"],
-            output_dir=tmp_path / "chapters",
+        cleaned, cancelled = _clean_probe_chapter(
+            tmp_path, cleaner
         )
 
         assert not cancelled
@@ -1281,47 +1175,19 @@ def _test_custom_backend_prefers_trace_batch_cleaning() -> None:
         async def clean_batch_with_trace_async(self, texts):
             self.batch_calls += 1
             return [
-                SimpleNamespace(
-                    original_text=text,
-                    rule_based_text=text,
-                    cleaned_text=text.replace("## ", ""),
-                    mode="llm_success",
-                    llm_output=None,
-                    llm_error=None,
-                )
+                _cleaner_trace(text, text.replace('## ', ''))
                 for text in texts
             ]
 
         def clean_with_trace(self, text):
             self.single_calls += 1
-            return SimpleNamespace(
-                original_text=text,
-                rule_based_text=text,
-                cleaned_text=text,
-                mode="llm_success",
-                llm_output=None,
-                llm_error=None,
-            )
+            return _cleaner_trace(text, text)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            cleaner_backend="api",
-            save_cleaning_debug=False,
-        )
-        pipeline = ConversionPipeline(config=cfg)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
-
-        chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
-            chapter=chapter,
-            chapter_idx=0,
-            total_chapters=1,
-            chunks=["## alpha", "## beta"],
-            output_dir=tmp_path / "chapters",
+        cleaned, cancelled = _clean_probe_chapter(
+            tmp_path, cleaner
         )
 
         assert not cancelled
@@ -1346,14 +1212,7 @@ def test_mlx_cleaning_uses_per_chunk_trace_cleaning_for_live_progress() -> None:
 
         def clean_with_trace(self, text):
             self.single_calls += 1
-            return SimpleNamespace(
-                original_text=text,
-                rule_based_text=text,
-                cleaned_text=text.replace("## ", ""),
-                mode="llm_success",
-                llm_output=None,
-                llm_error=None,
-            )
+            return _cleaner_trace(text, text.replace('## ', ''))
 
     progress_events = []
 
@@ -1372,23 +1231,9 @@ def test_mlx_cleaning_uses_per_chunk_trace_cleaning_for_live_progress() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            cleaner_backend="mlx",
-            save_cleaning_debug=False,
-        )
-        pipeline = ConversionPipeline(config=cfg, progress_callback=_capture_progress)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
-
-        chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
-            chapter=chapter,
-            chapter_idx=0,
-            total_chapters=1,
-            chunks=["## alpha", "## beta"],
-            output_dir=tmp_path / "chapters",
+        cleaned, cancelled = _clean_probe_chapter(
+            tmp_path, cleaner, backend="mlx", progress_callback=_capture_progress
         )
 
     assert not cancelled
@@ -1396,8 +1241,8 @@ def test_mlx_cleaning_uses_per_chunk_trace_cleaning_for_live_progress() -> None:
     assert cleaner.batch_calls == 0
     assert cleaner.single_calls == 2
     assert [event["message"] for event in progress_events] == [
-        "Cleaning chunk 1/2",
-        "Cleaning chunk 2/2",
+        "Chapter 1/1: cleaning chunk 1/2",
+        "Chapter 1/1: cleaning chunk 2/2",
     ]
     assert {event["stage"] for event in progress_events} == {"cleaning"}
 
@@ -1416,34 +1261,13 @@ def _test_batch_cleaning_falls_back_to_per_chunk_when_shape_mismatch() -> None:
 
         def clean_with_trace(self, text):
             self.single_calls += 1
-            return SimpleNamespace(
-                original_text=text,
-                rule_based_text=text,
-                cleaned_text=text.replace("## ", ""),
-                mode="llm_success",
-                llm_output=None,
-                llm_error=None,
-            )
+            return _cleaner_trace(text, text.replace('## ', ''))
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
-        cfg = PipelineConfig(
-            output_dir=tmp_path / "output",
-            temp_dir=tmp_path / "temp",
-            cleaner_backend="api",
-            save_cleaning_debug=False,
-        )
-        pipeline = ConversionPipeline(config=cfg)
         cleaner = _FakeCleaner()
-        pipeline.stages._chapter_processor.get_text_cleaner_for_chapter = lambda: cleaner  # type: ignore[method-assign]
-
-        chapter = _Chapter(number=1, title="One", content="alpha")
-        cleaned, cancelled = pipeline.stages._chapter_processor.clean_chapter_content(
-            chapter=chapter,
-            chapter_idx=0,
-            total_chapters=1,
-            chunks=["## alpha", "## beta"],
-            output_dir=tmp_path / "chapters",
+        cleaned, cancelled = _clean_probe_chapter(
+            tmp_path, cleaner
         )
 
         assert not cancelled
@@ -1480,15 +1304,11 @@ def test_parallel_fallback() -> bool:
     print("PARALLEL FALLBACK TEST SUITE")
     print("=" * 50 + "\n")
 
-    _test_parallel_fallback_switches_to_sequential_chapter_mode()
     _test_parallel_path_forwards_total_chapters_to_worker_partial()
-    _test_infrastructure_errors_retry_sequential_mode()
-    _test_all_parallel_chapter_failures_retry_sequential_mode()
     _test_shared_manager_exception_retries_sequential_mode()
     _test_shared_manager_all_errors_retry_sequential_mode()
     _test_shared_manager_infrastructure_errors_retry_sequential_mode()
     _test_shared_manager_mixed_results_retry_failed_chapters()
-    _test_as_completed_path_avoids_polling_sleep()
     _test_parallel_orchestrator_does_not_hang_on_error_only_workers()
     _test_api_backend_prefers_batch_cleaning()
     _test_custom_backend_prefers_trace_batch_cleaning()

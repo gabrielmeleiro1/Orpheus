@@ -7,14 +7,19 @@ Central façade that delegates business logic to focused app services.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
+import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from modules.app.config import AppConfig
+from modules.errors import ConversionCleanupPendingError, WorkerWarmupUnavailableError
 from modules.app.services import (
     ConversionRuntimeOptions,
     ConversionService,
@@ -31,7 +36,12 @@ from modules.pipeline.worker_recommendation import (
 from modules.storage.maintenance import (
     audit_storage_state,
     backup_database as backup_database_file,
+    list_database_backups,
     prune_stale_records_and_files,
+    recover_restore_artifacts,
+    restore_database_backup,
+    storage_cleanup_summary,
+    unowned_output_folders,
     workspace_root_for_db,
 )
 from modules.storage.models import BookSummary, ConversionResult
@@ -52,6 +62,9 @@ from modules.tts.cleaner_config import (
 from modules.tts.device_memory import get_device_memory_policy
 from modules.tts.factory import TTSEngineFactory
 from modules.tts.runtime_spec import TTSRuntimeSpec
+
+
+logger = logging.getLogger(__name__)
 
 
 class JobStatus(Enum):
@@ -85,18 +98,23 @@ class ConversionJob:
     result: Optional[ConversionResult] = None
     error: Optional[str] = None
     cancel_requested: bool = False
+    client_request_id: Optional[str] = None
     _thread: Optional[threading.Thread] = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
-    def cancel(self) -> bool:
+    def request_cancel(self) -> tuple[bool, Any]:
+        """Mark cancellation and capture its pipeline without calling external code."""
         with self._lock:
             if self.status not in {JobStatus.IDLE, JobStatus.RUNNING}:
-                return False
+                return False, None
             self.cancel_requested = True
-            pipeline = self.pipeline
+            return True, self.pipeline
+
+    def cancel(self) -> bool:
+        cancelled, pipeline = self.request_cancel()
         if pipeline is not None:
             pipeline.cancel()
-        return True
+        return cancelled
 
     def is_active(self) -> bool:
         with self._lock:
@@ -159,7 +177,6 @@ class ConversionCallbacks:
 
     on_progress: Optional[Callable[[str, float, str], None]] = None
     on_stage_change: Optional[Callable[[str], None]] = None
-    on_chapter_complete: Optional[Callable[[int, int], None]] = None
     on_log: Optional[Callable[[str, str], None]] = None
     on_complete: Optional[Callable[[ConversionResult], None]] = None
     on_error: Optional[Callable[[str], None]] = None
@@ -183,12 +200,23 @@ class AppController:
         repository: Optional[IBookRepository] = None,
     ):
         self.config = config or AppConfig()
+        self.config.data_dir = Path(self.config.data_dir).expanduser().resolve()
+        self.config.output_dir = Path(self.config.output_dir).expanduser().resolve()
+        self.config.temp_dir = Path(self.config.temp_dir).expanduser().resolve()
+        self._library_generation_id = uuid.uuid4().hex
+        self._library_restore_lock = threading.Lock()
+        self._worker_warmup_lock = threading.Lock()
         self._owns_repository = repository is None
         self.repository = repository or SQLiteRepository(
             self.config.db_path,
             output_dir=self.config.output_dir,
             temp_dir=self.config.temp_dir,
         )
+        if isinstance(self.repository, SQLiteRepository):
+            # Every maintenance service must keep using the path whose process
+            # ownership the repository acquired, even if an alias is retargeted.
+            self.config.db_path = self.repository.db_path
+        recover_restore_artifacts(self.repository)
 
         self._cleaner_api_limiter = GlobalAPILimiter(self.config.cleaner_api_global_concurrency)
         self._shared_worker_pool_manager: Optional[SharedWorkerPoolManager] = None
@@ -216,6 +244,7 @@ class AppController:
             cleaner_api_limiter=self._cleaner_api_limiter,
             runtime_validator=self._voice_service.validate_tts_runtime,
             shared_worker_pool_manager=self._shared_worker_pool_manager,
+            book_cleanup_paths_resolver=lambda book_id: self._library_service.book_cleanup_paths(book_id),
         )
         if hasattr(self._conversion_service, "upload_cleanup_guard"):
             self._library_service.upload_cleanup_guard = self._conversion_service.upload_cleanup_guard
@@ -230,6 +259,9 @@ class AppController:
         return self._runtime_capability_service
 
     # ==================== Library ====================
+
+    def library_snapshot(self, expected_epoch: str | None = None, *, mutation: bool = False):
+        return self._library_service.library_snapshot(expected_epoch, mutation=mutation)
 
     def get_library_books(
         self,
@@ -253,6 +285,9 @@ class AppController:
     def get_book(self, book_id: int) -> Optional[dict]:
         return self._library_service.get_book(book_id)
 
+    def get_book_cover(self, book_id: int):
+        return self._library_service.get_book_cover(book_id)
+
     def upload_source(self, *, filename: str, file_obj, max_bytes: int) -> dict:
         return self._library_service.upload_source(
             filename=filename,
@@ -270,6 +305,9 @@ class AppController:
     def preflight_source(self, source_path: Path | str) -> dict:
         return self._library_service.preflight_source(source_path)
 
+    def find_existing_books(self, source_path: Path | str, title: str | None = None) -> list[dict]:
+        return self._library_service.find_existing_books(source_path, title)
+
     def sweep_stale_uploads(self) -> int:
         return self._library_service.sweep_stale_uploads()
 
@@ -279,8 +317,8 @@ class AppController:
     def get_book_playback_file(self, book_id: int, chapter_number: int | None = None) -> Optional[Path]:
         return self._library_service.get_book_playback_file(book_id, chapter_number=chapter_number)
 
-    def update_book_playback_position(self, book_id: int, position_sec: float) -> Optional[float]:
-        return self._library_service.update_book_playback_position(book_id, position_sec)
+    def update_book_playback_position(self, book_id: int, position_sec: float, expected_epoch: str | None = None) -> Optional[float]:
+        return self._library_service.update_book_playback_position(book_id, position_sec, expected_epoch=expected_epoch)
 
     def update_book_metadata(
         self,
@@ -290,6 +328,7 @@ class AppController:
         author: Optional[str] = None,
         tags: Optional[str] = None,
         favorite: Optional[bool] = None,
+        expected_epoch: str | None = None,
     ) -> Optional[dict]:
         return self._library_service.update_book_metadata(
             book_id,
@@ -297,20 +336,23 @@ class AppController:
             author=author,
             tags=tags,
             favorite=favorite,
+            expected_epoch=expected_epoch,
         )
 
     def get_chapter_cleaning_preview(self, book_id: int, chapter_number: int) -> Optional[dict]:
         return self._library_service.get_chapter_cleaning_preview(book_id, chapter_number)
 
-    def delete_book(self, book_id: int) -> bool | dict:
+    @contextmanager
+    def _book_cleanup(self, book_id: int):
         begin_cleanup = getattr(self._conversion_service, "begin_book_cleanup", None)
         end_cleanup = getattr(self._conversion_service, "end_book_cleanup", None)
         if callable(begin_cleanup) and callable(end_cleanup):
             begin_cleanup(book_id)
             try:
-                return self._library_service.delete_book(book_id)
+                yield
             finally:
                 end_cleanup(book_id)
+            return
 
         active_job = self._conversion_service.get_active_job()
         if (
@@ -321,25 +363,91 @@ class AppController:
             raise RuntimeError(
                 "Cannot delete a book while it is being converted or repaired"
             )
-        return self._library_service.delete_book(book_id)
+        yield
+
+    def delete_book(self, book_id: int, expected_epoch: str | None = None) -> bool | dict:
+        with self._book_cleanup(book_id):
+            return self._library_service.delete_book(book_id, **({"expected_epoch": expected_epoch} if expected_epoch is not None else {}))
+
+    def delete_book_with_identity(self, book_id: int, expected_epoch: str | None = None) -> bool | dict:
+        # Reserve before taking the snapshot; upload cleanup takes the locks in
+        # this order too. The reservation excludes restore, the only identity
+        # change, so the identity read here still describes the deletion while
+        # the staged files are removed outside the repository lock.
+        with self._book_cleanup(book_id):
+            with self.library_snapshot(expected_epoch) as snapshot:
+                identity = dict(snapshot)
+            deleted = self._library_service.delete_book(book_id, **({"expected_epoch": expected_epoch} if expected_epoch is not None else {}))
+            if not deleted:
+                return False
+            return {"deleted": True, **identity, **(deleted if isinstance(deleted, dict) else {})}
 
     def open_book_folder(self, book_id: int) -> Optional[Path]:
         return self._library_service.open_book_folder(book_id)
 
     def get_storage_diagnostics(self) -> dict:
-        db_path = Path(self.config.db_path)
-        audit = audit_storage_state(
-            db_path=db_path,
-            output_dir=self.config.output_dir,
-            temp_dir=self.config.temp_dir,
-        )
-        return {
-            "database_path": str(db_path.resolve()),
-            "output_path": str(self.config.output_dir.resolve()),
-            "temp_path": str(self.config.temp_dir.resolve()),
-            "app_data_path": str(workspace_root_for_db(db_path)),
-            "audit": audit,
-        }
+        # Restore is the only operation that replaces library identity, and it
+        # takes the restore lock. Holding that lock keeps the identity and the
+        # audit consistent; the repository lock is released before the walk,
+        # which reads through its own connection and touches every stored path.
+        with self._library_restore_lock:
+            with self.library_snapshot() as snapshot:
+                identity = dict(snapshot)
+            db_path = Path(self.config.db_path)
+            audit = audit_storage_state(
+                db_path=db_path,
+                output_dir=self.config.output_dir,
+                temp_dir=self.config.temp_dir,
+            )
+            return {
+                **identity,
+                "database_path": str(db_path.resolve()),
+                "output_path": str(self.config.output_dir.resolve()),
+                "temp_path": str(self.config.temp_dir.resolve()),
+                "app_data_path": str(workspace_root_for_db(db_path)),
+                "audit": audit,
+                # The same classification cleanup reports, so counts agree.
+                "cleanup_preview": storage_cleanup_summary(
+                    db_path, self.config.output_dir, self.config.temp_dir, audit,
+                ),
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "quarantine": getattr(self.repository, "quarantine", None),
+                "library_generation": f"{self._library_generation_id}:{getattr(self.repository, 'library_generation', 0)}",
+            }
+
+    def list_database_backups(self) -> list[dict]:
+        return list_database_backups(self.config.db_path)
+
+    def restore_database_backup(self, backup_id: str) -> Path:
+        return self.restore_database_backup_report(backup_id)["safety_copy"]
+
+    def restore_database_backup_report(self, backup_id: str) -> dict[str, Any]:
+        """Restore a backup, then report how the restored rows match the disk.
+
+        A backup holds rows, not files: books deleted since it was taken come
+        back without their audio, and books converted since then leave folders
+        that no row owns. Restore never deletes anything; it reports both.
+        """
+        self._conversion_service.begin_storage_cleanup()
+        try:
+            with self._library_restore_lock:
+                safety = restore_database_backup(self.repository, backup_id)
+                self._conversion_service.invalidate_recovered_uploads()
+                self._library_service.sweep_delete_staging()
+                files = self._library_service.books_with_missing_files()
+                folders = unowned_output_folders(self.config.db_path, self.config.output_dir, self.config.temp_dir)
+                return {
+                    # resolve() restores the on-disk case of the canonical path.
+                    "safety_copy": Path(safety).resolve(),
+                    "summary": {
+                        "books_restored": files["books"],
+                        "missing_audio": files["missing_audio"],
+                        "missing_source": files["missing_source"],
+                        "unowned_output_folders": folders,
+                    },
+                }
+        finally:
+            self._conversion_service.end_storage_cleanup()
 
     def backup_database(self) -> Path:
         # A backup opens its own SQLite connections outside the repository lock,
@@ -353,19 +461,59 @@ class AppController:
         finally:
             self._conversion_service.end_storage_cleanup()
 
-    def cleanup_storage(self, *, confirm: str) -> dict:
+    def cleanup_storage(self, *, confirm: str, remove_unowned_folders: tuple[str, ...] = ()) -> dict:
+        """Prune stale storage; remove unowned output folders only when named.
+
+        A folder no book owns may hold a finished audiobook, so cleanup never
+        removes one on its own. Each folder named in ``remove_unowned_folders``
+        goes through the same staged deletion transaction as a book.
+        """
         if str(confirm).strip().lower() != "cleanup":
             raise ValueError("Cleanup requires confirm='cleanup'")
         # begin_storage_cleanup atomically rejects an active job and blocks new
         # conversion starts until cleanup finishes (no check-then-prune race).
         self._conversion_service.begin_storage_cleanup()
         try:
-            return prune_stale_records_and_files(
+            report = prune_stale_records_and_files(
                 db_path=self.config.db_path,
                 output_dir=self.config.output_dir,
                 temp_dir=self.config.temp_dir,
                 aggressive=True,
             )
+            if remove_unowned_folders:
+                unowned = {
+                    folder["name"]: Path(folder["path"])
+                    for folder in unowned_output_folders(self.config.db_path, self.config.output_dir, self.config.temp_dir)
+                }
+                removed, missing = [], []
+                for name in dict.fromkeys(remove_unowned_folders):
+                    if name not in unowned:
+                        missing.append(name)
+                        continue
+                    self._library_service.remove_unowned_output_folder(unowned[name])
+                    removed.append(name)
+                report["removed_unowned_folders"] = removed
+                report["unknown_unowned_folders"] = missing
+                summary = report.get("summary")
+                if isinstance(summary, dict):
+                    if removed:
+                        # What is kept, and why, depends on the folders that
+                        # are still there: classify again without the removed ones.
+                        audit = audit_storage_state(
+                            db_path=self.config.db_path,
+                            output_dir=self.config.output_dir,
+                            temp_dir=self.config.temp_dir,
+                        )
+                        report["audit_after"] = audit
+                        summary = report["summary"] = {
+                            "removed": summary.get("removed", {}),
+                            **storage_cleanup_summary(
+                                self.config.db_path, self.config.output_dir, self.config.temp_dir, audit,
+                                actions=report.get("actions"), changed=True,
+                            ),
+                        }
+                    summary.setdefault("removed", {})["unowned_folders"] = len(removed)
+            return report
         finally:
             self._conversion_service.end_storage_cleanup()
 
@@ -379,6 +527,8 @@ class AppController:
         title: Optional[str] = None,
         author: Optional[str] = None,
         runtime_options: Optional[ConversionRuntimeOptions] = None,
+        *,
+        client_request_id: str | None = None,
     ) -> ConversionJob:
         return self._conversion_service.start_conversion(
             source_path=source_path,
@@ -387,13 +537,14 @@ class AppController:
             title=title,
             author=author,
             runtime_options=runtime_options,
+            client_request_id=client_request_id,
         )
 
     def get_active_job(self) -> Optional[ConversionJob]:
         return self._conversion_service.get_active_job()
 
-    def cancel_conversion(self) -> bool:
-        return self._conversion_service.cancel_conversion()
+    def cancel_conversion(self, expected_job_id: str | None = None) -> bool:
+        return self._conversion_service.cancel_conversion(expected_job_id=expected_job_id)
 
     def repair_conversion(
         self,
@@ -401,104 +552,21 @@ class AppController:
         callbacks: Optional[ConversionCallbacks] = None,
         runtime_options: Optional[ConversionRuntimeOptions] = None,
         runtime_fields_set: Optional[set[str] | frozenset[str]] = None,
+        expected_epoch: str | None = None,
     ) -> ConversionJob:
-        return self._conversion_service.start_repair(
-            book_id=book_id,
-            callbacks=callbacks,
-            runtime_options=runtime_options,
-            runtime_fields_set=runtime_fields_set,
-        )
-
-    # Compatibility wrappers retained for tests/patching internals.
-    def _validate_tts_runtime(
-        self,
-        tts_engine: str,
-        tts_quantization: Optional[str] = None,
-        *,
-        tts_provider: Optional[str] = None,
-        tts_device: Optional[str] = None,
-        tts_options: Optional[dict[str, Any]] = None,
-        runtime_spec: Optional[Any] = None,
-    ) -> None:
-        self._voice_service.validate_tts_runtime(
-            tts_engine,
-            tts_quantization,
-            tts_provider=tts_provider,
-            tts_device=tts_device,
-            tts_options=tts_options,
-            runtime_spec=runtime_spec,
-        )
-
-    def _create_pipeline_config(
-        self,
-        conversion_mode: str = "audiobook",
-        runtime_options: Optional[ConversionRuntimeOptions] = None,
-    ):
-        return self._conversion_service._create_pipeline_config(  # noqa: SLF001
-            conversion_mode=conversion_mode,
-            runtime_options=runtime_options,
-        )
-
-    def _create_pipeline_callbacks(self, callbacks: Optional[ConversionCallbacks]):
-        return self._conversion_service._create_pipeline_callbacks(callbacks)  # noqa: SLF001
-
-    def _persist_conversion_library_records(
-        self,
-        source_path: Path,
-        pipeline_result,
-        conversion_mode: str = "audiobook",
-    ) -> int:
-        return self._conversion_service._persist_conversion_library_records(  # noqa: SLF001
-            source_path,
-            pipeline_result,
-            conversion_mode=conversion_mode,
-        )
-
-    def _handle_conversion_success(
-        self,
-        job: ConversionJob,
-        source_path: Path,
-        pipeline_result,
-        callbacks: Optional[ConversionCallbacks],
-    ) -> None:
-        self._conversion_service._handle_conversion_success(  # noqa: SLF001
-            job=job,
-            source_path=source_path,
-            pipeline_result=pipeline_result,
-            callbacks=callbacks,
-        )
-
-    def _handle_conversion_failure(
-        self,
-        job: ConversionJob,
-        error_message: str,
-        callbacks: Optional[ConversionCallbacks],
-    ) -> None:
-        self._conversion_service._handle_conversion_failure(  # noqa: SLF001
-            job=job,
-            error_message=error_message,
-            callbacks=callbacks,
-        )
-
-    def _run_conversion(
-        self,
-        job: ConversionJob,
-        source_path: Path,
-        callbacks: Optional[ConversionCallbacks],
-        conversion_mode: str = "audiobook",
-        title: Optional[str] = None,
-        author: Optional[str] = None,
-        runtime_options: Optional[ConversionRuntimeOptions] = None,
-    ) -> None:
-        self._conversion_service._run_conversion(  # noqa: SLF001
-            job=job,
-            source_path=source_path,
-            callbacks=callbacks,
-            conversion_mode=conversion_mode,
-            title=title,
-            author=author,
-            runtime_options=runtime_options,
-        )
+        with self._conversion_service.repair_reservation(book_id) as job:
+            # The reservation blocks restore until epoch validation and start
+            # finish, without acquiring the job lock inside the snapshot.
+            with self.library_snapshot(expected_epoch, mutation=True):
+                generation = getattr(self.repository, "library_generation", 0)
+            return self._conversion_service.start_repair(
+                book_id=book_id,
+                callbacks=callbacks,
+                runtime_options=runtime_options,
+                runtime_fields_set=runtime_fields_set,
+                reserved_job=job,
+                expected_generation=generation,
+            )
 
     # ==================== Voice ====================
 
@@ -568,8 +636,16 @@ class AppController:
         }
 
     def get_system_capabilities(self) -> dict[str, Any]:
-        runtime_probe = self._runtime_capability_service.get_system_runtime_snapshot()
-        mlx_runtime_available = bool(runtime_probe["tts"]["available"])
+        default_tts_runtime = TTSRuntimeSpec.from_legacy(
+            self.config.tts_engine,
+            self.config.tts_quantization,
+        )
+        primary_runtime = default_tts_runtime.provider
+        runtime_probe = self._runtime_capability_service.get_system_runtime_snapshot(
+            primary_runtime=primary_runtime,
+        )
+        # The probe reports the selected runtime: MLX TTS only on an MLX runtime.
+        mlx_runtime_available = primary_runtime == "mlx" and bool(runtime_probe["tts"]["available"])
         cleaner_runtime_availability = (
             self._runtime_capability_service.get_cached_cleaner_backend_availability()
         )
@@ -596,12 +672,6 @@ class AppController:
             }
         )
 
-        default_tts_runtime = TTSRuntimeSpec.from_legacy(
-            self.config.tts_engine,
-            self.config.tts_quantization,
-        )
-        primary_runtime = default_tts_runtime.provider
-
         return {
             "primary_runtime": primary_runtime,
             "mlx_runtime_available": mlx_runtime_available,
@@ -626,7 +696,37 @@ class AppController:
             "metrics": metrics,
         }
 
-    def warmup_parallel_worker_recommendation(
+    def warmup_parallel_worker_recommendation(self, **options: Any) -> dict[str, Any]:
+        """Load the conversion models once to measure a worker recommendation.
+
+        Loading runs outside a conversion job, so it reserves the same exclusive
+        maintenance slot as model deletion and storage cleanup: no conversion,
+        repair, model deletion, or cleanup can start meanwhile, and none may be
+        running or still releasing a cancelled worker pool. One warmup at a time.
+        """
+        if not self._worker_warmup_lock.acquire(blocking=False):
+            raise WorkerWarmupUnavailableError("warmup_in_progress", "A worker warmup is already running.")
+        try:
+            try:
+                self._conversion_service.begin_storage_cleanup()
+            except ConversionCleanupPendingError:
+                raise
+            except RuntimeError as exc:
+                if self._conversion_service.has_active_job():
+                    raise WorkerWarmupUnavailableError(
+                        "conversion_in_progress", "Wait for the current conversion to finish before warming up workers.",
+                    ) from exc
+                raise WorkerWarmupUnavailableError(
+                    "maintenance_in_progress", "Wait for library maintenance to finish before warming up workers.",
+                ) from exc
+            try:
+                return self._measure_parallel_worker_recommendation(**options)
+            finally:
+                self._conversion_service.end_storage_cleanup()
+        finally:
+            self._worker_warmup_lock.release()
+
+    def _measure_parallel_worker_recommendation(
         self,
         *,
         voice: str,
@@ -711,20 +811,28 @@ class AppController:
                 )
             )
         except TypeError:
-            self._shared_worker_pool_manager.shutdown()
-            return True
+            return bool(self._shared_worker_pool_manager.shutdown())
 
-    def cleanup(self) -> None:
+    def cleanup(self) -> bool:
+        begin_shutdown = getattr(self._conversion_service, "begin_shutdown", None)
+        if callable(begin_shutdown):
+            begin_shutdown()
         self._cancel_active_conversion_for_cleanup(
             self._CLEANUP_CONVERSION_CANCEL_TIMEOUT_SECONDS,
         )
-        self._shutdown_shared_worker_pool_for_cleanup()
+        workers_quiesced = self._shutdown_shared_worker_pool_for_cleanup()
+        conversion_quiesced = self._cancel_active_conversion_for_cleanup(
+            self._CLEANUP_POST_WORKER_CANCEL_TIMEOUT_SECONDS,
+        )
+        if not conversion_quiesced or not workers_quiesced:
+            logger.warning(
+                "Shutdown deferred: conversion_quiesced=%s workers_quiesced=%s; resources remain open",
+                conversion_quiesced, workers_quiesced,
+            )
+            return False
         cleanup_conversion_service = getattr(self._conversion_service, "cleanup", None)
         if callable(cleanup_conversion_service):
             cleanup_conversion_service()
-        self._cancel_active_conversion_for_cleanup(
-            self._CLEANUP_POST_WORKER_CANCEL_TIMEOUT_SECONDS,
-        )
         self._voice_service.cleanup()
         self._cleaner_api_limiter.shutdown()
         if self._owns_repository:
@@ -732,6 +840,7 @@ class AppController:
             if callable(close):
                 close()
         self._emit_desktop_shutdown_ack()
+        return True
 
     def _emit_desktop_shutdown_ack(self) -> None:
         if not os.environ.get("AUDIOBOOK_DESKTOP_READY_FILE", "").strip():

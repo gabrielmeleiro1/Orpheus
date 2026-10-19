@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .chapter_dispatch import dispatch_chapters
 from .models import (
     ChapterResult,
     PipelineStage,
@@ -21,8 +19,7 @@ from .result_validation import (
     validate_chapter_sets,
     validate_conversion_success_artifacts,
 )
-from .stages.ingestion import ingest_source
-from .stages.packaging import package_chapters
+from .stages.packaging import resolve_background_audio_futures
 
 
 @dataclass(frozen=True)
@@ -78,7 +75,6 @@ def _failure_result(
     *,
     plan: RepairPlan,
     error: str,
-    processing_started_at: float,
     chapters: Optional[list[ChapterResult]] = None,
 ) -> RepairResult:
     return RepairResult(
@@ -88,7 +84,6 @@ def _failure_result(
         chapters=chapters or [],
         total_duration_ms=sum(result.duration_ms for result in chapters or []),
         error=error,
-        processing_time_seconds=time.time() - processing_started_at,
     )
 
 
@@ -96,165 +91,11 @@ def _cancelled_result(plan: RepairPlan) -> RepairResult:
     return RepairResult(success=False, title=plan.title, author=plan.author, error="Cancelled")
 
 
-def _ingest_document(pipeline: Any, source_path: Path) -> Any:
-    ingest = getattr(getattr(pipeline, "stages", pipeline), "ingest", None)
-    if callable(ingest):
-        return ingest(source_path)
-    return ingest_source(pipeline, source_path)
-
-
-def _process_missing_repair_chapters(
-    pipeline: Any,
-    missing_chapters: list[Any],
-    chapters_dir: Path,
-    total_chapters: int,
-) -> list[ChapterResult]:
-    if not missing_chapters:
-        return []
-    runner = getattr(pipeline, "stages", pipeline)
-    can_use_dispatch = (
-        hasattr(pipeline, "config")
-        and hasattr(pipeline, "is_parallel")
-        and callable(getattr(runner, "warmup_models", None))
-        and (
-            callable(getattr(runner, "process_chapters_parallel", None))
-            or callable(getattr(runner, "process_chapters_sequential", None))
-        )
-    )
-    if not can_use_dispatch:
-        processor = runner.process_chapter
-        results: list[ChapterResult] = []
-        for source_chapter in missing_chapters:
-            chapter_number = int(getattr(source_chapter, "number", len(results) + 1))
-            results.append(
-                processor(
-                    chapter=source_chapter,
-                    chapter_idx=max(0, chapter_number - 1),
-                    total_chapters=total_chapters,
-                    output_dir=chapters_dir,
-                )
-            )
-        return results
-    return dispatch_chapters(
-        getattr(pipeline, "dispatch_context", pipeline),
-        missing_chapters,
-        chapters_dir,
-    )
-
-
-def _package_repair_results(
-    pipeline: Any,
-    *,
-    chapter_results: list[ChapterResult],
-    title: str,
-    author: Optional[str],
-    output_dir: Path,
-) -> Path:
-    package_results = getattr(pipeline, "package_results", None)
-    if callable(package_results):
-        return package_results(
-            chapter_results=chapter_results,
-            title=title,
-            author=author,
-            output_dir=output_dir,
-        )
-    package = getattr(getattr(pipeline, "stages", pipeline), "package", None)
-    if callable(package):
-        return package(
-            chapter_results=chapter_results,
-            title=title,
-            author=author,
-            output_dir=output_dir,
-        )
-    return package_chapters(
-        pipeline=pipeline,
-        chapter_results=chapter_results,
-        title=title,
-        author=author,
-        output_dir=output_dir,
-    )
-
-
-def repair_runtime_from_pipeline(pipeline: Any) -> RepairRuntime:
-    """Build a compatibility runtime from a pipeline-like object with public collaborators."""
-    begin_run = getattr(pipeline, "begin_run", None)
-    finish_run = getattr(pipeline, "finish_run", None)
-    check_cancelled = getattr(pipeline, "check_cancelled", None)
-    set_stage = getattr(pipeline, "set_stage", None)
-    set_total_chars = getattr(pipeline, "set_total_chars", None)
-    cancel = getattr(pipeline, "cancel", None)
-    runner = getattr(pipeline, "stages", pipeline)
-    cleanup_models = getattr(runner, "cleanup_models", None)
-    fallback_finish_run = (
-        (lambda: cleanup_models(force=False))
-        if callable(cleanup_models)
-        else (lambda: None)
-    )
-    return RepairRuntime(
-        begin_run=begin_run if callable(begin_run) else lambda: None,
-        finish_run=finish_run if callable(finish_run) else fallback_finish_run,
-        check_cancelled=check_cancelled if callable(check_cancelled) else lambda: False,
-        set_stage=set_stage if callable(set_stage) else lambda stage: None,
-        set_total_chars=set_total_chars if callable(set_total_chars) else lambda total_chars: None,
-        ingest_source=lambda source_path: _ingest_document(pipeline, source_path),
-        process_missing_chapters=lambda chapters, output_dir, total_chapters: _process_missing_repair_chapters(
-            pipeline,
-            chapters,
-            output_dir,
-            total_chapters,
-        ),
-        package_results=lambda chapter_results, title, author, output_dir: _package_repair_results(
-            pipeline,
-            chapter_results=chapter_results,
-            title=title,
-            author=author,
-            output_dir=output_dir,
-        ),
-        cancel=cancel if callable(cancel) else lambda: None,
-    )
-
-
-def _coerce_plan(
-    plan: RepairPlan | None,
-    *,
-    source_path: Path | None = None,
-    stored_chapters: list[Any] | None = None,
-    title: str | None = None,
-    author: Optional[str] = None,
-    output_dir: Path | None = None,
-    chapters_dir: Path | None = None,
-    resolve_chapter_audio=None,
-    cancel_requested=None,
-) -> RepairPlan:
-    if plan is not None:
-        return plan
-    if (
-        source_path is None
-        or stored_chapters is None
-        or title is None
-        or output_dir is None
-        or chapters_dir is None
-        or resolve_chapter_audio is None
-    ):
-        raise ValueError("repair_conversion requires a RepairPlan or complete repair inputs")
-    return RepairPlan(
-        source_path=Path(source_path),
-        stored_chapters=stored_chapters,
-        title=title,
-        author=author,
-        output_dir=output_dir,
-        chapters_dir=chapters_dir,
-        resolve_chapter_audio=resolve_chapter_audio,
-        cancel_requested=cancel_requested,
-    )
-
-
 def execute_repair_plan(
     runtime: RepairRuntime,
     plan: RepairPlan,
 ) -> RepairResult:
     """Repair missing chapters and repackage using explicit runtime operations."""
-    pipeline_start = time.time()
     runtime.begin_run()
     try:
         if runtime.check_cancelled():
@@ -275,7 +116,6 @@ def execute_repair_plan(
             return _failure_result(
                 plan=plan,
                 error="Repair chapter structure mismatch. " + "; ".join(structure_errors),
-                processing_started_at=pipeline_start,
             )
 
         plan.output_dir.mkdir(parents=True, exist_ok=True)
@@ -342,9 +182,9 @@ def execute_repair_plan(
                 return _cancelled_result(plan)
             stored_chapter = stored_by_number.get(chapter_number)
             if stored_chapter is not None and not repaired.error:
-                # Defer building the update until after packaging: in the
+                # Defer building the update until futures are resolved: in the
                 # background-AAC default the chapter returns with mp3_path=None
-                # and only aac_future set, and package_results backfills the
+                # and only aac_future set, and resolving it backfills the
                 # durable .m4a onto mp3_path. Capturing mp3_path here would
                 # persist None, dropping the durable reference and re-triggering
                 # repair forever.
@@ -363,6 +203,7 @@ def execute_repair_plan(
             results_by_number[_chapter_number(stored_chapter, 0)]
             for stored_chapter in stored_chapters
         ]
+        resolve_background_audio_futures(results)
         incomplete_notes = summarize_repair_input_failures(results)
         if incomplete_notes:
             runtime.set_stage(PipelineStage.ERROR)
@@ -370,7 +211,6 @@ def execute_repair_plan(
                 plan=plan,
                 chapters=results,
                 error="Repair incomplete. " + format_failure_notes(incomplete_notes),
-                processing_started_at=pipeline_start,
             )
 
         final_output_path = runtime.package_results(
@@ -379,7 +219,7 @@ def execute_repair_plan(
             plan.author,
             plan.output_dir,
         )
-        # Packaging has now resolved any background AAC futures, so mp3_path
+        # Background AAC futures have been resolved, so mp3_path
         # reflects the durable per-chapter audio (.m4a or .mp3).
         repaired_updates = [
             RepairedChapterUpdate(
@@ -400,7 +240,6 @@ def execute_repair_plan(
             output_path=Path(final_output_path),
             chapters=results,
             total_duration_ms=sum(chapter.duration_ms for chapter in results),
-            processing_time_seconds=time.time() - pipeline_start,
             repaired_chapter_updates=repaired_updates,
         )
         artifact_validation = validate_conversion_success_artifacts(
@@ -417,7 +256,6 @@ def execute_repair_plan(
                 plan=plan,
                 chapters=results,
                 error="Repair reported invalid artifacts. " + format_failure_notes(notes),
-                processing_started_at=pipeline_start,
             )
         runtime.set_stage(PipelineStage.COMPLETE)
         return result
@@ -426,23 +264,6 @@ def execute_repair_plan(
         return _failure_result(
             plan=plan,
             error=str(exc),
-            processing_started_at=pipeline_start,
         )
     finally:
         runtime.finish_run()
-
-
-def repair_conversion(
-    pipeline: Any,
-    plan: RepairPlan | None = None,
-    **legacy_plan_kwargs: Any,
-) -> RepairResult:
-    """Compatibility wrapper for pipeline-like test doubles."""
-    plan = _coerce_plan(plan, **legacy_plan_kwargs)
-    try:
-        from .orchestrator import ConversionPipeline
-    except ImportError:
-        ConversionPipeline = None
-    if ConversionPipeline is not None and isinstance(pipeline, ConversionPipeline):
-        return pipeline.repair(plan=plan)
-    return execute_repair_plan(repair_runtime_from_pipeline(pipeline), plan)

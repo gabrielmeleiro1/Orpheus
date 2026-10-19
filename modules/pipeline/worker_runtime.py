@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
 import os
 import signal
+import threading
 from typing import Any, Optional
 
 from modules.pipeline.worker_config import build_worker_pipeline_config
@@ -83,6 +85,31 @@ def _record_worker_init_failure(
     )
 
 
+_PARENT_GONE_EXIT_CODE = 70
+
+
+def _start_parent_watchdog() -> None:
+    """Exit this worker as soon as the process that spawned it is gone.
+
+    A pool worker otherwise outlives a crashed or killed backend: it blocks on
+    its call queue forever, keeping its models (and their device memory)
+    resident. Thread-backed workers share the parent process and need none.
+    """
+    parent = multiprocessing.parent_process()
+    if parent is None:
+        return
+
+    def wait_for_parent_exit() -> None:
+        try:
+            parent.join()
+        finally:
+            os._exit(_PARENT_GONE_EXIT_CODE)
+
+    threading.Thread(
+        target=wait_for_parent_exit, name="worker-parent-watchdog", daemon=True,
+    ).start()
+
+
 def _init_worker(
     available_vram_gb: float,
     active_workers: int = 1,
@@ -101,6 +128,7 @@ def _init_worker(
         _WORKER_PROVIDER, \
         _WORKER_DEVICE
 
+    _start_parent_watchdog()
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
     except ValueError:
@@ -244,10 +272,3 @@ def get_worker_startup_status() -> WorkerStartupStatus:
             message=None,
         )
     return startup_status_from_failure(_WORKER_INIT_STATUS)
-
-
-def get_worker_init_error() -> Optional[str]:
-    """Return worker initialization error message if worker load or warm-up failed."""
-    if _WORKER_INIT_STATUS is None:
-        return None
-    return _WORKER_INIT_STATUS.message

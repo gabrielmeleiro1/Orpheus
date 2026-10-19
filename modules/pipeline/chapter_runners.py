@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .chapter_processor import ChapterProcessor
-from .models import ChapterResult
+from .models import ChapterResult, PipelineStage
 from .result_validation import format_failure_notes
 from .runtime import PipelineRuntimeProtocol
 from .worker_config import build_worker_pipeline_config
@@ -157,6 +157,9 @@ class SequentialChapterRunner:
         is preparing audio. Any orchestration failure falls back to strict
         chapter-by-chapter processing.
         """
+        from .pool_shutdown import shutdown_shared_worker_pool
+
+        shutdown_shared_worker_pool(self.runtime.config)
         total_chapters = len(chapters)
         if not self.runtime.config.enable_pipelining or total_chapters <= 1:
             return self._process_chapters_sequential_strict(chapters, output_dir)
@@ -364,6 +367,10 @@ class ParallelChapterRunner:
         if self.runtime.check_cancelled():
             return []
 
+        from .pool_shutdown import shutdown_shared_worker_pool
+
+        shutdown_shared_worker_pool(self.runtime.config)
+
         self.runtime.set_parallel_execution_active(False)
         self.runtime.log_verbose(log_message, "warning")
         performance: dict[str, Any] = {
@@ -416,19 +423,55 @@ class ParallelChapterRunner:
             )
             return self.process_chapters_sequential(chapters, output_dir)
 
+        # Workers run the chapter stages in other processes, so the parent
+        # reports its own chapter-stage sequence from completion counts:
+        # synthesizing for the next unfinished chapter, then encoding once a
+        # chapter finishes. That keeps the stage sequence and the weighted
+        # overall progress in step with sequential runs (monotonic, one step
+        # per chapter) and emits at most two progress events per chapter;
+        # queue notices are logged only.
+        reported = {"done": -1}
+
+        def report(stage: PipelineStage, chapter_idx: int, message: str, performance) -> None:
+            self.runtime.set_stage(stage)
+            self.runtime.notify_progress(
+                chapter_idx=chapter_idx,
+                total_chapters=total_chapters,
+                message=message,
+                performance=performance,
+            )
+
         def chapter_progress(
             current: int,
             total: int,
             message: str,
             performance: Optional[dict[str, Any]] = None,
         ):
+            _ = current, total
             self.runtime.log_verbose(f"[PARALLEL] {message}", "info")
-            self.runtime.notify_progress(
-                chapter_idx=current,
-                total_chapters=total,
-                message=message,
-                performance=performance,
+            stats = performance or {}
+            done = min(
+                total_chapters,
+                int(stats.get("completed_chapters", 0) or 0)
+                + int(stats.get("failed_chapters", 0) or 0),
             )
+            if done <= reported["done"]:
+                return
+            if done > 0:
+                report(
+                    PipelineStage.ENCODING,
+                    done - 1,
+                    f"Completed {done}/{total_chapters} chapters",
+                    performance,
+                )
+            reported["done"] = done
+            if done < total_chapters:
+                report(
+                    PipelineStage.SYNTHESIZING,
+                    done,
+                    f"Synthesizing chapters in parallel ({done}/{total_chapters} done)",
+                    performance,
+                )
 
         from .parallel import ParallelPipelineOrchestrator
 
@@ -464,6 +507,18 @@ class ParallelChapterRunner:
 
         try:
             self.runtime.set_parallel_execution_active(True)
+            # Starting a pool loads a full model set in every worker, which can
+            # take longer than synthesizing a short chapter; say so instead of
+            # leaving the previous stage on screen.
+            self.runtime.notify_progress(
+                chapter_idx=max(0, total_chapters - 1),
+                total_chapters=total_chapters,
+                message=(
+                    f"Starting {selected_parallel_workers} parallel "
+                    f"{'worker' if selected_parallel_workers == 1 else 'workers'} "
+                    "(loading models in each)..."
+                ),
+            )
             parallel_results = orchestrator.process_chapters_parallel(
                 chapters=list(chapters),
                 process_func=partial(
@@ -549,6 +604,9 @@ class ParallelChapterRunner:
                 previous_parallel_active = self.runtime.parallel_execution_active()
                 self.runtime.set_parallel_execution_active(False)
                 try:
+                    from .pool_shutdown import shutdown_shared_worker_pool
+
+                    shutdown_shared_worker_pool(self.runtime.config)
                     for idx in failed_indices:
                         retry_result = self.process_chapter(
                             chapter=chapters[idx],

@@ -39,7 +39,6 @@ class PipelineJobCommand:
     def run(
         self,
         pipeline: Any,
-        pipeline_config: PipelineConfig,
     ) -> PipelineConversionResult:
         raise NotImplementedError
 
@@ -48,7 +47,6 @@ class PipelineJobCommand:
         service: Any,
         pipeline_result: PipelineConversionResult,
         controller_result: ConversionResult,
-        pipeline_config: PipelineConfig,
     ) -> None:
         raise NotImplementedError
 
@@ -80,9 +78,7 @@ class ConversionRunCommand(PipelineJobCommand):
     def run(
         self,
         pipeline: Any,
-        pipeline_config: PipelineConfig,
     ) -> PipelineConversionResult:
-        _ = pipeline_config
         return pipeline.convert(
             source_path=self.source_path,
             title=self.title,
@@ -94,9 +90,8 @@ class ConversionRunCommand(PipelineJobCommand):
         service: Any,
         pipeline_result: PipelineConversionResult,
         controller_result: ConversionResult,
-        pipeline_config: PipelineConfig,
     ) -> None:
-        _ = (controller_result, pipeline_config)
+        _ = controller_result
         service._handle_conversion_success(
             job=self.job,
             source_path=self.source_path,
@@ -142,9 +137,7 @@ class RepairRunCommand(PipelineJobCommand):
     def run(
         self,
         pipeline: Any,
-        pipeline_config: PipelineConfig,
     ) -> RepairResult:
-        _ = pipeline_config
         context = self.repair_context
         return pipeline.repair(
             plan=RepairPlan(
@@ -166,9 +159,7 @@ class RepairRunCommand(PipelineJobCommand):
         service: Any,
         pipeline_result: RepairResult,
         controller_result: ConversionResult,
-        pipeline_config: PipelineConfig,
     ) -> None:
-        _ = pipeline_config
         final_output_path = Path(pipeline_result.output_path)
         service._repository.apply_repair_result(
             self.book_id,

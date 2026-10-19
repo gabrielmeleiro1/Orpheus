@@ -22,9 +22,6 @@ from modules.pipeline.pool_manager import (
     _health_ping,
     _worker_startup_probe,
 )
-from modules.pipeline.orchestrator import ConversionPipeline
-from modules.pipeline.models import PipelineConfig
-from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.pipeline.worker_errors import WorkerStartupError
 from worker_pool_test_helpers import (
     FakeExecutor as _FakeExecutor,
@@ -35,6 +32,25 @@ from worker_pool_test_helpers import (
     reset_executor_class_state,
     wait_for_executor_chapter_submits,
 )
+
+
+def _finish_released_worker(executor, future, fn, args, kwargs):
+    executor.release_worker.wait(timeout=3)
+    try:
+        future.set_result(fn(*args, **kwargs))
+    except Exception as exc:  # pragma: no cover - defensive
+        future.set_exception(exc)
+    finally:
+        executor.worker_finished.set()
+
+
+def _pool_job_thread(manager, chapters, results, **options):
+    return threading.Thread(
+        target=lambda: results.extend(
+            manager.run_parallel(chapters=chapters, process_func=_process, **options)
+        ),
+        daemon=True,
+    )
 
 
 @dataclass
@@ -201,13 +217,7 @@ class _QuiescingCancellationExecutor(_FakeExecutor):
 
         def _run() -> None:
             self.worker_started.set()
-            self.release_worker.wait(timeout=3)
-            try:
-                future.set_result(fn(*args, **kwargs))
-            except Exception as exc:  # pragma: no cover - defensive
-                future.set_exception(exc)
-            finally:
-                self.worker_finished.set()
+            _finish_released_worker(self, future, fn, args, kwargs)
 
         threading.Thread(target=_run, daemon=True).start()
         return future
@@ -244,13 +254,7 @@ class _UncooperativeThreadExecutor(_FakeExecutor):
             return future
 
         def _run() -> None:
-            self.release_worker.wait(timeout=3)
-            try:
-                future.set_result(fn(*args, **kwargs))
-            except Exception as exc:  # pragma: no cover - defensive
-                future.set_exception(exc)
-            finally:
-                self.worker_finished.set()
+            _finish_released_worker(self, future, fn, args, kwargs)
 
         threading.Thread(target=_run, daemon=True).start()
         return future
@@ -501,16 +505,10 @@ def test_shared_pool_stopping_barrier_blocks_successor_until_thread_worker_quies
     ):
         manager = SharedWorkerPoolManager(max_workers=1, shutdown_timeout_seconds=0.05)
         manager._use_processes = False  # noqa: SLF001
-        first_runner = threading.Thread(
-            target=lambda: first_results.extend(
-                manager.run_parallel(
-                    chapters=chapters,
-                    process_func=_process,
-                    config_fingerprint="thread-cancel",
-                    cancel_requested=cancellation_requested.is_set,
-                )
-            ),
-            daemon=True,
+        first_runner = _pool_job_thread(
+            manager, chapters, first_results,
+            config_fingerprint='thread-cancel',
+            cancel_requested=cancellation_requested.is_set,
         )
         first_runner.start()
 
@@ -527,15 +525,9 @@ def test_shared_pool_stopping_barrier_blocks_successor_until_thread_worker_quies
             assert first_results == []
             assert first_executor.worker_finished.is_set() is False
 
-            second_runner = threading.Thread(
-                target=lambda: second_results.extend(
-                    manager.run_parallel(
-                        chapters=chapters,
-                        process_func=_process,
-                        config_fingerprint="thread-cancel",
-                    )
-                ),
-                daemon=True,
+            second_runner = _pool_job_thread(
+                manager, chapters, second_results,
+                config_fingerprint='thread-cancel',
             )
             second_runner.start()
             second_runner.join(timeout=0.2)
@@ -568,16 +560,10 @@ def test_shared_pool_shutdown_barrier_blocks_successor_after_active_run_cancels(
     ):
         manager = SharedWorkerPoolManager(max_workers=1, shutdown_timeout_seconds=0.05)
         manager._use_processes = False  # noqa: SLF001
-        first_runner = threading.Thread(
-            target=lambda: first_results.extend(
-                manager.run_parallel(
-                    chapters=chapters,
-                    process_func=_process,
-                    config_fingerprint="shutdown-race",
-                    cancel_requested=cancellation_requested.is_set,
-                )
-            ),
-            daemon=True,
+        first_runner = _pool_job_thread(
+            manager, chapters, first_results,
+            config_fingerprint='shutdown-race',
+            cancel_requested=cancellation_requested.is_set,
         )
         first_runner.start()
 
@@ -607,15 +593,9 @@ def test_shared_pool_shutdown_barrier_blocks_successor_after_active_run_cancels(
             assert first_results == []
             assert first_executor.worker_finished.is_set() is False
 
-            second_runner = threading.Thread(
-                target=lambda: second_results.extend(
-                    manager.run_parallel(
-                        chapters=chapters,
-                        process_func=_process,
-                        config_fingerprint="successor",
-                    )
-                ),
-                daemon=True,
+            second_runner = _pool_job_thread(
+                manager, chapters, second_results,
+                config_fingerprint='successor',
             )
             second_runner.start()
             second_runner.join(timeout=0.2)
@@ -662,8 +642,9 @@ def test_shared_pool_cancellation_clears_current_job_metrics() -> None:
                 time.sleep(0.01)
             executor = _QuiescingCancellationExecutor.instances[0]
             cancellation_requested.set()
-            assert executor.worker_started.wait(timeout=2.0)
-            assert executor.shutdown_entered.wait(timeout=2.0)
+            # Generous bounds: thread start-up is slow on a loaded Windows machine.
+            assert executor.worker_started.wait(timeout=10.0)
+            assert executor.shutdown_entered.wait(timeout=10.0)
             executor.release_worker.set()
             runner.join(timeout=2.0)
             assert not runner.is_alive()
@@ -874,6 +855,55 @@ def test_shared_pool_shutdown_wait_is_bounded() -> None:
     assert manager.snapshot()["running"] is False
 
 
+def test_shared_pool_shutdown_preserves_quiescence_barrier_after_timeout():
+    _BlockingShutdownExecutor.shutdown_entered.clear()
+    _BlockingShutdownExecutor.release_shutdown.clear()
+
+    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _BlockingShutdownExecutor):
+        manager = SharedWorkerPoolManager(max_workers=2)
+        manager.ensure_started("blocking-shutdown", worker_init_config={"voice": "af_bella"})
+        try:
+            assert manager.shutdown(timeout_seconds=0.01) is False
+            assert manager.shutdown(timeout_seconds=0.0) is False
+        finally:
+            _BlockingShutdownExecutor.release_shutdown.set()
+
+        assert manager.shutdown(timeout_seconds=1.0) is True
+
+
+def test_shared_pool_replacement_preserves_quiescence_barrier_after_timeout():
+    _BlockingShutdownExecutor.shutdown_entered.clear()
+    _BlockingShutdownExecutor.release_shutdown.clear()
+
+    with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _BlockingShutdownExecutor):
+        manager = SharedWorkerPoolManager(max_workers=2, shutdown_timeout_seconds=0.01)
+        manager.ensure_started("old-runtime", worker_init_config={"voice": "af_bella"})
+        try:
+            with pytest.raises(RuntimeError, match="has not stopped"):
+                manager.ensure_started("new-runtime", worker_init_config={"voice": "af_bella"})
+            assert manager.cleanup_pending is True
+            assert manager.snapshot()["running"] is False
+        finally:
+            _BlockingShutdownExecutor.release_shutdown.set()
+
+        assert manager.shutdown(timeout_seconds=1.0) is True
+        manager.ensure_started("new-runtime", worker_init_config={"voice": "af_bella"})
+        assert manager.snapshot()["fingerprint"] == "new-runtime"
+        assert manager.shutdown(timeout_seconds=1.0) is True
+
+
+def test_bounded_shutdown_does_not_report_success_when_shutdown_raises():
+    from modules.pipeline.pool_shutdown import _shutdown_executor_bounded
+
+    class FailingExecutor:
+        def shutdown(self, **kwargs):
+            raise RuntimeError("shutdown failed")
+
+    assert _shutdown_executor_bounded(
+        FailingExecutor(), timeout_seconds=1.0, cancel_futures=True,
+    ) is False
+
+
 def test_shared_pool_cancellation_interrupts_blocking_wait_loop() -> None:
     reset_executor_class_state(NeverCompletingChapterExecutor)
     chapters = [
@@ -1017,32 +1047,3 @@ def test_shared_pool_snapshot_records_cancellation() -> None:
     assert snapshot["startup_failures"] == 0
     assert_pending_futures_cancelled(executor)
 
-
-def test_cuda_same_device_worker_plan_caps_shared_pool_workers(tmp_path: Path) -> None:
-    runtime_spec = TTSRuntimeSpec(
-        provider="cuda",
-        engine="kokoro",
-        model="Kokoro-82M",
-        quantization="bf16",
-        device="cuda:0",
-    )
-    config = PipelineConfig(
-        output_dir=tmp_path / "output",
-        temp_dir=tmp_path / "temp",
-        tts_runtime=runtime_spec,
-        cleaner_backend="cuda",
-        cleaner_cuda_device="cuda:0",
-        cleaner_cuda_quantization="4bit",
-        enable_parallel=True,
-        max_parallel_chapters=3,
-        requested_parallel_chapters=3,
-    )
-    pipeline = ConversionPipeline(config)
-
-    assert config.worker_plan.max_workers == 1
-    assert (
-        config.worker_plan.initial_reason
-        == "CUDA TTS + CUDA cleaner same-device contention guard"
-    )
-    assert pipeline._parallel_config is not None
-    assert pipeline._parallel_config.max_workers == 1

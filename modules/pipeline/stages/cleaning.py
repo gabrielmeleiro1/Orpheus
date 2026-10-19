@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Protocol
 
+from modules.pipeline.progress import chapter_progress_message
 from modules.tts.cleaner_backends.registry import is_local_cleaner_backend
 
 
@@ -220,7 +222,9 @@ def _emit_cleaning_progress(
         total_chapters=total_chapters,
         chunk_idx=chunk_idx,
         total_chunks=total_chunks,
-        message=f"Cleaning chunk {chunk_idx + 1}/{total_chunks}",
+        message=chapter_progress_message(
+            chapter_idx, total_chapters, f"cleaning chunk {chunk_idx + 1}/{total_chunks}",
+        ),
     )
     if not log_preview:
         return
@@ -245,6 +249,44 @@ def _validate_batch_length(batch_results: list[Any], total_chunks: int) -> None:
         )
 
 
+def _collect_batch_results(
+    runtime: Any,
+    *,
+    chapter_idx: int,
+    total_chapters: int,
+    chunks: list[str],
+    batch_outputs: list[Any],
+    total_chunks: int,
+    with_trace: bool,
+) -> tuple[list[CleanedChunkResult], bool]:
+    """Report progress and normalize validated batch output in chunk order."""
+    results: list[CleanedChunkResult] = []
+    for chunk_idx, (chunk, output) in enumerate(zip(chunks, batch_outputs)):
+        if runtime.check_cancelled():
+            return results, True
+
+        _emit_cleaning_progress(
+            runtime,
+            chapter_idx=chapter_idx,
+            total_chapters=total_chapters,
+            chunk_idx=chunk_idx,
+            total_chunks=total_chunks,
+            original_chunk=chunk,
+            log_preview=with_trace,
+        )
+        results.append(
+            _build_cleaned_chunk_result(
+                chunk_idx=chunk_idx,
+                total_chunks=total_chunks,
+                original_chunk=chunk,
+                cleaned_chunk=chunk if with_trace else output,
+                trace=output if with_trace else None,
+                include_debug_row=runtime.config.save_cleaning_debug,
+            )
+        )
+    return results, False
+
+
 def _run_batch_trace_cleaning(
     runtime: Any,
     hooks: CleaningStageHooks,
@@ -265,34 +307,24 @@ def _run_batch_trace_cleaning(
         "info",
     )
     try:
-        batch_traces = hooks.run_coroutine_sync(clean_batch_with_trace_async(chunks))
+        if "cancel_requested" in inspect.signature(clean_batch_with_trace_async).parameters:
+            batch = clean_batch_with_trace_async(chunks, cancel_requested=runtime.check_cancelled)
+        else:
+            batch = clean_batch_with_trace_async(chunks)
+        batch_traces = hooks.run_coroutine_sync(batch)
+        if runtime.check_cancelled():
+            return [], True
         _validate_batch_length(batch_traces, total_chunks)
 
-        results: list[CleanedChunkResult] = []
-        for chunk_idx, (chunk, trace) in enumerate(zip(chunks, batch_traces)):
-            if runtime.check_cancelled():
-                return results, True
-
-            _emit_cleaning_progress(
-                runtime,
-                chapter_idx=chapter_idx,
-                total_chapters=total_chapters,
-                chunk_idx=chunk_idx,
-                total_chunks=total_chunks,
-                original_chunk=chunk,
-                log_preview=True,
-            )
-            results.append(
-                _build_cleaned_chunk_result(
-                    chunk_idx=chunk_idx,
-                    total_chunks=total_chunks,
-                    original_chunk=chunk,
-                    cleaned_chunk=chunk,
-                    trace=trace,
-                    include_debug_row=runtime.config.save_cleaning_debug,
-                )
-            )
-        return results, False
+        return _collect_batch_results(
+            runtime,
+            chapter_idx=chapter_idx,
+            total_chapters=total_chapters,
+            chunks=chunks,
+            batch_outputs=batch_traces,
+            total_chunks=total_chunks,
+            with_trace=True,
+        )
     except Exception as exc:
         runtime.log_verbose(
             f"[CLEANER] Batch trace cleaning failed ({exc}); falling back to compatibility paths",
@@ -324,31 +356,15 @@ def _run_compat_batch_cleaning(
         batch_cleaned = hooks.run_coroutine_sync(clean_batch_async(chunks))
         _validate_batch_length(batch_cleaned, total_chunks)
 
-        results: list[CleanedChunkResult] = []
-        for chunk_idx, (chunk, cleaned_chunk) in enumerate(zip(chunks, batch_cleaned)):
-            if runtime.check_cancelled():
-                return results, True
-
-            _emit_cleaning_progress(
-                runtime,
-                chapter_idx=chapter_idx,
-                total_chapters=total_chapters,
-                chunk_idx=chunk_idx,
-                total_chunks=total_chunks,
-                original_chunk=chunk,
-                log_preview=False,
-            )
-            results.append(
-                _build_cleaned_chunk_result(
-                    chunk_idx=chunk_idx,
-                    total_chunks=total_chunks,
-                    original_chunk=chunk,
-                    cleaned_chunk=cleaned_chunk,
-                    trace=None,
-                    include_debug_row=runtime.config.save_cleaning_debug,
-                )
-            )
-        return results, False
+        return _collect_batch_results(
+            runtime,
+            chapter_idx=chapter_idx,
+            total_chapters=total_chapters,
+            chunks=chunks,
+            batch_outputs=batch_cleaned,
+            total_chunks=total_chunks,
+            with_trace=False,
+        )
     except Exception as exc:
         runtime.log_verbose(
             f"[CLEANER] Batch compatibility cleaning failed ({exc}); falling back to per-chunk cleaning",
@@ -376,38 +392,29 @@ def _run_sync_trace_batch_cleaning(
         "info",
     )
     try:
-        batch_traces = clean_chunks_with_trace(chunks)
+        if "cancel_requested" in inspect.signature(clean_chunks_with_trace).parameters:
+            batch_traces = clean_chunks_with_trace(chunks, cancel_requested=runtime.check_cancelled)
+        else:
+            batch_traces = clean_chunks_with_trace(chunks)
+        if runtime.check_cancelled():
+            return [], True
         _validate_batch_length(batch_traces, total_chunks)
-        results: list[CleanedChunkResult] = []
-        for chunk_idx, (chunk, trace) in enumerate(zip(chunks, batch_traces)):
-            if runtime.check_cancelled():
-                return results, True
-            _emit_cleaning_progress(
-                runtime,
-                chapter_idx=chapter_idx,
-                total_chapters=total_chapters,
-                chunk_idx=chunk_idx,
-                total_chunks=total_chunks,
-                original_chunk=chunk,
-                log_preview=True,
-            )
-            results.append(
-                _build_cleaned_chunk_result(
-                    chunk_idx=chunk_idx,
-                    total_chunks=total_chunks,
-                    original_chunk=chunk,
-                    cleaned_chunk=chunk,
-                    trace=trace,
-                    include_debug_row=runtime.config.save_cleaning_debug,
-                )
-            )
-        return results, False
+        return _collect_batch_results(
+            runtime,
+            chapter_idx=chapter_idx,
+            total_chapters=total_chapters,
+            chunks=chunks,
+            batch_outputs=batch_traces,
+            total_chunks=total_chunks,
+            with_trace=True,
+        )
     except Exception as exc:
         runtime.log_verbose(
             f"[CLEANER] Local batch trace cleaning failed ({exc}); falling back to per-chunk cleaning",
             "warning",
         )
         return None
+
 
 def _run_per_chunk_cleaning(
     runtime: Any,
@@ -479,11 +486,28 @@ def clean_chunks_with_trace(
             total_chapters=total_chapters,
             chunks=chunks,
         )
-        if batch_result is not None:
-            results, was_cancelled = batch_result
-            cleaned_chunks, llm_input_chunks, cleaning_trace_rows = _collect_results_payload(results)
-            return cleaned_chunks, llm_input_chunks, cleaning_trace_rows, was_cancelled
+    else:
+        batch_result = _run_batch_trace_cleaning(
+            runtime,
+            hooks,
+            cleaner=cleaner,
+            cleaner_backend=cleaner_backend,
+            chapter_idx=chapter_idx,
+            total_chapters=total_chapters,
+            chunks=chunks,
+        )
+        if batch_result is None:
+            batch_result = _run_compat_batch_cleaning(
+                runtime,
+                hooks,
+                cleaner=cleaner,
+                cleaner_backend=cleaner_backend,
+                chapter_idx=chapter_idx,
+                total_chapters=total_chapters,
+                chunks=chunks,
+            )
 
+    if batch_result is None:
         results, was_cancelled = _run_per_chunk_cleaning(
             runtime,
             hooks,
@@ -492,44 +516,7 @@ def clean_chunks_with_trace(
             total_chapters=total_chapters,
             chunks=chunks,
         )
-        cleaned_chunks, llm_input_chunks, cleaning_trace_rows = _collect_results_payload(results)
-        return cleaned_chunks, llm_input_chunks, cleaning_trace_rows, was_cancelled
-
-    batch_result = _run_batch_trace_cleaning(
-        runtime,
-        hooks,
-        cleaner=cleaner,
-        cleaner_backend=cleaner_backend,
-        chapter_idx=chapter_idx,
-        total_chapters=total_chapters,
-        chunks=chunks,
-    )
-    if batch_result is not None:
+    else:
         results, was_cancelled = batch_result
-        cleaned_chunks, llm_input_chunks, cleaning_trace_rows = _collect_results_payload(results)
-        return cleaned_chunks, llm_input_chunks, cleaning_trace_rows, was_cancelled
-
-    batch_result = _run_compat_batch_cleaning(
-        runtime,
-        hooks,
-        cleaner=cleaner,
-        cleaner_backend=cleaner_backend,
-        chapter_idx=chapter_idx,
-        total_chapters=total_chapters,
-        chunks=chunks,
-    )
-    if batch_result is not None:
-        results, was_cancelled = batch_result
-        cleaned_chunks, llm_input_chunks, cleaning_trace_rows = _collect_results_payload(results)
-        return cleaned_chunks, llm_input_chunks, cleaning_trace_rows, was_cancelled
-
-    results, was_cancelled = _run_per_chunk_cleaning(
-        runtime,
-        hooks,
-        cleaner=cleaner,
-        chapter_idx=chapter_idx,
-        total_chapters=total_chapters,
-        chunks=chunks,
-    )
     cleaned_chunks, llm_input_chunks, cleaning_trace_rows = _collect_results_payload(results)
     return cleaned_chunks, llm_input_chunks, cleaning_trace_rows, was_cancelled

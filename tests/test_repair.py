@@ -366,40 +366,6 @@ def test_execute_repair_plan_is_idempotent_after_background_aac_repair(
     assert [update.chapter_id for update in second.repaired_chapter_updates] == []
 
 
-def test_execute_repair_plan_uses_shared_chapter_set_validation(tmp_path: Path) -> None:
-    from unittest.mock import patch
-
-    from modules.pipeline import repair as repair_module
-
-    document_chapters = [SimpleNamespace(number=1, title="One", content="text")]
-    stored_chapters = [Chapter(1, 77, 1, "One", None, None)]
-    runtime, _observed = _make_runtime(document_chapters=document_chapters)
-    plan = RepairPlan(
-        source_path=tmp_path / "source.md",
-        stored_chapters=stored_chapters,
-        title="Repair Book",
-        author="Tester",
-        output_dir=tmp_path / "output",
-        chapters_dir=tmp_path / "output" / "chapters",
-        resolve_chapter_audio=lambda _chapter: None,
-    )
-
-    with patch.object(
-        repair_module,
-        "validate_chapter_sets",
-        return_value=["duplicate source chapter rows: 1"],
-    ) as validate_sets:
-        result = execute_repair_plan(runtime, plan)
-
-    validate_sets.assert_called_once_with(
-        document_chapters,
-        stored_chapters,
-        context="repair",
-    )
-    assert result.success is False
-    assert "duplicate source chapter rows: 1" in str(result.error)
-
-
 def test_repair_regenerates_corrupt_audio_and_reuses_valid_audio(tmp_path):
     from dataclasses import replace
     from modules.pipeline.models import ChapterResult

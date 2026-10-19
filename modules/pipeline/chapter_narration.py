@@ -10,7 +10,13 @@ import numpy as np
 
 from .stages.synthesis import ChapterAudioAccumulator
 
-CHAPTER_PAUSE_SECONDS = 3
+# Chapter audio is: announcement, heading pause, body, end pause. Kokoro adds
+# roughly 0.2-0.5 s of its own trailing silence to each clip, so a chapter
+# change is heard as about 2 s of quiet (end pause + next announcement lead-in)
+# and the body follows its announcement after about 2 s. That stays within the
+# usual audiobook range (0.5-1 s lead-in, 1-5 s tail) without dead air.
+CHAPTER_HEADING_PAUSE_SECONDS = 1.5
+CHAPTER_END_PAUSE_SECONDS = 1.5
 _LABEL = re.compile(r"^(chapter|section|part|book)\b\s*[:.\-–—]?\s*", re.I)
 _NUMBER = re.compile(
     r"^(?:number\s+)?(\d+(?:\.\d+)*|[ivxlcdm]+|"
@@ -28,6 +34,8 @@ def _plain_title(title: str) -> str:
 
 def chapter_announcement(chapter: Any, conversion_mode: str = "audiobook") -> str:
     """Keep explicit source labels/numbers; otherwise use the parsed sequence."""
+    from modules.tts.speech_typography import normalize_speech_typography
+
     title = _plain_title(chapter.title)
     kind = "Section" if conversion_mode == "document_audio" else "Chapter"
     number = str(chapter.number)
@@ -46,6 +54,9 @@ def chapter_announcement(chapter: Any, conversion_mode: str = "audiobook") -> st
                                  for i, v in enumerate(digits)))
     elif title == number:
         title = ""
+    title = normalize_speech_typography(
+        title, str(getattr(chapter, "content", "") or ""), heading=True,
+    )
     suffix = f" {title.rstrip('.!?')}." if title else ""
     return f"{kind} number {number}.{suffix}"
 
@@ -82,16 +93,21 @@ def add_chapter_narration(runtime: Any, chapter: Any, body: Path | np.ndarray, r
     accumulator.spill_to_disk()
     try:
         accumulator.add_segment(intro)
-        silence = np.zeros(CHAPTER_PAUSE_SECONDS * sample_rate, dtype=np.float32)
-        accumulator.add_segment(silence)
+        accumulator.add_segment(
+            np.zeros(int(CHAPTER_HEADING_PAUSE_SECONDS * sample_rate), dtype=np.float32)
+        )
         if isinstance(body, Path):
             runtime.track_temp_cleanup_path(body)
             accumulator.add_file(body)
         else:
             accumulator.add_segment(body)
-        accumulator.add_segment(silence)
+        accumulator.add_segment(
+            np.zeros(int(CHAPTER_END_PAUSE_SECONDS * sample_rate), dtype=np.float32)
+        )
         audio = accumulator.finalize()
         result.pcm_rms = accumulator.pcm16_rms()
+        if isinstance(body, Path) and body.resolve().is_relative_to(runtime.config.temp_dir.resolve()):
+            body.unlink(missing_ok=True)
         return audio
     finally:
         accumulator.close()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from modules.tts.cleaner_memory import (
@@ -10,6 +11,8 @@ from modules.tts.cleaner_memory import (
 )
 from modules.tts.device_memory import CUDADeviceMemoryPolicy
 from modules.tts.factory import TTSEngineFactory
+
+logger = logging.getLogger(__name__)
 
 
 def _tts_strategy_kwargs(runtime: Any) -> dict[str, Any]:
@@ -233,19 +236,21 @@ def cleanup_models(runtime: Any, *, force: bool = False) -> bool:
         and _should_keep_tts_engine_warm(runtime)
     )
 
+    # Unload failures must not abort run teardown, but they can leave device
+    # memory allocated, so keep them visible in the backend log.
     if not keep_tts_warm:
         try:
             if runtime.state.tts_engine is not None:
                 runtime.state.tts_engine.unload(keep_in_cache=False)
         except Exception:
-            pass
+            logger.warning("TTS engine unload failed", exc_info=True)
         runtime.state.tts_engine = None
 
     try:
         if runtime.state.text_cleaner is not None:
             runtime.state.text_cleaner.unload(keep_in_cache=True)
     except Exception:
-        pass
+        logger.warning("Text cleaner unload failed", exc_info=True)
 
     runtime.state.text_cleaner = None
     return keep_tts_warm

@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .ffmpeg import atomic_output_path, require_ffmpeg_binary, run_ffmpeg_command
-from .packager import AudiobookMetadata, write_ffmpeg_concat_file
+from .packager import AudiobookMetadata, expected_audio_seconds, write_ffmpeg_concat_file
 
 
 class DocumentAudioPackager:
@@ -26,6 +26,7 @@ class DocumentAudioPackager:
         output_path: Path | str,
         bitrate: str = "128k",
         cancel_requested: Callable[[], bool] | None = None,
+        chapter_durations_ms: list[int] | None = None,
     ) -> Path:
         if not mp3_files:
             raise ValueError("mp3_files must not be empty")
@@ -66,13 +67,13 @@ class DocumentAudioPackager:
                 "-metadata",
                 f"title={metadata.title}",
                 "-metadata",
-                f"artist={metadata.author}",
-                "-metadata",
                 f"album={metadata.title}",
                 "-metadata",
                 f"genre={metadata.genre}",
             ]
 
+            if str(metadata.author or "").strip():
+                command.extend(["-metadata", f"artist={metadata.author}"])
             if metadata.narrator:
                 command.extend(["-metadata", f"composer={metadata.narrator}"])
             if metadata.year:
@@ -86,6 +87,7 @@ class DocumentAudioPackager:
                     command,
                     failure_message="M4A creation failed",
                     cancel_requested=cancel_requested,
+                    audio_seconds=expected_audio_seconds(audio_files, chapter_durations_ms),
                 )
 
         return output_path

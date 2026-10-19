@@ -8,20 +8,7 @@ from typing import Any
 from modules.errors import CorruptedFileError
 from modules.ingestion.models import Document
 
-
-def _select_configured_chapter_range(document: Any, config: Any) -> Any:
-    chapter_start = max(1, int(getattr(config, "chapter_start", 1) or 1))
-    chapter_limit = getattr(config, "chapter_limit", None)
-    start_index = chapter_start - 1
-    if chapter_limit is None and start_index == 0:
-        return document
-
-    chapters = list(getattr(document, "chapters", []))
-    if chapter_limit is None:
-        document.chapters = chapters[start_index:]
-    else:
-        document.chapters = chapters[start_index : start_index + max(1, int(chapter_limit))]
-    return document
+_MAX_LOGGED_CHAPTERS = 200
 
 
 def ingest_source(runtime: Any, source_path: Path):
@@ -63,7 +50,6 @@ def ingest_source(runtime: Any, source_path: Path):
 
     runtime.log_verbose("[PARSER] Parsing content...", "process")
     document = parser.parse()
-    document = _select_configured_chapter_range(document, runtime.config)
     if bool(getattr(runtime.config, "pre_chunk_document_cleanup", True)):
         from modules.text.document_normalizer import normalize_extracted_document
 
@@ -99,13 +85,25 @@ def ingest_source(runtime: Any, source_path: Path):
     num_chapters = len(document.chapters)
     runtime.log_verbose(f"[PARSER] Extracted: {num_chapters} chapters found", "success")
 
+    # Parsing is already finished here; this loop only reports it. Bound the
+    # report so a source with thousands of headings cannot flood the event
+    # stream: one progress event per percent, and a capped chapter listing.
+    last_reported_pct = -1
     for i, chapter in enumerate(document.chapters):
         progress_pct = int((i + 1) / num_chapters * 100) if num_chapters > 0 else 0
-        runtime.log_verbose(
-            f"[PARSER] [{progress_pct:3d}%] Chapter {i + 1}/{num_chapters}: "
-            f"{chapter.title[:40]}... ({len(chapter.content)} chars)",
-            "info",
-        )
+        if i < _MAX_LOGGED_CHAPTERS:
+            runtime.log_verbose(
+                f"[PARSER] [{progress_pct:3d}%] Chapter {i + 1}/{num_chapters}: "
+                f"{chapter.title[:40]}... ({len(chapter.content)} chars)",
+                "info",
+            )
+        elif i == _MAX_LOGGED_CHAPTERS:
+            runtime.log_verbose(
+                f"[PARSER] ... {num_chapters - i} more chapters not listed", "info",
+            )
+        if progress_pct == last_reported_pct and i != num_chapters - 1:
+            continue
+        last_reported_pct = progress_pct
         runtime.notify_progress(
             chapter_idx=i,
             total_chapters=num_chapters,
