@@ -6,7 +6,10 @@ from fastapi import APIRouter, HTTPException
 
 from modules.app import ConversionCallbacks
 from modules.app.services.repair_runtime import repair_runtime_fields_set
-from modules.web.deps import ControllerDep, EventBrokerDep, TempDirDep, call_with_http_errors
+from modules.storage.sqlite_repo import LibraryReplacedError
+from modules.contracts.public_errors import PublicError
+from modules.web.events import normalize_event
+from modules.web.deps import public_http_error, ControllerDep, EventBrokerDep, TempDirDep, call_with_http_errors
 from modules.web.schemas.conversions import (
     RepairConversionRequest,
     StartConversionRequest,
@@ -25,24 +28,36 @@ def start_conversion(
     temp_dir: TempDirDep,
 ) -> dict:
     try:
-        source_path = resolve_source_reference(payload.source_path, temp_dir)
+        service = getattr(controller, "_conversion_service", None)
+        source_path = resolve_source_reference(
+            payload.source_path, temp_dir,
+            resolve_recovered_upload=getattr(service, "resolve_recovered_upload", None),
+        )
     except ValueError as exc:
         if payload.source_path.startswith("upload:"):
             raise HTTPException(status_code=400, detail="Source file is no longer available — add it again") from exc
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    def publish_event(event):
+        event_payload = normalize_event(event)
+        if event_payload.get("job_id") is not None:
+            event_payload["client_request_id"] = payload.client_request_id
+        event_broker.publish(event_payload)
+
     job = call_with_http_errors(
         lambda: controller.start_conversion(
             source_path=source_path,
             runtime_options=payload.to_runtime_options(),
-            callbacks=ConversionCallbacks(on_event=event_broker.publish),
+            callbacks=ConversionCallbacks(on_event=publish_event),
             conversion_mode=payload.conversion_mode,
             title=payload.title,
             author=payload.author,
+            **({"client_request_id": payload.client_request_id} if payload.client_request_id is not None else {}),
         ),
         runtime_status=409,
     )
     return {
         "job_id": job.id,
+        "client_request_id": getattr(job, "client_request_id", None),
         "status": job_status_value(job),
         "book_id": getattr(job, "book_id", None),
         "error": getattr(job, "error", None),
@@ -66,17 +81,22 @@ def repair_conversion(
     controller: ControllerDep,
     event_broker: EventBrokerDep,
 ) -> dict:
-    job = call_with_http_errors(
-        lambda: controller.repair_conversion(
-            book_id=book_id,
-            runtime_options=payload.to_runtime_options(),
-            runtime_fields_set=repair_runtime_fields_set(payload),
-            callbacks=ConversionCallbacks(on_event=event_broker.publish),
-        ),
-        runtime_status=409,
-    )
+    def start_repair():
+        try:
+            return controller.repair_conversion(
+                book_id=book_id,
+                runtime_options=payload.to_runtime_options(),
+                runtime_fields_set=repair_runtime_fields_set(payload),
+                callbacks=ConversionCallbacks(on_event=event_broker.publish),
+                **({"expected_epoch": payload.expected_epoch} if payload.expected_epoch is not None else {}),
+            )
+        except LibraryReplacedError as error:
+            raise public_http_error(PublicError(error.code, str(error), 409)) from error
+
+    job = call_with_http_errors(start_repair, runtime_status=409)
     return {
         "job_id": job.id,
+        "client_request_id": getattr(job, "client_request_id", None),
         "status": job_status_value(job),
         "book_id": getattr(job, "book_id", book_id),
         "error": getattr(job, "error", None),
@@ -89,5 +109,5 @@ def cancel_conversion(job_id: str, controller: ControllerDep) -> dict:
     if job is None or str(job.id) != job_id:
         raise HTTPException(status_code=404, detail="Active job not found")
 
-    cancelled = controller.cancel_conversion()
+    cancelled = controller.cancel_conversion(expected_job_id=job_id)
     return {"job_id": job_id, "cancelled": bool(cancelled)}

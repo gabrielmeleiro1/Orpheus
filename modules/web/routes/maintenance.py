@@ -15,6 +15,8 @@ router = APIRouter()
 
 class CleanupStorageRequest(BaseModel):
     confirm: str = Field(..., min_length=1)
+    # Names from ``summary.kept[category=unowned_output_folder]``; off by default.
+    remove_unowned_folders: list[str] = Field(default_factory=list, max_length=100)
 
 
 class OpenDeletionFolderRequest(BaseModel):
@@ -52,9 +54,34 @@ def post_maintenance_backup(controller: ControllerDep) -> dict:
     return {"backup_path": str(backup_path)}
 
 
+@router.get("/api/maintenance/backups")
+def get_maintenance_backups(controller: ControllerDep) -> dict:
+    return {"items": controller.list_database_backups()}
+
+
+@router.post("/api/maintenance/backups/{backup_id}/restore")
+def post_maintenance_restore(backup_id: str, controller: ControllerDep) -> dict:
+    report = getattr(controller, "restore_database_backup_report", None)
+    try:
+        if callable(report):
+            result = call_with_http_errors(lambda: report(backup_id), runtime_status=409)
+        else:
+            result = {"safety_copy": call_with_http_errors(
+                lambda: controller.restore_database_backup(backup_id), runtime_status=409,
+            )}
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="Database backup not found") from error
+    return {
+        "restored_id": backup_id,
+        "safety_copy_path": str(result["safety_copy"]),
+        **({"summary": result["summary"]} if "summary" in result else {}),
+    }
+
+
 @router.post("/api/maintenance/cleanup")
 def post_maintenance_cleanup(payload: CleanupStorageRequest, controller: ControllerDep) -> dict:
+    extra = {"remove_unowned_folders": tuple(payload.remove_unowned_folders)} if payload.remove_unowned_folders else {}
     return call_with_http_errors(
-        lambda: controller.cleanup_storage(confirm=payload.confirm),
+        lambda: controller.cleanup_storage(confirm=payload.confirm, **extra),
         runtime_status=409,
     )

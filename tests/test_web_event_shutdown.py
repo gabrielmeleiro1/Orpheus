@@ -63,19 +63,15 @@ def test_event_stream_unsubscribes_on_generator_close() -> None:
     assert broker.subscriber_count == 0
 
 
-def test_dropped_event_count_increments_on_queue_overflow() -> None:
+def test_queue_overflow_drops_oldest_events() -> None:
     broker = EventBroker(max_queue_size=1)
     subscriber = broker.subscribe()
 
     broker.publish(make_log_event("one", "info"))
-    assert broker.dropped_event_count == 0
-
     broker.publish(make_log_event("two", "info"))
-    assert broker.dropped_event_count == 1
-
     broker.publish(make_log_event("three", "info"))
-    assert broker.dropped_event_count == 2
 
     # The newest event is retained after the overflow drops.
     assert subscriber.get_nowait()["message"] == "three"
+    assert subscriber.empty()
     broker.unsubscribe(subscriber)

@@ -24,12 +24,17 @@ def book_summary_to_dict(book) -> dict:
         "tags": getattr(book, "tags", "") or "",
         "favorite": bool(getattr(book, "favorite", False)),
         "source_available": getattr(book, "source_available", None),
+        "audio_available": getattr(book, "audio_available", None),
     }
 
 
 def book_to_dict(book: dict) -> dict:
     payload = dict(book)
     payload["created_at"] = _iso(payload.get("created_at"))
+    payload["chapters"] = [
+        {**chapter, "packaged_start_ms": chapter.get("packaged_start_ms")}
+        for chapter in payload.get("chapters", [])
+    ]
     return payload
 
 
@@ -55,6 +60,7 @@ def job_payload(job) -> dict:
 
     return {
         "id": job_id,
+        "client_request_id": getattr(job, "client_request_id", None),
         "book_id": book_id,
         "status": _status_value(status),
         "error": error,

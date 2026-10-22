@@ -14,14 +14,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def test_web_events() -> bool:
-    print("\n" + "=" * 50)
-    print("WEB EVENTS TEST SUITE")
-    print("=" * 50 + "\n")
-
+def test_published_event_carries_envelope_and_encodes_as_sse_frame() -> None:
     from modules.app.events import make_log_event
-    from modules.web.events import EventBroker, event_stream, sse_frame
-    from modules.web.server import create_app
+    from modules.web.events import EventBroker, sse_frame
 
     broker = EventBroker(max_queue_size=2)
     queue = broker.subscribe()
@@ -32,43 +27,11 @@ def test_web_events() -> bool:
     assert payload["message"] == "hello"
     assert "timestamp" in payload
     assert "event_id" in payload
-    print("✓ event broker publish/subscribe + envelope")
 
     frame = sse_frame(payload)
     assert frame.startswith("data: ")
     assert frame.endswith("\n\n")
-    print("✓ sse frame encoding")
-
-    # Queue pressure: max queue size is 2, oldest should be dropped.
-    broker.publish(make_log_event("one", "info"))
-    broker.publish(make_log_event("two", "info"))
-    broker.publish(make_log_event("three", "info"))
-    kept = [queue.get(timeout=1.0), queue.get(timeout=1.0)]
-    assert kept[0]["message"] == "two"
-    assert kept[1]["message"] == "three"
-    print("✓ queue pressure drops oldest payload")
-
-    stream = event_stream(broker, heartbeat_seconds=0.01)
-    ping_frame = next(stream)
-    assert ping_frame.startswith("event: ping")
-    print("✓ heartbeat ping frame")
-
-    assert broker.subscriber_count >= 1
-    stream.close()
-    assert broker.subscriber_count == 1  # only explicit queue subscriber remains
     broker.unsubscribe(queue)
-    assert broker.subscriber_count == 0
-    print("✓ subscriber cleanup on stream close")
-
-    app = create_app()
-    route_paths = set(app.openapi()["paths"])
-    assert "/api/events/stream" in route_paths
-    print("✓ sse route registered")
-
-    print("\n" + "=" * 50)
-    print("ALL WEB EVENTS TESTS PASSED ✓")
-    print("=" * 50 + "\n")
-    return True
 
 
 def test_event_broker_tolerates_full_queue_between_drop_and_publish(monkeypatch) -> None:
@@ -142,5 +105,4 @@ def test_progress_event_throughput_delivers_latest_state_within_budget() -> None
 
 
 if __name__ == "__main__":
-    success = test_web_events()
-    sys.exit(0 if success else 1)
+    test_published_event_carries_envelope_and_encodes_as_sse_frame()

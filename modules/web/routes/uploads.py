@@ -9,7 +9,8 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from modules.contracts.limits import MAX_BOOK_TITLE_LENGTH, MAX_UPLOAD_BYTES
 from modules.contracts.upload_errors import UploadTooLargeError
-from modules.web.deps import ControllerDep, call_with_http_errors
+from modules.errors import SourceInputError
+from modules.web.deps import ControllerDep, call_with_http_errors, public_http_error
 
 router = APIRouter()
 
@@ -31,28 +32,31 @@ _UPLOAD_BODY_PATHS = frozenset({"/api/uploads/source", "/api/uploads/text"})
 MAX_TEXT_CHARS = MAX_UPLOAD_BYTES
 
 
+# Every other route takes a small JSON document (options, paths, titles).
+# Neither uvicorn nor its HTTP parsers bound request bodies, and FastAPI buffers
+# the whole body before parsing it, so cap it generously but finitely.
+MAX_REQUEST_BODY_BYTES = 1024 * 1024
+
+
 class _UploadBodySizeLimitMiddleware:
-    """Bound declared and chunked upload bodies before framework parsing."""
+    """Bound declared and chunked request bodies before framework parsing."""
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if (
-            scope["type"] != "http"
-            or scope.get("method", "").upper() != "POST"
-            or scope.get("path") not in _UPLOAD_BODY_PATHS
-        ):
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
-        limit = MAX_UPLOAD_BYTES + CONTENT_LENGTH_SLACK_BYTES
+        is_upload = scope.get("method", "").upper() == "POST" and scope.get("path") in _UPLOAD_BODY_PATHS
+        limit = MAX_UPLOAD_BYTES + CONTENT_LENGTH_SLACK_BYTES if is_upload else MAX_REQUEST_BODY_BYTES
         headers = dict(scope.get("headers", []))
         declared = headers.get(b"content-length")
         if declared is not None:
             try:
                 if int(declared) > limit:
-                    await self._reject(scope, receive, send)
+                    await self._reject(scope, receive, send, is_upload=is_upload)
                     return
             except ValueError:
                 pass
@@ -80,14 +84,15 @@ class _UploadBodySizeLimitMiddleware:
             if not too_large:
                 raise
         if too_large:
-            await self._reject(scope, receive, send)
+            await self._reject(scope, receive, send, is_upload=is_upload)
 
     @staticmethod
-    async def _reject(scope: Scope, receive: Receive, send: Send) -> None:
-        response = JSONResponse(
-            status_code=413,
-            content={"detail": f"Upload body exceeds {MAX_UPLOAD_BYTES} bytes"},
+    async def _reject(scope: Scope, receive: Receive, send: Send, *, is_upload: bool) -> None:
+        detail = (
+            f"Upload body exceeds {MAX_UPLOAD_BYTES} bytes" if is_upload
+            else f"Request body exceeds {MAX_REQUEST_BODY_BYTES} bytes"
         )
+        response = JSONResponse(status_code=413, content={"detail": detail})
         await response(scope, receive, send)
 
 
@@ -110,6 +115,8 @@ def upload_source(controller: ControllerDep, file: UploadFile = File(...)) -> di
         )
     except UploadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except SourceInputError as exc:
+        raise public_http_error(exc.public_error) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

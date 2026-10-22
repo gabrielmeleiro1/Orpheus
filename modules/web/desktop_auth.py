@@ -13,6 +13,8 @@ from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from starlette.responses import JSONResponse, Response
 
+from modules.web.deps import get_controller
+
 _AUDIO_PLAYBACK_PATH_RE = re.compile(r"^/api/library/(?P<book_id>[^/]+)/audio/?$")
 _QUERY_TOKEN_VERSION = "v1"
 _QUERY_TOKEN_TTL_SECONDS = 60
@@ -24,6 +26,7 @@ desktop_query_token_router = APIRouter(prefix="/api/desktop", tags=["desktop"])
 class DesktopQueryTokenRequest(BaseModel):
     scope: str
     book_id: int | None = None
+    expected_epoch: str | None = None
 
 
 class DesktopQueryTokenResponse(BaseModel):
@@ -52,7 +55,12 @@ def _path_requires_auth(path: str) -> bool:
 
 
 def _is_valid_token(candidate: str | None, expected: str) -> bool:
-    return bool(candidate) and hmac.compare_digest(candidate, expected)
+    if not candidate:
+        return False
+    try:
+        return hmac.compare_digest(candidate.encode("utf-8"), expected.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
 
 
 def _query_token_scope_for_path(path: str) -> str | None:
@@ -122,8 +130,11 @@ def validate_desktop_query_token(candidate: str | None, secret: str, required_sc
         return False
 
     payload = ".".join(parts[:4])
-    expected_signature = _sign_query_token_payload(payload, secret)
-    return hmac.compare_digest(signature, expected_signature)
+    try:
+        expected_signature = _sign_query_token_payload(payload, secret)
+    except UnicodeEncodeError:
+        return False
+    return _is_valid_token(signature, expected_signature)
 
 
 def _unauthorized() -> Response:
@@ -142,7 +153,9 @@ def _request_scope(payload: DesktopQueryTokenRequest) -> str:
     if scope == "audio":
         if not payload.book_id or payload.book_id <= 0:
             raise HTTPException(status_code=422, detail="book_id is required for audio query tokens")
-        return f"audio:{payload.book_id}"
+        if not payload.expected_epoch:
+            raise HTTPException(status_code=422, detail="expected_epoch is required for audio query tokens")
+        return f"audio:{payload.book_id}:{payload.expected_epoch}"
 
     raise HTTPException(status_code=422, detail="Unsupported query token scope")
 
@@ -154,7 +167,7 @@ def _query_token_ttl_for_scope(scope: str) -> int:
 
 
 @desktop_query_token_router.post("/query-token", response_model=DesktopQueryTokenResponse)
-async def create_desktop_query_token(
+def create_desktop_query_token(
     payload: DesktopQueryTokenRequest,
     request: Request,
 ) -> DesktopQueryTokenResponse:
@@ -166,11 +179,16 @@ async def create_desktop_query_token(
         raise HTTPException(status_code=500, detail="Desktop API token is not configured")
 
     scope = _request_scope(payload)
-    token, expires_at = mint_desktop_query_token(
-        expected_token,
-        scope,
-        ttl_seconds=_query_token_ttl_for_scope(scope),
-    )
+    if payload.scope.strip().lower() == "audio":
+        from modules.web.routes.library import library_epoch_errors, library_snapshot
+
+        with library_epoch_errors(), library_snapshot(get_controller(request), payload.expected_epoch):
+            token, expires_at = mint_desktop_query_token(
+                expected_token, scope, ttl_seconds=_query_token_ttl_for_scope(scope),
+            )
+    else:
+        token, expires_at = mint_desktop_query_token(expected_token, scope)
+
     return DesktopQueryTokenResponse(token=token, expires_at=expires_at)
 
 
@@ -200,6 +218,16 @@ def add_desktop_auth_middleware(app: FastAPI) -> None:
         required_query_scope = _query_token_scope_for_path(path)
         if required_query_scope is not None:
             query_token = request.query_params.get("token")
+            if required_query_scope.startswith("audio:") and query_token:
+                try:
+                    token_scope = _base64url_decode(query_token.split(".")[1]).decode("utf-8")
+                except (IndexError, UnicodeError, ValueError):
+                    return _unauthorized()
+                prefix = required_query_scope + ":"
+                if not token_scope.startswith(prefix) or not token_scope[len(prefix):]:
+                    return _unauthorized()
+                required_query_scope = token_scope
+                request.state.audio_library_epoch = token_scope[len(prefix):]
             if validate_desktop_query_token(query_token, expected_token, required_query_scope):
                 return await call_next(request)
 

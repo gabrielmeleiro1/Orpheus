@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 class OpenAIModelListRequest(BaseModel):
-    api_key: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1, repr=False)
 
 
 class ParallelWarmupRequest(BaseModel):
@@ -27,7 +27,7 @@ class ParallelWarmupRequest(BaseModel):
     cleaner_cuda_device: str | None = None
     cleaner_cuda_quantization: str | None = None
     cleaner_api_model: str | None = None
-    cleaner_api_key: str | None = None
+    cleaner_api_key: str | None = Field(default=None, repr=False)
     max_parallel_chapters: int = Field(default=4, ge=1)
 
 
@@ -43,8 +43,8 @@ def get_model_options(controller: ControllerDep, request: Request) -> dict:
     # Once setup is configured, conversion offers downloaded local models only.
     # Installation and removal belong to Settings, not an implicit model load.
     from modules.web.routes.setup import _get_status_cache, _check_model_group_assets
-    from scripts import setup_runtime
-    from scripts.download_models import MODEL_GROUPS
+    from modules.runtime_setup import state as setup_runtime
+    from modules.runtime_setup.catalog import MODEL_GROUPS
 
     try:
         state, _ = setup_runtime._read_setup_state(setup_runtime.default_state_path())

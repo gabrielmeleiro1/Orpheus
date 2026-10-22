@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel, ConfigDict, Field
-from starlette.background import BackgroundTask
 from starlette.responses import FileResponse
+from starlette.types import Receive, Scope, Send
 
 from modules.web.deps import ControllerDep, TempDirDep, call_with_http_errors
 from modules.web.serializers import safe_unlink
@@ -16,12 +17,26 @@ from modules.web.source_handles import resolve_source_reference
 router = APIRouter()
 
 
+class _EphemeralFileResponse(FileResponse):
+    """Serve a generated file and remove it however the response ends.
+
+    A background task runs only after a complete send, so a client that
+    disconnects mid-preview would otherwise leave the WAV in the temp folder.
+    """
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            safe_unlink(Path(self.path))
+
+
 class VoicePreviewRequest(BaseModel):
     # Reject NaN/±Infinity so a non-finite speed 422s instead of 500ing.
     model_config = ConfigDict(allow_inf_nan=False)
 
     voice: str = Field(..., min_length=1)
-    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    speed: float = Field(default=1.0, ge=0.5, le=3.0)
     text: Optional[str] = Field(default=None, max_length=320)
     tts_engine: Optional[str] = None
     tts_quantization: Optional[str] = None
@@ -57,11 +72,10 @@ def post_voice_preview(payload: VoicePreviewRequest, controller: ControllerDep) 
         lambda: controller.generate_voice_preview(**preview_kwargs)
     )
 
-    return FileResponse(
+    return _EphemeralFileResponse(
         path=preview_path,
         media_type="audio/wav",
         filename=preview_path.name,
-        background=BackgroundTask(safe_unlink, preview_path),
         headers={"Cache-Control": "no-store"},
     )
 

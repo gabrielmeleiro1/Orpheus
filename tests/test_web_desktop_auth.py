@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from modules.web.server import create_app
 
 TOKEN = "desktop-test-token"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_desktop_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
 
 
 @dataclass
@@ -68,6 +75,10 @@ class _FakeController:
             output_dir=output_dir or playback_path.parent,
             temp_dir=(output_dir or playback_path.parent) / "temp",
         )
+
+    def library_snapshot(self, expected_epoch=None):
+        assert expected_epoch in (None, "selected-epoch")
+        return nullcontext({"library_id": "library", "library_epoch": "selected-epoch"})
 
     def get_library_books(  # noqa: ANN001,ANN201
         self,
@@ -129,6 +140,7 @@ def _mint_query_token(client: TestClient, scope: str, *, book_id: int | None = N
     payload: dict[str, object] = {"scope": scope}
     if book_id is not None:
         payload["book_id"] = book_id
+        payload["expected_epoch"] = "selected-epoch"
     response = client.post(
         "/api/desktop/query-token",
         json=payload,
@@ -145,6 +157,7 @@ def _create_query_token(client: TestClient, scope: str, *, book_id: int | None =
     payload: dict[str, object] = {"scope": scope}
     if book_id is not None:
         payload["book_id"] = book_id
+        payload["expected_epoch"] = "selected-epoch"
     response = client.post(
         "/api/desktop/query-token",
         json=payload,
@@ -166,6 +179,17 @@ def test_desktop_mode_health_remains_open(tmp_path: Path) -> None:
     assert response.json() == {"status": "ok"}
 
 
+def test_desktop_mode_serves_no_unauthenticated_api_docs(tmp_path: Path) -> None:
+    audio_path = tmp_path / "sample.m4b"
+    audio_path.write_bytes(b"ID3desktop-audio")
+
+    with _make_desktop_client(_FakeController(audio_path)) as client:
+        for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+            assert client.get(path).status_code == 404, path
+        # The schema stays available in-process for route contract checks.
+        assert "/api/library" in client.app.openapi()["paths"]
+
+
 def test_desktop_mode_library_requires_bearer_token(tmp_path: Path) -> None:
     audio_path = tmp_path / "sample.m4b"
     audio_path.write_bytes(b"ID3desktop-audio")
@@ -185,6 +209,44 @@ def test_desktop_mode_library_requires_bearer_token(tmp_path: Path) -> None:
     assert count_missing.status_code == 401
     assert count_authed.status_code == 200
     assert count_authed.json() == {"count": 1}
+
+
+@pytest.mark.parametrize("credential", [b"\xc3\xa9", b"\xff"])
+def test_desktop_mode_malformed_bearer_returns_401(tmp_path: Path, credential: bytes) -> None:
+    controller = _FakeController(tmp_path / "sample.m4b")
+
+    with _make_desktop_client(controller) as client:
+        response = client.get("/api/library", headers={b"authorization": b"Bearer " + credential})
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
+@pytest.mark.parametrize("field,value", [(1, "é"), (1, "a"), (1, "_w"), (4, "é")])
+def test_desktop_mode_malformed_query_token_returns_401(tmp_path: Path, field: int, value: str) -> None:
+    from modules.web.desktop_auth import mint_desktop_query_token
+
+    token, _ = mint_desktop_query_token(TOKEN, "events")
+    parts = token.split(".")
+    parts[field] = value
+    controller = _FakeController(tmp_path / "sample.m4b")
+
+    with _make_desktop_client(controller) as client:
+        response = client.get("/api/events/stream", params={"token": ".".join(parts)})
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Unauthorized"}
+
+
+@pytest.mark.parametrize("field", [3, 4])
+def test_query_token_with_invalid_utf8_is_rejected_without_error(field: int) -> None:
+    from modules.web.desktop_auth import mint_desktop_query_token, validate_desktop_query_token
+
+    token, _ = mint_desktop_query_token(TOKEN, "events")
+    parts = token.split(".")
+    parts[field] = "\ud800"
+
+    assert validate_desktop_query_token(".".join(parts), TOKEN, "events") is False
 
 
 def test_desktop_mode_library_forwards_offset_to_repository(tmp_path: Path) -> None:
@@ -453,14 +515,6 @@ def _forged_query_token(scope: str) -> str:
     encoded_scope = base64.urlsafe_b64encode(scope.encode("utf-8")).decode("ascii").rstrip("=")
     expires_at = int(time.time()) + 60
     return f"v1.{encoded_scope}.{expires_at}.nonce.signature"
-
-
-def test_query_token_with_non_ascii_scope_is_rejected_without_error() -> None:
-    from modules.web.desktop_auth import validate_desktop_query_token
-
-    # ``hmac.compare_digest`` raises TypeError on non-ASCII str inputs; an
-    # attacker-controlled decoded scope must yield False, not an exception.
-    assert validate_desktop_query_token(_forged_query_token("évents"), TOKEN, "events") is False
 
 
 def test_desktop_mode_non_ascii_scope_query_token_returns_401(tmp_path: Path) -> None:

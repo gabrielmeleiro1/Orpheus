@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from modules.contracts.conversion_runtime import merge_runtime_options
 from modules.contracts.conversion_runtime_options import ConversionRuntimeOptions
-from modules.contracts.limits import MAX_BOOK_TITLE_LENGTH
+from modules.contracts.limits import MAX_BOOK_AUTHOR_LENGTH, MAX_BOOK_TITLE_LENGTH
 
 
 class _InfNanSafeModel(BaseModel):
@@ -28,7 +28,7 @@ class ConversionRuntimeOptionsRequest(_InfNanSafeModel):
     cleaner_cuda_device: str | None = None
     cleaner_cuda_quantization: str | None = None
     cleaner_api_model: str | None = None
-    cleaner_api_key: str | None = None
+    cleaner_api_key: str | None = Field(default=None, repr=False)
     tts_options: Mapping[str, object] | None = None
     parallel_worker_mode: str | None = None
     enable_parallel: bool | None = None
@@ -70,11 +70,12 @@ class _RuntimeOptionsRequest(ConversionRuntimeOptionsRequest):
 
 
 class StartConversionRequest(_RuntimeOptionsRequest):
+    client_request_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     source_path: str = Field(..., min_length=1)
     conversion_mode: Literal["audiobook", "document_audio"] = "audiobook"
     title: str | None = Field(default=None, max_length=MAX_BOOK_TITLE_LENGTH)
-    author: str | None = None
+    author: str | None = Field(default=None, max_length=MAX_BOOK_AUTHOR_LENGTH)
 
 
 class RepairConversionRequest(_RuntimeOptionsRequest):
-    pass
+    expected_epoch: str | None = None

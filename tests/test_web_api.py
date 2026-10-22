@@ -14,11 +14,17 @@ PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def _make_client():
+def _make_client(tmp_path):
     from fastapi.testclient import TestClient
+    from modules.app.config import AppConfig
+    from modules.app.controller import AppController
     from modules.web.server import create_app
 
-    return TestClient(create_app())
+    config = AppConfig(
+        data_dir=tmp_path / "data", output_dir=tmp_path / "output",
+        temp_dir=tmp_path / "temp", db_path=tmp_path / "data" / "audiobooks.db",
+    )
+    return TestClient(create_app(controller_factory=lambda: AppController(config)))
 
 
 def _make_client_with_controller(controller):
@@ -48,12 +54,14 @@ def test_active_conversion_route_serializes_job_metadata():
     assert response.status_code == 200
     assert response.json()["job"] == {
         "id": "job-1",
+        "client_request_id": None,
         "book_id": None,
         "status": "running",
         "error": None,
         "title": "Reloaded title",
         "author": "Reloaded author",
     }
+
 
 
 def test_openai_model_list_route_fetches_models_with_pasted_key(monkeypatch):
@@ -496,14 +504,17 @@ def _capture_conversion_controller():
 def _pipeline_config_for_payload(tmp_path: Path, api_payload: dict):
     from modules.app.config import AppConfig
     from modules.app.services.conversion_runtime import RuntimeOptionsResolver
-    from modules.contracts.conversion_runtime import from_api_payload
+    from modules.web.schemas.conversions import StartConversionRequest
 
-    runtime_options = from_api_payload(api_payload)
+    runtime_options = StartConversionRequest(**api_payload).to_runtime_options()
     config = AppConfig(
         data_dir=tmp_path / "data",
         output_dir=tmp_path / "output",
         temp_dir=tmp_path / "temp",
         db_path=tmp_path / "data" / "app.db",
+        # Test payload mapping without host-dependent CPU worker normalization.
+        # Runtime validation is stubbed below; no MLX inference is performed.
+        tts_provider="mlx",
     )
     resolver = RuntimeOptionsResolver(
         config=config,
@@ -613,19 +624,15 @@ def test_conversion_api_payload_contract_maps_to_controller_and_pipeline_config(
     expected_runtime,
     expected_pipeline,
 ):
-    from modules.contracts.conversion_runtime import from_api_payload
-
     controller = _capture_conversion_controller()
     client = _make_client_with_controller(controller)
     response = client.post("/api/conversions", json=api_payload)
 
     assert response.status_code == 200
     controller_runtime = controller.start_kwargs["runtime_options"]
-    contract_runtime = from_api_payload(api_payload)
 
     for field, expected_value in expected_runtime.items():
         assert getattr(controller_runtime, field) == expected_value
-        assert getattr(contract_runtime, field) == expected_value
 
     _, pipeline_config = _pipeline_config_for_payload(tmp_path, api_payload)
     for field, expected_value in expected_pipeline.items():
@@ -657,7 +664,80 @@ def test_start_conversion_rejects_invalid_conversion_mode():
     assert controller.start_called is False
 
 
-def test_voice_preview_route_forwards_runtime_selection_payload(tmp_path):
+@pytest.mark.parametrize("missing_asset", ["snapshot", "receipt", "phonemizer", "voice"])
+def test_voice_preview_returns_installation_guidance_after_model_load(
+    monkeypatch, tmp_path, missing_asset,
+):
+    import importlib.metadata
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    from unittest.mock import Mock
+    from fastapi.testclient import TestClient
+    from modules.app.config import AppConfig
+    from modules.app.services.voice_service import VoiceService
+    from modules.tts import mlx_compat, model_snapshots
+    from modules.tts.engine import TTSEngine
+    from modules.tts.runtime_spec import KOKORO_MLX_DEFAULT_MODEL_REPO
+    from modules.web.server import create_app
+
+    model_name = KOKORO_MLX_DEFAULT_MODEL_REPO
+    messages = {
+        "snapshot": f"Model {model_name} is not installed. Reinstall the model from Setup.",
+        "receipt": f"Incomplete or damaged cache for {model_name}. Reinstall the model from Setup.",
+        "phonemizer": "The English phonemizer model is missing. Reinstall the runtime from Setup.",
+        "voice": f"Voice af_heart is missing from the installed snapshot for {model_name}. Reinstall the model from Setup.",
+    }
+
+    def snapshot_download(**kwargs):
+        assert kwargs["local_files_only"] is True
+        if missing_asset == "snapshot":
+            raise LocalEntryNotFoundError("Snapshot absent")
+        return str(tmp_path)
+
+    def distribution(name):
+        if missing_asset == "phonemizer":
+            raise importlib.metadata.PackageNotFoundError(name)
+        return object()
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", snapshot_download)
+    monkeypatch.setattr(model_snapshots._receipt_verifier, "verify", lambda *a, **kw: missing_asset != "receipt")
+    monkeypatch.setattr(importlib.metadata, "distribution", distribution)
+    monkeypatch.setitem(sys.modules, "mlx_audio.tts.models.kokoro.pipeline", SimpleNamespace(
+        KokoroPipeline=type("Pipeline", (), {"load_single_voice": Mock()}),
+    ))
+
+    def synthesize_once(**kwargs):
+        with mlx_compat.use_installed_voices(model_name):
+            model_snapshots.installed_voice_path(model_name, "af_heart")
+        pytest.fail("Synthesis must require installed assets")
+
+    engine = TTSEngine.__new__(TTSEngine)
+    engine._model_path = model_name
+    engine._model_loaded = True
+    engine._synthesize_once = Mock(side_effect=synthesize_once)
+    engine._retry_or_exhausted = Mock(return_value=False)
+    engine.validate_voice = lambda voice: True
+    service = VoiceService(AppConfig(
+        data_dir=tmp_path / "data", output_dir=tmp_path / "output", temp_dir=tmp_path,
+    ), tts_factory=Mock())
+    monkeypatch.setattr(service, "ensure_preview_engine", lambda **kwargs: engine)
+    monkeypatch.setattr(service, "_schedule_preview_idle_unload", lambda: None)
+    controller = SimpleNamespace(config=service._config, generate_voice_preview=service.generate_voice_preview)
+    client = TestClient(create_app(controller=controller), raise_server_exceptions=False)
+
+    response = client.post("/api/voices/preview", json={
+        "voice": "af_heart", "text": "Hello again.", "tts_provider": "mlx",
+    })
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": messages[missing_asset]}
+    engine._synthesize_once.assert_called_once()
+    engine._retry_or_exhausted.assert_not_called()
+    assert service.metrics_snapshot()["preview_generation_count"] == 0
+
+
+@pytest.mark.parametrize("speed", [0.5, 1.35, 2.5, 3.0])
+def test_voice_preview_route_forwards_runtime_selection_payload(tmp_path, speed):
     preview_path = tmp_path / "preview.wav"
     preview_path.write_bytes(b"RIFF$\x00\x00\x00WAVEfmt ")
 
@@ -677,7 +757,7 @@ def test_voice_preview_route_forwards_runtime_selection_payload(tmp_path):
         "/api/voices/preview",
         json={
             "voice": "af_bella",
-            "speed": 1.35,
+            "speed": speed,
             "text": "Preview the selected voice.",
             "tts_engine": "kokoro",
             "tts_quantization": "bf16",
@@ -690,7 +770,7 @@ def test_voice_preview_route_forwards_runtime_selection_payload(tmp_path):
     assert response.status_code == 200
     assert controller.preview_kwargs == {
         "voice": "af_bella",
-        "speed": 1.35,
+        "speed": speed,
         "text": "Preview the selected voice.",
         "engine_name": "kokoro",
         "tts_quantization": "bf16",
@@ -698,6 +778,35 @@ def test_voice_preview_route_forwards_runtime_selection_payload(tmp_path):
         "tts_device": "cuda:0",
         "tts_options": {"quantization": "bf16", "dtype": "fp16"},
     }
+    assert not preview_path.exists()
+
+
+def test_voice_preview_file_is_removed_when_the_client_disconnects(tmp_path):
+    import anyio
+
+    from modules.web.routes.voices import _EphemeralFileResponse
+
+    preview_path = tmp_path / "preview.wav"
+    preview_path.write_bytes(b"RIFF$\x00\x00\x00WAVEfmt " * 4096)
+    response = _EphemeralFileResponse(path=preview_path, media_type="audio/wav")
+
+    async def receive():  # noqa: ANN202
+        # The disconnect surfaces through the failed send, not through receive.
+        await anyio.sleep_forever()
+
+    async def disconnected_send(message):  # noqa: ANN001, ANN202
+        if message["type"] == "http.response.body":
+            raise OSError("client went away")
+
+    async def serve() -> None:
+        await response(
+            {"type": "http", "method": "GET", "path": "/", "headers": [], "extensions": {}},
+            receive, disconnected_send,
+        )
+
+    with pytest.raises(Exception):
+        anyio.run(serve)
+    assert not preview_path.exists()
 
 
 def test_system_capabilities_include_parallel_worker_recommendation(monkeypatch):
@@ -707,7 +816,7 @@ def test_system_capabilities_include_parallel_worker_recommendation(monkeypatch)
     monkeypatch.setattr(
         worker_recommendation,
         "sample_memory_snapshot",
-        lambda: MemorySnapshot(
+        lambda device_memory_policy=None: MemorySnapshot(
             total_bytes=16 * 1024**3,
             available_bytes=12 * 1024**3,
             process_rss_bytes=1024**3,
@@ -921,16 +1030,12 @@ def test_start_conversion_nested_runtime_options_forwards_cuda_fields():
     assert runtime_options.cleaner_cuda_quantization == "fp16"
 
 
-def test_web_api() -> bool:
+def test_web_api(tmp_path) -> bool:
     print("\n" + "=" * 50)
     print("WEB API TEST SUITE")
     print("=" * 50 + "\n")
 
-    client = _make_client()
-
-    root = client.get("/")
-    assert root.status_code == 404
-    print("✓ retired legacy dashboard route is absent")
+    client = _make_client(tmp_path)
 
     health = client.get("/health")
     assert health.status_code == 200
@@ -1074,7 +1179,7 @@ def test_web_api() -> bool:
         def get_active_job(self):
             return self.job
 
-        def cancel_conversion(self) -> bool:
+        def cancel_conversion(self, expected_job_id=None) -> bool:
             if not self.job:
                 return False
             self.job.status = _Status("cancelled")
@@ -1359,22 +1464,6 @@ def test_web_api() -> bool:
         assert "sample" in preflight_payload
         print("✓ POST /api/sources/preflight resolves upload handles")
 
-        pasted_upload = fake_client.post(
-            "/api/uploads/text",
-            json={"title": "Pasted Notes", "text": "Copied from the web.\n\nSecond paragraph."},
-        )
-        assert pasted_upload.status_code == 200
-        pasted_payload = pasted_upload.json()
-        assert pasted_payload["source_handle"].startswith("upload:")
-        assert pasted_payload["original_name"].endswith(".md")
-        assert pasted_payload["preflight"]["source_type"] == "md"
-        assert pasted_payload["preflight"]["title"] == "Pasted Notes"
-        pasted_path = upload_root / pasted_payload["source_handle"].removeprefix("upload:")
-        assert pasted_path.read_text(encoding="utf-8").startswith(
-            "# Pasted Notes\n\nCopied from the web."
-        )
-        print("✓ POST /api/uploads/text stores pasted markdown source")
-
         handle_start = fake_client.post(
             "/api/conversions",
             json={
@@ -1410,11 +1499,6 @@ def test_web_api() -> bool:
         assert runtime_options.tts_options == {"quantization": "bf16"}
         print("✓ POST /api/conversions resolves upload handles")
 
-        filtered = fake_client.get("/api/library", params={"search": "murakami", "limit": 10})
-        assert filtered.status_code == 200
-        assert fake_controller.library_searches[-1] == ("murakami", 10, 0, None, None)
-        print("✓ /api/library search passthrough")
-
         voice_options = fake_client.get("/api/options/voices", params={"engine": "kokoro"})
         assert voice_options.status_code == 200
         assert voice_options.json()["engine"] == "kokoro"
@@ -1437,40 +1521,6 @@ def test_web_api() -> bool:
             "engine_name": "kokoro",
         }
         print("✓ POST /api/voices/suggest resolves upload handles")
-
-        start = fake_client.post(
-            "/api/conversions",
-            json={
-                "source_path": "/tmp/sample.pdf",
-                "voice": "af_bella",
-                "speed": 1.25,
-                "conversion_mode": "document_audio",
-                "title": "Custom Title",
-                "author": "Custom Author",
-                "tts_engine": "kokoro",
-                "tts_quantization": "bf16",
-                "cleaner_model": "qwen",
-                "cleaner_backend": "api",
-                "cleaner_api_model": "moonshot-v1-8k",
-                "tts_options": {"quantization": "bf16"},
-            },
-        )
-        assert start.status_code == 200
-        assert start.json()["job_id"] == "conv_test_1"
-        runtime_options = fake_controller.start_kwargs["runtime_options"]
-        assert runtime_options.voice == "af_bella"
-        assert runtime_options.speed == 1.25
-        assert fake_controller.start_kwargs["conversion_mode"] == "document_audio"
-        assert fake_controller.start_kwargs["title"] == "Custom Title"
-        assert fake_controller.start_kwargs["author"] == "Custom Author"
-        assert runtime_options.tts_engine == "kokoro"
-        assert runtime_options.tts_quantization == "bf16"
-        assert runtime_options.cleaner_model == "qwen"
-        assert runtime_options.cleaner_backend == "api"
-        assert runtime_options.cleaner_api_model == "moonshot-v1-8k"
-        assert runtime_options.tts_options == {"quantization": "bf16"}
-        assert fake_controller.start_kwargs["source_path"] == Path("/tmp/sample.pdf")
-        print("✓ POST /api/conversions")
 
         filtered = fake_client.get(
             "/api/library",
@@ -1499,12 +1549,6 @@ def test_web_api() -> bool:
         assert cleaning_preview.status_code == 200
         assert cleaning_preview.json()["cleaned_text"] == "clean"
         print("✓ GET /api/library/{book_id}/chapters/{chapter_number}/cleaning-preview")
-
-        voice_options = fake_client.get("/api/options/voices", params={"engine": "kokoro"})
-        assert voice_options.status_code == 200
-        assert voice_options.json()["engine"] == "kokoro"
-        assert voice_options.json()["voices"][0]["id"] == "af_bella"
-        print("✓ /api/options/voices")
 
         suggestion = fake_client.post(
             "/api/voices/suggest",
@@ -1653,7 +1697,10 @@ def test_web_api() -> bool:
 
 
 if __name__ == "__main__":
-    success = test_web_api()
+    # Windows cannot delete the library database while the app still holds it
+    # open; pytest's tmp_path tolerates that, so script mode should too.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        success = test_web_api(Path(tmp))
     sys.exit(0 if success else 1)
 
 

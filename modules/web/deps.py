@@ -9,6 +9,13 @@ from typing import Annotated, Callable, TypeVar
 from fastapi import Depends, HTTPException, Request
 from fastapi import FastAPI
 from modules.app import AppController
+from modules.contracts.public_errors import PublicError, public_error_detail
+from modules.errors import (
+    ConversionCleanupPendingError,
+    SourceInputError,
+    TTSInstallationError,
+    WorkerWarmupUnavailableError,
+)
 from modules.web.events import EventBroker
 
 T = TypeVar("T")
@@ -62,10 +69,20 @@ def get_temp_dir(request: Request) -> Path:
     return getattr(service_config, "temp_dir", Path("temp"))
 
 
+def public_http_error(error: PublicError, *, legacy_error: bool = False) -> HTTPException:
+    """Translate an explicitly classified public error to the HTTP envelope."""
+    return HTTPException(status_code=error.status, detail=public_error_detail(error, legacy_error=legacy_error))
+
+
 def call_with_http_errors(action: Callable[[], T], *, runtime_status: int = 500) -> T:
     """Translate controller/service errors into consistent HTTP responses."""
     try:
         return action()
+    except (ConversionCleanupPendingError, WorkerWarmupUnavailableError, SourceInputError) as exc:
+        raise public_http_error(exc.public_error) from exc
+    except TTSInstallationError as exc:
+        error = exc.public_error
+        raise HTTPException(status_code=error.status, detail=error.message) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

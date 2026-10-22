@@ -8,7 +8,10 @@ import threading
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from itertools import count
-from typing import Any, Iterator
+from typing import Any, AsyncIterator, Iterator
+from uuid import uuid4
+
+import anyio
 
 # Pushed to every subscriber queue on broker shutdown so streaming generators
 # terminate cleanly instead of looping forever.
@@ -23,7 +26,7 @@ class EventBroker:
         self._subscribers: list[queue.Queue[Any]] = []
         self._subscribers_lock = threading.Lock()
         self._event_counter = count(1)
-        self._dropped_event_count = 0
+        self.instance_id = uuid4().hex
         self._closed = False
 
     @property
@@ -31,12 +34,6 @@ class EventBroker:
         """Current live SSE subscriber count."""
         with self._subscribers_lock:
             return len(self._subscribers)
-
-    @property
-    def dropped_event_count(self) -> int:
-        """Diagnostic count of events dropped due to full subscriber queues."""
-        with self._subscribers_lock:
-            return self._dropped_event_count
 
     def subscribe(self) -> queue.Queue[Any]:
         subscriber: queue.Queue[Any] = queue.Queue(maxsize=self._max_queue_size)
@@ -65,8 +62,11 @@ class EventBroker:
 
     def _decorate_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         decorated = dict(payload)
+        sequence = next(self._event_counter)
         decorated.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
-        decorated.setdefault("event_id", str(next(self._event_counter)))
+        decorated.setdefault("event_id", str(sequence))
+        decorated["backend_instance_id"] = self.instance_id
+        decorated["event_sequence"] = sequence
         return decorated
 
     @staticmethod
@@ -92,18 +92,16 @@ class EventBroker:
         self,
         subscriber: queue.Queue[Any],
         payload: dict[str, Any],
-    ) -> bool:
-        """Deliver ``payload``; return True if an old event was dropped."""
+    ) -> None:
+        """Deliver ``payload``, dropping the oldest queued event when full."""
         try:
             subscriber.put_nowait(payload)
-            return False
+            return
         except queue.Full:
             pass
 
-        dropped = False
         try:
             subscriber.get_nowait()
-            dropped = True
         except queue.Empty:
             pass
 
@@ -112,20 +110,14 @@ class EventBroker:
         except queue.Full:
             pass
 
-        return dropped
-
     def publish(self, event: Any) -> None:
         normalized = normalize_event(event)
         with self._subscribers_lock:
             if self._closed:
                 return
             payload = self._decorate_payload(normalized)
-            dropped = 0
             for subscriber in self._subscribers:
-                if self._publish_to_subscriber(subscriber, payload):
-                    dropped += 1
-            if dropped:
-                self._dropped_event_count += dropped
+                self._publish_to_subscriber(subscriber, payload)
 
 
 def normalize_event(event: Any) -> dict[str, Any]:
@@ -136,6 +128,8 @@ def normalize_event(event: Any) -> dict[str, Any]:
         payload = dict(event)
     else:
         payload = {"event_type": "log", "level": "info", "message": str(event)}
+    if payload.get("job_id") is not None:
+        payload.setdefault("client_request_id", None)
     return payload
 
 
@@ -144,10 +138,38 @@ def sse_frame(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=True)}\n\n"
 
 
-def event_stream(broker: EventBroker, heartbeat_seconds: float = 5.0) -> Iterator[str]:
+_STREAM_END = object()
+
+
+async def close_with_response(frames: Iterator[str]) -> AsyncIterator[str]:
+    """Iterate blocking SSE frames off the event loop and close them on exit.
+
+    Starlette's own thread-pool iteration abandons the generator when the
+    client disconnects, leaving it in a reference cycle: its broker queue stays
+    subscribed until the cyclic collector happens to run. Closing explicitly
+    runs the generator's cleanup as soon as the response ends.
+    """
+    try:
+        while (frame := await anyio.to_thread.run_sync(next, frames, _STREAM_END)) is not _STREAM_END:
+            yield frame
+    finally:
+        # Cancellation waits for the worker thread, so the generator is idle here.
+        close = getattr(frames, "close", None)
+        if callable(close):
+            close()
+
+
+def event_stream(
+    broker: EventBroker, heartbeat_seconds: float = 5.0, *, announce_instance: bool = False
+) -> Iterator[str]:
     """Yield SSE frames for one subscribed client."""
     subscriber = broker.subscribe()
     try:
+        if announce_instance:
+            # Subscribe before announcing identity so events published while the
+            # client reconciles are queued. This message does not advance the
+            # event sequence or replay events from earlier connections.
+            yield sse_frame({"event_type": "stream", "backend_instance_id": broker.instance_id})
         while True:
             try:
                 payload = subscriber.get(timeout=heartbeat_seconds)
