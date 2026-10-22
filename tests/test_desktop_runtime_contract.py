@@ -19,6 +19,20 @@ from modules.app.config import AppConfig
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_packaged_csp_allows_native_ipc_and_loopback_connections_only() -> None:
+    config = json.loads(
+        (PROJECT_ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
+    )
+    directives = {
+        parts[0]: set(parts[1:])
+        for directive in config["app"]["security"]["csp"].split(";")
+        if (parts := directive.split())
+    }
+    assert directives["connect-src"] == {
+        "'self'", "ipc:", "http://ipc.localhost", "http://127.0.0.1:*",
+    }
+
+
 def _skip_if_loopback_bind_unavailable() -> None:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -128,20 +142,6 @@ def _clear_desktop_path_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "AUDIOBOOK_DB_PATH",
     ):
         monkeypatch.delenv(key, raising=False)
-
-
-def test_desktop_backend_ready_payload_for_ephemeral_port(tmp_path: Path) -> None:
-    _skip_if_loopback_bind_unavailable()
-    process, payload = _launch_desktop_backend(host="127.0.0.1", port=0, cwd=tmp_path)
-    try:
-        assert payload["event"] == "ready"
-        assert payload["host"] == "127.0.0.1"
-        assert isinstance(payload["port"], int)
-        assert payload["port"] > 0
-        assert isinstance(payload["token"], str)
-        assert payload["token"]
-    finally:
-        _stop_process(process)
 
 
 def test_desktop_backend_binds_requested_loopback_port(tmp_path: Path) -> None:

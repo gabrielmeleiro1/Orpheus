@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Event bridge used by runtime setup progress and the drag-and-drop source queue.",
   "windows": ["main"],
-  "permissions": ["core:event:default"]
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
 }

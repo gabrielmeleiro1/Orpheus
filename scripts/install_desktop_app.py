@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -75,18 +76,6 @@ def _parse_args() -> argparse.Namespace:
         description="Replace /Applications/Orpheus.app with the latest built app bundle.",
     )
     parser.add_argument(
-        "--source-app",
-        type=Path,
-        default=DEFAULT_APP_BUNDLE,
-        help=f"Built .app bundle to install (default: {DEFAULT_APP_BUNDLE})",
-    )
-    parser.add_argument(
-        "--applications-dir",
-        type=Path,
-        default=DEFAULT_APPLICATIONS_DIR,
-        help="Applications directory to replace into (default: /Applications)",
-    )
-    parser.add_argument(
         "--remove-source-after-install",
         action="store_true",
         help="Remove the source .app after replacement to avoid duplicate Spotlight results.",
@@ -96,9 +85,15 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    if sys.platform != "darwin":
+        print(
+            "install_desktop_app.py replaces the macOS app bundle in /Applications. "
+            "On Windows, build the Inno Setup installer instead "
+            "(docs/RUN_APPLICATION.md, 'Windows installer').",
+            file=sys.stderr,
+        )
+        return 2
     installed_app = install_app_bundle(
-        args.source_app,
-        applications_dir=args.applications_dir,
         remove_source_after_install=args.remove_source_after_install,
     )
     print(f"Installed {installed_app}")

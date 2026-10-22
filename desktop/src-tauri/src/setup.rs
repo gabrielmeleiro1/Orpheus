@@ -25,52 +25,18 @@ const MAX_PROGRESS_EVENTS: usize = 256;
 const MAX_PROGRESS_EVENTS_PER_SECOND: usize = 32;
 const RESERVED_STAGE_EVENTS: usize = 8;
 const READER_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
-#[cfg(any(test, windows))]
+#[cfg(windows)]
 const WINDOWS_CREATE_SUSPENDED: u32 = 0x0000_0004;
-#[cfg(any(test, windows))]
+#[cfg(windows)]
 const WINDOWS_CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-#[cfg(any(test, windows))]
+#[cfg(windows)]
 const WINDOWS_CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
-#[cfg(any(test, windows))]
+// Children start hidden and suspended, and are resumed only after they have been
+// assigned to a kill-on-close Job Object.
+#[cfg(windows)]
 pub(crate) fn windows_setup_creation_flags() -> u32 {
     WINDOWS_CREATE_SUSPENDED | WINDOWS_CREATE_NEW_PROCESS_GROUP | WINDOWS_CREATE_NO_WINDOW
-}
-
-#[cfg(any(test, windows))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WindowsLaunchPhase {
-    Built,
-    SpawnedSuspended,
-    JobAssigned,
-    Resumed,
-}
-
-#[cfg(any(test, windows))]
-impl WindowsLaunchPhase {
-    pub(crate) fn mark_spawned_suspended(&mut self) -> Result<(), String> {
-        if *self != Self::Built {
-            return Err("invalid Windows setup spawn order".to_string());
-        }
-        *self = Self::SpawnedSuspended;
-        Ok(())
-    }
-
-    pub(crate) fn mark_job_assigned(&mut self) -> Result<(), String> {
-        if *self != Self::SpawnedSuspended {
-            return Err("runtime setup job must follow suspended spawn".to_string());
-        }
-        *self = Self::JobAssigned;
-        Ok(())
-    }
-
-    pub(crate) fn mark_resumed(&mut self) -> Result<(), String> {
-        if *self != Self::JobAssigned {
-            return Err("runtime setup cannot resume before job assignment".to_string());
-        }
-        *self = Self::Resumed;
-        Ok(())
-    }
 }
 
 pub(crate) type EventSink = Arc<dyn Fn(SetupProgressEvent) + Send + Sync + 'static>;
@@ -103,9 +69,10 @@ pub struct SetupRequest {
     pub cleaner_cuda_quantization: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupLifecycle {
+    #[default]
     Idle,
     Running,
     Cancelling,
@@ -113,12 +80,6 @@ pub enum SetupLifecycle {
     Failed,
     Cancelled,
     TimedOut,
-}
-
-impl Default for SetupLifecycle {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -151,8 +112,6 @@ pub struct SetupLaunchConfig {
     pub args: Vec<String>,
     pub cwd: PathBuf,
     pub env: BTreeMap<String, String>,
-    // Kept explicit so the security property is visible and unit-testable.
-    pub uses_shell: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -187,7 +146,23 @@ impl SetupProgressEvent {
             restart_required: Some(restart_required),
         }
     }
+
+    fn diagnostic(message: String) -> Self {
+        Self {
+            event: "diagnostic".to_string(),
+            stage: None,
+            profile: None,
+            model_groups: Vec::new(),
+            message: Some(message),
+            percent: None,
+            terminal: None,
+            restart_required: None,
+        }
+    }
 }
+
+const OVERSIZED_LINE_DIAGNOSTIC: &str =
+    "runtime setup output line exceeded the safe limit and was discarded";
 
 #[derive(Debug, Default)]
 struct SetupRunnerInner {
@@ -255,7 +230,7 @@ impl WindowsJob {
 
         let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if handle.is_null() {
-            return Err("failed to create runtime setup job object".to_string());
+            return Err("failed to create Windows job object".to_string());
         }
         let job = Arc::new(Self {
             handle: WindowsHandle(handle),
@@ -271,7 +246,7 @@ impl WindowsJob {
             )
         };
         if configured == 0 {
-            return Err("failed to configure runtime setup job object".to_string());
+            return Err("failed to configure Windows job object".to_string());
         }
         let assigned = unsafe {
             AssignProcessToJobObject(
@@ -280,7 +255,7 @@ impl WindowsJob {
             )
         };
         if assigned == 0 {
-            return Err("failed to contain runtime setup process".to_string());
+            return Err("failed to assign child process to Windows job object".to_string());
         }
         Ok(job)
     }
@@ -304,30 +279,32 @@ pub(crate) fn resume_suspended_child_threads(process_id: u32) -> Result<(), Stri
 
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
-        return Err("failed to enumerate suspended runtime setup threads".to_string());
+        return Err("failed to enumerate suspended child threads".to_string());
     }
     let snapshot = WindowsHandle(snapshot);
-    let mut entry = THREADENTRY32::default();
-    entry.dwSize = size_of::<THREADENTRY32>() as u32;
+    let mut entry = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
     if unsafe { Thread32First(snapshot.0, &mut entry) } == 0 {
-        return Err("failed to read suspended runtime setup threads".to_string());
+        return Err("failed to read suspended child threads".to_string());
     }
     let mut resumed = 0_u32;
     loop {
         if entry.th32OwnerProcessID == process_id {
             let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
             if thread.is_null() {
-                return Err("failed to open suspended runtime setup thread".to_string());
+                return Err("failed to open suspended child thread".to_string());
             }
             let thread = WindowsHandle(thread);
             let mut previous = unsafe { ResumeThread(thread.0) };
             if previous == u32::MAX || previous == 0 {
-                return Err("failed to resume contained runtime setup thread".to_string());
+                return Err("failed to resume contained child thread".to_string());
             }
             while previous > 1 {
                 previous = unsafe { ResumeThread(thread.0) };
                 if previous == u32::MAX || previous == 0 {
-                    return Err("failed to fully resume contained runtime setup thread".to_string());
+                    return Err("failed to fully resume contained child thread".to_string());
                 }
             }
             resumed += 1;
@@ -337,7 +314,7 @@ pub(crate) fn resume_suspended_child_threads(process_id: u32) -> Result<(), Stri
         }
     }
     if resumed == 0 {
-        return Err("suspended runtime setup process has no owned thread".to_string());
+        return Err("suspended child process has no owned thread".to_string());
     }
     Ok(())
 }
@@ -382,7 +359,6 @@ impl SetupRunnerState {
         };
         inner.active_process = None;
         inner.terminal_emitted = false;
-        inner.restart_in_progress = false;
         Ok(generation)
     }
 
@@ -583,13 +559,20 @@ fn valid_identifier(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
 }
 
+const MODEL_GROUPS_BY_PROFILE: &[(&str, &[&str])] = &[
+    ("mlx", &["tts-mlx", "cleaner-mlx", "cleaner-mlx-small"]),
+    (
+        "cuda",
+        &["tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"],
+    ),
+];
+
 fn allowed_groups(profile: &str) -> &'static [&'static str] {
-    match profile {
-        "base" => &[],
-        "mlx" => &["tts-mlx", "cleaner-mlx", "cleaner-mlx-small"],
-        "cuda" => &["tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"],
-        _ => &[],
-    }
+    MODEL_GROUPS_BY_PROFILE
+        .iter()
+        .find(|(name, _)| *name == profile)
+        .map(|(_, groups)| *groups)
+        .unwrap_or(&[])
 }
 
 fn validate_platform(profile: &str, os: &str, arch: &str) -> Result<(), String> {
@@ -658,32 +641,7 @@ fn build_setup_launch_config(
         args,
         cwd: repo_root.to_path_buf(),
         env: runtime_paths.as_env(),
-        uses_shell: false,
     })
-}
-
-#[cfg(test)]
-pub(crate) fn build_setup_launch_config_for_platform(
-    repo_root: &Path,
-    python_program: impl AsRef<Path>,
-    request: SetupRequest,
-    os: &str,
-    arch: &str,
-) -> Result<SetupLaunchConfig, String> {
-    let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/test-app-data");
-    build_setup_launch_config(repo_root, python_program, request, os, arch, &runtime_paths)
-}
-
-#[cfg(test)]
-pub(crate) fn build_setup_launch_config_for_platform_with_runtime_paths(
-    repo_root: &Path,
-    python_program: impl AsRef<Path>,
-    request: SetupRequest,
-    os: &str,
-    arch: &str,
-    runtime_paths: &DesktopRuntimePaths,
-) -> Result<SetupLaunchConfig, String> {
-    build_setup_launch_config(repo_root, python_program, request, os, arch, runtime_paths)
 }
 
 /// Resolve the setup interpreter from one fixed, user-created repository venv.
@@ -815,14 +773,6 @@ fn current_runtime_setup_environment() -> RuntimeSetupEnvironment {
     runtime_setup_environment_for(!cfg!(debug_assertions), repo_root.as_deref())
 }
 
-#[cfg(test)]
-pub(crate) fn runtime_setup_environment_for_test(
-    packaged: bool,
-    repo_root: Option<&Path>,
-) -> RuntimeSetupEnvironment {
-    runtime_setup_environment_for(packaged, repo_root)
-}
-
 fn sanitize_stage(value: &str) -> Option<String> {
     match value {
         "Dependency installation" | "dependency_installation" => {
@@ -894,16 +844,7 @@ fn sanitize_text(value: &str) -> String {
 pub fn sanitize_progress_line(line: &str) -> Option<SetupProgressEvent> {
     let Ok(value) = serde_json::from_str::<Value>(line.trim()) else {
         let message = sanitize_text(line);
-        return (!message.is_empty()).then_some(SetupProgressEvent {
-            event: "diagnostic".to_string(),
-            stage: None,
-            profile: None,
-            model_groups: Vec::new(),
-            message: Some(message),
-            percent: None,
-            terminal: None,
-            restart_required: None,
-        });
+        return (!message.is_empty()).then(|| SetupProgressEvent::diagnostic(message));
     };
     let object = value.as_object()?;
     let source_event = object.get("event").and_then(Value::as_str).unwrap_or("");
@@ -931,10 +872,9 @@ pub fn sanitize_progress_line(line: &str) -> Option<SetupProgressEvent> {
         .flatten()
         .filter_map(Value::as_str)
         .filter(|group| {
-            matches!(
-                *group,
-                "tts-mlx" | "cleaner-mlx" | "tts-cpu-cuda" | "cleaner-cuda"
-            )
+            MODEL_GROUPS_BY_PROFILE
+                .iter()
+                .any(|(_, groups)| groups.contains(group))
         })
         .take(MAX_MODEL_GROUPS)
         .map(str::to_string)
@@ -979,19 +919,9 @@ where
         for byte in &chunk[..read] {
             if *byte == b'\n' {
                 if overflowing {
-                    emit(SetupProgressEvent {
-                        event: "diagnostic".to_string(),
-                        stage: None,
-                        profile: None,
-                        model_groups: Vec::new(),
-                        message: Some(
-                            "runtime setup output line exceeded the safe limit and was discarded"
-                                .to_string(),
-                        ),
-                        percent: None,
-                        terminal: None,
-                        restart_required: None,
-                    });
+                    emit(SetupProgressEvent::diagnostic(
+                        OVERSIZED_LINE_DIAGNOSTIC.to_string(),
+                    ));
                 } else if !line.is_empty() {
                     if let Some(event) = sanitize_progress_line(&String::from_utf8_lossy(&line)) {
                         emit(event);
@@ -1010,18 +940,9 @@ where
         }
     }
     if overflowing {
-        emit(SetupProgressEvent {
-            event: "diagnostic".to_string(),
-            stage: None,
-            profile: None,
-            model_groups: Vec::new(),
-            message: Some(
-                "runtime setup output line exceeded the safe limit and was discarded".to_string(),
-            ),
-            percent: None,
-            terminal: None,
-            restart_required: None,
-        });
+        emit(SetupProgressEvent::diagnostic(
+            OVERSIZED_LINE_DIAGNOSTIC.to_string(),
+        ));
     } else if !line.is_empty() {
         if let Some(event) = sanitize_progress_line(&String::from_utf8_lossy(&line)) {
             emit(event);
@@ -1436,14 +1357,6 @@ fn spawn_setup(
     let mut child = command
         .spawn()
         .map_err(|error| format!("failed to start runtime setup: {error}"))?;
-    #[cfg(windows)]
-    let mut windows_phase = WindowsLaunchPhase::Built;
-    #[cfg(windows)]
-    if let Err(error) = windows_phase.mark_spawned_suspended() {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     #[cfg(unix)]
@@ -1459,21 +1372,7 @@ fn spawn_setup(
         }
     };
     #[cfg(windows)]
-    if let Err(error) = windows_phase.mark_job_assigned() {
-        job.terminate();
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
-    #[cfg(windows)]
     if let Err(error) = resume_suspended_child_threads(child.id()) {
-        job.terminate();
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(error);
-    }
-    #[cfg(windows)]
-    if let Err(error) = windows_phase.mark_resumed() {
         job.terminate();
         let _ = child.kill();
         let _ = child.wait();
@@ -1590,7 +1489,27 @@ fn spawn_setup(
     Ok(())
 }
 
+// Interpreter settings the desktop process can inherit from a shell, IDE or
+// another Python tool. Each one changes which standard library or modules the
+// fixed interpreter loads, so none of them reaches the backend or the setup
+// runner. (`VIRTUAL_ENV` is only read by activation scripts and tools, never by
+// the interpreter, so it cannot redirect either child.)
+const INHERITED_PYTHON_OVERRIDES: &[&str] = &[
+    "PYTHONHOME",
+    "PYTHONPATH",
+    "PYTHONPLATLIBDIR",
+    "PYTHONUSERBASE",
+    "PYTHONEXECUTABLE",
+];
+
+pub(crate) fn remove_inherited_python_overrides(command: &mut Command) {
+    for key in INHERITED_PYTHON_OVERRIDES {
+        command.env_remove(key);
+    }
+}
+
 fn apply_setup_command_env(command: &mut Command, launch: &SetupLaunchConfig) {
+    remove_inherited_python_overrides(command);
     // Explicit command-level values take precedence over anything inherited by
     // the desktop process. The frontend cannot supply either names or values.
     for key in launch.env.keys() {
@@ -1600,33 +1519,13 @@ fn apply_setup_command_env(command: &mut Command, launch: &SetupLaunchConfig) {
     command.env("ORPHEUS_TAURI_SETUP_SUPERVISED", "1");
 }
 
-#[cfg(test)]
-pub(crate) fn setup_command_env_for_test(
-    launch: &SetupLaunchConfig,
-    inherited: &[(&str, &str)],
-) -> BTreeMap<String, String> {
-    let mut command = Command::new(&launch.program);
-    command.envs(inherited.iter().copied());
-    apply_setup_command_env(&mut command, launch);
-    command
-        .get_envs()
-        .filter_map(|(key, value)| {
-            value.map(|value| {
-                (
-                    key.to_string_lossy().into_owned(),
-                    value.to_string_lossy().into_owned(),
-                )
-            })
-        })
-        .collect()
-}
-
 fn start_supervised(
     state: SetupRunnerState,
     request: SetupRequest,
     launch: SetupLaunchConfig,
     timeout: Duration,
     sink: EventSink,
+    #[cfg(test)] after_spawn: Option<Arc<dyn Fn() + Send + Sync>>,
 ) -> Result<SetupStatus, String> {
     let generation = state.begin(request)?;
     if let Err(error) = spawn_setup(
@@ -1636,7 +1535,7 @@ fn start_supervised(
         timeout,
         Arc::clone(&sink),
         #[cfg(test)]
-        None,
+        after_spawn,
     ) {
         if state.finish_failure(generation, SetupLifecycle::Failed, &error) {
             sink(SetupProgressEvent::terminal(
@@ -1648,47 +1547,6 @@ fn start_supervised(
         return Err(sanitize_text(&error));
     }
     Ok(state.status())
-}
-
-#[cfg(test)]
-pub(crate) fn start_supervised_with_hook_for_test(
-    state: SetupRunnerState,
-    request: SetupRequest,
-    launch: SetupLaunchConfig,
-    timeout: Duration,
-    sink: EventSink,
-    after_spawn: Arc<dyn Fn() + Send + Sync>,
-) -> Result<SetupStatus, String> {
-    let generation = state.begin(request)?;
-    if let Err(error) = spawn_setup(
-        state.clone(),
-        generation,
-        launch,
-        timeout,
-        Arc::clone(&sink),
-        Some(after_spawn),
-    ) {
-        if state.finish_failure(generation, SetupLifecycle::Failed, &error) {
-            sink(SetupProgressEvent::terminal(
-                "error",
-                Some(sanitize_text(&error)),
-                false,
-            ));
-        }
-        return Err(sanitize_text(&error));
-    }
-    Ok(state.status())
-}
-
-#[cfg(test)]
-pub(crate) fn start_supervised_for_test(
-    state: SetupRunnerState,
-    request: SetupRequest,
-    launch: SetupLaunchConfig,
-    timeout: Duration,
-    sink: EventSink,
-) -> Result<SetupStatus, String> {
-    start_supervised(state, request, launch, timeout, sink)
 }
 
 fn cancel_with_sink(state: &SetupRunnerState, sink: EventSink) -> Result<SetupStatus, String> {
@@ -1711,18 +1569,12 @@ fn cancel_with_sink(state: &SetupRunnerState, sink: EventSink) -> Result<SetupSt
     Ok(state.status())
 }
 
-#[cfg(test)]
-pub(crate) fn cancel_with_sink_for_test(
-    state: &SetupRunnerState,
-    sink: EventSink,
-) -> Result<SetupStatus, String> {
-    cancel_with_sink(state, sink)
-}
-
 fn app_event_sink(app_handle: tauri::AppHandle) -> EventSink {
     Arc::new(move |event| {
         if let Err(error) = app_handle.emit(SETUP_PROGRESS_EVENT, &event) {
-            eprintln!("failed to emit runtime setup progress: {error}");
+            crate::backend::print_diagnostic(format_args!(
+                "failed to emit runtime setup progress: {error}"
+            ));
         }
     })
 }
@@ -1745,6 +1597,8 @@ pub async fn start_runtime_setup(
         launch,
         SETUP_OVERALL_TIMEOUT,
         app_event_sink(app_handle),
+        #[cfg(test)]
+        None,
     )
 }
 
@@ -1772,3 +1626,7 @@ pub async fn cancel_runtime_setup(
         .await
         .map_err(|error| format!("runtime setup cancellation task failed: {error}"))?
 }
+
+#[cfg(test)]
+#[path = "setup_tests.rs"]
+mod tests;

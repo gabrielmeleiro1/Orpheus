@@ -11,6 +11,8 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
+from contextlib import contextmanager
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -80,7 +82,12 @@ MLX_CORE_EXTENSION = Path("_internal") / "mlx" / "core.cpython-312-darwin.so"
 MLX_ROOT_DYLIB = Path("_internal") / "libmlx.dylib"
 MLX_NESTED_DYLIB = Path("_internal") / "mlx" / "lib" / "libmlx.dylib"
 ESPEAK_DATA_DIR = Path("_internal") / "espeakng_loader" / "espeak-ng-data"
+BITSANDBYTES_LIBRARY_DIR = Path("_internal") / "bitsandbytes"
 RUNTIME_PROFILE_RESOURCE = Path("runtime-profile.json")
+# What the backend creates in its working directory when AUDIOBOOK_* paths are
+# lost, as when the sidecar is started by hand from its own folder.
+SIDECAR_RUNTIME_STATE_NAMES = frozenset({"data", "output", "temp", "backend-ready.json"})
+SIDECAR_RUNTIME_STATE_SUFFIXES = (".db", ".db-wal", ".db-shm", ".db-journal")
 SYSTEM_MACHO_PREFIXES: tuple[str, ...] = (
     "/usr/lib/",
     "/System/",
@@ -98,14 +105,10 @@ FORBIDDEN_ABSOLUTE_MACHO_PREFIXES: tuple[str, ...] = (
 def _default_python_executable() -> str:
     posix_python = PROJECT_ROOT / ".venv" / "bin" / "python"
     windows_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
-    candidates = (
-        (windows_python, posix_python)
-        if platform.system().lower() == "windows"
-        else (posix_python, windows_python)
-    )
-    for repo_python in candidates:
-        if repo_python.is_file():
-            return str(repo_python)
+    windows = platform.system().lower() == "windows"
+    repo_python = windows_python if windows else posix_python
+    if repo_python.is_file() and (windows or os.access(repo_python, os.X_OK)):
+        return str(repo_python)
     return sys.executable
 
 
@@ -436,6 +439,8 @@ def _validate_runtime_dependencies(
             + "\n".join(errors)
             + "\nInstall the missing dependencies, then run this script again."
         )
+    if _is_windows_target(resolved_target):
+        _validate_windows_ffmpeg_binaries(resolved_bins)
     return resolved_bins
 
 
@@ -497,6 +502,19 @@ def _validate_sidecar_resources(
             "Rebuild with a spec that collects platform runtime package data."
         )
 
+    runtime_state = sorted(
+        entry.name
+        for entry in sidecar_dir.iterdir()
+        if entry.name in SIDECAR_RUNTIME_STATE_NAMES or entry.name.endswith(SIDECAR_RUNTIME_STATE_SUFFIXES)
+    )
+    if runtime_state:
+        raise RuntimeError(
+            "Sidecar resource contains library state from a local run: "
+            f"{', '.join(runtime_state)} in {sidecar_dir}. A sidecar started there without "
+            "its AUDIOBOOK_* paths writes its library into that folder, and installers would "
+            "ship it. Rebuild the sidecar before packaging."
+        )
+
     marker_path = sidecar_dir / RUNTIME_PROFILE_RESOURCE
     try:
         marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
@@ -511,6 +529,12 @@ def _validate_sidecar_resources(
         raise RuntimeError(
             "Packaged runtime profile mismatch: "
             f"expected {resolved_profile!r}, found {marker_profile!r}."
+        )
+
+    if _is_windows_target(resolved_target) and _host_os() == "windows":
+        _validate_windows_ffmpeg_binaries(
+            {name: sidecar_dir / "bin" / f"{name}.exe" for name in REQUIRED_BINARIES},
+            packaged=True,
         )
 
 
@@ -535,15 +559,68 @@ def validate_existing_sidecar(
             "  (from desktop/) npm run desktop:build"
         )
 
-    # Without an explicit profile, validate the resources common to every
-    # package. This keeps an intentionally built base sidecar valid on an MLX
-    # host while still preventing an empty/broken Tauri bundle.
+    if runtime_profile is None:
+        marker = TAURI_SIDECAR_RESOURCE_DIR / RUNTIME_PROFILE_RESOURCE
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+            profile = payload.get("profile") if isinstance(payload, dict) else None
+            if not isinstance(profile, str) or not profile.strip():
+                raise ValueError("missing profile")
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"Packaged runtime profile marker is invalid: {marker}") from exc
+        runtime_profile = _resolve_runtime_profile(resolved_target, profile)
     _validate_sidecar_resources(
         TAURI_SIDECAR_RESOURCE_DIR,
         target_triple=resolved_target,
-        runtime_profile=runtime_profile or "base",
+        runtime_profile=runtime_profile,
     )
     return executable
+
+
+def _validate_windows_ffmpeg_binaries(
+    binaries: Mapping[str, Path],
+    *,
+    packaged: bool = False,
+) -> None:
+    env = os.environ.copy()
+    if packaged:
+        # os.environ is case-insensitive on Windows; its dict copy is not.
+        system_root = Path(
+            os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+        )
+        env["PATH"] = str(system_root / "System32")
+
+    for name in REQUIRED_BINARIES:
+        binary = Path(binaries[name]).resolve()
+        try:
+            completed = subprocess.run(
+                [str(binary), "-version"],
+                cwd=binary.parent,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=30,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise RuntimeError(
+                f"Windows {name} could not run: {binary}. "
+                f"Use a standalone static FFmpeg build. Details: {exc}"
+            ) from exc
+        output = completed.stdout + "\n" + completed.stderr
+        if completed.returncode != 0:
+            raise RuntimeError(
+                f"Windows {name} failed its -version check: {binary}. "
+                "Use a standalone static FFmpeg build that needs no distribution DLLs. "
+                f"Exit code: {completed.returncode}. Details: {output.strip()}"
+            )
+        if "--enable-shared" in output:
+            raise RuntimeError(
+                f"Windows shared FFmpeg build is unsupported: {binary}. "
+                "Use a standalone static build; distribution DLLs are not packaged."
+            )
 
 
 def _copy_ffmpeg_binaries(
@@ -552,6 +629,8 @@ def _copy_ffmpeg_binaries(
     *,
     target_triple: str,
 ) -> None:
+    if _is_windows_target(target_triple):
+        _validate_windows_ffmpeg_binaries(ffmpeg_binaries)
     bin_dir = sidecar_dir / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1058,12 +1137,97 @@ def _expose_espeak_data_at_sidecar_root(sidecar_dir: Path) -> None:
                 shutil.copy2(data_item, target)
 
 
+def _bundled_torch_cuda_tag(sidecar_dir: Path) -> str | None:
+    """Return the CUDA tag of the bundled torch wheel, for example ``126`` for ``+cu126``."""
+    for dist_info in (sidecar_dir / "_internal").glob("torch-*.dist-info"):
+        version = dist_info.name.removeprefix("torch-").removesuffix(".dist-info")
+        local = version.partition("+")[2]
+        if local.startswith("cu") and local[2:].isdigit():
+            return local[2:]
+    return None
+
+
+def _prune_unmatched_bitsandbytes_libraries(sidecar_dir: Path) -> None:
+    """Keep only the bitsandbytes CUDA library that the bundled torch loads.
+
+    bitsandbytes ships one native library per CUDA release and loads the one named
+    after ``torch.version.cuda``. The bundled torch carries its own CUDA runtime,
+    so every other variant is dead weight (about 150 MB on Windows).
+    """
+    library_dir = sidecar_dir / BITSANDBYTES_LIBRARY_DIR
+    cuda_tag = _bundled_torch_cuda_tag(sidecar_dir)
+    if cuda_tag is None or not library_dir.is_dir():
+        return
+    prefix = "libbitsandbytes_cuda"
+    variants = [
+        path
+        for path in library_dir.iterdir()
+        if path.is_file() and path.stem.startswith(prefix) and path.stem[len(prefix):].isdigit()
+    ]
+    matching = [path for path in variants if path.stem == f"{prefix}{cuda_tag}"]
+    if variants and not matching:
+        raise RuntimeError(
+            f"bitsandbytes has no CUDA {cuda_tag} library for the bundled torch in {library_dir}. "
+            "Install a bitsandbytes release built for this CUDA version."
+        )
+    for path in variants:
+        if path not in matching:
+            path.unlink()
+
+
+@contextmanager
+def _sidecar_publication_lock():
+    """Serialize builds and publication; the OS releases ownership on exit."""
+    parent = TAURI_SIDECAR_RESOURCE_DIR.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    with (parent / f".{SIDE_CAR_STEM}.lock").open("a+b") as handle:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                if not handle.read(1):
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise RuntimeError("Another sidecar build owns publication; retry when it finishes.") from exc
+        try:
+            previous = TAURI_SIDECAR_RESOURCE_DIR.with_name(f".{SIDE_CAR_STEM}.previous")
+            if previous.exists() and not TAURI_SIDECAR_RESOURCE_DIR.exists():
+                try:
+                    previous.rename(TAURI_SIDECAR_RESOURCE_DIR)
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Cannot recover previous sidecar at {previous}; close running backend executables before retrying."
+                    ) from exc
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 def _copy_sidecar_for_tauri(
     target_triple: str,
     *,
     ffmpeg_binaries: Mapping[str, Path] | None = None,
     runtime_profile: str | None = None,
+    _locked: bool = False,
 ) -> Path:
+    if not _locked:
+        with _sidecar_publication_lock():
+            return _copy_sidecar_for_tauri(
+                target_triple, ffmpeg_binaries=ffmpeg_binaries,
+                runtime_profile=runtime_profile, _locked=True,
+            )
     pyinstaller_binary_name = (
         f"{SIDE_CAR_STEM}.exe" if _is_windows_target(target_triple) else SIDE_CAR_STEM
     )
@@ -1085,31 +1249,65 @@ def _copy_sidecar_for_tauri(
         raise RuntimeError(f"Missing required runtime binaries:\n{formatted}")
 
     TAURI_BINARIES_DIR.mkdir(parents=True, exist_ok=True)
-    if TAURI_SIDECAR_RESOURCE_DIR.exists():
-        shutil.rmtree(TAURI_SIDECAR_RESOURCE_DIR)
-    shutil.copytree(built_sidecar_dir, TAURI_SIDECAR_RESOURCE_DIR, symlinks=True)
-    _copy_ffmpeg_binaries(
-        TAURI_SIDECAR_RESOURCE_DIR,
-        resolved_ffmpeg_binaries,
-        target_triple=target_triple,
-    )
-    resolved_profile = _resolve_runtime_profile(target_triple, runtime_profile)
-    (TAURI_SIDECAR_RESOURCE_DIR / RUNTIME_PROFILE_RESOURCE).write_text(
-        json.dumps({"profile": resolved_profile}, separators=(",", ":")) + "\n",
-        encoding="utf-8",
-    )
-    if resolved_profile == "mlx":
-        _normalize_mlx_dylib_layout(TAURI_SIDECAR_RESOURCE_DIR)
-        ensure_mlx_native_dylib_closure(TAURI_SIDECAR_RESOURCE_DIR)
-    if resolved_profile in {"mlx", "cuda"}:
-        _expose_espeak_data_at_sidecar_root(TAURI_SIDECAR_RESOURCE_DIR)
-    _validate_sidecar_resources(
-        TAURI_SIDECAR_RESOURCE_DIR,
-        target_triple=target_triple,
-        runtime_profile=resolved_profile,
-    )
-    if resolved_profile == "mlx":
-        validate_mlx_native_dependency_closure(TAURI_SIDECAR_RESOURCE_DIR)
+    live = TAURI_SIDECAR_RESOURCE_DIR
+    previous = live.with_name(f".{SIDE_CAR_STEM}.previous")
+    if previous.exists():
+        shutil.rmtree(previous)
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{SIDE_CAR_STEM}-staging-", dir=live.parent))
+    staged = staging_root / "staging"
+    try:
+        shutil.copytree(built_sidecar_dir, staged, symlinks=True)
+        _copy_ffmpeg_binaries(
+            staged,
+            resolved_ffmpeg_binaries,
+            target_triple=target_triple,
+        )
+        resolved_profile = _resolve_runtime_profile(target_triple, runtime_profile)
+        (staged / RUNTIME_PROFILE_RESOURCE).write_text(
+            json.dumps({"profile": resolved_profile}, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        if resolved_profile == "mlx":
+            _normalize_mlx_dylib_layout(staged)
+            ensure_mlx_native_dylib_closure(staged)
+        # The Windows launcher hands espeak-ng an explicit data path, so a root
+        # copy there would only duplicate the speech data in the installer.
+        if resolved_profile in {"mlx", "cuda"} and not _is_windows_target(target_triple):
+            _expose_espeak_data_at_sidecar_root(staged)
+        if resolved_profile == "cuda":
+            _prune_unmatched_bitsandbytes_libraries(staged)
+        _validate_sidecar_resources(
+            staged,
+            target_triple=target_triple,
+            runtime_profile=resolved_profile,
+        )
+        if resolved_profile == "mlx":
+            validate_mlx_native_dependency_closure(staged)
+
+        staged_binary = staged / pyinstaller_binary_name
+        if not _is_windows_target(target_triple):
+            staged_binary.chmod(staged_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        try:
+            if live.exists():
+                live.rename(previous)
+            staged.rename(live)
+        except OSError as exc:
+            if previous.exists() and not live.exists():
+                try:
+                    previous.rename(live)
+                except OSError as recovery_error:
+                    raise RuntimeError(
+                        f"Sidecar publication and recovery failed; previous tree is at {previous}. "
+                        "Close running backend executables before retrying."
+                    ) from recovery_error
+            raise RuntimeError(
+                "Sidecar publication failed; previous tree preserved. "
+                "Close running backend executables (including locked Windows executables) before retrying."
+            ) from exc
+        if previous.exists():
+            shutil.rmtree(previous)
+    finally:
+        shutil.rmtree(staging_root)
 
     # The legacy `{stem}-{target_triple}` binary matches this glob, so the
     # sweep below removes it along with any other stale sidecar entry --
@@ -1120,13 +1318,7 @@ def _copy_sidecar_for_tauri(
         elif stale_sidecar.is_dir():
             shutil.rmtree(stale_sidecar)
 
-    output_binary = TAURI_SIDECAR_RESOURCE_DIR / pyinstaller_binary_name
-    if not _is_windows_target(target_triple):
-        output_binary.chmod(
-            output_binary.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-        )
-
-    return output_binary
+    return TAURI_SIDECAR_RESOURCE_DIR / pyinstaller_binary_name
 
 
 def main() -> int:
@@ -1142,22 +1334,24 @@ def main() -> int:
         return 0
 
     _validate_pyinstaller_target_matches_host(target_triple)
-    runtime_profile = _resolve_build_runtime_profile(target_triple, args.runtime_profile)
-    ffmpeg_binaries = _validate_runtime_dependencies(
-        args.python,
-        target_triple=target_triple,
-        runtime_profile=runtime_profile,
-    )
-    _run_pyinstaller(
-        args.python,
-        clean=not args.no_clean,
-        runtime_profile=runtime_profile,
-    )
-    output_binary = _copy_sidecar_for_tauri(
-        target_triple,
-        ffmpeg_binaries=ffmpeg_binaries,
-        runtime_profile=runtime_profile,
-    )
+    with _sidecar_publication_lock():
+        runtime_profile = _resolve_build_runtime_profile(target_triple, args.runtime_profile)
+        ffmpeg_binaries = _validate_runtime_dependencies(
+            args.python,
+            target_triple=target_triple,
+            runtime_profile=runtime_profile,
+        )
+        _run_pyinstaller(
+            args.python,
+            clean=not args.no_clean,
+            runtime_profile=runtime_profile,
+        )
+        output_binary = _copy_sidecar_for_tauri(
+            target_triple,
+            ffmpeg_binaries=ffmpeg_binaries,
+            _locked=True,
+            runtime_profile=runtime_profile,
+        )
 
     print(f"Built desktop backend sidecar for target: {target_triple}")
     print(f"Runtime profile: {runtime_profile}")

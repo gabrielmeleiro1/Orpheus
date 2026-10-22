@@ -53,13 +53,51 @@ fn permissions(capability: &Value) -> Vec<String> {
         .collect()
 }
 
+fn release_csp_directives() -> BTreeMap<String, Vec<String>> {
+    let config: Value = serde_json::from_str(include_str!("../tauri.conf.json"))
+        .expect("tauri.conf.json is valid JSON");
+    let csp = config["app"]["security"]["csp"]
+        .as_str()
+        .expect("a release CSP is configured");
+    csp.split(';')
+        .filter_map(|directive| {
+            let mut parts = directive.split_whitespace();
+            let name = parts.next()?.to_string();
+            Some((name, parts.map(str::to_string).collect()))
+        })
+        .collect()
+}
+
 #[test]
-fn generated_acl_is_not_empty() {
-    let capabilities = generated_capabilities();
-    assert!(
-        !capabilities.is_empty(),
-        "no Tauri capability is defined, so every plugin: IPC command is rejected by the ACL"
+fn release_csp_grants_only_used_sources() {
+    let directives = release_csp_directives();
+    let sources = |name: &str| directives.get(name).cloned().unwrap_or_default();
+
+    for (name, values) in &directives {
+        assert!(
+            !values.iter().any(|value| value == "'unsafe-eval'"),
+            "{name} allows eval"
+        );
+    }
+    assert_eq!(sources("script-src"), ["'self'"]);
+    assert_eq!(sources("object-src"), ["'none'"]);
+    assert_eq!(sources("font-src"), ["'self'"], "fonts are bundled files");
+    // The backend is the only network peer: loopback API and SSE, tokenized
+    // audio, plus blob previews and the bundled CSS data-URI icon.
+    assert_eq!(
+        sources("connect-src"),
+        [
+            "'self'",
+            "ipc:",
+            "http://ipc.localhost",
+            "http://127.0.0.1:*"
+        ]
     );
+    assert_eq!(
+        sources("media-src"),
+        ["'self'", "http://127.0.0.1:*", "blob:"]
+    );
+    assert_eq!(sources("img-src"), ["'self'", "data:", "blob:"]);
 }
 
 #[test]

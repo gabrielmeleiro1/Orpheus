@@ -108,3 +108,17 @@ def test_install_app_bundle_removes_partial_staging_bundle_when_copy_fails(
     assert (existing_app / "Contents" / "Info.plist").read_text(
         encoding="utf-8"
     ) == "old"
+
+
+def test_install_refuses_non_macos_hosts_before_touching_files(monkeypatch, capsys) -> None:
+    import scripts.install_desktop_app as installer
+
+    monkeypatch.setattr(installer.sys, "platform", "win32")
+    monkeypatch.setattr(installer.sys, "argv", ["install_desktop_app.py"])
+    monkeypatch.setattr(
+        installer, "install_app_bundle",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("must not install")),
+    )
+
+    assert installer.main() == 2
+    assert "Inno Setup" in capsys.readouterr().err

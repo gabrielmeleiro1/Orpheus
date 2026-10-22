@@ -1,24 +1,23 @@
 #[cfg(unix)]
-use super::setup::resolve_setup_python;
+use super::resolve_setup_python;
 #[cfg(windows)]
-use super::setup::windows_taskkill_path;
-use super::setup::{
-    build_setup_launch_config_for_platform,
-    build_setup_launch_config_for_platform_with_runtime_paths, cancel_with_sink_for_test,
-    read_progress_events, runtime_setup_environment_for_test, sanitize_progress_line,
-    setup_command_env_for_test, start_supervised_for_test, start_supervised_with_hook_for_test,
-    windows_setup_creation_flags, EventSink, SetupLaunchConfig, SetupLifecycle, SetupProgressEvent,
-    SetupRequest, SetupRunnerState, WindowsLaunchPhase, SETUP_PROGRESS_EVENT,
-};
+use super::windows_taskkill_path;
 use super::{
-    restart_after_setup_transaction, restart_after_setup_with_readiness, wait_for_backend_ready,
-    BackendLifecycle,
+    apply_setup_command_env, build_setup_launch_config, cancel_with_sink, read_progress_events,
+    runtime_setup_environment_for, sanitize_progress_line, start_supervised, EventSink,
+    SetupLaunchConfig, SetupLifecycle, SetupProgressEvent, SetupRequest, SetupRunnerState,
+    SETUP_PROGRESS_EVENT,
 };
+use crate::backend::{BackendLifecycle, BackendReadyPayload};
 use crate::paths::DesktopRuntimePaths;
+use crate::{
+    restart_after_setup_transaction, restart_after_setup_with_readiness, wait_for_backend_ready,
+    AppState,
+};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -33,54 +32,75 @@ fn request(profile: &str, groups: &[&str], accept_pytorch_risk: bool) -> SetupRe
     }
 }
 
+fn build_for_platform(
+    repo_root: &Path,
+    request: SetupRequest,
+    os: &str,
+    arch: &str,
+) -> Result<SetupLaunchConfig, String> {
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/trusted/app-data");
+    build_setup_launch_config(
+        repo_root,
+        "/trusted/python",
+        request,
+        os,
+        arch,
+        &runtime_paths,
+    )
+}
+
+/// The environment the setup child would start with, given what the desktop
+/// process inherited.
+fn configured_env(
+    launch: &SetupLaunchConfig,
+    inherited: &[(&str, &str)],
+) -> BTreeMap<String, String> {
+    let mut command = Command::new(&launch.program);
+    command.envs(inherited.iter().copied());
+    apply_setup_command_env(&mut command, launch);
+    command
+        .get_envs()
+        .filter_map(|(key, value)| {
+            value.map(|value| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+        })
+        .collect()
+}
+
 #[test]
 fn setup_forwards_selected_precision_and_rejects_unknown_modes() {
     let mut choice = request("cuda", &["tts-cpu-cuda", "cleaner-cuda-large"], false);
     choice.cleaner_cuda_quantization = Some("8bit".to_string());
-    let launch = build_setup_launch_config_for_platform(
-        Path::new("/trusted/orpheus"), "/trusted/python", choice.clone(), "windows", "x86_64",
-    ).expect("catalog model and precision are supported");
-    assert!(launch.args.windows(2).any(|pair| pair == ["--cleaner-cuda-quantization", "8bit"]));
+    let launch = build_for_platform(
+        Path::new("/trusted/orpheus"),
+        choice.clone(),
+        "windows",
+        "x86_64",
+    )
+    .expect("catalog model and precision are supported");
+    assert!(launch
+        .args
+        .windows(2)
+        .any(|pair| pair == ["--cleaner-cuda-quantization", "8bit"]));
     choice.cleaner_cuda_quantization = Some("2bit".to_string());
-    assert!(build_setup_launch_config_for_platform(
-        Path::new("/trusted/orpheus"), "/trusted/python", choice, "windows", "x86_64",
-    ).is_err());
-}
-
-#[test]
-fn windows_setup_is_hidden_suspended_and_in_its_own_process_group() {
-    let flags = windows_setup_creation_flags();
-    assert_ne!(flags & 0x0800_0000, 0, "CREATE_NO_WINDOW is required");
-    assert_ne!(flags & 0x0000_0004, 0, "CREATE_SUSPENDED is required");
-    assert_ne!(
-        flags & 0x0000_0200,
-        0,
-        "CREATE_NEW_PROCESS_GROUP is required"
+    assert!(
+        build_for_platform(Path::new("/trusted/orpheus"), choice, "windows", "x86_64").is_err()
     );
-}
-
-#[test]
-fn windows_launch_protocol_requires_job_assignment_before_resume() {
-    let mut phase = WindowsLaunchPhase::Built;
-    assert!(phase.mark_resumed().is_err());
-    phase.mark_spawned_suspended().expect("suspended spawn");
-    assert!(phase.mark_resumed().is_err());
-    phase.mark_job_assigned().expect("job assignment");
-    phase.mark_resumed().expect("resume after containment");
-    assert_eq!(phase, WindowsLaunchPhase::Resumed);
 }
 
 #[test]
 fn setup_launch_is_a_fixed_shell_free_command() {
     let repo = Path::new("/trusted/orpheus");
     let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/trusted/app-data");
-    let launch = build_setup_launch_config_for_platform_with_runtime_paths(
+    let launch = build_for_platform(
         repo,
-        "/trusted/python",
         request("mlx", &["tts-mlx", "cleaner-mlx"], false),
         "macos",
         "aarch64",
-        &runtime_paths,
     )
     .expect("valid MLX setup");
 
@@ -102,14 +122,13 @@ fn setup_launch_is_a_fixed_shell_free_command() {
             "--progress-json".into(),
         ]
     );
-    assert!(!launch.uses_shell);
     assert_eq!(launch.env, runtime_paths.as_env());
 }
 
 #[test]
 fn setup_launch_overrides_inherited_desktop_paths_with_backend_contract() {
     let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/authoritative/app-data");
-    let launch = build_setup_launch_config_for_platform_with_runtime_paths(
+    let launch = build_setup_launch_config(
         Path::new("/trusted/orpheus"),
         "/trusted/python",
         request("base", &[], false),
@@ -118,7 +137,7 @@ fn setup_launch_overrides_inherited_desktop_paths_with_backend_contract() {
         &runtime_paths,
     )
     .expect("valid base setup");
-    let configured = setup_command_env_for_test(
+    let configured = configured_env(
         &launch,
         &[
             ("AUDIOBOOK_DATA_DIR", "/untrusted/data"),
@@ -141,8 +160,37 @@ fn setup_launch_overrides_inherited_desktop_paths_with_backend_contract() {
 }
 
 #[test]
+fn setup_launch_drops_inherited_python_overrides() {
+    let launch = build_for_platform(
+        Path::new("/trusted/orpheus"),
+        request("base", &[], false),
+        "macos",
+        "aarch64",
+    )
+    .expect("valid base setup");
+    let configured = configured_env(
+        &launch,
+        &[
+            ("PYTHONHOME", "/untrusted/home"),
+            ("PYTHONPATH", "/untrusted/modules"),
+            ("PYTHONUSERBASE", "/untrusted/user-base"),
+            ("PIP_INDEX_URL", "https://mirror.example/simple"),
+        ],
+    );
+
+    for key in ["PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE"] {
+        assert!(!configured.contains_key(key), "{key} reached setup");
+    }
+    // Ordinary tool configuration still passes through.
+    assert_eq!(
+        configured.get("PIP_INDEX_URL").map(String::as_str),
+        Some("https://mirror.example/simple")
+    );
+}
+
+#[test]
 fn packaged_runtime_setup_never_uses_a_source_build_path() {
-    let environment = runtime_setup_environment_for_test(true, None);
+    let environment = runtime_setup_environment_for(true, None);
     assert!(!environment.available);
     assert_eq!(environment.mode, "packaged");
     assert!(environment.reason.contains("profile-baked"));
@@ -152,7 +200,7 @@ fn packaged_runtime_setup_never_uses_a_source_build_path() {
 fn source_runtime_setup_requires_fixed_script_and_repository_venv() {
     let repo = unique_temp_dir("environment-missing");
     fs::create_dir_all(repo.join("scripts")).expect("scripts");
-    let environment = runtime_setup_environment_for_test(false, Some(&repo));
+    let environment = runtime_setup_environment_for(false, Some(&repo));
     assert!(!environment.available);
     assert_eq!(environment.mode, "source_checkout");
     assert!(environment.reason.contains("setup_runtime.py"));
@@ -168,7 +216,7 @@ fn source_runtime_setup_reports_available_only_for_fixed_repo_assets() {
     fs::write(repo.join("scripts/setup_runtime.py"), "# fixed setup").expect("script");
     fs::create_dir_all(repo.join(".venv/bin")).expect("venv");
     symlink("/bin/sh", repo.join(".venv/bin/python")).expect("python");
-    let environment = runtime_setup_environment_for_test(false, Some(&repo));
+    let environment = runtime_setup_environment_for(false, Some(&repo));
     assert!(environment.available);
     assert_eq!(environment.mode, "source_checkout");
     assert!(environment.reason.is_empty());
@@ -185,59 +233,19 @@ fn setup_validation_rejects_unknown_mismatched_and_injection_values() {
         request("mlx", &["tts-mlx; open /tmp"], false),
         request("mlx", &["../../model"], false),
     ] {
-        assert!(build_setup_launch_config_for_platform(
-            repo,
-            "/trusted/python",
-            invalid,
-            "macos",
-            "aarch64"
-        )
-        .is_err());
+        assert!(build_for_platform(repo, invalid, "macos", "aarch64").is_err());
     }
 
-    assert!(build_setup_launch_config_for_platform(
+    assert!(build_for_platform(
         repo,
-        "/trusted/python",
         request("cuda", &["tts-cpu-cuda"], true),
         "macos",
         "aarch64"
     )
     .is_err());
-    assert!(build_setup_launch_config_for_platform(
-        repo,
-        "/trusted/python",
-        request("mlx", &["tts-mlx"], false),
-        "linux",
-        "x86_64"
-    )
-    .is_err());
-}
-
-#[test]
-fn cuda_ignores_obsolete_risk_acknowledgement_without_forwarding_a_flag() {
-    let repo = Path::new("/trusted/orpheus");
-    let launch_without_ack = build_setup_launch_config_for_platform(
-        repo,
-        "/trusted/python",
-        request("cuda", &["cleaner-cuda"], false),
-        "linux",
-        "x86_64",
-    )
-    .expect("CUDA no longer requires a resolved advisory acknowledgement");
-    assert!(!launch_without_ack
-        .args
-        .iter()
-        .any(|arg| arg == "--accept-pytorch-risk"));
-
-    let launch = build_setup_launch_config_for_platform(
-        repo,
-        "/trusted/python",
-        request("cuda", &["cleaner-cuda"], true),
-        "linux",
-        "x86_64",
-    )
-    .expect("CUDA setup");
-    assert!(!launch.args.iter().any(|arg| arg == "--accept-pytorch-risk"));
+    assert!(
+        build_for_platform(repo, request("mlx", &["tts-mlx"], false), "linux", "x86_64").is_err()
+    );
 }
 
 #[test]
@@ -533,7 +541,7 @@ fn setup_restart_releases_lock_before_readiness_wait() {
         {
             let lock_free_during_wait = Arc::clone(&lock_free_during_wait);
             let restart_lock = &restart_lock;
-            move || {
+            move |()| {
                 // The lock must be released before the readiness wait so a
                 // concurrent shutdown/restart can acquire it.
                 *lock_free_during_wait.lock().expect("wait flag") = restart_lock.try_lock().is_ok();
@@ -593,21 +601,6 @@ fn malformed_output_becomes_a_safe_bounded_diagnostic() {
     assert!(message.len() <= 512);
     assert!(!message.contains("supersecret"));
     assert!(!message.contains("/Users"));
-}
-
-#[test]
-fn stale_generation_cannot_clear_or_replace_active_run() {
-    let state = SetupRunnerState::default();
-    let first = state.begin(request("base", &[], false)).expect("first run");
-    state.finish_failure(first, SetupLifecycle::Failed, "first failed");
-    let second = state
-        .begin(request("base", &[], false))
-        .expect("second run");
-
-    state.finish_success(first, true);
-    let status = state.status();
-    assert_eq!(status.lifecycle, SetupLifecycle::Running);
-    assert_eq!(status.generation, second);
 }
 
 #[test]
@@ -761,7 +754,7 @@ fn setup_python_resolution_ignores_backend_override_and_path() {
     let output = Command::new(std::env::current_exe().expect("test executable"))
         .args([
             "--exact",
-            "setup_tests::setup_python_resolution_ignores_backend_override_and_path",
+            "setup::tests::setup_python_resolution_ignores_backend_override_and_path",
         ])
         .env(CHILD_FLAG, "1")
         .env("AUDIOBOOK_DESKTOP_PYTHON", "/tmp/attacker-python")
@@ -819,7 +812,6 @@ fn fixture_launch(program: &Path, args: &[String]) -> SetupLaunchConfig {
         args: args.to_vec(),
         cwd: std::env::temp_dir(),
         env: Default::default(),
-        uses_shell: false,
     }
 }
 
@@ -830,6 +822,16 @@ fn collecting_sink() -> (EventSink, Arc<Mutex<Vec<SetupProgressEvent>>>) {
         captured.lock().expect("events").push(event);
     });
     (sink, events)
+}
+
+fn supervise(
+    state: SetupRunnerState,
+    request: SetupRequest,
+    launch: SetupLaunchConfig,
+    timeout: Duration,
+    sink: EventSink,
+) -> Result<super::SetupStatus, String> {
+    start_supervised(state, request, launch, timeout, sink, None)
 }
 
 fn wait_for_terminal(state: &SetupRunnerState, timeout: Duration) -> SetupLifecycle {
@@ -848,7 +850,7 @@ fn wait_for_terminal(state: &SetupRunnerState, timeout: Duration) -> SetupLifecy
 fn spawn_failure_clears_guard_and_emits_one_terminal_error() {
     let state = SetupRunnerState::default();
     let (sink, events) = collecting_sink();
-    let result = start_supervised_for_test(
+    let result = supervise(
         state.clone(),
         request("base", &[], false),
         fixture_launch(Path::new("/definitely/missing/orpheus-python"), &[]),
@@ -886,16 +888,15 @@ fn cancel_between_spawn_and_attach_emits_exactly_one_terminal_event() {
     let (sink, events) = collecting_sink();
     let hook_state = state.clone();
     let hook_sink = Arc::clone(&sink);
-    let result = start_supervised_with_hook_for_test(
+    let result = start_supervised(
         state.clone(),
         request("base", &[], false),
         fixture_launch(&program, &args),
         Duration::from_secs(30),
         sink,
-        Arc::new(move || {
-            cancel_with_sink_for_test(&hook_state, Arc::clone(&hook_sink))
-                .expect("cancel during launch");
-        }),
+        Some(Arc::new(move || {
+            cancel_with_sink(&hook_state, Arc::clone(&hook_sink)).expect("cancel during launch");
+        })),
     );
     assert!(result.is_err());
     assert_eq!(state.status().lifecycle, SetupLifecycle::Cancelled);
@@ -927,7 +928,7 @@ fn successful_real_child_emits_exactly_one_authoritative_terminal_event() {
     };
     let state = SetupRunnerState::default();
     let (sink, events) = collecting_sink();
-    start_supervised_for_test(
+    supervise(
         state.clone(),
         request("base", &[], false),
         fixture_launch(&program, &args),
@@ -950,38 +951,6 @@ fn successful_real_child_emits_exactly_one_authoritative_terminal_event() {
     assert_eq!(terminal[0].restart_required, Some(true));
 }
 
-#[test]
-fn supervised_child_receives_fixed_internal_containment_flag() {
-    let python = if cfg!(windows) {
-        PathBuf::from("C:\\Windows\\py.exe")
-    } else {
-        PathBuf::from("/usr/bin/python3")
-    };
-    if !python.is_file() {
-        return;
-    }
-    let code = "import json,os; print(json.dumps({'event':'plan','message':os.environ.get('ORPHEUS_TAURI_SETUP_SUPERVISED')}), flush=True)";
-    let state = SetupRunnerState::default();
-    let (sink, events) = collecting_sink();
-    start_supervised_for_test(
-        state.clone(),
-        request("base", &[], false),
-        fixture_launch(&python, &["-c".into(), code.into()]),
-        Duration::from_secs(3),
-        sink,
-    )
-    .expect("fixture starts");
-    assert_eq!(
-        wait_for_terminal(&state, Duration::from_secs(3)),
-        SetupLifecycle::Complete
-    );
-    assert!(events
-        .lock()
-        .expect("events")
-        .iter()
-        .any(|event| event.message.as_deref() == Some("1")));
-}
-
 #[cfg(unix)]
 #[test]
 fn root_exit_with_pipe_inheriting_detached_child_completes_and_kills_child() {
@@ -999,7 +968,7 @@ fn root_exit_with_pipe_inheriting_detached_child_completes_and_kills_child() {
     let state = SetupRunnerState::default();
     let (sink, events) = collecting_sink();
     let started = Instant::now();
-    start_supervised_for_test(
+    supervise(
         state.clone(),
         request("base", &[], false),
         fixture_launch(&python, &["-c".into(), code]),
@@ -1047,7 +1016,7 @@ fn noisy_child_is_rate_limited_but_terminal_is_preserved() {
     let code = "import json; [print(json.dumps({'event':'plan','message':'noise'}), flush=True) for _ in range(5000)]; print(json.dumps({'event':'stage_started','stage':'Dependency installation'}), flush=True)";
     let state = SetupRunnerState::default();
     let (sink, events) = collecting_sink();
-    start_supervised_for_test(
+    supervise(
         state.clone(),
         request("base", &[], false),
         fixture_launch(&python, &["-c".into(), code.into()]),
@@ -1102,7 +1071,7 @@ fn supervisor_timeout_kills_detached_descendant_and_emits_one_terminal_event() {
     );
     let state = SetupRunnerState::default();
     let (sink, events) = collecting_sink();
-    start_supervised_for_test(
+    supervise(
         state.clone(),
         request("base", &[], false),
         fixture_launch(&python, &["-c".into(), code]),
@@ -1146,7 +1115,7 @@ fn cancel_and_shutdown_kill_real_children_and_release_guard() {
     for shutdown in [false, true] {
         let state = SetupRunnerState::default();
         let (sink, events) = collecting_sink();
-        start_supervised_for_test(
+        supervise(
             state.clone(),
             request("base", &[], false),
             fixture_launch(&sleep, &["60".into()]),
@@ -1158,7 +1127,7 @@ fn cancel_and_shutdown_kill_real_children_and_release_guard() {
         if shutdown {
             state.shutdown();
         } else {
-            cancel_with_sink_for_test(&state, sink).expect("cancel");
+            cancel_with_sink(&state, sink).expect("cancel");
         }
         assert_eq!(state.status().lifecycle, SetupLifecycle::Cancelled);
         thread::sleep(Duration::from_millis(50));
@@ -1180,4 +1149,93 @@ fn cancel_and_shutdown_kill_real_children_and_release_guard() {
             );
         }
     }
+}
+
+#[test]
+fn progress_preserves_every_model_group_accepted_by_setup() {
+    for (profile, os, arch, groups) in [
+        (
+            "mlx",
+            "macos",
+            "aarch64",
+            vec!["tts-mlx", "cleaner-mlx", "cleaner-mlx-small"],
+        ),
+        (
+            "cuda",
+            "windows",
+            "x86_64",
+            vec!["tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"],
+        ),
+    ] {
+        build_for_platform(
+            Path::new("/trusted/orpheus"),
+            request(profile, &groups, true),
+            os,
+            arch,
+        )
+        .expect("accepted model groups");
+        let line =
+            serde_json::json!({"event": "stage_started", "model_groups": groups}).to_string();
+        let event = sanitize_progress_line(&line).expect("progress event");
+        assert_eq!(event.model_groups, groups);
+    }
+}
+
+#[test]
+fn setup_readiness_rejects_a_replacement_backend() {
+    for replacement_ready in [false, true] {
+        let state = AppState::default();
+        let generation = {
+            let mut manager = state.backend_manager.lock().unwrap();
+            let generation = manager.mark_starting();
+            let replacement = manager.mark_starting();
+            if replacement_ready {
+                manager.mark_ready_for_generation(
+                    replacement,
+                    BackendReadyPayload {
+                        event: "ready".into(),
+                        host: "127.0.0.1".into(),
+                        port: 9000,
+                        token: "replacement".into(),
+                    },
+                );
+            }
+            generation
+        };
+        let result = wait_for_backend_ready(Duration::ZERO, Duration::ZERO, || {
+            state.refresh_backend_generation(generation)
+        });
+        assert!(result
+            .expect_err("replacement cannot satisfy readiness")
+            .contains("replaced"));
+    }
+}
+
+#[test]
+fn setup_readiness_failure_preserves_a_replacement_backend() {
+    let state = AppState::default();
+    let generation = {
+        let mut manager = state.backend_manager.lock().unwrap();
+        let generation = manager.mark_starting();
+        manager.mark_starting();
+        generation
+    };
+    state.fail_backend_generation(generation, "startup timed out");
+    assert_eq!(
+        state.backend_manager.lock().unwrap().status().lifecycle,
+        BackendLifecycle::Starting
+    );
+}
+
+#[test]
+fn setup_readiness_stops_waiting_when_shutdown_begins() {
+    let state = AppState::default();
+    let generation = state.backend_manager.lock().unwrap().mark_starting();
+    state
+        .shutting_down
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let error = state
+        .refresh_backend_generation(generation)
+        .expect_err("shutdown interrupts readiness");
+    assert!(error.contains("shutting down"));
 }

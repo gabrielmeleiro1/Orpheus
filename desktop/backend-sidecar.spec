@@ -91,6 +91,9 @@ datas += [
     (str(project_root / "requirements" / f"{name}.txt"), "requirements")
     for name in ("base", "mlx", "cuda")
 ]
+# huggingface_hub looks for hf_xet's distribution metadata before using it;
+# without it model downloads fall back to plain HTTP.
+datas += _copy_metadata("hf_xet")
 
 if runtime_profile in {"mlx", "cuda"}:
     datas += _collect_data_files("en_core_web_sm") + _copy_metadata("en_core_web_sm")

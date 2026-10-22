@@ -50,19 +50,6 @@ def _write_executable(path: Path, content: str = "#!/bin/sh\nexit 0\n") -> Path:
     return path
 
 
-def test_parse_args_defaults_to_quick_python_smoke() -> None:
-    args = desktop_runtime_smoke.parse_args([])
-
-    assert args.backend == "python"
-    assert args.iterations == 1
-    assert args.requests == 3
-    assert args.timeout_seconds == 30.0
-    assert args.min_success_rate == 1.0
-    assert not args.reduced_path
-    assert not args.check_ffmpeg_runtime
-    assert not args.conversion_journey
-
-
 def test_parse_args_accepts_opt_in_ffmpeg_runtime_check() -> None:
     args = desktop_runtime_smoke.parse_args(["--check-ffmpeg-runtime"])
 
@@ -102,11 +89,6 @@ def test_parse_args_accepts_opt_in_conversion_journey() -> None:
     assert args.conversion_journey is True
     assert args.conversion_timeout_seconds == 90.0
     assert args.probe_wait_seconds == 15.0
-
-
-def test_parse_args_defaults_include_probe_wait_budget() -> None:
-    args = desktop_runtime_smoke.parse_args([])
-    assert args.probe_wait_seconds == 25.0
 
 
 def test_backend_command_uses_python_launcher_by_default(tmp_path: Path) -> None:
@@ -572,7 +554,6 @@ def test_run_conversion_journey_skips_when_tts_unavailable(monkeypatch) -> None:
     )
 
     assert result.skipped is True
-    assert result.attempted is False
     assert result.completed is False
     assert "TTS" in (result.reason or "") or "probe" in (result.reason or "").lower()
     assert not any("POST " in call and "/api/conversions" in call for call in calls)
@@ -692,7 +673,6 @@ def test_run_iteration_runs_conversion_journey_when_requested(monkeypatch, tmp_p
         observed["ready"] = ready_payload
         observed.update(kwargs)
         return desktop_runtime_smoke.ConversionJourneyResult(
-            attempted=False,
             completed=False,
             skipped=True,
             reason=(
@@ -1086,8 +1066,9 @@ def test_wait_for_conversion_terminal_ignores_wrong_job_terminal_payload(monkeyp
     assert index["n"] >= 3
 
 
+@pytest.mark.parametrize("library_epoch", ["selected-library-epoch", None, ""])
 def test_run_conversion_journey_selects_matching_book_not_library_first(
-    monkeypatch,
+    monkeypatch, library_epoch,
 ) -> None:
     ready = desktop_runtime_smoke.ReadyPayload(host="127.0.0.1", port=9, token="t")
     calls: list[str] = []
@@ -1124,10 +1105,15 @@ def test_run_conversion_journey_selects_matching_book_not_library_first(
         if url.endswith("/api/library?limit=20"):
             return desktop_runtime_smoke.HttpResult(
                 200,
-                b'{"items":[{"id":1,"title":"Unrelated First Book"},'
-                b'{"id":77,"title":"Conversion Journey Smoke"}]}',
+                json.dumps({"items": [
+                    {"id": 1, "title": "Unrelated First Book", "library_epoch": "unrelated-epoch"},
+                    {"id": 77, "title": "Conversion Journey Smoke", "library_epoch": library_epoch},
+                ]}).encode("utf-8"),
             )
         if "/api/desktop/query-token" in url:
+            assert json.loads(kwargs["data"]) == {
+                "scope": "audio", "book_id": 77, "expected_epoch": library_epoch,
+            }
             return desktop_runtime_smoke.HttpResult(
                 200, b'{"token":"audio-token","expires_at":1}'
             )
@@ -1148,6 +1134,17 @@ def test_run_conversion_journey_selects_matching_book_not_library_first(
             "book_id": 77,
         },
     )
+
+    if not library_epoch:
+        with pytest.raises(desktop_runtime_smoke.SmokeFailure, match="missing its library epoch"):
+            desktop_runtime_smoke.run_conversion_journey(
+                ready,
+                timeout_seconds=5.0,
+                conversion_timeout_seconds=5.0,
+                probe_wait_seconds=0.0,
+            )
+        assert not any("/api/desktop/query-token" in call for call in calls)
+        return
 
     result = desktop_runtime_smoke.run_conversion_journey(
         ready,
@@ -1246,3 +1243,340 @@ def test_wait_for_conversion_journey_book_fails_closed_on_ambiguous_title(
             expected_title=title,
             timeout_seconds=5.0,
         )
+
+
+@pytest.mark.parametrize("startup", ["timeout", "invalid_stdout", "invalid_file", "exit", "ready"])
+def test_backend_tree_is_stopped_after_startup_failure_or_normal_shutdown(
+    tmp_path: Path, monkeypatch, startup: str,
+) -> None:
+    import psutil
+
+    pid_file = tmp_path / "child.pid"
+    ready_file = tmp_path / "ready.json"
+    payload = json.dumps({
+        "event": "ready", "host": "127.0.0.1", "port": 1234,
+        "token": "test", "runtime_profile": "base",
+    })
+    code = (
+        "import subprocess, sys, time\n"
+        "from pathlib import Path\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"Path({str(pid_file)!r}).write_text(str(child.pid))\n"
+    )
+    if startup == "invalid_stdout":
+        code += "print('{}', flush=True)\n"
+    elif startup == "invalid_file":
+        code += f"Path({str(ready_file)!r}).write_text('{{')\n"
+    elif startup == "exit":
+        code += "sys.exit(3)\n"
+    elif startup == "ready":
+        code += f"print({payload!r}, flush=True)\n"
+    code += "time.sleep(60)\n"
+    monkeypatch.setattr(desktop_runtime_smoke, "build_backend_command", lambda **_: [sys.executable, "-c", code])
+    processes = []
+    popen = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        process = popen(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(desktop_runtime_smoke.subprocess, "Popen", spawn)
+    paths = desktop_runtime_smoke.RuntimePaths(
+        tmp_path, tmp_path / "data", tmp_path / "output", tmp_path / "temp",
+        tmp_path / "db", ready_file,
+    )
+    try:
+        kwargs = dict(
+            backend="python", sidecar_path=None, python_executable=sys.executable,
+            runtime_paths=paths, timeout_seconds=1.0, reduced_path=False,
+        )
+        if startup == "ready":
+            process, _, _, _ = desktop_runtime_smoke.start_backend(**kwargs)
+            desktop_runtime_smoke.stop_backend(process, timeout_seconds=0.5)
+        else:
+            with pytest.raises((desktop_runtime_smoke.SmokeFailure, json.JSONDecodeError)):
+                desktop_runtime_smoke.start_backend(**kwargs)
+        assert processes[0].poll() is not None
+        try:
+            child = psutil.Process(int(pid_file.read_text()))
+            child.wait(timeout=3)
+        except psutil.NoSuchProcess:
+            pass
+    finally:
+        if pid_file.exists():
+            try:
+                child = psutil.Process(int(pid_file.read_text()))
+                child.kill()
+                child.wait(timeout=3)
+            except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+                pass
+        for process in processes:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=3)
+
+
+def test_backend_output_readers_survive_bytes_outside_the_locale_encoding(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Progress bars and native libraries write bytes no ANSI code page maps.
+
+    A reader thread that dies on them stops draining its pipe, so the ready line
+    is never seen and the backend eventually blocks on a full stderr pipe.
+    """
+    payload = json.dumps({
+        "event": "ready", "host": "127.0.0.1", "port": 1234,
+        "token": "test", "runtime_profile": "cuda",
+    })
+    code = (
+        "import sys, time\n"
+        "for stream in (sys.stdout.buffer, sys.stderr.buffer):\n"
+        "    stream.write('Loading weights 10%|▏|\\n'.encode('utf-8') + b'\\x81\\x8f\\xff\\n')\n"
+        "    stream.flush()\n"
+        "sys.stderr.write('after-unmapped-bytes\\n'); sys.stderr.flush()\n"
+        f"print({payload!r}, flush=True)\n"
+        "time.sleep(60)\n"
+    )
+    monkeypatch.setattr(desktop_runtime_smoke, "build_backend_command", lambda **_: [sys.executable, "-c", code])
+    paths = desktop_runtime_smoke.RuntimePaths(
+        tmp_path, tmp_path / "data", tmp_path / "output", tmp_path / "temp",
+        tmp_path / "db", tmp_path / "ready.json",
+    )
+
+    process, ready, _stdout, stderr = desktop_runtime_smoke.start_backend(
+        backend="python", sidecar_path=None, python_executable=sys.executable,
+        runtime_paths=paths, timeout_seconds=10.0, reduced_path=False,
+    )
+    try:
+        assert ready.runtime_profile == "cuda"
+        deadline = time.monotonic() + 5
+        while "after-unmapped-bytes" not in stderr and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert "after-unmapped-bytes" in stderr
+    finally:
+        desktop_runtime_smoke.stop_backend(process, timeout_seconds=2)
+
+
+def test_default_sidecar_path_names_the_windows_executable(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(desktop_runtime_smoke, "DEFAULT_APP_SIDECAR", tmp_path / "missing.app" / "sidecar")
+    monkeypatch.setattr(desktop_runtime_smoke.os, "name", "nt")
+
+    resolved = desktop_runtime_smoke.resolve_default_sidecar_path()
+
+    assert resolved.name == "orpheus-desktop-backend.exe"
+    assert resolved.parent == desktop_runtime_smoke.DEFAULT_RESOURCE_SIDECAR.parent
+
+
+@pytest.mark.parametrize("category", ["thread", "multiprocessing", "subprocess"])
+@pytest.mark.parametrize("exitstatus", [0, 2])
+def test_session_leaks_return_failure_without_hiding_existing_failure(monkeypatch, category, exitstatus):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("session_cleanup", Path(__file__).with_name("conftest.py"))
+    conftest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conftest)
+    import faulthandler
+    from types import SimpleNamespace
+
+    leaked = MagicMock(daemon=False, pid=12345)
+    leaked.name = "unfinished-worker" if category == "thread" else MagicMock(return_value="python")
+    leaked.cmdline.return_value = ["python", "worker.py"]
+    monkeypatch.setattr(conftest.threading, "enumerate", lambda: [leaked] if category == "thread" else [])
+    monkeypatch.setattr(conftest.multiprocessing, "active_children", lambda: [leaked] if category == "multiprocessing" else [])
+    parent = MagicMock()
+    parent.children.return_value = [leaked] if category == "subprocess" else []
+    class WaitExpired(Exception):
+        pass
+
+    leaked.wait.side_effect = WaitExpired
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(
+        Process=lambda: parent, TimeoutExpired=WaitExpired, NoSuchProcess=ProcessLookupError,
+    ))
+    monkeypatch.setattr(faulthandler, "dump_traceback", lambda **_: None)
+    exits = []
+    monkeypatch.setattr(conftest.os, "_exit", exits.append)
+    monkeypatch.setattr(conftest, "_session_exit_status", exitstatus)
+    hook = conftest.pytest_unconfigure(MagicMock())
+    next(hook)
+    with pytest.raises(StopIteration):
+        next(hook)
+    assert exits == [exitstatus or 1]
+
+
+def test_backend_output_retains_bounded_recent_diagnostics():
+    import io
+    import queue
+
+    output = []
+    lines = queue.Queue(maxsize=200)
+    stream = io.StringIO("x" * 1_000_000 + "\n" + "last line\n")
+    desktop_runtime_smoke._reader_thread(stream, output, lines)
+    assert sum(map(len, output)) <= 200 * 16384
+    assert max(map(len, output)) <= 16384
+    assert output[-1] == "last line"
+
+
+@pytest.mark.parametrize("child_command", ["multiprocessing.resource_tracker", "worker.py"])
+def test_finished_or_expected_session_children_do_not_fail(monkeypatch, child_command):
+    import importlib.util
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location("session_cleanup", Path(__file__).with_name("conftest.py"))
+    conftest = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(conftest)
+    child = MagicMock()
+    child.name.return_value = "python"
+    child.cmdline.return_value = ["python", child_command]
+    parent = MagicMock()
+    parent.children.return_value = [child]
+    monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=lambda: parent))
+    thread = MagicMock(daemon=False)
+    thread.name = "finishing-worker"
+    thread.is_alive.side_effect = [True, False]
+    monkeypatch.setattr(conftest.threading, "enumerate", lambda: [thread])
+    monkeypatch.setattr(conftest.multiprocessing, "active_children", lambda: [])
+    exits = []
+    monkeypatch.setattr(conftest.os, "_exit", exits.append)
+    hook = conftest.pytest_unconfigure(MagicMock())
+    next(hook)
+    with pytest.raises(StopIteration):
+        next(hook)
+    assert exits == []
+    assert child.wait.call_count == (0 if "resource_tracker" in child_command else 1)
+
+
+def test_backend_environment_watches_smoke_driver(tmp_path, monkeypatch):
+    monkeypatch.setenv('ORPHEUS_DESKTOP_PARENT_PID', '999999')
+    paths = desktop_runtime_smoke.RuntimePaths(tmp_path, tmp_path / 'data', tmp_path / 'output',
+                                              tmp_path / 'temp', tmp_path / 'db', tmp_path / 'ready')
+    env = desktop_runtime_smoke.build_child_env(paths, backend='python', reduced_path=False)
+    assert env['ORPHEUS_DESKTOP_PARENT_PID'] == str(os.getpid())
+
+
+def _mock_windows_backend(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(desktop_runtime_smoke, 'os', SimpleNamespace(**dict(vars(os), name='nt')))
+    process = MagicMock()
+    process.poll.return_value = None
+    monkeypatch.setattr(desktop_runtime_smoke.subprocess, 'Popen', MagicMock(return_value=process))
+    monkeypatch.setattr(desktop_runtime_smoke, 'build_backend_command', lambda **kwargs: ['backend'])
+    monkeypatch.setattr(desktop_runtime_smoke, 'build_child_env', lambda *a, **kwargs: {})
+    return process
+
+
+def test_windows_backend_is_suspended_until_owned_and_resumed(tmp_path, monkeypatch):
+    process = _mock_windows_backend(monkeypatch)
+    events = []
+
+    def own(child):
+        assert desktop_runtime_smoke.subprocess.Popen.call_args.kwargs.get('creationflags', 0) & 0x4
+        events.append('owned')
+
+    monkeypatch.setattr(desktop_runtime_smoke, '_own_windows_process_tree', own)
+    monkeypatch.setattr(desktop_runtime_smoke, '_resume_windows_process', lambda child: events.append('resumed'), raising=False)
+    monkeypatch.setattr(desktop_runtime_smoke, '_reader_thread', lambda *args: None)
+    monkeypatch.setattr(desktop_runtime_smoke, '_load_ready_file', lambda _: 'ready')
+    paths = desktop_runtime_smoke.RuntimePaths(tmp_path, tmp_path / 'data', tmp_path / 'output',
+                                              tmp_path / 'temp', tmp_path / 'db', tmp_path / 'ready')
+    desktop_runtime_smoke.start_backend(backend='python', sidecar_path=None, python_executable=sys.executable,
+                                       runtime_paths=paths, timeout_seconds=1, reduced_path=False)
+    assert events == ['owned', 'resumed']
+    process.kill.assert_not_called()
+
+
+def test_windows_backend_assignment_failure_kills_before_resume(tmp_path, monkeypatch):
+    process = _mock_windows_backend(monkeypatch)
+    monkeypatch.setattr(desktop_runtime_smoke, '_own_windows_process_tree', MagicMock(side_effect=OSError('cannot assign')))
+    resume = MagicMock()
+    monkeypatch.setattr(desktop_runtime_smoke, '_resume_windows_process', resume, raising=False)
+    monkeypatch.setattr(desktop_runtime_smoke, 'stop_backend', MagicMock())
+    paths = desktop_runtime_smoke.RuntimePaths(tmp_path, tmp_path / 'data', tmp_path / 'output',
+                                              tmp_path / 'temp', tmp_path / 'db', tmp_path / 'ready')
+    with pytest.raises(OSError, match='cannot assign'):
+        desktop_runtime_smoke.start_backend(backend='python', sidecar_path=None, python_executable=sys.executable,
+                                           runtime_paths=paths, timeout_seconds=1, reduced_path=False)
+    process.kill.assert_called_once()
+    process.wait.assert_called()
+    resume.assert_not_called()
+
+
+def test_windows_cleanup_attempts_tree_kill_after_parent_exits(monkeypatch):
+    process = _mock_windows_backend(monkeypatch)
+    process._close_process_tree = None
+    process.poll.return_value = 3
+    process.pid = 123
+    run = MagicMock()
+    monkeypatch.setattr(desktop_runtime_smoke.subprocess, 'run', run)
+    desktop_runtime_smoke.stop_backend(process)
+    run.assert_called_once()
+    assert run.call_args.args[0][-3:] == ['123', '/T', '/F']
+
+
+@pytest.mark.parametrize('status', [0, -1])
+def test_windows_resume_process_checks_native_status(monkeypatch, status):
+    import ctypes
+
+    resume = MagicMock(return_value=status)
+    library = MagicMock(NtResumeProcess=resume)
+    load = MagicMock(return_value=library)
+    monkeypatch.setattr(ctypes, 'WinDLL', load, raising=False)
+    process = MagicMock(_handle=123)
+    if status < 0:
+        with pytest.raises(OSError, match='NTSTATUS'):
+            desktop_runtime_smoke._resume_windows_process(process)
+    else:
+        desktop_runtime_smoke._resume_windows_process(process)
+    load.assert_called_once_with('ntdll')
+    resume.assert_called_once_with(123)
+    assert resume.argtypes == [ctypes.wintypes.HANDLE]
+    assert resume.restype is ctypes.c_long
+
+
+@pytest.mark.parametrize('platform', ['posix', 'nt'])
+def test_bundled_backend_inherits_driver_process_group(tmp_path, monkeypatch, platform):
+    import ctypes
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(desktop_runtime_smoke, 'os', SimpleNamespace(**dict(vars(os), name=platform)))
+    monkeypatch.setattr(ctypes, 'WinDLL', MagicMock(side_effect=AssertionError(
+        'mocked backend must not call Windows process APIs'
+    )), raising=False)
+    monkeypatch.setenv('ORPHEUS_SMOKE_PROCESS_GROUP', '1')
+    process = MagicMock()
+    spawn = MagicMock(return_value=process)
+    monkeypatch.setattr(desktop_runtime_smoke.subprocess, 'Popen', spawn)
+    monkeypatch.setattr(desktop_runtime_smoke, '_own_windows_process_tree', lambda _: None)
+    monkeypatch.setattr(desktop_runtime_smoke, '_resume_windows_process', lambda _: None)
+    monkeypatch.setattr(desktop_runtime_smoke, 'build_backend_command', lambda **kwargs: ['backend'])
+    monkeypatch.setattr(desktop_runtime_smoke, '_reader_thread', lambda *args: None)
+    monkeypatch.setattr(desktop_runtime_smoke, '_load_ready_file', lambda _: 'ready')
+    paths = desktop_runtime_smoke.RuntimePaths(tmp_path, tmp_path / 'data', tmp_path / 'output',
+                                              tmp_path / 'temp', tmp_path / 'db', tmp_path / 'ready')
+    desktop_runtime_smoke.start_backend(backend='python', sidecar_path=None, python_executable=sys.executable,
+                                       runtime_paths=paths, timeout_seconds=1, reduced_path=False)
+    assert spawn.call_args.kwargs['start_new_session'] is False
+    assert process._owns_process_group is False
+
+
+def test_runtime_root_removal_retries_until_handles_are_released(monkeypatch, tmp_path):
+    root = tmp_path / 'smoke-root'
+    (root / 'data').mkdir(parents=True)
+    held = root / 'data' / 'audiobooks.db'
+    held.write_bytes(b'db')
+    real_rmtree = desktop_runtime_smoke.shutil.rmtree
+    attempts = []
+
+    def rmtree(path, ignore_errors=False):
+        attempts.append(path)
+        if len(attempts) > 1:
+            real_rmtree(path, ignore_errors=ignore_errors)
+
+    monkeypatch.setattr(desktop_runtime_smoke.shutil, 'rmtree', rmtree)
+    monkeypatch.setattr(desktop_runtime_smoke.time, 'sleep', lambda _seconds: None)
+
+    desktop_runtime_smoke._remove_runtime_root(root)
+
+    assert len(attempts) == 2
+    assert not root.exists()

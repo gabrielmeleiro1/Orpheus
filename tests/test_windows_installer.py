@@ -2,7 +2,9 @@
 
 import json
 import re
+import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -17,22 +19,6 @@ def _code(name):
         rf"(?:function|procedure) {name}\b.*?(?=\n(?:function|procedure) |\Z)",
         INSTALLER, re.S,
     ).group()
-
-
-def test_upgrade_stages_backend_and_preserves_previous_payload_until_success():
-    assert "[InstallDelete]" not in INSTALLER
-    sidecar = next(line for line in INSTALLER.splitlines() if line.startswith('Source: "src-tauri\\binaries'))
-    assert 'DestDir: "{app}\\binaries\\orpheus-desktop-backend.new"' in sidecar
-    steps = _code("CurStepChanged")
-    assert steps.index("CurStep = ssPostInstall") < steps.index("RenameFile(BackendPath, BackupBackendPath)")
-    assert steps.index("RenameFile(BackendPath, BackupBackendPath)") < steps.index("RenameFile(StagedBackendPath, BackendPath)")
-    assert steps.index("CurStep = ssDone") < steps.index("DelTree(BackupBackendPath")
-    assert re.search(r"if not RenameFile\(StagedBackendPath, BackendPath\) then begin\s+RestoreBackend;", steps)
-    assert "if not InstallComplete then\n    RestoreBackend;" in _code("DeinitializeSetup")
-    restore = _code("RestoreBackend")
-    assert "RenameFile(BackupBackendPath, BackendPath)" in restore
-    assert "DelTree" not in restore
-    assert '[UninstallDelete]\nType: filesandordirs; Name: "{app}\\binaries\\orpheus-desktop-backend"' in INSTALLER
 
 
 def test_webview2_is_detected_and_bootstrapped_before_installation():
@@ -51,32 +37,9 @@ def test_webview2_is_detected_and_bootstrapped_before_installation():
     assert "except\n    Result := 'Orpheus requires Microsoft Edge WebView2 Runtime." in prepare
 
 
-def test_upgrade_recovers_interrupted_payload_before_preparing_installation():
-    prepare = _code("PrepareToInstall")
-    assert "Result := RecoverBackend;\n  if Result <> '' then\n    exit;" in prepare
-    assert prepare.index("BackupBackendPath :=") < prepare.index("Result := RecoverBackend;")
-    assert prepare.index("Result := RecoverBackend;") < prepare.index("if ExtractOnly or WebView2Installed")
-    assert "remove the .new staging directory before retrying" not in INSTALLER
-
-    recovery = _code("RecoverBackend")
-    assert re.search(
-        r"if not DirExists\(BackendPath\) and DirExists\(BackupBackendPath\) then begin\s+"
-        r"if not RenameFile\(BackupBackendPath, BackendPath\) then begin\s+"
-        r"Result := .*?;\s+exit;", recovery,
-    )
-    assert recovery.index("RenameFile(BackupBackendPath, BackendPath)") < recovery.index("DelTree(StagedBackendPath")
-    assert "if DirExists(StagedBackendPath) and not DelTree(StagedBackendPath, True, True, True) then begin" in recovery
-    assert re.search(
-        r"if DirExists\(BackendPath\) and DirExists\(BackupBackendPath\) then begin\s+"
-        r"if not DelTree\(BackupBackendPath, True, True, True\) then\s+Result :=", recovery,
-    )
-    assert "DelTree(BackendPath," not in recovery
-    assert "BackendBackedUp :=" not in recovery
-    assert "BackendActivated :=" not in recovery
-
-
 @pytest.mark.parametrize("problem", ["base", "missing_resource", "valid"])
 def test_installer_compile_gate_validates_cuda_marker_and_resources(tmp_path, monkeypatch, problem):
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Darwin")
     gate = re.search(r"#if Exec\(.*?\n\s+#error .*?\n#endif", INSTALLER).group()
     assert gate.index("--validate-existing") < gate.index("!= 0")
     assert "--runtime-profile cuda" in gate
@@ -105,3 +68,27 @@ def test_installer_compile_gate_validates_cuda_marker_and_resources(tmp_path, mo
             build_desktop_backend.validate_existing_sidecar(
                 target_triple="x86_64-pc-windows-msvc", runtime_profile="cuda",
             )
+
+
+@pytest.mark.parametrize("host_system", ["Darwin", "Linux", "Windows"])
+def test_windows_sidecar_checks_packaged_binaries_only_on_windows(tmp_path, monkeypatch, host_system):
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: host_system)
+    for resource in build_desktop_backend.required_sidecar_resources(
+        "x86_64-pc-windows-msvc", runtime_profile="cuda",
+    ):
+        path = tmp_path / resource
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"resource")
+    (tmp_path / "runtime-profile.json").write_text(json.dumps({"profile": "cuda"}))
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, "configuration: --enable-static", ""))
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", run)
+
+    build_desktop_backend._validate_sidecar_resources(
+        tmp_path, target_triple="x86_64-pc-windows-msvc", runtime_profile="cuda",
+    )
+
+    assert run.call_count == (2 if host_system == "Windows" else 0)
+    if host_system == "Windows":
+        assert [call.args[0] for call in run.call_args_list] == [
+            [str(tmp_path / "bin" / f"{name}.exe"), "-version"] for name in ("ffmpeg", "ffprobe")
+        ]

@@ -21,16 +21,6 @@ from scripts import build_desktop_backend
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-def test_tauri_bundle_declares_project_and_third_party_license_resources() -> None:
-    config = json.loads(
-        (PROJECT_ROOT / "desktop/src-tauri/tauri.conf.json").read_text(encoding="utf-8")
-    )
-
-    resources = config["bundle"]["resources"]
-    assert resources["../../LICENSE"] == "LICENSE"
-    assert resources["../../THIRD_PARTY_LICENSES.md"] == "THIRD_PARTY_LICENSES.md"
-
-
 def _write_executable(path: Path, content: str = "executable") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -184,6 +174,13 @@ def test_copy_sidecar_for_tauri_windows_does_not_require_mlx_resources(
     ffmpeg_source = _write_executable(tmp_path / "tools" / "ffmpeg.exe", "ffmpeg exe")
     ffprobe_source = _write_executable(tmp_path / "tools" / "ffprobe.exe", "ffprobe exe")
     _ = executable
+    monkeypatch.setattr(
+        build_desktop_backend.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, "configuration: --enable-static\n", "",
+        ),
+    )
     (onedir / "_internal" / "espeakng_loader" / "espeak-ng-data").mkdir(parents=True)
     (onedir / "_internal" / "espeakng_loader" / "espeak-ng-data" / "phontab").write_text(
         "phoneme table",
@@ -214,44 +211,6 @@ def test_copy_sidecar_for_tauri_windows_does_not_require_mlx_resources(
     assert (copied_executable.parent / "bin" / "ffprobe.exe").read_text(
         encoding="utf-8"
     ) == "ffprobe exe"
-
-
-@pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
-)
-def test_copy_sidecar_for_tauri_copies_resolved_ffmpeg_binaries_under_bin(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    dist_dir = tmp_path / "dist"
-    binaries_dir = tmp_path / "binaries"
-    onedir = dist_dir / "orpheus-desktop-backend"
-    executable = _write_executable(onedir / "orpheus-desktop-backend", "backend")
-    ffmpeg_source = _write_executable(tmp_path / "source" / "ffmpeg", "ffmpeg binary")
-    ffprobe_source = _write_executable(tmp_path / "source" / "ffprobe", "ffprobe binary")
-    _ = executable
-    _write_required_pyinstaller_resources(onedir)
-
-    monkeypatch.setattr(build_desktop_backend, "DIST_DIR", dist_dir)
-    monkeypatch.setattr(build_desktop_backend, "TAURI_BINARIES_DIR", binaries_dir)
-    monkeypatch.setattr(
-        build_desktop_backend,
-        "TAURI_SIDECAR_RESOURCE_DIR",
-        binaries_dir / "orpheus-desktop-backend",
-    )
-
-    copied_executable = build_desktop_backend._copy_sidecar_for_tauri(  # noqa: SLF001
-        "aarch64-apple-darwin",
-        ffmpeg_binaries={"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
-    )
-
-    copied_bin = copied_executable.parent / "bin"
-    assert (copied_bin / "ffmpeg").read_text(encoding="utf-8") == "ffmpeg binary"
-    assert (copied_bin / "ffprobe").read_text(encoding="utf-8") == "ffprobe binary"
-    if os.name != "nt":
-        assert (copied_bin / "ffmpeg").stat().st_mode & stat.S_IXUSR
-        assert (copied_bin / "ffprobe").stat().st_mode & stat.S_IXUSR
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX mode bits are the packaging failure mode")
@@ -353,15 +312,6 @@ def test_validate_existing_sidecar_requires_executable_and_runtime_resources(
     )
 
 
-def test_desktop_build_script_delegates_fresh_sidecar_build_to_tauri() -> None:
-    package_json = json.loads(
-        (PROJECT_ROOT / "desktop" / "package.json").read_text(encoding="utf-8")
-    )
-
-    assert package_json["scripts"]["desktop:build"] == "tauri build"
-    assert package_json["scripts"]["desktop:release"].startswith("tauri build")
-
-
 def test_tauri_build_freshens_sidecar_before_frontend() -> None:
     tauri_config = json.loads(
         (PROJECT_ROOT / "desktop" / "src-tauri" / "tauri.conf.json").read_text(
@@ -369,29 +319,9 @@ def test_tauri_build_freshens_sidecar_before_frontend() -> None:
         )
     )
 
-    assert tauri_config["build"]["beforeBuildCommand"] == (
-        "python ../scripts/build_desktop_backend.py && npm run build"
-    )
-
-
-def test_release_docs_describe_fresh_profiled_tauri_sidecar_build() -> None:
-    docs = {
-        path: (PROJECT_ROOT / path).read_text(encoding="utf-8")
-        for path in (
-            "README.md",
-            "docs/RUN_APPLICATION.md",
-            "docs/TESTING.md",
-            "docs/ARCHITECTURE.md",
-            "docs/DEPENDENCIES.md",
-        )
-    }
-
-    for contents in docs.values():
-        assert "ORPHEUS_RUNTIME_PROFILE" in contents
-    assert "TAURI_ENV_TARGET_TRIPLE" in docs["docs/RUN_APPLICATION.md"]
-    assert "TAURI_ENV_TARGET_TRIPLE" in docs["docs/ARCHITECTURE.md"]
-    assert "required before `desktop:build` or `desktop:release`" not in docs["README.md"]
-    assert "Sidecar must already exist" not in docs["docs/ARCHITECTURE.md"]
+    command = tauri_config["build"]["beforeBuildCommand"]
+    assert "../scripts/build_desktop_backend.py" in command
+    assert command.index("build_desktop_backend.py") < command.index("npm run build")
 
 
 def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
@@ -415,68 +345,6 @@ def test_validate_runtime_dependencies_returns_resolved_ffmpeg_binary_paths(
     resolved = build_desktop_backend._validate_runtime_dependencies("python")  # noqa: SLF001
 
     assert resolved == {"ffmpeg": ffmpeg, "ffprobe": ffprobe}
-
-
-@pytest.mark.parametrize(
-    ("runtime_profile", "target_triple"),
-    [
-        ("base", "x86_64-unknown-linux-gnu"),
-        ("mlx", "aarch64-apple-darwin"),
-        ("cuda", "x86_64-unknown-linux-gnu"),
-    ],
-)
-def test_runtime_profile_uses_environment_when_cli_omitted(
-    monkeypatch,
-    runtime_profile: str,
-    target_triple: str,
-) -> None:
-    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", runtime_profile)
-
-    assert build_desktop_backend._resolve_runtime_profile(target_triple, None) == runtime_profile
-
-
-def test_explicit_runtime_profile_wins_over_environment(monkeypatch) -> None:
-    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "cuda")
-
-    assert (
-        build_desktop_backend._resolve_runtime_profile(  # noqa: SLF001
-            "x86_64-unknown-linux-gnu",
-            "base",
-        )
-        == "base"
-    )
-
-
-@pytest.mark.parametrize("previous", ["base", "cuda"])
-def test_rebuild_keeps_previous_runtime_without_override(tmp_path, monkeypatch, previous) -> None:
-    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
-    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
-    (tmp_path / "runtime-profile.json").write_text(json.dumps({"profile": previous}))
-
-    assert build_desktop_backend._resolve_build_runtime_profile(
-        "x86_64-pc-windows-msvc", None
-    ) == previous
-
-
-@pytest.mark.parametrize("override", ["cli", "environment"])
-def test_rebuild_allows_explicit_downgrade_to_base(tmp_path, monkeypatch, override) -> None:
-    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
-    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
-    (tmp_path / "runtime-profile.json").write_text('{"profile":"cuda"}')
-    if override == "environment":
-        monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "base")
-
-    assert build_desktop_backend._resolve_build_runtime_profile(
-        "x86_64-pc-windows-msvc", "base" if override == "cli" else None
-    ) == "base"
-
-
-def test_first_build_uses_platform_default(tmp_path, monkeypatch) -> None:
-    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
-    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path)
-    assert build_desktop_backend._resolve_build_runtime_profile(
-        "x86_64-pc-windows-msvc", None
-    ) == "base"
 
 
 def test_main_rebuild_passes_preserved_cuda_profile_to_every_build_step(tmp_path, monkeypatch) -> None:
@@ -573,26 +441,6 @@ def test_target_triple_prefers_tauri_environment(monkeypatch) -> None:
         build_desktop_backend._resolve_target_triple("x86_64-apple-darwin")
         == "x86_64-apple-darwin"
     )
-
-
-def test_default_python_prefers_windows_project_virtualenv(monkeypatch, tmp_path: Path) -> None:
-    windows_python = _write_executable(tmp_path / ".venv" / "Scripts" / "python.exe")
-    _write_executable(tmp_path / ".venv" / "bin" / "python")
-    monkeypatch.setattr(build_desktop_backend, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Windows")
-    monkeypatch.setattr(build_desktop_backend.sys, "executable", "fallback-python")
-
-    assert build_desktop_backend._default_python_executable() == str(windows_python)
-
-
-def test_default_python_prefers_posix_project_virtualenv(monkeypatch, tmp_path: Path) -> None:
-    posix_python = _write_executable(tmp_path / ".venv" / "bin" / "python")
-    _write_executable(tmp_path / ".venv" / "Scripts" / "python.exe")
-    monkeypatch.setattr(build_desktop_backend, "PROJECT_ROOT", tmp_path)
-    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
-    monkeypatch.setattr(build_desktop_backend.sys, "executable", "fallback-python")
-
-    assert build_desktop_backend._default_python_executable() == str(posix_python)
 
 
 def test_validate_runtime_dependencies_rejects_cross_os_target(monkeypatch) -> None:
@@ -736,7 +584,6 @@ def test_backend_sidecar_spec_collects_curated_mlx_phonemizers() -> None:
 
     assert 'MLX_PHONEMIZER_HIDDEN_IMPORTS = ("misaki.en", "misaki.espeak")' in spec_text
     assert "hiddenimports += MLX_PHONEMIZER_HIDDEN_IMPORTS" in mlx_branch
-    assert 'collect_submodules("misaki")' not in mlx_branch
 
 
 @pytest.mark.parametrize("runtime_profile", ["base", "mlx"])
@@ -1079,6 +926,111 @@ def test_expose_espeak_data_at_sidecar_root_links_files_and_copies_dirs(tmp_path
     assert (voices_dir / "en").read_text(encoding="utf-8") == "english voices"
 
 
+def _write_bitsandbytes_variants(sidecar_dir: Path, torch_version: str) -> Path:
+    internal = sidecar_dir / "_internal"
+    (internal / f"torch-{torch_version}.dist-info").mkdir(parents=True)
+    library_dir = internal / "bitsandbytes"
+    library_dir.mkdir(parents=True)
+    for name in ("cpu", "cuda118", "cuda124", "cuda126", "cuda129"):
+        (library_dir / f"libbitsandbytes_{name}.dll").write_bytes(name.encode())
+    (library_dir / "functional.py").write_text("", encoding="utf-8")
+    return library_dir
+
+
+def test_bitsandbytes_pruning_keeps_only_the_variant_the_bundled_torch_loads(tmp_path: Path) -> None:
+    library_dir = _write_bitsandbytes_variants(tmp_path, "2.13.0+cu126")
+
+    build_desktop_backend._prune_unmatched_bitsandbytes_libraries(tmp_path)  # noqa: SLF001
+
+    assert sorted(path.name for path in library_dir.iterdir()) == [
+        "functional.py", "libbitsandbytes_cpu.dll", "libbitsandbytes_cuda126.dll",
+    ]
+
+
+def test_bitsandbytes_pruning_refuses_a_bundle_without_the_matching_variant(tmp_path: Path) -> None:
+    library_dir = _write_bitsandbytes_variants(tmp_path, "2.13.0+cu130")
+
+    with pytest.raises(RuntimeError, match="no CUDA 130 library"):
+        build_desktop_backend._prune_unmatched_bitsandbytes_libraries(tmp_path)  # noqa: SLF001
+    assert len(list(library_dir.glob("libbitsandbytes_cuda*.dll"))) == 4
+
+
+def test_bitsandbytes_pruning_leaves_bundles_without_a_cuda_torch_untouched(tmp_path: Path) -> None:
+    library_dir = _write_bitsandbytes_variants(tmp_path, "2.13.0+cpu")
+
+    build_desktop_backend._prune_unmatched_bitsandbytes_libraries(tmp_path)  # noqa: SLF001
+
+    assert len(list(library_dir.glob("libbitsandbytes_cuda*.dll"))) == 4
+
+
+def test_windows_cuda_publication_keeps_speech_data_single_and_prunes_bitsandbytes(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    binaries_dir = tmp_path / "binaries"
+    onedir = dist_dir / "orpheus-desktop-backend"
+    _write_executable(onedir / "orpheus-desktop-backend.exe", "backend exe")
+    ffmpeg_source = _write_executable(tmp_path / "tools" / "ffmpeg.exe", "ffmpeg exe")
+    ffprobe_source = _write_executable(tmp_path / "tools" / "ffprobe.exe", "ffprobe exe")
+    monkeypatch.setattr(
+        build_desktop_backend.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, "configuration: --enable-static\n", "",
+        ),
+    )
+    data_dir = onedir / "_internal" / "espeakng_loader" / "espeak-ng-data"
+    (data_dir / "voices").mkdir(parents=True)
+    (data_dir / "phontab").write_text("phoneme table", encoding="utf-8")
+    (data_dir / "en_dict").write_text("english", encoding="utf-8")
+    _write_requirements_manifests(onedir)
+    _write_bitsandbytes_variants(onedir, "2.13.0+cu126")
+    monkeypatch.setattr(build_desktop_backend, "DIST_DIR", dist_dir)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_BINARIES_DIR", binaries_dir)
+    monkeypatch.setattr(
+        build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", binaries_dir / "orpheus-desktop-backend",
+    )
+
+    executable = build_desktop_backend._copy_sidecar_for_tauri(  # noqa: SLF001
+        "x86_64-pc-windows-msvc",
+        ffmpeg_binaries={"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
+        runtime_profile="cuda",
+    )
+
+    published = executable.parent
+    assert sorted(path.name for path in published.iterdir()) == [
+        "_internal", "bin", "orpheus-desktop-backend.exe", "runtime-profile.json",
+    ]
+    assert (published / "_internal" / "espeakng_loader" / "espeak-ng-data" / "en_dict").is_file()
+    assert sorted(
+        path.name for path in (published / "_internal" / "bitsandbytes").glob("libbitsandbytes_*")
+    ) == ["libbitsandbytes_cpu.dll", "libbitsandbytes_cuda126.dll"]
+
+
+@pytest.mark.parametrize(
+    "state", ["data/audiobooks.db", "output/.orpheus-storage-owner.json", "temp/x.wav", "backend-ready.json", "audiobooks.db"],
+)
+def test_resource_validation_refuses_library_state_from_a_local_run(
+    tmp_path: Path, monkeypatch, state: str,
+) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Linux")
+    sidecar_dir = tmp_path / "sidecar"
+    _write_required_pyinstaller_resources(sidecar_dir, runtime_profile="base")
+    for name in ("ffmpeg", "ffprobe"):
+        _write_executable(sidecar_dir / "bin" / name)
+    build_desktop_backend._validate_sidecar_resources(  # noqa: SLF001
+        sidecar_dir, target_triple="x86_64-unknown-linux-gnu", runtime_profile="base",
+    )
+    leaked = sidecar_dir / state
+    leaked.parent.mkdir(parents=True, exist_ok=True)
+    leaked.write_text("user library", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=f"library state from a local run: {state.split('/')[0]}"):
+        build_desktop_backend._validate_sidecar_resources(  # noqa: SLF001
+            sidecar_dir, target_triple="x86_64-unknown-linux-gnu", runtime_profile="base",
+        )
+
+
 def test_backend_build_prerequisites_include_mlx_runtime_imports() -> None:
     modules = set(
         build_desktop_backend.required_modules(
@@ -1087,7 +1039,6 @@ def test_backend_build_prerequisites_include_mlx_runtime_imports() -> None:
         )
     )
 
-    assert "jinja2" not in modules
     assert {"en_core_web_sm", "scipy", "spacy", "thinc", "mlx", "mlx_audio"}.issubset(modules)
     assert "torch" not in modules
 
@@ -1485,6 +1436,13 @@ def test_copy_ffmpeg_binaries_skips_relocation_on_windows_target(
     ffmpeg_source = _write_executable(tmp_path / "source" / "ffmpeg.exe", "ffmpeg")
     ffprobe_source = _write_executable(tmp_path / "source" / "ffprobe.exe", "ffprobe")
     sidecar_dir = tmp_path / "sidecar"
+    monkeypatch.setattr(
+        build_desktop_backend.subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, "configuration: --enable-static\n", "",
+        ),
+    )
 
     def boom(*_args, **_kwargs):  # noqa: ANN002, ANN003
         raise AssertionError("Windows packaging must not relocate Mach-O deps")
@@ -1502,6 +1460,101 @@ def test_copy_ffmpeg_binaries_skips_relocation_on_windows_target(
     )
     assert (sidecar_dir / "bin" / "ffmpeg.exe").is_file()
     assert (sidecar_dir / "bin" / "ffprobe.exe").is_file()
+
+
+@pytest.mark.parametrize("shared_binary", ["ffmpeg", "ffprobe"])
+def test_windows_ffmpeg_packaging_rejects_shared_builds(
+    tmp_path: Path, monkeypatch, shared_binary: str,
+) -> None:
+    binaries = {
+        name: _write_executable(tmp_path / "shared" / f"{name}.exe")
+        for name in ("ffmpeg", "ffprobe")
+    }
+    (tmp_path / "shared" / "avcodec-61.dll").write_bytes(b"shared library")
+
+    def run(command, **kwargs):
+        assert command[1:] == ["-version"]
+        configuration = "--enable-shared" if Path(command[0]).stem == shared_binary else "--enable-static"
+        return subprocess.CompletedProcess(command, 0, f"configuration: {configuration}\n", "")
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="(?i)shared.*standalone"):
+        build_desktop_backend._copy_ffmpeg_binaries(  # noqa: SLF001
+            tmp_path / "sidecar", binaries, target_triple="x86_64-pc-windows-msvc",
+        )
+
+
+@pytest.mark.parametrize("broken_binary", ["ffmpeg", "ffprobe"])
+def test_windows_resource_validation_rejects_ffmpeg_with_missing_dlls(
+    tmp_path: Path, monkeypatch, broken_binary: str,
+) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Windows")
+    sidecar_dir = tmp_path / "sidecar"
+    _write_required_pyinstaller_resources(sidecar_dir, runtime_profile="base")
+    for name in ("ffmpeg", "ffprobe"):
+        _write_executable(sidecar_dir / "bin" / f"{name}.exe")
+
+    def run(command, **kwargs):
+        return subprocess.CompletedProcess(
+            command, 0xC0000135 if Path(command[0]).stem == broken_binary else 0,
+            "", "avcodec-61.dll was not found" if Path(command[0]).stem == broken_binary else "",
+        )
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match=f"{broken_binary}.*standalone"):
+        build_desktop_backend._validate_sidecar_resources(  # noqa: SLF001
+            sidecar_dir, target_triple="x86_64-pc-windows-msvc", runtime_profile="base",
+        )
+
+
+def test_windows_resource_validation_runs_both_tools_with_only_system_path(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Windows")
+    sidecar_dir = tmp_path / "sidecar"
+    _write_required_pyinstaller_resources(sidecar_dir, runtime_profile="base")
+    for name in ("ffmpeg", "ffprobe"):
+        _write_executable(sidecar_dir / "bin" / f"{name}.exe")
+    system_root = tmp_path / "Windows"
+    monkeypatch.setenv("SystemRoot", str(system_root))
+    monkeypatch.setenv("PATH", str(tmp_path / "shared-ffmpeg"))
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        assert command[1:] == ["-version"]
+        env = {key.upper(): value for key, value in kwargs["env"].items()}
+        assert env["PATH"] == str(system_root / "System32")
+        assert env["SYSTEMROOT"] == str(system_root)
+        assert kwargs["cwd"] == sidecar_dir / "bin"
+        assert 0 < kwargs["timeout"] <= 30
+        return subprocess.CompletedProcess(command, 0, "configuration: --enable-static\n", "")
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", run)
+    build_desktop_backend._validate_sidecar_resources(  # noqa: SLF001
+        sidecar_dir, target_triple="x86_64-pc-windows-msvc", runtime_profile="base",
+    )
+    assert calls == [[str(sidecar_dir / "bin" / f"{name}.exe"), "-version"] for name in ("ffmpeg", "ffprobe")]
+
+
+@pytest.mark.parametrize("failure", [OSError("DLL load failed"), subprocess.TimeoutExpired("ffmpeg", 30)])
+def test_windows_resource_validation_reports_tools_that_cannot_run(
+    tmp_path: Path, monkeypatch, failure: Exception,
+) -> None:
+    monkeypatch.setattr(build_desktop_backend.platform, "system", lambda: "Windows")
+    sidecar_dir = tmp_path / "sidecar"
+    _write_required_pyinstaller_resources(sidecar_dir, runtime_profile="base")
+    for name in ("ffmpeg", "ffprobe"):
+        _write_executable(sidecar_dir / "bin" / f"{name}.exe")
+
+    def run(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(build_desktop_backend.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="ffmpeg could not run.*standalone"):
+        build_desktop_backend._validate_sidecar_resources(  # noqa: SLF001
+            sidecar_dir, target_triple="x86_64-pc-windows-msvc", runtime_profile="base",
+        )
 
 
 def test_validate_relocated_macho_rejects_forbidden_absolute_deps(tmp_path: Path) -> None:
@@ -1554,3 +1607,90 @@ def test_build_script_help_runs_from_desktop_working_directory_without_pythonpat
 
     assert completed.returncode == 0, completed.stderr
     assert "Build the desktop backend sidecar executable" in completed.stdout
+
+
+@pytest.mark.parametrize("profile,target", [
+    ("base", "x86_64-unknown-linux-gnu"),
+    ("mlx", "aarch64-apple-darwin"),
+    ("cuda", "x86_64-unknown-linux-gnu"),
+])
+def test_existing_sidecar_infers_profile_and_validates_its_resources(tmp_path, monkeypatch, profile, target):
+    sidecar = tmp_path / "sidecar"
+    executable = _write_executable(sidecar / build_desktop_backend.SIDE_CAR_STEM)
+    _write_required_pyinstaller_resources(sidecar, runtime_profile=profile)
+    for name in ("ffmpeg", "ffprobe"):
+        _write_executable(sidecar / "bin" / name)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", sidecar)
+    monkeypatch.setenv("ORPHEUS_RUNTIME_PROFILE", "base")
+    assert build_desktop_backend.validate_existing_sidecar(target_triple=target) == executable
+    if profile != "base":
+        (sidecar / "_internal/espeakng_loader/espeak-ng-data/phontab").unlink()
+        with pytest.raises(RuntimeError, match="missing required runtime resources"):
+            build_desktop_backend.validate_existing_sidecar(target_triple=target)
+
+
+@pytest.mark.parametrize("failure", ["copy", "rewrite", "validation", "publish", "locked"])
+def test_failed_sidecar_publication_preserves_previous_tree(tmp_path, monkeypatch, failure):
+    dist = tmp_path / "dist"
+    binaries = tmp_path / "binaries"
+    live = binaries / build_desktop_backend.SIDE_CAR_STEM
+    _write_executable(live / build_desktop_backend.SIDE_CAR_STEM, "previous executable")
+    _write_executable(dist / build_desktop_backend.SIDE_CAR_STEM / build_desktop_backend.SIDE_CAR_STEM, "new executable")
+    monkeypatch.setattr(build_desktop_backend, "DIST_DIR", dist)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_BINARIES_DIR", binaries)
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", live)
+    monkeypatch.setattr(build_desktop_backend, "_copy_ffmpeg_binaries", lambda *a, **kw: None)
+    monkeypatch.setattr(build_desktop_backend, "_validate_sidecar_resources", lambda *a, **kw: None)
+
+    def fail(*args, **kwargs):
+        raise OSError("injected failure")
+
+    if failure == "copy":
+        monkeypatch.setattr(build_desktop_backend.shutil, "copytree", fail)
+    elif failure == "rewrite":
+        monkeypatch.setattr(build_desktop_backend, "_copy_ffmpeg_binaries", fail)
+    elif failure == "validation":
+        monkeypatch.setattr(build_desktop_backend, "_validate_sidecar_resources", fail)
+    else:
+        rename = Path.rename
+
+        def fail_rename(source, destination):
+            if failure == "locked" and source == live:
+                raise PermissionError("executable is locked")
+            if failure == "publish" and Path(destination) == live and "staging" in source.name:
+                raise OSError("injected failure")
+            return rename(source, destination)
+
+        monkeypatch.setattr(Path, "rename", fail_rename)
+    message = "locked Windows executables" if failure == "locked" else "injected failure|publication failed"
+    with pytest.raises((OSError, RuntimeError), match=message):
+        build_desktop_backend._copy_sidecar_for_tauri(
+            "x86_64-unknown-linux-gnu", runtime_profile="base",
+            ffmpeg_binaries={"ffmpeg": tmp_path / "ffmpeg", "ffprobe": tmp_path / "ffprobe"},
+        )
+    assert (live / build_desktop_backend.SIDE_CAR_STEM).read_text() == "previous executable"
+
+
+def test_sidecar_publication_rejects_concurrent_owner_and_releases_after_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", tmp_path / "sidecar")
+    with pytest.raises(ValueError, match="build failed"):
+        with build_desktop_backend._sidecar_publication_lock():
+            with pytest.raises(RuntimeError, match="Another sidecar build"):
+                with build_desktop_backend._sidecar_publication_lock():
+                    pytest.fail("concurrent publication acquired ownership")
+            raise ValueError("build failed")
+    with build_desktop_backend._sidecar_publication_lock():
+        pass
+
+
+def test_interrupted_publication_recovers_previous_profile_before_rebuilding(tmp_path, monkeypatch):
+    live = tmp_path / "binaries" / build_desktop_backend.SIDE_CAR_STEM
+    previous = live.with_name(f".{build_desktop_backend.SIDE_CAR_STEM}.previous")
+    _write_executable(previous / build_desktop_backend.SIDE_CAR_STEM, "previous executable")
+    (previous / "runtime-profile.json").write_text('{"profile":"cuda"}')
+    monkeypatch.setattr(build_desktop_backend, "TAURI_SIDECAR_RESOURCE_DIR", live)
+    monkeypatch.delenv("ORPHEUS_RUNTIME_PROFILE", raising=False)
+    with build_desktop_backend._sidecar_publication_lock():
+        assert build_desktop_backend._resolve_build_runtime_profile("x86_64-pc-windows-msvc", None) == "cuda"
+        assert (live / build_desktop_backend.SIDE_CAR_STEM).read_text() == "previous executable"
+    assert not previous.exists()

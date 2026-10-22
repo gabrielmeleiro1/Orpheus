@@ -17,17 +17,26 @@ import socket
 import sys
 import tempfile
 import threading
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from pathlib import Path
-from typing import Sequence
+from typing import BinaryIO, Sequence
 
-from modules.hf_cache import configure_hf_cache
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8", errors="backslashreplace")
+
+from modules.hf_cache import configure_hf_cache  # noqa: E402
 
 configure_hf_cache()
 
 import uvicorn  # noqa: E402
+import psutil  # noqa: E402
 from uvicorn.server import HANDLED_SIGNALS  # noqa: E402
 
+from modules.app import AppConfig, AppController  # noqa: E402
+from modules.storage.db_ownership import (  # noqa: E402
+    DatabaseOwnership, acquire_database, open_process_lock, time as time,
+)
 from modules.web.server import create_app  # noqa: E402
 
 # libespeak-ng POSIX path_home buffer (speech.h N_PATH_HOME).
@@ -35,6 +44,7 @@ from modules.web.server import create_app  # noqa: E402
 _LIBESPEAK_PATH_HOME_LIMIT = 160
 _SUPPORTED_RUNTIME_PROFILES = frozenset({"base", "mlx", "cuda"})
 _RUNTIME_PROFILE_MARKER = "runtime-profile.json"
+_library_lock: DatabaseOwnership | None = None
 
 # Upper bound on how long Uvicorn will wait for active connections to drain on
 # shutdown. The persistent SSE stream is closed proactively on signal (see
@@ -43,13 +53,87 @@ _RUNTIME_PROFILE_MARKER = "runtime-profile.json"
 DESKTOP_GRACEFUL_SHUTDOWN_TIMEOUT = 3.0
 
 
+def _open_process_lock(path: Path, *, blocking: bool) -> BinaryIO:
+    return open_process_lock(path, blocking=blocking, windows=os.name == "nt")
+
+
+def _exit_orphaned_backend(code: int) -> None:
+    try:
+        descendants = psutil.Process().children(recursive=True)
+        for child in descendants:
+            with contextlib.suppress(psutil.Error):
+                child.terminate()
+        _, alive = psutil.wait_procs(descendants, timeout=1.0)
+        for child in alive:
+            with contextlib.suppress(psutil.Error):
+                child.kill()
+        psutil.wait_procs(alive, timeout=0.5)
+    finally:
+        os._exit(code)
+
+
+def _pid_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _watch_desktop_parent(
+    expected_pid: int,
+    request_shutdown: Callable[[], None],
+    stop: threading.Event,
+    *,
+    getppid: Callable[[], int] = os.getppid,
+    pid_exists: Callable[[int], bool] = _pid_exists,
+) -> None:
+    while not stop.wait(1.0):
+        if getppid() != expected_pid or not pid_exists(expected_pid):
+            # Arm before cleanup so a stuck callback cannot prevent the fallback.
+            # Keep it armed through interpreter teardown and multiprocessing joins.
+            fallback = threading.Timer(8.0, _exit_orphaned_backend, args=(1,))
+            fallback.daemon = True
+            fallback.start()
+            request_shutdown()
+            return
+
+
+def _start_desktop_parent_watchdog(
+    request_shutdown: Callable[[], None],
+) -> threading.Event | None:
+    if sys.platform == "win32":
+        return None
+    try:
+        expected_pid = int(os.environ.get("ORPHEUS_DESKTOP_PARENT_PID", ""))
+    except ValueError:
+        return None
+    if expected_pid <= 0:
+        return None
+    stop = threading.Event()
+    threading.Thread(
+        target=_watch_desktop_parent, args=(expected_pid, request_shutdown, stop), daemon=True
+    ).start()
+    return stop
+
+
 def _path_filesystem_byte_length(path: Path | str) -> int:
     """Return path length in filesystem-encoded bytes (libespeak buffer units)."""
     return len(os.fsencode(os.fspath(path)))
 
 
-def _frozen_espeak_runtime_base() -> Path:
-    """Short per-user cache dir for the espeak-ng-data bridge or copy."""
+def _is_native_safe_espeak_path(path: Path, *, platform: str | None = None) -> bool:
+    platform = sys.platform if platform is None else platform
+    return (
+        _path_filesystem_byte_length(path) < _LIBESPEAK_PATH_HOME_LIMIT
+        and (platform != "win32" or str(path).isascii())
+    )
+
+
+def _espeak_runtime_base() -> Path:
+    """Short per-user cache dir for the espeak-ng-data copy."""
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "Orpheus" / "espeak"
     xdg_cache = os.environ.get("XDG_CACHE_HOME")
@@ -63,51 +147,35 @@ def _ensure_short_espeak_data_path(packaged_data: Path) -> Path:
     packaged_data = packaged_data.resolve()
     if sys.platform == "win32":
         return _windows_espeak_data_path(packaged_data)
-    if _path_filesystem_byte_length(packaged_data) < _LIBESPEAK_PATH_HOME_LIMIT:
+    if _is_native_safe_espeak_path(packaged_data):
         return packaged_data
 
+    manifest = _espeak_data_manifest(packaged_data)
+    fingerprint = hashlib.sha256()
+    for path, (size, digest) in sorted(manifest.items()):
+        fingerprint.update(f"{path}:{size}:{digest}\n".encode("utf-8"))
+    version = fingerprint.hexdigest()[:12]
+    user_key = hashlib.sha256(os.fsencode(Path.home())).hexdigest()[:12]
     candidates = (
-        _frozen_espeak_runtime_base() / "espeak-ng-data",
-        Path(tempfile.gettempdir()) / "orpheus-espeak" / "espeak-ng-data",
+        _espeak_runtime_base() / version / "espeak-ng-data",
+        Path(tempfile.gettempdir()) / f"orpheus-espeak-{user_key}" / version / "espeak-ng-data",
     )
-    for link_path in candidates:
-        if _path_filesystem_byte_length(link_path) >= _LIBESPEAK_PATH_HOME_LIMIT:
-            continue
+    for target in candidates:
         try:
-            link_path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            continue
-        try:
-            if link_path.is_symlink() and link_path.resolve() == packaged_data:
-                return link_path
-        except OSError:
-            pass
-
-        # Replace only symlinks/files. Never delete a real directory tree.
-        try:
-            if link_path.is_symlink() or link_path.is_file():
-                link_path.unlink()
-            elif link_path.exists():
+            if not _is_native_safe_espeak_path(target.resolve()):
                 continue
-            link_path.symlink_to(packaged_data, target_is_directory=True)
-        except FileExistsError:
-            try:
-                if link_path.is_symlink() and link_path.resolve() == packaged_data:
-                    return link_path
-            except OSError:
-                continue
-            continue
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _publish_espeak_data(packaged_data, target, manifest)
+            resolved = target.resolve()
+            if (
+                _is_native_safe_espeak_path(resolved)
+                and (resolved / "phontab").is_file()
+                and _espeak_data_matches(target, manifest)
+            ):
+                return resolved
         except OSError:
             continue
-
-        try:
-            if link_path.resolve() == packaged_data:
-                return link_path
-        except OSError:
-            continue
-
-    # Last resort: return packaged path (may still truncate in libespeak).
-    return packaged_data
+    raise RuntimeError("Speech data needs a writable short cache path to enable speech.")
 
 
 def _espeak_data_manifest(root: Path) -> dict[Path, tuple[int, str]]:
@@ -137,15 +205,33 @@ def _espeak_data_matches(root: Path, expected: dict[Path, tuple[int, str]]) -> b
         return False
 
 
+def _publish_espeak_data(
+    packaged_data: Path, target: Path, manifest: dict[Path, tuple[int, str]],
+) -> None:
+    # Keep the lock file in place so every launcher locks the same inode.
+    with _open_process_lock(target.parent / ".publish.lock", blocking=True):
+        if _espeak_data_matches(target, manifest):
+            return
+        with tempfile.TemporaryDirectory(prefix=".copy-", dir=target.parent) as staging:
+            copied = Path(staging) / "espeak-ng-data"
+            shutil.copytree(packaged_data, copied)
+            if not _espeak_data_matches(copied, manifest):
+                raise OSError("Copied speech data does not match the package")
+            if _espeak_data_matches(target, manifest):
+                return
+            try:
+                target.rename(Path(staging) / "discarded")
+            except FileNotFoundError:
+                pass
+            copied.rename(target)
+
+
 def _windows_espeak_data_path(packaged_data: Path) -> Path:
     # The bundled C library uses narrow Windows filesystem calls. UTF-8 paths
     # can terminate the process inside espeak_Initialize, before Python can
     # catch an error. Phonemizer resolves junctions/8.3 names back to the unsafe
     # path, so keep a small, versioned data copy when a bridge cannot work.
-    if (
-        str(packaged_data).isascii()
-        and _path_filesystem_byte_length(packaged_data) < _LIBESPEAK_PATH_HOME_LIMIT
-    ):
+    if _is_native_safe_espeak_path(packaged_data, platform="win32"):
         return packaged_data
     files = sorted(path for path in packaged_data.rglob("*") if path.is_file())
     fingerprint = hashlib.sha256(str(packaged_data).encode("utf-8"))
@@ -159,14 +245,14 @@ def _windows_espeak_data_path(packaged_data: Path) -> Path:
     # native path budget on two separate hash directories.
     cache_key = hashlib.sha256(f"{Path.home()}:{version}".encode("utf-8")).hexdigest()[:16]
     program_data = Path(os.environ.get("PROGRAMDATA", "C:/ProgramData"))
-    packaged_manifest = None
+    packaged_manifest = _espeak_data_manifest(packaged_data)
     for base in (
-        _frozen_espeak_runtime_base() / version,
+        _espeak_runtime_base() / version,
         Path(tempfile.gettempdir()) / "orpheus-espeak" / version,
         program_data / f"orpheus-espeak-{cache_key}",
     ):
         target = base / "espeak-ng-data"
-        if not str(target).isascii() or _path_filesystem_byte_length(target) >= _LIBESPEAK_PATH_HOME_LIMIT:
+        if not _is_native_safe_espeak_path(target, platform="win32"):
             continue
         try:
             shared_cache = base.is_relative_to(program_data) or base.resolve().is_relative_to(program_data.resolve())
@@ -176,33 +262,11 @@ def _windows_espeak_data_path(packaged_data: Path) -> Path:
             # and administrators. Existing directories (or older Python builds)
             # still require content verification; their inherited ACL is unchanged.
             base.mkdir(mode=0o700 if shared_cache else 0o777, parents=True, exist_ok=True)
-            if shared_cache and packaged_manifest is None:
-                packaged_manifest = _espeak_data_manifest(packaged_data)
             # Verify write access even when reusing a previously populated cache.
             with tempfile.TemporaryFile(dir=target.parent) as probe:
                 probe.write(b"orpheus")
-            needs_copy = not target.exists() or (
-                shared_cache and not _espeak_data_matches(target, packaged_manifest)
-            )
-            if needs_copy:
-                with tempfile.TemporaryDirectory(prefix=".copy-", dir=target.parent) as staging:
-                    copied = Path(staging) / "espeak-ng-data"
-                    shutil.copytree(packaged_data, copied)
-                    if shared_cache:
-                        if not _espeak_data_matches(copied, packaged_manifest):
-                            raise OSError("Copied speech data does not match the package")
-                        # Publish only a complete, verified directory. Move an
-                        # untrusted target aside rather than modifying it in place.
-                        try:
-                            target.rename(Path(staging) / "discarded")
-                        except FileNotFoundError:
-                            pass
-                    try:
-                        copied.rename(target)
-                    except FileExistsError:
-                        # Another backend may have completed the same cache.
-                        pass
-            if shared_cache and not _espeak_data_matches(target, packaged_manifest):
+            _publish_espeak_data(packaged_data, target, packaged_manifest)
+            if not _espeak_data_matches(target, packaged_manifest):
                 continue
             if (target / "phontab").is_file() and all(
                 (target / path.relative_to(packaged_data)).is_file()
@@ -210,10 +274,7 @@ def _windows_espeak_data_path(packaged_data: Path) -> Path:
                 for path in files
             ):
                 resolved = target.resolve()
-                if (
-                    str(resolved).isascii()
-                    and _path_filesystem_byte_length(resolved) < _LIBESPEAK_PATH_HOME_LIMIT
-                ):
+                if _is_native_safe_espeak_path(resolved, platform="win32"):
                     return resolved
         except OSError:
             continue
@@ -438,36 +499,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def configure_frozen_espeak_runtime() -> None:
-    """Point phonemizer/espeak at packaged data before TTS imports (PyInstaller only).
+def configure_espeak_runtime() -> None:
+    """Point phonemizer/espeak at safe data paths before TTS imports.
 
     The bundled libespeak-ng defaults to its compile-time CI data path. Misaki
     configures phonemizer from espeakng_loader getters at import time, so the
-    frozen sidecar must retarget those getters and EspeakWrapper before any
+    launcher must retarget those getters and EspeakWrapper before any
     misaki/phonemizer/TTS import can lock in the missing path.
 
-    Nested .app paths often exceed libespeak POSIX N_PATH_HOME (160 filesystem
-    bytes). When the packaged data path is too long, expose it through a short
-    symlink bridge in a per-user cache location and set
+    Nested .app and virtualenv paths can exceed libespeak POSIX N_PATH_HOME (160
+    filesystem bytes). When the data path is too long, expose it through a short
+    verified data copy in a per-user cache location and set
     ESPEAK_DATA_PATH / PHONEMIZER_* consistently for parent and spawn-worker
     re-entry. Windows uses a versioned ASCII data copy for unsafe paths.
     """
-    if not getattr(sys, "frozen", False):
-        return
+    from modules.tts.mlx_compat import patch_espeakng_loader_paths
 
-    from modules.tts.mlx_compat import patch_frozen_espeakng_loader_paths
-
-    patch_frozen_espeakng_loader_paths()
+    patch_espeakng_loader_paths()
 
     try:
         import espeakng_loader
-        from phonemizer.backend.espeak.wrapper import EspeakWrapper
     except ImportError:
         return
 
     library_path = Path(espeakng_loader.get_library_path())
     packaged_data = Path(espeakng_loader.get_data_path())
     if not library_path.is_file() or not packaged_data.is_dir():
+        return
+    if (
+        not getattr(sys, "frozen", False)
+        and _is_native_safe_espeak_path(packaged_data.resolve())
+    ):
         return
 
     try:
@@ -482,6 +544,10 @@ def configure_frozen_espeak_runtime() -> None:
         # Fail in Python before any native initialization can use the unsafe path.
         espeakng_loader.get_library_path = unavailable
         espeakng_loader.get_data_path = unavailable
+        try:
+            from phonemizer.backend.espeak.wrapper import EspeakWrapper
+        except ImportError:
+            return
         EspeakWrapper.library = classmethod(unavailable)
         return
     library = str(library_path)
@@ -489,22 +555,27 @@ def configure_frozen_espeak_runtime() -> None:
 
     espeakng_loader.get_library_path = lambda library=library: library
     espeakng_loader.get_data_path = lambda data=data: data
-    EspeakWrapper.set_library(library)
-    EspeakWrapper.set_data_path(data)
     os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = library
     os.environ["PHONEMIZER_ESPEAK_DATA_PATH"] = data
     os.environ["ESPEAK_DATA_PATH"] = data
+    try:
+        from phonemizer.backend.espeak.wrapper import EspeakWrapper
+    except ImportError:
+        return
+    EspeakWrapper.set_library(library)
+    EspeakWrapper.set_data_path(data)
 
 
 def main(argv: list[str] | None = None) -> int:
+    global _library_lock
     # App-owned databases, sources, temporary audio, and generated artifacts
     # are private by default. Explicit chmod calls also repair existing roots;
     # the process umask covers every newly created nested path.
     if os.name != "nt":
         os.umask(0o077)
-    # Configure packaged espeak paths before freeze_support: multiprocessing
+    # Configure espeak paths before freeze_support: frozen multiprocessing
     # children re-enter main and never return from freeze_support.
-    configure_frozen_espeak_runtime()
+    configure_espeak_runtime()
     # Required for PyInstaller-frozen multiprocessing helper subprocesses
     # (resource tracker / forkserver / worker bootstrap) so they don't fall
     # through to CLI arg parsing.
@@ -516,7 +587,21 @@ def main(argv: list[str] | None = None) -> int:
     except RuntimeError as exc:
         print(f"failed to start desktop backend: {exc}", file=sys.stderr)
         return 1
-    app = create_app(desktop_mode=True, desktop_api_token=token)
+    config = AppConfig()
+    try:
+        # Retain ownership through interpreter teardown and worker joins.
+        _library_lock = acquire_database(config.db_path)
+        config.db_path = _library_lock.path
+    except BlockingIOError:
+        print("Orpheus is already running with this library", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"failed to lock desktop library: {exc}", file=sys.stderr)
+        return 1
+    app = create_app(
+        controller_factory=lambda: AppController(config=config),
+        desktop_mode=True, desktop_api_token=token, enforce_loopback_host=True,
+    )
     server = _build_desktop_server(
         app,
         host=args.host,
@@ -525,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
         runtime_profile=runtime_profile,
     )
 
+    parent_watchdog_stop = _start_desktop_parent_watchdog(server.request_shutdown)
     try:
         server.run()
     except KeyboardInterrupt:
@@ -532,9 +618,20 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         print(f"failed to start desktop backend: {exc}", file=sys.stderr)
         return 1
+    finally:
+        if parent_watchdog_stop is not None:
+            parent_watchdog_stop.set()
 
     if not server.ready_emitted:
-        print("failed to start desktop backend: startup did not complete", file=sys.stderr)
+        # A library that cannot be opened (newer schema, read-only file) names
+        # its cause and remedy; keep it last so the shell's error tail ends with it.
+        cause = getattr(getattr(app, "state", None), "startup_error", None)
+        if isinstance(cause, Exception) and str(cause):
+            print(f"failed to start desktop backend: {cause}", file=sys.stderr)
+        else:
+            # No named cause: leave the prefix off so the shell keeps the
+            # stderr tail above, which holds the actual error.
+            print("desktop backend startup did not complete", file=sys.stderr)
         return 1
     return 0
 

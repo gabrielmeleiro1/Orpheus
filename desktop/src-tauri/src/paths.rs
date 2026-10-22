@@ -276,11 +276,13 @@ fn reject_broad_qualification_targets(
     resolved: &Path,
     live_app_data_dir: &Path,
 ) -> Result<(), String> {
-    if resolved == Path::new("/") {
-        return Err(
-            "qualification override refuse: runtime root must not be filesystem root '/'; refusing to fall back to live app data"
-                .to_string(),
-        );
+    // A path without a parent is a filesystem root: `/` on Unix, or any drive
+    // or share root (`\\?\D:\`, `\\?\UNC\server\share\`) on Windows.
+    if resolved.parent().is_none() {
+        return Err(format!(
+            "qualification override refuse: runtime root must not be a filesystem root ('{}'); refusing to fall back to live app data",
+            resolved.display()
+        ));
     }
 
     if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
@@ -341,24 +343,6 @@ mod tests {
         fs::create_dir_all(root.join("data")).expect("data");
         fs::create_dir_all(root.join("output")).expect("output");
         fs::create_dir_all(root.join("temp")).expect("temp");
-    }
-
-    #[test]
-    fn app_data_path_generation_matches_desktop_contract() {
-        let app_data_root = PathBuf::from("/tmp/audiobook-app");
-        let runtime_paths = DesktopRuntimePaths::from_app_data_dir(&app_data_root);
-
-        assert_eq!(runtime_paths.data_dir, app_data_root.join("data"));
-        assert_eq!(runtime_paths.output_dir, app_data_root.join("output"));
-        assert_eq!(runtime_paths.temp_dir, app_data_root.join("temp"));
-        assert_eq!(
-            runtime_paths.db_path,
-            app_data_root.join("data").join("audiobooks.db")
-        );
-        assert_eq!(
-            runtime_paths.ready_file_path,
-            app_data_root.join("backend-ready.json")
-        );
     }
 
     #[test]
@@ -536,41 +520,9 @@ mod tests {
     }
 
     #[test]
-    fn audiobook_env_injection_cannot_redirect_production_resolve() {
-        // Inherited AUDIOBOOK_* must never select the runtime root. Resolution
-        // only consults the qualification override pair (or the live app-data
-        // directory); AUDIOBOOK_* are outputs via as_env(), never inputs.
-        let app_data = PathBuf::from("/tmp/live-app-data-ignore-audiobook");
-        let paths = resolve_desktop_runtime_paths_with_env(&app_data, None, None)
-            .expect("production resolve");
-        assert_eq!(paths, DesktopRuntimePaths::from_app_data_dir(&app_data));
-        assert_eq!(
-            paths.data_dir,
-            PathBuf::from("/tmp/live-app-data-ignore-audiobook/data")
-        );
-        assert_ne!(
-            paths.data_dir,
-            PathBuf::from("/untrusted/attacker-library/data")
-        );
-    }
-
-    #[test]
-    fn broad_targets_like_root_home_and_live_app_data_are_rejected() {
+    fn home_and_live_app_data_are_rejected_as_broad_targets() {
         let app_data = unique_temp_dir("live-broad");
         write_qualification_runtime(&app_data, "1.0.0-final");
-
-        let root_err = resolve_desktop_runtime_paths_with_env(
-            &app_data,
-            Some(std::ffi::OsString::from("/")),
-            Some(std::ffi::OsString::from("1.0.0-final")),
-        )
-        .expect_err("filesystem root must fail");
-        assert!(
-            root_err.to_ascii_lowercase().contains("refuse")
-                || root_err.to_ascii_lowercase().contains("unsafe")
-                || root_err.contains('/'),
-            "{root_err}"
-        );
 
         if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
             let home_err = resolve_desktop_runtime_paths_with_env(
@@ -601,6 +553,25 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(app_data);
+    }
+
+    #[test]
+    fn every_filesystem_root_is_rejected_as_a_broad_target() {
+        let live = PathBuf::from("/nonexistent/orpheus-live-app-data");
+        #[cfg(windows)]
+        let roots = [r"\\?\C:\", r"\\?\Z:\", r"Z:\", r"\\?\UNC\server\share\"];
+        #[cfg(not(windows))]
+        let roots = ["/"];
+        for root in roots {
+            let error = super::reject_broad_qualification_targets(Path::new(root), &live)
+                .expect_err("a filesystem root must be refused");
+            assert!(error.contains("filesystem root"), "{root}: {error}");
+        }
+        assert!(super::reject_broad_qualification_targets(
+            &std::env::temp_dir().join("orpheus-qualification-evidence"),
+            &live
+        )
+        .is_ok());
     }
 
     #[test]

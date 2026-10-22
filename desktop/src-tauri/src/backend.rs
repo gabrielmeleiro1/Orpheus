@@ -1,33 +1,28 @@
 use crate::paths::DesktopRuntimePaths;
-use crate::setup::resolve_setup_python;
+use crate::setup::{remove_inherited_python_overrides, resolve_setup_python};
 #[cfg(windows)]
 use crate::setup::{resume_suspended_child_threads, WindowsJob};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStderr, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendLifecycle {
+    #[default]
     Stopped,
     Starting,
     Ready,
     Failed,
-}
-
-impl Default for BackendLifecycle {
-    fn default() -> Self {
-        Self::Stopped
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -86,6 +81,10 @@ pub struct BackendManager {
 }
 
 impl BackendManager {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn mark_starting(&mut self) -> u64 {
         self.generation = self.generation.wrapping_add(1);
         self.lifecycle = BackendLifecycle::Starting;
@@ -93,10 +92,6 @@ impl BackendManager {
         self.error = None;
         self.started_at = Some(Instant::now());
         self.generation
-    }
-
-    pub fn mark_ready(&mut self, payload: BackendReadyPayload) {
-        self.mark_ready_for_generation(self.generation, payload);
     }
 
     pub fn mark_ready_for_generation(&mut self, generation: u64, payload: BackendReadyPayload) {
@@ -187,11 +182,118 @@ pub struct ProcessLaunchConfig {
     pub env: Vec<(String, String)>,
 }
 
+const BACKEND_LOG_MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+struct BackendLog {
+    path: PathBuf,
+    writer: Option<BufWriter<fs::File>>,
+    size: u64,
+}
+
+impl BackendLog {
+    fn open(data_dir: &Path) -> io::Result<Self> {
+        let log_dir = data_dir.join("logs");
+        fs::create_dir_all(&log_dir)?;
+        let path = log_dir.join("backend.log");
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let size = file.metadata()?.len();
+        Ok(Self {
+            path,
+            writer: Some(BufWriter::new(file)),
+            size,
+        })
+    }
+
+    fn write_line(&mut self, line: &str) -> io::Result<()> {
+        // Keep even a single oversized diagnostic within the rotation budget.
+        let mut start = line
+            .len()
+            .saturating_sub(BACKEND_LOG_MAX_BYTES as usize - 1);
+        while !line.is_char_boundary(start) {
+            start += 1;
+        }
+        let line = &line[start..];
+        let bytes = line.len() as u64 + 1;
+        if self.size + bytes > BACKEND_LOG_MAX_BYTES {
+            if let Some(mut writer) = self.writer.take() {
+                writer.flush()?;
+            }
+            let backup = self.path.with_file_name("backend.log.1");
+            match fs::remove_file(&backup) {
+                Ok(()) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            fs::rename(&self.path, backup)?;
+            self.writer = Some(BufWriter::new(
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)?,
+            ));
+            self.size = 0;
+        }
+        if let Some(writer) = self.writer.as_mut() {
+            writeln!(writer, "{line}")?;
+            writer.flush()?;
+            self.size += bytes;
+        }
+        Ok(())
+    }
+}
+
+/// Best-effort diagnostic on the shell's own stderr. `eprintln!` panics when
+/// stderr is a closed pipe; in a reader thread that would stop draining the
+/// backend's pipe until the child blocks on a full buffer (and abort a release
+/// build, which uses `panic = "abort"`), so write errors are ignored.
+pub(crate) fn print_diagnostic(message: std::fmt::Arguments<'_>) {
+    let _ = writeln!(io::stderr().lock(), "{message}");
+}
+
+fn log_backend_line(log: &Mutex<Option<BackendLog>>, line: &str) {
+    if let Ok(mut guard) = log.lock() {
+        if let Some(writer) = guard.as_mut() {
+            if writer.write_line(line).is_err() {
+                *guard = None;
+            }
+        }
+    }
+}
+
+// The launcher ends its stderr with this prefix and the cause when startup
+// fails for a reason it can name (for example a library from a newer version).
+const BACKEND_STARTUP_FAILURE_PREFIX: &str = "failed to start desktop backend: ";
+
+fn backend_exit_detail(message: impl AsRef<str>, stderr: &Mutex<Vec<String>>) -> String {
+    let lines = stderr.lock().map(|lines| lines.clone()).unwrap_or_default();
+    // A named cause is the whole message: the traceback above it and the exit
+    // code add nothing a user can act on.
+    if let Some(cause) = lines
+        .iter()
+        .rev()
+        .map(|line| line.trim())
+        .find(|line| !line.is_empty())
+        .filter(|line| line.starts_with(BACKEND_STARTUP_FAILURE_PREFIX))
+    {
+        return cause.to_string();
+    }
+    let tail = lines.join("\n");
+    if tail.trim().is_empty() {
+        message.as_ref().to_string()
+    } else {
+        format!("{}: {}", message.as_ref(), tail.trim())
+    }
+}
+
 #[derive(Debug)]
 pub struct RunningBackend {
     child: Child,
     stdout_thread: Option<JoinHandle<()>>,
     stderr_thread: Option<JoinHandle<()>>,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
     // Set by the stdout reader when the backend prints its shutdown
     // acknowledgement after finishing cleanup; exit is imminent at that point.
     shutdown_ack: Arc<AtomicBool>,
@@ -213,9 +315,6 @@ pub struct RunningBackend {
     job: Arc<WindowsJob>,
 }
 
-#[cfg(windows)]
-pub(crate) type BackendLaunchPhase = crate::setup::WindowsLaunchPhase;
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BackendShutdownPayload {
     pub event: String,
@@ -236,7 +335,13 @@ const BACKEND_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BACKEND_EMERGENCY_TEARDOWN_WAIT: Duration = Duration::from_millis(500);
 const BACKEND_READER_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
 const BACKEND_READER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(25);
+// Number of trailing stderr lines quoted in the error when the backend exits.
+const BACKEND_STDERR_TAIL_LINES: usize = 20;
 const BACKEND_SIDECAR_NAME: &str = "orpheus-desktop-backend";
+// The only address the backend is asked to bind. A ready payload naming any
+// other host is not the child the shell launched, so it is never adopted: the
+// token would otherwise be handed to that host, and the CSP only admits this one.
+const BACKEND_LOOPBACK_HOST: &str = "127.0.0.1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShutdownOutcome {
@@ -578,7 +683,56 @@ fn join_reader_thread(handle: JoinHandle<()>, timeout: Duration) -> bool {
     }
 }
 
+fn adopt_backend_ready(
+    manager: &Mutex<BackendManager>,
+    generation: u64,
+    payload: BackendReadyPayload,
+    #[cfg(windows)] shutdown_endpoint: &Mutex<Option<BackendReadyPayload>>,
+) -> Result<(), String> {
+    let mut manager = manager
+        .lock()
+        .map_err(|_| "backend manager lock poisoned".to_string())?;
+    if manager.generation() != generation
+        || manager.status().lifecycle != BackendLifecycle::Starting
+    {
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        let mut endpoint = shutdown_endpoint
+            .lock()
+            .map_err(|_| "backend shutdown endpoint lock poisoned".to_string())?;
+        *endpoint = Some(payload.clone());
+    }
+    manager.mark_ready_for_generation(generation, payload);
+    Ok(())
+}
+
 impl RunningBackend {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn adopt_ready(
+        &self,
+        manager: &Mutex<BackendManager>,
+        payload: BackendReadyPayload,
+    ) -> Result<(), String> {
+        adopt_backend_ready(
+            manager,
+            self.generation,
+            payload,
+            #[cfg(windows)]
+            &self.shutdown_endpoint,
+        )
+    }
+
+    /// End a child whose startup deadline passed. Its generation is already
+    /// failed, so there is nothing to shut down gracefully.
+    pub fn kill_after_startup_timeout(&mut self) {
+        self.force_kill_owned_process_group();
+    }
+
     pub fn disarm_emergency_teardown(&mut self) {
         self.emergency_teardown_armed = false;
     }
@@ -608,6 +762,9 @@ impl RunningBackend {
                 let _ = send_signal_to_process_group(process_group_id, libc::SIGKILL);
             }
         }
+
+        #[cfg(windows)]
+        self.job.terminate();
 
         let _ = self.child.kill();
         let _ = wait_for_child_exit(&mut self.child, BACKEND_EMERGENCY_TEARDOWN_WAIT);
@@ -655,9 +812,21 @@ impl RunningBackend {
         let Some(exit_status) = exit_status else {
             return Ok(());
         };
+        // The failed backend remains in the application slot until restart.
+        // Close its workers and inherited pipes now, while the job is still owned.
+        #[cfg(windows)]
+        self.job.terminate();
         #[cfg(unix)]
         {
             self.child_reaped = true;
+        }
+
+        // Drain diagnostics before the supervisor races the stdout EOF handler.
+        if let Some(handle) = self.stderr_thread.take() {
+            join_reader_thread(handle, BACKEND_READER_JOIN_TIMEOUT);
+        }
+        if let Some(handle) = self.stdout_thread.take() {
+            join_reader_thread(handle, BACKEND_READER_JOIN_TIMEOUT);
         }
 
         let mut guard = manager
@@ -667,13 +836,19 @@ impl RunningBackend {
             BackendLifecycle::Starting => {
                 guard.mark_failed_for_generation(
                     self.generation,
-                    format!("desktop backend exited before ready payload ({exit_status})"),
+                    backend_exit_detail(
+                        format!("desktop backend exited before ready payload ({exit_status})"),
+                        &self.stderr_lines,
+                    ),
                 );
             }
             BackendLifecycle::Ready => {
                 guard.mark_failed_for_generation(
                     self.generation,
-                    format!("desktop backend exited unexpectedly ({exit_status})"),
+                    backend_exit_detail(
+                        format!("desktop backend exited unexpectedly ({exit_status})"),
+                        &self.stderr_lines,
+                    ),
                 );
             }
             BackendLifecycle::Stopped | BackendLifecycle::Failed => {}
@@ -794,27 +969,12 @@ fn python_program() -> String {
         .unwrap_or_else(|| "python".to_string())
 }
 
-#[cfg(test)]
-pub fn sidecar_binary_stem() -> &'static str {
-    BACKEND_SIDECAR_NAME
-}
-
 pub fn sidecar_runtime_filename() -> String {
     if cfg!(target_os = "windows") {
         format!("{BACKEND_SIDECAR_NAME}.exe")
     } else {
         BACKEND_SIDECAR_NAME.to_string()
     }
-}
-
-#[cfg(test)]
-pub fn sidecar_source_filename(target_triple: &str) -> String {
-    let extension = if target_triple.contains("windows") {
-        ".exe"
-    } else {
-        ""
-    };
-    format!("{BACKEND_SIDECAR_NAME}-{target_triple}{extension}")
 }
 
 pub fn resolve_sidecar_path(
@@ -909,16 +1069,18 @@ pub(crate) fn build_dev_launch_config_for_root(
     ))
 }
 
-/// Base backend environment plus the debug-only dev-CORS opt-in.
+/// Base backend environment, parent process identity, and debug-only dev-CORS opt-in.
 ///
 /// Debug builds (`tauri dev`) serve the frontend from the Vite dev server, so
 /// the backend must allow `http://localhost:5173` in CORS. Release builds
 /// (`tauri build`) compile with `debug_assertions` off and never set this flag,
 /// so packaged backends only accept the `tauri.localhost` origin.
 fn backend_launch_env(runtime_paths: &DesktopRuntimePaths) -> Vec<(String, String)> {
-    // `mut` is only used under debug_assertions; release builds never push.
-    #[cfg_attr(not(debug_assertions), allow(unused_mut))]
     let mut env: Vec<(String, String)> = runtime_paths.as_env().into_iter().collect();
+    env.push((
+        "ORPHEUS_DESKTOP_PARENT_PID".to_string(),
+        std::process::id().to_string(),
+    ));
     #[cfg(debug_assertions)]
     env.push(("ORPHEUS_DESKTOP_DEV".to_string(), "1".to_string()));
     env
@@ -935,22 +1097,13 @@ fn build_dev_launch_config_with_python(
             "-m".to_string(),
             "apps.launchers.desktop_backend".to_string(),
             "--host".to_string(),
-            "127.0.0.1".to_string(),
+            BACKEND_LOOPBACK_HOST.to_string(),
             "--port".to_string(),
             "0".to_string(),
         ],
         cwd: Some(project_root.to_path_buf()),
         env: backend_launch_env(runtime_paths),
     }
-}
-
-#[cfg(all(test, unix))]
-pub(crate) fn build_dev_launch_config_for_test(
-    runtime_paths: &DesktopRuntimePaths,
-    project_root: &Path,
-    python: &Path,
-) -> ProcessLaunchConfig {
-    build_dev_launch_config_with_python(runtime_paths, project_root, python)
 }
 
 pub fn build_sidecar_launch_config(
@@ -961,7 +1114,7 @@ pub fn build_sidecar_launch_config(
         program: sidecar_path.as_ref().to_string_lossy().into_owned(),
         args: vec![
             "--host".to_string(),
-            "127.0.0.1".to_string(),
+            BACKEND_LOOPBACK_HOST.to_string(),
             "--port".to_string(),
             "0".to_string(),
         ],
@@ -992,6 +1145,7 @@ fn launch_backend(
         command.current_dir(cwd);
     }
 
+    remove_inherited_python_overrides(&mut command);
     for (key, value) in &launch.env {
         command.env(key, value);
     }
@@ -1010,183 +1164,82 @@ fn launch_backend(
     let mut child = command.spawn().map_err(|error| {
         let message = format!("failed to launch desktop backend process: {error}");
         if let Ok(mut guard) = manager.lock() {
-            guard.mark_failed(message.clone());
+            guard.mark_failed_for_generation(generation, message.clone());
         }
         message
     })?;
     #[cfg(unix)]
     let process_group_id = i32::try_from(child.id()).ok();
 
-    #[cfg(windows)]
-    let mut windows_phase = BackendLaunchPhase::Built;
-    #[cfg(windows)]
-    if let Err(error) = windows_phase.mark_spawned_suspended() {
-        let _ = child.kill();
-        let _ = child.wait();
-        if let Ok(mut guard) = manager.lock() {
-            guard.mark_failed_for_generation(generation, error.clone());
-        }
-        return Err(error);
-    }
-
-    #[cfg(windows)]
-    let job = match WindowsJob::assign(&child) {
-        Ok(job) => job,
-        Err(error) => {
+    // Kill a child whose launch cannot be completed and record why. The job
+    // (once assigned) is terminated first so no descendant can survive.
+    let abort =
+        |child: &mut Child, #[cfg(windows)] job: Option<&WindowsJob>, error: String| -> String {
+            #[cfg(windows)]
+            if let Some(job) = job {
+                job.terminate();
+            }
             let _ = child.kill();
             let _ = child.wait();
             if let Ok(mut guard) = manager.lock() {
                 guard.mark_failed_for_generation(generation, error.clone());
             }
-            return Err(error);
-        }
-    };
-    #[cfg(windows)]
-    if let Err(error) = windows_phase.mark_job_assigned() {
-        job.terminate();
-        let _ = child.kill();
-        let _ = child.wait();
-        if let Ok(mut guard) = manager.lock() {
-            guard.mark_failed_for_generation(generation, error.clone());
-        }
-        return Err(error);
-    }
+            error
+        };
 
-    let stdout = match child.stdout.take() {
-        Some(stdout) => stdout,
-        None => {
-            #[cfg(windows)]
-            job.terminate();
-            let _ = child.kill();
-            let _ = child.wait();
-            if let Ok(mut guard) = manager.lock() {
-                guard.mark_failed_for_generation(
-                    generation,
-                    "failed to capture desktop backend stdout",
-                );
-            }
-            return Err("failed to capture desktop backend stdout".to_string());
-        }
+    #[cfg(windows)]
+    let job = match WindowsJob::assign(&child) {
+        Ok(job) => job,
+        Err(error) => return Err(abort(&mut child, None, error)),
     };
-    let stderr = match child.stderr.take() {
-        Some(stderr) => stderr,
-        None => {
+
+    let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        return Err(abort(
+            &mut child,
             #[cfg(windows)]
-            job.terminate();
-            let _ = child.kill();
-            let _ = child.wait();
-            if let Ok(mut guard) = manager.lock() {
-                guard.mark_failed_for_generation(
-                    generation,
-                    "failed to capture desktop backend stderr",
-                );
-            }
-            return Err("failed to capture desktop backend stderr".to_string());
-        }
+            Some(job.as_ref()),
+            "failed to capture desktop backend output".to_string(),
+        ));
     };
 
     #[cfg(windows)]
     if let Err(error) = resume_suspended_child_threads(child.id()) {
-        job.terminate();
-        let _ = child.kill();
-        let _ = child.wait();
-        if let Ok(mut guard) = manager.lock() {
-            guard.mark_failed_for_generation(generation, error.clone());
-        }
-        return Err(error);
-    }
-    #[cfg(windows)]
-    if let Err(error) = windows_phase.mark_resumed() {
-        job.terminate();
-        let _ = child.kill();
-        let _ = child.wait();
-        if let Ok(mut guard) = manager.lock() {
-            guard.mark_failed_for_generation(generation, error.clone());
-        }
-        return Err(error);
+        return Err(abort(&mut child, Some(job.as_ref()), error));
     }
 
-    let stdout_manager = Arc::clone(&manager);
-    let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
-    let stdout_stderr_lines = Arc::clone(&stderr_lines);
+    let log = Arc::new(Mutex::new(
+        launch
+            .env
+            .iter()
+            .find(|(key, _)| key == "AUDIOBOOK_DATA_DIR")
+            .and_then(|(_, value)| BackendLog::open(Path::new(value)).ok()),
+    ));
+    let stderr_lines = Arc::new(Mutex::new(Vec::new()));
     let shutdown_ack = Arc::new(AtomicBool::new(false));
-    let stdout_shutdown_ack = Arc::clone(&shutdown_ack);
     #[cfg(windows)]
     let shutdown_endpoint = Arc::new(Mutex::new(None));
-    #[cfg(windows)]
-    let stdout_shutdown_endpoint = Arc::clone(&shutdown_endpoint);
-    let stdout_thread = thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            if let Ok(payload) = parse_ready_line(&line) {
-                #[cfg(windows)]
-                if let Ok(mut endpoint) = stdout_shutdown_endpoint.lock() {
-                    *endpoint = Some(payload.clone());
-                }
-                if let Ok(mut guard) = stdout_manager.lock() {
-                    guard.mark_ready_for_generation(generation, payload);
-                }
-            } else if parse_shutdown_line(&line).is_ok() {
-                stdout_shutdown_ack.store(true, Ordering::SeqCst);
-            }
-        }
+    let (stderr_done_tx, stderr_done_rx) = mpsc::channel();
 
-        // An acknowledged shutdown means the backend finished cleanup and
-        // exited on purpose; report it as stopped rather than failed.
-        if stdout_shutdown_ack.load(Ordering::SeqCst) {
-            if let Ok(mut guard) = stdout_manager.lock() {
-                guard.mark_stopped_for_generation(generation);
-            }
-            return;
-        }
-
-        if let Ok(mut guard) = stdout_manager.lock() {
-            match guard.status().lifecycle {
-                BackendLifecycle::Starting => {
-                    let stderr = stdout_stderr_lines
-                        .lock()
-                        .ok()
-                        .map(|lines| lines.join("\n"))
-                        .unwrap_or_default();
-                    let error = if stderr.trim().is_empty() {
-                        "desktop backend exited before ready payload".to_string()
-                    } else {
-                        format!(
-                            "desktop backend exited before ready payload: {}",
-                            stderr.trim()
-                        )
-                    };
-                    guard.mark_failed_for_generation(generation, error);
-                }
-                BackendLifecycle::Ready => {
-                    guard.mark_failed_for_generation(
-                        generation,
-                        "desktop backend exited unexpectedly",
-                    );
-                }
-                BackendLifecycle::Stopped | BackendLifecycle::Failed => {}
-            }
-        }
-    });
-
-    let stderr_stderr_lines = Arc::clone(&stderr_lines);
-    let stderr_thread = thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            if let Ok(mut lines) = stderr_stderr_lines.lock() {
-                lines.push(line.clone());
-                if lines.len() > 20 {
-                    lines.remove(0);
-                }
-            }
-            eprintln!("[desktop-backend] {line}");
-        }
-    });
+    let stdout_thread = spawn_stdout_reader(
+        stdout,
+        StdoutReaderContext {
+            manager: Arc::clone(&manager),
+            generation,
+            log: Arc::clone(&log),
+            stderr_lines: Arc::clone(&stderr_lines),
+            stderr_done: stderr_done_rx,
+            shutdown_ack: Arc::clone(&shutdown_ack),
+            #[cfg(windows)]
+            shutdown_endpoint: Arc::clone(&shutdown_endpoint),
+        },
+    );
+    let stderr_thread = spawn_stderr_reader(stderr, log, Arc::clone(&stderr_lines), stderr_done_tx);
 
     Ok(RunningBackend {
         child,
         stdout_thread: Some(stdout_thread),
         stderr_thread: Some(stderr_thread),
+        stderr_lines,
         shutdown_ack,
         #[cfg(windows)]
         shutdown_endpoint,
@@ -1198,6 +1251,114 @@ fn launch_backend(
         emergency_teardown_armed: true,
         #[cfg(windows)]
         job,
+    })
+}
+
+// Read one newline-terminated line, decoding invalid UTF-8 lossily so a stray
+// byte never stops diagnostics. Returns `None` at EOF or on a read error.
+fn read_lossy_line(reader: &mut impl BufRead, buffer: &mut Vec<u8>) -> Option<String> {
+    buffer.clear();
+    match reader.read_until(b'\n', buffer) {
+        Ok(0) | Err(_) => None,
+        Ok(_) => Some(
+            String::from_utf8_lossy(buffer)
+                .trim_end_matches(['\r', '\n'])
+                .to_string(),
+        ),
+    }
+}
+
+struct StdoutReaderContext {
+    manager: Arc<Mutex<BackendManager>>,
+    generation: u64,
+    log: Arc<Mutex<Option<BackendLog>>>,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
+    stderr_done: mpsc::Receiver<()>,
+    shutdown_ack: Arc<AtomicBool>,
+    #[cfg(windows)]
+    shutdown_endpoint: Arc<Mutex<Option<BackendReadyPayload>>>,
+}
+
+// Watch stdout for the ready handshake and the shutdown acknowledgement, log
+// everything else, and turn EOF into this generation's terminal lifecycle.
+// The ready line carries the session token, so it is never logged.
+fn spawn_stdout_reader(stdout: ChildStdout, context: StdoutReaderContext) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let StdoutReaderContext {
+            manager,
+            generation,
+            log,
+            stderr_lines,
+            stderr_done,
+            shutdown_ack,
+            #[cfg(windows)]
+            shutdown_endpoint,
+        } = context;
+        let mut reader = BufReader::new(stdout);
+        let mut buffer = Vec::new();
+        while let Some(line) = read_lossy_line(&mut reader, &mut buffer) {
+            if let Ok(payload) = parse_ready_line(&line) {
+                let _ = adopt_backend_ready(
+                    &manager,
+                    generation,
+                    payload,
+                    #[cfg(windows)]
+                    &shutdown_endpoint,
+                );
+            } else if is_ready_event(&line) {
+                // A rejected handshake still carries a token; record only that
+                // it was ignored.
+                log_backend_line(&log, "ignored an invalid desktop ready payload");
+            } else {
+                log_backend_line(&log, &line);
+                if parse_shutdown_line(&line).is_ok() {
+                    shutdown_ack.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+        // stderr can reach EOF after stdout even when the child has exited.
+        let _ = stderr_done.recv_timeout(BACKEND_READER_JOIN_TIMEOUT);
+
+        let Ok(mut guard) = manager.lock() else {
+            return;
+        };
+        // An acknowledged shutdown means the backend finished cleanup and
+        // exited on purpose; report it as stopped rather than failed.
+        if shutdown_ack.load(Ordering::SeqCst) {
+            guard.mark_stopped_for_generation(generation);
+            return;
+        }
+        let message = match guard.status().lifecycle {
+            BackendLifecycle::Starting => "desktop backend exited before ready payload",
+            BackendLifecycle::Ready => "desktop backend exited unexpectedly",
+            BackendLifecycle::Stopped | BackendLifecycle::Failed => return,
+        };
+        guard.mark_failed_for_generation(generation, backend_exit_detail(message, &stderr_lines));
+    })
+}
+
+// Mirror stderr into the log and the console, keeping a short tail for the
+// failure message shown when the backend exits.
+fn spawn_stderr_reader(
+    stderr: ChildStderr,
+    log: Arc<Mutex<Option<BackendLog>>>,
+    stderr_lines: Arc<Mutex<Vec<String>>>,
+    done: mpsc::Sender<()>,
+) -> JoinHandle<()> {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(stderr);
+        let mut buffer = Vec::new();
+        while let Some(line) = read_lossy_line(&mut reader, &mut buffer) {
+            if let Ok(mut lines) = stderr_lines.lock() {
+                if lines.len() >= BACKEND_STDERR_TAIL_LINES {
+                    lines.remove(0);
+                }
+                lines.push(line.clone());
+            }
+            log_backend_line(&log, &line);
+            print_diagnostic(format_args!("[desktop-backend] {line}"));
+        }
+        let _ = done.send(());
     })
 }
 
@@ -1231,6 +1392,12 @@ pub fn parse_ready_line(line: &str) -> Result<BackendReadyPayload, String> {
     if payload.host.trim().is_empty() {
         return Err("desktop ready payload missing host".to_string());
     }
+    if payload.host != BACKEND_LOOPBACK_HOST {
+        return Err(format!(
+            "desktop ready payload host '{}' is not the requested loopback address {BACKEND_LOOPBACK_HOST}",
+            payload.host
+        ));
+    }
     if payload.port == 0 {
         return Err("desktop ready payload missing port".to_string());
     }
@@ -1239,6 +1406,18 @@ pub fn parse_ready_line(line: &str) -> Result<BackendReadyPayload, String> {
     }
 
     Ok(payload)
+}
+
+fn is_ready_event(line: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(line.trim())
+        .ok()
+        .and_then(|value| {
+            value
+                .get("event")
+                .and_then(serde_json::Value::as_str)
+                .map(|event| event == "ready")
+        })
+        .unwrap_or(false)
 }
 
 pub fn parse_shutdown_line(line: &str) -> Result<BackendShutdownPayload, String> {
@@ -1255,21 +1434,6 @@ pub fn parse_shutdown_line(line: &str) -> Result<BackendShutdownPayload, String>
     Ok(payload)
 }
 
-#[cfg(test)]
-pub fn backend_shutdown_graceful_timeout() -> Duration {
-    BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT
-}
-
-#[cfg(test)]
-pub fn backend_shutdown_force_kill_max() -> Duration {
-    BACKEND_SHUTDOWN_FORCE_KILL_MAX
-}
-
-#[cfg(test)]
-pub fn backend_shutdown_ack_extension() -> Duration {
-    BACKEND_SHUTDOWN_ACK_EXTENSION
-}
-
 pub fn read_ready_payload_from_file(path: impl AsRef<Path>) -> Result<BackendReadyPayload, String> {
     let path = path.as_ref();
     let payload = fs::read_to_string(path).map_err(|error| {
@@ -1279,12 +1443,10 @@ pub fn read_ready_payload_from_file(path: impl AsRef<Path>) -> Result<BackendRea
         )
     })?;
     let parsed = parse_ready_line(&payload)?;
-    fs::remove_file(path).map_err(|error| {
-        format!(
-            "failed to remove desktop ready file '{}': {error}",
-            path.display()
-        )
-    })?;
+    // The payload is already this generation's (the file is cleared before
+    // every launch), so a scanner or indexer briefly holding the file open must
+    // not discard it. Stopping the backend removes the file again.
+    let _ = fs::remove_file(path);
     Ok(parsed)
 }
 

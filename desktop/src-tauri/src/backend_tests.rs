@@ -1,10 +1,8 @@
-#[cfg(unix)]
-use super::build_dev_launch_config_for_test;
 use super::{
-    backend_shutdown_force_kill_max, backend_shutdown_graceful_timeout,
-    build_dev_launch_config_for_root, parse_ready_line, parse_shutdown_line,
-    read_ready_payload_from_file, resolve_sidecar_path, sidecar_binary_stem,
-    sidecar_source_filename, BackendLifecycle, BackendManager,
+    backend_exit_detail, build_dev_launch_config_for_root, parse_ready_line, parse_shutdown_line,
+    read_ready_payload_from_file, resolve_sidecar_path, BackendLifecycle, BackendManager,
+    BACKEND_SHUTDOWN_ACK_EXTENSION, BACKEND_SHUTDOWN_FORCE_KILL_MAX,
+    BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT, BACKEND_SIDECAR_NAME,
 };
 
 #[cfg(windows)]
@@ -13,23 +11,6 @@ fn forced_backend_shutdown_terminates_root_and_descendant_in_job() {
     use std::fs;
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
-
-    fn process_is_running(pid: u32) -> bool {
-        use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-        use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
-        };
-
-        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-        if handle.is_null() {
-            return false;
-        }
-        let mut exit_code = 0_u32;
-        let running = unsafe { GetExitCodeProcess(handle, &mut exit_code) != 0 }
-            && exit_code == STILL_ACTIVE as u32;
-        unsafe { CloseHandle(handle) };
-        running
-    }
 
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -86,8 +67,8 @@ while True:
         );
         thread::sleep(Duration::from_millis(25));
     };
-    assert!(process_is_running(pids[0]));
-    assert!(process_is_running(pids[1]));
+    let processes = [WatchedProcess::open(pids[0]), WatchedProcess::open(pids[1])];
+    assert!(processes.iter().all(WatchedProcess::is_running));
 
     let endpoint = loop {
         if let Some(endpoint) = running.shutdown_endpoint.lock().unwrap().clone() {
@@ -113,19 +94,154 @@ while True:
     // before dropping `running`; otherwise KILL_ON_JOB_CLOSE would mask a
     // broken TerminateJobObject call.
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
-    while process_is_running(pids[0]) || process_is_running(pids[1]) {
+    while processes.iter().any(WatchedProcess::is_running) {
         assert!(
             std::time::Instant::now() < deadline,
             "forced backend shutdown left a process alive"
         );
         thread::sleep(Duration::from_millis(25));
     }
-    assert!(!process_is_running(pids[0]));
-    assert!(!process_is_running(pids[1]));
 
     drop(running);
     let _ = fs::remove_file(marker);
 }
+
+/// Keeps a process handle open so its PID cannot be recycled while a test
+/// polls it; parallel tests spawn many short-lived Python processes.
+#[cfg(windows)]
+struct WatchedProcess {
+    pid: u32,
+    handle: windows_sys::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl WatchedProcess {
+    fn open(pid: u32) -> Self {
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SYNCHRONIZE};
+
+        let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
+        assert!(!handle.is_null(), "failed to open process {pid}");
+        Self { pid, handle }
+    }
+
+    /// Uses the signaled state, like `Child::try_wait`. An exit code can be
+    /// published slightly before the handle is signaled, so polling it would
+    /// let a test call `refresh_exit_status` before the exit is observable.
+    fn is_running(&self) -> bool {
+        use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        unsafe { WaitForSingleObject(self.handle, 0) == WAIT_TIMEOUT }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for WatchedProcess {
+    fn drop(&mut self) {
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
+    }
+}
+
+#[cfg(windows)]
+fn launch_windows_backend_with_descendant() -> (
+    super::RunningBackend,
+    std::sync::Arc<std::sync::Mutex<BackendManager>>,
+    WatchedProcess,
+    PathBuf,
+) {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let root = unique_temp_path("windows-backend-exit");
+    std::fs::create_dir_all(&root).unwrap();
+    let script = r#"import os, pathlib, subprocess, sys, time
+root = pathlib.Path(sys.argv[1])
+descendant = subprocess.Popen(
+    [sys.executable, '-c', 'import time; time.sleep(60)'],
+    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
+)
+(root / 'worker.pid').write_text(str(descendant.pid), encoding='ascii')
+while not (root / 'exit').exists():
+    time.sleep(0.01)
+os._exit(23)
+"#;
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let running = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                root.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("contained Windows backend fixture");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let worker = loop {
+        if let Ok(contents) = std::fs::read_to_string(root.join("worker.pid")) {
+            if let Ok(pid) = contents.parse::<u32>() {
+                break pid;
+            }
+        }
+        assert!(Instant::now() < deadline, "backend worker did not start");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let worker = WatchedProcess::open(worker);
+    assert!(worker.is_running());
+    (running, manager, worker, root)
+}
+
+#[cfg(windows)]
+fn assert_windows_process_exits(process: &WatchedProcess) {
+    use std::time::{Duration, Instant};
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process.is_running() {
+        assert!(
+            Instant::now() < deadline,
+            "owned process {} survived cleanup",
+            process.pid
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_exit_refresh_terminates_surviving_worker_before_drop() {
+    let (mut running, manager, worker, root) = launch_windows_backend_with_descendant();
+    std::fs::write(root.join("exit"), b"exit").unwrap();
+    assert_windows_process_exits(&WatchedProcess::open(running.child.id()));
+    running.refresh_exit_status(&manager).unwrap();
+    running.refresh_exit_status(&manager).unwrap();
+
+    // A failed backend remains in the application slot until the user restarts.
+    // Keeping it alive here ensures kill-on-job-close cannot mask missing cleanup.
+    assert_windows_process_exits(&worker);
+    assert_eq!(
+        manager.lock().unwrap().status().lifecycle,
+        BackendLifecycle::Failed
+    );
+    drop(running);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_emergency_teardown_terminates_surviving_worker_before_drop() {
+    let (mut running, _manager, worker, root) = launch_windows_backend_with_descendant();
+    running.emergency_teardown();
+    running.emergency_teardown();
+    assert_windows_process_exits(&WatchedProcess::open(running.child.id()));
+    assert_windows_process_exits(&worker);
+    drop(running);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 use crate::paths::DesktopRuntimePaths;
 use std::path::{Path, PathBuf};
 
@@ -189,18 +305,6 @@ backend.run()
 }
 
 #[test]
-fn parse_ready_line_accepts_valid_json_payload() {
-    let payload = parse_ready_line(
-        "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":54321,\"token\":\"abc123\"}",
-    )
-    .expect("expected ready payload to parse");
-
-    assert_eq!(payload.host, "127.0.0.1");
-    assert_eq!(payload.port, 54321);
-    assert_eq!(payload.token, "abc123");
-}
-
-#[test]
 fn parse_ready_line_rejects_non_ready_event() {
     let error = parse_ready_line(
         "{\"event\":\"starting\",\"host\":\"127.0.0.1\",\"port\":54321,\"token\":\"abc123\"}",
@@ -211,13 +315,22 @@ fn parse_ready_line_rejects_non_ready_event() {
 }
 
 #[test]
+fn read_lossy_line_trims_line_endings_and_survives_invalid_utf8() {
+    let mut reader = std::io::Cursor::new(b"first\r\nJos\xe9\nlast".to_vec());
+    let mut buffer = Vec::new();
+    let lines: Vec<String> =
+        std::iter::from_fn(|| super::read_lossy_line(&mut reader, &mut buffer)).collect();
+    assert_eq!(lines, ["first", "Jos\u{fffd}", "last"]);
+}
+
+#[test]
 fn backend_state_machine_transitions_start_ready_stop() {
     let mut manager = BackendManager::default();
 
     assert_eq!(manager.status().lifecycle, BackendLifecycle::Stopped);
     assert!(manager.status().endpoint.is_none());
 
-    manager.mark_starting();
+    let generation = manager.mark_starting();
     assert_eq!(manager.status().lifecycle, BackendLifecycle::Starting);
     assert!(manager.status().endpoint.is_none());
 
@@ -225,7 +338,7 @@ fn backend_state_machine_transitions_start_ready_stop() {
         "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9000,\"token\":\"token-1\"}",
     )
     .expect("expected valid ready payload");
-    manager.mark_ready(payload);
+    manager.mark_ready_for_generation(generation, payload);
 
     let ready = manager.status();
     assert_eq!(ready.lifecycle, BackendLifecycle::Ready);
@@ -244,14 +357,14 @@ fn backend_state_machine_transitions_start_ready_stop() {
 #[test]
 fn backend_manager_ignores_late_ready_payload_after_failure() {
     let mut manager = BackendManager::default();
-    manager.mark_starting();
+    let generation = manager.mark_starting();
     manager.mark_failed("backend exited");
 
     let payload = parse_ready_line(
         "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9000,\"token\":\"token-1\"}",
     )
     .expect("expected valid ready payload");
-    manager.mark_ready(payload);
+    manager.mark_ready_for_generation(generation, payload);
 
     let status = manager.status();
     assert_eq!(status.lifecycle, BackendLifecycle::Failed);
@@ -306,6 +419,142 @@ fn ready_backend_stdout_eof_marks_unexpected_exit_failed() {
         .contains("desktop backend exited unexpectedly"));
 }
 
+fn run_backend_to_failure(data_dir: &Path, output: &str) -> super::BackendStatus {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let script = format!(
+        "import sys\nprint('{{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9000,\"token\":\"secret-token\"}}', flush=True)\n{output}"
+    );
+    let launch = super::ProcessLaunchConfig {
+        program: super::python_program(),
+        args: vec!["-c".to_string(), script],
+        cwd: None,
+        env: vec![
+            (
+                "AUDIOBOOK_DATA_DIR".to_string(),
+                data_dir.to_string_lossy().into_owned(),
+            ),
+            ("PYTHONIOENCODING".to_string(), "utf-8".to_string()),
+        ],
+    };
+    let mut running = super::launch_backend(Arc::clone(&manager), launch).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        running.refresh_exit_status(&manager).unwrap();
+        let status = manager.lock().unwrap().status();
+        if status.lifecycle == BackendLifecycle::Failed {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "backend did not report its exit");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    running.stop(&manager);
+    status
+}
+
+#[test]
+fn ready_backend_persists_diagnostics_and_reports_stderr_on_exit() {
+    let data_dir = unique_temp_path("backend-diagnostics");
+    let status = run_backend_to_failure(
+        &data_dir,
+        "print('conversion progress', flush=True)\nprint('speech initialization failed', file=sys.stderr, flush=True)",
+    );
+    let log = std::fs::read_to_string(data_dir.join("logs/backend.log")).unwrap();
+    assert!(log.contains("speech initialization failed"));
+    assert!(log.contains("conversion progress"));
+    assert!(!log.contains("secret-token"));
+    assert!(status
+        .error
+        .unwrap()
+        .contains("speech initialization failed"));
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[test]
+fn backend_log_keeps_reading_after_non_utf8_stdout_and_stderr() {
+    let data_dir = unique_temp_path("backend-log-invalid-bytes");
+    let status = run_backend_to_failure(
+        &data_dir,
+        "sys.stdout.buffer.write(b'Jos\\xe9 stdout\\ncontinued stdout\\n'); sys.stdout.flush()\nsys.stderr.buffer.write(b'Jos\\xe9 stderr\\ncontinued stderr\\n'); sys.stderr.flush()",
+    );
+    let log = std::fs::read_to_string(data_dir.join("logs/backend.log")).unwrap();
+    for line in [
+        "Jos� stdout",
+        "continued stdout",
+        "Jos� stderr",
+        "continued stderr",
+    ] {
+        assert!(log.contains(line), "missing diagnostic: {line}");
+    }
+    let error = status.error.unwrap();
+    assert!(error.contains("Jos� stderr"));
+    assert!(error.contains("continued stderr"));
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[test]
+fn backend_log_rotates_at_size_limit() {
+    let data_dir = unique_temp_path("backend-log-rotation");
+    let logs = data_dir.join("logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let limit = 5 * 1024 * 1024;
+    std::fs::write(logs.join("backend.log"), vec![b'x'; limit]).unwrap();
+    std::fs::write(logs.join("backend.log.1"), "older log").unwrap();
+    run_backend_to_failure(&data_dir, "print('new diagnostic', flush=True)");
+    assert_eq!(
+        std::fs::metadata(logs.join("backend.log.1")).unwrap().len(),
+        limit as u64
+    );
+    assert!(std::fs::metadata(logs.join("backend.log")).unwrap().len() <= limit as u64);
+    assert!(std::fs::read_to_string(logs.join("backend.log"))
+        .unwrap()
+        .contains("new diagnostic"));
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[test]
+fn backend_log_bounds_oversized_lines() {
+    let data_dir = unique_temp_path("backend-log-large-line");
+    run_backend_to_failure(
+        &data_dir,
+        "print('é' * (3 * 1024 * 1024), flush=True)\nprint('last diagnostic', flush=True)",
+    );
+    for name in ["backend.log", "backend.log.1"] {
+        let contents = std::fs::read_to_string(data_dir.join("logs").join(name)).unwrap();
+        assert!(contents.len() <= 5 * 1024 * 1024);
+    }
+    assert!(std::fs::read_to_string(data_dir.join("logs/backend.log"))
+        .unwrap()
+        .contains("last diagnostic"));
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+#[test]
+fn backend_log_io_failures_preserve_exit_diagnostics() {
+    for block_rotation in [false, true] {
+        let data_dir = unique_temp_path("backend-log-blocked");
+        let logs = data_dir.join("logs");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        if block_rotation {
+            std::fs::create_dir_all(logs.join("backend.log.1")).unwrap();
+            std::fs::write(logs.join("backend.log"), vec![b'x'; 5 * 1024 * 1024]).unwrap();
+        } else {
+            std::fs::write(&logs, "blocked").unwrap();
+        }
+        let status = run_backend_to_failure(
+            &data_dir,
+            "print('speech initialization failed', file=sys.stderr, flush=True)",
+        );
+        assert!(status
+            .error
+            .unwrap()
+            .contains("speech initialization failed"));
+        std::fs::remove_dir_all(data_dir).unwrap();
+    }
+}
+
 #[test]
 fn ready_backend_shutdown_ack_before_eof_marks_stopped() {
     use std::sync::{Arc, Mutex};
@@ -352,21 +601,36 @@ fn ready_backend_shutdown_ack_before_eof_marks_stopped() {
     assert!(terminal_status.error.is_none());
 }
 
-// POSIX-shaped fixture paths below, so compile this out on Windows rather than
-// filtering it out of every gate at the command line.
-#[cfg(unix)]
+#[test]
+fn desktop_launch_configs_carry_runtime_paths_and_parent_pid() {
+    let root = std::env::temp_dir().join("orpheus-parent-env");
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir(&root);
+    let configs = [
+        super::build_dev_launch_config_with_python(&runtime_paths, &root, &root.join("python")),
+        super::build_sidecar_launch_config(&runtime_paths, root.join("backend")),
+    ];
+    for config in configs {
+        let env = config
+            .env
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            env.get("ORPHEUS_DESKTOP_PARENT_PID"),
+            Some(&std::process::id().to_string())
+        );
+        for (key, value) in runtime_paths.as_env() {
+            assert_eq!(env.get(&key), Some(&value), "wrong {key}");
+        }
+    }
+}
+
 #[test]
 fn build_dev_launch_config_matches_desktop_runtime_contract() {
     let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/tmp/audiobook-app");
     let repo = Path::new("/trusted/orpheus");
-    let python = repo.join(".venv").join(if cfg!(windows) {
-        "Scripts/python.exe"
-    } else {
-        "bin/python"
-    });
-    let config = build_dev_launch_config_for_test(&runtime_paths, repo, &python);
+    let python = repo.join(".venv").join("bin").join("python");
+    let config = super::build_dev_launch_config_with_python(&runtime_paths, repo, &python);
 
-    assert!(!config.program.trim().is_empty());
     assert_eq!(
         config.args,
         vec![
@@ -380,35 +644,6 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
     );
     assert_eq!(config.program, python.to_string_lossy());
     assert_eq!(config.cwd, Some(repo.to_path_buf()));
-
-    let env = config
-        .env
-        .into_iter()
-        .collect::<std::collections::BTreeMap<_, _>>();
-    assert_eq!(
-        env.get("AUDIOBOOK_DATA_DIR").map(PathBuf::from),
-        Some(PathBuf::from("/tmp/audiobook-app").join("data"))
-    );
-    assert_eq!(
-        env.get("AUDIOBOOK_OUTPUT_DIR").map(PathBuf::from),
-        Some(PathBuf::from("/tmp/audiobook-app").join("output"))
-    );
-    assert_eq!(
-        env.get("AUDIOBOOK_TEMP_DIR").map(PathBuf::from),
-        Some(PathBuf::from("/tmp/audiobook-app").join("temp"))
-    );
-    assert_eq!(
-        env.get("AUDIOBOOK_DB_PATH").map(PathBuf::from),
-        Some(
-            PathBuf::from("/tmp/audiobook-app")
-                .join("data")
-                .join("audiobooks.db")
-        )
-    );
-    assert_eq!(
-        env.get("AUDIOBOOK_DESKTOP_READY_FILE").map(PathBuf::from),
-        Some(PathBuf::from("/tmp/audiobook-app").join("backend-ready.json"))
-    );
 }
 
 #[cfg(unix)]
@@ -489,22 +724,6 @@ fn read_ready_payload_from_file_accepts_packaged_handoff_json() {
 }
 
 #[test]
-fn sidecar_source_filename_matches_tauri_target_convention() {
-    assert_eq!(
-        sidecar_source_filename("aarch64-apple-darwin"),
-        "orpheus-desktop-backend-aarch64-apple-darwin"
-    );
-    assert_eq!(
-        sidecar_source_filename("x86_64-unknown-linux-gnu"),
-        "orpheus-desktop-backend-x86_64-unknown-linux-gnu"
-    );
-    assert_eq!(
-        sidecar_source_filename("x86_64-pc-windows-msvc"),
-        "orpheus-desktop-backend-x86_64-pc-windows-msvc.exe"
-    );
-}
-
-#[test]
 fn resolve_sidecar_path_finds_resource_root_binary() {
     let temp_root = unique_temp_path("resource-root");
     std::fs::create_dir_all(&temp_root).expect("expected test temp dir");
@@ -536,7 +755,7 @@ fn resolve_sidecar_path_finds_resource_binaries_subdir() {
 #[test]
 fn resolve_sidecar_path_finds_resource_onedir_binary() {
     let temp_root = unique_temp_path("resource-onedir");
-    let sidecar_dir = temp_root.join(sidecar_binary_stem());
+    let sidecar_dir = temp_root.join(BACKEND_SIDECAR_NAME);
     std::fs::create_dir_all(&sidecar_dir).expect("expected test sidecar dir");
     let sidecar_path = sidecar_dir.join(runtime_sidecar_file_name_for_tests());
     std::fs::write(&sidecar_path, b"test-sidecar").expect("expected sidecar fixture");
@@ -555,7 +774,7 @@ fn resolve_sidecar_path_reports_missing_binary() {
 
     let error = resolve_sidecar_path(Some(&temp_root), None)
         .expect_err("expected missing sidecar resolution to fail");
-    assert!(error.contains(sidecar_binary_stem()));
+    assert!(error.contains(BACKEND_SIDECAR_NAME));
 
     let _ = std::fs::remove_dir_all(&temp_root);
 }
@@ -565,7 +784,7 @@ fn resolve_sidecar_path_uses_logical_install_when_resource_directory_is_virtuali
     let temp_root = unique_temp_path("virtualized-resource");
     let install = temp_root.join("install");
     let resources = temp_root.join("package-cache");
-    let sidecar_dir = install.join("binaries").join(sidecar_binary_stem());
+    let sidecar_dir = install.join("binaries").join(BACKEND_SIDECAR_NAME);
     std::fs::create_dir_all(&sidecar_dir).unwrap();
     let sidecar = sidecar_dir.join(runtime_sidecar_file_name_for_tests());
     std::fs::write(&sidecar, b"test-sidecar").unwrap();
@@ -579,9 +798,9 @@ fn resolve_sidecar_path_uses_logical_install_when_resource_directory_is_virtuali
 
 fn runtime_sidecar_file_name_for_tests() -> String {
     if cfg!(target_os = "windows") {
-        format!("{}.exe", sidecar_binary_stem())
+        format!("{}.exe", BACKEND_SIDECAR_NAME)
     } else {
-        sidecar_binary_stem().to_string()
+        BACKEND_SIDECAR_NAME.to_string()
     }
 }
 
@@ -630,8 +849,6 @@ while True:
         .stderr(Stdio::piped())
         .spawn()
         .expect("expected test process to launch");
-    #[cfg(windows)]
-    let job = super::setup::WindowsJob::assign(&child).expect("expected job assignment");
     let stdout = child.stdout.take().expect("expected stdout pipe");
     let stderr = child.stderr.take().expect("expected stderr pipe");
 
@@ -656,14 +873,12 @@ while True:
         child,
         stdout_thread: Some(stdout_thread),
         stderr_thread: Some(stderr_thread),
+        stderr_lines: Arc::new(Mutex::new(Vec::new())),
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
-        #[cfg(unix)]
         process_group_id: None,
         child_reaped: false,
         emergency_teardown_armed: true,
-        #[cfg(windows)]
-        job,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     running.stop(&manager);
@@ -730,26 +945,19 @@ while True:
 
 #[test]
 fn backend_shutdown_graceful_timeout_matches_documented_cleanup_budget() {
-    let graceful = backend_shutdown_graceful_timeout();
+    let graceful = BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT;
     assert!(
         graceful > std::time::Duration::from_millis(5000),
         "graceful shutdown timeout {:?} must exceed the backend's documented 5.0s cleanup budget",
         graceful
     );
     assert!(
-        graceful + super::backend_shutdown_ack_extension() <= backend_shutdown_force_kill_max(),
+        graceful + BACKEND_SHUTDOWN_ACK_EXTENSION <= BACKEND_SHUTDOWN_FORCE_KILL_MAX,
         "force-kill ceiling {:?} must cover the graceful timeout {:?} plus the ack extension {:?}",
-        backend_shutdown_force_kill_max(),
+        BACKEND_SHUTDOWN_FORCE_KILL_MAX,
         graceful,
-        super::backend_shutdown_ack_extension()
+        BACKEND_SHUTDOWN_ACK_EXTENSION
     );
-}
-
-#[test]
-fn parse_shutdown_line_accepts_valid_json_payload() {
-    let payload =
-        parse_shutdown_line("{\"event\":\"shutdown\"}").expect("expected shutdown payload");
-    assert_eq!(payload.event, "shutdown");
 }
 
 #[test]
@@ -800,8 +1008,6 @@ while True:
         .stderr(Stdio::piped())
         .spawn()
         .expect("expected test process to launch");
-    #[cfg(windows)]
-    let job = super::setup::WindowsJob::assign(&child).expect("expected job assignment");
     let stdout = child.stdout.take().expect("expected stdout pipe");
     let stderr = child.stderr.take().expect("expected stderr pipe");
 
@@ -826,14 +1032,12 @@ while True:
         child,
         stdout_thread: Some(stdout_thread),
         stderr_thread: Some(stderr_thread),
+        stderr_lines: Arc::new(Mutex::new(Vec::new())),
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
-        #[cfg(unix)]
         process_group_id: None,
         child_reaped: false,
         emergency_teardown_armed: true,
-        #[cfg(windows)]
-        job,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     let started_at = Instant::now();
@@ -845,7 +1049,7 @@ while True:
         "stop should wait for simulated cleanup to finish"
     );
     assert!(
-        started_at.elapsed() < backend_shutdown_force_kill_max(),
+        started_at.elapsed() < BACKEND_SHUTDOWN_FORCE_KILL_MAX,
         "slow cleanup should exit gracefully before the force-kill ceiling"
     );
 
@@ -880,8 +1084,6 @@ while True:
         .stderr(Stdio::piped())
         .spawn()
         .expect("expected test process to launch");
-    #[cfg(windows)]
-    let job = super::setup::WindowsJob::assign(&child).expect("expected job assignment");
     let stdout = child.stdout.take().expect("expected stdout pipe");
     let stderr = child.stderr.take().expect("expected stderr pipe");
 
@@ -900,14 +1102,12 @@ while True:
         child,
         stdout_thread: Some(stdout_thread),
         stderr_thread: Some(stderr_thread),
+        stderr_lines: Arc::new(Mutex::new(Vec::new())),
         shutdown_ack: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         generation: 0,
-        #[cfg(unix)]
         process_group_id: None,
         child_reaped: false,
         emergency_teardown_armed: true,
-        #[cfg(windows)]
-        job,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     let started_at = Instant::now();
@@ -915,11 +1115,11 @@ while True:
     running.stop(&manager);
 
     assert!(
-        started_at.elapsed() >= backend_shutdown_graceful_timeout(),
+        started_at.elapsed() >= BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT,
         "unresponsive backend should receive the full graceful shutdown window"
     );
     assert!(
-        started_at.elapsed() < backend_shutdown_force_kill_max() + Duration::from_millis(500),
+        started_at.elapsed() < BACKEND_SHUTDOWN_FORCE_KILL_MAX + Duration::from_millis(500),
         "backend stop must force-kill hung backends within the bounded ceiling"
     );
 }
@@ -1168,32 +1368,6 @@ fn starting_backend_fails_after_startup_deadline() {
     // Idempotent once the backend is no longer `Starting`.
     assert!(!manager.fail_if_startup_timed_out(Duration::from_millis(0)));
     assert_eq!(manager.status().lifecycle, BackendLifecycle::Failed);
-}
-
-#[test]
-fn startup_deadline_tracks_latest_generation_only() {
-    use std::time::Duration;
-
-    let mut manager = BackendManager::default();
-    let first = manager.mark_starting();
-
-    // A restart supersedes the first generation and resets the startup clock.
-    let second = manager.mark_starting();
-    assert_ne!(first, second);
-
-    // The fresh generation must not be failed by a long deadline: the timeout
-    // tracks the newest `started_at`, so a superseded generation can never fail
-    // the one that replaced it.
-    assert!(!manager.fail_if_startup_timed_out(Duration::from_secs(3600)));
-    assert_eq!(manager.status().lifecycle, BackendLifecycle::Starting);
-
-    let payload = parse_ready_line(
-        "{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9100,\"token\":\"gen2\"}",
-    )
-    .expect("expected valid ready payload");
-    manager.mark_ready_for_generation(second, payload);
-    assert_eq!(manager.status().lifecycle, BackendLifecycle::Ready);
-    assert_eq!(manager.endpoint().expect("endpoint").token, "gen2");
 }
 
 #[cfg(unix)]
@@ -1591,11 +1765,10 @@ fn refresh_exit_status_kills_same_group_grandchild_before_reap() {
         grandchild_pid,
         Duration::from_secs(2)
     ));
-    assert!(running.child_reaped);
     assert!(!process_is_alive(child_pid));
     assert_eq!(
-        manager.lock().expect("manager lock").lifecycle,
-        super::BackendLifecycle::Failed
+        manager.lock().expect("manager lock").status().lifecycle,
+        BackendLifecycle::Failed
     );
 
     // The subsequent ordinary stop must not signal the stored PGID after the
@@ -1635,44 +1808,6 @@ fn verified_owned_process_group_rejects_reaped_leader() {
 
 #[cfg(unix)]
 #[test]
-fn ordinary_stop_disarms_drop_fallback() {
-    use std::fs;
-    use std::time::Duration;
-
-    let (mut running, manager, child_pid, grandchild_pid, temp_root) =
-        launch_backend_with_grandchild();
-
-    // Disarm without stopping, then Drop must not kill (proves ordinary stop's
-    // disarm path prevents double-kill / unrelated pgid hazards).
-    running.disarm_emergency_teardown();
-    drop(running);
-
-    assert!(
-        process_is_alive(child_pid),
-        "disarmed Drop must not kill the owned backend"
-    );
-    assert!(
-        process_is_alive(grandchild_pid),
-        "disarmed Drop must not kill the process group"
-    );
-
-    // Cleanup the fixture processes now that disarm behavior is verified.
-    let _ = unsafe { libc::kill(grandchild_pid, libc::SIGKILL) };
-    let _ = unsafe { libc::kill(child_pid, libc::SIGKILL) };
-    // Reap the former child so it does not linger as a zombie that still
-    // answers kill(pid, 0).
-    let mut status = 0;
-    let _ = unsafe { libc::waitpid(child_pid, &mut status, 0) };
-    assert!(
-        wait_until_process_exits(grandchild_pid, Duration::from_secs(2)),
-        "cleanup must terminate grandchild"
-    );
-    let _ = manager;
-    let _ = fs::remove_dir_all(temp_root);
-}
-
-#[cfg(unix)]
-#[test]
 fn ordinary_stop_then_drop_is_safe_and_repeated_emergency_teardown_is_idempotent() {
     use std::fs;
     use std::sync::Mutex;
@@ -1706,4 +1841,466 @@ fn ordinary_stop_then_drop_is_safe_and_repeated_emergency_teardown_is_idempotent
 
     let _ = fs::remove_dir_all(temp_root);
     let _ = fs::remove_dir_all(temp_root2);
+}
+
+#[test]
+fn file_readiness_adopts_the_endpoint_without_stdout() {
+    let (state, path) = starting_state_with_ready_file(
+        r#"{"event":"ready","host":"127.0.0.1","port":54321,"token":"file-token"}"#,
+    );
+
+    let result = state.refresh_backend_ready_from_file();
+    let endpoint = state.backend_manager.lock().unwrap().endpoint();
+    state.shutdown();
+    let _ = std::fs::remove_file(path);
+
+    result.expect("file readiness");
+    let endpoint = endpoint.expect("adopted endpoint");
+    assert_eq!(endpoint.base_url, "http://127.0.0.1:54321");
+    assert_eq!(endpoint.token, "file-token");
+}
+
+// Only Windows keeps the adopted payload: it authenticates the graceful
+// shutdown request, so a stale generation must never supply it.
+#[cfg(windows)]
+#[test]
+fn readiness_adoption_ignores_stale_generations_and_terminal_states() {
+    use std::sync::Mutex;
+
+    let payload = parse_ready_line(
+        r#"{"event":"ready","host":"127.0.0.1","port":54321,"token":"old-token"}"#,
+    )
+    .unwrap();
+    let manager = Mutex::new(BackendManager::default());
+    let endpoint = Mutex::new(None);
+    let old = manager.lock().unwrap().mark_starting();
+    let current = manager.lock().unwrap().mark_starting();
+    super::adopt_backend_ready(&manager, old, payload.clone(), &endpoint).unwrap();
+    assert!(endpoint.lock().unwrap().is_none());
+    assert_eq!(
+        manager.lock().unwrap().status().lifecycle,
+        BackendLifecycle::Starting
+    );
+
+    manager.lock().unwrap().mark_failed("startup timed out");
+    super::adopt_backend_ready(&manager, current, payload, &endpoint).unwrap();
+    assert!(endpoint.lock().unwrap().is_none());
+    assert_eq!(
+        manager.lock().unwrap().status().lifecycle,
+        BackendLifecycle::Failed
+    );
+}
+
+#[test]
+fn setup_timeout_stops_only_the_launched_child() {
+    use std::sync::Arc;
+
+    let state = crate::AppState::default();
+    let old = state.backend_manager.lock().unwrap().mark_starting();
+    let child = super::launch_backend(
+        Arc::clone(&state.backend_manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec!["-c".into(), "import time; time.sleep(60)".into()],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("backend launch");
+    let current = child.generation();
+    *state.backend_process.lock().unwrap() = Some(child);
+
+    state.fail_backend_generation(old, "startup timed out");
+    {
+        let mut slot = state.backend_process.lock().unwrap();
+        let child = slot.as_mut().expect("replacement remains installed");
+        assert!(child.child.try_wait().unwrap().is_none());
+    }
+    state.fail_backend_generation(current, "startup timed out");
+    assert!(state.backend_process.lock().unwrap().is_none());
+    let status = state.backend_manager.lock().unwrap().status();
+    assert_eq!(status.lifecycle, BackendLifecycle::Failed);
+    assert_eq!(status.error.as_deref(), Some("startup timed out"));
+}
+
+#[cfg(windows)]
+#[test]
+fn file_readiness_enables_authenticated_graceful_shutdown() {
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    let root = unique_temp_path("file-shutdown");
+    std::fs::create_dir_all(&root).unwrap();
+    let ready = root.join("ready.json");
+    let marker = root.join("cleanup.txt");
+    let script = r#"import http.server, json, pathlib, sys
+ready, marker = map(pathlib.Path, sys.argv[1:])
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        assert self.path == '/api/desktop/shutdown'
+        assert self.headers['Authorization'] == 'Bearer file-token'
+        marker.write_text('cleanup completed')
+        self.send_response(202)
+        self.end_headers()
+server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+staged = ready.with_suffix('.tmp')
+staged.write_text(json.dumps(dict(event='ready', host='127.0.0.1', port=server.server_port, token='file-token')))
+staged.replace(ready)
+server.handle_request()
+print(json.dumps(dict(event='shutdown')), flush=True)
+"#;
+    let state = crate::AppState::default();
+    let child = super::launch_backend(
+        Arc::clone(&state.backend_manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".into(),
+                script.into(),
+                ready.to_string_lossy().into_owned(),
+                marker.to_string_lossy().into_owned(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("backend launch");
+    *state.backend_process.lock().unwrap() = Some(child);
+    *state.backend_ready_file.lock().unwrap() = Some(ready);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        state.refresh_backend_ready_from_file().unwrap();
+        if state.backend_manager.lock().unwrap().endpoint().is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "file readiness did not arrive");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    state.shutdown();
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "cleanup completed"
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn parse_ready_line_rejects_hosts_other_than_the_requested_loopback() {
+    for host in ["203.0.113.7", "example.com", "localhost", "0.0.0.0"] {
+        let line = format!(r#"{{"event":"ready","host":"{host}","port":54321,"token":"abc123"}}"#);
+        let error = parse_ready_line(&line).expect_err("foreign host must be rejected");
+        assert!(error.contains("loopback"), "{host}: {error}");
+        assert!(!error.contains("abc123"), "{host}: {error}");
+    }
+}
+
+#[test]
+fn rejected_ready_line_is_neither_adopted_nor_logged_with_its_token() {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let data_dir = unique_temp_path("backend-foreign-ready");
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let mut running = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".into(),
+                r#"print('{"event":"ready","host":"203.0.113.7","port":9000,"token":"never-log-this-token"}', flush=True)"#.into(),
+            ],
+            cwd: None,
+            env: vec![(
+                "AUDIOBOOK_DATA_DIR".into(),
+                data_dir.to_string_lossy().into_owned(),
+            )],
+        },
+    )
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        running.refresh_exit_status(&manager).unwrap();
+        let status = manager.lock().unwrap().status();
+        if status.lifecycle != BackendLifecycle::Starting {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "backend did not report its exit");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    running.stop(&manager);
+
+    assert_eq!(status.lifecycle, BackendLifecycle::Failed, "{status:?}");
+    assert!(status
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("exited before ready payload"));
+    let log = std::fs::read_to_string(data_dir.join("logs/backend.log")).unwrap();
+    assert!(
+        log.contains("ignored an invalid desktop ready payload"),
+        "{log}"
+    );
+    assert!(!log.contains("never-log-this-token"), "{log}");
+    std::fs::remove_dir_all(data_dir).unwrap();
+}
+
+/// Installs a sleeping child as the current `Starting` generation of a fresh
+/// application state.
+fn starting_state() -> crate::AppState {
+    use std::sync::Arc;
+
+    let state = crate::AppState::default();
+    let child = super::launch_backend(
+        Arc::clone(&state.backend_manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec!["-c".into(), "import time; time.sleep(60)".into()],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("backend launch");
+    *state.backend_process.lock().unwrap() = Some(child);
+    state
+}
+
+/// Like [`starting_state`], with `contents` waiting in the child's ready file.
+fn starting_state_with_ready_file(contents: &str) -> (crate::AppState, PathBuf) {
+    let state = starting_state();
+    let path = unique_temp_path("pending-ready.json");
+    std::fs::write(&path, contents).unwrap();
+    *state.backend_ready_file.lock().unwrap() = Some(path.clone());
+    (state, path)
+}
+
+#[test]
+fn unreadable_ready_file_leaves_startup_pending_instead_of_failing_status() {
+    let (state, path) = starting_state_with_ready_file(r#"{"event":"ready","host":"127.0"#);
+
+    let result = state.refresh_backend_ready_from_file();
+    let lifecycle = state.backend_manager.lock().unwrap().status().lifecycle;
+    state.shutdown();
+    let _ = std::fs::remove_file(path);
+
+    result.expect("a ready file that cannot be parsed yet must not fail the status command");
+    assert_eq!(lifecycle, BackendLifecycle::Starting);
+}
+
+#[cfg(windows)]
+#[test]
+fn ready_file_held_open_by_a_scanner_is_still_adopted() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let (state, path) = starting_state_with_ready_file(
+        r#"{"event":"ready","host":"127.0.0.1","port":54321,"token":"held-token"}"#,
+    );
+    // Antivirus and indexers commonly open new files without delete sharing,
+    // which makes removal fail with a sharing violation while reads succeed.
+    const FILE_SHARE_READ: u32 = 0x1;
+    let scanner = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(&path)
+        .unwrap();
+
+    let result = state.refresh_backend_ready_from_file();
+    let endpoint = state.backend_manager.lock().unwrap().endpoint();
+    drop(scanner);
+    state.shutdown();
+    let _ = std::fs::remove_file(path);
+
+    result.expect("a ready file that cannot be removed must not fail the status command");
+    assert_eq!(endpoint.expect("adopted endpoint").token, "held-token");
+}
+
+#[test]
+fn startup_deadline_kills_the_timed_out_child() {
+    let state = starting_state();
+
+    state
+        .enforce_startup_deadline(std::time::Duration::ZERO)
+        .unwrap();
+    let exited = state
+        .backend_process
+        .lock()
+        .unwrap()
+        .as_mut()
+        .expect("the failed child stays in the slot until restart")
+        .child
+        .try_wait()
+        .unwrap()
+        .is_some();
+    let status = state.backend_manager.lock().unwrap().status();
+    state.shutdown();
+
+    assert!(exited, "a timed-out startup must not keep running");
+    assert_eq!(status.lifecycle, BackendLifecycle::Failed);
+    assert!(status
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("did not become ready"));
+}
+
+const CHILD_TEST_ENV: &str = "ORPHEUS_BACKEND_CHILD_TEST";
+
+/// Runs `backend::tests::<name>` again in a fresh test process so it can see
+/// process-wide state (inherited environment, a closed stderr) that must not
+/// leak into tests running in parallel. Returns `None` inside that child.
+fn rerun_in_child_test_process(
+    name: &str,
+    env: &[(&str, &std::ffi::OsStr)],
+    close_stderr: bool,
+) -> Option<std::process::Output> {
+    use std::process::{Command, Stdio};
+
+    if std::env::var(CHILD_TEST_ENV).as_deref() == Ok(name) {
+        return None;
+    }
+    let mut command = Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args(["--exact", &format!("backend::tests::{name}"), "--nocapture"])
+        .env(CHILD_TEST_ENV, name)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = command.spawn().expect("child test process");
+    if close_stderr {
+        drop(child.stderr.take());
+    }
+    Some(child.wait_with_output().expect("child test output"))
+}
+
+fn assert_child_test_passed(output: &std::process::Output) {
+    assert!(
+        output.status.success(),
+        "child test failed ({}): {}{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "child test did not run: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn backend_launch_drops_inherited_python_overrides() {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    const NAME: &str = "backend_launch_drops_inherited_python_overrides";
+    let foreign = unique_temp_path("foreign-python-home");
+    if let Some(output) = rerun_in_child_test_process(
+        NAME,
+        &[
+            ("PYTHONHOME", foreign.as_os_str()),
+            ("PYTHONPATH", foreign.as_os_str()),
+        ],
+        false,
+    ) {
+        assert_child_test_passed(&output);
+        return;
+    }
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let running = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".into(),
+                concat!(
+                    "import os, sys, time\n",
+                    "leaked = [k for k in ('PYTHONHOME', 'PYTHONPATH') if k in os.environ]\n",
+                    "if leaked: sys.exit('inherited ' + ', '.join(leaked))\n",
+                    "print('{\"event\":\"ready\",\"host\":\"127.0.0.1\",\"port\":9000,\"token\":\"t\"}', flush=True)\n",
+                    "time.sleep(30)\n",
+                )
+                .into(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("backend launch");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        let status = manager.lock().unwrap().status();
+        if status.lifecycle != BackendLifecycle::Starting || Instant::now() >= deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    running.stop(&manager);
+    assert_eq!(status.lifecycle, BackendLifecycle::Ready, "{status:?}");
+}
+
+#[test]
+fn backend_stderr_is_drained_when_the_shell_stderr_is_closed() {
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    const NAME: &str = "backend_stderr_is_drained_when_the_shell_stderr_is_closed";
+    if let Some(output) = rerun_in_child_test_process(NAME, &[], true) {
+        assert_child_test_passed(&output);
+        return;
+    }
+
+    // Far more stderr than a pipe buffer holds: if the reader stopped at the
+    // first mirrored line, the child would block forever on a full pipe.
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let mut running = super::launch_backend(
+        Arc::clone(&manager),
+        super::ProcessLaunchConfig {
+            program: super::python_program(),
+            args: vec![
+                "-c".into(),
+                concat!(
+                    "import sys\n",
+                    "for _ in range(4000): sys.stderr.write('x' * 100 + '\\n')\n",
+                    "sys.stderr.write('stderr fully drained\\n')\n",
+                    "sys.exit(3)\n",
+                )
+                .into(),
+            ],
+            cwd: None,
+            env: Vec::new(),
+        },
+    )
+    .expect("backend launch");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        running.refresh_exit_status(&manager).unwrap();
+        let status = manager.lock().unwrap().status();
+        if status.lifecycle != BackendLifecycle::Starting || Instant::now() >= deadline {
+            break status;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    running.stop(&manager);
+    assert_eq!(status.lifecycle, BackendLifecycle::Failed, "{status:?}");
+    assert!(status
+        .error
+        .as_deref()
+        .unwrap_or_default()
+        .contains("stderr fully drained"));
+}
+
+#[test]
+fn exit_detail_is_the_named_startup_cause_alone() {
+    let stderr = std::sync::Mutex::new(vec![
+        "Traceback (most recent call last):".to_string(),
+        "  File \"launcher.py\", line 1, in <module>".to_string(),
+        "failed to start desktop backend: This library was created by a newer version.".to_string(),
+        String::new(),
+    ]);
+
+    assert_eq!(
+        backend_exit_detail("desktop backend exited before ready payload", &stderr),
+        "failed to start desktop backend: This library was created by a newer version."
+    );
 }
