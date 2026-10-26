@@ -1,19 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
-  type DragEvent,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
+  type DragEvent,
   type ChangeEvent,
 } from "react";
 
+import { useGenerationGuard, useMountedRef } from "../../state/generationGuard";
 import type { ApiClient } from "../../api/client";
 import type { ConversionMode } from "../../types/api";
 import { extractDroppedPaths, pathsFromUriList } from "./conversionPanelHelpers";
 import { isTauriRuntime } from "../../platform/tauriRuntime";
-import { createQueueItem, type ConversionQueueItem } from "./conversionPanelModel";
+import { createQueueItem, isFinishedQueueItem, type ConversionQueueItem } from "./conversionPanelModel";
 import type { ConversionJobController } from "./useConversionJob";
 import type { useConversionQueueController } from "./useConversionQueueController";
 
@@ -44,27 +46,29 @@ export function useConversionSourceQueue({
   const applySourcePathsRef = useRef<(paths: string[]) => void>(() => {});
   const hasSelectedSourceRef = useRef(false);
   const browserFileInputRef = useRef<HTMLInputElement>(null);
-  const browserUploadBatchRef = useRef(0);
+  const browserUploadGuard = useGenerationGuard();
   const uploadSlotsRef = useRef({ active: 0, waiting: [] as Array<() => void> });
-  const mountedRef = useRef(false);
   const pasteInFlightRef = useRef(false);
   const queueControllerRef = useRef(queueController);
   const conversionJobRef = useRef(conversionJob);
+  const conversionModeRef = useRef(conversionMode);
   const sourceContextRef = useRef({
     apiClient,
-    conversionMode,
     generation: 0,
   });
 
-  queueControllerRef.current = queueController;
-  conversionJobRef.current = conversionJob;
-  if (
-    sourceContextRef.current.apiClient !== apiClient ||
-    sourceContextRef.current.conversionMode !== conversionMode
-  ) {
+  useLayoutEffect(() => {
+    queueControllerRef.current = queueController;
+  });
+  useLayoutEffect(() => {
+    conversionJobRef.current = conversionJob;
+  });
+  useLayoutEffect(() => {
+    conversionModeRef.current = conversionMode;
+  });
+  if (sourceContextRef.current.apiClient !== apiClient) {
     sourceContextRef.current = {
       apiClient,
-      conversionMode,
       generation: sourceContextRef.current.generation + 1,
     };
     pasteInFlightRef.current = false;
@@ -74,17 +78,15 @@ export function useConversionSourceQueue({
   // Run only on mount/unmount: rerunning during a paste could let its completion
   // clear a newer paste's guard. Leave the generation unchanged so StrictMode's
   // effect replay keeps existing callbacks valid.
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      pasteInFlightRef.current = false;
-    };
+  const mountedRef = useMountedRef();
+  useEffect(() => () => {
+    pasteInFlightRef.current = false;
   }, []);
 
   useEffect(() => {
     setPasteBusy(false);
-  }, [apiClient, conversionMode]);
+    setPasteStatus("Idle");
+  }, [apiClient]);
 
   const isCurrentSourceContext = useCallback(
     (generation: number) =>
@@ -93,10 +95,13 @@ export function useConversionSourceQueue({
   );
 
   useEffect(() => {
-    hasSelectedSourceRef.current = Boolean(
-      queueController.selectedQueueId || queueController.sourcePath.trim(),
-    );
-  }, [queueController.selectedQueueId, queueController.sourcePath]);
+    // A finished row does not hold the selection: the next book added takes
+    // it, so the primary action starts that book instead of repeating this one.
+    const selected = queueController.selectedQueueItem;
+    hasSelectedSourceRef.current = selected
+      ? !isFinishedQueueItem(selected)
+      : Boolean(queueController.selectedQueueId || queueController.sourcePath.trim());
+  }, [queueController.selectedQueueId, queueController.selectedQueueItem, queueController.sourcePath]);
 
   const applySourcePaths = useCallback(
     (paths: string[]) => {
@@ -118,7 +123,9 @@ export function useConversionSourceQueue({
     [conversionMode],
   );
 
-  applySourcePathsRef.current = applySourcePaths;
+  useLayoutEffect(() => {
+    applySourcePathsRef.current = applySourcePaths;
+  });
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -205,10 +212,9 @@ export function useConversionSourceQueue({
     browserFileInputRef.current?.click();
   }, [isCurrentSourceContext, sourceContextGeneration]);
 
-  const onBrowserFilesSelected = useCallback(
-    async (event: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(event.target.files ?? []);
-      event.target.value = "";
+  const uploadBrowserFiles = useCallback(
+    async (selected: File[]) => {
+      let files = selected;
       if (files.length === 0) {
         return;
       }
@@ -216,12 +222,26 @@ export function useConversionSourceQueue({
         return;
       }
       if (!apiClient) {
-        queueControllerRef.current.setPreflightStatus("Backend is not connected.");
+        queueControllerRef.current.setPreflightStatus("Not connected.");
         return;
       }
 
-      const batchId = ++browserUploadBatchRef.current;
-      queueControllerRef.current.setPreflightStatus(`Uploading ${files.length === 1 ? files[0].name : `${files.length} sources`}...`);
+      // The same file chosen again stays one row; say so instead of adding it twice.
+      const queued = queueControllerRef.current.queueItems ?? [];
+      const duplicates = files.filter((file) => queued.some((item) =>
+        item.label === file.name && item.preflight?.size_bytes === file.size));
+      files = files.filter((file) => !duplicates.includes(file));
+      const duplicateNote = duplicates.length
+        ? `${duplicates.map((file) => file.name).join(", ")} ${duplicates.length === 1 ? "is" : "are"} already in the queue.`
+        : "";
+      if (files.length === 0) {
+        queueControllerRef.current.setPreflightStatus(duplicateNote);
+        return;
+      }
+
+      browserUploadGuard.invalidate();
+      const ownsBatch = browserUploadGuard.capture();
+      queueControllerRef.current.setPreflightStatus(`Adding ${files.length === 1 ? files[0].name : `${files.length} sources`}…`);
       // Share slots across overlapping selections so a second batch cannot
       // multiply backend preflight memory. Results retain the selected order.
       const results = await Promise.allSettled(files.map(async (file) => {
@@ -251,10 +271,14 @@ export function useConversionSourceQueue({
 
       const responses = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
       const failedCount = results.length - responses.length;
+      // Name each file that was not added, with the backend's reason.
+      const failures = results.flatMap((result, index) => result.status === "rejected"
+        ? [`${files[index].name}: ${result.reason instanceof Error ? result.reason.message : String(result.reason || "unknown error")}`]
+        : []);
 
       if (responses.length > 0) {
         const items = responses.map((response) =>
-          createQueueItem(response.source_handle, conversionMode, response.original_name, response.preflight),
+          createQueueItem(response.source_handle, conversionModeRef.current, response.original_name, response.preflight),
         );
         const selectFirst = !hasSelectedSourceRef.current;
         if (selectFirst) {
@@ -264,22 +288,18 @@ export function useConversionSourceQueue({
           selectFirst,
         });
         conversionJobRef.current.clearFormError();
-        if (batchId !== browserUploadBatchRef.current) {
+        if (!ownsBatch()) {
           return;
         }
-        if (failedCount === 0) {
-          queueControllerRef.current.setPreflightStatus(
-            files.length === 1 ? "Source uploaded." : `${files.length} sources uploaded.`,
-          );
-        } else {
-          queueControllerRef.current.setPreflightStatus(
-            `Added ${responses.length} ${responses.length === 1 ? "source" : "sources"}; ${failedCount} upload${failedCount === 1 ? "" : "s"} failed.`,
-          );
-        }
+        // The new queue rows confirm success; only a partial failure needs words.
+        queueControllerRef.current.setPreflightStatus([
+          failedCount === 0 ? "" : `Added ${responses.length} ${responses.length === 1 ? "source" : "sources"}. Not added: ${failures.join("; ")}`,
+          duplicateNote,
+        ].filter(Boolean).join(" "));
         return;
       }
 
-      if (batchId !== browserUploadBatchRef.current) {
+      if (!ownsBatch()) {
         return;
       }
       const firstFailure = results.find((result) => result.status === "rejected");
@@ -289,16 +309,25 @@ export function useConversionSourceQueue({
             ? firstFailure.reason.message
             : String(firstFailure.reason || "unknown error")
           : "unknown error";
-      queueControllerRef.current.setPreflightStatus(
-        files.length === 1 ? `Source upload failed: ${detail}` : `All ${files.length} source uploads failed: ${detail}`,
-      );
+      queueControllerRef.current.setPreflightStatus([
+        files.length === 1 ? `Could not add the file: ${detail}` : `Could not add these files: ${failures.join("; ")}`,
+        duplicateNote,
+      ].filter(Boolean).join(" "));
     },
     [
       apiClient,
-      conversionMode,
       isCurrentSourceContext,
       sourceContextGeneration,
     ],
+  );
+
+  const onBrowserFilesSelected = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files ?? []);
+      event.target.value = "";
+      await uploadBrowserFiles(files);
+    },
+    [uploadBrowserFiles],
   );
 
   const onAddPastedText = useCallback(async (): Promise<ConversionQueueItem | null> => {
@@ -312,7 +341,7 @@ export function useConversionSourceQueue({
       return null;
     }
     if (!apiClient) {
-      setPasteStatus("Backend is not connected.");
+      setPasteStatus("Not connected.");
       return null;
     }
 
@@ -327,7 +356,7 @@ export function useConversionSourceQueue({
 
     pasteInFlightRef.current = true;
     setPasteBusy(true);
-    setPasteStatus("Creating markdown source…");
+    setPasteStatus("");
     try {
       const response = await apiClient.uploadSourceText({
         text,
@@ -338,7 +367,9 @@ export function useConversionSourceQueue({
       }
       const item = createQueueItem(
         response.source_handle,
-        conversionMode,
+        // Format is now an editable choice on the same source page. A change
+        // while intake is pending applies to the new row, without losing it.
+        conversionModeRef.current,
         response.original_name,
         response.preflight,
       );
@@ -351,10 +382,10 @@ export function useConversionSourceQueue({
       // A paste is always a new source; select it so the Title field and the
       // primary action target it rather than a stale earlier row.
       queueControllerRef.current.addPastedSource(item, { selectItem: true });
-      setPastedText("");
-      setPastedTitle("");
-      setPastedAuthor("");
-      setPasteStatus("Pasted markdown source added.");
+      setPastedText((current) => current === pastedText ? "" : current);
+      setPastedTitle((current) => current === pastedTitle ? "" : current);
+      setPastedAuthor((current) => current === pastedAuthor ? "" : current);
+      setPasteStatus("");
       conversionJobRef.current.clearFormError();
       return item;
     } catch (error: unknown) {
@@ -374,7 +405,6 @@ export function useConversionSourceQueue({
     }
   }, [
     apiClient,
-    conversionMode,
     isCurrentSourceContext,
     pastedAuthor,
     pastedText,
@@ -401,6 +431,11 @@ export function useConversionSourceQueue({
         return;
       }
 
+      if (!isTauriRuntime()) {
+        void uploadBrowserFiles(files);
+        return;
+      }
+
       const desktopPaths = files
         .map((file) => (file as File & { path?: string }).path)
         .filter((path): path is string => Boolean(path?.trim()));
@@ -409,15 +444,19 @@ export function useConversionSourceQueue({
         return;
       }
 
-      queueController.setPreflightStatus("Dropped files must come from the desktop runtime with native paths.");
+      queueController.setPreflightStatus("Drop files from your file manager.");
     },
-    [applySourcePaths, queueController],
+    [applySourcePaths, queueController, uploadBrowserFiles],
   );
+
+  const onAddSourcePath = useCallback((path: string) => {
+    applySourcePaths([path]);
+  }, [applySourcePaths]);
 
   const onInspectCurrentSource = useCallback(() => {
     const normalized = queueController.sourcePath.trim();
     if (!normalized) {
-      queueController.setPreflightStatus("Choose a source before preflight.");
+      queueController.setPreflightStatus("Choose a source first.");
       return;
     }
 
@@ -462,6 +501,7 @@ export function useConversionSourceQueue({
     onBrowserFilesSelected,
     onAddPastedText,
     onDropZoneDrop,
+    onAddSourcePath,
     onInspectCurrentSource,
   };
 }

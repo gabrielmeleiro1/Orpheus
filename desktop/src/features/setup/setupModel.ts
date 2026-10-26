@@ -5,7 +5,7 @@ import type {
   RuntimeSetupStatusResponse,
 } from "../../types/api";
 
-export type RuntimeProfileId = RuntimeSetupProfile["id"];
+type RuntimeProfileId = RuntimeSetupProfile["id"];
 
 export interface SetupSelection {
   cleanerCudaQuantization?: string;
@@ -22,7 +22,7 @@ export interface SetupProgressEvent {
   event: string;
   stage?: string;
   message?: string;
-  percent?: number;
+  percent?: number | null;
   terminal?: boolean;
   restart_required?: boolean;
 }
@@ -47,7 +47,7 @@ export interface SetupProgressState {
   restartRequired: boolean;
 }
 
-export interface SetupStartLock {
+interface SetupStartLock {
   current: boolean;
 }
 
@@ -57,7 +57,7 @@ export function acquireSetupStart(lock: SetupStartLock): boolean {
   return true;
 }
 
-export interface ModelGroupDetail {
+interface ModelGroupDetail {
   label: string;
   description: string;
   /** HF repo actually fetched — mirrors MODEL_GROUPS in scripts/download_models.py. */
@@ -68,33 +68,28 @@ export interface ModelGroupDetail {
 }
 
 export const MODEL_GROUP_DETAILS: Record<string, ModelGroupDetail> = {
-  "tts-mlx": { label: "Kokoro TTS", description: "Natural speech generated locally on Apple Silicon.", model: "mlx-community/Kokoro-82M-bf16", downloadMB: 450, diskMB: 700, kind: "tts" },
-  "cleaner-mlx": { label: "Llama 3.2 · 3B", description: "Larger text cleaner, supplied in 4-bit precision.", model: "mlx-community/Llama-3.2-3B-Instruct-4bit", downloadMB: 1800, diskMB: 2300, kind: "cleaner" },
-  "tts-cpu-cuda": { label: "Kokoro TTS", description: "Natural speech generated locally on CPU or NVIDIA GPU.", model: "hexgrad/Kokoro-82M", downloadMB: 500, diskMB: 900, kind: "tts" },
-  "cleaner-cuda": { label: "Qwen 2.5 · 1.5B", description: "Recommended balance of size and text-cleaning capability.", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 3100, diskMB: 3200, kind: "cleaner" },
-  "cleaner-cuda-large": { label: "Qwen 2.5 · 3B", description: "Larger model for more demanding text; uses more GPU memory.", model: "Qwen/Qwen2.5-3B-Instruct", downloadMB: 6200, diskMB: 6400, kind: "cleaner" },
-  "cleaner-mlx-small": { label: "Llama 3.2 · 1B", description: "Smaller text cleaner, supplied in 4-bit precision.", model: "mlx-community/Llama-3.2-1B-Instruct-4bit", downloadMB: 713, diskMB: 800, kind: "cleaner" },
+  "tts-mlx": { label: "Kokoro TTS", description: "Local speech on Apple Silicon", model: "mlx-community/Kokoro-82M-bf16", downloadMB: 450, diskMB: 700, kind: "tts" },
+  "cleaner-mlx": { label: "Llama 3.2 · 3B", description: "Larger text cleaner · 4-bit", model: "mlx-community/Llama-3.2-3B-Instruct-4bit", downloadMB: 1800, diskMB: 2300, kind: "cleaner" },
+  "tts-cpu-cuda": { label: "Kokoro TTS", description: "Local speech on CPU or NVIDIA GPU", model: "hexgrad/Kokoro-82M", downloadMB: 500, diskMB: 900, kind: "tts" },
+  "cleaner-cuda": { label: "Qwen 2.5 · 1.5B", description: "Balanced size and text cleaning", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 3100, diskMB: 3200, kind: "cleaner" },
+  "cleaner-cuda-large": { label: "Qwen 2.5 · 3B", description: "More capable · more GPU memory", model: "Qwen/Qwen2.5-3B-Instruct", downloadMB: 6200, diskMB: 6400, kind: "cleaner" },
+  "cleaner-mlx-small": { label: "Llama 3.2 · 1B", description: "Lightweight text cleaning · 4-bit", model: "mlx-community/Llama-3.2-1B-Instruct-4bit", downloadMB: 713, diskMB: 800, kind: "cleaner" },
 };
 
-function formatMB(mb: number): string {
+export function formatMB(mb: number): string {
   if (!Number.isFinite(mb) || mb <= 0) return "0 MB";
   return mb >= 1000 ? `${(mb / 1000).toFixed(1).replace(/\.0$/, "")} GB` : `${Math.round(mb)} MB`;
 }
 
-export function groupEstimate(groupId: string): string {
-  const details = MODEL_GROUP_DETAILS[groupId];
-  if (!details) return "";
-  return `~${formatMB(details.downloadMB)} download · ~${formatMB(details.diskMB)} disk`;
-}
-
-export function selectionEstimate(modelGroups: string[]): string {
+/** Approximate download and disk sizes for the groups that still need downloading. */
+export function selectionEstimate(modelGroups: string[]): { download: string; disk: string } | null {
   const details = modelGroups
     .map((group) => MODEL_GROUP_DETAILS[group])
     .filter((entry): entry is ModelGroupDetail => Boolean(entry));
-  if (details.length === 0) return "";
+  if (details.length === 0) return null;
   const download = details.reduce((sum, entry) => sum + entry.downloadMB, 0);
   const disk = details.reduce((sum, entry) => sum + entry.diskMB, 0);
-  return `~${formatMB(download)} download · ~${formatMB(disk)} on disk`;
+  return { download: formatMB(download), disk: formatMB(disk) };
 }
 
 // Download one voice model and one cleaner, never the whole catalog.
@@ -222,11 +217,19 @@ export function selectionReadiness(selection: SetupSelection, status: RuntimeSet
 export function modelDownloadProgressEvent(
   status: RuntimeModelDownloadStatus,
 ): SetupProgressEvent {
+  const totalBytes = status.bytes_total;
+  const doneBytes = status.bytes_done;
+  const hasBytes = typeof totalBytes === "number" && Number.isFinite(totalBytes) && totalBytes > 0
+    && typeof doneBytes === "number" && Number.isFinite(doneBytes) && doneBytes >= 0;
+  const done = hasBytes ? Math.min(doneBytes, totalBytes) : 0;
+  const sizes = hasBytes ? ` · ${formatDownloadBytes(done)} of ${formatDownloadBytes(totalBytes)}` : "";
+  const percent = hasBytes ? 100 * done / totalBytes : null;
   if (status.lifecycle === "stopping") {
     return {
       event: "status",
       stage: "models",
-      message: "Stopping download… You can leave setup while it stops.",
+      message: `Stopping download… You can leave setup while it stops.${sizes}`,
+      percent,
     };
   }
   if (status.lifecycle === "cancelled") {
@@ -258,14 +261,69 @@ export function modelDownloadProgressEvent(
   const label = MODEL_GROUP_DETAILS[status.current_model_group ?? ""]?.label
     ?? status.current_model_group
     ?? "models";
+  const message = hasCounts ? `Downloading model ${position} of ${totalModels}: ${label}` : `Downloading ${label}…`;
   return {
     event: "status",
     stage: "models",
-    message: hasCounts ? `Downloading ${label} (${position} of ${totalModels})…` : `Downloading ${label}…`,
-    percent: hasCounts && status.total_models > 0
-      ? Math.round((status.completed_models / status.total_models) * 100)
-      : undefined,
+    message: `${message}${sizes}`,
+    percent,
   };
+}
+
+function formatDownloadBytes(bytes: number): string {
+  if (bytes >= 1_000_000) return formatMB(bytes / 1_000_000);
+  if (bytes >= 1000) return `${(bytes / 1000).toFixed(1).replace(/\.0$/, "")} kB`;
+  return `${Math.round(bytes)} B`;
+}
+
+export function isCheckingRuntimeSelection(status: RuntimeSetupStatusResponse | null, selection: SetupSelection): boolean {
+  if (!status || selection.profile === "base") return false;
+  const installedGroups = status.installed_runtime?.profile === selection.profile
+    ? status.installed_runtime.model_groups : [];
+  const probeChecks = !status.configured || status.selected_profile === selection.profile
+    ? status.probe.checks : [];
+  const pending = (state: string | undefined) => state === "pending" || state === "timeout";
+  if (selection.modelGroups.some((id) => pending(installedGroups.find((group) => group.id === id)?.runtime_state)
+    || pending(probeChecks.find((check) => check.id === id)?.state))) return true;
+  const groups = installedGroups.length ? installedGroups
+    : status.selected_profile === selection.profile ? status.selected_model_groups : [];
+  if (selection.modelGroups.length && selection.modelGroups.every((id) => groups.find((group) => group.id === id)?.runtime_ready)) return false;
+  return Boolean(status.checking && (!status.configured || status.selected_profile === selection.profile));
+}
+
+export function isCheckingConfiguredRuntime(status: RuntimeSetupStatusResponse | null): boolean {
+  return Boolean(status?.configured && (status.state === "checking" || isCheckingRuntimeSelection(status, {
+    profile: status.selected_profile ?? "base",
+    modelGroups: status.selected_model_groups.map((group) => group.id),
+    acceptPytorchRisk: false,
+  })));
+}
+
+const ASSET_PROBLEMS: Record<string, string> = {
+  missing: "is not downloaded", incomplete: "did not finish downloading", corrupt: "is damaged", unavailable: "is unavailable",
+};
+
+/** What a finished runtime check found: ready, still probing, or the first thing that is wrong. */
+export function runtimeCheckResult(status: RuntimeSetupStatusResponse): { tone: "ready" | "pending" | "problem"; text: string } {
+  const problem = (text: string) => ({ tone: "problem" as const, text });
+  if (status.restart_required || status.state === "restart_required") return problem("Restart Orpheus to finish applying the runtime.");
+  if (status.state === "checking" || isCheckingConfiguredRuntime(status)) return { tone: "pending", text: "Still checking this device." };
+  if (!status.configured || status.state === "unconfigured") return problem("No runtime is set up yet.");
+  if (status.ready && status.state === "ready") {
+    return { tone: "ready", text: status.selected_profile === "base"
+      ? "Library only is ready. Creating audiobooks needs a voice runtime." : "Runtime ready." };
+  }
+  const label = (id: string) => MODEL_GROUP_DETAILS[id]?.label ?? id;
+  const installed = status.installed_runtime?.profile === status.selected_profile ? status.installed_runtime?.model_groups ?? [] : [];
+  for (const group of status.selected_model_groups) {
+    if (!group.runtime_ready) {
+      return problem(`${label(group.id)} cannot run: ${(installed.find((item) => item.id === group.id)?.runtime_reason || "the runtime is unavailable").replace(/\.$/, "")}.`);
+    }
+    if (!group.assets_ready) return problem(`${label(group.id)} ${ASSET_PROBLEMS[group.assets_reason ?? "missing"]}.`);
+  }
+  const packages = status.packages.missing.length + status.packages.incompatible.length;
+  if (packages > 0) return problem(`${packages} runtime ${packages === 1 ? "package is" : "packages are"} missing or out of date.`);
+  return problem("The runtime is not ready.");
 }
 
 export function shouldShowRuntimeSetup(
@@ -336,7 +394,7 @@ export function applyProgressEvent(
       ? 100
       : typeof event.percent === "number" && Number.isFinite(event.percent)
         ? Math.max(0, Math.min(99, event.percent))
-        : prior.percent,
+        : event.percent === null ? null : prior.percent,
     completedStages,
     restartRequired: Boolean(event.restart_required) || prior.restartRequired,
   };

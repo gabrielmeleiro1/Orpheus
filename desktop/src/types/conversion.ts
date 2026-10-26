@@ -31,6 +31,12 @@ export interface TtsVoiceOption {
 }
 
 interface TtsEngineCapabilities {
+  is_local?: boolean;
+  process_safe?: boolean;
+  provider?: string;
+  supports_conversion?: boolean;
+  supports_voice_cloning?: boolean;
+  worker_auto_mode?: string;
   supports_batching?: boolean;
   supports_native_batching?: boolean;
   batching_mode?: string;
@@ -114,6 +120,7 @@ export interface SystemCapabilitiesResponse {
   runtime_probe: RuntimeProbe;
   primary_runtime?: string;
   mlx_runtime_available?: boolean;
+  mlx_cleaner_runtime_available?: boolean;
   available_tts_engines?: string[];
   cleaner_backends?: string[];
   parallel_processing_enabled?: boolean;
@@ -174,6 +181,7 @@ export interface ConversionRuntimeOptions {
 }
 
 export interface StartConversionRequest extends Partial<ConversionRuntimeOptions> {
+  client_request_id?: string | null;
   source_path: string;
   conversion_mode: ConversionMode;
   title?: string | null;
@@ -182,6 +190,7 @@ export interface StartConversionRequest extends Partial<ConversionRuntimeOptions
 }
 
 export interface StartConversionResponse {
+  client_request_id?: string | null;
   job_id: string;
   status: ConversionJobStatus;
   book_id: number | null;
@@ -189,6 +198,7 @@ export interface StartConversionResponse {
 }
 
 export interface RepairConversionRequest extends Partial<ConversionRuntimeOptions> {
+  expected_epoch?: string;
   runtime_options?: ConversionRuntimeOptions | null;
 }
 
@@ -202,11 +212,18 @@ export interface SourcePreflight {
   title: string | null;
   author: string | null;
   chapter_count: number;
+  chapter_titles?: string[];
   source_type: string;
   sample: string;
   warnings: string[];
   size_bytes: number;
   requires_ocr: boolean;
+  /** Newer backends: books already made from this file or with this title (informational). */
+  existing_books?: Array<{ id: number; title: string; match: "same_file" | "same_title" }>;
+  /** Newer backends: why the source cannot be converted at all; `message` is written for the user. */
+  blocking_error?: { code: string; message: string; details?: string } | null;
+  /** Newer backends: rough spoken length, or null when it cannot be estimated. */
+  estimated_audio_seconds?: number | null;
   pdf_text_layer: {
     classification: "native_text" | "low_text_layer" | "ocr_required" | "unknown";
     confidence: number;
@@ -256,6 +273,7 @@ export interface VoiceSuggestionResponse {
 }
 
 interface ActiveConversionJob {
+  client_request_id?: string | null;
   id: string;
   book_id: number | null;
   status: ConversionJobStatus;

@@ -4,7 +4,6 @@ import {
   createApiClient,
   createApiClientFromDesktopEndpoint,
   type ApiClient,
-  type DesktopBackendStatus,
 } from "../api/client";
 import {
   BACKEND_HEALTH_CHECK_INTERVAL_MS,
@@ -16,6 +15,7 @@ import {
 import { isTauriRuntime } from "../platform/tauriRuntime";
 import type {
   BackendConnectionState,
+  DesktopBackendStatus,
   HealthResponse,
 } from "../types/api";
 
@@ -53,7 +53,7 @@ const BACKEND_RECOVERY_RETRY_DELAY_MS = 3_000;
 // health connection, so transient crashes still recover indefinitely.
 const BACKEND_RECOVERY_MAX_ATTEMPTS = 5;
 
-export type BackendRecoveryDecision =
+type BackendRecoveryDecision =
   | { action: "restart"; consumeAttempt: true }
   | { action: "wait"; consumeAttempt: false }
   | { action: "give_up" };
@@ -81,7 +81,20 @@ export function decideBackendRecovery(
   return { action: "wait", consumeAttempt: false };
 }
 
-export interface BrowserHealthState {
+// The launcher's final stderr line when startup fails for a cause it can name.
+const BACKEND_STARTUP_FAILURE_PREFIX = "failed to start desktop backend: ";
+
+/** Message shown once recovery gives up; a named startup cause stands alone. */
+export function describeBackendRecoveryFailure(error: string | null | undefined): string {
+  const cause = error?.trim();
+  if (cause?.startsWith(BACKEND_STARTUP_FAILURE_PREFIX)) {
+    return cause.slice(BACKEND_STARTUP_FAILURE_PREFIX.length);
+  }
+  return "backend failed to recover after multiple attempts; retry the connection or reload the app"
+    + (cause ? `. ${cause}` : "");
+}
+
+interface BrowserHealthState {
   failures: number;
   connectionState: BackendConnectionState;
 }
@@ -108,7 +121,7 @@ export function nextBrowserHealthState(
   };
 }
 
-export interface BackendMonitorFailureResolution {
+interface BackendMonitorFailureResolution {
   clearClient: boolean;
   connectionState: BackendConnectionState;
   health: HealthResponse | null;
@@ -261,11 +274,7 @@ export function useBackendClient() {
           readyRecoveryAttempts,
         );
         if (decision.action === "give_up") {
-          const cause = status.error?.trim();
-          setStatusMessage(
-            "backend failed to recover after multiple attempts; retry the connection or reload the app"
-            + (cause ? `. ${cause}` : ""),
-          );
+          setStatusMessage(describeBackendRecoveryFailure(status.error));
           return;
         }
         if (decision.action === "restart") {
@@ -335,6 +344,19 @@ export function useBackendClient() {
           setHealth(null);
           setConnectionState("checking");
           setStatusMessage(describeDesktopBackendStatus(status));
+          return;
+        }
+        const liveBaseUrl = status.endpoint?.base_url;
+        if (liveBaseUrl && liveBaseUrl !== backendBaseUrl) {
+          // The supervisor relaunched the backend on a new socket and token.
+          // This client can only fail from here on, so acquire the new
+          // endpoint now instead of waiting out the health-failure threshold.
+          setHealth(null);
+          setApiClient(null);
+          setBackendBaseUrl("");
+          setConnectionState("checking");
+          setStatusMessage("Backend restarted; reconnecting");
+          setBootstrapAttempt((attempt) => attempt + 1);
           return;
         }
 

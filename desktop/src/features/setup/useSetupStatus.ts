@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type SetStateAction } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
@@ -20,11 +20,17 @@ export function useSetupStatus({ apiClient, initialStatus, initialError, onReady
     ? createSelection(initialStatus)
     : { profile: "base", modelGroups: [], acceptPytorchRisk: false });
   const statusRef = useRef(status);
-  statusRef.current = status;
+  useLayoutEffect(() => {
+    statusRef.current = status;
+  });
   const selectionRef = useRef(selection);
-  selectionRef.current = selection;
+  useLayoutEffect(() => {
+    selectionRef.current = selection;
+  });
   const clientRef = useRef(apiClient);
-  clientRef.current = apiClient;
+  useLayoutEffect(() => {
+    clientRef.current = apiClient;
+  });
   const requestSequence = useRef(0);
   const previousClient = useRef(apiClient);
   const selectionDirty = useRef(false);
@@ -55,7 +61,7 @@ export function useSetupStatus({ apiClient, initialStatus, initialError, onReady
     const sequence = ++requestSequence.current;
     const isCurrent = () => clientRef.current === apiClient && requestSequence.current === sequence;
     try {
-      // Cold probes and first-time model hashing share the app's two-minute budget.
+      // Frozen status reads return pending while cold probes continue in the backend.
       const next = await apiClient.getRuntimeSetupStatus({ timeoutMs: 120_000 });
       if (!isCurrent()) return null;
       const incompatible = !next.profiles.some((profile) => profile.id === selectionRef.current.profile && profile.compatible);
@@ -74,6 +80,29 @@ export function useSetupStatus({ apiClient, initialStatus, initialError, onReady
       return null;
     }
   }, [apiClient, onReady, preserveSelection]);
+
+  const checking = Boolean(status?.checking || status?.installed_runtime?.checking
+    || status?.probe.checks.some((check) => check.state === "timeout" || check.state === "pending"));
+  const refreshRef = useRef(refreshStatus);
+  useLayoutEffect(() => {
+    refreshRef.current = refreshStatus;
+  });
+  useEffect(() => {
+    if (!apiClient || !checking) return;
+    let active = true;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      attempts += 1;
+      const next = await refreshRef.current();
+      if (active && attempts < 120 && next && (next.checking || next.installed_runtime?.checking
+        || next.probe.checks.some((check) => check.state === "timeout" || check.state === "pending"))) {
+        timer = setTimeout(() => void poll(), 3_000);
+      }
+    };
+    timer = setTimeout(() => void poll(), 3_000);
+    return () => { active = false; clearTimeout(timer); };
+  }, [apiClient, checking]);
 
   return { status, setStatus, selection, setSelection, error, setError, refreshStatus };
 }

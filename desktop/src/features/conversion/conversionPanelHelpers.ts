@@ -1,54 +1,18 @@
+import { formatListeningLength } from "../../format/time";
+
 export const VOICE_PREVIEW_DEFAULT_TEXT = "The quick brown fox jumps over the lazy dog.";
+
+/** Windows Explorer's Copy as path wraps a path in double quotes. */
+export function unwrapQuotedSourcePath(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')
+    ? trimmed.slice(1, -1)
+    : value;
+}
 
 export function splitPath(path: string): string {
   const segments = path.split(/[\\/]+/).filter(Boolean);
   return segments.length > 0 ? segments[segments.length - 1] : path;
-}
-
-/** Middle-truncate a long string, keeping both ends readable. */
-export function middleTruncate(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-  const keep = Math.max(1, maxChars - 1);
-  const front = Math.ceil(keep / 2);
-  const back = Math.floor(keep / 2);
-  return `${value.slice(0, front)}…${value.slice(value.length - back)}`;
-}
-
-export interface SourceDisplay {
-  /** Friendly basename shown to the user (e.g. "Pasted Document.md"). */
-  name: string;
-  /** Containing directory for real file paths, middle-truncated. Empty for upload handles. */
-  dir: string;
-}
-
-/**
- * Describe a chosen source for display: a friendly basename plus (for real
- * filesystem paths) its middle-truncated directory. Upload handles such as
- * "upload:1699_ab_Pasted Document.md" collapse to just their friendly label.
- * Callers keep the full path/handle for the tooltip.
- */
-export function describeSourceDisplay(sourcePath: string, label?: string): SourceDisplay {
-  const trimmed = sourcePath.trim();
-  if (!trimmed) {
-    return { name: "", dir: "" };
-  }
-
-  const friendlyLabel = label?.trim();
-  // A URL-ish scheme ("upload:…") has no filesystem directory to surface, but a
-  // Windows drive letter ("C:\…") is a real path — exclude it from the scheme test.
-  const isHandle = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) && !/^[a-z]:[\\/]/i.test(trimmed);
-  const name = friendlyLabel || splitPath(trimmed);
-  if (isHandle) {
-    // Never surface the raw handle: "upload:<stamp>_<hash>_<file>" collapses
-    // to its original file name when no queue-item label is around.
-    return { name: friendlyLabel || name.replace(/^upload:\d+_[0-9a-f]+_/i, ""), dir: "" };
-  }
-
-  const separatorIndex = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-  const dir = separatorIndex > 0 ? trimmed.slice(0, separatorIndex) : "";
-  return { name, dir: dir ? middleTruncate(dir, 44) : "" };
 }
 
 export function compactSample(text: string, maxChars = 260): string {
@@ -56,7 +20,7 @@ export function compactSample(text: string, maxChars = 260): string {
   if (normalized.length <= maxChars) {
     return normalized;
   }
-  return `${normalized.slice(0, maxChars - 3)}...`;
+  return `${normalized.slice(0, maxChars - 1)}…`;
 }
 
 // Alias map must stay in sync with modules/tts/quantization.py (QUANTIZATION_ALIASES).
@@ -123,4 +87,15 @@ export function pathsFromUriList(uriList: string): string[] {
     paths.push(url.host ? `//${url.host}${pathname}` : pathname);
   }
   return paths;
+}
+
+// Mirrors ESTIMATED_CHARS_PER_AUDIO_SECOND in modules/ingestion/preflight.py,
+// so this estimate and the queued row's (the backend's) agree for the same text.
+const ESTIMATED_CHARACTERS_PER_AUDIO_SECOND = 18.5;
+
+/** Size and rough narration length of pasted text, shown before Start. */
+export function pastedTextEstimate(text: string): string {
+  const characters = text.trim().length;
+  if (characters === 0) return "";
+  return `${characters.toLocaleString("en-US")} characters · About ${formatListeningLength(Math.round(characters / ESTIMATED_CHARACTERS_PER_AUDIO_SECOND))} of audio`;
 }

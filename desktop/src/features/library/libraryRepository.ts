@@ -1,9 +1,12 @@
+import type { LibraryRequestOptions } from "../../api/resources/library";
+import type { CleanupStorageOptions } from "../../api/resources/maintenance";
 import type { ApiClient, ApiRequestOptions } from "../../api/client";
 import type {
   CleaningPreviewResponse,
   ConversionMode,
   DeleteBookResponse,
   LibraryBookDetail,
+  LibraryIdentity,
   LibraryBookSummary,
   LibraryBookUpdateRequest,
   MaintenanceBackupResponse,
@@ -23,7 +26,7 @@ export type LibraryModeFilter = "all" | ConversionMode;
 export const LIBRARY_PAGE_SIZE = 100;
 
 /** One page of library results plus the metadata needed to page further. */
-export interface LibraryPage {
+interface LibraryPage extends LibraryIdentity {
   items: LibraryBookSummary[];
   /** The offset this page was requested at. */
   offset: number;
@@ -50,17 +53,17 @@ export interface LibraryRepository {
     payload: LibraryBookUpdateRequest,
     options?: ApiRequestOptions,
   ): Promise<LibraryBookDetail>;
-  deleteBook(bookId: number, options?: ApiRequestOptions): Promise<DeleteBookResponse>;
+  deleteBook(bookId: number, options?: LibraryRequestOptions): Promise<DeleteBookResponse>;
   getCleaningPreview(
     bookId: number,
     chapterNumber: number,
     options?: ApiRequestOptions,
   ): Promise<CleaningPreviewResponse>;
   openBookFolder(bookId: number, options?: ApiRequestOptions): Promise<OpenBookFolderResponse>;
-  repairBook(bookId: number, options?: ApiRequestOptions): Promise<StartConversionResponse>;
+  repairBook(bookId: number, options?: LibraryRequestOptions): Promise<StartConversionResponse>;
   getMaintenanceDiagnostics(options?: ApiRequestOptions): Promise<MaintenanceDiagnosticsResponse>;
   backupDatabase(options?: ApiRequestOptions): Promise<MaintenanceBackupResponse>;
-  cleanupStorage(options?: ApiRequestOptions): Promise<MaintenanceCleanupResponse>;
+  cleanupStorage(options?: CleanupStorageOptions): Promise<MaintenanceCleanupResponse>;
 }
 
 export function createLibraryRepository(apiClient: ApiClient): LibraryRepository {
@@ -72,7 +75,13 @@ export function createLibraryRepository(apiClient: ApiClient): LibraryRepository
       }, options);
       const items = Array.isArray(response.items) ? response.items : [];
       return {
-        items,
+        items: items.map((item) => ({
+          ...item,
+          library_id: item.library_id ?? response.library_id,
+          library_epoch: item.library_epoch ?? response.library_epoch,
+        })),
+        library_id: response.library_id,
+        library_epoch: response.library_epoch,
         offset,
         // A full page implies the backend may have more rows past this offset.
         hasMore: items.length >= LIBRARY_PAGE_SIZE,
@@ -100,7 +109,7 @@ export function createLibraryRepository(apiClient: ApiClient): LibraryRepository
     repairBook(bookId, options) {
       // Omit narration/worker fields so the backend reuses persisted conversion
       // settings and forces safe automatic worker planning.
-      return apiClient.repairConversion(bookId, {}, options);
+      return apiClient.repairConversion(bookId, { expected_epoch: options?.expectedEpoch }, options);
     },
     getMaintenanceDiagnostics(options) {
       return apiClient.getMaintenanceDiagnostics(options);

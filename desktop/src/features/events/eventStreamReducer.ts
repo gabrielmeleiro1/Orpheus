@@ -22,6 +22,15 @@ import {
   resolveStageIndex,
 } from "./progressStageModel";
 
+// Reconciled jobs read as a sentence instead of a raw backend status.
+const ACTIVE_JOB_STATUS_TEXT: Partial<Record<ConversionJobStatus, string>> = {
+  running: "Conversion running",
+  idle: "Waiting for a conversion…",
+  completed: "Conversion completed",
+  failed: "Conversion failed",
+  cancelled: "Conversion cancelled",
+};
+
 export interface EventStreamModelState {
   uiState: ConversionJobStatus;
   statusText: string;
@@ -34,11 +43,14 @@ export interface EventStreamModelState {
   activeJobId: string | null;
   logs: EventStreamLogEntry[];
   isCancelling: boolean;
+  cancellationError: string;
   cancelledJobId: string | null;
   cancellingJobId: string | null;
   runningJobId: string | null;
   terminalJobIds: string[];
 }
+
+export const INTERRUPTED_JOB_TEXT = "The conversion was interrupted when the backend stopped. Finished chapters are kept: open the book in Library and use Repair audio to complete it.";
 
 // Bounds how many finished job ids we remember. Jobs run sequentially and ids
 // are unique, so a small window is enough to drop late events for a job that
@@ -56,7 +68,7 @@ function appendTerminalJobId(terminalJobIds: string[], jobId: string): string[] 
     : next;
 }
 
-export type EventStreamAction =
+type EventStreamAction =
   | { type: "progress"; payload: DesktopEventPayload }
   | ({ type: "state"; payload: DesktopEventPayload } & Partial<LogActionFields>)
   | ({ type: "log"; payload: DesktopEventPayload } & LogActionFields)
@@ -70,7 +82,7 @@ export type EventStreamAction =
   | { type: "conversionStarted"; jobId: string }
   | { type: "setActiveJobId"; jobId: string | null };
 
-export interface EventStreamReduceResult {
+interface EventStreamReduceResult {
   state: EventStreamModelState;
   terminalEvent?: ConversionJobTerminalEvent;
   ignored?: boolean;
@@ -89,6 +101,7 @@ export function createInitialEventStreamState(): EventStreamModelState {
     activeJobId: null,
     logs: [],
     isCancelling: false,
+    cancellationError: "",
     cancelledJobId: null,
     cancellingJobId: null,
     runningJobId: null,
@@ -106,6 +119,7 @@ function resetProgressForRun(state: EventStreamModelState): EventStreamModelStat
     currentMessage: "",
     performanceSnapshot: null,
     isCancelling: false,
+    cancellationError: "",
   };
 }
 
@@ -130,6 +144,7 @@ function reduceProgressEvent(
   const base: EventStreamModelState = {
     ...state,
     uiState: "running",
+    activeJobId: jobId || state.activeJobId,
     progressPct: overallPct,
     etaText: formatEtaLabel(payload.eta),
     statusText: message || (stage ? `Stage: ${stage}` : "Conversion running"),
@@ -176,6 +191,7 @@ function markJobCanceled(state: EventStreamModelState, jobId?: string): EventStr
     performanceSnapshot: null,
     activeJobId: null,
     isCancelling: false,
+    cancellationError: "",
   };
 }
 
@@ -233,41 +249,45 @@ function reduceStateEvent(
     const runningJobKey = jobId || "__unknown__";
     if (next.runningJobId !== runningJobKey) {
       next = resetProgressForRun(next);
-      next = { ...next, runningJobId: runningJobKey };
+      // The event log belongs to one conversion: a new one starts it afresh.
+      next = { ...next, runningJobId: runningJobKey, logs: [] };
     }
     next = { ...next, statusText: message || "Conversion running" };
   } else if (normalizedState === "completed") {
     next = {
       ...next,
       runningJobId: null,
-      statusText: message || "conversion completed",
+      statusText: message || "Conversion completed",
       progressPct: 100,
       etaText: "",
       stages: doneStages().map((item) => ({ ...item, detail: [] })),
       activeJobId: null,
       isCancelling: false,
+      cancellationError: "",
     };
   } else if (normalizedState === "failed") {
     next = {
       ...next,
       runningJobId: null,
-      statusText: message || "conversion failed",
+      statusText: message || "Conversion failed",
       etaText: "",
       activeJobId: null,
       isCancelling: false,
+      cancellationError: "",
     };
   } else if (normalizedState === "idle") {
     next = {
       ...next,
       runningJobId: null,
-      statusText: message || "ready",
+      statusText: message || "Ready",
       etaText: "",
       performanceSnapshot: null,
       activeJobId: null,
       isCancelling: false,
+      cancellationError: "",
     };
   } else {
-    next = { ...next, statusText: message || `state: ${rawState || "unknown"}` };
+    next = { ...next, statusText: message || `State: ${rawState || "unknown"}` };
   }
 
   if (message) {
@@ -359,28 +379,57 @@ export function eventStreamReducer(
           performanceSnapshot: null,
           activeJobId: null,
           isCancelling: false,
+          cancellationError: "",
           cancellingJobId: null,
           runningJobId: null,
         },
       };
-    case "refreshInactive":
+    case "refreshInactive": {
+      // A job that vanished without a terminal event leaves its last live
+      // message behind; only a settled outcome keeps its status text.
+      const wasLive = state.uiState === "running" || state.uiState === "unknown";
+      // A running job the backend no longer knows was lost with its process
+      // (one being cancelled simply finished stopping).
+      if (state.uiState === "running" && state.activeJobId && !state.isCancelling && !state.cancellingJobId) {
+        return {
+          state: {
+            ...state,
+            runningJobId: null,
+            activeJobId: null,
+            isCancelling: false,
+            cancellationError: "",
+            etaText: "",
+            performanceSnapshot: null,
+            uiState: "failed",
+            statusText: INTERRUPTED_JOB_TEXT,
+            currentMessage: INTERRUPTED_JOB_TEXT,
+          },
+        };
+      }
       return {
         state: {
           ...state,
           runningJobId: null,
           activeJobId: null,
           isCancelling: false,
+          cancellationError: "",
           etaText: "",
           performanceSnapshot: null,
-          uiState: state.uiState === "running" || state.uiState === "unknown" ? "idle" : state.uiState,
-          statusText:
-            state.statusText === "Conversion running" ||
-            state.statusText === "Cancellation requested — waiting for the backend to stop"
-              ? "ready"
-              : state.statusText,
+          uiState: wasLive ? "idle" : state.uiState,
+          statusText: wasLive ? "Ready" : state.statusText,
         },
       };
+    }
     case "refreshActive":
+      // The periodic reconcile poll confirming the job already being observed
+      // must not replace the live progress message with a generic status.
+      if (
+        action.job.status === "running" &&
+        state.uiState === "running" &&
+        state.activeJobId === action.job.id
+      ) {
+        return { state };
+      }
       // The fallback reconcile poll keeps seeing a non-terminal "running" job
       // while the backend winds down a cancellation that was already accepted
       // for this job. Preserve the "cancellation requested…" status/uiState
@@ -403,15 +452,15 @@ export function eventStreamReducer(
           ...state,
           activeJobId: action.job.id,
           uiState: action.job.status,
-          statusText: `active job: ${action.job.status}`,
+          statusText: ACTIVE_JOB_STATUS_TEXT[action.job.status] ?? "Conversion status unknown",
           runningJobId: action.job.status !== "running" ? null : state.runningJobId,
           isCancelling: action.job.status !== "running" ? false : state.isCancelling,
         },
       };
     case "cancelStart":
-      return { state: { ...state, isCancelling: true } };
+      return { state: { ...state, isCancelling: true, cancellationError: "" } };
     case "cancelRejected":
-      return { state: { ...state, isCancelling: false } };
+      return { state: { ...state, isCancelling: false, cancellationError: "Couldn't stop the conversion. Try again." } };
     case "cancelAccepted":
       return {
         state: addLog(
@@ -445,6 +494,7 @@ export function eventStreamReducer(
           cancelledJobId: null,
           cancellingJobId: null,
           isCancelling: false,
+          cancellationError: "",
         },
       };
     case "setActiveJobId":

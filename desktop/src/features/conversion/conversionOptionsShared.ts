@@ -52,6 +52,20 @@ export function savePersistedSettings(settings: PersistedSettings): void {
   }
 }
 
+export function resolveOptionValue(
+  options: readonly Pick<TermSelectOption, "value">[],
+  currentValue: string,
+  ...fallbackValues: unknown[]
+): string {
+  if (options.some((option) => option.value === currentValue)) {
+    return currentValue;
+  }
+  return fallbackValues
+    .map((value) => String(value ?? "").trim())
+    .find((candidate) => candidate && options.some((option) => option.value === candidate))
+    ?? options[0]?.value ?? "";
+}
+
 // Labels show display names only — raw ids stay out of visible copy but
 // remain matchable through the search haystack.
 export function mapEngineOption(engine: TtsEngineOption): TermSelectOption {
@@ -79,8 +93,8 @@ export function mapVoiceOption(voice: TtsVoiceOption): TermSelectOption {
 // The number input advertises min=0.5 max=3, but a typed value bypasses those
 // attributes, so clamp here (mirrors clampWorkerLimit for the workers field).
 // The backend also rejects out-of-range speed with a 422; this is the UX guard.
-export const MIN_NARRATION_SPEED = 0.5;
-export const MAX_NARRATION_SPEED = 3;
+const MIN_NARRATION_SPEED = 0.5;
+const MAX_NARRATION_SPEED = 3;
 
 export function parseSpeed(value: string): number {
   const parsed = Number.parseFloat(value);

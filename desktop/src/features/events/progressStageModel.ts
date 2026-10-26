@@ -28,6 +28,8 @@ const BACKEND_STAGE_NAME_MAP: Record<string, ProgressStageName | ""> = {
   cancelled: "",
 };
 
+const CHAPTER_DETAIL_LABEL = "Chapter";
+
 export function createProgressStages(): ProgressStageView[] {
   return PROGRESS_STAGE_NAMES.map((name) => ({
     name,
@@ -138,16 +140,17 @@ export function buildStageDetail(
   const chunkTotal = normalizeCounter(payload.chunk_total);
 
   if (chapterTotal > 0) {
+    // The chapter being worked on, not a count of finished ones (the performance line counts those).
     details.push({
-      label: "chapter",
-      value: `${Math.min(chapterCurrent, chapterTotal)}/${chapterTotal}`,
+      label: CHAPTER_DETAIL_LABEL,
+      value: `${Math.min(chapterCurrent, chapterTotal)} of ${chapterTotal}`,
       pct: counterPercent(chapterCurrent, chapterTotal),
     });
   }
 
   if (chunkTotal > 0) {
     details.push({
-      label: "chunk",
+      label: "Chunks",
       value: `${Math.min(chunkCurrent, chunkTotal)}/${chunkTotal}`,
       pct: counterPercent(chunkCurrent, chunkTotal),
     });
@@ -168,6 +171,22 @@ export function buildStageDetail(
   }
 
   return details;
+}
+
+/**
+ * "Chapter 3/12 · Synthesis" while the active stage reports which chapter it
+ * is on; the stage alone before the first chapter or when none is reported.
+ */
+export function chapterStageLabel(stages: ProgressStageView[], stage: string): string {
+  const chapter = stages
+    .find((item) => item.state === "active")
+    ?.detail.find((detail) => detail.label === CHAPTER_DETAIL_LABEL);
+  // Reads back the value buildStageDetail wrote for the chapter row.
+  const position = /^(\d+) of (\d+)$/.exec(chapter?.value ?? "");
+  if (!stage || !position || Number(position[1]) < 1) {
+    return stage;
+  }
+  return `Chapter ${position[1]}/${position[2]} · ${stage}`;
 }
 
 export function doneStages(): ProgressStageView[] {

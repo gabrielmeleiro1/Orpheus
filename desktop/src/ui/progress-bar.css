@@ -19,7 +19,7 @@
   transition: width var(--dur-fast) var(--ease-out);
 }
 
-.pbar-neutral .pbar-fill { background: var(--accent-muted); }
+.pbar-neutral .pbar-fill { background: var(--accent-active); }
 .pbar-done .pbar-fill { background: var(--positive); }
 .pbar-danger .pbar-fill { background: var(--negative); }
 
@@ -30,6 +30,49 @@
   to { transform: translateX(185%); }
 }
 
+/* Text-cell bars: same tones, drawn with block glyphs on the mono grid. */
+.pbar.pbar-ascii {
+  background: none;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  height: auto;
+  /* A little tracking separates the cells so the bar reads as text, not a fill. */
+  letter-spacing: .14em;
+  line-height: 1;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* A fitted bar lays its cells on a grid, so it ends exactly at its box edge. */
+.pbar-fit .pbar-cells {
+  display: grid;
+  grid-template-columns: repeat(var(--pbar-cells), minmax(0, 1fr));
+  justify-items: center;
+  letter-spacing: 0;
+}
+
+.pbar-fit :is(.pbar-cells-filled, .pbar-cells-empty) {
+  display: contents;
+}
+
+.pbar-ascii.pbar-hairline { font-size: 10px; }
+.pbar-ascii.pbar-regular { font-size: var(--text-sm); }
+.pbar-ascii.pbar-lg { font-size: 15px; }
+
+.pbar-cells-empty { color: var(--gray-6); }
+.pbar-ascii .pbar-cells-filled { color: var(--accent-text); }
+.pbar-ascii.pbar-neutral .pbar-cells-filled { color: var(--text-secondary); }
+.pbar-ascii.pbar-done .pbar-cells-filled { color: var(--positive); }
+.pbar-ascii.pbar-danger .pbar-cells-filled { color: var(--negative); }
+.pbar-ascii.pbar-indeterminate .pbar-cells-empty { animation: pbar-ascii-pulse 1.2s ease-in-out infinite alternate; }
+
+@keyframes pbar-ascii-pulse {
+  from { color: var(--gray-6); }
+  to { color: var(--gray-8); }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .pbar-ascii .pbar-cells-empty { animation: none !important; }
   .pbar-fill { transition: none; animation: none !important; }
 }

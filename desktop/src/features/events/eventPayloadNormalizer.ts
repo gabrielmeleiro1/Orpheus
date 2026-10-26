@@ -64,6 +64,13 @@ export function normalizeEventPayload(payload: unknown): DesktopEventPayload | n
   if (eventId) {
     normalized.event_id = eventId;
   }
+  const instanceId = normalizeString(source.backend_instance_id);
+  if (instanceId) {
+    normalized.backend_instance_id = instanceId;
+  }
+  if (typeof source.event_sequence === "number" && Number.isSafeInteger(source.event_sequence) && source.event_sequence > 0) {
+    normalized.event_sequence = source.event_sequence;
+  }
   if (timestamp) {
     normalized.timestamp = timestamp;
   }
@@ -96,13 +103,26 @@ export function normalizeEventPayload(payload: unknown): DesktopEventPayload | n
     "chunk_current",
     "chunk_total",
   ] as const) {
-    const numeric = Number(source[key]);
-    if (Number.isFinite(numeric)) {
+    const numeric = finiteNumber(source[key]);
+    if (numeric !== undefined) {
       normalized[key] = numeric;
     }
   }
 
   return normalized;
+}
+
+// `Number(null)` and `Number("")` are 0, which would turn an absent value into
+// a real reading and defeat `overall_progress ?? progress` fallbacks.
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : undefined;
+  }
+  return undefined;
 }
 
 export function terminalEventFromStatePayload(

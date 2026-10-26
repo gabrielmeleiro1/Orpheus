@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
-import { BrailleSpinner } from "../../ui/ascii/BrailleSpinner";
-import { RUNTIME_LABELS } from "../../format/runtime";
+import { AsciiLoader } from "../../ui/ascii/AsciiLoader";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
 import { invalidateRuntimeBootstrap } from "../../app/runtimeBootstrapCache";
 import {
@@ -25,8 +24,10 @@ import {
   MODEL_GROUP_DETAILS,
   createSelection,
   diagnosticsSnapshot,
+  isCheckingRuntimeSelection,
   modelDownloadProgressEvent,
   profileChoices,
+  runtimeCheckResult,
   selectionEstimate,
   selectionMatchesConfigured,
   selectionReadiness,
@@ -41,10 +42,9 @@ import {
 import { SetupDangerZone } from "./SetupDangerZone";
 import { SetupModelManager } from "./SetupModelManager";
 import { SetupPlanSection } from "./SetupPlanSection";
+import { SetupPrecisionChoice } from "./SetupPrecisionChoice";
 import { SetupProgressSection } from "./SetupProgressSection";
 import { SetupRecoveryNotice } from "./SetupRecoveryNotice";
-import { SetupRiskNotice } from "./SetupRiskNotice";
-import { ModelListTip } from "./SetupTips";
 import { useSetupModelDownload, type SetupDownloadPhase } from "./useSetupModelDownload";
 import { useSetupStatus } from "./useSetupStatus";
 
@@ -73,7 +73,10 @@ interface SetupPageProps {
   onReady: (status: RuntimeSetupStatusResponse) => void;
   onContinueLibraryOnly: () => void;
   settingsEntry?: boolean;
-  onExitSettings?: () => void;
+  /** Rendered as a section of the Settings page instead of its own screen. */
+  embedded?: boolean;
+  /** Embedded only: keeps the section mounted, so a running download keeps reporting, while Settings is closed. */
+  hidden?: boolean;
   onReconnectBackend: () => void;
   bridge?: SetupPageBridge;
 }
@@ -85,7 +88,8 @@ export function SetupPage({
   onReady,
   onContinueLibraryOnly,
   settingsEntry = false,
-  onExitSettings,
+  embedded = false,
+  hidden = false,
   onReconnectBackend,
   bridge = defaultBridge,
 }: SetupPageProps) {
@@ -110,13 +114,17 @@ export function SetupPage({
   const [adopting, setAdopting] = useState(false);
   const [managingModels, setManagingModels] = useState(false);
   const [downloadingGroup, setDownloadingGroup] = useState<string | null>(null);
-  const [showAdvanced, setShowAdvanced] = useState(settingsEntry);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [downloadPhase, setDownloadPhase] = useState<SetupDownloadPhase>("idle");
   const [statusRefreshing, setStatusRefreshing] = useState(false);
+  const [runtimeCheckedAt, setRuntimeCheckedAt] = useState<Date | null>(null);
   const startLocked = useRef(false);
   const restartLocked = useRef(false);
   const adoptLocked = useRef(false);
+  const cancelRequest = useRef<object | null>(null);
   const adoptGeneration = useRef(0);
+  const currentApiClient = useRef(apiClient);
+  currentApiClient.current = apiClient;
   const lastAttempt = useRef<"backend" | "bridge" | null>(null);
   const statusRefreshLock = useRef(false);
   const preRestartClient = useRef<ApiClient | null>(null);
@@ -127,6 +135,7 @@ export function SetupPage({
   useEffect(() => {
     adoptGeneration.current += 1;
     adoptLocked.current = false;
+    cancelRequest.current = null;
     setAdopting(false);
     setManagingModels(false);
     return () => { adoptGeneration.current += 1; };
@@ -247,8 +256,8 @@ export function SetupPage({
   });
 
   useEffect(() => {
-    setupHeadingRef.current?.focus();
-  }, []);
+    if (!embedded) setupHeadingRef.current?.focus();
+  }, [embedded]);
 
   useEffect(() => {
     if (error) errorRef.current?.focus();
@@ -270,10 +279,10 @@ export function SetupPage({
   }, [busy]);
 
   useEffect(() => {
-    if (settingsEntry) {
+    if (settingsEntry && !embedded) {
       setupHeadingRef.current?.focus();
     }
-  }, [progress.lifecycle, settingsEntry, status]);
+  }, [embedded, progress.lifecycle, settingsEntry, status]);
 
   useEffect(() => {
     if (!environment?.available || !busy || awaitingReconnect || downloadPhase !== "idle") return undefined;
@@ -298,7 +307,8 @@ export function SetupPage({
     void refreshStatus().then((next) => {
       if (!active) return;
       if (next && !next.restart_required && !next.ready) {
-        const message = "Orpheus restarted, but the selected runtime is not ready. Install again to repair it.";
+        // The failed state offers a Retry button that re-runs the installation.
+        const message = "Orpheus restarted, but the selected runtime is not ready. Select Retry to install it again.";
         lastAttempt.current = "bridge";
         setError(message);
         setProgress((previous) => ({ ...previous, lifecycle: "failed", restartRequired: false,
@@ -320,15 +330,17 @@ export function SetupPage({
   const choices = status ? profileChoices(status) : [];
   const mutationsAvailable = environment?.available === true;
   const installedRuntime = status?.installed_runtime ?? null;
+  const checkingHardware = isCheckingRuntimeSelection(status, selection);
+  const runtimeFailureReason = installedRuntime?.profile === selection.profile
+    ? installedRuntime.model_groups.find((group) => selection.modelGroups.includes(group.id) && !group.runtime_ready)?.runtime_reason
+    : null;
   const installedReady = installedRuntime?.ready === true;
+  const runtimeCheck = status ? runtimeCheckResult(status) : null;
   const configuredReady = status?.configured === true && status.ready && status.state === "ready" && !status.restart_required;
   const installedProfile = installedReady
     ? status?.profiles.find((profile) => profile.id === installedRuntime?.profile) ?? null
     : null;
   const installedIsCuda = installedReady && installedRuntime?.profile === "cuda";
-  const installedReadyGroups = installedReady
-    ? installedRuntime!.model_groups.filter((group) => group.ready).map((group) => group.id)
-    : [];
   const riskProfile = installedReady && !settingsEntry ? installedProfile : selectedProfile;
   const showRiskBlock = installedReady && !settingsEntry
     ? Boolean(installedIsCuda && installedProfile?.risk)
@@ -353,7 +365,7 @@ export function SetupPage({
   const cachedGroups = installedRuntime?.profile === selection.profile ? installedRuntime.model_groups
     : status?.selected_profile === selection.profile ? status.selected_model_groups : [];
   const missingGroups = selection.modelGroups.filter((id) => !cachedGroups.some((group) => group.id === id && group.assets_ready));
-  const selectedEstimate = missingGroups.length ? selectionEstimate(missingGroups) : "Already downloaded · no download needed";
+  const downloadEstimate = selectionEstimate(missingGroups);
   const progressMessage = showRestart && (progress.lifecycle === "idle" || progress.lifecycle === "complete") && !awaitingReconnect
     ? "Installation complete. Restart Orpheus to load the selected runtime."
     : progress.message;
@@ -385,6 +397,8 @@ export function SetupPage({
 
   const installFromBackend = async (): Promise<boolean> => {
     if (!apiClient || !status || selection.profile !== backendInstallProfile || !selectedReadiness.runtimeReady || !acquireSetupStart(startLocked)) return false;
+    const generation = adoptGeneration.current;
+    const ownsRequest = () => generation === adoptGeneration.current && currentApiClient.current === apiClient;
     lastAttempt.current = "backend";
     setDownloadPhase("starting");
     setBusy(true);
@@ -395,8 +409,10 @@ export function SetupPage({
         { profile: selection.profile, model_groups: [...selection.modelGroups], cleaner_cuda_quantization: selection.cleanerCudaQuantization ?? "4bit" },
         { timeoutMs: 15_000 },
       );
+      if (!ownsRequest()) return true;
       setDownloadPhase("downloading");
     } catch (reason: unknown) {
+      if (!ownsRequest()) return true;
       startLocked.current = false;
       setBusy(false);
       const message = safeError(reason, "Model downloads could not start.");
@@ -409,6 +425,8 @@ export function SetupPage({
 
   const installModel = async (profile: "base" | "mlx" | "cuda", groupId: string) => {
     if (!apiClient || busy || adopting || managingModels || !acquireSetupStart(startLocked)) return;
+    const generation = adoptGeneration.current;
+    const ownsRequest = () => generation === adoptGeneration.current && currentApiClient.current === apiClient;
     lastAttempt.current = null;
     setDownloadPhase("starting");
     setBusy(true);
@@ -417,8 +435,10 @@ export function SetupPage({
     setProgress({ ...EMPTY_PROGRESS, lifecycle: "running", message: "Starting model download…" });
     try {
       await apiClient.startRuntimeModelDownload({ profile, model_groups: [groupId], configure_runtime: false }, { timeoutMs: 15_000 });
+      if (!ownsRequest()) return;
       setDownloadPhase("downloading");
     } catch (reason: unknown) {
+      if (!ownsRequest()) return;
       startLocked.current = false;
       setBusy(false);
       setError(safeError(reason, "The model download could not start. Try again."));
@@ -457,8 +477,10 @@ export function SetupPage({
     if (statusRefreshLock.current) return;
     statusRefreshLock.current = true;
     setStatusRefreshing(true);
+    setRuntimeCheckedAt(null);
     try {
-      await refreshStatus();
+      // A failed check is reported by the error notice instead.
+      if (await refreshStatus()) setRuntimeCheckedAt(new Date());
     } finally {
       statusRefreshLock.current = false;
       setStatusRefreshing(false);
@@ -466,11 +488,18 @@ export function SetupPage({
   };
 
   const cancel = async () => {
-    if (!busy) return;
-    if (downloadPhase === "stopping") return;
-    if (downloadPhase === "downloading" && apiClient) {
-      try {
+    if (!busy || cancelRequest.current || downloadPhase === "stopping" || runnerStopping) return;
+    if (downloadPhase !== "downloading" && (downloadPhase !== "idle" || !mutationsAvailable)) return;
+    const request = {};
+    cancelRequest.current = request;
+    setError(null);
+    const generation = adoptGeneration.current;
+    const ownsRequest = () => generation === adoptGeneration.current
+      && currentApiClient.current === apiClient && cancelRequest.current === request;
+    try {
+      if (downloadPhase === "downloading" && apiClient) {
         const snapshot = await apiClient.cancelRuntimeModelDownload({ timeoutMs: 8_000 });
+        if (!ownsRequest()) return;
         if (snapshot.lifecycle === "stopping") setDownloadPhase("stopping");
         setProgress((previous) => applyProgressEvent(previous, modelDownloadProgressEvent(snapshot)));
         if (snapshot.lifecycle === "cancelled") {
@@ -479,17 +508,15 @@ export function SetupPage({
           setBusy(false);
           setProgress({ ...EMPTY_PROGRESS, message: "Model download cancelled." });
         }
-      } catch (reason: unknown) {
-        setError(safeError(reason, "Model download could not be cancelled."));
+      } else if (mutationsAvailable) {
+        const runner = await bridge.cancel();
+        if (ownsRequest()) applyRunnerSnapshot(runner);
       }
-      return;
-    }
-    if (!mutationsAvailable) return;
-    try {
-      const runner = await bridge.cancel();
-      applyRunnerSnapshot(runner);
     } catch (reason: unknown) {
-      setError(safeError(reason, "Setup could not be cancelled."));
+      if (ownsRequest()) setError(safeError(reason, downloadPhase === "downloading"
+        ? "Model download could not be cancelled." : "Setup could not be cancelled."));
+    } finally {
+      if (cancelRequest.current === request) cancelRequest.current = null;
     }
   };
 
@@ -583,12 +610,15 @@ export function SetupPage({
   };
 
   const continueLibraryOnly = async () => {
+    const generation = adoptGeneration.current;
+    const ownsRequest = () => generation === adoptGeneration.current && currentApiClient.current === apiClient;
     if (!mutationsAvailable && apiClient) {
       try {
         const next = await apiClient.adoptRuntimeSetup(
           { profile: "base", model_groups: [], accept_pytorch_risk: false },
           { timeoutMs: 15_000 },
         );
+        if (!ownsRequest()) return;
         setStatus(next);
         if (next.ready && next.state === "ready" && !next.restart_required) {
           onReady(next);
@@ -600,17 +630,18 @@ export function SetupPage({
         // Fall back to the in-memory override so the user is never trapped.
       }
     }
-    onContinueLibraryOnly();
+    if (ownsRequest()) onContinueLibraryOnly();
   };
 
   const resolvePrimaryAction = (): { label: string; disabled: boolean; run: () => void | Promise<unknown>; disabledReason: string | null } => {
+    if (checkingHardware && selection.profile !== "base") return { label: "Checking…", disabled: true, disabledReason: null, run: () => undefined };
     if (adopting) return { label: settingsEntry ? "Saving…" : "Continue…", disabled: true, disabledReason: null, run: () => undefined };
     if (managingModels) return { label: "Updating models…", disabled: true, disabledReason: null, run: () => undefined };
     if (selection.profile !== "base" && !selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts")) {
       return { label: "Continue", disabled: true, disabledReason: "Select the Kokoro voice model — it's required to create audio", run: () => undefined };
     }
     if (configuredReady && status && selectionMatchesConfigured(selection, status) && !showRestart) {
-      return { label: "Done", disabled: busy || adopting, disabledReason: null, run: () => onExitSettings ? onExitSettings() : onReady(status) };
+      return { label: "Done", disabled: busy || adopting, disabledReason: null, run: () => onReady(status) };
     }
     if (showRestart) {
       const disabled = busy || !mutationsAvailable;
@@ -658,7 +689,7 @@ export function SetupPage({
       disabledReason = selection.profile === "base"
         ? null
         : environment?.mode === "packaged"
-          ? "This runtime is unavailable in this installation. Check its status or install an Orpheus build with this runtime."
+          ? runtimeFailureReason ?? "This runtime is unavailable in this installation. Check its status or install an Orpheus build with this runtime."
           : "Open the desktop app to install this runtime.";
     } else if (!listenerReady || !runnerReconciled) {
       disabledReason = "Connecting to the installer…";
@@ -668,184 +699,207 @@ export function SetupPage({
   const action = resolvePrimaryAction();
   const showEnvironmentNotice = Boolean(
     status && environment && !mutationsAvailable && !installedReady && !configuredReady
-    && !backendInstallProfile && !showRestart && !busy,
+    && !backendInstallProfile && !showRestart && !busy && !checkingHardware,
   );
-  const configuredRuntimeLabel = status?.selected_profile === "base"
-    ? "Library-only mode is ready"
-    : `${status?.profiles.find((profile) => profile.id === status.selected_profile)?.label ?? "Local"} runtime is ready`;
+
+
+  // In Settings the models are already saved when nothing changed, so there is nothing to confirm.
+  const hidePrimaryAction = embedded && action.label === "Done";
+  const showFailureTools = Boolean(error || listenerError || runnerError || progress.lifecycle === "failed");
+  // Outside the desktop app the environment notice already says why installing is unavailable;
+  // a packaged build keeps the specific runtime reason.
+  const actionHint = action.disabled && !(showEnvironmentNotice && environment?.mode !== "packaged") ? action.disabledReason : null;
+  const footerTools = showFailureTools || actionHint;
+  const footerActions = !hidePrimaryAction
+    || (!settingsEntry && (downloadPhase === "stopping" || runnerStopping))
+    || (busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading"))
+    || (progress.lifecycle === "failed" && !busy);
+  const footer = footerTools || footerActions ? (
+    <footer className="setup-footer">
+      <div className="setup-footer-left">
+        {showFailureTools ? <button className="btn btn-ghost btn-sm" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button> : null}
+        {actionHint ? <span className="hint setup-action-hint">{actionHint}</span> : null}
+      </div>
+      <div className="setup-actions">
+        {!settingsEntry && (downloadPhase === "stopping" || runnerStopping) ? <button className="btn btn-ghost" type="button" onClick={onContinueLibraryOnly}>Back to dashboard</button> : null}
+        {busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading") ? <button className="btn btn-secondary" type="button" onClick={() => void cancel()}>Cancel</button> : null}
+        {progress.lifecycle === "failed" && !busy ? <button className="btn btn-secondary" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
+        {hidePrimaryAction ? null : <button className={`btn btn-primary btn-md setup-primary${adopting ? " is-loading" : ""}`} type="button" disabled={action.disabled} aria-busy={adopting} aria-disabled={adopting || action.disabled} onClick={() => void action.run()}>
+          {adopting ? <AsciiLoader active width={4} /> : null}
+          {action.label}
+        </button>}
+      </div>
+    </footer>
+  ) : null;
+
+  const panel = (
+    <section className={`setup-panel${embedded ? " is-embedded card settings-section" : ""}`} aria-labelledby="setup-heading" hidden={embedded && hidden}>
+      {embedded ? (
+        <div className="card-header setup-embedded-header">
+          <h2 id="setup-heading" ref={setupHeadingRef} tabIndex={-1} className="card-title">Voice &amp; models</h2>
+          <p className="settings-section-hint">Runs on this computer.</p>
+        </div>
+      ) : <div className="setup-intro">
+        {!settingsEntry ? (
+          <span className="brand-mark setup-brand" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M6 10v4M10 6v12M14 8.5v7M18 11v2" /></svg>
+          </span>
+        ) : null}
+        <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>{settingsEntry ? "Runtime setup" : "Welcome to Orpheus"}</h1>
+        {!settingsEntry ? <p className="setup-lede">Orpheus narrates your books on this computer.{status ? " You can change this later in Settings." : ""}</p> : null}
+      </div>}
+      <div className="setup-panel-content">
+        {checkingHardware ? (
+          <div className="setup-loading" role="status">
+            <AsciiLoader active width={6} className="setup-loading-spinner" />
+            <span>Checking your hardware…</span>
+            <button className="btn btn-ghost btn-sm" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>Check again</button>
+          </div>
+        ) : null}
+
+        {!status && !error ? (
+          <div className="setup-loading" role="status">
+            <AsciiLoader active width={6} className="setup-loading-spinner" />
+            <span>Checking this device…</span>
+          </div>
+        ) : null}
+
+        {!status && error ? (
+          <SetupRecoveryNotice title="Setup status unavailable" message="Orpheus couldn't check this computer's setup. Retry, or use your library for now." detail={error}>
+            <button className="btn btn-secondary btn-sm" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>
+              {statusRefreshing ? "Checking…" : "Retry"}
+            </button>
+            {action.label !== "Use library only" ? <button className="btn btn-secondary btn-sm" type="button" disabled={statusRefreshing} onClick={() => void continueLibraryOnly()}>
+              Use library only
+            </button> : null}
+          </SetupRecoveryNotice>
+        ) : null}
+
+        {showEnvironmentNotice ? (
+          <SetupRecoveryNotice
+            environment
+            title={environment?.mode === "packaged" ? "Audio creation is unavailable" : "Open the desktop app to set up audio creation"}
+            message={environment?.mode === "packaged"
+              ? "Orpheus could not verify the installed runtime. Check again, or reinstall Orpheus if the problem continues. You can still use your library."
+              : "Runtime installation is available in the Orpheus desktop app. You can still use your library here."}
+          >
+            <button className="btn btn-secondary btn-sm" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>
+              {statusRefreshing ? "Checking…" : "Check again"}
+            </button>
+            {action.label !== "Use library only" ? <button className="btn btn-secondary btn-sm" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button> : null}
+          </SetupRecoveryNotice>
+        ) : null}
+
+        {listenerError ? (
+          <SetupRecoveryNotice title="Progress connection unavailable" message={listenerError}>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={() => {
+              setListenerError(null);
+              setListenerAttempt((attempt) => attempt + 1);
+            }}>
+              Retry
+            </button>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={() => void continueLibraryOnly()}>Continue in library-only mode</button>
+          </SetupRecoveryNotice>
+        ) : null}
+
+        {runnerError && !listenerError ? (
+          <SetupRecoveryNotice title="Runner status unavailable" message={runnerError}>
+            <button className="btn btn-secondary btn-sm" type="button" onClick={() => {
+              setRunnerError(null);
+              void reconcileRunner();
+            }}>
+              Retry
+            </button>
+          </SetupRecoveryNotice>
+        ) : null}
+
+        {status ? (
+          <SetupPlanSection
+            status={status}
+            selection={selection}
+            setSelection={setSelection}
+            selectedProfile={selectedProfile}
+            downloadEstimate={downloadEstimate}
+            choices={choices}
+            busy={busy || managingModels}
+            adopting={adopting}
+            showAdvanced={showAdvanced}
+            setShowAdvanced={setShowAdvanced}
+            showRiskBlock={showRiskBlock}
+            riskProfile={riskProfile}
+            configuredReady={configuredReady}
+            installedReady={installedReady}
+            variant={settingsEntry ? "settings" : "onboarding"}
+            extraAction={settingsEntry ? (
+              <button className="btn btn-ghost btn-sm" type="button" disabled={busy || adopting || managingModels || statusRefreshing} onClick={() => void retryStatus()}>
+                {statusRefreshing ? "Checking…" : "Check runtime"}
+              </button>
+            ) : null}
+          />
+        ) : null}
+
+        {settingsEntry && status && (statusRefreshing || runtimeCheckedAt) ? (
+          <p className={`setup-model-feedback setup-runtime-check${!statusRefreshing && runtimeCheck?.tone === "problem" ? " is-error" : ""}`} role="status" aria-busy={statusRefreshing}>
+            {statusRefreshing
+              ? <><AsciiLoader active width={4} className="setup-loading-spinner" /> Checking the runtime…</>
+              : `${runtimeCheck?.text} Checked ${runtimeCheckedAt?.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}.`}
+          </p>
+        ) : null}
+
+        {settingsEntry && status ? <SetupModelManager
+          apiClient={apiClient} status={status} selection={selection} setSelection={setSelection}
+          disabled={busy || adopting || managingModels || showRestart}
+          downloadingGroup={busy ? downloadingGroup : null}
+          downloadMessage={busy ? progressMessage : null}
+          onInstall={installModel} onDeleted={modelDeleted} onBusyChange={setManagingModels}
+        /> : null}
+
+        {settingsEntry && status ? (
+          <SetupPrecisionChoice
+            selection={selection}
+            disabled={busy || adopting || managingModels}
+            onChange={(value) => setSelection((current) => ({ ...current, cleanerCudaQuantization: value }))}
+          />
+        ) : null}
+
+        {(busy || progress.lifecycle !== "idle" || showRestart) ? (
+          <SetupProgressSection
+            progress={progress}
+            progressMessage={progressMessage}
+            progressValue={progressValue}
+            headingRef={progressHeadingRef}
+          />
+        ) : null}
+
+        {error && status ? (
+          <div className="setup-error" role="alert" ref={errorRef} tabIndex={-1}>
+            <div className="setup-error-copy">
+              <strong>Something went wrong</strong>
+              <p>{error}</p>
+            </div>
+            {!busy && progress.lifecycle !== "failed" && !showRestart ? <button className="btn btn-secondary btn-sm" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>{statusRefreshing ? "Checking…" : "Retry"}</button> : null}
+          </div>
+        ) : null}
+
+        {status?.state_error && !["invalid", "unavailable"].includes(status.state_error) ? <p className="setup-model-feedback is-error" role="alert">{status.state_error}</p> : null}
+      </div>
+      {footer}
+      {settingsEntry && !busy && !adopting && !managingModels ? (
+        <SetupDangerZone
+          apiClient={apiClient}
+          onDeleted={modelDeleted}
+          onError={setError}
+        />
+      ) : null}
+    </section>
+  );
+
+  if (embedded) return panel;
 
   return (
     <main className="setup-frame" aria-label="Orpheus runtime setup">
-      <div className="setup-shell">
-        <section className="setup-panel" aria-labelledby="setup-heading">
-          <div className="setup-intro">
-            {settingsEntry && onExitSettings ? (
-              <button id="setup-back-btn" className="btn btn-ghost setup-back" type="button" disabled={(busy && downloadPhase !== "stopping" && !runnerStopping) || adopting || managingModels} onClick={onExitSettings}>
-                Back to dashboard
-              </button>
-            ) : null}
-            <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>{settingsEntry ? "Runtime setup" : "Welcome to Orpheus"}</h1>
-            <p className="setup-lede">{settingsEntry ? "Manage the runtime and models on this device." : "Choose how Orpheus creates audiobooks on this device."}</p>
-          </div>
-
-          {configuredReady && status ? (
-            <div className="setup-installed" role="status">
-              <strong>{configuredRuntimeLabel}</strong>
-              <ModelListTip modelGroups={status.selected_model_groups.filter((group) => group.ready).map((group) => group.id)} label="Configured runtime details" />
-            </div>
-          ) : null}
-
-          {installedReady && installedRuntime && !configuredReady ? (
-            <div className="setup-installed" role="note">
-              <strong>Installed {RUNTIME_LABELS[installedRuntime.profile]} runtime ready</strong>
-              <ModelListTip modelGroups={installedReadyGroups} label="Installed runtime details" />
-            </div>
-          ) : null}
-
-          {!status && !error ? (
-            <div className="setup-loading" role="status">
-              <span className="setup-loading-spinner" aria-hidden="true" />
-              <span>Checking this device…</span>
-            </div>
-          ) : null}
-
-          {!status && error ? (
-            <SetupRecoveryNotice title="Setup status unavailable" message={error}>
-              <div className="setup-actions">
-                <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>
-                  {statusRefreshing ? "Checking…" : "Retry"}
-                </button>
-                <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void continueLibraryOnly()}>
-                  Use library only
-                </button>
-              </div>
-            </SetupRecoveryNotice>
-          ) : null}
-
-          {showEnvironmentNotice ? (
-            <SetupRecoveryNotice
-              environment
-              title={environment?.mode === "packaged" ? "Audio creation is unavailable" : "Open the desktop app to set up audio creation"}
-              message={environment?.mode === "packaged"
-                ? "Orpheus could not verify the installed runtime. Check again, or reinstall Orpheus if the problem continues. You can still use your library."
-                : "Runtime installation is available in the Orpheus desktop app. You can still use your library here."}
-            >
-              <div className="setup-actions">
-                <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>
-                  {statusRefreshing ? "Checking…" : "Check again"}
-                </button>
-                <button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Use library only</button>
-              </div>
-            </SetupRecoveryNotice>
-          ) : null}
-
-          {listenerError ? (
-            <SetupRecoveryNotice title="Progress connection unavailable" message={listenerError}>
-              <div className="setup-actions">
-                <button className="btn" type="button" onClick={() => {
-                  setListenerError(null);
-                  setListenerAttempt((attempt) => attempt + 1);
-                }}>
-                  Retry progress connection
-                </button>
-                <button className="btn" type="button" onClick={() => void continueLibraryOnly()}>Continue in library-only mode</button>
-              </div>
-            </SetupRecoveryNotice>
-          ) : null}
-
-          {runnerError && !listenerError ? (
-            <SetupRecoveryNotice title="Runner status unavailable" message={runnerError}>
-              <button className="btn" type="button" onClick={() => {
-                setRunnerError(null);
-                void reconcileRunner();
-              }}>
-                Retry runner status
-              </button>
-            </SetupRecoveryNotice>
-          ) : null}
-
-          {status ? (
-            <SetupPlanSection
-              status={status}
-              selection={selection}
-              setSelection={setSelection}
-              selectedProfile={selectedProfile}
-              selectedEstimate={selectedEstimate}
-              choices={choices}
-              busy={busy || managingModels}
-              adopting={adopting}
-              showAdvanced={showAdvanced}
-              setShowAdvanced={setShowAdvanced}
-              showRiskBlock={showRiskBlock}
-              riskProfile={riskProfile}
-              showModels={!settingsEntry}
-            />
-          ) : null}
-
-          {settingsEntry && status ? <SetupModelManager
-            apiClient={apiClient} status={status} selection={selection} setSelection={setSelection}
-            disabled={busy || adopting || managingModels || showRestart}
-            downloadingGroup={busy ? downloadingGroup : null}
-            downloadMessage={busy ? progressMessage : null}
-            onInstall={installModel} onDeleted={modelDeleted} onBusyChange={setManagingModels}
-          /> : null}
-
-          {status && installedReady && !settingsEntry && showRiskBlock && riskProfile?.risk ? (
-            <SetupRiskNotice
-              summary={riskProfile.risk.summary}
-              checked={selection.acceptPytorchRisk}
-              disabled={busy || adopting}
-              onChange={(event) => setSelection((current) => ({ ...current, acceptPytorchRisk: event.target.checked }))}
-            />
-          ) : null}
-
-          {(busy || progress.lifecycle !== "idle" || showRestart) ? (
-            <SetupProgressSection
-              progress={progress}
-              progressMessage={progressMessage}
-              progressValue={progressValue}
-              modelGroups={selection.modelGroups}
-              headingRef={progressHeadingRef}
-            />
-          ) : null}
-
-          {error && status ? (
-            <div className="setup-error" role="alert" ref={errorRef} tabIndex={-1}>
-              <strong>Something went wrong</strong>
-              <p>{error}</p>
-              {!busy && progress.lifecycle !== "failed" && !showRestart ? <button className="btn" type="button" disabled={statusRefreshing} onClick={() => void retryStatus()}>{statusRefreshing ? "Checking…" : "Retry status check"}</button> : null}
-            </div>
-          ) : null}
-
-          {status?.state_error && !["invalid", "unavailable"].includes(status.state_error) ? <p className="setup-model-feedback is-error" role="alert">{status.state_error}</p> : null}
-
-          {settingsEntry && !busy && !adopting && !managingModels ? (
-            <SetupDangerZone
-              apiClient={apiClient}
-              onDeleted={refreshStatus}
-              onError={setError}
-            />
-          ) : null}
-
-          <footer className="setup-footer">
-            <div className="setup-footer-left">
-              {settingsEntry && status ? <button className="btn btn-ghost" type="button" disabled={busy || adopting || managingModels || statusRefreshing} onClick={() => void retryStatus()}>{statusRefreshing ? "Checking…" : "Check runtime"}</button> : null}
-              {(error || listenerError || runnerError || progress.lifecycle === "failed") ? <button className="btn btn-ghost" type="button" onClick={() => void copyDiagnostics()}>{copyLabel}</button> : null}
-              {action.disabled && action.disabledReason ? (
-                <span className="hint setup-action-hint">{action.disabledReason}</span>
-              ) : null}
-            </div>
-            <div className="setup-actions">
-              {!settingsEntry && (downloadPhase === "stopping" || runnerStopping) ? <button className="btn btn-ghost" type="button" onClick={onContinueLibraryOnly}>Back to dashboard</button> : null}
-              {busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading") ? <button className="btn" type="button" onClick={() => void cancel()}>Cancel</button> : null}
-              {progress.lifecycle === "failed" && !busy ? <button className="btn" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
-              <button className="btn btn-primary btn-lg setup-primary" type="button" disabled={action.disabled} aria-busy={adopting} onClick={() => void action.run()}>
-                {adopting ? <BrailleSpinner active /> : null}
-                {action.label}
-              </button>
-            </div>
-          </footer>
-        </section>
+      <div className="setup-shell is-flow">
+        {panel}
       </div>
     </main>
   );

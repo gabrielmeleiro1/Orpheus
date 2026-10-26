@@ -10,5 +10,5 @@ export async function runSourcePreflight(
 }
 
 export function isSilentAbort(error: unknown): boolean {
-  return error instanceof ApiError && (error.code === "aborted" || error.code === "timeout");
+  return error instanceof ApiError && error.code === "aborted";
 }

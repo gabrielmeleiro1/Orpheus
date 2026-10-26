@@ -5,9 +5,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: "127.0.0.1",
-    // Cargo outputs can be locked by OneDrive and do not need frontend reloads.
+    // Cargo outputs and staged sidecars can be locked while native builds run.
     watch: {
-      ignored: ["**/src-tauri/target/**"],
+      ignored: ["**/src-tauri/target/**", "**/src-tauri/binaries/**"],
     },
   },
   preview: {

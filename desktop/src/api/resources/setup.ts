@@ -59,9 +59,23 @@ export function createSetupApi(requestJson: RequestJson) {
     });
   }
 
+  async function getRuntimeModelInventory(options?: ApiRequestOptions): Promise<RuntimeModelInventory> {
+    return requestJson<RuntimeModelInventory>("/api/setup/models", options);
+  }
+
+  async function deleteRuntimeModel(
+    groupId: string,
+    options?: ApiRequestOptions,
+  ): Promise<RuntimeSetupRuntimeDeleteResponse> {
+    return requestJson<RuntimeSetupRuntimeDeleteResponse>(`/api/setup/models/${encodeURIComponent(groupId)}`, {
+      method: "DELETE",
+      ...options,
+    });
+  }
+
   return {
-    getRuntimeModelInventory: (options?: ApiRequestOptions) => requestJson<RuntimeModelInventory>("/api/setup/models", options),
-    deleteRuntimeModel: (groupId: string, options?: ApiRequestOptions) => requestJson<RuntimeSetupRuntimeDeleteResponse>(`/api/setup/models/${encodeURIComponent(groupId)}`, { ...options, method: "DELETE" }),
+    getRuntimeModelInventory,
+    deleteRuntimeModel,
     getRuntimeSetupStatus,
     adoptRuntimeSetup,
     getRuntimeModelDownloadStatus,

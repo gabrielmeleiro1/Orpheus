@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { EventStreamLogEntry } from "../../types/api";
+import { AsciiArt } from "../../ui/ascii/AsciiArt";
 import { Icon } from "../../ui/icons";
 import { TermSelect } from "../conversion/TermSelect";
 import {
@@ -32,7 +33,13 @@ const CATEGORY_OPTIONS = [
   { value: "other", label: "Other" },
 ];
 
-function levelBadgeLabel(level: string): string {
+const LEVEL_LABELS = {
+  info: "Info",
+  warn: "Warn",
+  error: "Error",
+};
+
+function levelBadgeKey(level: string): keyof typeof LEVEL_LABELS {
   const normalized = normalizeLogLevel(level);
   if (normalized === "warn") {
     return "warn";
@@ -44,7 +51,7 @@ function levelBadgeLabel(level: string): string {
 }
 
 function lineClass(level: string): string {
-  const badge = levelBadgeLabel(level);
+  const badge = levelBadgeKey(level);
   if (badge === "warn") {
     return "log-line log-warn";
   }
@@ -133,9 +140,9 @@ export function LogPanel({ logs }: LogPanelProps) {
   };
 
   return (
-    <div className="log-panel">
+    <div className="log-panel card">
       <div className="log-toolbar page-toolbar" aria-label="Log filters">
-        <div className="seg-control log-level-control log-filter-control" role="group" aria-label="Filter by level">
+        <div className="seg-control control-sm log-level-control log-filter-control" role="group" aria-label="Filter by level">
           {LEVEL_SEGMENTS.map(({ value, label, tip }) => {
             const count = levelCounts[value];
             return (
@@ -158,7 +165,7 @@ export function LogPanel({ logs }: LogPanelProps) {
 
         <TermSelect
           id="log-category-filter"
-          className="log-filter-control"
+          className="log-filter-control control-sm"
           label="Filter by source"
           value={category}
           options={CATEGORY_OPTIONS}
@@ -166,13 +173,13 @@ export function LogPanel({ logs }: LogPanelProps) {
           onChange={(value) => setCategory(value as LogCategoryFilter)}
         />
 
-        <label className="log-search-wrap" htmlFor="log-search">
-          <Icon name="search" className="log-search-icon" />
+        <label className="search-field log-search-wrap" htmlFor="log-search">
+          <Icon name="search" className="search-icon" />
           <input
             id="log-search"
-            className="field-input log-search log-filter-control"
+            className="field-input search-input control-sm log-search log-filter-control"
             type="search"
-            placeholder="Search..."
+            placeholder="Search…"
             aria-label="Search log messages"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
@@ -183,12 +190,9 @@ export function LogPanel({ logs }: LogPanelProps) {
           <span className="log-count tabular-nums" aria-live="polite">
             {countLabel}
           </span>
-          <span className="field-hint log-copy-status" role="status">
-            {copyStatus}
-          </span>
           <button
             id="log-copy-btn"
-            className="btn"
+            className="btn btn-secondary btn-sm"
             type="button"
             data-tip="Copy the entries currently shown, with timestamps"
             data-tip-pos="bottom"
@@ -197,12 +201,15 @@ export function LogPanel({ logs }: LogPanelProps) {
             <Icon name="copy" />
             Copy
           </button>
-          <button className="btn btn-ghost" type="button" onClick={() => {
+          <button className="btn btn-ghost btn-sm" type="button" onClick={() => {
             setClearedIds(new Set(logs.map((entry) => entry.id)));
             setCopyStatus("");
           }}>
             Clear
           </button>
+          <span className="field-hint log-copy-status" role="status">
+            {copyStatus}
+          </span>
         </div>
       </div>
 
@@ -212,13 +219,15 @@ export function LogPanel({ logs }: LogPanelProps) {
           ref={scrollBoxRef}
           className="panel-section log-box"
           role="log"
+          tabIndex={0}
+          aria-label="Event log entries"
           aria-live="polite"
           aria-relevant="additions"
           onScroll={onScroll}
         >
           {visibleLogs.length === 0 ? (
             <div className="empty-state log-empty">
-              <span className="empty-state-icon" aria-hidden="true"><Icon name="logs" /></span>
+              <AsciiArt name="idle" className="log-empty-art" />
               <span className="empty-state-title">{bufferedLogs.length === 0 ? "No events yet" : "No matches"}</span>
               <span className="empty-state-hint">
                 {bufferedLogs.length === 0
@@ -228,12 +237,12 @@ export function LogPanel({ logs }: LogPanelProps) {
             </div>
           ) : (
             visibleLogs.map((entry) => {
-              const badge = levelBadgeLabel(entry.level);
+              const badge = levelBadgeKey(entry.level);
               return (
                 <div key={entry.id} className={lineClass(entry.level)}>
                   <span className="log-marker" aria-hidden="true" />
                   <span className="log-ts tabular-nums">{entry.ts}</span>
-                  <span className={`log-level-badge log-level-${badge}`}>{badge}</span>
+                  <span className={`log-level-badge log-level-${badge}`}>{LEVEL_LABELS[badge]}</span>
                   <span className="log-msg">{entry.msg}</span>
                 </div>
               );
@@ -242,9 +251,9 @@ export function LogPanel({ logs }: LogPanelProps) {
         </div>
 
         {!following && visibleLogs.length > 0 ? (
-          <button className="log-jump-latest" type="button" onClick={jumpToLatest}>
+          <button className="btn btn-secondary btn-sm log-jump-latest" type="button" onClick={jumpToLatest}>
             Jump to latest
-            <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+            <svg className="icon" viewBox="0 0 24 24" focusable="false" aria-hidden="true">
               <path d="M12 19V6M6 12l6-6 6 6" />
             </svg>
           </button>

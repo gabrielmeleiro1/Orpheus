@@ -14,6 +14,16 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+// Native IPC cannot be aborted, so retire late replies while bounding each
+// awaited call by the same startup deadline. Both resolutions and rejections
+// remain observed after the deadline.
+function beforeDeadline<T>(request: Promise<T>, timeoutAt: number): Promise<T | null> {
+  return new Promise((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => resolve(null), Math.max(0, timeoutAt - Date.now()));
+    request.then(resolve, reject).finally(() => globalThis.clearTimeout(timer));
+  });
+}
+
 export async function readDesktopBackendStatus(): Promise<DesktopBackendStatus> {
   return invoke<DesktopBackendStatus>("backend_status");
 }
@@ -40,17 +50,20 @@ export async function waitForDesktopEndpoint(): Promise<DesktopBackendEndpoint |
   const timeoutAt = Date.now() + ENDPOINT_WAIT_TIMEOUT_MS;
 
   while (Date.now() < timeoutAt) {
-    const status = await readDesktopBackendStatus();
+    const status = await beforeDeadline(readDesktopBackendStatus(), timeoutAt);
+    if (!status) return null;
     if (status.lifecycle === "failed" || status.lifecycle === "stopped") {
       throw new Error(describeDesktopBackendStatus(status));
     }
     if (status.endpoint?.base_url) {
-      const endpoint = await invoke<DesktopBackendEndpoint | null>("backend_endpoint");
+      const endpoint = await beforeDeadline(invoke<DesktopBackendEndpoint | null>("backend_endpoint"), timeoutAt);
       if (endpoint?.base_url) {
         return endpoint;
       }
     }
-    await sleep(ENDPOINT_WAIT_INTERVAL_MS);
+    const remainingMs = timeoutAt - Date.now();
+    if (remainingMs <= 0) return null;
+    await sleep(Math.min(ENDPOINT_WAIT_INTERVAL_MS, remainingMs));
   }
 
   return null;

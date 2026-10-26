@@ -10,6 +10,7 @@ import type {
 import type { ApiClient } from "../../api/client";
 import type {
   BackendConnectionState,
+  ConversionMode,
   DashboardTab,
   HealthResponse,
   TermSelectOption,
@@ -17,16 +18,24 @@ import type {
 import type { ConversionJobController } from "./useConversionJob";
 import type { ConversionQueueItem } from "./conversionPanelModel";
 
+/** Whether the local runtime can convert: verified, still being checked, or not set up. */
+export type ConversionRuntimeState = "ready" | "checking" | "unavailable";
+
 export interface UseConversionPanelStateArgs {
   activeTab: DashboardTab | "config";
   hidden: boolean;
   apiClient: ApiClient | null;
+  runtimeSelectionGeneration?: number;
+  /** Defaults to "ready"; anything else leaves the page usable but blocks starting. */
+  runtimeState?: ConversionRuntimeState;
   connectionState: BackendConnectionState;
   health: HealthResponse | null;
   statusMessage: string;
   conversionJob: ConversionJobController;
   onOpenSettings: () => void;
   onOpenRuntimeSetup: () => void;
+  /** Opens the stages-and-log drawer for the running conversion. */
+  onOpenConversionDetails?: () => void;
   startCommandRef?: MutableRefObject<(() => void) | null>;
 }
 
@@ -45,6 +54,7 @@ export interface ConversionCapabilities {
   canStartConversion: boolean;
   canCancelJob: boolean;
   canRefreshJob: boolean;
+  canRetryRuntimeOptions: boolean;
   showRunQueue: boolean;
   showStartConversion: boolean;
 }
@@ -61,7 +71,6 @@ export interface CleanerOptionsViewModel {
   cleanerCudaDevice: string;
   cleanerCudaDevicePlaceholder: string;
   cleanerCudaQuantization: string;
-  cleanerCudaQuantizationOptions: TermSelectOption[];
   requiresApiKey: boolean;
   cleanerApiKey: string;
   openAiModelFetchLoading: boolean;
@@ -95,6 +104,8 @@ export interface AdvancedOptionsViewModel {
   showQuantization: boolean;
   manualParallelWorkerUpperBound: number;
   selectedParallelWorkerLimit: number;
+  /** How many of those will actually run at once; the selection itself when not given. */
+  usableParallelWorkerLimit?: number;
   parallelManualMax: string;
   parallelWorkerError: boolean;
   parallelWorkerStatus: string;
@@ -106,36 +117,50 @@ interface PreflightCardViewModel {
   meta: string;
   author: string;
   sourceType: string;
+  chapterCount?: number;
+  chapterTitles?: string[];
+  sizeLabel?: string;
   warnings: string[];
   sample: string;
   canConvert: boolean;
   blockingReason: string | null;
 }
 
-interface QueueItemViewModel {
+export interface QueueItemViewModel {
   id: string;
   title: string;
+  meta?: string;
   statusText: string;
   statusClassName: string;
+  /** Why the source failed or needs attention, shown in place of its details line. */
+  error?: string;
+  /** Chapters and a sample are still being read. */
+  inspecting?: boolean;
   converting: boolean;
   selected: boolean;
   canMoveUp: boolean;
   canMoveDown: boolean;
   canRemove: boolean;
   finished?: boolean;
+  /** Live progress while this item converts. */
+  progressPct?: number;
+  progressLabel?: string;
 }
+
+export type SourceInput = "file" | "paste";
 
 export interface SourceQueueViewModel {
   isDocumentMode: boolean;
+  sourceInput: SourceInput;
   dragging: boolean;
-  sourceFileName: string;
-  sourceFileDir: string;
   pastedText: string;
   pastedTitle: string;
   pastedAuthor: string;
   pasteBusy: boolean;
   pasteStatus: string;
   queueItems: QueueItemViewModel[];
+  /** A conversion running without a queue row, such as one resumed after a reload. */
+  untrackedJob: { title: string; progressPct: number; progressLabel: string } | null;
   queueCount: number;
   queueRunning: boolean;
   queueStatus: string;
@@ -151,11 +176,17 @@ export interface SourceQueueViewModel {
 }
 
 export interface ConversionActionsViewModel {
+  /** Recovery only: the start request's outcome is unknown and can be re-checked. */
+  showRefreshJob?: boolean;
   hasActiveJob: boolean;
   blockingReason: string | null;
   showSettingsShortcut: boolean;
   startLabel: string;
+  /** What to say instead of "Converting…" while the running job cannot be observed. */
+  runningStatus?: string;
   cancelLabel: string;
+  /** The book Cancel would stop; set only when stopping it needs a confirmation. */
+  cancelJobId?: string | null;
   isStarting: boolean;
 }
 
@@ -166,20 +197,23 @@ interface ConversionPanelShellState {
 }
 
 export interface ConversionPanelActions {
+  onRetryRuntimeOptions: () => void;
   onOpenSettings: () => void;
   onOpenRuntimeSetup: () => void;
-  setSourcePath: Dispatch<SetStateAction<string>>;
+  /** Queues a typed file path, the keyboard alternative to the picker. */
+  onAddSourcePath: (path: string) => void;
   setTitleOverride: Dispatch<SetStateAction<string>>;
   setAuthorOverride: Dispatch<SetStateAction<string>>;
   setDragging: Dispatch<SetStateAction<boolean>>;
   setPastedText: Dispatch<SetStateAction<string>>;
+  setSourceInput: (input: SourceInput) => void;
+  setConversionMode: (mode: ConversionMode) => void;
   setPastedTitle: Dispatch<SetStateAction<string>>;
   setPastedAuthor: Dispatch<SetStateAction<string>>;
   setPreviewText: Dispatch<SetStateAction<string>>;
   setCleanerBackend: (value: string) => void;
   setCleanerModel: (value: string) => void;
   setCleanerCudaDevice: (value: string) => void;
-  setCleanerCudaQuantization: (value: string) => void;
   setCleanerApiKey: (value: string) => void;
   setSelectedEngine: (value: string) => void;
   setVoiceFilter: (value: string) => void;
@@ -198,7 +232,16 @@ export interface ConversionPanelActions {
   onStartConversion: () => Promise<void>;
   onFetchCleanerModels: () => Promise<void>;
   onRefreshJob: () => Promise<void>;
-  onCancelJob: () => Promise<void>;
+  /**
+   * clickCount is the pointer click count (event.detail). Repeat clicks, and any
+   * activation right after Start put Cancel in its place, are ignored.
+   */
+  onCancelJob: (clickCount?: number) => Promise<void>;
+  /** Whether a Cancel click is the user's own, not the tail of a Start gesture. */
+  acceptsCancelClick: (clickCount?: number) => boolean;
+  /** Stops the running book once the user has confirmed it. */
+  onConfirmCancelJob: () => Promise<void>;
+  onOpenConversionDetails?: () => void;
   clearFormError: () => void;
   selectQueueItem: (itemId: string) => void;
   moveQueueItem: (itemId: string, delta: number) => void;

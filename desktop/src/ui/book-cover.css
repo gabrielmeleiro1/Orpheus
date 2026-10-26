@@ -1,0 +1,62 @@
+.book-cover {
+  aspect-ratio: 1;
+  background: hsl(0 0% var(--cover-l, 16%));
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px var(--border-light);
+  color: var(--accent-text);
+  display: flex;
+  flex-shrink: 0;
+  overflow: hidden;
+  position: relative;
+  user-select: none;
+}
+
+.book-cover.is-sm { height: var(--cover-sm); width: var(--cover-sm); }
+.book-cover.is-md { border-radius: var(--radius); height: 56px; width: 56px; }
+
+/* Fills its column, for cover shelves. */
+.book-cover.is-tile { border-radius: var(--radius); width: 100%; }
+
+/* Album pages: the cover is the page's anchor. */
+.book-cover.is-xl { border-radius: var(--radius-lg); width: min(280px, 100%); }
+
+/* Preserve the full source cover inside the frame, including portrait artwork. */
+.book-cover.has-art { background: var(--gray-3); }
+.book-cover-art {
+  animation: cover-art-in var(--dur-slow) var(--ease-out) both;
+  display: block;
+  height: 100%;
+  inset: 0;
+  object-fit: contain;
+  position: absolute;
+  width: 100%;
+}
+.book-cover.has-art::after {
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--border-light);
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+@keyframes cover-art-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Generated cover: the book's waveform, centred. Small covers fill with it;
+   large ones keep it a quiet mark in the middle of the shade. */
+.book-cover-bars {
+  fill: currentColor;
+  height: 70%;
+  margin: auto;
+  opacity: .5;
+  width: 70%;
+}
+
+.book-cover:is(.is-tile, .is-xl) .book-cover-bars {
+  height: 46%;
+  opacity: .34;
+  width: 46%;
+}

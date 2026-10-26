@@ -3,7 +3,9 @@ export * from "./conversion";
 export * from "./events";
 export * from "./library";
 
-type RuntimeSetupState = "unconfigured" | "error" | "restart_required" | "ready" | "unavailable";
+type RuntimeProbeState = "ready" | "unavailable" | "timeout" | "pending";
+
+type RuntimeSetupState = "checking" | "unconfigured" | "error" | "restart_required" | "ready" | "unavailable";
 
 interface RuntimeSetupRisk {
   id: string;
@@ -13,7 +15,7 @@ interface RuntimeSetupRisk {
 
 export interface RuntimeSetupProfile {
   device?: "cuda" | "cpu";
-  group_availability?: Record<string, { available: boolean; unavailable_reason: string | null }>;
+  group_availability?: Record<string, { available: boolean; unavailable_reason: string | null; state?: RuntimeProbeState }>;
   id: "base" | "mlx" | "cuda";
   label: string;
   description: string;
@@ -38,6 +40,8 @@ interface RuntimeSetupPackageIssue {
 }
 
 interface RuntimeSetupInstalledRuntimeGroup {
+  runtime_state?: RuntimeProbeState;
+  runtime_reason?: string | null;
   id: string;
   runtime_ready: boolean;
   assets_ready: boolean;
@@ -45,6 +49,7 @@ interface RuntimeSetupInstalledRuntimeGroup {
 }
 
 export interface RuntimeSetupInstalledRuntime {
+  checking?: boolean;
   device?: "cuda" | "cpu";
   profile: "mlx" | "cuda";
   ready: boolean;
@@ -60,6 +65,8 @@ export interface RuntimeModelDownloadStatus {
   model_groups: string[];
   total_models: number;
   completed_models: number;
+  bytes_total?: number | null;
+  bytes_done?: number | null;
   current_model_group: string | null;
   current_model?: string | null;
   error: string | null;
@@ -88,10 +95,20 @@ export interface RuntimeSetupRuntimeDeleteResponse {
 }
 
 export interface RuntimeModelInventory {
-  models: Array<{ id: string; downloaded: boolean; size_bytes: number; damaged?: boolean }>;
+  models: Array<{
+    id: string;
+    downloaded: boolean;
+    size_bytes: number;
+    damaged?: boolean;
+    /** Newer backends: whether Delete is allowed, and why not. */
+    deletable?: boolean;
+    delete_blocked?: { code: string; message: string } | null;
+  }>;
 }
 
 export interface RuntimeSetupStatusResponse {
+  setup_reset_id?: string;
+  checking?: boolean;
   cleaner_cuda_quantization?: string;
   schema_version: 1;
   configured: boolean;
@@ -108,7 +125,7 @@ export interface RuntimeSetupStatusResponse {
   };
   probe: {
     ready: boolean;
-    checks: Array<{ id: string; ready: boolean }>;
+    checks: Array<{ id: string; ready: boolean; state?: RuntimeProbeState }>;
   };
   ready: boolean;
   restart_required: boolean;

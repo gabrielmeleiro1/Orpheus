@@ -8,6 +8,7 @@ import {
   type SetStateAction,
 } from "react";
 
+import { useMountedRef } from "../../state/generationGuard";
 import type { ApiClient } from "../../api/client";
 import type { SourcePreflight } from "../../types/api";
 import type { ConversionQueueItem } from "./conversionPanelModel";
@@ -19,6 +20,7 @@ import {
   type ConversionQueueState,
   type PreflightStamp,
 } from "./conversionQueueReducer";
+import { readStoredQueue, writeStoredQueue } from "./conversionQueuePersistence";
 import { isSilentAbort, runSourcePreflight } from "./preflightService";
 
 interface UseConversionQueueControllerArgs {
@@ -47,12 +49,11 @@ export function useConversionQueueController({
   const [state, dispatch] = useReducer(
     conversionQueueReducer,
     undefined,
-    createConversionQueueInitialState,
+    () => createConversionQueueInitialState(readStoredQueue()),
   );
   const stateRef = useRef<ConversionQueueState>(state);
   const inFlightPreflightsRef = useRef<Map<string, InFlightPreflight>>(new Map());
   const preflightServiceRef = useRef<PreflightService>(runSourcePreflight);
-  const mountedRef = useRef(false);
   const clientContextRef = useRef({
     apiClient,
     generation: 0,
@@ -71,14 +72,15 @@ export function useConversionQueueController({
   }, [state]);
 
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      for (const request of inFlightPreflightsRef.current.values()) {
-        request.controller.abort();
-      }
-      inFlightPreflightsRef.current.clear();
-    };
+    writeStoredQueue(state.queueItems, state.selectedQueueId);
+  }, [state.queueItems, state.selectedQueueId]);
+
+  const mountedRef = useMountedRef();
+  useEffect(() => () => {
+    for (const request of inFlightPreflightsRef.current.values()) {
+      request.controller.abort();
+    }
+    inFlightPreflightsRef.current.clear();
   }, []);
 
   useEffect(() => {
@@ -184,16 +186,30 @@ export function useConversionQueueController({
       options?: { selectedItemId?: string | null },
     ) => {
       for (const item of items) {
-        await runPreflightForItem(item, {
+        const inspection = runPreflightForItem(item, {
           updateSelected: item.id === options?.selectedItemId,
         });
+        // A row that arrives already inspected settles at once. Yielding after
+        // it would let its bookkeeping clear a notice the caller writes about
+        // the whole batch right after adding it.
+        if (!item.preflight) {
+          await inspection;
+        }
       }
     },
     [runPreflightForItem],
   );
 
+  useEffect(() => {
+    if (!apiClient) return;
+    // Client replacement aborts the old requests and their queued callbacks.
+    // Resume every unfinished inspection through the new client, in order.
+    const pending = stateRef.current.queueItems.filter((item) => item.status === "preflighting");
+    void runPreflightQueue(pending, { selectedItemId: stateRef.current.selectedQueueId });
+  }, [apiClient, runPreflightQueue]);
+
   const addQueueItems = useCallback(
-    (items: ConversionQueueItem[], options?: { selectFirst?: boolean }) => {
+    (items: ConversionQueueItem[], options?: { selectFirst?: boolean; skipPreflight?: boolean }) => {
       const nextItems = items.filter((item) => item.sourcePath.trim());
       if (nextItems.length === 0) {
         return;
@@ -205,9 +221,11 @@ export function useConversionQueueController({
         items: nextItems,
         selectFirst: shouldSelectFirst,
       });
-      void runPreflightQueue(nextItems, {
-        selectedItemId: shouldSelectFirst ? nextItems[0].id : null,
-      });
+      if (!options?.skipPreflight) {
+        void runPreflightQueue(nextItems, {
+          selectedItemId: shouldSelectFirst ? nextItems[0].id : null,
+        });
+      }
     },
     [runPreflightQueue],
   );
@@ -273,6 +291,10 @@ export function useConversionQueueController({
     [abortPreflight, selectedQueueItem],
   );
 
+  const noteJobBook = useCallback((jobId: string, bookId: number, completed: boolean) => {
+    dispatch({ type: "jobBookObserved", jobId, bookId, completed });
+  }, []);
+
   const setQueueStatus = useCallback((status: string) => {
     dispatch({ type: "queueStatusSet", status });
   }, []);
@@ -305,6 +327,7 @@ export function useConversionQueueController({
     moveQueueItem,
     removeQueueItem,
     updateQueueItem,
+    noteJobBook,
     syncSelectedQueueEdits,
     runPreflightForItem,
     setQueueStatus,

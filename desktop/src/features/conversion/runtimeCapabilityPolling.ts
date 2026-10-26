@@ -1,8 +1,16 @@
+import { createRequestTimeoutError, type ApiError } from "../../api/http";
 import type { SystemCapabilitiesResponse } from "../../types/api";
 
-export const CAPABILITIES_PROBE_POLL_BASE_MS = 1500;
-export const CAPABILITIES_PROBE_POLL_MAX_MS = 6000;
-export const CAPABILITIES_PROBE_MAX_WAIT_MS = 120_000;
+const CAPABILITIES_PROBE_POLL_BASE_MS = 1500;
+const CAPABILITIES_PROBE_POLL_MAX_MS = 6000;
+// RuntimeCapabilityService runs TTS, CUDA cleaner, and MLX cleaner sequentially.
+// Each frozen probe can wait 120s for the lock, then run for 120s: 3 * 240s.
+// Add 30s for worker cleanup (up to 1s each), snapshot reads, and poll backoff.
+export const CAPABILITIES_PROBE_MAX_WAIT_MS = 3 * (120_000 + 120_000) + 30_000;
+// /api/system/capabilities reads get_system_runtime_snapshot's cache and starts
+// probes in a background thread; it returns pending without awaiting them.
+// Allow 8s for that snapshot read, bounded by the remaining overall budget.
+export const CAPABILITIES_PROBE_REQUEST_TIMEOUT_MS = 8_000;
 
 type RuntimeProbeSnapshot = Pick<
   SystemCapabilitiesResponse["runtime_probe"],
@@ -16,12 +24,21 @@ type RuntimeCapabilityPollSnapshot = Pick<
   runtime_probe?: RuntimeProbeSnapshot | null;
 };
 
+function hasUsableTtsCapabilities(capabilities: SystemCapabilitiesResponse | null | undefined): boolean {
+  if (!capabilities) return false;
+  if (capabilities.mlx_runtime_available === true) return true;
+  // The asynchronous TTS probe tests MLX only. CPU/CUDA options do not depend
+  // on that probe; their runtime is validated when conversion starts.
+  const primaryRuntime = String(capabilities.primary_runtime ?? "").trim().toLowerCase();
+  return (primaryRuntime === "cpu" || primaryRuntime === "cuda") && Boolean(capabilities.default_tts_engine.trim());
+}
+
 /**
  * True when Settings should keep asking for capabilities so Local MLX can
  * appear: the frozen probe is still settling, or an MLX primary/runtime has
  * published a terminal snapshot while cleaner mlx is still explicitly false.
  */
-export function shouldKeepPollingForMlxCleaner(
+function shouldKeepPollingForMlxCleaner(
   capabilities: RuntimeCapabilityPollSnapshot | null | undefined,
 ): boolean {
   if (!capabilities) {
@@ -62,7 +79,7 @@ export function shouldPollRuntimeCapabilities(
   return shouldKeepPollingForMlxCleaner(capabilities);
 }
 
-export interface RuntimeCapabilityPoller {
+interface RuntimeCapabilityPoller {
   /** Record the latest capabilities snapshot (bootstrap or poll). */
   noteCapabilities: (capabilities: SystemCapabilitiesResponse | null | undefined) => void;
   /** True after at least one live poll response was applied. */
@@ -73,13 +90,10 @@ export interface RuntimeCapabilityPoller {
 export interface StartRuntimeCapabilityPollingArgs {
   getSystemCapabilities: (signal: AbortSignal) => Promise<SystemCapabilitiesResponse>;
   onCapabilities: (capabilities: SystemCapabilitiesResponse) => void;
-  initialCapabilities?: SystemCapabilitiesResponse | null;
+  onError?: (error: ApiError) => void;
   baseMs?: number;
   maxMs?: number;
   maxWaitMs?: number;
-  now?: () => number;
-  setTimeoutFn?: (handler: () => void, timeout: number) => number;
-  clearTimeoutFn?: (handle: number) => void;
 }
 
 /**
@@ -90,23 +104,25 @@ export interface StartRuntimeCapabilityPollingArgs {
 export function startRuntimeCapabilityPolling({
   getSystemCapabilities,
   onCapabilities,
-  initialCapabilities = undefined,
+  onError,
   baseMs = CAPABILITIES_PROBE_POLL_BASE_MS,
   maxMs = CAPABILITIES_PROBE_POLL_MAX_MS,
   maxWaitMs = CAPABILITIES_PROBE_MAX_WAIT_MS,
-  now = Date.now,
-  setTimeoutFn = (handler, timeout) => globalThis.setTimeout(handler, timeout) as unknown as number,
-  clearTimeoutFn = (handle) => {
-    globalThis.clearTimeout(handle as unknown as ReturnType<typeof globalThis.setTimeout>);
-  },
 }: StartRuntimeCapabilityPollingArgs): RuntimeCapabilityPoller {
+  const now = Date.now;
+  const setTimeoutFn = (handler: () => void, timeout: number) => globalThis.setTimeout(handler, timeout) as unknown as number;
+  const clearTimeoutFn = (handle: number) => {
+    globalThis.clearTimeout(handle as unknown as ReturnType<typeof globalThis.setTimeout>);
+  };
   let cancelled = false;
   let timer: number | null = null;
   let attempt = 0;
   let pollApplied = false;
-  let latest: RuntimeCapabilityPollSnapshot | null | undefined = initialCapabilities;
-  let probe: RuntimeProbeSnapshot | null | undefined = initialCapabilities?.runtime_probe;
-  const controller = new AbortController();
+  let usableTtsObtained = false;
+  let latest: RuntimeCapabilityPollSnapshot | null | undefined;
+  let probe: RuntimeProbeSnapshot | null | undefined;
+  let controller: AbortController | null = null;
+  let budgetTimer: number | null = null;
   const startedAt = now();
 
   const clearTimer = () => {
@@ -118,40 +134,73 @@ export function startRuntimeCapabilityPolling({
 
   const shouldPoll = () => shouldPollRuntimeCapabilities(probe, latest);
 
+  const clearBudgetTimer = () => {
+    if (budgetTimer !== null) {
+      clearTimeoutFn(budgetTimer);
+      budgetTimer = null;
+    }
+  };
+
+  const expire = () => {
+    cancelled = true;
+    clearTimer();
+    clearBudgetTimer();
+    controller?.abort(new DOMException("request timed out", "TimeoutError"));
+    if (!usableTtsObtained) {
+      onError?.(createRequestTimeoutError());
+    }
+  };
+
   const scheduleNext = () => {
-    if (cancelled || !shouldPoll()) {
+    if (cancelled) return;
+    if (!shouldPoll()) {
+      clearBudgetTimer();
       return;
     }
-    if (now() - startedAt >= maxWaitMs) {
+    const remaining = maxWaitMs - (now() - startedAt);
+    if (remaining <= 0) {
+      expire();
       return;
     }
+    if (budgetTimer === null) {
+      budgetTimer = setTimeoutFn(expire, remaining);
+    }
+    if (controller) return;
     const delay = Math.min(baseMs * 2 ** attempt, maxMs);
     attempt += 1;
-    // Never orphan a pending handle: today scheduleNext only runs after the
-    // previous timer fired or was cleared, but overwriting blind would leak one.
     clearTimer();
+    if (delay >= remaining) return;
     timer = setTimeoutFn(() => {
+      timer = null;
       void poll();
     }, delay);
   };
 
   const poll = async () => {
-    if (cancelled || !shouldPoll()) {
+    if (cancelled || !shouldPoll()) return;
+    const remaining = maxWaitMs - (now() - startedAt);
+    if (remaining <= 0) {
+      expire();
       return;
     }
+    const requestController = new AbortController();
+    controller = requestController;
+    const requestTimer = setTimeoutFn(() => {
+      requestController.abort(new DOMException("request timed out", "TimeoutError"));
+    }, Math.min(CAPABILITIES_PROBE_REQUEST_TIMEOUT_MS, remaining));
     try {
-      const capabilities = await getSystemCapabilities(controller.signal);
-      if (cancelled) {
-        return;
-      }
+      const capabilities = await getSystemCapabilities(requestController.signal);
+      if (cancelled || requestController.signal.aborted) return;
       pollApplied = true;
+      usableTtsObtained ||= hasUsableTtsCapabilities(capabilities);
       latest = capabilities;
       probe = capabilities.runtime_probe;
       onCapabilities(capabilities);
     } catch {
-      if (cancelled) {
-        return;
-      }
+      // Retry snapshot failures; exhaustion is fatal only without usable TTS.
+    } finally {
+      clearTimeoutFn(requestTimer);
+      controller = null;
     }
     scheduleNext();
   };
@@ -160,10 +209,12 @@ export function startRuntimeCapabilityPolling({
 
   return {
     noteCapabilities: (capabilities) => {
+      usableTtsObtained ||= hasUsableTtsCapabilities(capabilities);
       latest = capabilities;
       probe = capabilities?.runtime_probe;
       if (!shouldPoll()) {
         clearTimer();
+        clearBudgetTimer();
       } else if (timer === null) {
         scheduleNext();
       }
@@ -173,8 +224,9 @@ export function startRuntimeCapabilityPolling({
     },
     stop: () => {
       cancelled = true;
-      controller.abort();
+      controller?.abort();
       clearTimer();
+      clearBudgetTimer();
     },
   };
 }

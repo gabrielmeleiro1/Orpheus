@@ -1,3 +1,6 @@
+import { useState } from "react";
+
+import { ConversionHelp } from "./ConversionHelp";
 import { TermSelect } from "../TermSelect";
 import { formatDevice } from "../../../format/runtime";
 import type {
@@ -13,18 +16,23 @@ interface CleanerOptionsViewProps {
   hidden: boolean;
 }
 
-function statusDotClass(runtimeStatusClass: string, statusText: string): string {
+type RuntimeHealth = "ok" | "busy" | "error" | "unknown";
+
+function runtimeHealth(runtimeStatusClass: string, statusText: string): RuntimeHealth {
   if (runtimeStatusClass.includes("is-error")) {
-    return "status-dot is-error";
+    return "error";
   }
   const lower = statusText.toLowerCase();
+  if (lower.includes("unavailable") || lower.includes("not available")) {
+    return "error";
+  }
   if (lower.includes("ready") || lower.includes("available")) {
-    return "status-dot is-ok";
+    return "ok";
   }
   if (lower.includes("check") || lower.includes("load") || lower.includes("…") || lower.includes("...")) {
-    return "status-dot is-busy";
+    return "busy";
   }
-  return "status-dot";
+  return "unknown";
 }
 
 export function CleanerOptionsView({
@@ -33,26 +41,34 @@ export function CleanerOptionsView({
   actions,
   hidden,
 }: CleanerOptionsViewProps) {
-  return (
-    <section id="tab-config" className="panel config-panel" role="tabpanel" aria-label="Configuration" aria-labelledby="tab-btn-settings" hidden={hidden}>
-      <div className="config-layout">
-        <section className="conversion-section">
-          <div className="conversion-section-header conversion-section-header-row">
-            <div>
-              <h2
-                className="conversion-group-heading"
-                data-tip="The cleaner prepares text before narration. It is independent of the TTS engine — choosing Cloud API here does not change the voice."
-                data-tip-pos="bottom"
-              >
-                Text cleaning
-              </h2>
-              <p className="conversion-section-hint">Backend, model, and device used to prepare text before narration.</p>
-            </div>
-          </div>
+  const health = runtimeHealth(cleanerOptions.runtimeStatusClass, cleanerOptions.cleanerRuntimeStatus);
+  // A working runtime needs no badge; its status is still announced.
+  const statusClass = health === "ok" ? "sr-only" : `field-hint cleaner-runtime-status${health === "error" ? " is-error" : ""}`;
+  const device = formatDevice(cleanerOptions.cleanerCudaDevice.trim() || cleanerOptions.cleanerCudaDevicePlaceholder);
+  const [editingDevice, setEditingDevice] = useState(false);
 
+  return (
+    <section id="tab-config" className="card config-panel settings-section" role="tabpanel" aria-label="Configuration" aria-labelledby="tab-btn-settings" hidden={hidden}>
+      <div className="card-header">
+        <h2 className="card-title">Text cleaning</h2>
+        <p className="settings-section-hint">Tidies text before narration.</p>
+      </div>
+      <div className="config-layout">
+        <p id="cleaner-runtime-status" className={statusClass} role="status" aria-atomic="true">
+          {cleanerOptions.cleanerRuntimeStatus}
+        </p>
+        {capabilities.canRetryRuntimeOptions ? (
+          <div className="settings-runtime-notice" role="status">
+            <p>Options could not load.</p>
+            <button className="btn btn-ghost" type="button" onClick={actions.onRetryRuntimeOptions}>
+              Retry
+            </button>
+          </div>
+        ) : null}
+        <div className="conversion-section">
           <div className="form-grid conversion-form-grid">
             <div className="field">
-              <label className="field-label" htmlFor="cleaner-backend-select">Backend</label>
+              <label className="field-label" htmlFor="cleaner-backend-select">Cleaner</label>
               <TermSelect
                 id="cleaner-backend-select"
                 label="Cleaner backend"
@@ -61,19 +77,6 @@ export function CleanerOptionsView({
                 placeholder="Select backend"
                 onChange={actions.setCleanerBackend}
               />
-            </div>
-
-            <div className="field">
-              <span className="field-label" id="cleaner-status-label">Status</span>
-              <div
-                id="cleaner-runtime-status"
-                className={`runtime-status-pill ${cleanerOptions.runtimeStatusClass}`}
-                role="status"
-                aria-labelledby="cleaner-status-label"
-              >
-                <span className={statusDotClass(cleanerOptions.runtimeStatusClass, cleanerOptions.cleanerRuntimeStatus)} aria-hidden="true" />
-                <span>{cleanerOptions.cleanerRuntimeStatus}</span>
-              </div>
             </div>
 
             <div className="field">
@@ -90,16 +93,14 @@ export function CleanerOptionsView({
             </div>
 
             {cleanerOptions.showCleanerCudaControls ? (
-              <>
-                <div className="field">
-                  <label
-                    className="field-label"
-                    htmlFor="cleaner-cuda-device-input"
-                    data-tip="Use CUDA for automatic placement, or CUDA:0 for the first NVIDIA GPU."
-                    data-tip-pos="right"
-                  >
-                    Device
-                  </label>
+              // Precision is the "Cleaner precision" setting above (the same saved
+              // default), so only the GPU is chosen here. It reads as text until changed.
+              <div className="field cleaner-device-field">
+                <div className="conversion-label-row">
+                  <span className="field-label" id="cleaner-cuda-device-label">Device</span>
+                  <ConversionHelp label="Device help" text="CUDA picks the GPU automatically; CUDA:0 is the first NVIDIA GPU." />
+                </div>
+                {editingDevice ? (
                   <input
                     id="cleaner-cuda-device-input"
                     className="field-input"
@@ -107,61 +108,53 @@ export function CleanerOptionsView({
                     spellCheck={false}
                     autoCapitalize="none"
                     autoCorrect="off"
+                    autoFocus
                     aria-label="cleaner CUDA device"
                     placeholder={formatDevice(cleanerOptions.cleanerCudaDevicePlaceholder)}
-                    value={formatDevice(cleanerOptions.cleanerCudaDevice.trim() || cleanerOptions.cleanerCudaDevicePlaceholder)}
+                    value={device}
                     onChange={(event) => actions.setCleanerCudaDevice(event.target.value.toLowerCase())}
+                    onBlur={() => setEditingDevice(false)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === "Escape") setEditingDevice(false);
+                    }}
                   />
-                </div>
-
-                {cleanerOptions.cleanerCudaQuantizationOptions.length > 0 ? (
-                  <div className="field">
-                    <label
-                      className="field-label"
-                      htmlFor="cleaner-cuda-quantization-select"
-                      data-tip="4bit uses the least GPU memory. 8bit and fp16 use more memory; speed depends on your GPU."
-                      data-tip-pos="right"
+                ) : (
+                  <div className="cleaner-device-value" role="group" aria-labelledby="cleaner-cuda-device-label">
+                    <span id="cleaner-cuda-device">{device}</span>
+                    <button
+                      id="cleaner-cuda-device-change"
+                      className="btn btn-ghost btn-sm btn-flush-end"
+                      type="button"
+                      aria-label="Change cleaner device"
+                      onClick={() => setEditingDevice(true)}
                     >
-                      Quantization
-                    </label>
-                    <TermSelect
-                      id="cleaner-cuda-quantization-select"
-                      label="Cleaner CUDA quantization"
-                      value={cleanerOptions.cleanerCudaQuantization}
-                      options={cleanerOptions.cleanerCudaQuantizationOptions}
-                      placeholder="default"
-                      onChange={actions.setCleanerCudaQuantization}
-                    />
+                      Change
+                    </button>
                   </div>
-                ) : null}
-              </>
+                )}
+              </div>
             ) : null}
           </div>
-        </section>
+        </div>
 
         {cleanerOptions.requiresApiKey ? (
-          <section className="conversion-section">
+          <section className="conversion-section settings-api-section">
             <div className="conversion-section-header">
-              <h2 className="conversion-group-heading">{cleanerOptions.selectedBackendDisplayName} cleaner</h2>
-              <p className="conversion-section-hint">API credentials for this session only.</p>
+              <h3 className="conversion-group-heading">{cleanerOptions.selectedBackendDisplayName} cleaner</h3>
             </div>
             <div className="form-grid conversion-form-grid">
               <div className="field">
-                <label
-                  className="field-label"
-                  htmlFor="cleaner-api-key-input"
-                  data-tip="Kept for this session only and sent only to this provider. Re-enter it after reconnecting."
-                  data-tip-pos="right"
-                >
-                  API key
-                </label>
+                <div className="conversion-label-row">
+                  <label className="field-label" htmlFor="cleaner-api-key-input">API key</label>
+                  <ConversionHelp label="API key help" text="Kept for this session only and sent only to this provider. Re-enter it after reconnecting." />
+                </div>
                 <input
                   id="cleaner-api-key-input"
                   className="field-input"
                   type="password"
                   aria-label={`${cleanerOptions.selectedBackendDisplayName} API key`}
                   autoComplete="off"
-                  placeholder="sk-..."
+                  placeholder="sk-…"
                   value={cleanerOptions.cleanerApiKey}
                   onChange={(event) => actions.setCleanerApiKey(event.target.value)}
                 />
@@ -171,7 +164,7 @@ export function CleanerOptionsView({
                 <div className="action-row">
                   <button
                     id="fetch-cleaner-models-btn"
-                    className="btn"
+                    className="btn btn-secondary"
                     type="button"
                     disabled={!capabilities.canFetchCleanerModels}
                     data-tip="List the models available to this API key"

@@ -1,0 +1,66 @@
+/* Slide-over for the running conversion's stages and log. It never replaces
+   the page underneath, so the queue stays one glance away. */
+.details-drawer-backdrop {
+  animation: drawer-fade var(--dur-normal) var(--ease-out) both;
+  background: rgba(0, 0, 0, .4);
+  inset: 0;
+  position: fixed;
+  z-index: 40;
+}
+
+.details-drawer {
+  animation: drawer-in var(--dur-slow) var(--ease-out) both;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: var(--panel-radius);
+  bottom: var(--frame-gap);
+  box-shadow: var(--shadow-overlay);
+  container: details-drawer / inline-size;
+  display: flex;
+  flex-direction: column;
+  max-width: calc(100vw - 2 * var(--frame-gap));
+  position: fixed;
+  right: var(--frame-gap);
+  top: var(--frame-gap);
+  width: 600px;
+  z-index: 41;
+}
+
+.details-drawer-top {
+  align-items: center;
+  border-bottom: 1px solid var(--border-light);
+  display: flex;
+  flex-shrink: 0;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-5);
+}
+
+.details-drawer-title {
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+
+.details-drawer-body {
+  display: grid;
+  gap: var(--space-6);
+  overflow-y: auto;
+  padding: var(--space-5);
+}
+
+.details-drawer .progress-summary {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.details-drawer .activity-log .log-box {
+  height: 320px;
+}
+
+@keyframes drawer-in {
+  from { opacity: 0; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes drawer-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}

@@ -32,13 +32,29 @@ export function useTermSelectPlacement(open: boolean, rootRef: RefObject<HTMLDiv
         ? current : { above, maxHeight });
     };
 
+    // A window resize can reflow the page and carry the open combobox (and
+    // its focused search field) out of its scrollport; bring it back.
+    const onResize = () => {
+      update();
+      const rect = root.getBoundingClientRect();
+      if (rect.top < 0 || rect.bottom > window.innerHeight) root.scrollIntoView?.({ block: "nearest" });
+      else {
+        for (let ancestor = root.parentElement; ancestor; ancestor = ancestor.parentElement) {
+          if (!/^(auto|scroll|overlay)$/.test(getComputedStyle(ancestor).overflowY)) continue;
+          const bounds = ancestor.getBoundingClientRect();
+          if (rect.top < bounds.top || rect.bottom > bounds.bottom) root.scrollIntoView?.({ block: "nearest" });
+          break;
+        }
+      }
+    };
+
     update();
     // Scroll does not bubble; capture catches nested scrollport movement.
     window.addEventListener("scroll", update, true);
-    window.addEventListener("resize", update);
+    window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("scroll", update, true);
-      window.removeEventListener("resize", update);
+      window.removeEventListener("resize", onResize);
     };
   }, [open, rootRef]);
 

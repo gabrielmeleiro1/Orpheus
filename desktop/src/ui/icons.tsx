@@ -1,36 +1,27 @@
 import type { ReactNode } from "react";
 
 export type IconName =
-  | "dashboard"
   | "convert"
   | "document"
   | "library"
-  | "progress"
-  | "logs"
   | "settings"
   | "refresh"
   | "stop"
   | "sidebar"
   | "chevron-right"
+  | "chevron-left"
+  | "pause"
+  | "folder"
   | "upload"
   | "play"
-  | "plus"
   | "search"
   | "copy"
-  | "trash"
   | "check"
   | "x"
-  | "alert";
+  | "alert"
+  | "info";
 
 const PATHS: Record<IconName, ReactNode> = {
-  dashboard: (
-    <>
-      <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
-      <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
-      <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
-      <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
-    </>
-  ),
   convert: (
     <>
       <path d="M4 10v4" />
@@ -53,17 +44,6 @@ const PATHS: Record<IconName, ReactNode> = {
       <rect x="4" y="4.5" width="4.5" height="15" rx="1" />
       <rect x="10" y="4.5" width="4.5" height="15" rx="1" />
       <path d="m15.8 6.3 3.3-.8 2.4 12.9-3.3.8Z" />
-    </>
-  ),
-  progress: <path d="M3.5 12h4l2.5-7 4 14 2.5-7h4" />,
-  logs: (
-    <>
-      <path d="M8 6h12" />
-      <path d="M8 12h12" />
-      <path d="M8 18h12" />
-      <path d="M4 6h.01" />
-      <path d="M4 12h.01" />
-      <path d="M4 18h.01" />
     </>
   ),
   settings: (
@@ -92,6 +72,9 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   "chevron-right": <path d="m9.5 6 6 6-6 6" />,
+  "chevron-left": <path d="m14.5 6-6 6 6 6" />,
+  pause: <path d="M9 5.5v13M15 5.5v13" />,
+  folder: <path d="M3.5 7A1.5 1.5 0 0 1 5 5.5h4l2 2.5h8A1.5 1.5 0 0 1 20.5 9.5v8A1.5 1.5 0 0 1 19 19H5a1.5 1.5 0 0 1-1.5-1.5Z" />,
   upload: (
     <>
       <path d="M12 15.5V4" />
@@ -100,12 +83,6 @@ const PATHS: Record<IconName, ReactNode> = {
     </>
   ),
   play: <path d="M8 5.5v13l10-6.5Z" />,
-  plus: (
-    <>
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </>
-  ),
   search: (
     <>
       <circle cx="11" cy="11" r="6.5" />
@@ -116,13 +93,6 @@ const PATHS: Record<IconName, ReactNode> = {
     <>
       <rect x="8.5" y="8.5" width="11" height="11" rx="2" />
       <path d="M15.5 8.5V6a1.5 1.5 0 0 0-1.5-1.5H6A1.5 1.5 0 0 0 4.5 6v8A1.5 1.5 0 0 0 6 15.5h2.5" />
-    </>
-  ),
-  trash: (
-    <>
-      <path d="M4.5 7h15" />
-      <path d="M9.5 7V4.5h5V7" />
-      <path d="M6.5 7l.9 12a1.5 1.5 0 0 0 1.5 1.4h6.2a1.5 1.5 0 0 0 1.5-1.4l.9-12" />
     </>
   ),
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
@@ -139,16 +109,21 @@ const PATHS: Record<IconName, ReactNode> = {
       <path d="M12 17h.01" />
     </>
   ),
+  info: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v6" />
+      <path d="M12 7h.01" />
+    </>
+  ),
 };
 
-/** Decorative line icon; inherits color from text. Size via the `.icon` CSS class or `size`. */
-export function Icon({ name, size, className }: { name: IconName; size?: number; className?: string }) {
+/** Decorative line icon; inherits color from text. Sized by the `.icon` class (--icon-size). */
+export function Icon({ name, className }: { name: IconName; className?: string }) {
   return (
     <svg
       className={className ? `icon ${className}` : "icon"}
       viewBox="0 0 24 24"
-      width={size}
-      height={size}
       aria-hidden="true"
       focusable="false"
     >

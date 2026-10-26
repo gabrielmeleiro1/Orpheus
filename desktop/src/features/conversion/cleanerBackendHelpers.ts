@@ -268,7 +268,7 @@ export function deriveCleanerRuntimeStatus(
   }
 
   return {
-    message: `Checking ${localCleanerRuntimeDisplayName(displayName, "local")} cleaner runtime...`,
+    message: `Checking ${localCleanerRuntimeDisplayName(displayName, "local")} cleaner runtime…`,
     isError: false,
   };
 }

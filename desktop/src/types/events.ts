@@ -54,6 +54,8 @@ export type EventStreamConnectionState = "idle" | "connecting" | "open" | "error
 
 export interface DesktopEventPayload {
   event_id?: string;
+  backend_instance_id?: string;
+  event_sequence?: number;
   timestamp?: string;
   event_type?: string;
   state?: ConversionJobStatus | string;
@@ -67,7 +69,8 @@ export interface DesktopEventPayload {
   chunk_total?: number;
   message?: string;
   level?: string;
-  job_id?: string;
+  job_id?: string | null;
+  client_request_id?: string | null;
   eta?: number | null;
   performance?: PerformanceSnapshot;
 }

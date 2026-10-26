@@ -1,36 +1,57 @@
+/* Spans the whole window under the rail and workspace panels, on the frame color. */
 .player-bar {
-  background: var(--surface);
-  border-top: 1px solid var(--border);
+  container: player / inline-size;
+  background: transparent;
   flex-shrink: 0;
-  padding: var(--space-3) calc(var(--density-page-x) + var(--scroll-gutter));
+  grid-column: 1 / -1;
+  grid-row: 2;
+  padding: var(--space-2) var(--space-2) var(--space-3);
 }
 
 .player-main {
   align-items: center;
   display: grid;
-  gap: var(--space-2) var(--space-4);
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 420px) minmax(0, 1fr);
-  margin: 0 auto;
-  max-width: calc(var(--page-max-width) - var(--density-page-x) * 2);
+  gap: var(--space-half) var(--space-4);
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 560px) minmax(0, 1fr);
+  grid-template-rows: var(--control-h) auto;
+  margin: 0;
+  max-width: none;
   min-height: 0;
   width: 100%;
 }
 
 .player-meta {
+  align-items: center;
+  display: flex;
+  gap: var(--space-3);
+  grid-column: 1;
+  grid-row: 1 / 3;
+  min-width: 0;
+}
+
+.player-meta-text {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  grid-column: 1;
-  justify-content: center;
+  gap: var(--space-half);
   min-width: 0;
+}
+
+/* A round primary button: the primary fills and states, at the default size. */
+.player-play {
+  border-radius: 50%;
+}
+
+.player-play svg {
+  fill: currentColor;
 }
 
 .player-center {
   align-items: stretch;
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: var(--space-2);
   grid-column: 2;
+  grid-row: 1 / 3;
+  grid-template-rows: subgrid;
   min-width: 0;
 }
 
@@ -41,84 +62,35 @@
   justify-content: center;
 }
 
+/* Centred on the whole bar, like the cover and title opposite. */
 .player-trailing {
   align-items: center;
   display: flex;
   gap: var(--space-2);
   grid-column: 3;
+  grid-row: 1 / 3;
   justify-content: flex-end;
   min-width: 0;
+}
+
+/* Optically align the last glyph with the bar edge, as the cover is on the left. */
+.player-close-btn {
+  margin-right: calc(var(--space-2) * -1);
 }
 
 .player-timeline {
   align-items: center;
   display: grid;
   gap: var(--space-2);
-  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
   width: 100%;
-}
-
-.player-bar .btn-player {
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: inline-flex;
-  flex-shrink: 0;
-  height: var(--control-h);
-  justify-content: center;
-  min-height: var(--control-h);
-  padding: 0;
-  transition: background var(--dur-fast) ease, border-color var(--dur-fast) ease, color var(--dur-fast) ease;
-  width: var(--control-h);
-}
-
-.player-bar .btn-player svg {
-  display: block;
-  fill: none;
-  height: 16px;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.75;
-  width: 16px;
-}
-
-.player-bar .btn-player:hover:not(:disabled) {
-  background: var(--surface-hover);
-  color: var(--text);
-}
-
-.player-bar .btn-player:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.player-bar .btn-play {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  color: var(--accent-text);
-  height: var(--control-h-lg);
-  min-height: var(--control-h-lg);
-  width: var(--control-h-lg);
-}
-
-.player-bar .btn-play svg {
-  height: 18px;
-  width: 18px;
-}
-
-.player-bar .btn-play:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 20%, transparent);
-  color: var(--accent-text);
 }
 
 .player-track-title {
   color: var(--text);
   font-size: var(--text-base);
-  font-weight: 600;
+  line-height: var(--line-base);
+  font-weight: var(--weight-medium);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -127,6 +99,7 @@
 .player-track-chapter {
   color: var(--text-secondary);
   font-size: var(--text-sm);
+  line-height: var(--line-sm);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -135,13 +108,16 @@
 .player-notice {
   color: var(--warning);
   font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  overflow-wrap: anywhere;
 }
 
 .player-time {
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
-  text-align: center;
+  line-height: var(--line-sm);
+  min-width: 5ch;
 }
 
 .player-time:first-child {
@@ -150,45 +126,6 @@
 
 .player-time:last-child {
   text-align: left;
-}
-
-.player-seek,
-.player-volume {
-  -webkit-appearance: none;
-  appearance: none;
-  background: var(--surface-active);
-  border: 0;
-  border-radius: 999px;
-  cursor: pointer;
-  height: 4px;
-  outline: none;
-  width: 100%;
-}
-
-.player-seek::-webkit-slider-thumb,
-.player-volume::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  background: var(--accent);
-  border-radius: 50%;
-  cursor: pointer;
-  height: 12px;
-  transition: transform var(--dur-fast) ease;
-  width: 12px;
-}
-
-.player-seek::-moz-range-thumb,
-.player-volume::-moz-range-thumb {
-  background: var(--accent);
-  border: 0;
-  border-radius: 50%;
-  cursor: pointer;
-  height: 12px;
-  width: 12px;
-}
-
-.player-seek::-webkit-slider-thumb:hover,
-.player-volume::-webkit-slider-thumb:hover {
-  transform: scale(1.15);
 }
 
 .player-volume-wrap {
@@ -207,33 +144,12 @@
   line-height: 0;
 }
 
-.player-volume-label svg {
-  fill: none;
-  height: 15px;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.7;
-  width: 15px;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .player-bar .btn-player,
-  .player-seek::-webkit-slider-thumb,
-  .player-volume::-webkit-slider-thumb {
-    transition: none;
-  }
-}
-
-@media (max-width: 800px) {
-  .player-bar {
-    padding-left: var(--space-4);
-    padding-right: var(--space-4);
-  }
-
+/* The bar spans the window, so the window width decides its layout. */
+@media (max-width: 959px) {
   .player-main {
     gap: var(--space-2) var(--space-3);
     grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
   }
 
   .player-meta {
@@ -242,6 +158,8 @@
   }
 
   .player-center {
+    display: flex;
+    flex-direction: column;
     grid-column: 1 / -1;
     grid-row: 2;
   }
@@ -256,20 +174,6 @@
   }
 }
 
-@media (max-width: 480px) {
-  .player-main {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .player-controls {
-    justify-content: center;
-  }
-
-  .player-volume-wrap {
-    display: none;
-  }
-}
-
 @media (max-height: 540px) {
   .player-bar {
     padding-top: var(--space-2);
@@ -280,23 +184,89 @@
     gap: var(--space-1) var(--space-3);
   }
 
-  .player-bar .btn-play {
-    height: var(--control-h);
-    min-height: var(--control-h);
-    width: var(--control-h);
-  }
+}
 
-  .player-bar .btn-play svg {
-    height: 16px;
-    width: 16px;
-  }
+/* Spotify-style scrubber: light fill, thumb appears on hover or focus. */
+.player-seek,
+.player-volume {
+  --range-fill-color: var(--text);
+  height: var(--line-base);
+}
 
-  .player-timeline {
-    grid-template-columns: 40px minmax(0, 1fr) 40px;
-  }
+.player-seek:hover:not(:disabled),
+.player-volume:hover:not(:disabled) {
+  --range-fill-color: var(--accent-hover);
+}
+
+.player-seek::-webkit-slider-thumb,
+.player-volume::-webkit-slider-thumb {
+  background: var(--text);
+  opacity: 0;
+}
+
+.player-seek:is(:hover, :focus-visible, :active)::-webkit-slider-thumb,
+.player-volume:is(:hover, :focus-visible, :active)::-webkit-slider-thumb {
+  background: var(--accent-hover);
+  opacity: 1;
 }
 
 .player-seek:focus-visible,
 .player-volume:focus-visible {
   box-shadow: var(--focus-ring);
+}
+
+/* Chapter notches: thin gaps cut into the track where each chapter begins. */
+.seek-track {
+  align-items: center;
+  display: flex;
+  min-width: 0;
+  position: relative;
+  width: 100%;
+}
+
+.seek-marks {
+  height: 4px;
+  inset: 50% 0 auto;
+  pointer-events: none;
+  position: absolute;
+  transform: translateY(-50%);
+}
+
+.seek-mark {
+  background: var(--seek-mark-color, var(--surface-1));
+  height: 100%;
+  position: absolute;
+  top: 0;
+  transform: translateX(-1px);
+  width: 2px;
+}
+
+.player-bar .seek-track {
+  --seek-mark-color: var(--frame);
+}
+
+/* Three bars that bounce while something plays: the shelf card, the album's
+   current chapter and Now Playing all use this one mark. */
+.playing-bars {
+  align-items: flex-end;
+  display: inline-flex;
+  gap: var(--space-half);
+  height: 12px;
+}
+
+.playing-bars span {
+  animation: playing-bar 900ms ease-in-out infinite;
+  background: currentColor;
+  border-radius: var(--radius-pill);
+  height: 100%;
+  transform-origin: bottom;
+  width: 2px;
+}
+
+.playing-bars span:nth-child(2) { animation-delay: -300ms; }
+.playing-bars span:nth-child(3) { animation-delay: -600ms; }
+
+@keyframes playing-bar {
+  0%, 100% { transform: scaleY(.3); }
+  50% { transform: scaleY(1); }
 }

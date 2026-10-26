@@ -1,8 +1,8 @@
-import { useLayoutEffect, useRef } from "react";
 import type { ConversionPanelViewModel } from "./useConversionPanelState";
 import { AdvancedOptionsView } from "./views/AdvancedOptionsView";
 import { CleanerOptionsView } from "./views/CleanerOptionsView";
 import { ConversionActionsView } from "./views/ConversionActionsView";
+import { FormatChoiceView } from "./views/FormatChoiceView";
 import { SourceQueueView } from "./views/SourceQueueView";
 import { TtsOptionsView } from "./views/TtsOptionsView";
 
@@ -16,20 +16,8 @@ export function ConversionPanelView({
   conversionActions,
   actions,
 }: ConversionPanelViewModel) {
-  const panelRef = useRef<HTMLElement>(null);
-
-  useLayoutEffect(() => {
-    const panel = panelRef.current;
-    const bar = panel?.querySelector<HTMLElement>(".conversion-actions");
-    if (!panel || !bar) return;
-    const measure = () => {
-      panel.style.setProperty("--conversion-actions-height", `${bar.getBoundingClientRect().height}px`);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(bar);
-    return () => observer.disconnect();
-  }, [shell.activeTab, shell.hidden]);
+  // With nothing queued, the intake fills the stage instead of an empty queue.
+  const isEmpty = sourceQueue.queueItems.length === 0 && !sourceQueue.untrackedJob;
 
   if (shell.activeTab === "config") {
     return (
@@ -44,39 +32,45 @@ export function ConversionPanelView({
 
   return (
     <section
-      ref={panelRef}
-      id={shell.isDocumentMode ? "tab-document" : "tab-convert"}
-      className="panel conversion-panel"
+      id="tab-convert"
+      className="panel page-container conversion-panel"
       role="tabpanel"
-      aria-label={shell.isDocumentMode ? "Document conversion setup" : "Audiobook conversion setup"}
-      aria-labelledby={`tab-btn-${shell.isDocumentMode ? "document" : "convert"}`}
+      aria-label="Conversion setup"
+      aria-labelledby="tab-btn-convert"
       hidden={shell.hidden}
     >
-      <div className="conversion-scroll" tabIndex={0} aria-label="Conversion options">
-        <div className="conversion-form">
+      <div className={`conversion-form${isEmpty ? " is-empty" : ""}`}>
+        {/* Not tab stops: every part of each pane is reached through its own
+            controls, and in the narrow layout the panes do not scroll at all. */}
+        <div className="conversion-scroll" aria-label="Conversion options">
           <SourceQueueView
             sourceQueue={sourceQueue}
             capabilities={capabilities}
             actions={actions}
             hidden={shell.hidden}
           />
-          <TtsOptionsView
-            ttsOptions={ttsOptions}
+        </div>
+        <div className="card conversion-narration" aria-label="Voice settings">
+          <div className="conversion-options-sections" aria-label="Narration settings">
+            <FormatChoiceView isDocumentMode={shell.isDocumentMode} actions={actions} />
+            <TtsOptionsView
+              ttsOptions={ttsOptions}
+              capabilities={capabilities}
+              actions={actions}
+            />
+            <AdvancedOptionsView
+              advancedOptions={advancedOptions}
+              actions={actions}
+            />
+          </div>
+          <ConversionActionsView
+            sourceQueue={sourceQueue}
+            conversionActions={conversionActions}
             capabilities={capabilities}
-            actions={actions}
-          />
-          <AdvancedOptionsView
-            advancedOptions={advancedOptions}
             actions={actions}
           />
         </div>
       </div>
-      <ConversionActionsView
-        sourceQueue={sourceQueue}
-        conversionActions={conversionActions}
-        capabilities={capabilities}
-        actions={actions}
-      />
     </section>
   );
 }

@@ -1,5 +1,4 @@
 import {
-  Fragment,
   memo,
   useCallback,
   useEffect,
@@ -7,90 +6,114 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 
 import { useBackendClient } from "./app/useBackendClient";
-import { syncSetupPreferences } from "./features/setup/setupPreferences";
-import { invalidateRuntimeBootstrap } from "./app/runtimeBootstrapCache";
+import { resolveCompletionNotice } from "./app/completionNotice";
+import { showDashboardDuringRuntimeCheck } from "./app/runtimeStartup";
+import { conversionRuntimeState, runtimeTtsReady } from "./app/runtimeReadiness";
+import { useVerifiedConversionJob } from "./app/useVerifiedConversionJob";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
 import { useRuntimeIdentity } from "./app/usePrimaryRuntime";
+import { useRuntimeSetupStatus } from "./app/useRuntimeSetupStatus";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
+import type { ConversionRuntimeState } from "./features/conversion/conversionPanelStateTypes";
 import { useConversionJob } from "./features/conversion/useConversionJob";
-import { DashboardPanel } from "./features/dashboard/DashboardPanel";
+import { LibraryMaintenanceSection } from "./features/library/LibraryMaintenanceSection";
+import { rememberLastPlayedBookId } from "./features/library/lastPlayedBook";
 import { LibraryPanel } from "./features/library/LibraryPanel";
 import { useLibrary } from "./features/library/useLibrary";
-import { LogPanel } from "./features/logs/LogPanel";
+import { NowPlayingView } from "./features/player/NowPlayingView";
 import { PlayerPanel } from "./features/player/PlayerPanel";
+import { usePlaybackRate } from "./features/player/usePlaybackExtras";
+import { formatClock } from "./format/time";
 import { useAudioPlayer } from "./features/player/useAudioPlayer";
-import { ProgressPanel } from "./features/progress/ProgressPanel";
+import { ConversionDetailsDrawer } from "./features/progress/ConversionDetailsDrawer";
 import { SetupPage } from "./features/setup/SetupPage";
 import { SettingsPage } from "./features/setup/SettingsPage";
-import { shouldShowRuntimeSetup } from "./features/setup/setupModel";
+import { isCheckingConfiguredRuntime, shouldShowRuntimeSetup } from "./features/setup/setupModel";
 import {
   DASHBOARD_TAB_CONFIGS,
   conversionPanelTabForDashboardTab,
 } from "./navigation/tabs";
 import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKeyboardNavigation";
-import type { DashboardTab, RuntimeSetupStatusResponse } from "./types/api";
-import { BrailleSpinner } from "./ui/ascii/BrailleSpinner";
+import type { DashboardTab, LibraryBookSummary, RuntimeSetupStatusResponse } from "./types/api";
+import { AsciiLoader } from "./ui/ascii/AsciiLoader";
+import { BookCover } from "./ui/BookCover";
+import { CoverClientContext, CoverGenerationContext, CoverRefreshContext } from "./ui/coverArt";
 import { Icon } from "./ui/icons";
-import { equalWhenHidden, equalWhenInvisible, memoWhenHidden } from "./app/visibilityMemo";
+import { ProgressBar } from "./ui/ProgressBar";
+import { TooltipLayer } from "./ui/TooltipLayer";
+import { installFocusRescue } from "./ui/focusRescue";
+import { equalWhenHidden, equalWhenInvisible } from "./app/visibilityMemo";
 
 type BackendClientState = ReturnType<typeof useBackendClient>;
 
-// Tabs the app may auto-switch away from when a job starts or finishes. On any
-// other tab the user is actively working, so we leave their focus alone rather
-// than yanking them to Progress/Library mid-action.
-const PASSIVE_AUTO_SWITCH_TABS: ReadonlySet<DashboardTab> = new Set<DashboardTab>([
-  "dashboard",
-  "progress",
-]);
+// The finished-book notice dismisses itself; it is an acknowledgement, not a task.
+const COMPLETION_NOTICE_MS = 10_000;
+const COMPLETED_BOOK_LOOKUP_TIMEOUT_MS = 8_000;
+// Narrow or short windows overlay the sidebar instead of docking it.
+const COMPACT_VIEWPORT_QUERY = "(max-width: 760px), (max-height: 540px)";
+const isCompactViewport = () => window.matchMedia(COMPACT_VIEWPORT_QUERY).matches;
 
-export function resolveAutoTabSwitch(input: {
-  previousUiState: string;
-  uiState: string;
-  activeTab: DashboardTab;
-}): DashboardTab | null {
-  if (input.previousUiState !== "running" && input.uiState === "running") {
-    return PASSIVE_AUTO_SWITCH_TABS.has(input.activeTab) ? "progress" : null;
-  }
-  if (input.previousUiState !== "completed" && input.uiState === "completed") {
-    return PASSIVE_AUTO_SWITCH_TABS.has(input.activeTab) ? "library" : null;
-  }
-  return null;
+interface CompletionNotice {
+  id: number;
+  kind: "completed" | "failed";
+  title: string;
+  bookId: number | null;
+  /** The book was already in the library (a repair), so it was updated rather than added. */
+  updated?: boolean;
 }
 
-const StableDashboardPanel = memo(DashboardPanel, equalWhenHidden);
-const StableConversionPanel = memo(ConversionPanel, equalWhenHidden);
+const StableConversionPanel = memo(ConversionPanel, (previous, next) =>
+  previous.apiClient === next.apiClient
+  && previous.conversionJob === next.conversionJob
+  && previous.runtimeSelectionGeneration === next.runtimeSelectionGeneration
+  && previous.runtimeState === next.runtimeState
+  && equalWhenHidden(previous, next),
+);
 const StableLibraryPanel = memo(LibraryPanel, equalWhenHidden);
 const StablePlayerPanel = memo(PlayerPanel, equalWhenInvisible);
 
-const VisibilityProgressPanel = memoWhenHidden(ProgressPanel);
-const VisibilityLogPanel = memoWhenHidden(LogPanel);
-
-function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetry: () => void }) {
+function RuntimeSetupChecking({ error, exhausted, onRetry, onContinueLibraryOnly }: {
+  error: string | null;
+  exhausted: boolean;
+  onRetry: () => void;
+  onContinueLibraryOnly: () => void;
+}) {
   const [longCheck, setLongCheck] = useState(false);
   useEffect(() => {
     setLongCheck(false);
-    if (error) return;
+    if (error || exhausted) return;
     const timer = window.setTimeout(() => setLongCheck(true), 5_000);
     return () => window.clearTimeout(timer);
-  }, [error]);
+  }, [error, exhausted]);
 
   return (
     <main className="setup-frame" aria-label="Orpheus startup">
-      <section className="setup-shell setup-startup" role={error ? undefined : "status"} aria-live={error ? undefined : "polite"}>
+      <section className="setup-shell setup-startup" role={error || exhausted ? undefined : "status"} aria-live={error || exhausted ? undefined : "polite"}>
         {error ? (
           <>
-            <h1>Unable to connect to your local runtime</h1>
-            <p role="alert">{error}</p>
-            <button type="button" className="btn" onClick={onRetry}>Retry connection</button>
+            <h1>Couldn't connect to the local runtime</h1>
+            <div role="alert">
+              <p>Retry, or restart Orpheus if this keeps happening.</p>
+              <span className="error-detail">{error}</span>
+            </div>
+            <button type="button" className="btn btn-secondary" onClick={onRetry}>Retry</button>
+          </>
+        ) : exhausted ? (
+          <>
+            <h1>Runtime check needs more time</h1>
+            <p role="alert">Checking your local runtime is taking longer than expected. Retry the check or use your library for now.</p>
+            <button type="button" className="btn btn-secondary" onClick={onRetry}>Retry</button>
+            <button type="button" className="btn btn-secondary" onClick={onContinueLibraryOnly}>Use library only</button>
           </>
         ) : (
           <>
             <h1>Orpheus</h1>
             <div className="setup-startup-status">
-              <span className="setup-startup-spinner" aria-hidden="true" />
+              <AsciiLoader active width={8} className="setup-startup-spinner" />
               <span>Checking your local runtime…</span>
             </div>
             {longCheck ? <p>First launch checks your GPU and model files — this can take up to a minute.</p> : null}
@@ -101,18 +124,87 @@ function RuntimeSetupChecking({ error, onRetry }: { error: string | null; onRetr
   );
 }
 
+function ConnectionBadge({ state, announce }: { state: BackendClientState["connectionState"]; announce: boolean }) {
+  return (
+    <span className={`connection-badge is-${state}`} {...(announce ? { role: "status", "aria-label": `Backend ${state}` } : { "aria-hidden": true })}>
+      <span className={`status-dot${state === "connected" ? " is-connected" : state === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
+      {state === "connected" ? "Connected" : state === "error" ? "Disconnected" : "Connecting…"}
+    </span>
+  );
+}
+
+// The dashboard re-renders on every playback tick and progress event; the
+// sidebar shelf only changes with the books, the selection or play state.
+const RailLibrary = memo(function RailLibrary({ items, indexedCount, selectedBookId, albumOpen, playingBookId, onOpenBook }: {
+  items: LibraryBookSummary[];
+  indexedCount: number;
+  selectedBookId: number | null;
+  /** The selected book's album page is showing. */
+  albumOpen: boolean;
+  /** The book audibly playing, or null. */
+  playingBookId: number | null;
+  onOpenBook: (index: number) => void;
+}) {
+  return (
+    <section className="rail-library" aria-label="Your library">
+      <div className="rail-library-header">
+        <span className="eyebrow rail-group-label">Your library</span>
+        <span className="rail-library-count tabular-nums">{indexedCount}</span>
+      </div>
+      <div className="rail-library-list">
+        {items.map((item, index) => {
+          const isCurrent = albumOpen && item.id === selectedBookId;
+          const isPlaying = item.id === playingBookId;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={`rail-book${isCurrent ? " is-current" : ""}${isPlaying ? " is-playing" : ""}`}
+              aria-current={isCurrent ? "true" : undefined}
+              onClick={() => onOpenBook(index)}
+            >
+              <BookCover bookId={item.id} sourceKey={item.source_path} title={item.title} author={item.author} size="sm" />
+              <span className="rail-book-text">
+                <span className="rail-book-title">{item.title || "Untitled"}</span>
+                {isPlaying || item.author ? (
+                  <span className="rail-book-author">{isPlaying ? "Playing" : item.author}</span>
+                ) : null}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+});
+
 function DashboardApp({
+  hidden = false,
   backend,
   setupStatus,
-  onOpenRuntimeSetup,
+  conversionRuntime,
+  runtimeSelectionGeneration,
+  onSettingsSetupReady,
+  onContinueLibraryOnly,
+  runtimeNotice = null,
 }: {
+  hidden?: boolean;
   backend: BackendClientState;
   setupStatus: RuntimeSetupStatusResponse | null;
-  onOpenRuntimeSetup: () => void;
+  /** Library-only use keeps Create visible; this says why it cannot start. */
+  conversionRuntime: ConversionRuntimeState;
+  runtimeSelectionGeneration: number;
+  onSettingsSetupReady: (status: RuntimeSetupStatusResponse) => void;
+  onContinueLibraryOnly: () => void;
+  /** Shown in the workspace notice row, above any completion notice. */
+  runtimeNotice?: ReactNode;
 }) {
-  const compactQuery = "(max-width: 760px), (max-height: 540px)";
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.matchMedia(compactQuery).matches);
-  const [activeTab, setActiveTab] = useState<DashboardTab>("dashboard");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(isCompactViewport);
+  const [activeTab, setActiveTab] = useState<DashboardTab>("library");
+  const [albumOpen, setAlbumOpen] = useState(false);
+  const [libraryNavigationGeneration, setLibraryNavigationGeneration] = useState(0);
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [notice, setNotice] = useState<CompletionNotice | null>(null);
   const {
     apiClient,
     backendBaseUrl,
@@ -125,11 +217,11 @@ function DashboardApp({
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const showSidebarRef = useRef<HTMLButtonElement | null>(null);
-  const pendingFocusRef = useRef<"heading" | "sidebar" | "toggle" | null>(null);
+  const pendingFocusRef = useRef<"heading" | "sidebar" | "toggle" | "models" | null>(null);
   const lastFocusedRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
-    const query = window.matchMedia(compactQuery);
+    const query = window.matchMedia(COMPACT_VIEWPORT_QUERY);
     const onChange = () => {
       if (query.matches && sidebarRef.current?.contains(document.activeElement)) {
         pendingFocusRef.current = "toggle";
@@ -143,13 +235,21 @@ function DashboardApp({
   }, []);
 
   useLayoutEffect(() => {
+    if (hidden) return;
     const target = pendingFocusRef.current;
     pendingFocusRef.current = null;
     if (target === "sidebar") {
       tabRefs.current[DASHBOARD_TAB_CONFIGS.findIndex((tab) => tab.id === activeTab)]?.focus();
     } else if (target === "toggle") {
       showSidebarRef.current?.focus();
-    } else if (target === "heading" || lastFocusedRef.current?.closest("[hidden]")) {
+    } else if (target === "models") {
+      const heading = document.getElementById("setup-heading");
+      heading?.scrollIntoView?.({ block: "start" });
+      heading?.focus({ preventScroll: true });
+    } else if (target === "heading" || lastFocusedRef.current?.parentElement?.closest("[hidden]")) {
+      // A page change hid the focused control's whole panel. A control hidden
+      // on its own (Start giving way to Cancel) is left to the focus rescue,
+      // which picks the nearest surviving control instead.
       headingRef.current?.focus();
     }
   });
@@ -159,20 +259,66 @@ function DashboardApp({
     backendDisconnected: connectionState === "error",
   });
 
-  const runtimeIdentity = useRuntimeIdentity(apiClient, setupStatus);
+  // Nothing shows the identity any more, but the hook pins the runtime bootstrap
+  // cache and polls capabilities while the runtime warms, which Create reads.
+  useRuntimeIdentity(apiClient, setupStatus);
   const player = useAudioPlayer({ apiClient, library });
+  const { playbackRate, setPlaybackRate } = usePlaybackRate(player.audioRef, player.audioProps.src);
+  const { sleepTimer, sleepRemainingSec, setSleepTimer } = player;
+  const [nowPlayingOpen, setNowPlayingOpen] = useState(false);
+  const nowPlayingVisible = nowPlayingOpen && player.playerVisible;
+  // NowPlayingView returns focus to whichever control opened it.
+  const closeNowPlaying = useCallback(() => {
+    setNowPlayingOpen(false);
+  }, []);
+  // The book that last played is the one the next launch opens on.
+  // The audio element follows the playing book, not the book being viewed.
+  const viewingPlayingBook = player.playingBookId !== null && player.playingBookId === library.selectedBookId;
+  const playingBookId = player.playing ? player.playingBookId : null;
+  useEffect(() => {
+    if (playingBookId !== null) rememberLastPlayedBookId(playingBookId);
+  }, [playingBookId]);
+  const sleepLabel = sleepTimer.kind === "chapter"
+    ? "Sleep · chapter end"
+    : sleepRemainingSec !== null ? `Sleep ${formatClock(sleepRemainingSec)}` : undefined;
   const previousUiStateRef = useRef<string>("idle");
-  const visitedTabsRef = useRef<Set<DashboardTab>>(new Set(["dashboard"]));
-  visitedTabsRef.current.add(activeTab);
+  const previousJobIdRef = useRef<string | null>(null);
+  const noticeSequenceRef = useRef(0);
+  const noticeClientRef = useRef(apiClient);
+  useLayoutEffect(() => {
+    noticeClientRef.current = apiClient;
+  }, [apiClient]);
+  useEffect(() => () => { noticeSequenceRef.current += 1; }, []);
+  useEffect(() => {
+    noticeSequenceRef.current += 1;
+    setNotice(null);
+    previousUiStateRef.current = "idle";
+    previousJobIdRef.current = null;
+  }, [apiClient]);
+  // Panels mount on first visit and then stay mounted so their state survives tab switches.
+  const [visitedTabs, setVisitedTabs] = useState<ReadonlySet<DashboardTab>>(() => new Set<DashboardTab>(["library"]));
+  if (!visitedTabs.has(activeTab)) {
+    setVisitedTabs(new Set(visitedTabs).add(activeTab));
+  }
 
-  const conversionJob = useConversionJob({
+  const liveConversionJob = useConversionJob({
     apiClient,
     baseUrl: backendBaseUrl,
   });
+  const conversionJob = useVerifiedConversionJob(liveConversionJob,
+    runtimeTtsReady(setupStatus) === true && !isCheckingConfiguredRuntime(setupStatus));
   const refreshLibrary = library.refreshLibrary;
+  const libraryItemsRef = useRef(library.items);
+  useLayoutEffect(() => {
+    libraryItemsRef.current = library.items;
+  }, [library.items]);
+  const jobRunning = conversionJob.uiState === "running";
+  const jobPercent = Math.max(0, Math.min(100, Math.round(Number(conversionJob.progressPct) || 0)));
 
   useEffect(() => {
     const previous = previousUiStateRef.current;
+    const completedJobId = previousJobIdRef.current;
+    previousJobIdRef.current = conversionJob.activeJobId;
     previousUiStateRef.current = conversionJob.uiState;
 
     // Refresh the library after every terminal outcome. Failed and cancelled
@@ -187,18 +333,36 @@ function DashboardApp({
       void refreshLibrary();
     }
 
-    const nextTab = resolveAutoTabSwitch({
-      previousUiState: previous,
-      uiState: conversionJob.uiState,
-      activeTab,
-    });
-    if (nextTab) {
-      setActiveTab(nextTab);
-    }
-  }, [activeTab, conversionJob.uiState, refreshLibrary]);
+    const kind = previous === conversionJob.uiState ? null : resolveCompletionNotice({ previousUiState: previous, uiState: conversionJob.uiState });
+    if (!kind) return;
+    const title = conversionJob.activeJobTitle || (kind === "completed" ? "Your audiobook" : "The conversion");
+    const id = ++noticeSequenceRef.current;
+    // The shelf as it was when the job ended, before the refresh above lands.
+    const shelfAtCompletion = libraryItemsRef.current;
+    setNotice({ id, kind, title, bookId: null });
+    if (kind !== "completed" || !apiClient) return;
+    // The finished job names its book, so the notice can open it directly.
+    void apiClient.getActiveConversion({ timeoutMs: COMPLETED_BOOK_LOOKUP_TIMEOUT_MS }).then(({ job }) => {
+      if (noticeClientRef.current === apiClient && noticeSequenceRef.current === id
+        && job?.status === "completed" && job.book_id != null
+        && (!completedJobId || job.id === completedJobId)) {
+        setNotice((current) => (current?.id === id ? { ...current, bookId: job.book_id ?? null,
+          updated: shelfAtCompletion.some((item) => item.id === job.book_id) } : current));
+      }
+    }).catch(() => undefined);
+  }, [apiClient, conversionJob.activeJobId, conversionJob.activeJobTitle, conversionJob.uiState, refreshLibrary]);
+
+  const noticeId = notice?.id;
+  useEffect(() => {
+    if (noticeId === undefined) return undefined;
+    const timer = window.setTimeout(() => setNotice(null), COMPLETION_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [noticeId]);
 
   const { playRelative, seekBy, seekTo, togglePlay } = player;
   useGlobalShortcuts({
+    enabled: !hidden && !detailsOpen,
+    startEnabled: !nowPlayingVisible,
     activeTab,
     startCommandRef,
     refreshLibrary,
@@ -207,17 +371,12 @@ function DashboardApp({
     togglePlay,
   });
 
-  const isConversionPanelVisible = activeTab === "convert" || activeTab === "document" || activeTab === "settings";
+  const isConversionPanelVisible = activeTab === "convert" || activeTab === "settings";
   const conversionPanelTab = conversionPanelTabForDashboardTab(activeTab);
-  const conversionPanelMounted = visitedTabsRef.current.has("convert")
-    || visitedTabsRef.current.has("document")
-    || visitedTabsRef.current.has("settings");
+  const conversionPanelMounted = visitedTabs.has("convert")
+    || visitedTabs.has("settings");
   const renderedConversionPanelId = conversionPanelMounted
-    ? conversionPanelTab === "config"
-      ? "tab-config"
-      : conversionPanelTab === "document"
-        ? "tab-document"
-        : "tab-convert"
+    ? conversionPanelTab === "config" ? "tab-config" : "tab-convert"
     : null;
   const activeTabIndex = DASHBOARD_TAB_CONFIGS.findIndex((tab) => tab.id === activeTab);
 
@@ -227,10 +386,13 @@ function DashboardApp({
       return;
     }
     setActiveTab(next.id);
+    setLibraryNavigationGeneration((generation) => generation + 1);
+    if (next.id === "library") setAlbumOpen(false);
     tabRefs.current[index]?.focus();
   }, []);
 
   const selectTab = useCallback((tab: DashboardTab) => {
+    setLibraryNavigationGeneration((generation) => generation + 1);
     if (tab === activeTab) {
       headingRef.current?.focus();
       return;
@@ -252,23 +414,77 @@ function DashboardApp({
     selectTabAtIndex(nextIndex);
   }, [activeTabIndex, selectTabAtIndex]);
 
+  const { selectBook } = library;
+  const openAlbum = useCallback((index: number) => {
+    setLibraryNavigationGeneration((generation) => generation + 1);
+    void selectBook(index);
+    setAlbumOpen(true);
+    if (activeTab !== "library") {
+      setActiveTab("library");
+    }
+  }, [activeTab, selectBook]);
+  const closeAlbum = useCallback(() => {
+    setAlbumOpen(false);
+  }, []);
+  const openRailBook = useCallback((index: number) => {
+    openAlbum(index);
+    if (isCompactViewport()) setSidebarCollapsed(true);
+  }, [openAlbum]);
+  const openBookById = useCallback((bookId: number | null) => {
+    const index = bookId === null ? -1 : library.items.findIndex((item) => item.id === bookId);
+    if (index >= 0) {
+      openAlbum(index);
+    } else {
+      setAlbumOpen(false);
+      selectTab("library");
+    }
+  }, [library.items, openAlbum, selectTab]);
+
   const openConvert = useCallback(() => selectTab("convert"), [selectTab]);
   const openSettings = useCallback(() => selectTab("settings"), [selectTab]);
-  const openLibrary = useCallback(() => selectTab("library"), [selectTab]);
-  const openProgress = useCallback(() => selectTab("progress"), [selectTab]);
-  const openLogs = useCallback(() => selectTab("logs"), [selectTab]);
+  const openModels = useCallback(() => {
+    pendingFocusRef.current = "models";
+    setActiveTab("settings");
+  }, []);
+  const openDetails = useCallback(() => setDetailsOpen(true), []);
+  const closeDetails = useCallback(() => setDetailsOpen(false), []);
   const playPrevious = useCallback(() => {
     void playRelative(-1);
   }, [playRelative]);
   const playNext = useCallback(() => {
     void playRelative(1);
   }, [playRelative]);
+  const { playSelectedBook } = player;
+  const playSelected = useCallback(() => {
+    void playSelectedBook();
+  }, [playSelectedBook]);
+  const { jumpToChapter, closePlayer } = player;
+  const jumpToChapterFromNowPlaying = useCallback((chapter: Parameters<typeof jumpToChapter>[0]) => {
+    void jumpToChapter(chapter);
+  }, [jumpToChapter]);
+  const closePlayerPanel = useCallback(() => {
+    setNowPlayingOpen(false);
+    closePlayer();
+    headingRef.current?.focus();
+  }, [closePlayer]);
+  const toggleNowPlaying = useCallback(() => {
+    if (nowPlayingVisible) closeNowPlaying();
+    else setNowPlayingOpen(true);
+  }, [closeNowPlaying, nowPlayingVisible]);
+
+  const pageLabel = activeTab === "library" && albumOpen && library.selectedBookDetail
+    ? library.selectedBookDetail.title || "Untitled"
+    : DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus";
 
   return (
-    <main className={`app-frame${sidebarCollapsed ? " sidebar-collapsed" : ""}`} aria-label="Orpheus dashboard" onFocusCapture={(event) => { lastFocusedRef.current = event.target as HTMLElement; }}>
-      <a className="skip-link" href="#workspace-heading" onClick={(event) => { event.preventDefault(); headingRef.current?.focus(); }}>Skip to content</a>
-      <span className="sr-only" role="status" aria-atomic="true">{conversionJob.uiState === "idle" ? "" : conversionJob.isCancelling ? "Stopping conversion." : `Conversion ${conversionJob.uiState === "running" ? "started" : conversionJob.uiState}.`}</span>
+    <CoverClientContext.Provider value={apiClient}>
+    <CoverGenerationContext.Provider value={library.libraryGeneration ?? 0}>
+    <CoverRefreshContext.Provider value={library.loadingList}>
+    <main className={`app-frame${sidebarCollapsed ? " sidebar-collapsed" : ""}`} aria-label="Orpheus" onFocusCapture={(event) => { lastFocusedRef.current = event.target as HTMLElement; }}>
+      <a className="skip-link" hidden={nowPlayingVisible} href="#workspace-heading" onClick={(event) => { event.preventDefault(); headingRef.current?.focus(); }}>Skip to content</a>
+      <span className="sr-only" role="status" aria-atomic="true">{conversionJob.uiState === "idle" || conversionJob.uiState === "unknown" ? "" : conversionJob.isCancelling ? "Stopping conversion." : `Conversion ${conversionJob.uiState === "running" ? "started" : conversionJob.uiState}.`}</span>
       <aside ref={sidebarRef} id="app-sidebar" className="rail" aria-label="Orpheus navigation" hidden={sidebarCollapsed}
+        {...(nowPlayingVisible || detailsOpen ? { inert: "" } : {})}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
             event.preventDefault();
@@ -277,15 +493,17 @@ function DashboardApp({
           }
         }}
         onBlurCapture={(event) => {
-          if (window.matchMedia(compactQuery).matches && event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
+          if (isCompactViewport() && event.relatedTarget instanceof Node && !event.currentTarget.contains(event.relatedTarget)) {
             setSidebarCollapsed(true);
           }
         }}
       >
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">O</span>
+          <span className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M6 10v4M10 6v12M14 8.5v7M18 11v2" /></svg>
+          </span>
           <span className="brand-name">Orpheus</span>
-          <button type="button" className="icon-btn sidebar-toggle" aria-label="Hide sidebar" aria-controls="app-sidebar" aria-expanded="true" data-tip="Hide sidebar" data-tip-pos="right" onClick={() => { pendingFocusRef.current = "toggle"; setSidebarCollapsed(true); }}>
+          <button type="button" className="btn btn-ghost btn-sm btn-icon sidebar-toggle" aria-label="Hide sidebar" aria-controls="app-sidebar" aria-expanded="true" data-tip="Hide sidebar" data-tip-pos="right" onClick={() => { pendingFocusRef.current = "toggle"; setSidebarCollapsed(true); }}>
             <Icon name="sidebar" />
           </button>
         </div>
@@ -293,331 +511,337 @@ function DashboardApp({
         <nav
           className="rail-nav"
           role="tablist"
-          aria-label="Dashboard sections"
+          aria-label="Sections"
           aria-orientation="vertical"
           onKeyDown={onTabListKeyDown}
         >
-          {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId, icon, group }, index) => {
+          {DASHBOARD_TAB_CONFIGS.map(({ id, label, panelId, icon }, index) => {
             const isActive = activeTab === id;
-            const startsGroup = index === 0 || DASHBOARD_TAB_CONFIGS[index - 1]?.group !== group;
             return (
-              <Fragment key={id}>
-                {startsGroup ? <span className={`rail-group-label${index === 0 ? "" : " rail-section-label"}`} role="presentation">{group}</span> : null}
-                <button
-                  id={`tab-btn-${id}`}
-                  ref={(node) => {
-                    tabRefs.current[index] = node;
-                  }}
-                  className={`rail-tab${isActive ? " active" : ""}`}
-                  type="button"
-                  role="tab"
-                  tabIndex={tabButtonTabIndex(activeTabIndex, index)}
-                  aria-controls={panelId}
-                  aria-label={label}
-                  aria-selected={isActive}
-                  onClick={() => {
-                    setActiveTab(id);
-                    if (window.matchMedia(compactQuery).matches) {
-                      pendingFocusRef.current = "heading";
-                      setSidebarCollapsed(true);
-                    }
-                  }}
-                >
-                  <Icon name={icon} className="rail-icon" />
-                  <span className="rail-label">{label}</span>
-                  {id === "progress" && conversionJob.uiState === "running" ? <span className="rail-badge-dot" aria-hidden="true" /> : null}
-                </button>
-              </Fragment>
+              <button
+                key={id}
+                id={`tab-btn-${id}`}
+                ref={(node) => {
+                  tabRefs.current[index] = node;
+                }}
+                className={`rail-tab${isActive ? " active" : ""}`}
+                type="button"
+                role="tab"
+                tabIndex={tabButtonTabIndex(activeTabIndex, index)}
+                aria-controls={panelId}
+                aria-label={label}
+                aria-selected={isActive}
+                onClick={() => {
+                  // The Library item always leads back to the shelf.
+                  if (id === "library") setAlbumOpen(false);
+                  setActiveTab(id);
+                  if (isCompactViewport()) {
+                    pendingFocusRef.current = "heading";
+                    setSidebarCollapsed(true);
+                  }
+                }}
+              >
+                <Icon name={icon} className="rail-icon" />
+                <span className="rail-label">{label}</span>
+                {id === "convert" && jobRunning ? <span className="rail-badge-dot" aria-hidden="true" /> : null}
+              </button>
             );
           })}
         </nav>
 
-        <div className="rail-bottom">
-          {conversionJob.uiState === "running" ? (
-            <button
-              className="rail-action stop"
-              type="button"
-              disabled={conversionJob.isCancelling}
-              data-tip="Stop the running conversion. Finished chapters are kept."
-              data-tip-pos="right"
-              onClick={() => void conversionJob.cancelActiveConversion()}
-            >
-              <Icon name="stop" className="rail-icon" />
-              <span>{conversionJob.isCancelling ? "Stopping…" : "Stop conversion"}</span>
-            </button>
-          ) : null}
-          <div className="rail-status">
-            <span className={`connection-badge is-${connectionState}`} role="status" aria-label={`Backend ${connectionState}`}>
-              <span className={`status-dot${connectionState === "connected" ? " is-connected" : connectionState === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
-              {connectionState === "connected" ? "Connected" : connectionState === "error" ? "Disconnected" : "Connecting…"}
-            </span>
-            <button
-              className="icon-btn"
-              type="button"
-              aria-label="Refresh library"
-              data-tip="Reload the library index"
-              data-tip-pos="right"
-              onClick={() => void refreshLibrary()}
-            >
-              <Icon name="refresh" />
-            </button>
-          </div>
-        </div>
-      </aside>
+        {library.items.length > 0 ? (
+          <RailLibrary
+            items={library.items}
+            indexedCount={library.indexedCount}
+            selectedBookId={library.selectedBookId}
+            albumOpen={activeTab === "library" && albumOpen}
+            playingBookId={playingBookId}
+            onOpenBook={openRailBook}
+          />
+        ) : null}
 
-      <div className="workspace-shell">
-        <header className="studio-status">
-          <div className="page-heading">
-            {sidebarCollapsed ? <button ref={showSidebarRef} type="button" className="icon-btn sidebar-expand" onClick={() => { pendingFocusRef.current = "sidebar"; setSidebarCollapsed(false); }} aria-label="Show sidebar" aria-controls="app-sidebar" aria-expanded="false" data-tip="Show sidebar" data-tip-pos="bottom"><Icon name="sidebar" /></button> : null}
-            <div className="page-title-block">
-              <h1 ref={headingRef} id="workspace-heading" tabIndex={-1}>{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus"}</h1>
-              <p className="page-description">{DASHBOARD_TAB_CONFIGS[activeTabIndex]?.description}</p>
-            </div>
-          </div>
-          <div className="studio-controls">
-            {conversionJob.uiState === "running" && activeTab !== "progress" ? (
-              <button type="button" className="btn btn-ghost converting-control" onClick={openProgress}>
-                <BrailleSpinner active />
-                <span>Converting</span>
+        {jobRunning || connectionState !== "connected" ? (
+          <div className="rail-bottom">
+            {jobRunning ? (
+              <button
+                type="button"
+                className="rail-job"
+                aria-label={`Converting ${conversionJob.activeJobTitle || "a book"}, ${jobPercent}%. Show details`}
+                data-tip="Show stages and the event log"
+                data-tip-pos="right"
+                onClick={openDetails}
+              >
+                <span className="rail-job-top">
+                  <AsciiLoader active={!hidden} width={4} className="rail-job-spinner" />
+                  <span className="rail-job-label">{conversionJob.isCancelling ? "Stopping…" : conversionJob.connectionLost ? "Reconnecting…" : "Converting"}</span>
+                  <span className="rail-job-pct tabular-nums">{jobPercent}%</span>
+                </span>
+                {conversionJob.activeJobTitle ? <span className="rail-job-title">{conversionJob.activeJobTitle}</span> : null}
+                <ProgressBar pct={jobPercent} tone="active" size="hairline" variant="ascii" cells={26} label="Conversion progress" />
               </button>
             ) : null}
-            {sidebarCollapsed || connectionState !== "connected" ? (
-              <span className={`connection-badge is-${connectionState}`} {...(sidebarCollapsed ? { role: "status", "aria-label": `Backend ${connectionState}` } : { "aria-hidden": true })}>
-                <span className={`status-dot${connectionState === "connected" ? " is-connected" : connectionState === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
-                {connectionState === "connected" ? "Connected" : connectionState === "error" ? "Disconnected" : "Connecting…"}
-              </span>
+            {connectionState !== "connected" ? (
+              <div className="rail-status">
+                <ConnectionBadge state={connectionState} announce />
+              </div>
             ) : null}
-            {activeTab === "dashboard" ? <button className="btn btn-primary" type="button" onClick={openConvert}>Convert a source</button> : null}
+          </div>
+        ) : null}
+      </aside>
+
+      <div className="workspace-shell" {...(nowPlayingVisible || detailsOpen ? { inert: "" } : {})}>
+        <header className="studio-status">
+          <div className="page-container page-header">
+            <h1 ref={headingRef} id="workspace-heading" tabIndex={-1} className="sr-only" data-focus-landing="">{pageLabel}</h1>
+            {sidebarCollapsed ? (
+              <div className="studio-controls">
+                <button ref={showSidebarRef} type="button" className="btn btn-ghost btn-sm btn-icon sidebar-expand" onClick={() => { pendingFocusRef.current = "sidebar"; setSidebarCollapsed(false); }} aria-label="Show sidebar" aria-controls="app-sidebar" aria-expanded="false" data-tip="Show sidebar" data-tip-pos="bottom"><Icon name="sidebar" /></button>
+                {jobRunning ? (
+                  <button type="button" className="btn btn-ghost converting-control" onClick={openDetails}>
+                    <AsciiLoader active width={5} />
+                    <span className="tabular-nums">{conversionJob.connectionLost ? "Reconnecting…" : "Converting"} · {jobPercent}%</span>
+                  </button>
+                ) : null}
+                {connectionState !== "connected" ? <ConnectionBadge state={connectionState} announce /> : null}
+              </div>
+            ) : null}
           </div>
         </header>
 
-        <div className={`main-workspace${activeTab === "convert" || activeTab === "document" ? " has-conversion" : ""}`}>
-          <StableDashboardPanel
-            apiClient={apiClient}
-            hidden={activeTab !== "dashboard"}
-            library={library}
-            connectionState={connectionState}
-            health={health}
-            statusMessage={statusMessage}
-            uiState={conversionJob.uiState}
-            progressPct={conversionJob.progressPct}
-            etaText={conversionJob.etaText}
-            stages={conversionJob.stages}
-            jobTitle={conversionJob.activeJobTitle}
-            jobAuthor={conversionJob.activeJobAuthor}
-            currentChapterLabel={player.currentChapterLabel}
-            playerTitle={player.title}
-            playing={player.playing}
-            elapsedSec={player.elapsedSec}
-            durationSec={player.durationSec}
-            onOpenLibrary={openLibrary}
-            onOpenProgress={openProgress}
-            onOpenSettings={openSettings}
-            onOpenLogs={openLogs}
-            cleanerLabel={runtimeIdentity.cleanerLabel}
-            ttsReady={runtimeIdentity.ttsReady}
-            ttsDevice={runtimeIdentity.ttsDevice}
-          />
-
+        <div className={`main-workspace${activeTab === "convert" ? " has-conversion" : ""}`}>
           {conversionPanelMounted ? (
             <SettingsPage
               active={activeTab === "settings"}
               apiClient={apiClient}
-              status={setupStatus}
-              onManageModels={onOpenRuntimeSetup}
+              models={visitedTabs.has("settings") ? (
+                <SetupPage
+                  embedded
+                  hidden={activeTab !== "settings"}
+                  apiClient={apiClient}
+                  initialStatus={setupStatus}
+                  initialError={null}
+                  onReady={onSettingsSetupReady}
+                  onContinueLibraryOnly={onContinueLibraryOnly}
+                  settingsEntry
+                  onReconnectBackend={backend.reconnectBackend}
+                />
+              ) : null}
+              maintenance={<LibraryMaintenanceSection library={library} selectedDetailId={library.selectedBookDetail?.id ?? null} />}
             >
               <StableConversionPanel
                 activeTab={conversionPanelTab}
                 hidden={!isConversionPanelVisible}
                 apiClient={apiClient}
+                runtimeSelectionGeneration={runtimeSelectionGeneration}
+                runtimeState={conversionRuntime}
                 connectionState={connectionState}
                 health={health}
                 statusMessage={statusMessage}
                 conversionJob={conversionJob}
                 onOpenSettings={openSettings}
-                onOpenRuntimeSetup={onOpenRuntimeSetup}
+                onOpenRuntimeSetup={openModels}
+                onOpenConversionDetails={openDetails}
                 startCommandRef={startCommandRef}
               />
             </SettingsPage>
           ) : null}
-          {["tab-convert", "tab-document", "tab-config"].map((panelId) => (
+          {["tab-convert", "tab-config"].map((panelId) => (
             panelId === renderedConversionPanelId ? null : (
               <section key={panelId} id={panelId} role="tabpanel" hidden />
             )
           ))}
 
-          {visitedTabsRef.current.has("progress") ? <section
-            id="tab-progress"
-            className="panel"
-            role="tabpanel"
-            aria-label="Conversion progress"
-            aria-labelledby="tab-btn-progress"
-            hidden={activeTab !== "progress"}
-          >
-            <VisibilityProgressPanel
-              hidden={activeTab !== "progress"}
-              uiState={conversionJob.uiState}
-              statusText={conversionJob.statusText}
-              progressPct={conversionJob.progressPct}
-              etaText={conversionJob.etaText}
-              stages={conversionJob.stages}
-              currentStage={conversionJob.currentStage}
-              currentMessage={conversionJob.currentMessage}
-              performance={conversionJob.performanceSnapshot}
-              activeJobId={conversionJob.activeJobId}
-              isCancelling={conversionJob.isCancelling}
-              onCancel={conversionJob.cancelActiveConversion}
-              onStartConvert={openConvert}
-            />
-          </section> : <section id="tab-progress" role="tabpanel" aria-label="Conversion progress" aria-labelledby="tab-btn-progress" hidden />}
-
-          {visitedTabsRef.current.has("logs") ? <section
-            id="tab-logs"
-            className="panel logs-panel"
-            role="tabpanel"
-            aria-label="Process logs"
-            aria-labelledby="tab-btn-logs"
-            hidden={activeTab !== "logs"}
-          >
-            <VisibilityLogPanel hidden={activeTab !== "logs"} logs={conversionJob.logs} />
-          </section> : <section id="tab-logs" role="tabpanel" aria-label="Process logs" hidden />}
-
-          {visitedTabsRef.current.has("library") ? <StableLibraryPanel
+          <StableLibraryPanel
+            navigationGeneration={libraryNavigationGeneration}
             hidden={activeTab !== "library"}
             library={library}
-            currentChapterNumber={player.currentChapter?.number ?? null}
-            playing={player.playing}
+            albumOpen={albumOpen}
+            onOpenAlbum={openAlbum}
+            onCloseAlbum={closeAlbum}
+            currentChapterNumber={viewingPlayingBook ? player.currentChapter?.number ?? null : null}
+            currentChapterLabel={viewingPlayingBook ? player.currentChapterLabel : undefined}
+            playing={viewingPlayingBook && player.playing}
+            playerLoaded={viewingPlayingBook && player.canSeek}
+            elapsedSec={viewingPlayingBook ? player.elapsedSec : 0}
+            durationSec={viewingPlayingBook ? player.durationSec : 0}
+            onTogglePlay={playSelected}
             onJumpToChapter={player.jumpToChapter}
+            onReleaseBookAudio={player.releaseBookAudio}
             onStartConvert={openConvert}
-          /> : <section id="tab-library" role="tabpanel" aria-label="Library and playback" aria-labelledby="tab-btn-library" hidden />}
+          />
         </div>
-
-        <StablePlayerPanel
-          enabled={player.playerEligible}
-          visible={player.playerVisible}
-          playing={player.playing}
-          title={player.title}
-          bookTitle={library.selectedBookDetail?.title}
-          chapterTitle={player.currentChapterLabel}
-          elapsedSec={player.elapsedSec}
-          durationSec={player.durationSec}
-          canSeek={player.canSeek}
-          volume={player.volume}
-          canGoPrevious={player.canGoPrevious}
-          canGoNext={player.canGoNext}
-          chapterPlaylist={player.chapterPlaylist}
-          audioRef={player.audioRef}
-          audio={player.audioProps}
-          onTogglePlay={togglePlay}
-          onSeekBy={seekBy}
-          onSeekTo={seekTo}
-          onPrevious={playPrevious}
-          onNext={playNext}
-          onVolumeChange={player.setPlayerVolume}
-          onClose={() => { player.closePlayer(); headingRef.current?.focus(); }}
-        />
+        {/* In the workspace flow, under the page: a notice never covers a control. */}
+        <div className="workspace-notices">
+        {runtimeNotice}
+        {notice ? (
+          <div className={`completion-notice is-${notice.kind}`} role="status" aria-live="polite">
+            <span className="completion-notice-mark" aria-hidden="true">{notice.kind === "completed" ? "✓" : "!"}</span>
+            <span className="completion-notice-copy">
+              <strong>{notice.kind === "completed" ? `${notice.title} is ready` : `${notice.title} failed`}</strong>
+              <span>{notice.kind === "completed" ? notice.updated ? "Updated in your library." : "Added to your library." : "Finished chapters are kept. The log says what went wrong."}</span>
+            </span>
+            {notice.kind === "completed" ? (
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setNotice(null); openBookById(notice.bookId); }}>
+                Open
+              </button>
+            ) : (
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setNotice(null); openDetails(); }}>
+                Details
+              </button>
+            )}
+            <button type="button" className="btn btn-ghost btn-sm btn-icon" aria-label="Dismiss" onClick={() => setNotice(null)}>
+              <Icon name="x" />
+            </button>
+          </div>
+        ) : null}
+        </div>
       </div>
+
+      <ConversionDetailsDrawer open={detailsOpen} conversionJob={conversionJob} onClose={closeDetails} />
+
+      <NowPlayingView
+        open={nowPlayingVisible}
+        bookId={player.playbackDetail?.id ?? null}
+        bookSourceKey={player.playbackDetail?.source_path ?? null}
+        bookTitle={player.playbackDetail?.title}
+        bookAuthor={player.playbackDetail?.author}
+        chapters={player.playbackDetail?.chapters ?? []}
+        currentChapterNumber={player.currentChapter?.number ?? null}
+        playing={player.playing}
+        elapsedSec={player.elapsedSec}
+        durationSec={player.durationSec}
+        canSeek={player.canSeek}
+        chapterPlaylist={player.chapterPlaylist}
+        playbackRate={playbackRate}
+        sleepTimer={sleepTimer}
+        sleepRemainingSec={sleepRemainingSec}
+        onJumpToChapter={jumpToChapterFromNowPlaying}
+        onSeekTo={seekTo}
+        onSeekBy={seekBy}
+        onPlaybackRateChange={setPlaybackRate}
+        onSleepTimerChange={setSleepTimer}
+        onClose={closeNowPlaying}
+      />
+      <StablePlayerPanel
+        enabled={player.playerEligible}
+        visible={player.playerVisible}
+        playing={player.playing}
+        title={player.title}
+        bookId={player.playbackDetail?.id ?? null}
+        bookSourceKey={player.playbackDetail?.source_path ?? null}
+        bookTitle={player.playbackDetail?.title}
+        bookAuthor={player.playbackDetail?.author}
+        chapterTitle={player.currentChapterLabel}
+        chapters={player.playbackDetail?.chapters}
+        elapsedSec={player.elapsedSec}
+        durationSec={player.durationSec}
+        canSeek={player.canSeek}
+        volume={player.volume}
+        canGoPrevious={player.canGoPrevious}
+        canGoNext={player.canGoNext}
+        chapterPlaylist={player.chapterPlaylist}
+        chapterTransport={player.chapterTransport}
+        audioRef={player.audioRef}
+        audio={player.audioProps}
+        onTogglePlay={togglePlay}
+        onSeekBy={seekBy}
+        onSeekTo={seekTo}
+        onPrevious={playPrevious}
+        onNext={playNext}
+        onVolumeChange={player.setPlayerVolume}
+        onClose={closePlayerPanel}
+        onToggleNowPlaying={toggleNowPlaying}
+        nowPlayingOpen={nowPlayingVisible}
+        playbackRate={playbackRate}
+        sleepLabel={sleepLabel}
+      />
     </main>
+    </CoverRefreshContext.Provider>
+    </CoverGenerationContext.Provider>
+    </CoverClientContext.Provider>
   );
 }
 
 function App() {
   const backend = useBackendClient();
-  const [setupStatus, setSetupStatus] = useState<RuntimeSetupStatusResponse | null>(null);
-  const [setupStatusClient, setSetupStatusClient] = useState<BackendClientState["apiClient"]>(null);
-  const [setupError, setSetupError] = useState<string | null>(null);
-  const [libraryOnlyOverride, setLibraryOnlyOverride] = useState(false);
-  const [forceOpenRuntimeSetup, setForceOpenRuntimeSetup] = useState(false);
+  const {
+    readyRuntimeHint,
+    setupStatus,
+    currentSetupStatus,
+    setupError,
+    checkExhausted,
+    libraryOnly,
+    runtimeSelectionGeneration,
+    onSetupReady,
+    onSettingsSetupReady,
+    continueLibraryOnly,
+    retryCheck,
+  } = useRuntimeSetupStatus(backend.apiClient);
+  // Keyboard focus never falls back to <body> when its control goes away.
+  useEffect(() => installFocusRescue(), []);
 
-  const onSetupReady = useCallback((status: RuntimeSetupStatusResponse) => {
-    syncSetupPreferences(status);
-    if (backend.apiClient) invalidateRuntimeBootstrap(backend.apiClient);
-    setSetupStatusClient(backend.apiClient);
-    setSetupStatus(status);
-    if (!forceOpenRuntimeSetup) {
-      setLibraryOnlyOverride(false);
-    }
-  }, [backend.apiClient, forceOpenRuntimeSetup]);
-
-  const onContinueLibraryOnly = useCallback(() => {
-    setForceOpenRuntimeSetup(false);
-    setLibraryOnlyOverride(true);
-  }, []);
-
-  const onExitSettingsSetup = useCallback(() => {
-    setForceOpenRuntimeSetup(false);
-    setLibraryOnlyOverride(shouldShowRuntimeSetup(setupStatus, false));
-  }, [setupStatus]);
-
-  const onOpenRuntimeSetup = useCallback(() => {
-    setSetupError(null);
-    setSetupStatus(null);
-    setForceOpenRuntimeSetup(true);
-  }, []);
-
-  useEffect(() => {
-    if (!backend.apiClient) {
-      return undefined;
-    }
-    let active = true;
-    setSetupError(null);
-    // Allow time for the cold-start subprocess probe and first-time model hashing.
-    void backend.apiClient.getRuntimeSetupStatus({ timeoutMs: 120_000 }).then((status) => {
-      if (!active) return;
-      syncSetupPreferences(status);
-      setSetupStatusClient(backend.apiClient);
-      setSetupStatus(status);
-    }).catch((error: unknown) => {
-      if (!active) return;
-      const message = error instanceof Error && error.message.trim()
-        ? error.message.trim().slice(0, 512)
-        : "Runtime setup status is temporarily unavailable.";
-      setSetupStatus(null);
-      setSetupError(message);
-    });
-    return () => {
-      active = false;
-    };
-  }, [backend.apiClient, forceOpenRuntimeSetup]);
-
-  if (
-    !forceOpenRuntimeSetup
-    && !libraryOnlyOverride
-    && setupStatus === null
-    && setupError === null
-  ) {
-    return (
-      <RuntimeSetupChecking
-        error={backend.connectionState === "error" ? backend.statusMessage : null}
-        onRetry={backend.reconnectBackend}
-      />
-    );
-  }
-
-  if (
-    forceOpenRuntimeSetup
-    || shouldShowRuntimeSetup(setupStatus, libraryOnlyOverride)
-  ) {
-    return (
-      <SetupPage
-        apiClient={backend.apiClient}
-        initialStatus={setupStatus}
-        initialError={setupError}
-        onReady={onSetupReady}
-        onContinueLibraryOnly={onContinueLibraryOnly}
-        settingsEntry={forceOpenRuntimeSetup}
-        onExitSettings={forceOpenRuntimeSetup ? onExitSettingsSetup : undefined}
-        onReconnectBackend={backend.reconnectBackend}
-      />
-    );
+  // Screen gating uses the last known status, so losing the backend keeps the
+  // dashboard (and its backend-error badge) instead of reopening setup. Only the
+  // dashboard's readiness is scoped to the current client.
+  const backgroundSetupCheck = showDashboardDuringRuntimeCheck(readyRuntimeHint, setupStatus, setupError);
+  const checkingSetup = !libraryOnly
+    && !backgroundSetupCheck
+    && (setupStatus === null || isCheckingConfiguredRuntime(setupStatus))
+    && setupError === null;
+  const showingSetup = !checkingSetup && !backgroundSetupCheck && shouldShowRuntimeSetup(setupStatus, libraryOnly);
+  const dashboardHidden = checkingSetup || showingSetup;
+  // Once shown, the dashboard stays mounted behind setup so playback and jobs survive.
+  const [dashboardMounted, setDashboardMounted] = useState(false);
+  if (!dashboardMounted && !dashboardHidden) {
+    setDashboardMounted(true);
   }
 
   return (
-    <DashboardApp
-      backend={backend}
-      setupStatus={setupStatusClient === backend.apiClient ? setupStatus : null}
-      onOpenRuntimeSetup={onOpenRuntimeSetup}
-    />
+    <>
+      <TooltipLayer />
+      {checkingSetup ? (
+        <RuntimeSetupChecking
+          error={backend.connectionState === "error" ? backend.statusMessage : null}
+          exhausted={checkExhausted}
+          onRetry={() => {
+            if (backend.connectionState === "error") backend.reconnectBackend();
+            else retryCheck();
+          }}
+          onContinueLibraryOnly={continueLibraryOnly}
+        />
+      ) : showingSetup ? (
+        <SetupPage
+          apiClient={backend.apiClient}
+          initialStatus={setupStatus}
+          initialError={setupError}
+          onReady={onSetupReady}
+          onContinueLibraryOnly={continueLibraryOnly}
+          onReconnectBackend={backend.reconnectBackend}
+        />
+      ) : null}
+      {dashboardMounted || !dashboardHidden ? (
+        <div hidden={dashboardHidden}>
+          <DashboardApp
+            hidden={dashboardHidden}
+            backend={backend}
+            setupStatus={currentSetupStatus}
+            conversionRuntime={conversionRuntimeState(currentSetupStatus, {
+              checking: isCheckingConfiguredRuntime(currentSetupStatus),
+              checkFailed: setupError !== null,
+            })}
+            runtimeSelectionGeneration={runtimeSelectionGeneration}
+            onSettingsSetupReady={onSettingsSetupReady}
+            onContinueLibraryOnly={continueLibraryOnly}
+            runtimeNotice={backgroundSetupCheck || checkExhausted ? (
+              <p className="runtime-check-notice" role="status">
+                {checkExhausted ? "Runtime check needs more time. Conversions are unavailable until it finishes." : "Checking your local runtime… You can browse your library while conversions are unavailable."}
+                {checkExhausted ? <button type="button" className="btn btn-secondary btn-sm" onClick={retryCheck}>Retry</button> : null}
+              </p>
+            ) : null}
+          />
+        </div>
+      ) : null}
+    </>
   );
 }
 

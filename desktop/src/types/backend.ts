@@ -1,4 +1,4 @@
-export type DashboardTab = "dashboard" | "convert" | "document" | "progress" | "library" | "logs" | "settings";
+export type DashboardTab = "convert" | "library" | "settings";
 
 export type BackendConnectionState = "checking" | "connected" | "error";
 
@@ -11,7 +11,7 @@ export interface DesktopBackendEndpoint {
   base_url: string;
 }
 
-export interface DesktopBackendStatusEndpoint {
+interface DesktopBackendStatusEndpoint {
   host: string;
   port: number;
   base_url: string;
@@ -32,6 +32,7 @@ type DesktopQueryTokenScope = "events" | "audio";
 export interface DesktopQueryTokenRequest {
   scope: DesktopQueryTokenScope;
   book_id?: number;
+  expected_epoch?: string;
 }
 
 export interface DesktopQueryTokenResponse {

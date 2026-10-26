@@ -1,8 +1,29 @@
-.braille-spinner {
+.ascii-loader {
   color: var(--accent);
   display: inline-block;
+  flex: none;
+  /* Geist Mono draws the block glyphs (░▒▓█) and the dot on one cell grid;
+     mixing fonts here made the loader cells uneven. */
   font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  letter-spacing: 0;
   line-height: 1;
   text-align: center;
+  white-space: pre;
+}
+
+.ascii-loader-ring {
   width: 1ch;
+}
+
+.ascii-art {
+  color: var(--gray-7);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-variant-ligatures: none;
+  letter-spacing: 0;
+  line-height: 1.15;
+  margin: 0;
+  user-select: none;
+  white-space: pre;
 }

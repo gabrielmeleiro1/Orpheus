@@ -1,11 +1,14 @@
-import { useCallback, useEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 
-import type { ApiClient } from "../../api/client";
+import { isLibraryReplacedError, type ApiClient } from "../../api/client";
 import { PLAYBACK_SAVE_INTERVAL_SEC } from "../dashboard/dashboardHelpers";
 import type { UseLibraryResult } from "../library/useLibrary";
+import type { LibraryBookDetail } from "../../types/api";
+import { chapterPlaybackAnchor } from "./chapterPositionModel";
 import {
   playbackCheckpointBookIdentity,
   readPlaybackCheckpoint,
+  readPlaybackResumePosition,
   writePlaybackCheckpoint,
 } from "./playbackCheckpoint";
 
@@ -13,6 +16,8 @@ import {
 // resume is broken. Automatic saves fire about once a second, so this rides
 // out a brief blip without sitting quiet through a real outage.
 const PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD = 5;
+// A stalled write must release later saves and the library's restore drain.
+const PLAYBACK_SAVE_TIMEOUT_MS = 15_000;
 
 export interface PersistPlaybackOptions {
   bookId?: number | null;
@@ -29,9 +34,10 @@ interface UsePlaybackPersistenceArgs {
   loadedBookId: number | null;
   onSaveFailed: () => void;
   positionOffsetRef?: RefObject<number>;
+  loadedChapterNumberRef?: RefObject<number | null>;
 }
 
-export interface PlaybackPersistence {
+interface PlaybackPersistence {
   persistBookPlaybackPosition: (
     bookId: number,
     positionSec: number,
@@ -40,7 +46,7 @@ export interface PlaybackPersistence {
   persistLoadedBookPlaybackPosition: (options?: PersistPlaybackOptions) => Promise<number | null>;
   restorePendingResumePosition: (audio: HTMLAudioElement | null, expectedBookId?: number | null) => void;
   waitForAudioReady: (audio: HTMLAudioElement | null) => Promise<void>;
-  setPendingResume: (bookId: number, positionSec: number, bookIdentity: string) => void;
+  setPendingResume: (bookId: number, positionSec: number, bookIdentity: string, detail?: LibraryBookDetail) => void;
   clearPendingResume: () => void;
   markPlaybackSaved: (bookId: number, positionSec: number) => void;
 }
@@ -56,6 +62,7 @@ export function usePlaybackPersistence({
   loadedBookId,
   onSaveFailed,
   positionOffsetRef,
+  loadedChapterNumberRef,
 }: UsePlaybackPersistenceArgs): PlaybackPersistence {
   const pendingResumeBookIdRef = useRef<number | null>(null);
   const pendingResumePositionSecRef = useRef(0);
@@ -65,26 +72,41 @@ export function usePlaybackPersistence({
   const saveTailsRef = useRef<Map<number, Promise<number | null>>>(new Map());
   const consecutiveSaveFailuresRef = useRef<Map<number, number>>(new Map());
   const bookIdentityByIdRef = useRef<Map<number, string>>(new Map());
+  const playbackDetailByIdRef = useRef<Map<number, LibraryBookDetail>>(new Map());
+  const libraryGeneration = library.libraryGeneration ?? 0;
+  const session = library.session;
+  const playbackGenerationRef = useRef(libraryGeneration);
   const playbackClientIdentityRef = useRef(apiClient);
-  if (playbackClientIdentityRef.current !== apiClient) {
+  if (playbackClientIdentityRef.current !== apiClient || playbackGenerationRef.current !== libraryGeneration) {
+    playbackGenerationRef.current = libraryGeneration;
+    pendingResumeBookIdRef.current = null;
+    pendingResumePositionSecRef.current = 0;
     playbackClientIdentityRef.current = apiClient;
     lastSavedPlaybackRef.current.clear();
     committedPlaybackRef.current.clear();
     consecutiveSaveFailuresRef.current.clear();
     saveTailsRef.current.clear();
     bookIdentityByIdRef.current.clear();
+    playbackDetailByIdRef.current.clear();
   }
   const selectedBookIdRef = useRef(library.selectedBookId);
-  selectedBookIdRef.current = library.selectedBookId;
+  useLayoutEffect(() => {
+    selectedBookIdRef.current = library.selectedBookId;
+  });
   const loadedBookIdRef = useRef(loadedBookId);
-  loadedBookIdRef.current = loadedBookId;
+  useLayoutEffect(() => {
+    loadedBookIdRef.current = loadedBookId;
+  });
 
-  const setPendingResume = useCallback((bookId: number, positionSec: number, bookIdentity: string) => {
+  const setPendingResume = useCallback((bookId: number, positionSec: number, bookIdentity: string, detail?: LibraryBookDetail) => {
+    if (session && !session.isCurrent(libraryGeneration)) return;
     bookIdentityByIdRef.current.set(bookId, bookIdentity);
+    if (detail) playbackDetailByIdRef.current.set(bookId, detail);
     pendingResumeBookIdRef.current = bookId;
-    pendingResumePositionSecRef.current =
-      readPlaybackCheckpoint(bookId, bookIdentity) ?? positionSec;
-  }, []);
+    pendingResumePositionSecRef.current = detail
+      ? readPlaybackResumePosition(detail)
+      : readPlaybackCheckpoint(bookId, bookIdentity) ?? positionSec;
+  }, [session, libraryGeneration]);
 
   const clearPendingResume = useCallback(() => {
     pendingResumeBookIdRef.current = null;
@@ -92,6 +114,7 @@ export function usePlaybackPersistence({
   }, []);
 
   const markPlaybackSaved = useCallback((bookId: number, positionSec: number) => {
+    if (session && !session.isCurrent(libraryGeneration)) return;
     const bookIdentity = bookIdentityByIdRef.current.get(bookId);
     if (bookIdentity) {
       writePlaybackCheckpoint(bookId, positionSec, bookIdentity);
@@ -100,12 +123,12 @@ export function usePlaybackPersistence({
       positionSec,
       token: ++saveSequenceRef.current,
     });
-  }, []);
+  }, [session, libraryGeneration]);
 
   const persistBookPlaybackPosition = useCallback(
     async (bookId: number, positionSec: number, options: PersistPlaybackOptions = {}): Promise<number | null> => {
       const requestApiClient = apiClient;
-      if (playbackClientIdentityRef.current !== requestApiClient) {
+      if (playbackClientIdentityRef.current !== requestApiClient || (session && !session.isCurrent(libraryGeneration))) {
         return null;
       }
 
@@ -114,18 +137,22 @@ export function usePlaybackPersistence({
         bookIdentity = playbackCheckpointBookIdentity(library.selectedBookDetail);
         bookIdentityByIdRef.current.set(bookId, bookIdentity);
       }
+      const detail = playbackDetailByIdRef.current.get(bookId)
+        ?? (library.selectedBookDetail?.id === bookId ? library.selectedBookDetail : null);
       const checkpointPosition = Math.max(0, Number(positionSec) || 0);
       if (bookIdentity) {
-        writePlaybackCheckpoint(bookId, checkpointPosition, bookIdentity);
+        const anchor = detail?.playback_status === "chapter_audio"
+          ? chapterPlaybackAnchor(detail.chapters, checkpointPosition,
+            loadedBookIdRef.current === bookId ? loadedChapterNumberRef?.current : null)
+          : null;
+        writePlaybackCheckpoint(bookId, checkpointPosition, bookIdentity, undefined, anchor);
       }
       if (!requestApiClient || !bookId) {
         return null;
       }
 
-      // Client identity is the whole fence: the ref only ever changes together
-      // with the client it tracks, so a live save owns its client exactly while
-      // the mounted hook still points at it.
-      const ownsCurrentClient = () => playbackClientIdentityRef.current === requestApiClient;
+      const ownsCurrentClient = () => playbackClientIdentityRef.current === requestApiClient
+        && (!session || session.isCurrent(libraryGeneration));
       const normalizedPosition = Math.round(checkpointPosition * 10) / 10;
       const force = Boolean(options.force);
       const previousMarker = lastSavedPlaybackRef.current.get(bookId) ?? null;
@@ -141,12 +168,15 @@ export function usePlaybackPersistence({
       const token = ++saveSequenceRef.current;
       lastSavedPlaybackRef.current.set(bookId, { positionSec: normalizedPosition, token });
       const previousTail = saveTailsRef.current.get(bookId) ?? Promise.resolve(null);
-      const operation = previousTail.catch(() => null).then(async () => {
+      const operation = () => previousTail.catch(() => null).then(async () => {
         if (!ownsCurrentClient()) {
           return null;
         }
         try {
-          const response = await requestApiClient.updateBookPlaybackPosition(bookId, normalizedPosition);
+          const response = await requestApiClient.updateBookPlaybackPosition(bookId, normalizedPosition, {
+            expectedEpoch: detail?.library_epoch,
+            timeoutMs: PLAYBACK_SAVE_TIMEOUT_MS,
+          });
           if (!ownsCurrentClient()) {
             return null;
           }
@@ -162,8 +192,12 @@ export function usePlaybackPersistence({
           }
           consecutiveSaveFailuresRef.current.delete(bookId);
           return resolved;
-        } catch {
+        } catch (error) {
           if (!ownsCurrentClient()) {
+            return null;
+          }
+          if (isLibraryReplacedError(error)) {
+            await library.reloadLibrarySession?.();
             return null;
           }
           const currentMarker = lastSavedPlaybackRef.current.get(bookId);
@@ -177,8 +211,8 @@ export function usePlaybackPersistence({
           }
           const failureCount = (consecutiveSaveFailuresRef.current.get(bookId) ?? 0) + 1;
           consecutiveSaveFailuresRef.current.set(bookId, failureCount);
-          const ownsCurrentPlayback =
-            selectedBookIdRef.current === bookId && loadedBookIdRef.current === bookId;
+          // The playing book reports its failures even while another book is viewed.
+          const ownsCurrentPlayback = loadedBookIdRef.current === bookId;
           if (
             ownsCurrentPlayback &&
             (!options.silent || failureCount >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD)
@@ -189,7 +223,8 @@ export function usePlaybackPersistence({
         }
       });
       let trackedTail!: Promise<number | null>;
-      trackedTail = operation.finally(() => {
+      const pending = session ? session.runMutation(libraryGeneration, operation) : operation();
+      trackedTail = pending.finally(() => {
         if (saveTailsRef.current.get(bookId) === trackedTail) {
           saveTailsRef.current.delete(bookId);
         }
@@ -197,7 +232,7 @@ export function usePlaybackPersistence({
       saveTailsRef.current.set(bookId, trackedTail);
       return trackedTail;
     },
-    [apiClient, library, onSaveFailed],
+    [apiClient, library, libraryGeneration, session, loadedChapterNumberRef, onSaveFailed],
   );
 
   const persistLoadedBookPlaybackPosition = useCallback(
@@ -266,6 +301,7 @@ export function usePlaybackPersistence({
 
   const restorePendingResumePosition = useCallback(
     (audio: HTMLAudioElement | null, expectedBookId?: number | null) => {
+      if (session && !session.isCurrent(libraryGeneration)) return;
       const resolvedBookId = expectedBookId ?? loadedBookId;
       if (!audio || pendingResumeBookIdRef.current !== resolvedBookId) {
         return;
@@ -286,7 +322,7 @@ export function usePlaybackPersistence({
       pendingResumeBookIdRef.current = null;
       pendingResumePositionSecRef.current = 0;
     },
-    [loadedBookId, positionOffsetRef],
+    [loadedBookId, positionOffsetRef, session, libraryGeneration],
   );
 
   useEffect(() => {

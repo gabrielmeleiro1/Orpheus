@@ -1,12 +1,17 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 
-import "@fontsource/jetbrains-mono/400.css";
-import "@fontsource/jetbrains-mono/700.css";
+import "@fontsource-variable/geist";
+import "@fontsource-variable/geist-mono";
 import "./styles.css";
 import App from "./App";
 
-ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
+const container = document.getElementById("root");
+if (!container) {
+  throw new Error("index.html is missing the #root mount point");
+}
+
+ReactDOM.createRoot(container).render(
   <React.StrictMode>
     <App />
   </React.StrictMode>,

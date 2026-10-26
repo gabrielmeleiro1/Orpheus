@@ -5,12 +5,16 @@ import type {
   ConversionJobTerminalEvent,
   DesktopEventPayload,
 } from "../../types/api";
+import { normalizeString } from "./eventPayloadNormalizer";
 import {
   pollTerminalState as pollTerminalStateFromClient,
   TERMINAL_MISSING_POLL_THRESHOLD,
 } from "./terminalStateWaiterModel";
 
 const TERMINAL_POLL_MS = 1500;
+// Late waiters only ask about recent jobs; older outcomes can be evicted so a
+// long session does not retain every job it ever observed.
+const TERMINAL_EVENT_CACHE_LIMIT = 32;
 
 interface UseTerminalStateWaitersArgs {
   apiClient: ApiClient | null;
@@ -21,10 +25,6 @@ interface TerminalWaiter {
   finish: (event: ConversionJobTerminalEvent) => void;
 }
 
-function normalizeString(value: unknown): string {
-  return typeof value === "string" ? value.trim() : "";
-}
-
 export function useTerminalStateWaiters({
   apiClient,
   onTerminalStatus,
@@ -33,7 +33,13 @@ export function useTerminalStateWaiters({
   const terminalWaitersRef = useRef<Map<string, TerminalWaiter[]>>(new Map());
 
   const resolveTerminalState = useCallback((event: ConversionJobTerminalEvent) => {
-    terminalEventsRef.current.set(event.jobId, event);
+    const terminalEvents = terminalEventsRef.current;
+    terminalEvents.delete(event.jobId);
+    terminalEvents.set(event.jobId, event);
+    for (const jobId of terminalEvents.keys()) {
+      if (terminalEvents.size <= TERMINAL_EVENT_CACHE_LIMIT) break;
+      terminalEvents.delete(jobId);
+    }
     const waiters = terminalWaitersRef.current.get(event.jobId) ?? [];
     terminalWaitersRef.current.delete(event.jobId);
     for (const waiter of waiters) {
@@ -48,12 +54,12 @@ export function useTerminalStateWaiters({
         return Promise.resolve({
           jobId: "",
           status: "unknown",
-          message: "missing job id",
+          message: "Missing job id",
         });
       }
 
       if (!apiClient) {
-        return Promise.resolve({ jobId: normalizedJobId, status: "unknown", message: "backend is not connected" });
+        return Promise.resolve({ jobId: normalizedJobId, status: "unknown", message: "Backend is not connected" });
       }
 
       const cached = terminalEventsRef.current.get(normalizedJobId);
@@ -64,6 +70,7 @@ export function useTerminalStateWaiters({
       return new Promise((resolve) => {
         let settled = false;
         let pollId: number | undefined;
+        const controller = new AbortController();
 
         const removeWaiter = (waiter: TerminalWaiter) => {
           const waiters = terminalWaitersRef.current.get(normalizedJobId) ?? [];
@@ -76,6 +83,7 @@ export function useTerminalStateWaiters({
         };
 
         const cleanup = () => {
+          controller.abort();
           if (pollId !== undefined) {
             window.clearInterval(pollId);
           }
@@ -106,6 +114,7 @@ export function useTerminalStateWaiters({
             const result = await pollTerminalStateFromClient({
               apiClient,
               jobId: normalizedJobId,
+              signal: controller.signal,
               missingPollCount,
               errorPollCount,
               missingPollThreshold: TERMINAL_MISSING_POLL_THRESHOLD,
@@ -160,7 +169,7 @@ export function useTerminalStateWaiters({
           waiter.finish({
             jobId,
             status: "unknown",
-            message: "terminal wait cancelled",
+            message: "Terminal wait cancelled",
           });
         }
       }

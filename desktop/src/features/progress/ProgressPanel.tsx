@@ -1,7 +1,13 @@
+import { Fragment } from "react";
+
 import type { ConversionJobStatus, PerformanceSnapshot, ProgressStageView } from "../../types/api";
+import { AsciiArt } from "../../ui/ascii/AsciiArt";
+import { AsciiLoader } from "../../ui/ascii/AsciiLoader";
 import { ProgressBar } from "../../ui/ProgressBar";
 import { Icon } from "../../ui/icons";
-import { buildProgressTerminalPresentation } from "./progressTerminalPresentation";
+import { StopConversionConfirm, useStopConfirm } from "../../ui/StopConversionConfirm";
+import { chapterStageLabel } from "../events/progressStageModel";
+import { buildProgressTerminalPresentation, formatStageDisplayName } from "./progressTerminalPresentation";
 import "./progress.css";
 
 interface ProgressPanelProps {
@@ -15,8 +21,10 @@ interface ProgressPanelProps {
   performance: PerformanceSnapshot | null;
   activeJobId: string | null;
   isCancelling: boolean;
+  cancellationError?: string;
+  /** Why fewer chapters run at once than were requested, when that is the case. */
+  parallelNote?: string;
   onCancel: () => Promise<void>;
-  onStartConvert?: () => void;
 }
 
 function hasJobToShow(uiState: ConversionJobStatus): boolean {
@@ -27,16 +35,6 @@ function hasJobToShow(uiState: ConversionJobStatus): boolean {
     uiState === "cancelled"
   );
 }
-
-const PLACEHOLDER_VALUES = new Set([
-  "",
-  "—",
-  "Not available",
-  "Not recorded",
-  "Not reported yet",
-  "Elapsed not recorded",
-  "Measuring…",
-]);
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -56,18 +54,24 @@ function stageStatus(stage: ProgressStageView): string {
   return "Queued";
 }
 
-function StageMarker({ state }: { state: ProgressStageView["state"] }) {
+/** "ETA ~12s" from the stream reads as "~12s left", matching the queue row. */
+function remainingLabel(etaText: string): string {
+  const eta = etaText.replace(/^eta\s*/i, "").trim();
+  return eta ? `${eta} left` : "";
+}
+
+function StageMarker({ state, busy }: { state: ProgressStageView["state"]; busy: boolean }) {
   if (state === "done") {
     return (
       <span className="stage-node is-done" aria-hidden="true">
-        <Icon name="check" size={14} />
+        <Icon name="check" />
       </span>
     );
   }
   if (state === "active") {
     return (
       <span className="stage-node is-active" aria-hidden="true">
-        <span className="stage-spinner" />
+        <AsciiLoader active={busy} variant="ring" className={`stage-spinner${busy ? " is-busy" : ""}`} />
       </span>
     );
   }
@@ -89,37 +93,30 @@ export function ProgressPanel({
   performance,
   activeJobId,
   isCancelling,
+  cancellationError,
+  parallelNote,
   onCancel,
-  onStartConvert,
 }: ProgressPanelProps) {
+  const running = uiState === "running";
+  const stopConfirm = useStopConfirm(running && !isCancelling ? activeJobId : null);
   if (!hasJobToShow(uiState)) {
+    const unknown = uiState === "unknown";
     return (
-      <div className="panel-section progress-empty card">
+      <div className="panel-section progress-empty">
         <div className="empty-state">
-          <span className="empty-state-icon" aria-hidden="true">
-            <Icon name="progress" />
+          <AsciiArt name="idle" className="progress-empty-art" />
+          <span className="empty-state-title">{unknown ? "Conversion status unavailable" : "No conversion running"}</span>
+          <span className="empty-state-hint" role={unknown ? "status" : undefined}>
+            {unknown ? statusText || "Waiting to reconnect and check the current conversion."
+              : "Start a conversion from Create and its progress will appear here."}
           </span>
-          <span className="empty-state-title">No conversion running</span>
-          <span className="empty-state-hint">
-            Start a conversion from the Convert tab and its progress will appear here.
-          </span>
-          {onStartConvert ? (
-            <button className="btn btn-primary" type="button" onClick={onStartConvert}>
-              Convert a source
-            </button>
-          ) : null}
         </div>
       </div>
     );
   }
 
   const boundedProgress = clampPercent(progressPct);
-  const activeStage = stages.find((stage) => stage.state === "active") ?? null;
-  const canCancel = uiState === "running" && Boolean(activeJobId) && !isCancelling;
-  const stageDetails = activeStage?.detail ?? [];
-  const activeTitles = performance?.active_chapter_titles ?? [];
-  const running = uiState === "running";
-  const heroClass = `panel-section progress-hero card is-${uiState}`;
+  const canCancel = running && Boolean(activeJobId) && !isCancelling;
   const presentation = buildProgressTerminalPresentation({
     uiState,
     stages,
@@ -128,22 +125,10 @@ export function ProgressPanel({
     performance,
     progressPct,
   });
-  const workersTip = presentation.showLiveWorkers
-    ? `Chapters synthesized concurrently. Requested ${performance?.requested_parallel_chapters ?? "—"}, effective ${performance?.effective_parallel_chapters ?? "—"} after warm-up and memory limits.`
-    : "Worker pool from the finished job.";
-  const live = presentation.showLiveWorkers;
-  // Finished jobs may have no performance data; omit their placeholder tiles.
-  const hasValue = (value: string) => !PLACEHOLDER_VALUES.has(value.trim());
-  const showStatusLine = uiState !== "completed";
-  const terminalTiles = live
-    ? []
-    : [
-        hasValue(presentation.workerSummary),
-        hasValue(presentation.throughputSummary),
-        hasValue(presentation.chaptersSummary),
-        hasValue(presentation.modeSummary),
-      ];
-  const showTerminalPerformance = !live && terminalTiles.some(Boolean);
+  const stageTitle = formatStageDisplayName(presentation.operationTitle);
+  const title = running ? chapterStageLabel(stages, stageTitle) : stageTitle;
+  const remaining = running ? remainingLabel(etaText) : "";
+  const showStatusLine = uiState !== "completed" && Boolean(statusText);
   const barTone = uiState === "cancelled" || uiState === "failed"
     ? "danger"
     : running
@@ -151,191 +136,130 @@ export function ProgressPanel({
       : "done";
 
   return (
-    <>
-      <div className={heroClass}>
-        <div className="progress-hero-top">
-          <div className="progress-hero-copy">
-            <span className="card-eyebrow">Current operation</span>
-            <h2 className="progress-title">{presentation.operationTitle}</h2>
-          </div>
-          {running && activeJobId ? (
+    <div className="progress-panel">
+      <div className={`panel-section progress-hero is-${uiState}`}>
+        <div className="progress-headline">
+          {running ? <AsciiLoader active variant="ring" className="progress-hero-loader" /> : null}
+          <h2 className="card-title progress-title">{title}</h2>
+          {uiState !== "completed" ? (
+            <span id="progress-pct" className="progress-pct-value tabular-nums">{`${boundedProgress}% overall`}</span>
+          ) : null}
+          {running && activeJobId && !stopConfirm.armed ? (
             <button
               id="progress-cancel-btn"
-              className="btn btn-danger"
+              ref={stopConfirm.triggerRef}
+              className="btn btn-ghost btn-sm btn-flush-end btn-quiet-danger progress-cancel-btn"
               type="button"
               disabled={!canCancel}
-              data-tip="Stop the running conversion. Finished chapters are kept."
+              data-tip="Finished chapters are kept"
               data-tip-pos="left"
-              onClick={() => {
-                void onCancel();
-              }}
+              onClick={stopConfirm.arm}
             >
               <Icon name="stop" />
               {isCancelling ? "Cancelling…" : "Cancel"}
             </button>
           ) : null}
         </div>
-
-        <div className="progress-overall-block">
-          <div className="progress-overall-meta tabular-nums">
-            <span id="progress-pct" className="progress-pct-value">{`${boundedProgress}%`}</span>
-            {running && etaText ? (
-              <span
-                id="eta-text"
-                className="progress-eta"
-                data-tip="Estimated time remaining, from current throughput"
-              >
-                {etaText}
-              </span>
-            ) : (
-              <span className="progress-eta is-muted">{uiState === "completed" ? "Complete" : stateLabel(uiState)}</span>
-            )}
-          </div>
-          <div id="progress-overall-bar" className="progress-overall">
-            <ProgressBar
-              pct={boundedProgress}
-              tone={barTone}
-              size="lg"
-              label="Overall conversion progress"
-            />
-          </div>
-          {showStatusLine ? (
-            <span id="status-text" className="progress-status-text" role="status" aria-live="polite">
-              {statusText || uiState}
-            </span>
-          ) : null}
+        {running && stopConfirm.armed ? (
+          <StopConversionConfirm
+            id="progress-cancel-confirm"
+            className="progress-stop-confirm"
+            onKeep={stopConfirm.keep}
+            onStop={() => {
+              stopConfirm.confirmed();
+              void onCancel();
+            }}
+          />
+        ) : null}
+        <div id="progress-overall-bar" className="progress-overall">
+          <ProgressBar
+            pct={boundedProgress}
+            tone={barTone}
+            size="lg"
+            variant="ascii"
+            cells="fit"
+            label="Overall conversion progress"
+          />
         </div>
+        {showStatusLine || remaining ? (
+          <div className="progress-subline">
+            {showStatusLine ? (
+              <span id="status-text" className="progress-status-text" role="status" aria-live="polite">
+                {statusText}
+              </span>
+            ) : <span />}
+            {remaining ? (
+              <span id="eta-text" className="progress-eta tabular-nums" data-tip="Estimated from the current speed" data-tip-pos="left">
+                {remaining}
+              </span>
+            ) : null}
+          </div>
+        ) : null}
+        {running && parallelNote ? <p id="parallel-limit-note" className="field-hint">{parallelNote}</p> : null}
+        {running && cancellationError ? <p role="alert" className="field-hint is-error">{cancellationError}</p> : null}
       </div>
 
-      {presentation.showLiveActiveTask && stageDetails.length > 0 ? (
-        <div className="panel-section subtask-section card" aria-label="Active stage detail">
-          <div className="card-header">
-            <h3 className="card-title">Active stage</h3>
+      <div className="progress-summary">
+        <div id="stage-list" className="panel-section stage-flow" aria-label="Pipeline stages">
+          <h3 className="eyebrow">Stages</h3>
+          <div className="stage-grid">
+            {stages.map((stage) => {
+              const details = presentation.showLiveActiveTask && stage.state === "active" ? stage.detail : [];
+              return (
+                <Fragment key={stage.name}>
+                  <div className={`stage-row${stage.state === "active" ? " stage-active" : ""}${stage.state === "done" ? " stage-done" : ""}`}>
+                    <StageMarker state={stage.state} busy={running} />
+                    <span className="stage-name">{formatStageDisplayName(stage.name)}</span>
+                    <ProgressBar
+                      pct={stage.pct}
+                      tone={running && stage.state === "active" ? "active" : stage.state === "done" ? "done" : "neutral"}
+                      size="hairline"
+                      variant="ascii"
+                      cells="fit"
+                      label={`${stageLabel(stage.name)} progress`}
+                    />
+                    <span className="stage-status tabular-nums">{stageStatus(stage)}</span>
+                  </div>
+                  {details.length > 0 ? (
+                    <div className="subtask-section" aria-label="Active stage detail">
+                      {details.map((detail) => (
+                        <div className="subtask-row" key={`${detail.label}-${detail.value}`}>
+                          <span aria-hidden="true" />
+                          <span className="subtask-label">{formatStageDisplayName(detail.label)}</span>
+                          <ProgressBar pct={detail.pct} tone={running ? "active" : "neutral"} size="hairline" variant="ascii" cells="fit" label={`${detail.label} progress`} />
+                          <span className="subtask-value tabular-nums">{detail.value.charAt(0).toUpperCase() + detail.value.slice(1)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </Fragment>
+              );
+            })}
           </div>
-          {stageDetails.map((detail) => (
-            <div className="subtask-row" key={`${detail.label}-${detail.value}`}>
-              <span className="subtask-label">{detail.label}</span>
-              <ProgressBar pct={detail.pct} tone={running ? "active" : "neutral"} size="hairline" label={`${detail.label} progress`} />
-              <span className="subtask-value tabular-nums">{detail.value}</span>
-            </div>
-          ))}
         </div>
-      ) : null}
 
-      <div id="stage-list" className="panel-section stage-flow card" aria-label="Pipeline stages">
-        <div className="card-header">
-          <h3 className="card-title">Stages</h3>
-        </div>
-        {stages.map((stage) => (
-          <div
-            key={stage.name}
-            className={`stage-row${stage.state === "active" ? " stage-active" : ""}${stage.state === "done" ? " stage-done" : ""}`}
-          >
-            <StageMarker state={stage.state} />
-            <span className="stage-name">{stageLabel(stage.name)}</span>
-            <ProgressBar
-              pct={stage.pct}
-              tone={running && stage.state === "active" ? "active" : stage.state === "done" ? "done" : "neutral"}
-              size="hairline"
-              label={`${stageLabel(stage.name)} progress`}
-            />
-            <span className="stage-status tabular-nums">{stageStatus(stage)}</span>
-          </div>
-        ))}
+        <details className="panel-section performance-section disclosure" aria-label="Performance snapshot">
+          <summary>
+            <span className="eyebrow">Performance</span>
+            {presentation.elapsed ? <span className="performance-summary-meta tabular-nums">{presentation.elapsed}</span> : null}
+          </summary>
+          {presentation.metrics.length > 0 ? (
+            <dl className="performance-grid">
+              {presentation.metrics.map((metric) => (
+                <div className="performance-item" key={metric.label} {...(metric.tip ? { "data-tip": metric.tip, "data-tip-pos": "top" } : {})}>
+                  <dt className="performance-label">{metric.label}</dt>
+                  <dd className="performance-value">
+                    <strong className="tabular-nums">{metric.value}</strong>
+                    {metric.note ? <span className="performance-note">{metric.note}</span> : null}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          ) : (
+            <p className="performance-empty">No measurements yet</p>
+          )}
+        </details>
       </div>
-
-      {live ? (
-        <div className="panel-section performance-section card" aria-label="Performance snapshot">
-          <div className="card-header">
-            <h3 className="card-title">Performance</h3>
-          </div>
-          <div className="performance-grid">
-            <div className="performance-item" data-tip={workersTip} data-tip-pos="top">
-              <span className="performance-label">Workers</span>
-              <strong>{presentation.workerSummary}</strong>
-              <span>{presentation.queueSummary}</span>
-            </div>
-            <div
-              className="performance-item"
-              data-tip="Processing rates per stage: text cleaning, speech synthesis, audio encoding"
-              data-tip-pos="top"
-            >
-              <span className="performance-label">Throughput</span>
-              <strong>{presentation.throughputSummary}</strong>
-              <span>{presentation.elapsedSummary}</span>
-            </div>
-            <div className="performance-item">
-              <span className="performance-label">Active chapters</span>
-              <strong>{activeTitles.length > 0 ? activeTitles.slice(0, 3).join(", ") : "None"}</strong>
-              <span>{presentation.chaptersSummary}</span>
-            </div>
-            <div
-              className="performance-item"
-              data-tip="Worker scheduling and pipeline mode in effect for this job"
-              data-tip-pos="top"
-            >
-              <span className="performance-label">Mode</span>
-              <strong>{presentation.modeSummary}</strong>
-              <span>
-                {performance?.fallback_reason
-                  ? `Fallback: ${performance.fallback_reason}`
-                  : presentation.activeTaskSummary}
-              </span>
-            </div>
-          </div>
-        </div>
-      ) : showTerminalPerformance ? (
-        <div className="panel-section performance-section card" aria-label="Performance snapshot">
-          <div className="card-header">
-            <h3 className="card-title">Performance</h3>
-          </div>
-          <div className="performance-grid">
-            {hasValue(presentation.workerSummary) ? (
-              <div className="performance-item" data-tip={workersTip} data-tip-pos="top">
-                <span className="performance-label">Workers</span>
-                <strong>{presentation.workerSummary}</strong>
-              </div>
-            ) : null}
-            {hasValue(presentation.throughputSummary) ? (
-              <div
-                className="performance-item"
-                data-tip="Processing rates per stage: text cleaning, speech synthesis, audio encoding"
-                data-tip-pos="top"
-              >
-                <span className="performance-label">Throughput</span>
-                <strong>{presentation.throughputSummary}</strong>
-                {hasValue(presentation.elapsedSummary) ? <span>{presentation.elapsedSummary}</span> : null}
-              </div>
-            ) : null}
-            {hasValue(presentation.chaptersSummary) ? (
-              <div className="performance-item">
-                <span className="performance-label">Chapters</span>
-                <strong>{presentation.chaptersSummary}</strong>
-              </div>
-            ) : null}
-            {hasValue(presentation.modeSummary) ? (
-              <div
-                className="performance-item"
-                data-tip="Worker scheduling and pipeline mode in effect for this job"
-                data-tip-pos="top"
-              >
-                <span className="performance-label">Mode</span>
-                <strong>{presentation.modeSummary}</strong>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
-    </>
+    </div>
   );
-}
-
-function stateLabel(uiState: ConversionJobStatus): string {
-  switch (uiState) {
-    case "completed": return "Complete";
-    case "failed": return "Failed";
-    case "cancelled": return "Cancelled";
-    case "running": return "Running";
-    default: return "Idle";
-  }
 }

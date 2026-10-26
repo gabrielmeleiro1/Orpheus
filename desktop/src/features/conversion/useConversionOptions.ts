@@ -1,77 +1,51 @@
 import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
-import type { CleanerBackendOption, ParallelWorkerRecommendation, TermSelectOption } from "../../types/api";
 
 import { cleanerBackendUsesCudaFields } from "./cleanerBackendHelpers";
 import { readPersistedSettings, savePersistedSettings } from "./conversionOptionsShared";
-import { useCleanerOptions } from "./useCleanerOptions";
-import { useParallelWorkers } from "./useParallelWorkers";
-import { useTtsOptions } from "./useTtsOptions";
+import { useCleanerOptions, type UseCleanerOptionsResult } from "./useCleanerOptions";
+import { useParallelWorkers, type UseParallelWorkersResult } from "./useParallelWorkers";
+import { useTtsOptions, type UseTtsOptionsResult } from "./useTtsOptions";
 
 interface UseConversionOptionsArgs {
   apiClient: ApiClient | null;
   conversionMode: string;
+  runtimeSelectionGeneration?: number;
 }
 
-export interface UseConversionOptionsResult {
-  loading: boolean;
-  error: string;
-  selectedEngine: string;
-  setSelectedEngine: (value: string) => void;
-  selectedVoice: string;
-  setSelectedVoice: (value: string) => void;
-  engineOptions: TermSelectOption[];
-  filteredVoiceOptions: TermSelectOption[];
-  voiceFilter: string;
-  setVoiceFilter: (value: string) => void;
-  speedInput: string;
-  speed: number;
-  setSpeed: (value: string) => void;
-  selectedQuantization: string;
-  setSelectedQuantization: (value: string) => void;
-  quantizationOptions: TermSelectOption[];
-  cleanerBackend: string;
-  setCleanerBackend: (value: string) => void;
-  cleanerBackendOptions: TermSelectOption[];
-  cleanerBackendConfigured: boolean;
-  selectedCleanerBackend: CleanerBackendOption | null;
-  cleanerModel: string;
-  setCleanerModel: (value: string) => void;
-  cleanerModelOptions: TermSelectOption[];
-  cleanerCudaDevice: string;
-  setCleanerCudaDevice: (value: string) => void;
-  cleanerCudaQuantization: string;
-  setCleanerCudaQuantization: (value: string) => void;
-  cleanerApiKey: string;
-  setCleanerApiKey: (value: string) => void;
-  fetchOpenAiModelIds: () => Promise<void>;
-  openAiModelFetchStatus: string;
-  openAiModelFetchLoading: boolean;
-  openAiModelFetchError: boolean;
-  cleanerRuntimeStatus: string;
-  cleanerRuntimeError: boolean;
-  parallelManualMax: string;
-  setParallelManualMax: (value: string) => void;
-  manualParallelWorkerUpperBound: number;
-  selectedParallelWorkerLimit: number;
-  parallelRecommendation: ParallelWorkerRecommendation | null;
-  parallelWorkerStatus: string;
-  parallelWorkerError: boolean;
-}
+export interface UseConversionOptionsResult
+  extends Omit<UseTtsOptionsResult, "modelOptions" | "systemCapabilities">,
+    Omit<UseCleanerOptionsResult, "cleanerOptionsHydrated">,
+    UseParallelWorkersResult {}
 
-export function useConversionOptions({ apiClient, conversionMode }: UseConversionOptionsArgs): UseConversionOptionsResult {
+export function useConversionOptions({
+  apiClient,
+  conversionMode,
+  runtimeSelectionGeneration = 0,
+}: UseConversionOptionsArgs): UseConversionOptionsResult {
   const persistedSettingsRef = useRef(readPersistedSettings());
   const settingsHydratedRef = useRef(false);
   const [conversionModeError, setConversionModeError] = useState("");
 
-  const ttsOptions = useTtsOptions({ apiClient, persistedSettingsRef, settingsHydratedRef });
+  useEffect(() => {
+    settingsHydratedRef.current = false;
+    persistedSettingsRef.current = readPersistedSettings();
+  }, [runtimeSelectionGeneration]);
+
+  const ttsOptions = useTtsOptions({
+    apiClient,
+    persistedSettingsRef,
+    settingsHydratedRef,
+    runtimeSelectionGeneration,
+  });
 
   const cleanerOptions = useCleanerOptions({
     apiClient,
     modelOptions: ttsOptions.modelOptions,
     systemCapabilities: ttsOptions.systemCapabilities,
     persistedSettingsRef,
+    runtimeSelectionGeneration,
   });
 
   const parallelWorkers = useParallelWorkers({
@@ -81,7 +55,7 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
   });
 
   useEffect(() => {
-    if (!settingsHydratedRef.current || !cleanerOptions.cleanerOptionsHydrated) {
+    if (ttsOptions.loading || !settingsHydratedRef.current || !cleanerOptions.cleanerOptionsHydrated) {
       return;
     }
 
@@ -148,6 +122,8 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
     ttsOptions.selectedQuantization,
     ttsOptions.selectedVoice,
     ttsOptions.speed,
+    ttsOptions.loading,
+    runtimeSelectionGeneration,
   ]);
 
   useEffect(() => {
@@ -158,51 +134,13 @@ export function useConversionOptions({ apiClient, conversionMode }: UseConversio
     }
   }, [conversionMode]);
 
-  const error = conversionModeError || ttsOptions.error;
+  const { modelOptions: _modelOptions, systemCapabilities: _systemCapabilities, ...ttsResult } = ttsOptions;
+  const { cleanerOptionsHydrated: _cleanerOptionsHydrated, ...cleanerResult } = cleanerOptions;
 
   return {
-    loading: ttsOptions.loading,
-    error,
-    selectedEngine: ttsOptions.selectedEngine,
-    setSelectedEngine: ttsOptions.setSelectedEngine,
-    selectedVoice: ttsOptions.selectedVoice,
-    setSelectedVoice: ttsOptions.setSelectedVoice,
-    engineOptions: ttsOptions.engineOptions,
-    filteredVoiceOptions: ttsOptions.filteredVoiceOptions,
-    voiceFilter: ttsOptions.voiceFilter,
-    setVoiceFilter: ttsOptions.setVoiceFilter,
-    speedInput: ttsOptions.speedInput,
-    speed: ttsOptions.speed,
-    setSpeed: ttsOptions.setSpeed,
-    selectedQuantization: ttsOptions.selectedQuantization,
-    setSelectedQuantization: ttsOptions.setSelectedQuantization,
-    quantizationOptions: ttsOptions.quantizationOptions,
-    cleanerBackend: cleanerOptions.cleanerBackend,
-    setCleanerBackend: cleanerOptions.setCleanerBackend,
-    cleanerBackendOptions: cleanerOptions.cleanerBackendOptions,
-    cleanerBackendConfigured: cleanerOptions.cleanerBackendConfigured,
-    selectedCleanerBackend: cleanerOptions.selectedCleanerBackend,
-    cleanerModel: cleanerOptions.cleanerModel,
-    setCleanerModel: cleanerOptions.setCleanerModel,
-    cleanerModelOptions: cleanerOptions.cleanerModelOptions,
-    cleanerCudaDevice: cleanerOptions.cleanerCudaDevice,
-    setCleanerCudaDevice: cleanerOptions.setCleanerCudaDevice,
-    cleanerCudaQuantization: cleanerOptions.cleanerCudaQuantization,
-    setCleanerCudaQuantization: cleanerOptions.setCleanerCudaQuantization,
-    cleanerApiKey: cleanerOptions.cleanerApiKey,
-    setCleanerApiKey: cleanerOptions.setCleanerApiKey,
-    fetchOpenAiModelIds: cleanerOptions.fetchOpenAiModelIds,
-    openAiModelFetchStatus: cleanerOptions.openAiModelFetchStatus,
-    openAiModelFetchLoading: cleanerOptions.openAiModelFetchLoading,
-    openAiModelFetchError: cleanerOptions.openAiModelFetchError,
-    cleanerRuntimeStatus: cleanerOptions.cleanerRuntimeStatus,
-    cleanerRuntimeError: cleanerOptions.cleanerRuntimeError,
-    parallelManualMax: parallelWorkers.parallelManualMax,
-    setParallelManualMax: parallelWorkers.setParallelManualMax,
-    manualParallelWorkerUpperBound: parallelWorkers.manualParallelWorkerUpperBound,
-    selectedParallelWorkerLimit: parallelWorkers.selectedParallelWorkerLimit,
-    parallelRecommendation: parallelWorkers.parallelRecommendation,
-    parallelWorkerStatus: parallelWorkers.parallelWorkerStatus,
-    parallelWorkerError: parallelWorkers.parallelWorkerError,
+    ...ttsResult,
+    error: conversionModeError || ttsOptions.error,
+    ...cleanerResult,
+    ...parallelWorkers,
   };
 }

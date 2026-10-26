@@ -1,4 +1,4 @@
-import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { useEffect, useLayoutEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
@@ -48,9 +48,28 @@ export function useSetupModelDownload({
   lastAttempt,
 }: UseSetupModelDownloadArgs): void {
   const latest = useRef({ selection, onReady, onModelDownloadReady, onDownloadingModel });
-  latest.current = { selection, onReady, onModelDownloadReady, onDownloadingModel };
+  useLayoutEffect(() => {
+    latest.current = { selection, onReady, onModelDownloadReady, onDownloadingModel };
+  });
   const configureRuntime = useRef(true);
   const completedPlan = useRef<SetupSelection | null>(null);
+  // Download state belongs to one backend. In particular, an adoption left in
+  // flight must never submit its old plan to a replacement backend.
+  const downloadClient = useRef(apiClient);
+  const ownsDownloadContext = downloadClient.current === apiClient;
+  useEffect(() => {
+    if (downloadClient.current === apiClient) return;
+    downloadClient.current = apiClient;
+    completedPlan.current = null;
+    configureRuntime.current = true;
+    if (downloadPhase !== "idle") {
+      startLocked.current = false;
+      setDownloadPhase("idle");
+      setBusy(false);
+      setProgress(EMPTY_PROGRESS);
+      latest.current.onDownloadingModel?.(null);
+    }
+  }, [apiClient]);
   // A download that survived a page remount (Settings re-entry, reload) must
   // resume driving the progress UI instead of allowing a second start.
   useEffect(() => {
@@ -78,7 +97,7 @@ export function useSetupModelDownload({
   }, [apiClient, environment]);
 
   useEffect(() => {
-    if ((downloadPhase !== "downloading" && downloadPhase !== "stopping") || !apiClient) {
+    if (!ownsDownloadContext || (downloadPhase !== "downloading" && downloadPhase !== "stopping") || !apiClient) {
       return undefined;
     }
     let active = true;
@@ -146,10 +165,10 @@ export function useSetupModelDownload({
       active = false;
       clearTimeout(timer);
     };
-  }, [apiClient, downloadPhase]);
+  }, [apiClient, downloadPhase, ownsDownloadContext]);
 
   useEffect(() => {
-    if (downloadPhase !== "adopting" || !apiClient) {
+    if (!ownsDownloadContext || downloadPhase !== "adopting" || !apiClient) {
       return undefined;
     }
     let active = true;
@@ -207,5 +226,5 @@ export function useSetupModelDownload({
     return () => {
       active = false;
     };
-  }, [apiClient, downloadPhase]);
+  }, [apiClient, downloadPhase, ownsDownloadContext]);
 }

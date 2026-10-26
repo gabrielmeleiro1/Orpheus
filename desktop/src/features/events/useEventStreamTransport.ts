@@ -9,6 +9,10 @@ import {
   type CachedQueryToken,
 } from "./transportBackoff";
 
+// Token minting uses local state and should finish quickly; a timeout
+// returns control to the normal connection backoff.
+const EVENT_TOKEN_REQUEST_TIMEOUT_MS = 8_000;
+
 interface UseEventStreamTransportArgs {
   apiClient: ApiClient | null;
   baseUrl: string;
@@ -80,7 +84,7 @@ export function useEventStreamTransport({
       if (apiClient.usesDesktopAuth) {
         try {
           if (shouldRefreshQueryToken(cachedQueryToken, Date.now())) {
-            const response = await apiClient.createDesktopQueryToken({ scope: "events" });
+            const response = await apiClient.createDesktopQueryToken({ scope: "events" }, { timeoutMs: EVENT_TOKEN_REQUEST_TIMEOUT_MS });
             cachedQueryToken = {
               token: response.token,
               expiresAt: response.expires_at * 1000,
@@ -102,10 +106,11 @@ export function useEventStreamTransport({
       }
 
       closeEventSource();
-      eventSource = new EventSource(buildEventStreamUrl(baseUrl, queryToken));
+      const source = new EventSource(buildEventStreamUrl(baseUrl, queryToken));
+      eventSource = source;
 
-      eventSource.onopen = () => {
-        if (closed) {
+      source.onopen = () => {
+        if (closed || eventSource !== source) {
           return;
         }
         setStreamState("open");
@@ -113,18 +118,18 @@ export function useEventStreamTransport({
         onOpen();
       };
 
-      eventSource.onerror = () => {
-        if (closed) {
+      source.onerror = () => {
+        if (closed || eventSource !== source) {
           return;
         }
         setStreamState("error");
-        onLog("warn", "event stream reconnecting...");
+        onLog("warn", "event stream reconnecting…");
         closeEventSource();
         queueReconnect();
       };
 
-      eventSource.onmessage = (event) => {
-        if (closed) {
+      source.onmessage = (event) => {
+        if (closed || eventSource !== source) {
           return;
         }
 
@@ -142,6 +147,7 @@ export function useEventStreamTransport({
         }
 
         if (
+          payload.event_type === "stream" ||
           payload.event_type === "progress" ||
           payload.event_type === "log" ||
           payload.event_type === "state"

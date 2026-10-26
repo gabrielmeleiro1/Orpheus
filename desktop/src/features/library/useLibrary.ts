@@ -1,17 +1,17 @@
-import { useMemo } from "react";
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import type {
   CleaningPreviewResponse,
   ConversionMode,
   LibraryBookDetail,
   LibraryBookSummary,
+  MaintenanceBackup,
   MaintenanceDiagnosticsResponse,
 } from "../../types/api";
 import type { ApiClient } from "../../api/client";
+import { createLibrarySession, type LibrarySession } from "./librarySession";
 import { useLibraryList } from "./useLibraryList";
 import { useLibraryMaintenance } from "./useLibraryMaintenance";
-
-export { formatLibraryMeta } from "./useLibraryList";
 
 interface UseLibraryArgs {
   apiClient: ApiClient | null;
@@ -19,6 +19,9 @@ interface UseLibraryArgs {
 }
 
 export interface UseLibraryResult {
+  captureNavigation?: () => () => boolean;
+  libraryGeneration?: number;
+  session?: LibrarySession;
   searchQuery: string;
   setSearchQuery: (value: string) => void;
   modeFilter: "all" | ConversionMode;
@@ -33,32 +36,42 @@ export interface UseLibraryResult {
   loadingList: boolean;
   loadingMore: boolean;
   loadingDetail: boolean;
+  savingMetadata?: boolean;
   errorMessage: string;
   statusMessage: string;
   pendingDeletionPath?: string | null;
+  dismissPendingDeletion?: () => void;
   openPendingDeletionFolder?: () => Promise<void>;
   bookSummaryTitle: string;
   bookSummaryMeta: string;
   bookDetailText: string;
   maintenanceReport: MaintenanceDiagnosticsResponse | null;
+  maintenanceBackups?: MaintenanceBackup[];
   maintenanceLoading: boolean;
   maintenanceMessage: string;
   canOpenAppData: boolean;
   refreshLibrary: () => Promise<void>;
+  reloadLibrarySession?: () => Promise<void>;
   loadMore: () => Promise<void>;
   selectBook: (index: number) => Promise<LibraryBookDetail | null>;
   selectRelative: (delta: number) => Promise<LibraryBookDetail | null>;
   updateSelectedBookMetadata: (payload: { title: string; author: string; tags: string }) => Promise<void>;
   loadCleaningPreview: (chapterNumber: number) => Promise<CleaningPreviewResponse | null>;
-  repairSelectedBook: () => Promise<void>;
+  repairSelectedBook: (releaseBookAudio?: (bookId: number) => void) => Promise<void>;
   loadMaintenanceDiagnostics: () => Promise<void>;
   backupDatabase: () => Promise<void>;
-  cleanupStorage: () => Promise<void>;
+  restoreBackup?: (id: string) => Promise<void>;
+  /** Names folders no book owns to delete as well; without them cleanup keeps every such folder. */
+  cleanupStorage: (removeUnownedFolders?: string[]) => Promise<void>;
   openSelectedBookFolder: () => Promise<void>;
   openAppDataFolder: () => Promise<void>;
-  deleteSelectedBook: () => Promise<boolean>;
+  deleteSelectedBook: (releaseBookAudio?: (bookId: number) => void) => Promise<boolean>;
   setSelectedPlaybackPosition: (positionSec: number) => void;
+  /** The backend is unreachable: items are the last shelf seen while connected. */
+  offline?: boolean;
 }
+
+const OFFLINE_MESSAGE = "The backend is disconnected. Showing your library as it was until it reconnects.";
 
 /**
  * Compatibility facade composing the decomposed library hooks. Its public
@@ -67,21 +80,67 @@ export interface UseLibraryResult {
  * keep working unchanged.
  */
 export function useLibrary({ apiClient, backendDisconnected = false }: UseLibraryArgs): UseLibraryResult {
-  const list = useLibraryList({ apiClient, backendDisconnected });
+  const [session] = useState(createLibrarySession);
+  const sessionClientRef = useRef(apiClient);
+  // Keep restore suspension across reconnects and retire the previous client's callbacks.
+  useLayoutEffect(() => {
+    if (sessionClientRef.current === apiClient) return;
+    sessionClientRef.current = apiClient;
+    session.invalidate();
+  }, [apiClient, session]);
+  const getGeneration = useCallback(() => session.generation, [session]);
+  const libraryGeneration = useSyncExternalStore(session.subscribe, getGeneration, getGeneration);
+  const list = useLibraryList({ apiClient, backendDisconnected, session });
   const maintenance = useLibraryMaintenance({
     apiClient,
+    backendDisconnected,
+    session,
     onAfterCleanup: list.reloadCurrentQuery,
     getReloadContextGeneration: list.getReloadContextGeneration,
   });
 
+  const updateSelectedBookMetadata = useCallback(async (payload: { title: string; author: string; tags: string }) => {
+    await session.runMutation(libraryGeneration, () => list.updateSelectedBookMetadata(payload));
+  }, [session, libraryGeneration, list.updateSelectedBookMetadata]);
+  const repairSelectedBook = useCallback(async (releaseBookAudio?: (bookId: number) => void) => {
+    await session.runMutation(libraryGeneration, () => list.repairSelectedBook(releaseBookAudio));
+  }, [session, libraryGeneration, list.repairSelectedBook]);
+  const deleteSelectedBook = useCallback(async (releaseBookAudio?: (bookId: number) => void) =>
+    await session.runMutation(libraryGeneration, () => list.deleteSelectedBook(releaseBookAudio)) ?? false,
+  [session, libraryGeneration, list.deleteSelectedBook]);
+  const setSelectedPlaybackPosition = useCallback((positionSec: number) => {
+    if (session.isCurrent(libraryGeneration)) list.setSelectedPlaybackPosition(positionSec);
+  }, [session, libraryGeneration, list.setSelectedPlaybackPosition]);
+
+  // Losing the backend clears the live list; keep the last shelf on screen,
+  // marked offline, until a reconnected backend has loaded the real one.
+  const disconnected = !apiClient || backendDisconnected;
+  const [offlineShelf, setOfflineShelf] = useState<{ items: LibraryBookSummary[]; indexedCount: number } | null>(null);
+  const wasDisconnectedRef = useRef(disconnected);
+  useLayoutEffect(() => {
+    const dropped = disconnected && !wasDisconnectedRef.current;
+    wasDisconnectedRef.current = disconnected;
+    // These are this render's values, from before the list resets.
+    if (dropped && list.items.length > 0) setOfflineShelf({ items: list.items, indexedCount: list.indexedCount });
+  }, [disconnected, list.items, list.indexedCount]);
+  const reconnectedListLoaded = !disconnected && !list.loadingList;
+  useLayoutEffect(() => {
+    if (reconnectedListLoaded) setOfflineShelf(null);
+  }, [reconnectedListLoaded]);
+  const shelf = offlineShelf && !reconnectedListLoaded ? offlineShelf : null;
+
   return useMemo(() => ({
+    captureNavigation: list.captureNavigation,
+    session,
+    libraryGeneration,
     searchQuery: list.searchQuery,
     setSearchQuery: list.setSearchQuery,
     modeFilter: list.modeFilter,
     setModeFilter: list.setModeFilter,
-    items: list.items,
-    indexedCount: list.indexedCount,
-    hasMore: list.hasMore,
+    items: shelf ? shelf.items : list.items,
+    indexedCount: shelf ? shelf.indexedCount : list.indexedCount,
+    hasMore: shelf ? false : list.hasMore,
+    offline: Boolean(shelf) || disconnected,
     selectedBookId: list.selectedBookId,
     selectedBookIndex: list.selectedBookIndex,
     selectedBookDetail: list.selectedBookDetail,
@@ -89,39 +148,49 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     loadingList: list.loadingList,
     loadingMore: list.loadingMore,
     loadingDetail: list.loadingDetail,
-    errorMessage: list.errorMessage,
+    savingMetadata: list.savingMetadata,
+    errorMessage: disconnected && (shelf || list.items.length === 0) ? OFFLINE_MESSAGE : list.errorMessage,
     statusMessage: list.statusMessage,
     pendingDeletionPath: list.pendingDeletionPath,
+    dismissPendingDeletion: list.dismissPendingDeletion,
     openPendingDeletionFolder: list.openPendingDeletionFolder,
     bookSummaryTitle: list.bookSummaryTitle,
     bookSummaryMeta: list.bookSummaryMeta,
     bookDetailText: list.bookDetailText,
     maintenanceReport: maintenance.maintenanceReport,
+    maintenanceBackups: maintenance.maintenanceBackups,
     maintenanceLoading: maintenance.maintenanceLoading,
     maintenanceMessage: maintenance.maintenanceMessage,
     canOpenAppData: maintenance.canOpenAppData,
     refreshLibrary: list.refreshLibrary,
+    reloadLibrarySession: list.reloadLibrarySession,
     loadMore: list.loadMore,
     selectBook: list.selectBook,
     selectRelative: list.selectRelative,
-    updateSelectedBookMetadata: list.updateSelectedBookMetadata,
+    updateSelectedBookMetadata,
     loadCleaningPreview: list.loadCleaningPreview,
-    repairSelectedBook: list.repairSelectedBook,
+    repairSelectedBook,
     loadMaintenanceDiagnostics: maintenance.loadMaintenanceDiagnostics,
     backupDatabase: maintenance.backupDatabase,
+    restoreBackup: maintenance.restoreBackup,
     cleanupStorage: maintenance.cleanupStorage,
     openSelectedBookFolder: list.openSelectedBookFolder,
     openAppDataFolder: maintenance.openAppDataFolder,
-    deleteSelectedBook: list.deleteSelectedBook,
-    setSelectedPlaybackPosition: list.setSelectedPlaybackPosition,
+    deleteSelectedBook,
+    setSelectedPlaybackPosition,
   }), [
+    session,
+    libraryGeneration,
     list.searchQuery,
+    list.captureNavigation,
     list.setSearchQuery,
     list.modeFilter,
     list.setModeFilter,
     list.items,
     list.indexedCount,
     list.hasMore,
+    shelf,
+    disconnected,
     list.selectedBookId,
     list.selectedBookIndex,
     list.selectedBookDetail,
@@ -129,6 +198,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     list.loadingList,
     list.loadingMore,
     list.loadingDetail,
+    list.savingMetadata,
     list.errorMessage,
     list.statusMessage,
     list.pendingDeletionPath,
@@ -137,21 +207,24 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     list.bookSummaryMeta,
     list.bookDetailText,
     list.refreshLibrary,
+    list.reloadLibrarySession,
     list.loadMore,
     list.selectBook,
     list.selectRelative,
-    list.updateSelectedBookMetadata,
+    updateSelectedBookMetadata,
     list.loadCleaningPreview,
-    list.repairSelectedBook,
+    repairSelectedBook,
     list.openSelectedBookFolder,
-    list.deleteSelectedBook,
-    list.setSelectedPlaybackPosition,
+    deleteSelectedBook,
+    setSelectedPlaybackPosition,
     maintenance.maintenanceReport,
+    maintenance.maintenanceBackups,
     maintenance.maintenanceLoading,
     maintenance.maintenanceMessage,
     maintenance.canOpenAppData,
     maintenance.loadMaintenanceDiagnostics,
     maintenance.backupDatabase,
+    maintenance.restoreBackup,
     maintenance.cleanupStorage,
     maintenance.openAppDataFolder,
   ]);

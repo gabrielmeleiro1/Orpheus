@@ -3,6 +3,8 @@ import { useEffect, type MutableRefObject } from "react";
 import type { DashboardTab } from "../types/api";
 
 interface UseGlobalShortcutsArgs {
+  enabled?: boolean;
+  startEnabled?: boolean;
   activeTab: DashboardTab;
   startCommandRef: MutableRefObject<(() => void) | null>;
   refreshLibrary: () => Promise<void>;
@@ -12,6 +14,8 @@ interface UseGlobalShortcutsArgs {
 }
 
 export function useGlobalShortcuts({
+  enabled = true,
+  startEnabled = true,
   activeTab,
   startCommandRef,
   refreshLibrary,
@@ -20,10 +24,14 @@ export function useGlobalShortcuts({
   togglePlay,
 }: UseGlobalShortcutsArgs): void {
   useEffect(() => {
+    if (!enabled) return;
     const onGlobalKeydown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing) return;
       const target = event.target as HTMLElement | null;
-      const tag = target?.tagName?.toLowerCase() || "";
-      if (tag === "input" || tag === "textarea" || tag === "button" || target?.isContentEditable) {
+      const control = target?.closest?.(
+        "input, textarea, select, button, summary, a[href], [role='button'], [role='combobox'], [role='listbox']",
+      );
+      if (control || target?.isContentEditable) {
         return;
       }
       if (event.metaKey || event.ctrlKey || event.altKey) {
@@ -31,8 +39,9 @@ export function useGlobalShortcuts({
       }
 
       const key = String(event.key || "").toLowerCase();
+      if (event.repeat && key !== "arrowleft" && key !== "arrowright") return;
       if (key === "s") {
-        if (activeTab === "convert" || activeTab === "document") {
+        if (startEnabled && activeTab === "convert") {
           startCommandRef.current?.();
         }
       } else if (key === "r") {
@@ -57,5 +66,5 @@ export function useGlobalShortcuts({
     return () => {
       document.removeEventListener("keydown", onGlobalKeydown);
     };
-  }, [activeTab, playRelative, refreshLibrary, seekBy, startCommandRef, togglePlay]);
+  }, [enabled, startEnabled, activeTab, playRelative, refreshLibrary, seekBy, startCommandRef, togglePlay]);
 }

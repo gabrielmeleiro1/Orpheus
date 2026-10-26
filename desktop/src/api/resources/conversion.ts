@@ -12,11 +12,19 @@ import type {
   VoiceSuggestionResponse,
 } from "../../types/api";
 
+// The first start after launch runs a blocking voice-runtime check (load the
+// model and synthesize a probe) before replying; that took ~26 s cold on a
+// Windows CUDA machine. A shorter budget turns every first start into an
+// ambiguous one that must be reconciled.
+export const CONVERSION_START_TIMEOUT_MS = 90_000;
+export const SOURCE_PREFLIGHT_TIMEOUT_MS = 30_000;
+
 export function createConversionApi(requestJson: RequestJson) {
   async function preflightSource(sourcePath: string, options?: ApiRequestOptions): Promise<SourcePreflight> {
     return requestJson<SourcePreflight>("/api/sources/preflight", {
       method: "POST",
       body: JSON.stringify({ source_path: sourcePath }),
+      timeoutMs: SOURCE_PREFLIGHT_TIMEOUT_MS,
       ...options,
     });
   }
@@ -45,8 +53,11 @@ export function createConversionApi(requestJson: RequestJson) {
     });
   }
 
-  async function deleteUpload(handle: string): Promise<{ deleted: boolean }> {
-    return requestJson(`/api/uploads/${encodeURIComponent(handle)}`, { method: "DELETE" });
+  async function deleteUpload(handle: string, options?: ApiRequestOptions): Promise<{ deleted: boolean }> {
+    return requestJson<{ deleted: boolean }>(`/api/uploads/${encodeURIComponent(handle)}`, {
+      method: "DELETE",
+      ...options,
+    });
   }
 
   async function suggestVoice(
@@ -73,6 +84,7 @@ export function createConversionApi(requestJson: RequestJson) {
     return requestJson<StartConversionResponse>("/api/conversions", {
       method: "POST",
       body: JSON.stringify(payload),
+      timeoutMs: CONVERSION_START_TIMEOUT_MS,
       ...options,
     });
   }

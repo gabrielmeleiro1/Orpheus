@@ -24,7 +24,7 @@ export interface ConversionQueueState {
   itemRevisions: Record<string, number>;
 }
 
-export type ConversionQueueAction =
+type ConversionQueueAction =
   | { type: "sourcePathSet"; sourcePath: string }
   | { type: "titleOverrideSet"; title: string | ((current: string) => string) }
   | { type: "authorOverrideSet"; author: string | ((current: string) => string) }
@@ -45,20 +45,25 @@ export type ConversionQueueAction =
     }
   | { type: "preflightFailed"; stamp: PreflightStamp; error: string }
   | { type: "pastedSourceAdded"; item: ConversionQueueItem; selectItem: boolean }
+  | { type: "jobBookObserved"; jobId: string; bookId: number; completed: boolean }
   | { type: "clearSourceSelection" };
 
-export function createConversionQueueInitialState(): ConversionQueueState {
-  return {
+export function createConversionQueueInitialState(
+  restored?: { items: ConversionQueueItem[]; selectedQueueId: string | null },
+): ConversionQueueState {
+  const state: ConversionQueueState = {
     sourcePath: "",
     titleOverride: "",
     authorOverride: "",
-    queueItems: [],
+    queueItems: restored?.items ?? [],
     selectedQueueId: null,
-    queueStatus: "Queue idle",
+    queueStatus: "",
     preflightStatus: "",
     previewText: null,
     itemRevisions: {},
   };
+  const selected = restored?.items.find((item) => item.id === restored.selectedQueueId) ?? null;
+  return selected ? applySelectedItem(state, selected) : state;
 }
 
 export function getPreflightStamp(
@@ -149,7 +154,7 @@ export function conversionQueueReducer(
       const nextState = {
         ...state,
         queueItems: [...state.queueItems, ...items],
-        queueStatus: `${items.length} item${items.length === 1 ? "" : "s"} added`,
+        queueStatus: "",
       };
       return action.selectFirst ? applySelectedItem(nextState, items[0]) : nextState;
     }
@@ -157,7 +162,7 @@ export function conversionQueueReducer(
       let nextState: ConversionQueueState = {
         ...state,
         queueItems: [...state.queueItems, action.item],
-        queueStatus: "1 item added",
+        queueStatus: "",
         titleOverride: action.item.preflight?.title
           ? state.titleOverride || action.item.preflight.title.trim()
           : state.titleOverride,
@@ -274,15 +279,16 @@ export function conversionQueueReducer(
     case "preflightStarted":
       return {
         ...state,
-        preflightStatus: `Inspecting ${splitPath(action.stamp.sourcePath)}...`,
+        preflightStatus: "",
         queueItems: state.queueItems.map((item) =>
-          item.id === action.stamp.itemId && hasFreshStamp(state, item, action.stamp) && item.status !== "converting"
+          item.id === action.stamp.itemId && hasFreshStamp(state, item, action.stamp) && item.status !== "converting" && item.status !== "done"
             ? { ...item, status: "preflighting", error: "" }
             : item,
         ),
       };
     case "preflightSucceeded": {
       let applied = false;
+      const updateSelected = action.updateSelected && state.selectedQueueId === action.stamp.itemId;
       let nextPreviewText = state.previewText;
       const preflightError = preflightBlockingReason(action.preflight);
       const queueItems = state.queueItems.map((item) => {
@@ -294,7 +300,7 @@ export function conversionQueueReducer(
         const nextAuthor = item.author || action.preflight.author?.trim() || "";
         const preserveActiveStatus =
           item.status === "converting" || item.status === "done" || item.status === "failed";
-        if (action.updateSelected && action.preflight.sample) {
+        if (updateSelected && action.preflight.sample) {
           nextPreviewText = compactSample(action.preflight.sample, 220);
         }
         return {
@@ -322,20 +328,17 @@ export function conversionQueueReducer(
       return {
         ...state,
         queueItems,
-        selectedQueueId: action.updateSelected ? action.stamp.itemId : state.selectedQueueId,
-        sourcePath: action.updateSelected ? action.stamp.sourcePath : state.sourcePath,
-        titleOverride: action.updateSelected
+        selectedQueueId: updateSelected ? action.stamp.itemId : state.selectedQueueId,
+        sourcePath: updateSelected ? action.stamp.sourcePath : state.sourcePath,
+        titleOverride: updateSelected
           ? state.titleOverride || action.preflight.title?.trim() || ""
           : state.titleOverride,
-        authorOverride: action.updateSelected
+        authorOverride: updateSelected
           ? state.authorOverride || action.preflight.author?.trim() || ""
           : state.authorOverride,
         previewText: nextPreviewText,
-        preflightStatus: preflightError
-          ? preflightError
-          : action.preflight.warnings.length
-            ? "Preflight completed with warnings."
-            : "Preflight completed.",
+        // The row's status and details report the outcome; no sentence needed.
+        preflightStatus: "",
       };
     }
     case "preflightFailed": {
@@ -345,9 +348,38 @@ export function conversionQueueReducer(
           return item;
         }
         applied = true;
-        return item.status === "converting" ? item : { ...item, status: "failed" as const, error: action.error };
+        return item.status === "converting" || item.status === "done" ? item : { ...item, status: "failed" as const, error: action.error };
       });
-      return applied ? { ...state, queueItems, preflightStatus: action.error } : state;
+      if (!applied) return state;
+      // A failed row shows its own error; a finished row keeps its history, so
+      // only then does the intake line report the failure.
+      const target = queueItems.find((item) => item.id === action.stamp.itemId);
+      return { ...state, queueItems, preflightStatus: target?.status === "failed" ? "" : action.error };
+    }
+    case "jobBookObserved": {
+      let changed = false;
+      const queueItems = state.queueItems.map((item) => {
+        if (item.jobId === action.jobId) {
+          // The row lost sight of its own job, which has now been seen to finish.
+          const confirmed = action.completed && item.status === "warning";
+          if (item.bookId === action.bookId && !confirmed) return item;
+          changed = true;
+          return confirmed
+            ? { ...item, bookId: action.bookId, status: "done" as const, error: "" }
+            : { ...item, bookId: action.bookId };
+        }
+        // Another job (a repair started from Library) finished this row's book,
+        // so the row's earlier stop or failure no longer describes the book.
+        if (
+          action.completed && item.jobId !== null && item.bookId === action.bookId &&
+          (item.status === "failed" || item.status === "warning")
+        ) {
+          changed = true;
+          return { ...item, status: "done" as const, error: "" };
+        }
+        return item;
+      });
+      return changed ? { ...state, queueItems } : state;
     }
     case "clearSourceSelection":
       return applySelectedItem(state, null);

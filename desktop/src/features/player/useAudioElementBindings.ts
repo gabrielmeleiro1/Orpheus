@@ -5,7 +5,7 @@ import type { PersistPlaybackOptions } from "./playbackPersistence";
 
 const PLAYBACK_UI_UPDATE_INTERVAL_MS = 1000;
 
-export interface AudioElementProps {
+interface AudioElementProps {
   src: string | null;
   preload: "metadata";
   onLoadedMetadata: () => void;
@@ -16,6 +16,8 @@ export interface AudioElementProps {
   onVolumeChange: () => void;
   onEmptied: () => void;
   onEnded: () => void;
+  onSeeking: () => void;
+  onSeeked: () => void;
   onError: () => void;
 }
 
@@ -31,6 +33,8 @@ interface UseAudioElementBindingsArgs {
   updatePlayerStatus: () => void;
   playRelative: (delta: number) => Promise<void>;
   advanceChapter?: () => boolean;
+  canFinishBook: boolean;
+  onBookCompleted: () => void;
   setIsPlaying: Dispatch<SetStateAction<boolean>>;
   setElapsedSec: Dispatch<SetStateAction<number>>;
   setTotalSec: Dispatch<SetStateAction<number>>;
@@ -38,6 +42,9 @@ interface UseAudioElementBindingsArgs {
   setPlayerTitle: Dispatch<SetStateAction<string>>;
   onPlaybackError: () => void;
   onPlaybackHealthy: () => void;
+  stopAtChapterEnd?: (ended?: boolean) => boolean;
+  onSeeking?: () => void;
+  onSeeked?: () => void;
 }
 
 /**
@@ -57,6 +64,8 @@ export function useAudioElementBindings({
   updatePlayerStatus,
   playRelative,
   advanceChapter,
+  canFinishBook,
+  onBookCompleted,
   setIsPlaying,
   setElapsedSec,
   setTotalSec,
@@ -64,6 +73,9 @@ export function useAudioElementBindings({
   setPlayerTitle,
   onPlaybackError,
   onPlaybackHealthy,
+  stopAtChapterEnd,
+  onSeeking,
+  onSeeked,
 }: UseAudioElementBindingsArgs): AudioElementProps {
   const lastPlaybackUiUpdateMsRef = useRef(0);
   const lastPlaybackUiSecondRef = useRef(-1);
@@ -79,12 +91,15 @@ export function useAudioElementBindings({
   }, [audioRef, volume]);
 
   return useMemo(() => {
+    const isCurrent = () => !library.session || library.session.isCurrent(library.libraryGeneration ?? 0);
     const handleTimeUpdate: ReactEventHandler<HTMLAudioElement> = () => {
+      if (!isCurrent()) return;
       const audio = audioRef.current;
       if (!audio) {
         return;
       }
       onPlaybackHealthy();
+      stopAtChapterEnd?.();
 
       const nextElapsedSec = Math.max(0, Number(audio.currentTime) || 0);
       const nextElapsedUiSecond = Math.floor(nextElapsedSec);
@@ -114,16 +129,20 @@ export function useAudioElementBindings({
       src: audioSrc,
       preload: "metadata" as const,
       onLoadedMetadata: () => {
+        if (!isCurrent()) return;
         handleAudioMetadata();
       },
       onDurationChange: () => {
+        if (!isCurrent()) return;
         handleAudioMetadata();
       },
       onPlay: () => {
+        if (!isCurrent()) return;
         setIsPlaying(true);
         updatePlayerStatus();
       },
       onPause: () => {
+        if (!isCurrent()) return;
         setIsPlaying(false);
         void persistLoadedBookPlaybackPosition({ force: true, silent: true });
         updatePlayerStatus();
@@ -146,8 +165,20 @@ export function useAudioElementBindings({
         updatePlayerStatus();
       },
       onEnded: () => {
+        if (!isCurrent()) return;
+        if (stopAtChapterEnd?.(true)) {
+          setIsPlaying(false);
+          void persistLoadedBookPlaybackPosition({ force: true, silent: true });
+          updatePlayerStatus();
+          return;
+        }
         if (advanceChapter?.()) return;
         setIsPlaying(false);
+        if (!canFinishBook) {
+          void persistLoadedBookPlaybackPosition({ force: true, silent: true });
+          updatePlayerStatus();
+          return;
+        }
         const finishedBookId = loadedBookId;
         if (finishedBookId) {
           markPlaybackSaved(finishedBookId, 0);
@@ -161,10 +192,14 @@ export function useAudioElementBindings({
         if (library.selectedBookId === finishedBookId) {
           library.setSelectedPlaybackPosition(0);
         }
-        updatePlayerStatus();
+        // The finished book reads "Finished" unless the library continues with the next one.
+        onBookCompleted();
         void playRelative(1);
       },
+      onSeeking: () => { if (isCurrent()) onSeeking?.(); },
+      onSeeked: () => { if (isCurrent()) onSeeked?.(); },
       onError: () => {
+        if (!isCurrent()) return;
         setPlayerTitle("playback failed");
         onPlaybackError();
       },
@@ -178,9 +213,14 @@ export function useAudioElementBindings({
     markPlaybackSaved,
     onPlaybackError,
     onPlaybackHealthy,
+    stopAtChapterEnd,
+    onSeeking,
+    onSeeked,
     persistLoadedBookPlaybackPosition,
     playRelative,
     advanceChapter,
+    canFinishBook,
+    onBookCompleted,
     setElapsedSec,
     setIsPlaying,
     setPlayerTitle,

@@ -18,6 +18,7 @@ interface UseConversionPreviewArgs {
   sourcePath: string;
   selectedPreflight: SourcePreflight | null;
   sampleText: string | null;
+  hidden?: boolean;
 }
 
 export function useConversionPreview({
@@ -26,6 +27,7 @@ export function useConversionPreview({
   sourcePath,
   selectedPreflight,
   sampleText,
+  hidden = false,
 }: UseConversionPreviewArgs) {
   const [voiceSuggestBusy, setVoiceSuggestBusy] = useState(false);
   const [voiceSuggestStatus, setVoiceSuggestStatus] = useState("");
@@ -57,7 +59,7 @@ export function useConversionPreview({
         previewObjectUrlRef.current = null;
       }
     };
-  }, [apiClient, beginPreviewRequest, optionState.selectedEngine, optionState.selectedQuantization,
+  }, [apiClient, beginPreviewRequest, hidden, optionState.selectedEngine, optionState.selectedQuantization,
     optionState.selectedVoice, optionState.speed, previewText]);
 
   useEffect(() => {
@@ -77,6 +79,7 @@ export function useConversionPreview({
   }, [sampleText]);
 
   const onPreviewVoice = useCallback(async () => {
+    if (hidden) return;
     if (!apiClient || !optionState.selectedVoice) {
       setPreviewError(true);
       setPreviewStatus("Select a voice before preview.");
@@ -85,7 +88,7 @@ export function useConversionPreview({
 
     setPreviewBusy(true);
     setPreviewError(false);
-    setPreviewStatus("Generating preview...");
+    setPreviewStatus("Generating preview…");
     const quantization = normalizeQuantizationValue(optionState.selectedQuantization);
     const isLatest = beginPreviewRequest();
 
@@ -123,7 +126,18 @@ export function useConversionPreview({
       if (!isLatest()) {
         return;
       }
-      setPreviewStatus(`Previewing ${optionState.selectedVoice}`);
+      const voiceLabel = optionState.filteredVoiceOptions.find((option) => option.value === optionState.selectedVoice)?.label;
+      setPreviewStatus(`Previewing ${voiceLabel ?? optionState.selectedVoice}`);
+      // "Previewing" describes the sample while it plays, not for the rest of the session.
+      const finish = () => {
+        audio.removeEventListener("ended", finish);
+        audio.removeEventListener("pause", finish);
+        if (isLatest()) setPreviewStatus("");
+      };
+      if (typeof audio.addEventListener === "function") {
+        audio.addEventListener("ended", finish);
+        audio.addEventListener("pause", finish);
+      }
     } catch (error: unknown) {
       if (isLatest() && !isAbortLikeError(error)) {
         setPreviewError(true);
@@ -137,6 +151,7 @@ export function useConversionPreview({
   }, [
     apiClient,
     beginPreviewRequest,
+    hidden,
     optionState.selectedEngine,
     optionState.selectedQuantization,
     optionState.selectedVoice,
@@ -144,9 +159,12 @@ export function useConversionPreview({
     previewText,
   ]);
 
-  const recommendationUnavailableReason = optionState.cleanerBackend !== "api" || !optionState.cleanerApiKey.trim() || !optionState.cleanerModel.trim()
-    ? "Configure an API cleaner model and key in Settings to recommend a voice."
-    : "";
+  // The backend recommends voices only through an online (API) cleaner model.
+  const recommendationUnavailableReason = optionState.cleanerBackend !== "api"
+    ? "Voice recommendations need an online (API) text cleaner, and yours runs locally. Pick a voice from the list, or set up an API cleaner in Settings."
+    : !optionState.cleanerApiKey.trim() || !optionState.cleanerModel.trim()
+      ? "Add the API cleaner's model and key in Settings to recommend a voice."
+      : "";
 
   const onRecommendVoice = useCallback(async () => {
     if (recommendationUnavailableReason) {
@@ -164,7 +182,7 @@ export function useConversionPreview({
 
     setVoiceSuggestBusy(true);
     voiceSuggestPendingRef.current = true;
-    setVoiceSuggestStatus("Analyzing first chapters...");
+    setVoiceSuggestStatus("Analyzing first chapters…");
     const isLatest = beginVoiceSuggestRequest();
     try {
       const response = await apiClient.suggestVoice(

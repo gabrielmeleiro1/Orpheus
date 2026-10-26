@@ -1,43 +1,259 @@
+/* Preferences layout: every section is one row of the same two columns, a
+   title (and at most one short line) on the left and its settings on the
+   right, divided by hairlines instead of cards. */
 .settings-page {
+  --settings-label-col: 200px;
+  --settings-row-label: 136px;
+  container: settings / inline-size;
   display: grid;
-  gap: var(--space-4);
-  margin-inline: auto;
-  max-width: calc(var(--page-max-width) - var(--density-page-x) * 2);
-  min-width: 0;
-  width: 100%;
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 960px;
 }
 
-.settings-page > .panel {
-  max-width: var(--content-narrow);
+.settings-page > * {
+  min-width: 0;
 }
 
 .settings-content {
   display: contents;
 }
 
-.settings-storage-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-3);
-  max-width: var(--field-text-width);
+.settings-page > .card.settings-section {
+  align-items: start;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  column-gap: var(--space-10);
+  display: grid;
+  grid-template-columns: var(--settings-label-col) minmax(0, 1fr);
+  margin: 0;
+  padding: var(--space-8) 0;
 }
 
-.settings-path {
+.settings-page > .card.settings-section + .card.settings-section {
+  border-top: 1px solid var(--border-light);
+}
+
+.settings-page > .card.settings-section:first-child {
+  padding-top: var(--space-2);
+}
+
+.settings-page > .card.settings-section > :not(.card-header) {
+  grid-column: 2;
   min-width: 0;
-  overflow-wrap: anywhere;
+}
+
+.settings-page > .card.settings-section > .card-header {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: var(--space-1);
+  grid-column: 1;
+  grid-row: 1 / span 4;
+  justify-content: flex-start;
+}
+
+.settings-section-hint {
   color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  margin: 0;
 }
 
-.settings-storage-row > div {
-  min-width: 0;
+.settings-page > .config-panel {
+  display: block;
+  height: auto;
 }
 
-.settings-storage-row > .btn {
+.settings-page .card-header {
+  margin-bottom: 0;
+  min-height: 0;
+}
+
+.settings-page .card-header > .conversion-label-row {
   flex-shrink: 0;
 }
 
-p.settings-path {
+.settings-page .config-layout {
+  gap: var(--space-4);
+  max-width: none;
+}
+
+.settings-page .conversion-form-grid {
+  gap: var(--space-4);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-page .conversion-form-grid > .field {
+  align-content: start;
+  gap: var(--space-1);
+  grid-template-rows: var(--control-h-sm) var(--control-h);
+}
+
+.settings-page .conversion-form-grid > .field > .field-label {
+  align-items: center;
+  display: flex;
+}
+
+.settings-page .settings-api-section {
+  border-top: 1px solid var(--border-light);
+  padding-top: var(--space-4);
+}
+
+.settings-page .settings-runtime-notice {
+  color: var(--text-secondary);
+  display: grid;
+  gap: var(--space-2);
+  justify-items: center;
+  text-align: center;
+}
+
+/* Label | value | action rows, shared by Library, Storage and About. Rows use a
+   subgrid so values and buttons line up even when a row has no action. */
+.settings-rows {
+  column-gap: var(--space-4);
+  display: grid;
+  grid-template-columns: var(--settings-row-label, 136px) minmax(0, 1fr) max-content;
+  list-style: none;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.settings-row {
+  align-items: center;
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  min-height: var(--row-h);
+  min-width: 0;
+  padding-block: var(--space-2);
+}
+
+.settings-row + .settings-row {
+  border-top: 1px solid var(--border-light);
+}
+
+/* The first row's text sits on the section title's line. */
+.settings-section > .card-header + .settings-rows,
+.settings-section > .card-header + .maintenance-body > .settings-rows:first-child {
+  margin-top: calc((var(--line-md) - var(--row-h)) / 2);
+}
+
+.settings-row > .field-label {
+  color: var(--text);
+  font-size: var(--text-base);
+  font-weight: var(--weight-normal);
+  line-height: var(--line-base);
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-row > dd {
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: var(--line-base);
+  margin: 0;
+}
+
+.settings-row > .btn {
+  grid-column: 3;
+  justify-self: end;
+}
+
+.settings-row-hint {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A path keeps its last folders visible and gives up the middle first. */
+.path-text {
+  display: flex;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.path-text-head {
+  min-width: 2ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.path-text-tail {
+  flex: none;
+  max-width: 85%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.settings-path {
+  color: var(--text-secondary);
   font-family: var(--font-mono);
   font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  user-select: text;
+}
+
+.settings-path.is-empty {
+  font-family: var(--font-body);
+}
+
+.settings-feedback {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  margin-top: var(--space-3);
+  overflow-wrap: anywhere;
+}
+
+.settings-feedback.is-error {
+  color: var(--negative);
+}
+
+/* Voice & models: the setup flow drops its own frame and fills the right column. */
+.setup-panel.is-embedded .setup-panel-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+}
+
+.setup-panel.is-embedded > .setup-footer {
+  margin-top: var(--space-5);
+}
+
+.setup-panel.is-embedded > .setup-danger {
+  border-top: 1px solid var(--border-light);
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+}
+
+@container settings (max-width: 720px) {
+  .settings-page > .card.settings-section {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: var(--space-4);
+  }
+
+  .settings-page > .card.settings-section > :not(.card-header),
+  .settings-page > .card.settings-section > .card-header {
+    grid-column: 1;
+    grid-row: auto;
+  }
+}
+
+@container settings (max-width: 520px) {
+  .settings-page .conversion-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-rows {
+    --settings-row-label: 104px;
+  }
 }

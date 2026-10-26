@@ -1,5 +1,6 @@
 .conversion-panel,
 .config-panel {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -7,40 +8,32 @@
   width: 100%;
 }
 
-:is(.main-workspace, .settings-content) > .conversion-panel,
 :is(.main-workspace, .settings-content) > .config-panel {
-  /* Match the studio-status content column, then left-align form content inside. */
   margin-left: auto;
   margin-right: auto;
-  max-width: calc(var(--page-max-width) - var(--density-page-x) * 2);
+  max-width: var(--page-max-width);
   width: 100%;
 }
 
-.conversion-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0 0 calc(var(--conversion-actions-height, 6rem) + var(--space-4));
-  scrollbar-gutter: stable;
-  scroll-padding-block: var(--space-2) calc(var(--conversion-actions-height, 6rem) + var(--space-4));
+.conversion-panel {
+  container-name: conversion-workbench;
 }
 
-:is(.main-workspace, .settings-content) > .conversion-panel {
-  margin-bottom: 0;
-}
-
-.conversion-form,
-.conversion-source-sections,
 .config-layout {
+  align-items: start;
+  container-type: inline-size;
   display: grid;
-  gap: var(--space-6);
+  gap: var(--section-gap);
   max-width: var(--content-narrow);
   min-width: 0;
+  width: 100%;
 }
+
+/* ---------- Shared section pieces (Create and the Settings defaults form) ---------- */
 
 .conversion-section {
   display: grid;
-  gap: var(--space-2);
+  gap: var(--space-4);
   margin-bottom: 0;
   min-width: 0;
 }
@@ -51,372 +44,24 @@
   min-width: 0;
 }
 
-.conversion-section-header-row {
-  align-items: flex-start;
-  display: flex;
-  gap: var(--space-3);
-  justify-content: space-between;
-  max-width: var(--field-text-width);
-}
-
+/* A group inside a section, styled like the setup subheadings (Models, Runtime). */
 .conversion-group-heading {
   color: var(--text);
-  font-size: var(--text-md);
-  font-weight: 600;
-  letter-spacing: 0;
-  margin: 0;
-  text-transform: none;
-}
-
-.conversion-section-hint {
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-  line-height: 1.45;
-  margin: 0;
-}
-
-.conversion-form-grid {
-  max-width: var(--field-text-width);
-}
-
-.drop-zone-stack {
-  background: var(--surface);
-  border: 1px dashed var(--border-strong);
-  border-radius: var(--card-radius);
-  display: grid;
-  gap: 0;
-  max-width: var(--field-text-width);
-  min-width: 0;
-  overflow: hidden;
-  transition: border-color 120ms ease, background 120ms ease;
-}
-
-.drop-zone-stack:has(.drop-zone:hover),
-.drop-zone-stack:has(.drop-zone.drag-over),
-.drop-zone-stack:has(.drop-zone:focus-visible) {
-  background: var(--accent-soft);
-  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
-}
-
-.drop-zone {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: 0;
-  cursor: pointer;
-  display: grid;
-  gap: var(--space-3);
-  grid-template-columns: 36px minmax(0, 1fr) auto;
-  margin: 0;
-  min-height: 80px;
-  padding: var(--space-4);
-}
-
-.drop-zone:hover,
-.drop-zone.drag-over,
-.drop-zone:focus-visible {
-  background: transparent;
-}
-
-.drop-zone-icon {
-  align-items: center;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text-secondary);
-  display: grid;
-  height: 36px;
-  justify-items: center;
-  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
-  width: 36px;
-}
-
-.drop-zone-icon .icon {
-  height: 18px;
-  width: 18px;
-}
-
-.drop-zone-copy {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.drop-zone-copy strong {
-  color: var(--text);
-  font-size: var(--text-md);
-  font-weight: 600;
-}
-
-.drop-zone-formats {
-  color: var(--text-tertiary);
-  font-size: var(--text-sm);
-}
-
-.drop-zone-browse {
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-.drop-zone:hover .drop-zone-icon,
-.drop-zone.drag-over .drop-zone-icon,
-.drop-zone:focus-visible .drop-zone-icon {
-  background: color-mix(in srgb, var(--accent) 14%, var(--bg-elevated));
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
-  color: var(--accent-text);
-}
-
-.source-chosen {
-  align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  display: flex;
-  gap: var(--space-2);
-  max-width: var(--field-text-width);
-  min-width: 0;
-  padding: var(--space-2) var(--space-3);
-}
-
-.source-chosen-file {
-  align-items: baseline;
-  display: flex;
-  flex: 1 1 auto;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.source-chosen-name {
-  color: var(--text);
-  flex: 0 1 auto;
-  font-size: var(--text-sm);
-  font-weight: 500;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-chosen-dir {
-  color: var(--text-tertiary);
-  flex: 1 1 auto;
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.manual-path {
-  border-top: 1px solid var(--border-light);
-  margin: 0;
-  padding: var(--space-1) var(--space-3) var(--space-2);
-}
-
-.manual-path > summary.manual-path-toggle {
-  color: var(--text-tertiary);
-  cursor: pointer;
-  display: inline-flex;
-  list-style: none;
-  margin: 0;
-  width: max-content;
-}
-
-.manual-path > summary.manual-path-toggle::-webkit-details-marker {
-  display: none;
-}
-
-.manual-path > summary.manual-path-toggle:hover {
-  color: var(--text);
-}
-
-.manual-path[open] > summary.manual-path-toggle {
-  margin-bottom: var(--space-2);
-}
-
-.source-or-divider {
-  align-items: center;
-  color: var(--text-tertiary);
-  display: grid;
-  font-size: var(--text-xs);
-  font-weight: 600;
-  gap: var(--space-3);
-  grid-template-columns: 1fr auto 1fr;
-  letter-spacing: 0.04em;
-  max-width: var(--field-text-width);
-  text-transform: uppercase;
-}
-
-.source-or-divider::before,
-.source-or-divider::after {
-  background: var(--border);
-  content: "";
-  height: 1px;
-}
-
-.paste-panel,
-.queue-panel,
-.preflight-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  margin: 0;
-  max-width: var(--field-text-width);
-  padding: var(--card-pad);
-}
-
-.details-section {
-  gap: var(--space-3);
-}
-
-.paste-header,
-.queue-header,
-.preflight-title {
-  align-items: flex-start;
-  color: var(--text);
-  display: flex;
-  font-size: var(--text-md);
-  font-weight: 600;
-  gap: var(--space-3);
-  justify-content: space-between;
-  letter-spacing: normal;
-  margin-bottom: var(--space-3);
-  text-transform: none;
-}
-
-.paste-header-copy {
-  display: grid;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.paste-title {
-  color: var(--text);
-  font-size: var(--text-md);
-  font-weight: 600;
-}
-
-.paste-header .field-hint {
-  font-weight: 400;
-}
-
-.queue-header > span {
-  white-space: nowrap;
-}
-
-.paste-grid {
-  display: grid;
-  gap: var(--space-3);
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.paste-textarea {
-  line-height: 1.5;
-  min-height: 96px;
-  resize: vertical;
-}
-
-.paste-panel > .hint,
-.paste-panel > .field-hint {
-  display: block;
-  margin-top: var(--space-3);
-}
-
-.queue-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.queue-row {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--border-light);
-  border-radius: 0;
-  display: grid;
-  gap: var(--space-3);
-  grid-template-columns: minmax(0, 1fr) max-content;
-  min-height: 40px;
-  padding: var(--space-2) 0;
-  transition: background 120ms ease;
-}
-
-.queue-row:last-child {
-  border-bottom: 0;
-}
-
-.queue-row:hover {
-  background: var(--surface-hover);
-}
-
-.queue-row.is-selected {
-  background: var(--accent-soft);
-}
-
-.queue-item-main,
-.chapter-main {
-  background: transparent;
-  border: 0;
-  color: var(--text-secondary);
-  cursor: pointer;
-  display: grid;
   font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  line-height: var(--line-base);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.conversion-label-row {
+  align-items: center;
+  display: flex;
   gap: var(--space-1);
   min-width: 0;
-  padding: 0;
-  text-align: left;
 }
 
-.chapter-main {
-  align-items: center;
-  grid-template-columns: 42px minmax(0, 1fr) 54px;
-}
-
-.queue-row.is-selected .queue-item-title,
-.chapter-row.is-current .chapter-title {
-  color: var(--accent-text);
-}
-
-.queue-item-title,
-.queue-item-status,
-.chapter-title {
-  min-width: 0;
-  overflow: hidden;
-  overflow-wrap: normal;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.queue-item-status {
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-}
-
-.chapter-number,
-.chapter-duration {
-  color: var(--text-tertiary);
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  font-variant-numeric: tabular-nums;
-}
-
-.queue-item-status.status-converting {
-  color: var(--accent-text);
-}
-
-.queue-spinner {
-  margin-right: var(--space-1);
-}
-
-.chapter-duration {
-  text-align: right;
-}
-
-.voice-suggest-actions,
 .queue-item-actions,
-.maintenance-actions,
 .action-row {
   align-items: center;
   display: flex;
@@ -425,214 +70,955 @@
   margin-bottom: 0;
 }
 
-.preflight-sample {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-light);
-  border-radius: var(--radius-sm);
-  color: var(--text-secondary);
+/* ---------- Workbench: a stage on the left, an inspector on the right ----------
+   One surface, no nested cards: sections are divided by hairlines. */
+
+.conversion-form {
+  align-content: start;
+  display: grid;
+  flex: 1;
+  gap: var(--space-8);
+  grid-auto-rows: max-content;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  scroll-padding-block: var(--space-4);
+  scrollbar-gutter: stable;
+  /* The single scrolling column keeps its scrollbar in the page gutter, so
+     content keeps the same right edge as every other page. */
+  margin-right: calc(-1 * var(--scroll-gutter));
+}
+
+.conversion-scroll,
+.conversion-source-sections,
+.conversion-options-sections {
+  align-content: start;
+  display: grid;
+  min-width: 0;
+}
+
+.conversion-scroll,
+.conversion-source-sections {
+  gap: var(--space-8);
+}
+
+.conversion-source-sections {
+  display: flex;
+  flex-direction: column;
+}
+
+.conversion-source-sections > .conversion-source-section ~ * {
+  border-top: 1px solid var(--border-light);
+  padding-top: var(--space-6);
+}
+
+.conversion-panel .card {
+  background: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}
+
+.conversion-panel .card-header {
+  align-items: center;
+  flex-direction: row;
+  margin: 0;
+  min-height: var(--control-h-sm);
+  min-width: 0;
+}
+
+.conversion-panel .form-error:empty,
+.conversion-panel #paste-source-status:empty {
+  display: none;
+}
+
+.conversion-panel .field-row {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+/* ---------- Source intake ---------- */
+
+.conversion-source-section,
+.paste-panel {
+  flex-shrink: 0;
+}
+
+.conversion-source-section {
+  gap: var(--space-4);
+}
+
+.source-input-switch {
+  justify-self: start;
+}
+
+.source-input-switch .seg-control-btn {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--space-2);
+}
+
+.drop-zone-stack {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
+.drop-zone-stack > .drop-zone {
+  justify-self: stretch;
+}
+
+/* Compact intake once something is queued; see .is-empty for the full-stage version. */
+.conversion-panel .drop-zone {
+  background: transparent;
+  border-radius: var(--radius-lg);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-height: 64px;
+  padding: var(--space-3) var(--space-4);
+  transition: border-color var(--dur-fast) var(--ease-out), background var(--dur-fast) var(--ease-out);
+}
+
+.conversion-panel .drop-zone:is(:hover, .drag-over) {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.conversion-panel .drop-zone-icon {
+  color: var(--text-tertiary);
+  display: inline-flex;
+}
+
+.conversion-panel .drop-zone-browse {
+  display: inline-flex;
+  padding-inline: var(--space-3);
+}
+
+/* Typing a path is a quiet fallback under the drop zone. */
+.manual-path {
+  justify-self: stretch;
+  margin: 0;
+}
+
+.manual-path > summary {
+  color: var(--text-tertiary);
+  justify-self: start;
+  width: max-content;
+}
+
+.manual-path-row {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-bottom: var(--space-1);
+}
+
+.manual-path .field-input {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  line-height: 1.5;
-  margin: var(--space-2) 0 var(--space-3);
+}
+
+.source-intake-status {
+  margin: 0;
   overflow-wrap: anywhere;
-  padding: var(--space-3) var(--space-4);
+}
+
+.paste-panel {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.conversion-panel #paste-text-input {
+  height: 120px;
+  min-height: 88px;
+}
+
+.paste-footer {
+  align-items: center;
+  display: flex;
+  gap: var(--space-3);
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.paste-footer .field-hint {
+  margin: 0;
+}
+
+#paste-source-status {
+  margin: 0;
+}
+
+/* ---------- Queue ---------- */
+
+.queue-panel {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  min-width: 0;
+}
+
+.queue-heading {
+  align-items: baseline;
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.queue-count {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+}
+
+.queue-list {
+  display: grid;
+  gap: var(--space-half);
+  min-height: 0;
+}
+
+.queue-empty {
+  align-items: center;
+  color: var(--text-secondary);
+  display: flex;
+  font-size: var(--text-base);
+  justify-content: center;
+  min-height: 96px;
+  padding: var(--space-4);
+}
+
+.queue-row {
+  align-items: center;
+  background: transparent;
+  border-radius: var(--radius);
+  display: grid;
+  flex-shrink: 0;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  position: relative;
+  transition: background var(--dur-fast) var(--ease-out);
+}
+
+.queue-row:hover {
+  background: var(--surface-2);
+}
+
+/* The open row is a quiet container; it does not light up under the pointer. */
+.queue-row:is(.is-selected, .is-converting) {
+  background: var(--surface-1);
+}
+
+.queue-row.is-expanded {
+  box-shadow: inset 0 0 0 1px var(--border-light);
+  padding-bottom: var(--space-4);
+}
+
+/* Cover, then title over details, then the status pill. */
+.queue-item-main {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  column-gap: var(--space-3);
+  cursor: pointer;
+  display: grid;
+  font-size: var(--text-base);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  min-width: 0;
+  padding: 0;
+  row-gap: var(--space-half);
+  text-align: left;
+}
+
+.queue-item-main.is-static {
+  cursor: default;
+}
+
+/* The row tools float over the last column, which is empty while the status
+   is only announced. Keep it as wide as the tools, so a long title ends
+   before them instead of running underneath. */
+.queue-row:not(.is-converting) > .queue-item-main {
+  grid-template-columns: auto minmax(0, 1fr) minmax(calc(3 * var(--control-h-sm) - (var(--space-3) - var(--space-2))), auto);
+}
+
+.queue-item-main > .book-cover {
+  grid-column: 1;
+  grid-row: 1 / 3;
+}
+
+.queue-item-title,
+.queue-item-meta,
+.queue-item-status {
+  min-width: 0;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-item-title {
+  align-self: end;
+  font-weight: var(--weight-medium);
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.queue-item-main:not(:has(.queue-item-meta)) > .queue-item-title {
+  align-self: center;
+  grid-row: 1 / 3;
+}
+
+.queue-item-meta {
+  align-self: start;
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  grid-column: 2;
+  grid-row: 2;
+  line-height: var(--line-sm);
+}
+
+/* The reason is what a failed row has to say, so it wraps and is read in full. */
+.queue-item-meta.is-error {
+  color: var(--negative);
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+/* Runner errors arrive lowercase ("conversion failed"). */
+.queue-item-meta.is-error::first-letter {
+  text-transform: uppercase;
+}
+
+.queue-item-status {
+  font-variant-numeric: tabular-nums;
+  grid-column: 3;
+  grid-row: 1 / 3;
+  justify-self: end;
+  max-width: 10rem;
+}
+
+.queue-item-status-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-spinner {
+  flex-shrink: 0;
+}
+
+/* Row tools float over the status pill while the row is hovered or focused. */
+.queue-item-actions {
+  background: inherit;
+  border-radius: var(--radius-sm);
+  flex-wrap: nowrap;
+  gap: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: var(--space-2);
+  top: calc(var(--space-2) + (var(--cover-sm) - var(--control-h-sm)) / 2);
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.queue-row:is(:hover, :focus-within) .queue-item-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.queue-row.is-converting .queue-item-actions {
+  display: none;
+}
+
+.queue-move-up {
+  transform: rotate(-90deg);
+}
+
+.queue-move-down {
+  transform: rotate(90deg);
+}
+
+/* A converting book carries its own live ASCII bar, aligned under its title. */
+.queue-row-progress {
+  align-items: center;
+  column-gap: var(--space-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: var(--space-2);
+  min-width: 0;
+  padding-left: calc(var(--cover-sm) + var(--space-3));
+  row-gap: var(--space-1);
+}
+
+.queue-row-progress .pbar {
+  grid-column: 1 / -1;
+  min-width: 0;
+}
+
+.queue-row-progress-text {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  line-height: var(--line-sm);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.queue-row-progress-text strong {
+  color: var(--text);
+  font-weight: var(--weight-medium);
+}
+
+.queue-details-btn {
+  justify-self: end;
+}
+
+/* ---------- The selected book, expanded inside its row ---------- */
+
+.queue-item-detail {
+  border-top: 1px solid var(--border-light);
+  container: selected-book / inline-size;
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-3);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-left: calc(var(--cover-sm) + var(--space-3));
+  padding-top: var(--space-4);
+}
+
+.queue-item-detail-pending {
+  align-items: center;
+  display: flex;
+  gap: var(--space-3);
+  justify-content: space-between;
+  min-height: var(--control-h-sm);
+}
+
+.queue-item-detail-pending .btn {
+  margin-left: auto;
+}
+
+.preflight-warnings {
+  color: var(--warning);
+  display: grid;
+  font-size: var(--text-sm);
+  gap: var(--space-1);
+  line-height: var(--line-sm);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.queue-item-detail > .field-error {
+  margin: 0;
+}
+
+.book-preview {
+  margin: 0;
+}
+
+.book-preview > summary {
+  justify-self: start;
+  width: max-content;
+}
+
+.book-preview[open] > summary {
+  margin-bottom: var(--space-3);
+}
+
+.book-preview-columns {
+  display: grid;
+  gap: var(--space-6);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.book-preview-columns > section {
+  min-width: 0;
+}
+
+.book-preview-columns .eyebrow {
+  margin-bottom: var(--space-2);
+}
+
+.book-chapters ol {
+  counter-reset: chapter;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.book-chapters li {
+  align-items: baseline;
+  border-bottom: 1px solid var(--border-light);
+  color: var(--text);
+  counter-increment: chapter;
+  display: grid;
+  font-size: var(--text-sm);
+  gap: var(--space-2);
+  grid-template-columns: 2ch minmax(0, 1fr);
+  line-height: var(--line-sm);
+  padding-block: var(--space-2);
+}
+
+.book-chapters li::before {
+  color: var(--text-tertiary);
+  content: counter(chapter);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.book-chapters li > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-chapters li:first-child {
+  padding-top: 0;
+}
+
+.book-chapters li:last-child {
+  border-bottom: 0;
+}
+
+.book-chapters .field-hint {
+  margin: var(--space-2) 0 0;
+}
+
+/* The sample reads like an excerpt, not a form field. */
+.preflight-sample {
+  border-left: 2px solid var(--border-strong);
+  color: var(--text-secondary);
+  font-family: var(--font-body);
+  font-size: var(--text-base);
+  line-height: var(--line-md);
+  margin: 0;
+  max-height: 20rem;
+  overflow-wrap: anywhere;
+  overflow-y: auto;
+  padding: 0 0 0 var(--space-3);
   white-space: pre-wrap;
 }
 
-.voice-options {
+@container selected-book (max-width: 399px) {
+  .book-preview-columns,
+  .queue-item-detail .field-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ---------- Inspector: format, voice, speed, then the actions ---------- */
+
+.conversion-narration {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  min-height: 0;
+  min-width: 0;
+}
+
+.conversion-options-sections {
+  gap: var(--space-5);
+}
+
+.conversion-options-sections > * + * {
+  border-top: 1px solid var(--border-light);
+  padding-top: var(--space-5);
+}
+
+.conversion-options-sections > .conversion-section {
   gap: var(--space-3);
+}
+
+.format-choices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%;
+}
+
+/* The radio fills its segment invisibly, so the whole segment is the target. */
+.format-summary {
+  margin: var(--space-2) 0 0;
+}
+
+.format-choice {
+  align-items: center;
+  display: inline-flex;
+  justify-content: center;
+  position: relative;
+}
+
+.format-choice input {
+  appearance: none;
+  cursor: pointer;
+  inset: 0;
+  margin: 0;
+  opacity: 0;
+  position: absolute;
+}
+
+.format-choice:has(input:focus-visible) {
+  outline: var(--focus-ring-width) solid var(--focus-color);
+  outline-offset: var(--focus-ring-offset);
+  z-index: 1;
+}
+
+.format-choice-title {
+  pointer-events: none;
+}
+
+.voice-options {
   margin-bottom: 0;
   max-width: 100%;
 }
 
-.voice-controls {
-  align-items: start;
-  display: grid;
-  gap: var(--space-3) var(--space-2);
-  grid-template-columns: minmax(0, 1fr) auto;
-  max-width: var(--field-text-width);
-  min-width: 0;
+.voice-header {
+  display: flex;
+  justify-content: space-between;
 }
 
-.voice-engine-field {
-  grid-column: 1 / -1;
-}
-
-.voice-main-field {
-  min-width: 0;
-}
-
-.voice-side {
-  display: grid;
-  gap: var(--space-1);
-  justify-items: stretch;
-}
-
-.voice-side-spacer {
-  visibility: hidden;
-}
-
-.voice-selection {
+.voice-picker {
   align-items: center;
   display: grid;
   gap: var(--space-2);
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   min-width: 0;
 }
 
-.voice-action-btn {
-  min-width: 7.5rem;
+.voice-preview-btn .ascii-loader {
+  font-size: var(--text-md);
 }
 
 .voice-status-span {
-  grid-column: 1 / -1;
-  margin-top: calc(var(--space-3) * -1 + var(--space-1));
+  margin: 0;
 }
 
 .voice-status-span:empty {
   display: none;
 }
 
-.conversion-actions {
-  align-items: center;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--card-radius);
-  display: flex;
-  flex-shrink: 0;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-3);
-  justify-content: flex-end;
-  margin-top: var(--space-2);
-  max-height: 50%;
-  max-width: var(--field-text-width);
-  overflow-y: auto;
-  padding: var(--space-3) var(--card-pad);
-  width: 100%;
-}
-
-.conversion-queue-summary {
-  color: var(--text-secondary);
-  display: grid;
-  flex: 1 1 180px;
-  font-size: var(--text-sm);
-  gap: var(--space-1);
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.conversion-queue-summary strong {
-  color: var(--text);
-  font-size: var(--text-base);
-  font-weight: 600;
-}
-
-.conversion-actions-hint {
-  color: var(--text-secondary);
-  font-size: var(--text-sm);
-}
-
-.conversion-actions .conversion-job-actions {
+.voice-sample {
   margin: 0;
 }
 
-.conversion-actions #start-btn,
-.conversion-actions #run-queue-btn {
-  min-width: 168px;
-  width: auto;
+.voice-sample-body {
+  padding-top: var(--space-2);
 }
 
 .voice-preview-audio {
   display: none;
 }
 
-.advanced-settings,
-.metadata-overrides {
-  margin: 0;
-  max-width: var(--field-text-width);
+/* Searchable menu: the filter stays pinned while the list scrolls. */
+.term-select-menu.has-search {
+  align-content: start;
+  gap: 0;
+  padding: 0;
 }
 
-.advanced-settings-body,
-.metadata-overrides-body {
-  margin-bottom: 0;
-  padding: var(--card-pad);
+.term-select-search {
+  background: var(--surface-3);
+  border-bottom: 1px solid var(--border);
+  padding: var(--space-1);
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
-.runtime-status-pill {
-  align-items: center;
-  background: var(--positive-soft);
-  border: 0;
-  border-radius: 999px;
-  color: var(--text-secondary);
-  display: inline-flex;
-  font-size: var(--text-sm);
-  gap: var(--space-2);
-  min-height: var(--control-h-sm);
-  padding: 0 var(--space-3);
-  width: fit-content;
-  max-width: 100%;
+.term-select-search .field-input {
+  background: transparent;
+  border-color: transparent;
 }
 
-.runtime-status-pill.is-error {
-  background: var(--negative-soft);
-  color: var(--negative);
+/* The caret marks focus here; the menu itself is the focused context. */
+.term-select-search .field-input:focus-visible {
+  border-color: var(--border-strong);
+  outline: none;
 }
 
-.conversion-source-sections > .form-error:empty {
+.term-select-search .search-icon {
+  left: calc(var(--space-1) + var(--space-3));
+}
+
+.term-select-list {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-1);
+}
+
+.term-select-list:empty {
   display: none;
 }
 
-@media (max-height: 540px) {
-  .conversion-actions {
-    gap: var(--space-1) var(--space-2);
-    padding: var(--space-2) var(--space-3);
+.term-select-empty {
+  color: var(--text-tertiary);
+  font-size: var(--text-sm);
+  margin: 0;
+  padding: var(--space-3);
+}
+
+.advanced-settings {
+  margin: 0;
+}
+
+.advanced-settings > summary {
+  display: grid;
+  gap: var(--space-1-5);
+  grid-template-columns: auto minmax(0, 1fr) var(--icon-size);
+  white-space: nowrap;
+}
+
+.advanced-settings > summary::before {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.advanced-settings > summary > span:first-of-type {
+  color: var(--text);
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.advanced-settings .disclosure-card-meta {
+  color: var(--text-tertiary);
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  text-align: right;
+  /* A summary too long for the line wraps beside the title; it is never cut. */
+  white-space: normal;
+}
+
+.advanced-settings-body {
+  padding: var(--space-3) 0 0;
+}
+
+.advanced-settings .conversion-form-grid {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.advanced-settings .short-input {
+  max-width: none;
+}
+
+/* One summary line over one primary action, pinned to the inspector's foot. */
+.conversion-actions {
+  border-top: 1px solid var(--border-light);
+  display: grid;
+  flex-shrink: 0;
+  gap: var(--space-3);
+  margin-top: auto;
+  min-width: 0;
+  padding-top: var(--space-4);
+  width: 100%;
+}
+
+/* Long errors scroll (and take keyboard focus) rather than push the actions off screen. */
+.conversion-actions .form-error {
+  border-radius: var(--radius-xs);
+  margin: 0;
+  max-height: calc(5 * var(--line-sm));
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.conversion-summary-row {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+  justify-content: space-between;
+  min-height: var(--control-h-sm);
+  min-width: 0;
+}
+
+.conversion-queue-summary {
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+  line-height: var(--line-sm);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.conversion-action-row {
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.conversion-action-row > .btn {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.conversion-action-row > .btn[hidden] {
+  display: none;
+}
+
+.conversion-action-row > #refresh-btn {
+  flex: 0 0 auto;
+}
+
+/* ---------- Wide layout: two columns, each scrolling on its own ---------- */
+
+@container conversion-workbench (min-width: 720px) {
+  .conversion-form {
+    align-content: stretch;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    grid-template-rows: minmax(0, 1fr);
+    margin-right: 0;
+    overflow: hidden;
+    scrollbar-gutter: auto;
   }
 
-  .conversion-actions #start-btn,
-  .conversion-actions #run-queue-btn {
-    min-width: 0;
+  .conversion-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+  }
+
+  .conversion-options-sections {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .conversion-panel .conversion-narration {
+    border-left: 1px solid var(--border-light);
+    padding-left: var(--space-6);
   }
 }
 
-@media (max-width: 800px) {
-  .voice-controls,
-  .voice-selection {
-    grid-template-columns: minmax(0, 1fr);
+@container conversion-workbench (min-width: 1120px) {
+  .conversion-form {
+    grid-template-columns: minmax(0, 1fr) clamp(320px, 28.125cqw, 360px);
   }
+}
 
-  .voice-side {
-    justify-items: start;
-  }
+/* ---------- Empty stage: the intake becomes the page ---------- */
 
-  .voice-action-btn {
-    min-width: 0;
-  }
+.conversion-form.is-empty .drop-zone {
+  background: transparent;
+  gap: var(--space-4);
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  min-height: 320px;
+  padding: var(--space-10) var(--space-6);
+  text-align: center;
+}
 
-  .voice-side-spacer {
-    display: none;
-  }
+.conversion-form.is-empty .drop-zone-icon {
+  align-items: center;
+  background: var(--surface-2);
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--accent-text);
+  height: 56px;
+  justify-content: center;
+  width: 56px;
+}
 
-  .conversion-section-header-row {
-    align-items: stretch;
-    flex-direction: column;
-  }
+.conversion-form.is-empty .drop-zone-copy {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.conversion-form.is-empty .drop-zone-copy strong {
+  font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
+  line-height: var(--line-xl);
+}
+
+.conversion-form.is-empty .drop-zone-browse {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  padding-inline: var(--space-5);
+}
+
+.conversion-form.is-empty .queue-panel {
+  display: none;
+}
+
+.conversion-form.is-empty #paste-text-input {
+  height: 260px;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .drop-zone,
-  .drop-zone-icon,
-  .queue-row {
+  .queue-row,
+  .conversion-panel .drop-zone,
+  .queue-item-actions {
     transition: none;
   }
 }
 
-@media (max-width: 560px) {
-  .drop-zone {
-    grid-template-columns: 36px minmax(0, 1fr);
+@media (forced-colors: active) {
+  /* The empty stage's Browse chip is accent-filled like a primary button. */
+  .conversion-form.is-empty .drop-zone-browse {
+    background: Highlight;
+    border-color: Highlight;
+    color: HighlightText;
+    forced-color-adjust: none;
   }
 
-  .drop-zone-browse {
-    grid-column: 2;
-    justify-self: start;
+  .queue-row.is-expanded {
+    outline: 1px solid CanvasText;
   }
+
+  .format-choice:has(input:checked) {
+    outline: 1px solid Highlight;
+    outline-offset: -1px;
+  }
+}
+
+/* ---------- Settings: text cleaning defaults ---------- */
+
+/* The GPU reads as a value, not an input, until the user asks to change it. */
+.cleaner-device-value {
+  align-items: center;
+  color: var(--text);
+  display: flex;
+  font-size: var(--text-base);
+  gap: var(--space-2);
+  justify-content: space-between;
+  min-height: var(--control-h);
+  min-width: 0;
+}
+
+.cleaner-runtime-status {
+  margin: 0;
+}
+
+/* In Settings the device is a full-width label | value | action row, like the
+   Library rows below it. */
+.settings-page .conversion-form-grid > .field.cleaner-device-field {
+  align-items: center;
+  border-top: 1px solid var(--border-light);
+  column-gap: 0;
+  grid-column: 1 / -1;
+  grid-template-columns: 9.5rem minmax(0, 1fr);
+  grid-template-rows: auto;
+  padding-top: var(--space-2);
+}
+
+/* The same label as the settings rows below it. */
+.settings-page .cleaner-device-field > .conversion-label-row > .field-label {
+  color: var(--text);
+  font-size: var(--text-base);
+  font-weight: var(--weight-normal);
+  line-height: var(--line-base);
+}
+
+.conversion-action-row > .stop-confirm {
+  flex: 1 1 100%;
 }

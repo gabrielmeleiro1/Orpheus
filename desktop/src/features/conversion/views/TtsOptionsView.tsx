@@ -1,3 +1,5 @@
+import { ConversionHelp } from "./ConversionHelp";
+import { AsciiLoader } from "../../../ui/ascii/AsciiLoader";
 import { Icon } from "../../../ui/icons";
 import { TermSelect } from "../TermSelect";
 import type {
@@ -12,28 +14,44 @@ interface TtsOptionsViewProps {
   actions: ConversionPanelActions;
 }
 
+const RECOMMEND_TIP = "Suggest a voice suited to this book";
+
+/**
+ * One searchable voice picker with a play button beside it. The engine picker
+ * appears only when there is more than one engine to choose from.
+ */
 export function TtsOptionsView({
   ttsOptions,
   capabilities,
   actions,
 }: TtsOptionsViewProps) {
+  const showEngine = ttsOptions.engineOptions.length > 1;
+  const recommendTip = capabilities.recommendationUnavailableReason || RECOMMEND_TIP;
   return (
-    <section className="conversion-section form-section voice-options">
-      <div className="conversion-section-header">
-        <h2 className="conversion-group-heading">Voice</h2>
-        <p className="conversion-section-hint">Choose the narrator and preview a short sample before converting.</p>
+    <section className="conversion-section form-section voice-options" aria-labelledby="voice-heading">
+      <div className="card-header conversion-section-header voice-header">
+        <h2 className="eyebrow" id="voice-heading">Voice</h2>
+        <button
+          id="voice-suggest-btn"
+          className="btn btn-ghost btn-sm btn-flush-end voice-action-btn"
+          type="button"
+          disabled={!capabilities.canRecommendVoice}
+          aria-describedby="voice-suggest-tip"
+          data-tip={recommendTip}
+          data-tip-pos="left"
+          onClick={() => void actions.onRecommendVoice()}
+        >
+          {ttsOptions.voiceSuggestBusy ? "Analyzing…" : "Recommend"}
+        </button>
+        <span id="voice-suggest-tip" className="sr-only">{recommendTip}</span>
       </div>
 
-      <div className="voice-controls">
+      {showEngine ? (
         <div className="field voice-engine-field">
-          <label
-            className="field-label"
-            htmlFor="tts-engine-select"
-            data-tip="Speech engine used to narrate the book"
-            data-tip-pos="right"
-          >
-            Engine
-          </label>
+          <div className="conversion-label-row">
+            <label className="field-label" htmlFor="tts-engine-select">Engine</label>
+            <ConversionHelp label="Engine help" text="Speech engine used to narrate the book" />
+          </div>
           <TermSelect
             id="tts-engine-select"
             label="TTS engine"
@@ -44,52 +62,57 @@ export function TtsOptionsView({
             onChange={actions.setSelectedEngine}
           />
         </div>
+      ) : null}
 
-        <div className="field voice-main-field">
-          <span className="field-label" id="voice-field-label">Voice</span>
-          <div className="voice-selection" role="group" aria-labelledby="voice-field-label">
-            <input
-              id="voice-search"
-              aria-label="Search voices"
-              className="field-input"
-              type="text"
-              placeholder="Search voices…"
-              value={ttsOptions.voiceFilter}
-              onChange={(event) => actions.setVoiceFilter(event.target.value)}
-            />
-            <TermSelect
-              id="voice-select"
-              label="Voice"
-              value={ttsOptions.selectedVoice}
-              options={ttsOptions.filteredVoiceOptions}
-              placeholder="-"
-              disabled={ttsOptions.voiceSelectDisabled}
-              onChange={actions.setSelectedVoice}
-            />
-          </div>
-        </div>
-        <div className="voice-side">
-          <span className="field-label voice-side-spacer" aria-hidden="true">&nbsp;</span>
-          <button
-            id="voice-suggest-btn"
-            className="btn voice-action-btn"
-            type="button"
-            disabled={!capabilities.canRecommendVoice}
-            title={capabilities.recommendationUnavailableReason || "Suggest a voice suited to this book from a text sample"}
-            data-tip={capabilities.recommendationUnavailableReason || "Suggest a voice suited to this book from a text sample"}
-            onClick={() => void actions.onRecommendVoice()}
-          >
-            {ttsOptions.voiceSuggestBusy ? "Analyzing…" : "Recommend"}
-          </button>
-        </div>
-        {ttsOptions.voiceSuggestStatus ? (
-          <span className="voice-suggest-status voice-status-span" role="status">{ttsOptions.voiceSuggestStatus}</span>
-        ) : null}
+      <div className="voice-picker" role="group" aria-labelledby="voice-heading">
+        <TermSelect
+          id="voice-select"
+          label="Voice"
+          value={ttsOptions.selectedVoice}
+          options={ttsOptions.filteredVoiceOptions}
+          placeholder="-"
+          disabled={ttsOptions.voiceSelectDisabled}
+          search={{
+            id: "voice-search",
+            label: "Search voices",
+            placeholder: "Search voices…",
+            value: ttsOptions.voiceFilter,
+            onChange: actions.setVoiceFilter,
+            emptyText: "No matching voices",
+          }}
+          onChange={actions.setSelectedVoice}
+        />
+        <button
+          id="voice-preview-btn"
+          className={`btn btn-secondary btn-icon voice-preview-btn${ttsOptions.previewBusy ? " is-loading" : ""}`}
+          type="button"
+          disabled={!capabilities.canPreviewVoice}
+          aria-label={ttsOptions.previewBusy ? "Loading voice preview" : "Listen to voice preview"}
+          data-tip="Listen"
+          data-tip-pos="left"
+          onClick={() => void actions.onPreviewVoice()}
+        >
+          {ttsOptions.previewBusy ? <AsciiLoader variant="ring" /> : <Icon name="play" />}
+        </button>
+      </div>
+      {ttsOptions.voiceSuggestStatus ? (
+        <p className="voice-suggest-status voice-status-span" role="status">{ttsOptions.voiceSuggestStatus}</p>
+      ) : null}
+      <span
+        id="voice-preview-status"
+        role="status"
+        aria-atomic="true"
+        className={ttsOptions.previewError ? "field-hint is-error voice-status-span" : "sr-only"}
+      >
+        {ttsOptions.previewStatus}
+      </span>
 
-        <div className="field voice-main-field">
-          <label className="field-label" htmlFor="voice-preview-text">Preview</label>
+      <details className="voice-sample disclosure">
+        <summary><span>Preview text</span></summary>
+        <div className="voice-sample-body">
           <input
             id="voice-preview-text"
+            maxLength={320}
             aria-label="Voice preview text"
             className="field-input"
             type="text"
@@ -98,31 +121,8 @@ export function TtsOptionsView({
             onChange={(event) => actions.setPreviewText(event.target.value)}
           />
         </div>
-        <div className="voice-side">
-          <span className="field-label voice-side-spacer" aria-hidden="true">&nbsp;</span>
-          <button
-            id="voice-preview-btn"
-            className="btn voice-action-btn"
-            type="button"
-            disabled={!capabilities.canPreviewVoice}
-            aria-label={ttsOptions.previewBusy ? "Loading voice preview" : "Listen to voice preview"}
-            data-tip="Speak the sample with the selected voice"
-            onClick={() => void actions.onPreviewVoice()}
-          >
-            <Icon name="play" />
-            {ttsOptions.previewBusy ? "…" : "Listen"}
-          </button>
-        </div>
-        <span
-          id="voice-preview-status"
-          role="status"
-          aria-atomic="true"
-          className={`field-hint voice-status-span${ttsOptions.previewError ? " is-error" : ""}`}
-        >
-          {ttsOptions.previewStatus}
-        </span>
-        <audio id="voice-preview-audio" ref={ttsOptions.previewAudioRef} className="voice-preview-audio" preload="none" />
-      </div>
+      </details>
+      <audio id="voice-preview-audio" ref={ttsOptions.previewAudioRef} className="voice-preview-audio" preload="none" />
     </section>
   );
 }

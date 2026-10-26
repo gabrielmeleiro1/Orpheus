@@ -1,3 +1,4 @@
+import { ConversionHelp } from "./ConversionHelp";
 import { TermSelect } from "../TermSelect";
 import { normalizeSpeedInput } from "../conversionOptionsShared";
 import type {
@@ -11,33 +12,42 @@ interface AdvancedOptionsViewProps {
 }
 
 function collapsedSummary(advancedOptions: AdvancedOptionsViewModel): string {
-  const speed = advancedOptions.speedInput.trim() || "1";
-  const workers = advancedOptions.selectedParallelWorkerLimit;
-  const workerText = workers > 1 ? `${workers} chapters at once` : "one chapter at a time";
-  return `Speed ${speed} · ${workerText}`;
+  // The field keeps what was typed ("1.0") until blur; the summary shows the value in use.
+  const speed = normalizeSpeedInput(advancedOptions.speedInput);
+  const requested = advancedOptions.selectedParallelWorkerLimit;
+  // The summary states what will run, which can be fewer than was asked for.
+  const workers = Math.min(requested, advancedOptions.usableParallelWorkerLimit ?? requested);
+  // Kept short: the header shares one narrow line with the section title.
+  if (workers < requested) return `Speed ${speed} · ${workers} of ${requested} chapters`;
+  // One chapter at a time is the default and needs no mention unless more was asked for.
+  return workers > 1 ? `Speed ${speed} · ${workers} chapters at once` : `Speed ${speed}`;
 }
 
 export function AdvancedOptionsView({
   advancedOptions,
   actions,
 }: AdvancedOptionsViewProps) {
+  const quantizationLabels: Record<string, string> = {
+    "": "Default", "4bit": "4-bit", "8bit": "8-bit", fp16: "FP16", bf16: "BF16", fp32: "FP32",
+  };
+  const quantizationOptions = advancedOptions.quantizationOptions.map((option) => ({
+    ...option,
+    label: quantizationLabels[option.value] ?? option.label,
+  }));
+
   return (
-    <details id="advanced-audio-settings" className="advanced-settings disclosure disclosure-card">
+    <details id="advanced-audio-settings" className="advanced-settings disclosure">
       <summary>
-        <span>Advanced</span>
+        <span>Speed &amp; performance</span>
         <span className="disclosure-card-meta">{collapsedSummary(advancedOptions)}</span>
       </summary>
       <div className="advanced-settings-body">
         <div className="form-grid conversion-form-grid">
           <div className="field">
-            <label
-              className="field-label"
-              htmlFor="speed-input"
-              data-tip="Narration speed baked into the audio. 1.0 is natural pace."
-              data-tip-pos="right"
-            >
-              Speed
-            </label>
+            <div className="conversion-label-row">
+              <label className="field-label" htmlFor="speed-input">Speed</label>
+              <ConversionHelp label="Speed help" text="Narration speed baked into the audio. 1.0 is natural pace." />
+            </div>
             <input
               id="speed-input"
               aria-label="Narration speed"
@@ -54,37 +64,31 @@ export function AdvancedOptionsView({
 
           {advancedOptions.showQuantization ? (
             <div className="field">
-              <label
-                className="field-label"
-                htmlFor="tts-quantization-select"
-                data-tip="Model precision. Lower bits run faster with a slight quality trade-off."
-                data-tip-pos="right"
-              >
-                Quantization
-              </label>
+              <div className="conversion-label-row">
+                <label className="field-label" htmlFor="tts-quantization-select">Quantization</label>
+                <ConversionHelp label="Quantization help" text="Model precision. Lower bits run faster with a slight quality trade-off." />
+              </div>
               <TermSelect
                 id="tts-quantization-select"
                 label="TTS quantization"
                 value={advancedOptions.selectedQuantization}
-                options={advancedOptions.quantizationOptions}
-                placeholder="default"
+                options={quantizationOptions}
+                placeholder="Default"
                 onChange={actions.setSelectedQuantization}
               />
             </div>
           ) : null}
 
           <div className="field">
-            <label
-              className="field-label"
-              htmlFor="parallel-worker-max-input"
-              data-tip="How many chapters synthesize at the same time. Each one loads its own copy of the voice model, so higher values need more memory."
-              data-tip-pos="right"
-            >
-              Parallel chapters
-            </label>
+            <div className="conversion-label-row">
+              <label className="field-label" htmlFor="parallel-worker-max-input">Parallel chapters</label>
+              <ConversionHelp label="Parallel chapters help" text="Narrates several chapters at once to finish sooner. Each one loads its own copy of the voice model, so it needs more memory." />
+            </div>
             <input
               id="parallel-worker-max-input"
               aria-label="Chapters converted in parallel"
+              aria-invalid={advancedOptions.parallelWorkerError || undefined}
+              aria-describedby={advancedOptions.parallelWorkerStatus ? "parallel-worker-status" : undefined}
               className="field-input short-input"
               type="number"
               min={1}
@@ -92,11 +96,12 @@ export function AdvancedOptionsView({
               step={1}
               value={advancedOptions.parallelManualMax}
               onChange={(event) => actions.setParallelManualMax(event.target.value)}
+              onBlur={(event) => actions.setParallelManualMax(event.target.value.trim() || "1")}
             />
             {advancedOptions.parallelWorkerStatus ? (
               <span
                 id="parallel-worker-status"
-                className={`field-hint${advancedOptions.parallelWorkerError ? " is-error" : ""}`}
+                className={advancedOptions.parallelWorkerError ? "field-error" : "field-hint"}
                 {...(advancedOptions.parallelWorkerDetail
                   ? { "data-tip": advancedOptions.parallelWorkerDetail }
                   : {})}

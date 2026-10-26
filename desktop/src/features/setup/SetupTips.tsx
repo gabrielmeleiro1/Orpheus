@@ -1,7 +1,7 @@
 import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
-import { groupEstimate, MODEL_GROUP_DETAILS } from "./setupModel";
+import { Icon } from "../../ui/icons";
 
 export function InfoTip({ children, label }: { children: ReactNode; label: string }) {
   const id = useId();
@@ -69,7 +69,7 @@ export function InfoTip({ children, label }: { children: ReactNode; label: strin
       <button
         ref={trigger}
         type="button"
-        className="setup-tip"
+        className="btn btn-ghost btn-icon btn-info setup-tip"
         aria-label={label}
         aria-expanded={open}
         aria-controls={open ? id : undefined}
@@ -84,7 +84,7 @@ export function InfoTip({ children, label }: { children: ReactNode; label: strin
           keepOpen();
         }}
       >
-        <span className="setup-tip-icon" aria-hidden="true">i</span>
+        <Icon name="info" />
       </button>
       {open && createPortal(
         <div
@@ -99,26 +99,5 @@ export function InfoTip({ children, label }: { children: ReactNode; label: strin
         document.body,
       )}
     </>
-  );
-}
-
-export function ModelListTip({ modelGroups, label }: { modelGroups: string[]; label: string }) {
-  const rows = modelGroups
-    .map((groupId) => ({ groupId, details: MODEL_GROUP_DETAILS[groupId] }))
-    .filter((row) => Boolean(row.details));
-  if (rows.length === 0) return null;
-  return (
-    <InfoTip label={label}>
-      <ul className="setup-tip-models">
-        {rows.map(({ groupId, details }) => (
-          <li key={groupId}>
-            <strong>{details!.label}</strong>
-            <span>{details!.description}</span>
-            <code>{details!.model}</code>
-            <span>{groupEstimate(groupId)}</span>
-          </li>
-        ))}
-      </ul>
-    </InfoTip>
   );
 }

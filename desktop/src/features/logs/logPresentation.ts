@@ -57,7 +57,7 @@ export function filterVisibleLogs(
   });
 }
 
-export interface LogLevelCounts {
+interface LogLevelCounts {
   all: number;
   info: number;
   warn: number;

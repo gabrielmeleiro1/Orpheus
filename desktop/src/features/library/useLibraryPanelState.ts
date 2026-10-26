@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { useGenerationGuard } from "../../state/generationGuard";
 import type { CleaningPreviewResponse } from "../../types/api";
 import type { UseLibraryResult } from "./useLibrary";
 
@@ -14,6 +15,9 @@ export interface UseLibraryPanelStateResult {
   setEditTitle: (value: string) => void;
   setEditAuthor: (value: string) => void;
   setEditTags: (value: string) => void;
+  /** Whether the draft differs from the selected book's stored metadata. */
+  metadataDirty: boolean;
+  saveMetadata: () => Promise<void>;
   cleaningPreview: CleaningPreviewResponse | null;
   cleaningPreviewLoading: boolean;
   loadCleaningPreview: (chapterNumber: number) => Promise<void>;
@@ -27,53 +31,90 @@ export interface UseLibraryPanelStateResult {
  */
 export function useLibraryPanelState({ library }: UseLibraryPanelStateArgs): UseLibraryPanelStateResult {
   const selected = library.selectedBookDetail;
+  const selectedId = selected?.id ?? null;
+  const requestCleaningPreview = library.loadCleaningPreview;
 
-  const [editTitle, setEditTitle] = useState("");
-  const [editAuthor, setEditAuthor] = useState("");
-  const [editTags, setEditTags] = useState("");
+  const [editTitle, updateEditTitle] = useState("");
+  const [editAuthor, updateEditAuthor] = useState("");
+  const [editTags, updateEditTags] = useState("");
   const [cleaningPreview, setCleaningPreview] = useState<CleaningPreviewResponse | null>(null);
   const [cleaningPreviewLoading, setCleaningPreviewLoading] = useState(false);
-  const previewGenerationRef = useRef(0);
+  const previewGuard = useGenerationGuard();
   const selectedBookIdRef = useRef<number | null>(selected?.id ?? null);
-  selectedBookIdRef.current = selected?.id ?? null;
+  useLayoutEffect(() => {
+    selectedBookIdRef.current = selected?.id ?? null;
+  });
+
+  const libraryGenerationRef = useRef(library.libraryGeneration);
+  const metadataRef = useRef<typeof selected>(null);
+  const draftRevisionRef = useRef(0);
+  const syncedRevisionRef = useRef(0);
+  const submittedDraftRef = useRef<{ bookId: number; revision: number } | null>(null);
+
+  const setEditTitle = useCallback((value: string) => {
+    draftRevisionRef.current += 1;
+    updateEditTitle(value);
+  }, []);
+  const setEditAuthor = useCallback((value: string) => {
+    draftRevisionRef.current += 1;
+    updateEditAuthor(value);
+  }, []);
+  const setEditTags = useCallback((value: string) => {
+    draftRevisionRef.current += 1;
+    updateEditTags(value);
+  }, []);
 
   useEffect(() => {
-    previewGenerationRef.current += 1;
-    setEditTitle(selected?.title ?? "");
-    setEditAuthor(selected?.author ?? "");
-    setEditTags(selected?.tags ?? "");
+    const changedBook = metadataRef.current?.id !== selected?.id
+      || libraryGenerationRef.current !== library.libraryGeneration;
+    libraryGenerationRef.current = library.libraryGeneration;
+    metadataRef.current = selected;
+    const submitted = submittedDraftRef.current;
+    const submittedDraftUnchanged = submitted?.bookId === selected?.id
+      && submitted?.revision === draftRevisionRef.current;
+    if (changedBook) draftRevisionRef.current += 1;
+    if (changedBook || submittedDraftUnchanged || syncedRevisionRef.current === draftRevisionRef.current) {
+      updateEditTitle(selected?.title ?? "");
+      updateEditAuthor(selected?.author ?? "");
+      updateEditTags(selected?.tags ?? "");
+      syncedRevisionRef.current = draftRevisionRef.current;
+    }
+    submittedDraftRef.current = null;
+    previewGuard.invalidate();
     setCleaningPreview(null);
     setCleaningPreviewLoading(false);
-  }, [selected?.id, selected?.title, selected?.author, selected?.tags]);
+  }, [library.libraryGeneration, selected?.id, selected?.title, selected?.author, selected?.tags]);
+
+  const saveMetadata = useCallback(async () => {
+    if (!selected || library.savingMetadata) return;
+    submittedDraftRef.current = { bookId: selected.id, revision: draftRevisionRef.current };
+    await library.updateSelectedBookMetadata({ title: editTitle, author: editAuthor, tags: editTags });
+  }, [selected, library, editTitle, editAuthor, editTags]);
 
   const loadCleaningPreview = useCallback(
     async (chapterNumber: number): Promise<void> => {
-      const requestGeneration = ++previewGenerationRef.current;
-      const requestBookId = selected?.id ?? null;
+      previewGuard.invalidate();
+      const ownsPreview = previewGuard.capture();
+      const requestBookId = selectedId;
+      const isCurrentPreview = () => ownsPreview() && selectedBookIdRef.current === requestBookId;
       setCleaningPreviewLoading(true);
       try {
-        const preview = await library.loadCleaningPreview(chapterNumber);
-        if (
-          previewGenerationRef.current === requestGeneration &&
-          selectedBookIdRef.current === requestBookId
-        ) {
+        const preview = await requestCleaningPreview(chapterNumber);
+        if (isCurrentPreview()) {
           setCleaningPreview(preview);
         }
       } finally {
-        if (
-          previewGenerationRef.current === requestGeneration &&
-          selectedBookIdRef.current === requestBookId
-        ) {
+        if (isCurrentPreview()) {
           setCleaningPreviewLoading(false);
         }
       }
     },
-    [library],
+    [requestCleaningPreview, selectedId],
   );
 
   return {
     closeCleaningPreview: () => {
-      previewGenerationRef.current += 1;
+      previewGuard.invalidate();
       setCleaningPreview(null);
       setCleaningPreviewLoading(false);
     },
@@ -83,6 +124,12 @@ export function useLibraryPanelState({ library }: UseLibraryPanelStateArgs): Use
     setEditTitle,
     setEditAuthor,
     setEditTags,
+    metadataDirty: Boolean(selected) && (
+      editTitle !== (selected?.title ?? "")
+      || editAuthor !== (selected?.author ?? "")
+      || editTags !== (selected?.tags ?? "")
+    ),
+    saveMetadata,
     cleaningPreview,
     cleaningPreviewLoading,
     loadCleaningPreview,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
-import type { ApiClient } from "../../api/client";
+import { ApiError, type ApiClient } from "../../api/client";
 import type { CleanerBackendOption, ModelOptionsResponse, SystemCapabilitiesResponse, TermSelectOption } from "../../types/api";
 
 import {
@@ -15,14 +15,19 @@ import {
   resolveInitialCleanerBackendId,
   selectedCleanerBackendOption,
 } from "./cleanerBackendHelpers";
-import type { PersistedSettings } from "./conversionOptionsShared";
-import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
+import { resolveOptionValue, type PersistedSettings } from "./conversionOptionsShared";
+import { useLatestRequest } from "./useLatestRequest";
 
-export interface UseCleanerOptionsArgs {
+// Model discovery contacts the remote provider; allow network latency while
+// releasing the fetch button for a manual retry if the provider stalls.
+const CLEANER_MODEL_DISCOVERY_TIMEOUT_MS = 30_000;
+
+interface UseCleanerOptionsArgs {
   apiClient: ApiClient | null;
   modelOptions: ModelOptionsResponse | null;
   systemCapabilities: SystemCapabilitiesResponse | null;
   persistedSettingsRef: MutableRefObject<PersistedSettings>;
+  runtimeSelectionGeneration?: number;
 }
 
 export interface UseCleanerOptionsResult {
@@ -63,26 +68,6 @@ export function compactProviderError(message: string): string {
   }
 }
 
-function resolveInitialBackendSelection(
-  modelOptions: ModelOptionsResponse | null,
-  systemCapabilities: SystemCapabilitiesResponse | null,
-  persisted: PersistedSettings,
-) {
-  const availableOptions = filterAvailableCleanerBackendOptions(
-    resolveCleanerBackendOptions(modelOptions),
-    systemCapabilities,
-  );
-
-  const hasConfiguredCleanerBackend = Boolean(persisted.cleaner_backend_configured);
-  const persistedBackend = hasConfiguredCleanerBackend
-    ? String(
-        persisted.preferred_cleaner_backend ?? persisted.cleaner_backend ?? "",
-      ).trim()
-    : "";
-
-  return resolveInitialCleanerBackendId(availableOptions, persistedBackend);
-}
-
 function resolveInitialCudaDevice(
   backendOption: CleanerBackendOption | null,
   persisted: PersistedSettings,
@@ -111,6 +96,7 @@ export function useCleanerOptions({
   modelOptions,
   systemCapabilities,
   persistedSettingsRef,
+  runtimeSelectionGeneration = 0,
 }: UseCleanerOptionsArgs): UseCleanerOptionsResult {
   const cleanerOptionsHydratedRef = useRef(false);
   const [cleanerOptionsHydrated, setCleanerOptionsHydrated] = useState(false);
@@ -126,11 +112,21 @@ export function useCleanerOptions({
   const [openAiModelFetchLoading, setOpenAiModelFetchLoading] = useState(false);
   const [openAiModelFetchError, setOpenAiModelFetchError] = useState(false);
 
-  const [cleanerRuntimeStatus, setCleanerRuntimeStatus] = useState("Checking cleaner runtime...");
+  const [cleanerRuntimeStatus, setCleanerRuntimeStatus] = useState("Checking cleaner runtime…");
   const [cleanerRuntimeError, setCleanerRuntimeError] = useState(false);
-  const beginOpenAiModelFetch = useLatestRequest();
+  const beginOpenAiModelFetch = useLatestRequest(apiClient);
   const lastAutoFetchedKeyRef = useRef("");
   const openAiModelFetchLoadingRef = useRef(false);
+
+  useEffect(() => {
+    beginOpenAiModelFetch();
+    lastAutoFetchedKeyRef.current = "";
+    openAiModelFetchLoadingRef.current = false;
+    setFetchedOpenAiModelOptions([]);
+    setOpenAiModelFetchLoading(false);
+    setOpenAiModelFetchError(false);
+    setOpenAiModelFetchStatus("Paste an API key to fetch available models.");
+  }, [apiClient, beginOpenAiModelFetch]);
 
   const availableCleanerBackendOptions = useMemo(
     () => filterAvailableCleanerBackendOptions(resolveCleanerBackendOptions(modelOptions), systemCapabilities),
@@ -177,6 +173,12 @@ export function useCleanerOptions({
   );
 
   useEffect(() => {
+    cleanerOptionsHydratedRef.current = false;
+    setCleanerOptionsHydrated(false);
+    setCleanerModelState("");
+  }, [runtimeSelectionGeneration]);
+
+  useEffect(() => {
     if (!apiClient) {
       cleanerOptionsHydratedRef.current = false;
       setCleanerOptionsHydrated(false);
@@ -190,7 +192,7 @@ export function useCleanerOptions({
       setOpenAiModelFetchStatus("Paste an API key to fetch available models.");
       setOpenAiModelFetchLoading(false);
       setOpenAiModelFetchError(false);
-      setCleanerRuntimeStatus("Checking cleaner runtime...");
+      setCleanerRuntimeStatus("Checking cleaner runtime…");
       setCleanerRuntimeError(false);
       lastAutoFetchedKeyRef.current = "";
       openAiModelFetchLoadingRef.current = false;
@@ -242,7 +244,7 @@ export function useCleanerOptions({
     preferredCleanerBackendRef.current = persistedPreference;
     setCleanerBackendConfigured(hasConfiguredCleanerBackend);
 
-    const initialSelection = resolveInitialBackendSelection(modelOptions, systemCapabilities, persisted);
+    const initialSelection = resolveInitialCleanerBackendId(availableCleanerBackendOptions, persistedPreference);
     const backendOption = selectedCleanerBackendOption(modelOptions, initialSelection.backendId);
     const persistedCudaDefaults = initialSelection.restoredPersistedBackend
       ? {
@@ -253,7 +255,7 @@ export function useCleanerOptions({
     selectCleanerBackend(initialSelection.backendId, persistedCudaDefaults);
     cleanerOptionsHydratedRef.current = true;
     setCleanerOptionsHydrated(true);
-  }, [apiClient, beginOpenAiModelFetch, modelOptions, persistedSettingsRef, selectCleanerBackend, systemCapabilities]);
+  }, [apiClient, availableCleanerBackendOptions, beginOpenAiModelFetch, modelOptions, persistedSettingsRef, selectCleanerBackend, systemCapabilities, runtimeSelectionGeneration]);
 
   useEffect(() => {
     if (!apiClient || !modelOptions || !cleanerBackend) {
@@ -296,31 +298,15 @@ export function useCleanerOptions({
   ]);
 
   useEffect(() => {
-    setCleanerModelState((previous) => {
-      if (cleanerModelOptions.some((option) => option.value === previous)) {
-        return previous;
-      }
-
-      const persisted = String(
-        persistedSettingsRef.current.preferred_cleaner_model ??
-          persistedSettingsRef.current.cleaner_model ??
-          "",
-      ).trim();
-      if (persisted && cleanerModelOptions.some((option) => option.value === persisted)) {
-        return persisted;
-      }
-
-      return cleanerModelOptions[0]?.value ?? "";
-    });
-  }, [cleanerModelOptions, persistedSettingsRef]);
+    setCleanerModelState((previous) => resolveOptionValue(
+      cleanerModelOptions,
+      previous,
+      persistedSettingsRef.current.preferred_cleaner_model ??
+        persistedSettingsRef.current.cleaner_model,
+    ));
+  }, [cleanerModelOptions, persistedSettingsRef, runtimeSelectionGeneration]);
 
   useEffect(() => {
-    if (!selectedCleanerBackend) {
-      setCleanerRuntimeStatus("No cleaner backend options available.");
-      setCleanerRuntimeError(true);
-      return;
-    }
-
     const runtimeStatus = deriveCleanerRuntimeStatus(
       systemCapabilities,
       selectedCleanerBackend,
@@ -413,11 +399,11 @@ export function useCleanerOptions({
     openAiModelFetchLoadingRef.current = true;
     setOpenAiModelFetchLoading(true);
     setOpenAiModelFetchError(false);
-    setOpenAiModelFetchStatus(`Fetching ${selectedCleanerBackend.display_name} models...`);
+    setOpenAiModelFetchStatus(`Fetching ${selectedCleanerBackend.display_name} models…`);
     const isLatest = beginOpenAiModelFetch();
 
     try {
-      const modelIds = await apiClient.fetchOpenAiModelIds(normalizedKey);
+      const modelIds = await apiClient.fetchOpenAiModelIds(normalizedKey, { timeoutMs: CLEANER_MODEL_DISCOVERY_TIMEOUT_MS });
       if (!isLatest()) {
         return;
       }
@@ -432,7 +418,7 @@ export function useCleanerOptions({
     } catch (fetchError: unknown) {
       if (
         isLatest() &&
-        !isAbortLikeError(fetchError)
+        !(fetchError instanceof ApiError && fetchError.code === "aborted")
       ) {
         setOpenAiModelFetchError(true);
         setOpenAiModelFetchStatus(

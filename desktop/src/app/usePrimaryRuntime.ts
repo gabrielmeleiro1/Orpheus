@@ -7,11 +7,19 @@ import {
   DESKTOP_SETTINGS_CHANGED_EVENT,
   readPersistedSettings,
 } from "../features/conversion/conversionOptionsShared";
-import { buildRuntimeIdentityFromSnapshot, formatRuntimeIdentity, type RuntimeIdentity } from "./runtimeIdentity";
+import { buildRuntimeIdentityFromSnapshot, type RuntimeIdentity } from "./runtimeIdentity";
 import { getRuntimeBootstrap, updateRuntimeBootstrapCapabilities } from "./runtimeBootstrapCache";
 import { startRuntimeCapabilityPolling } from "../features/conversion/runtimeCapabilityPolling";
 
-export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: RuntimeSetupStatusResponse | null = null): RuntimeIdentity & { ttsReady: boolean | null; ttsDevice?: "cuda" | "cpu" } {
+// Capability polls repeat while the runtime warms up, and this hook's host is
+// the whole dashboard: an unchanged identity must not re-render it.
+function retainEqualIdentity(next: RuntimeIdentity) {
+  return (current: RuntimeIdentity) => (
+    current.ttsLabel === next.ttsLabel && current.cleanerLabel === next.cleanerLabel ? current : next
+  );
+}
+
+export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: RuntimeSetupStatusResponse | null = null): RuntimeIdentity & { ttsReady: boolean | null } {
   const [identity, setIdentity] = useState<RuntimeIdentity>({ ttsLabel: "—", cleanerLabel: "—" });
   const capabilitiesRef = useRef<SystemCapabilitiesResponse | null>(null);
   const modelOptionsRef = useRef<ModelOptionsResponse | null>(null);
@@ -20,22 +28,20 @@ export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: Run
     if (!apiClient) {
       capabilitiesRef.current = null;
       modelOptionsRef.current = null;
-      setIdentity({ ttsLabel: "—", cleanerLabel: "—" });
+      setIdentity(retainEqualIdentity({ ttsLabel: "—", cleanerLabel: "—" }));
       return undefined;
     }
     let cancelled = false;
     capabilitiesRef.current = null;
     modelOptionsRef.current = null;
-    setIdentity({ ttsLabel: "—", cleanerLabel: "—" });
+    setIdentity(retainEqualIdentity({ ttsLabel: "—", cleanerLabel: "—" }));
     const updateIdentity = () => {
       if (cancelled || !modelOptionsRef.current) return;
-      setIdentity({
-        ...buildRuntimeIdentityFromSnapshot({
-          capabilities: capabilitiesRef.current,
-          modelOptions: modelOptionsRef.current,
-          settings: readPersistedSettings(),
-        }),
-      });
+      setIdentity(retainEqualIdentity(buildRuntimeIdentityFromSnapshot({
+        capabilities: capabilitiesRef.current,
+        modelOptions: modelOptionsRef.current,
+        settings: readPersistedSettings(),
+      })));
     };
     const poller = startRuntimeCapabilityPolling({
       getSystemCapabilities: (signal) => apiClient.getSystemCapabilities({ signal }),
@@ -46,54 +52,42 @@ export function useRuntimeIdentity(apiClient: ApiClient | null, setupStatus: Run
         updateIdentity();
       },
     });
-    void getRuntimeBootstrap(apiClient)
-      .then(({ capabilities, models: modelOptions }) => {
-        if (cancelled) {
-          return;
-        }
+    let bootstrapPending = false;
+    const loadBootstrap = async () => {
+      if (bootstrapPending) return;
+      bootstrapPending = true;
+      try {
+        const { capabilities, models: modelOptions } = await getRuntimeBootstrap(apiClient);
+        if (cancelled) return;
         modelOptionsRef.current = modelOptions;
         if (!poller.pollApplied) {
           capabilitiesRef.current = capabilities;
           poller.noteCapabilities(capabilities);
         }
         updateIdentity();
-      })
-      .catch(() => {
+      } catch {
         if (!cancelled) {
-          setIdentity({ ttsLabel: "—", cleanerLabel: "—" });
+          setIdentity(retainEqualIdentity({ ttsLabel: "—", cleanerLabel: "—" }));
         }
-      });
-    return () => {
-      cancelled = true;
-      poller.stop();
+      } finally {
+        bootstrapPending = false;
+      }
     };
-  }, [apiClient]);
-
-  useEffect(() => {
-    if (!apiClient) {
-      return undefined;
-    }
+    void loadBootstrap();
     const onSettingsChanged = () => {
       if (!capabilitiesRef.current || !modelOptionsRef.current) {
-        return;
+        void loadBootstrap();
+      } else {
+        updateIdentity();
       }
-      setIdentity({
-        ...buildRuntimeIdentityFromSnapshot({
-          capabilities: capabilitiesRef.current,
-          modelOptions: modelOptionsRef.current,
-          settings: readPersistedSettings(),
-        }),
-      });
     };
     window.addEventListener(DESKTOP_SETTINGS_CHANGED_EVENT, onSettingsChanged);
     return () => {
+      cancelled = true;
+      poller.stop();
       window.removeEventListener(DESKTOP_SETTINGS_CHANGED_EVENT, onSettingsChanged);
     };
   }, [apiClient]);
 
-  return { ...identity, ttsReady: apiClient ? runtimeTtsReady(setupStatus) : null, ttsDevice: setupStatus?.profiles.find((profile) => profile.id === setupStatus.selected_profile)?.device };
-}
-
-export function useRuntimeIdentityLabel(apiClient: ApiClient | null): string {
-  return formatRuntimeIdentity(useRuntimeIdentity(apiClient));
+  return { ...identity, ttsReady: apiClient ? runtimeTtsReady(setupStatus) : null };
 }

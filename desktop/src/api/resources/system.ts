@@ -7,6 +7,15 @@ import type {
   VoiceOptionsResponse,
 } from "../../types/api";
 
+type StorageFolder = "output" | "app_data";
+
+interface StorageFoldersResponse {
+  output_path: string;
+  app_data_path: string;
+  /** The desktop shell's backend log; null when it does not exist (older backends omit it). */
+  log_path?: string | null;
+}
+
 export function createSystemApi(requestJson: RequestJson) {
   async function getHealth(options?: ApiRequestOptions): Promise<HealthResponse> {
     return requestJson<HealthResponse>("/health", options);
@@ -45,9 +54,23 @@ export function createSystemApi(requestJson: RequestJson) {
     return requestJson<SystemCapabilitiesResponse>("/api/system/capabilities", options);
   }
 
+  async function getStorageFolders(options?: ApiRequestOptions): Promise<StorageFoldersResponse> {
+    return requestJson<StorageFoldersResponse>("/api/system/storage", options);
+  }
+
+  async function openStorageFolder(
+    folder: StorageFolder,
+    options?: ApiRequestOptions,
+  ): Promise<{ folder_path: string }> {
+    return requestJson<{ folder_path: string }>(`/api/system/storage/${folder}/open`, {
+      method: "POST",
+      ...options,
+    });
+  }
+
   return {
-    getStorageFolders: (options?: ApiRequestOptions) => requestJson<{ output_path: string; app_data_path: string }>("/api/system/storage", options),
-    openStorageFolder: (folder: "output" | "app_data", options?: ApiRequestOptions) => requestJson<{ folder_path: string }>(`/api/system/storage/${folder}/open`, { ...options, method: "POST" }),
+    getStorageFolders,
+    openStorageFolder,
     getHealth,
     getModelOptions,
     fetchOpenAiModelIds,

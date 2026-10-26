@@ -1,6 +1,11 @@
 import type { ConversionMode } from "./conversion";
 
-export interface LibraryBookSummary {
+export interface LibraryIdentity {
+  library_id?: string;
+  library_epoch?: string;
+}
+
+export interface LibraryBookSummary extends LibraryIdentity {
   id: number;
   title: string;
   author: string | null;
@@ -12,11 +17,15 @@ export interface LibraryBookSummary {
   total_chapters: number;
   completed_chapters: number;
   created_at?: string | null;
+  /** Whether any playable audio exists on disk; absent from older backends. */
+  audio_available?: boolean | null;
 }
 
-export interface LibraryListResponse {
+export interface LibraryListResponse extends LibraryIdentity {
   items: LibraryBookSummary[];
   count: number;
+  limit?: number;
+  offset?: number;
 }
 
 export interface LibraryCountResponse {
@@ -28,14 +37,19 @@ export interface LibraryChapterDetail {
   number: number;
   title: string;
   duration_ms: number | null;
+  packaged_start_ms?: number | null;
   mp3_path: string | null;
 }
 
-export interface LibraryBookDetail {
+export interface LibraryBookDetail extends LibraryIdentity {
   id: number;
   title: string;
   author: string | null;
   source_path: string | null;
+  /** Whether any playable audio exists on disk; absent from older backends. */
+  audio_available?: boolean | null;
+  /** Chapters with audio; sent by newer backends on the detail too. */
+  completed_chapters?: number;
   source_type: string;
   conversion_mode: ConversionMode;
   tags: string;
@@ -50,12 +64,13 @@ export interface LibraryBookDetail {
   playback_url?: string | null;
 }
 
-export interface PlaybackPositionUpdateResponse {
+export interface PlaybackPositionUpdateResponse extends LibraryIdentity {
   book_id: number;
   position_sec: number;
 }
 
 export interface LibraryBookUpdateRequest {
+  expected_epoch?: string;
   title?: string | null;
   author?: string | null;
   tags?: string | null;
@@ -78,18 +93,19 @@ export interface OpenBookFolderResponse {
   folder_path: string;
 }
 
-export interface DeleteBookResponse {
+export interface DeleteBookResponse extends LibraryIdentity {
   book_id: number;
   deleted: boolean;
   files_pending?: boolean;
   path?: string;
 }
 
-export interface MaintenanceDiagnosticsResponse {
+export interface MaintenanceDiagnosticsResponse extends LibraryIdentity {
   database_path: string;
   output_path: string;
   temp_path: string;
   app_data_path: string;
+  quarantine?: { path: string; created_at: string } | null;
   audit: {
     row_counts?: Record<string, number>;
     stale_chapter_rows?: unknown[];
@@ -99,10 +115,71 @@ export interface MaintenanceDiagnosticsResponse {
     stale_temp_stage_dirs?: string[];
     [key: string]: unknown;
   };
+  /** What cleanup would do now, and when the check ran (ISO UTC). */
+  cleanup_preview: CleanupSummary;
+  checked_at: string;
+}
+
+interface BookReference {
+  id: number;
+  title: string;
+}
+
+type CleanupKeptGroup =
+  | { category: "missing_source"; reason: "needs_user_action"; items: BookReference[] }
+  | { category: "missing_chapter_audio"; reason: "book_kept"; items: Array<BookReference & { chapters: number }> }
+  | { category: "book_without_audio"; reason: "unowned_audio_present" | "other_audio_present" | "interrupted_conversion"; items: BookReference[] }
+  | { category: "unowned_output_folder"; reason: "contains_finished_audio" | "interrupted_conversion" | "recently_modified";
+    items: Array<{ name: string; path: string }> };
+
+export interface CleanupSummary {
+  changed: boolean | null;
+  grace_hours: number;
+  removable: {
+    output_folders: number;
+    temp_uploads: number;
+    temp_stage_folders: number;
+    pending_deletions: number;
+    orphan_sources: number;
+  };
+  kept: CleanupKeptGroup[];
+  removed?: Record<string, number>;
+  /** Newer backends: books with no audio and no source file, whose library entry a cleanup removes. */
+  removable_books?: BookReference[];
+  /** Newer backends, after a cleanup: the books whose library entry it removed. */
+  removed_books?: BookReference[];
 }
 
 export interface MaintenanceBackupResponse {
   backup_path: string;
+}
+
+export interface MaintenanceBackup {
+  id: string;
+  filename: string;
+  created_at: string;
+  size: number;
+  book_count: number | null;
+  /** Newer backends: a backup or the safety copy taken before a restore, with a display label. */
+  /** "backup" or "safety_copy". */
+  kind?: string;
+  label?: string | null;
+}
+
+export interface MaintenanceBackupsResponse {
+  items: MaintenanceBackup[];
+}
+
+export interface MaintenanceRestoreResponse {
+  restored_id: string;
+  safety_copy_path: string;
+  /** Newer backends: what came back, and what did not. */
+  summary?: {
+    books_restored: number;
+    missing_audio: BookReference[];
+    missing_source: BookReference[];
+    unowned_output_folders: Array<{ name: string; path: string; has_audio: boolean; has_recovery_inventory: boolean }>;
+  };
 }
 
 export interface MaintenanceCleanupResponse {
@@ -112,6 +189,10 @@ export interface MaintenanceCleanupResponse {
   deleted_temp_uploads?: string[];
   deleted_temp_stage_dirs?: string[];
   moved_sources?: unknown[];
-  backup_path?: string;
+  backup_path?: string | null;
+  /** Newer backends: what was removed and what was kept. */
+  summary?: CleanupSummary;
+  removed_unowned_folders?: string[];
+  unknown_unowned_folders?: string[];
   [key: string]: unknown;
 }

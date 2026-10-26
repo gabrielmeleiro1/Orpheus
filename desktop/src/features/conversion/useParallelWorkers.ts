@@ -12,7 +12,7 @@ import type { PersistedSettings } from "./conversionOptionsShared";
 // recommendation. A measured recommendation may raise this value later.
 const DEFAULT_PARALLEL_WORKER_LIMIT = 1;
 
-export interface UseParallelWorkersArgs {
+interface UseParallelWorkersArgs {
   apiClient: ApiClient | null;
   systemCapabilities: SystemCapabilitiesResponse | null;
   persistedSettingsRef: MutableRefObject<PersistedSettings>;
@@ -23,6 +23,8 @@ export interface UseParallelWorkersResult {
   setParallelManualMax: (value: string) => void;
   manualParallelWorkerUpperBound: number;
   selectedParallelWorkerLimit: number;
+  /** How many of the selected chapters this computer's memory lets run at once. */
+  usableParallelWorkerLimit: number;
   parallelRecommendation: ParallelWorkerRecommendation | null;
   parallelWorkerStatus: string;
   parallelWorkerError: boolean;
@@ -40,8 +42,18 @@ function clampWorkerLimit(value: number, maxSafe: number): number {
   return Math.max(1, Math.min(Math.max(1, maxSafe), parsed));
 }
 
-function shortWorkerLine(recommendation: ParallelWorkerRecommendation): string {
-  let headline = `Recommended for this machine: ${recommendation.recommended_parallel_chapters}`;
+function shortWorkerLine(recommendation: ParallelWorkerRecommendation, selected: number): string {
+  const maxSafe = Math.max(1, recommendation.max_safe_parallel_chapters);
+  // A larger request is kept, but only what memory allows will run; say which.
+  if (maxSafe <= 1) {
+    return selected > 1
+      ? `Runs 1 of the ${selected} requested: this computer has memory for one chapter at a time.`
+      : "This computer has memory for one chapter at a time.";
+  }
+  if (selected > maxSafe) {
+    return `Runs ${maxSafe} of the ${selected} requested: this computer has memory for ${maxSafe} chapters at a time.`;
+  }
+  let headline = `Recommended: ${recommendation.recommended_parallel_chapters}`;
   if (recommendation.max_safe_parallel_chapters > recommendation.recommended_parallel_chapters) {
     headline += ` (up to ${recommendation.max_safe_parallel_chapters})`;
   }
@@ -56,12 +68,6 @@ export function useParallelWorkers({
 }: UseParallelWorkersArgs): UseParallelWorkersResult {
   const [parallelManualMax, setParallelManualMaxState] = useState(String(DEFAULT_PARALLEL_WORKER_LIMIT));
   const [parallelRecommendation, setParallelRecommendation] = useState<ParallelWorkerRecommendation | null>(null);
-
-  const parallelWorkerStatus = useMemo(() => {
-    return parallelRecommendation
-      ? shortWorkerLine(parallelRecommendation)
-      : "Worker recommendation unavailable.";
-  }, [parallelRecommendation]);
 
   const parallelWorkerError = useMemo(() => {
     return parallelRecommendation ? !parallelRecommendation.memory_measurement_available : false;
@@ -79,6 +85,16 @@ export function useParallelWorkers({
   const selectedParallelWorkerLimit = useMemo(() => {
     return clampWorkerLimit(Number.parseInt(parallelManualMax, 10), manualParallelWorkerUpperBound);
   }, [manualParallelWorkerUpperBound, parallelManualMax]);
+
+  const usableParallelWorkerLimit = parallelRecommendation
+    ? Math.min(selectedParallelWorkerLimit, Math.max(1, parallelRecommendation.max_safe_parallel_chapters))
+    : selectedParallelWorkerLimit;
+
+  const parallelWorkerStatus = useMemo(() => {
+    return parallelRecommendation
+      ? shortWorkerLine(parallelRecommendation, selectedParallelWorkerLimit)
+      : "Worker recommendation unavailable.";
+  }, [parallelRecommendation, selectedParallelWorkerLimit]);
 
   useEffect(() => {
     if (!apiClient) {
@@ -104,12 +120,11 @@ export function useParallelWorkers({
 
   const setParallelManualMax = useCallback(
     (value: string) => {
-      const digitsOnly = value.replace(/[^\d]/g, "");
-      if (!digitsOnly) {
+      if (!value.trim()) {
         setParallelManualMaxState("");
         return;
       }
-      const next = clampWorkerLimit(Number.parseInt(digitsOnly, 10), manualParallelWorkerUpperBound);
+      const next = clampWorkerLimit(Number(value), manualParallelWorkerUpperBound);
       setParallelManualMaxState(String(next));
     },
     [manualParallelWorkerUpperBound],
@@ -120,6 +135,7 @@ export function useParallelWorkers({
     setParallelManualMax,
     manualParallelWorkerUpperBound,
     selectedParallelWorkerLimit,
+    usableParallelWorkerLimit,
     parallelRecommendation,
     parallelWorkerStatus,
     parallelWorkerError,

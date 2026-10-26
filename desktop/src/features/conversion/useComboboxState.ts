@@ -5,7 +5,7 @@ export interface ComboboxState {
   highlightIndex: number;
 }
 
-export type ComboboxAction =
+type ComboboxAction =
   | { type: "toggle" }
   | { type: "open" }
   | { type: "close" }
@@ -39,10 +39,12 @@ interface UseComboboxStateArgs {
   optionCount: number;
   selectedIndex: number;
   disabled: boolean;
+  /** A searchable menu stays open while its query matches nothing. */
+  keepOpenWhenEmpty?: boolean;
   onChoose: (index: number) => void;
 }
 
-export interface UseComboboxStateResult {
+interface UseComboboxStateResult {
   open: boolean;
   highlightIndex: number;
   rootRef: React.RefObject<HTMLDivElement>;
@@ -57,6 +59,7 @@ export function useComboboxState({
   optionCount,
   selectedIndex,
   disabled,
+  keepOpenWhenEmpty = false,
   onChoose,
 }: UseComboboxStateArgs): UseComboboxStateResult {
   const [state, dispatch] = useReducer(comboboxReducer, initialComboboxState);
@@ -64,7 +67,7 @@ export function useComboboxState({
   const { open, highlightIndex } = state;
 
   useEffect(() => {
-    if ((disabled || optionCount === 0) && open) {
+    if ((disabled || (optionCount === 0 && !keepOpenWhenEmpty)) && open) {
       dispatch({ type: "close" });
       return;
     }
@@ -75,23 +78,25 @@ export function useComboboxState({
       ? Math.min(optionCount - 1, Math.max(0, selectedIndex >= 0 ? selectedIndex : 0))
       : -1;
     dispatch({ type: "setHighlight", index: nextHighlight });
-  }, [disabled, open, optionCount, selectedIndex]);
+  }, [disabled, keepOpenWhenEmpty, open, optionCount, selectedIndex]);
 
   useEffect(() => {
     if (!open) {
       return;
     }
 
-    const onPointerDown = (event: PointerEvent) => {
+    const closeOutside = (event: Event) => {
       const target = event.target;
       if (target instanceof Node && rootRef.current && !rootRef.current.contains(target)) {
         dispatch({ type: "close" });
       }
     };
 
-    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("focusin", closeOutside);
     return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("focusin", closeOutside);
     };
   }, [open]);
 
@@ -110,6 +115,11 @@ export function useComboboxState({
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLButtonElement>) => {
       if (disabled || optionCount === 0) {
+        return;
+      }
+
+      if (event.key === "Tab") {
+        dispatch({ type: "close" });
         return;
       }
 

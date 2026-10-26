@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { useGenerationGuard, useMountedRef } from "../../state/generationGuard";
 import type { ApiClient } from "../../api/client";
 import type {
   ActiveConversionResponse,
@@ -17,7 +18,13 @@ import {
   normalizeTerminalStatus,
 } from "./eventStreamModel";
 import { useEventStreamTransport } from "./useEventStreamTransport";
+import { addLog } from "./eventLogModel";
+import { INTERRUPTED_JOB_TEXT, type EventStreamModelState } from "./eventStreamReducer";
 import { useTerminalStateWaiters } from "./useTerminalStateWaiters";
+
+// Active conversion state is an in-memory snapshot; a stalled read must
+// release reconciliation and cancellation lookups for the next trigger.
+const ACTIVE_STATE_REQUEST_TIMEOUT_MS = 8_000;
 
 interface UseEventStreamArgs {
   apiClient: ApiClient | null;
@@ -30,6 +37,8 @@ interface UseEventStreamArgs {
 
 interface UseEventStreamResult {
   streamState: EventStreamConnectionState;
+  /** A job is running but its event stream is down; its progress is not live. */
+  connectionLost: boolean;
   uiState: ConversionJobStatus;
   statusText: string;
   progressPct: number;
@@ -41,6 +50,7 @@ interface UseEventStreamResult {
   activeJobId: string | null;
   logs: EventStreamLogEntry[];
   isCancelling: boolean;
+  cancellationError?: string;
   cancelActiveConversion: () => Promise<void>;
   refreshActiveConversionState: () => Promise<ActiveConversionResponse | null>;
   markConversionStarted: (jobId: string) => void;
@@ -51,30 +61,65 @@ function nowTimestamp(): string {
   return new Date().toLocaleTimeString("en-US", { hour12: false });
 }
 
-// After a cancel is accepted the UI normally unlatches on the terminal SSE
-// event. Poll the active-job endpoint as a fallback so a missed or delayed
-// event cannot leave the interface stuck on "cancelling" forever.
-const CANCEL_RECONCILE_INTERVAL_MS = 2_000;
+// SSE is the primary source of job state. While a job is active, the
+// active-job endpoint is polled as a fallback so a missed terminal event
+// cannot leave the interface running (or "cancelling") forever.
+const ACTIVE_JOB_RECONCILE_INTERVAL_MS = 2_000;
+// A cancel the backend never confirms is released after this many polls.
 const CANCEL_RECONCILE_MAX_ATTEMPTS = 30;
+const CONNECTION_LOST_TEXT = "Connection lost: reconnecting…";
+
+function interruptedJobState(logs: EventStreamModelState["logs"], logId: number, timestamp: string): EventStreamModelState {
+  const state: EventStreamModelState = {
+    ...createInitialEventStreamState(),
+    uiState: "failed",
+    statusText: INTERRUPTED_JOB_TEXT,
+    currentMessage: INTERRUPTED_JOB_TEXT,
+    logs,
+  };
+  return addLog(state, "error", "conversion interrupted: the backend restarted", undefined, logId, timestamp);
+}
 
 export function useEventStream({
   apiClient,
   baseUrl,
   onActiveConversionReconciled,
 }: UseEventStreamArgs): UseEventStreamResult {
-  const initialModelState = useRef(createInitialEventStreamState());
-  const [modelState, setModelState] = useState(initialModelState.current);
-  const modelStateRef = useRef(initialModelState.current);
+  const [modelState, setModelState] = useState(createInitialEventStreamState);
+  // Reducer input for callbacks that run between renders; always the latest
+  // state handed to setModelState.
+  const modelStateRef = useRef(modelState);
   const logSequenceRef = useRef(0);
   const activeJobIdRef = useRef<string | null>(null);
   const lookupFailedRef = useRef(false);
-  const runtimeMutationGenerationRef = useRef(0);
+  const runtimeMutationGuard = useGenerationGuard();
   const cancellationAttemptSequenceRef = useRef(0);
-  const mountedRef = useRef(true);
-  const hasOpenedStreamRef = useRef(false);
+  const mountedRef = useMountedRef(true);
+  // Every backend client (or base URL) opens a new ownership epoch. The epoch
+  // is derived during render with React's state-from-props pattern and is
+  // published to async callbacks only once that render commits, so a render
+  // React discards can never fence off the committed client's work.
+  const [clientContext, setClientContext] = useState({ apiClient, baseUrl, generation: 0 });
+  if (clientContext.apiClient !== apiClient || clientContext.baseUrl !== baseUrl) {
+    setClientContext({ apiClient, baseUrl, generation: clientContext.generation + 1 });
+  }
+  const clientGeneration = clientContext.generation;
+  const committedClientGenerationRef = useRef(clientGeneration);
+  useLayoutEffect(() => {
+    committedClientGenerationRef.current = clientGeneration;
+  }, [clientGeneration]);
+  const ownsClientContext = useCallback(() => mountedRef.current
+    && committedClientGenerationRef.current === clientGeneration, [clientGeneration, mountedRef]);
   const onReconciledRef = useRef(onActiveConversionReconciled);
-  onReconciledRef.current = onActiveConversionReconciled;
-  const refreshGenerationRef = useRef(0);
+  useLayoutEffect(() => {
+    onReconciledRef.current = onActiveConversionReconciled;
+  }, [onActiveConversionReconciled]);
+  const refreshGuard = useGenerationGuard();
+  const streamInstanceRef = useRef<string | null>(null);
+  const streamSequenceRef = useRef(0);
+  const retiredStreamInstancesRef = useRef(new Set<string>());
+  // A job was running when the client changed; a new backend instance means it was lost.
+  const interruptedJobRef = useRef(false);
 
   const nextLogId = useCallback(() => {
     logSequenceRef.current += 1;
@@ -127,11 +172,9 @@ export function useEventStream({
         }
       }
       if (payload.event_type === "progress" || payload.event_type === "state") {
-        runtimeMutationGenerationRef.current += 1;
+        runtimeMutationGuard.invalidate();
+        refreshGuard.invalidate();
       }
-      // Any live event is newer than a reconciliation request already in
-      // flight. Fence that request so its snapshot cannot roll state back.
-      refreshGenerationRef.current += 1;
       if (payload.event_type === "progress") {
         applyReducerAction({ type: "progress", payload });
         return;
@@ -169,10 +212,12 @@ export function useEventStream({
   }, [resolveTerminalState]);
 
   const refreshActiveConversionState = useCallback(async () => {
-    const reconciliationGeneration = runtimeMutationGenerationRef.current;
-    const generation = ++refreshGenerationRef.current;
+    if (!ownsClientContext()) return null;
+    const ownsReconciliation = runtimeMutationGuard.capture();
+    refreshGuard.invalidate();
+    const ownsRefresh = refreshGuard.capture();
     if (!apiClient) {
-      if (!mountedRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+      if (!ownsClientContext() || !ownsReconciliation()) {
         return null;
       }
       applyReducerAction({ type: "refreshNoClient" });
@@ -180,27 +225,35 @@ export function useEventStream({
     }
 
     try {
-      const response = await apiClient.getActiveConversion();
-      if (!mountedRef.current || reconciliationGeneration !== runtimeMutationGenerationRef.current) {
+      const response = await apiClient.getActiveConversion({ timeoutMs: ACTIVE_STATE_REQUEST_TIMEOUT_MS });
+      if (!ownsClientContext() || !ownsReconciliation()) {
         return null;
       }
-      if (generation !== refreshGenerationRef.current) {
+      if (!ownsRefresh()) {
         return null;
       }
       // Claim this reconciliation before applying it so a concurrent lookup
       // that captured the same generation cannot land afterward and overwrite
       // the response accepted here.
-      runtimeMutationGenerationRef.current += 1;
+      runtimeMutationGuard.invalidate();
       lookupFailedRef.current = false;
       onReconciledRef.current?.(response);
       if (response.job) {
         const terminalStatus = normalizeTerminalStatus(response.job.status);
         if (terminalStatus) {
-          applyEventPayload({
-            event_type: "state",
-            job_id: response.job.id,
-            state: terminalStatus,
-            message: response.job.error || `conversion ${terminalStatus}`,
+          // This fenced snapshot is authoritative even when another job ran
+          // while the stream was unavailable. Only unsolicited events should
+          // be filtered against the previously observed active job id.
+          applyReducerAction({
+            type: "state",
+            payload: {
+              event_type: "state",
+              job_id: response.job.id,
+              state: terminalStatus,
+              message: response.job.error || `conversion ${terminalStatus}`,
+            },
+            logId: nextLogId(),
+            fallbackTimestamp: nowTimestamp(),
           });
           return response;
         }
@@ -220,9 +273,9 @@ export function useEventStream({
       return response;
     } catch {
       if (
-        !mountedRef.current ||
-        reconciliationGeneration !== runtimeMutationGenerationRef.current ||
-        generation !== refreshGenerationRef.current
+        !ownsClientContext() ||
+        !ownsReconciliation() ||
+        !ownsRefresh()
       ) {
         return null;
       }
@@ -237,62 +290,122 @@ export function useEventStream({
       }
       return null;
     }
-  }, [apiClient, applyEventPayload, applyReducerAction, pushLog]);
+  }, [apiClient, applyReducerAction, nextLogId, ownsClientContext, pushLog]);
 
   const markConversionStarted = useCallback(
     (jobId: string) => {
       const normalizedJobId = String(jobId ?? "").trim();
-      if (!normalizedJobId || !mountedRef.current) {
+      if (!normalizedJobId || !ownsClientContext()) {
         return;
       }
-      runtimeMutationGenerationRef.current += 1;
+      runtimeMutationGuard.invalidate();
       applyReducerAction({ type: "conversionStarted", jobId: normalizedJobId });
     },
-    [applyReducerAction],
+    [applyReducerAction, ownsClientContext],
   );
 
   const handleStreamOpen = useCallback(() => {
-    if (!hasOpenedStreamRef.current) {
-      hasOpenedStreamRef.current = true;
-      return;
-    }
     void refreshActiveConversionState();
   }, [refreshActiveConversionState]);
+
+  const handleStreamPayload = useCallback((payload: DesktopEventPayload) => {
+    if (!ownsClientContext()) return;
+    const instanceId = payload.backend_instance_id;
+    let restarted = false;
+    if (instanceId) {
+      if (retiredStreamInstancesRef.current.has(instanceId)) {
+        return;
+      }
+      if (instanceId !== streamInstanceRef.current) {
+        const previousInstance = streamInstanceRef.current;
+        streamInstanceRef.current = instanceId;
+        streamSequenceRef.current = 0;
+        if (previousInstance !== null) {
+          retiredStreamInstancesRef.current.add(previousInstance);
+          restarted = true;
+          runtimeMutationGuard.invalidate();
+          refreshGuard.invalidate();
+          cancellationAttemptSequenceRef.current += 1;
+          // A job cannot survive its backend: say so instead of resetting to idle.
+          const interrupted = modelStateRef.current.uiState === "running" || interruptedJobRef.current
+            || modelStateRef.current.statusText === INTERRUPTED_JOB_TEXT;
+          interruptedJobRef.current = false;
+          const state = interrupted
+            ? interruptedJobState(modelStateRef.current.logs, nextLogId(), nowTimestamp())
+            : { ...createInitialEventStreamState(), logs: modelStateRef.current.logs };
+          modelStateRef.current = state;
+          activeJobIdRef.current = null;
+          setModelState(state);
+        }
+      }
+      if (!restarted) interruptedJobRef.current = false;
+      if (payload.event_sequence !== undefined) {
+        if (payload.event_sequence <= streamSequenceRef.current) {
+          return;
+        }
+        streamSequenceRef.current = payload.event_sequence;
+      }
+    }
+    applyEventPayload(payload);
+    if (restarted) {
+      // The open callback can precede identity discovery. Reconcile again with
+      // the old job and in-flight requests fenced off by the instance change.
+      void refreshActiveConversionState();
+    }
+  }, [applyEventPayload, nextLogId, ownsClientContext, refreshActiveConversionState]);
 
   const streamState = useEventStreamTransport({
     apiClient,
     baseUrl,
     onLog: pushLog,
     onOpen: handleStreamOpen,
-    onPayload: applyEventPayload,
+    onPayload: handleStreamPayload,
   });
 
+  // Retire the old backend's job and cancellation state before discovering the
+  // replacement. Retained callbacks also check their context before any I/O.
+  const modelClientGenerationRef = useRef(clientGeneration);
   useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  // A client or base-URL swap invalidates any reconciliation still in flight
-  // and reopens the stream, so the next open is treated as a first open.
-  useEffect(() => {
-    refreshGenerationRef.current += 1;
-    hasOpenedStreamRef.current = false;
-  }, [apiClient, baseUrl]);
+    refreshGuard.invalidate();
+    if (modelClientGenerationRef.current === clientGeneration) return;
+    modelClientGenerationRef.current = clientGeneration;
+    runtimeMutationGuard.invalidate();
+    cancellationAttemptSequenceRef.current += 1;
+    lookupFailedRef.current = false;
+    // Whether that job survived is known once the new stream names its backend.
+    interruptedJobRef.current = modelStateRef.current.uiState === "running";
+    const state = { ...createInitialEventStreamState(), logs: modelStateRef.current.logs };
+    modelStateRef.current = state;
+    activeJobIdRef.current = null;
+    setModelState(state);
+  }, [clientGeneration]);
 
   // This hook owns startup reconciliation. Consumers that need the response
   // body take it via onActiveConversionReconciled rather than repeating the
-  // lookup, so a mount issues exactly one request.
+  // lookup. Stream opens reconcile again to close the subscription gap.
   useEffect(() => {
     void refreshActiveConversionState();
   }, [refreshActiveConversionState]);
+
+  useEffect(() => {
+    if (!apiClient || !modelState.activeJobId || modelState.isCancelling) {
+      return undefined;
+    }
+    let inFlight = false;
+    const timer = window.setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void refreshActiveConversionState().finally(() => { inFlight = false; });
+    }, ACTIVE_JOB_RECONCILE_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [apiClient, modelState.activeJobId, modelState.isCancelling, refreshActiveConversionState]);
 
   useEffect(() => {
     if (!modelState.isCancelling || !apiClient) {
       return undefined;
     }
     let attempts = 0;
+    let inFlight = false;
     const timer = window.setInterval(() => {
       attempts += 1;
       if (attempts > CANCEL_RECONCILE_MAX_ATTEMPTS) {
@@ -301,8 +414,12 @@ export function useEventStream({
         applyReducerAction({ type: "cancelRejected" });
         return;
       }
-      void refreshActiveConversionState();
-    }, CANCEL_RECONCILE_INTERVAL_MS);
+      // A newer lookup supersedes earlier snapshots. Let a slow request
+      // finish before polling again, while retaining the overall time limit.
+      if (inFlight) return;
+      inFlight = true;
+      void refreshActiveConversionState().finally(() => { inFlight = false; });
+    }, ACTIVE_JOB_RECONCILE_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [
     apiClient,
@@ -313,23 +430,24 @@ export function useEventStream({
   ]);
 
   const cancelActiveConversion = useCallback(async () => {
+    if (!ownsClientContext()) return;
     if (!apiClient) {
-      pushLog("warn", "backend is not connected");
+      pushLog("warn", "Backend is not connected");
       return;
     }
 
     const attemptId = ++cancellationAttemptSequenceRef.current;
-    const lookupGeneration = runtimeMutationGenerationRef.current;
+    const ownsLookup = runtimeMutationGuard.capture();
     applyReducerAction({ type: "cancelStart" });
 
     let targetJobId: string | null = activeJobIdRef.current;
     try {
       if (!targetJobId) {
-        const active = await apiClient.getActiveConversion();
-        if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current) {
+        const active = await apiClient.getActiveConversion({ timeoutMs: ACTIVE_STATE_REQUEST_TIMEOUT_MS });
+        if (!ownsClientContext() || attemptId !== cancellationAttemptSequenceRef.current) {
           return;
         }
-        if (lookupGeneration !== runtimeMutationGenerationRef.current) {
+        if (!ownsLookup()) {
           pushLog("warn", "cancellation superseded by a newer conversion");
           applyReducerAction({ type: "cancelRejected" });
           return;
@@ -337,7 +455,7 @@ export function useEventStream({
         if (active.active && active.job) {
           targetJobId = active.job.id;
           activeJobIdRef.current = targetJobId;
-          runtimeMutationGenerationRef.current += 1;
+          runtimeMutationGuard.invalidate();
           applyReducerAction({ type: "setActiveJobId", jobId: targetJobId });
         }
       }
@@ -348,7 +466,7 @@ export function useEventStream({
         return;
       }
 
-      if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current) {
+      if (!ownsClientContext() || attemptId !== cancellationAttemptSequenceRef.current) {
         return;
       }
       if (
@@ -358,7 +476,7 @@ export function useEventStream({
         return;
       }
       if (activeJobIdRef.current !== targetJobId) {
-        if (mountedRef.current) {
+        if (ownsClientContext()) {
           pushLog("warn", "cancellation superseded by a newer conversion");
           applyReducerAction({ type: "cancelRejected" });
         }
@@ -366,7 +484,7 @@ export function useEventStream({
       }
 
       const response = await apiClient.cancelConversion(targetJobId);
-      if (!mountedRef.current || attemptId !== cancellationAttemptSequenceRef.current) {
+      if (!ownsClientContext() || attemptId !== cancellationAttemptSequenceRef.current) {
         return;
       }
       if (
@@ -376,7 +494,7 @@ export function useEventStream({
         return;
       }
       if (activeJobIdRef.current !== targetJobId) {
-        if (mountedRef.current) {
+        if (ownsClientContext()) {
           pushLog("warn", "cancellation superseded by a newer conversion");
           applyReducerAction({ type: "cancelRejected" });
         }
@@ -396,10 +514,10 @@ export function useEventStream({
       });
     } catch (error: unknown) {
       if (
-        !mountedRef.current ||
+        !ownsClientContext() ||
         attemptId !== cancellationAttemptSequenceRef.current ||
         (targetJobId !== null && activeJobIdRef.current !== targetJobId) ||
-        (targetJobId === null && lookupGeneration !== runtimeMutationGenerationRef.current)
+        (targetJobId === null && !ownsLookup())
       ) {
         return;
       }
@@ -407,14 +525,17 @@ export function useEventStream({
       pushLog("error", message);
       applyReducerAction({ type: "cancelRejected" });
     }
-  }, [apiClient, applyReducerAction, nextLogId, pushLog]);
+  }, [apiClient, applyReducerAction, nextLogId, ownsClientContext, pushLog]);
 
+  // While the stream is down a running job's numbers are frozen: say so and drop the ETA.
+  const connectionLost = streamState === "error" && modelState.uiState === "running";
   return useMemo(() => ({
     streamState,
+    connectionLost,
     uiState: modelState.uiState,
-    statusText: modelState.statusText,
+    statusText: connectionLost ? CONNECTION_LOST_TEXT : modelState.statusText,
     progressPct: modelState.progressPct,
-    etaText: modelState.etaText,
+    etaText: connectionLost ? "" : modelState.etaText,
     stages: modelState.stages,
     currentStage: modelState.currentStage,
     currentMessage: modelState.currentMessage,
@@ -422,6 +543,7 @@ export function useEventStream({
     activeJobId: modelState.activeJobId,
     logs: modelState.logs,
     isCancelling: modelState.isCancelling,
+    cancellationError: modelState.cancellationError,
     cancelActiveConversion,
     refreshActiveConversionState,
     markConversionStarted,
@@ -430,6 +552,8 @@ export function useEventStream({
     waitForTerminalState,
   }), [
     cancelActiveConversion,
+    connectionLost,
+    markConversionStarted,
     modelState,
     refreshActiveConversionState,
     streamState,

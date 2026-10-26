@@ -4,13 +4,10 @@ const DEFAULT_CAP_DELAY_MS = 15_000;
 const QUERY_TOKEN_REFRESH_SKEW_MS = 30_000;
 
 interface TransportBackoffOptions {
-  baseDelayMs?: number;
-  factor?: number;
-  capDelayMs?: number;
   random?: () => number;
 }
 
-export interface TransportBackoff {
+interface TransportBackoff {
   nextDelayMs: () => number;
   reset: () => void;
 }
@@ -21,16 +18,13 @@ export interface CachedQueryToken {
 }
 
 export function createTransportBackoff({
-  baseDelayMs = DEFAULT_BASE_DELAY_MS,
-  factor = DEFAULT_FACTOR,
-  capDelayMs = DEFAULT_CAP_DELAY_MS,
   random = Math.random,
 }: TransportBackoffOptions = {}): TransportBackoff {
   let attempt = 0;
 
   return {
     nextDelayMs: () => {
-      const maxDelay = Math.min(capDelayMs, baseDelayMs * factor ** attempt);
+      const maxDelay = Math.min(DEFAULT_CAP_DELAY_MS, DEFAULT_BASE_DELAY_MS * DEFAULT_FACTOR ** attempt);
       attempt += 1;
       return Math.round(Math.max(0, Math.min(1, random())) * maxDelay);
     },

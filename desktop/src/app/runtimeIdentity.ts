@@ -32,10 +32,6 @@ export function resolveRuntimeIdentity(input: {
   return { ttsLabel, cleanerLabel };
 }
 
-export function formatRuntimeIdentity(identity: RuntimeIdentity): string {
-  return `TTS: ${identity.ttsLabel} · Cleaner: ${identity.cleanerLabel}`;
-}
-
 export function buildRuntimeIdentityFromSnapshot(input: {
   capabilities: SystemCapabilitiesResponse | null;
   modelOptions: ModelOptionsResponse | null;
@@ -64,8 +60,4 @@ export function buildRuntimeIdentityFromSnapshot(input: {
     cleanerBackendLabel: cleaner?.display_name ?? null,
     ttsEngineLabel: null,
   });
-}
-
-export function buildRuntimeIdentityLabelFromSnapshot(input: Parameters<typeof buildRuntimeIdentityFromSnapshot>[0]): string {
-  return formatRuntimeIdentity(buildRuntimeIdentityFromSnapshot(input));
 }
