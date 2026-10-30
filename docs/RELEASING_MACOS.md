@@ -1,126 +1,131 @@
 # Releasing Orpheus on macOS (Apple Silicon)
 
-Maintainer guide for producing and publishing an **unsigned, unnotarized** Apple
-Silicon DMG. First target: **Apple Silicon**, **macOS 14+**.
+This is the maintainer procedure for producing and publishing an **unsigned,
+unnotarized** DMG for **Apple Silicon** on **macOS 14+**.
 
-This document does **not** automate GitHub state. Do **not** tag, push, or create
-a GitHub Release unless you receive a **separate explicit request** for that
-step.
+Publishing is manual on purpose. No script or workflow tags, pushes, or creates
+a GitHub Release. Tagging, pushing, and publishing are separate steps, and each
+needs an explicit request from the release owner.
 
-**Signing policy:** qualification expects no Developer ID / Apple Distribution
-identity and no nonempty `TeamIdentifier`. Builds request an outer ad-hoc seal
-(`signingIdentity: "-"`) so `codesign --verify --deep --strict` passes with
-`Signature=adhoc`, `TeamIdentifier=not set`, and sealed resources present.
-That complete ad-hoc seal is the expected unsigned state; it carries **no
-distribution identity** and is not notarization.
+**Signing policy.** Qualification expects no Developer ID or Apple
+Distribution identity and no nonempty `TeamIdentifier`. Builds request an
+outer ad-hoc seal (`signingIdentity: "-"`), so
+`codesign --verify --deep --strict` passes with `Signature=adhoc`,
+`TeamIdentifier=not set`, and sealed resources present. That complete ad-hoc
+seal is the expected unsigned state. It carries **no distribution identity**
+and is not notarization.
 
-## Source CI vs full local release gate
+## Source CI vs the full local release gate
 
 | Gate | What it is | What it is not |
 | --- | --- | --- |
 | Source CI | `.github/workflows/source-validation.yml` on GitHub Actions | A release publisher, installer builder, or artifact uploader |
-| Full local release gate | `scripts/release_qualification.py` on an Apple Silicon host | Automatic tagging, pushing, or `gh release` publishing |
+| Full local release gate | `scripts/release_qualification.py` on an Apple Silicon Mac | Automatic tagging, pushing, or release publishing |
 
-Source validation remains informational for release readiness. Only a local
-qualification run that finishes with release state `pass` produces releasable
-evidence.
+Source validation is informational for a release. Only a local qualification
+run that ends in release state `pass` produces releasable evidence.
 
 ## Prerequisites
 
-- Apple Silicon Mac running macOS 14 or newer
-- Clean, qualified tree per [TESTING.md](TESTING.md) and the release
-  qualification preflight
-- Intended runtime profile already installed (typically `mlx` for Apple Silicon
-  releases)
+- An Apple Silicon Mac running macOS 14 or newer.
+- A clean tree that passes the checks in [TESTING.md](TESTING.md) and the
+  qualification preflight.
+- The runtime profile you intend to ship, already installed (usually `mlx`).
 
-## Local qualification flow
+## Local qualification
 
-Replace `<id>` with the report directory printed by `prepare`:
+Replace `<id>` with the report directory that `prepare` prints:
 
 ```bash
 python scripts/release_qualification.py prepare --version 1.0.0 --final
 python scripts/release_qualification.py run --report-dir .artifacts/release-qualification/<id>
-# Complete Computer Use journeys and the Gatekeeper first-open handoff.
-# Record every checklist item; do not mark pass without notes/evidence.
+# Walk through the installed-app journeys and the Gatekeeper first-open check.
+# Record every checklist item with notes or evidence before marking it passed.
 python scripts/release_qualification.py finalize --report-dir .artifacts/release-qualification/<id>
 ```
 
-`finalize` succeeds only when every required phase and checklist item passed.
-Failed or incomplete required work blocks release.
+Other subcommands: `status` shows progress, `observe` samples process budgets
+for a lifecycle scenario (`warm-launch`, `idle-dashboard`, `shutdown`, or
+`soak`), and `record-check` records a checklist result.
 
-## Portable staged evidence (after finalize)
+`finalize` succeeds only when every required phase and checklist item passed.
+Failed or incomplete required work blocks the release. Qualification includes
+the `lifecycle_performance` phase and its configured performance budgets; keep
+those measurements and the installed-app checklist evidence in the report.
+Source validation alone does not satisfy them.
+
+## Staged evidence
 
 `finalize` stages portable release inputs **inside** the report directory:
 
-- the exact qualified `.dmg` (copied beside the checksums)
-- `release-qualification-<version>.md` (immutable Markdown report copy)
-- `SHA256SUMS` (basename-only entries for the staged DMG and Markdown report)
+- the exact qualified `.dmg`;
+- `release-qualification-<version>.md`, an immutable copy of the report;
+- `SHA256SUMS`, with basename-only entries for the DMG and the report.
 
-Verify checksums from that directory so `shasum` resolves basenames correctly:
+Verify the checksums from that directory so `shasum` resolves the basenames:
 
 ```bash
 cd .artifacts/release-qualification/<id>
 shasum -a 256 -c SHA256SUMS
 ```
 
-Expected: every listed file reports `OK`. The staged DMG and
-`release-qualification-<version>.md` sit beside `SHA256SUMS` in the same
-directory.
+Every listed file must report `OK`. The staged DMG and
+`release-qualification-<version>.md` sit beside `SHA256SUMS`.
 
-## Four manual release inputs
+## The four release inputs
 
-Prepare these four inputs before any GitHub Release draft:
+Prepare these four inputs before drafting a GitHub Release:
 
-1. **DMG** — the staged unsigned Apple Silicon disk image from the report
-   directory
-2. **SHA256SUMS** — the portable checksum file from the same directory
-3. **Qualification report** — `release-qualification-<version>.md`
-4. **Release notes** — human-written notes (use
-   [`.github/RELEASE_TEMPLATE.md`](../.github/RELEASE_TEMPLATE.md)); include
-   known limitations, unsigned/unnotarized warning, and rollback guidance
+1. **DMG:** the staged, unsigned Apple Silicon disk image from the report
+   directory.
+2. **SHA256SUMS:** the checksum file from the same directory.
+3. **Qualification report:** `release-qualification-<version>.md`.
+4. **Release notes:** written by hand from
+   [`.github/RELEASE_TEMPLATE.md`](../.github/RELEASE_TEMPLATE.md), including
+   known limitations, the unsigned and unnotarized warning, and rollback
+   guidance.
 
-There is no fifth automated upload path. Do not invent Actions workflows or
-publish scripts for this.
+There is no automated upload path for these.
 
-## Manual GitHub Release procedure (draft → review → publish)
+## Manual GitHub Release (draft, review, publish)
 
-Perform this only after local `finalize` passed and checksum verification
-succeeded. Keep it manual:
+Do this only after `finalize` passed and the checksums verified.
 
-1. On GitHub, create a **draft** Release for the intended version.
-2. Attach the four inputs above (DMG, `SHA256SUMS`,
-   `release-qualification-<version>.md`, and paste/adapt the release notes).
-3. Compare uploaded filenames and checksums against the local report directory
-   (`shasum -a 256 -c SHA256SUMS` after `cd` into that directory).
-4. **Review** the draft: Apple Silicon / macOS 14+, unsigned and unnotarized
-   wording, install link to [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md),
-   known limitations, and rollback/removal steps.
-5. **Publish** the draft only after that final review.
+1. On GitHub, create a **draft** Release for the version.
+2. Attach the DMG, `SHA256SUMS`, and `release-qualification-<version>.md`, and
+   paste the release notes.
+3. Compare the uploaded filenames and checksums with the local report
+   directory (`cd` into it and run `shasum -a 256 -c SHA256SUMS`).
+4. **Review** the draft: Apple Silicon and macOS 14+, the unsigned and
+   unnotarized wording, a link to
+   [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md), known limitations,
+   and rollback and removal steps.
+5. **Publish** the draft after that review.
 
-Do **not** use the GitHub CLI to create or upload releases, automatic tag
-creation, pushing of tags, or new GitHub Actions for publishing. Tagging,
-pushing, and releasing each require a **separate explicit request**.
+Keep this in the GitHub web interface. Do not add command-line release
+uploads, automatic tag creation, or a publishing workflow.
 
-## End-user install handoff
+## End-user install
 
-Point users at [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md). Supported
-first-open paths are right-click **Open** and System Settings **Open Anyway**.
-Do not document Gatekeeper kill-switches or quarantine stripping.
+Point users to [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md). The
+supported first-open paths are right-click **Open** and **Open Anyway** in
+System Settings. Do not document system-wide Gatekeeper switches or quarantine
+stripping.
 
 ## Rollback and removal
 
-- **Rollback:** install the previous published DMG the same way (verify its
-  `SHA256SUMS`, then open via the supported Gatekeeper path) so
-  `/Applications/Orpheus.app` is replaced by the older bundle.
-- **Uninstall / removal:** quit Orpheus, then remove `/Applications/Orpheus.app`
-  (Trash or Finder). Optional local library data under the app support folder
-  can be deleted separately if a full wipe is desired; qualification fixtures
-  never use the live library.
+- **Rollback:** install the previous published DMG the same way: verify its
+  `SHA256SUMS`, then open it through a supported Gatekeeper path so the older
+  bundle replaces `/Applications/Orpheus.app`.
+- **Uninstall:** quit Orpheus, then move `/Applications/Orpheus.app` to the
+  Trash. Delete the library data in the app support folder only for a full
+  wipe. Qualification fixtures never use the live library.
 
 ## Related docs
 
-- [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md) — end-user unsigned
-  install
-- [TESTING.md](TESTING.md) — source CI vs local matrices
-- [RUN_APPLICATION.md](RUN_APPLICATION.md) — build and install from source
-- [COMMIT_WORKFLOW.md](COMMIT_WORKFLOW.md) — commit and staging rules
+- [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): end-user install of
+  unsigned builds
+- [TESTING.md](TESTING.md): source CI and local verification
+- [RUN_APPLICATION.md](RUN_APPLICATION.md): building and installing from
+  source
+- [CONTRIBUTING.md](../CONTRIBUTING.md): branch and commit conventions

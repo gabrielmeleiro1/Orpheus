@@ -1,256 +1,23 @@
 # Running the Application
 
-Architecture reference: `docs/ARCHITECTURE.md`
+This guide covers running Orpheus from source, the first-launch setup, where
+data is kept, and how to package and install the desktop app. For the
+component design, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
-## 1. Setup
+## Setup
 
-Install the system prerequisites listed in [DEPENDENCIES.md](DEPENDENCIES.md)
-first.
+Install the prerequisites and the Python environment as described in
+[DEPENDENCIES.md](DEPENDENCIES.md). macOS and Linux commands use a POSIX shell.
+Windows commands use PowerShell, the interpreter at `.\.venv\Scripts\python.exe`,
+and `npm.cmd`, so they work even when script execution is disabled.
 
-Use the platform-specific source setup in
-[DEPENDENCIES.md](DEPENDENCIES.md#system-prerequisites): macOS commands use a
-POSIX shell (also used on Linux), while Windows commands use PowerShell and
-`.\.venv\Scripts\Activate.ps1`.
+The `base` profile supports source inspection, library management, and
+playback of existing audio. Both conversion modes (Audiobook and Document)
+need a local TTS runtime from the `mlx` or `cuda` profile; the API cleaner
+does not replace TTS. See
+[runtime profiles](DEPENDENCIES.md#runtime-profiles) for the install commands.
 
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python scripts/setup_runtime.py --profile base
-python -m pip install -r requirements-dev.txt
-```
-
-The `base` profile supports source inspection, library management, and playback
-of existing audio. Both conversion modes require a local TTS runtime; cloud
-cleaning is not a replacement for TTS. Base does not install local models. `requirements-dev.txt`
-adds contributor and PyInstaller tooling on top of those base dependencies.
-Use `requirements.txt` instead when you do not plan to run tests, static
-analysis, or desktop sidecar packaging.
-
-Select and install a local runtime before using local TTS/cleaning or building
-a sidecar that bundles it:
-
-```bash
-# macOS 14+ on arm64 Apple Silicon
-python scripts/setup_runtime.py --profile mlx \
-  --group tts-mlx --group cleaner-mlx
-
-# Linux with a supported NVIDIA GPU and driver; Windows uses the PowerShell dependency guide
-python scripts/setup_runtime.py --profile cuda \
-  --group tts-cpu-cuda --group cleaner-cuda
-```
-
-The CUDA profile is opt-in and checks the NVIDIA driver before installing.
-Non-base setup requires a Kokoro voice group. To install dependencies alone,
-use `python -m pip install -r requirements/mlx.txt` (Apple Silicon) or
-`python -m pip install -r requirements/cuda.txt` (NVIDIA); this does not mark setup ready.
-The equivalent fixed
-manifests are `requirements/base.txt`, `requirements/mlx.txt`, and
-`requirements/cuda.txt`; prefer `setup_runtime.py` because it validates platform
-compatibility and records the selected profile.
-
-Packaged builds download any missing managed models from the Setup screen. The
-download can be cancelled there. The in-flight download worker is stopped;
-**Stopping download…** allows returning to the dashboard while it exits.
-
-The first page shows the voice model (Kokoro), one optional text cleaner, and its
-precision. CUDA offers Qwen 2.5 1.5B and 3B; MLX offers Llama 3.2 3B and 1B.
-Only the selected models are installed. CUDA's **4-bit**, **8-bit**, and **FP16**
-choices share one model download: quantization is applied when the model loads.
-4-bit uses the least GPU memory; FP16 uses the most. The download size does not
-shrink with lower precision. MLX cleaners are supplied as 4-bit models.
-
-After setup, use **Settings → Manage models** to change the runtime or selected
-models. **Save runtime settings** reuses models already on this device and keeps
-the selection across restarts. Switching to library-only mode does not delete
-downloaded models; switching back reuses them. Missing models offer **Install**.
-Use **Check runtime** to retry discovery after a temporary startup or device
-failure. The cleaner backend, model, and CUDA device can be changed directly in
-Settings when that backend is available.
-
-**Models on this device** shows each managed model's installation status and
-cache size. **Delete** removes that model's shared cached files after confirmation;
-other models, books, and audio are preserved. **Install again** downloads it
-without changing the active runtime selection. Select the models you want to use
-and save the runtime settings separately. Deleting Kokoro makes audio creation
-not-ready until it is installed again or you choose library-only mode. Damaged
-caches remain visible for deletion; partial deletions report residual files and
-the bytes actually removed. Model deletion is blocked during conversions or
-another setup operation.
-
-Keep multiple cleaners downloaded, but select one at a time. Changing a cached
-model or precision uses **Save runtime settings** and needs no download. The
-saved model and precision become the defaults for conversion, including after
-a restart. Conversion's model selector lists installed local models; use
-**Manage models** to install another supported model.
-
-### Data locations
-
-The Tauri desktop keeps `data/audiobooks.db`, `output/`, `temp/`, and
-`runtime-setup.json` under its app data directory:
-
-| OS | Desktop app data directory |
-| --- | --- |
-| macOS | `~/Library/Application Support/com.orpheus.desktop/` |
-| Windows | `%APPDATA%\com.orpheus.desktop\` |
-| Linux | `${XDG_DATA_HOME:-~/.local/share}/com.orpheus.desktop/` |
-
-**Settings → Storage** displays the resolved paths and opens either folder.
-Models use Hugging Face's shared cache (normally `~/.cache/huggingface/hub`,
-including on Windows); `HF_HOME` or `HF_HUB_CACHE` can relocate it.
-
-When run directly outside Tauri, the backend defaults to repository-local
-`data/`, `output/`, and `temp/`. Standalone `scripts/setup_runtime.py` stores its
-state in `~/Library/Application Support/Orpheus/` on macOS,
-`%LOCALAPPDATA%\Orpheus\` on Windows, or `${XDG_DATA_HOME:-~/.local/share}/orpheus/`
-on Linux. If `AUDIOBOOK_DATA_DIR` is set, setup state is placed in its parent;
-the desktop supplies this override automatically.
-
-## 2. Validate Python/Core
-
-```bash
-python run_tests.py --contract
-```
-
-This validates the Python/core regression gate only. It excludes desktop
-TypeScript, Tauri/Rust, packaged sidecar, release install, and property,
-benchmark, slow, and UI suites.
-
-Optional faster smoke pass:
-```bash
-python run_tests.py
-```
-
-## 3. Troubleshooting
-
-If conversion fails, inspect:
-- desktop devtools/network logs when running the Tauri dev shell
-- server logs in terminal
-- `output/` for generated artifacts
-- `temp/` for transient artifacts
-- `data/audiobooks.db` for repository-local library state
-- the app data folder for Tauri-managed runtime state
-
-## 4. Desktop Runtime Contract
-
-The desktop flow uses this runtime contract:
-
-1. Tauri launches a desktop backend process:
-   - development: `python -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0`
-   - production: bundled sidecar executable (`orpheus-desktop-backend`)
-2. Once bound to local host/port, Python prints one machine-readable startup JSON line:
-   `{"event":"ready","host":"127.0.0.1","port":54321,"token":"..."}`
-3. Python also writes the payload to the app-data ready file (`backend-ready.json`)
-   so the shell can recover it if stdout is unavailable.
-4. React reads `host`/`port`/`token` from Tauri and calls the local API on the
-   announced socket.
-
-Python continues to own conversion orchestration and local storage through the
-configured data, output, temp, and SQLite paths.
-
-### Desktop backend launcher
-
-Start the desktop backend directly:
-
-```bash
-python -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0
-```
-
-- `--host` accepts loopback addresses only (`127.0.0.1` or `localhost`).
-- `--port` accepts `0-65535`; `0` requests an ephemeral port.
-- On successful bind, stdout emits exactly one JSON ready line:
-  `{"event":"ready","host":"127.0.0.1","port":54321,"token":"..."}`
-- Process handles `SIGTERM` cleanly for desktop lifecycle control.
-- Desktop mode enables CORS for the Vite dev server at `http://localhost:5173`
-  and packaged WebView origins.
-
-### Build desktop sidecar for production packaging
-
-The release path is `npm run desktop:build`; do not prebuild a sidecar first.
-Select the installed runtime profile through the environment so Tauri's fresh
-sidecar hook inherits it:
-
-```bash
-# POSIX shell
-cd desktop
-ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build
-ORPHEUS_RUNTIME_PROFILE=mlx npm run desktop:build
-ORPHEUS_RUNTIME_PROFILE=cuda npm run desktop:build
-```
-
-```powershell
-# PowerShell
-Set-Location desktop
-$env:ORPHEUS_RUNTIME_PROFILE = "base" # or "mlx" / "cuda"
-npm run desktop:build
-Remove-Item Env:ORPHEUS_RUNTIME_PROFILE
-```
-
-When `ORPHEUS_RUNTIME_PROFILE` is unset, a rebuild retains the profile recorded
-in the previous sidecar's `runtime-profile.json`, so rebuilding the UI cannot
-silently remove the local runtime. A first build defaults to `mlx` for an
-Apple Silicon target and `base` elsewhere. Only `base`, `mlx`, and `cuda` are
-accepted. An explicit standalone `--runtime-profile` takes precedence over the
-environment and is useful for diagnosing the sidecar builder directly:
-
-```bash
-python scripts/build_desktop_backend.py --runtime-profile base
-```
-
-The sidecar build:
-- validates only the selected profile's runtime dependencies, plus PyInstaller
-  and system binaries needed by the sidecar build
-- builds `apps.launchers.desktop_backend` via `desktop/backend-sidecar.spec`
-- writes the PyInstaller onedir sidecar to:
-  `desktop/src-tauri/binaries/orpheus-desktop-backend/`
-- copies the exact resolved `ffmpeg` and `ffprobe` executables into the sidecar
-  `bin/` directory and fails if those packaged runtime resources are missing
-- removes stale target-triple sidecar files and directories from
-  `desktop/src-tauri/binaries/`
-
-`desktop:build` is the Tauri release build command. Tauri's
-`beforeBuildCommand` first runs `python ../scripts/build_desktop_backend.py`
-to create a fresh architecture-matched sidecar, then runs `npm run build` for
-the frontend before packaging. The diagnostic `--validate-existing` mode is
-available when you need to inspect an already-produced sidecar, but it is not
-part of the release path.
-
-Tauri exports the selected Rust target as `TAURI_ENV_TARGET_TRIPLE`; the
-sidecar builder uses it before `CARGO_BUILD_TARGET` or `TARGET`, and rejects a
-host/target OS or architecture mismatch before dependency or PyInstaller
-probes. This prevents a native PyInstaller executable for the wrong
-architecture from entering the bundle.
-
-During `desktop:build`, Tauri embeds the `binaries/` resource declared in `tauri.conf.json`.
-The production app launches the executable inside that bundled onedir resource instead of
-the repo-local Python interpreter.
-
-To install the built app into `/Applications` by replacement:
-
-```bash
-cd desktop
-npm run desktop:install
-```
-
-To rebuild the sidecar, rebuild the `.dmg`, replace `/Applications/Orpheus.app`,
-and remove the temporary build-output `.app` so Spotlight shows the installed app only:
-
-```bash
-cd desktop
-npm run desktop:release
-```
-
-`desktop:release` delegates to the same Tauri build hook (fresh sidecar,
-frontend, then bundle) before installing the resulting app. Prefix it with
-`ORPHEUS_RUNTIME_PROFILE=base|mlx|cuda` in a POSIX shell, or set the equivalent
-`$env:ORPHEUS_RUNTIME_PROFILE` in PowerShell, to select a non-default profile.
-
-The desktop bundle keeps the stable app name and bundle identifier:
-`Orpheus.app` / `com.orpheus.desktop`. The current release metadata is `1.0.0`,
-so dragging from the `.dmg` or using `desktop:install` replaces the same app bundle rather
-than creating a second Applications entry.
-
-### Desktop dev launch (full shell + backend)
+Then start the app:
 
 ```bash
 cd desktop
@@ -258,70 +25,270 @@ npm ci
 npm run desktop:dev
 ```
 
-This launches:
-- Vite frontend dev server
-- Tauri shell
-- Python desktop backend process managed by Rust
+This starts the Vite dev server, the Tauri shell, and the Python backend,
+which Rust launches and supervises.
 
-### Release-Readiness Command Matrix
+## First Launch and Models
 
-Run these commands in order before treating a desktop build as release-ready:
+The Setup screen checks the runtime, asks you to choose the Kokoro voice model
+and an optional text cleaner with its precision, downloads only those models,
+and then verifies that audio creation works. CUDA hardware is checked for the
+local cleaner; narration falls back to CPU when CUDA is unavailable.
+**Use library only** skips model downloads. A download can be cancelled; while
+the worker stops, **Stopping download…** lets you return to the library.
+
+Cleaner choices:
+
+- **CUDA:** Qwen 2.5 1.5B or 3B. **4-bit**, **8-bit**, and **FP16** share one
+  download because quantization is applied when the model loads. 4-bit uses
+  the least GPU memory and FP16 the most; the download size is the same.
+- **MLX:** Llama 3.2 3B or 1B, supplied as 4-bit models.
+
+### Managing models
+
+Use the **Voice & models** section of **Settings** to change the runtime or
+the selected models.
+
+- **Save runtime settings** reuses models already on the device and keeps the
+  selection across restarts. Changing a cached model or precision needs no
+  download. The saved model and precision become the conversion defaults.
+- Switching to library-only mode does not delete downloaded models; switching
+  back reuses them.
+- The **Models** list shows each model's status and size on disk.
+  **Download** appears for missing models and **Repair** for incomplete ones;
+  neither changes the active selection. **Check runtime** retries discovery
+  after a temporary startup or device failure and then shows the result and
+  the time of the check, for example *Runtime ready.*
+- The **Text cleaner · runtime model** group picks the cleaner model the
+  runtime is set up with. The cleaner each book uses is chosen under
+  **Text cleaning**.
+- **Delete** removes that model's cached files after confirmation; other
+  models, books, and audio are kept. Deleting Kokoro makes audio creation
+  unavailable until you download it again or choose library-only mode.
+  Damaged caches stay visible so you can delete them, and a partial deletion
+  reports leftover files and the bytes actually removed. While a conversion,
+  library maintenance, a model download, or a voice preview is running,
+  **Delete** is disabled and gives the reason.
+- You can keep several cleaners downloaded but use one at a time. The
+  conversion form lists installed local models; download another supported
+  one from **Voice & models**.
+
+## Library Maintenance
+
+The **Library** section of **Settings** has the maintenance actions. Restoring,
+cleaning up, and removing folders ask for confirmation first, and **Cancel**
+leaves everything as it is.
+
+- **Check library** reports what a cleanup would remove and what it would keep,
+  with the reason.
+- **Back up** saves a dated copy of the library database. Backups are listed
+  below with a **Restore** button; restoring replaces the current database
+  after keeping a safety copy, and then reports any restored books whose audio
+  or source file is missing.
+- **Clean up** removes leftover temporary files. A database backup is kept
+  when the cleanup changes the library, and finished audio is kept.
+- **Other folders** appears when the output folder holds folders that no book
+  in the library owns. They are kept unless you choose **Remove…** and confirm,
+  which deletes those folders and any audio inside. This cannot be undone.
+
+## Data Locations
+
+The desktop app keeps `data/audiobooks.db`, `output/`, `temp/`, and
+`runtime-setup.json` in its app data directory:
+
+| OS | Desktop app data directory |
+| --- | --- |
+| macOS | `~/Library/Application Support/com.orpheus.desktop/` |
+| Windows | `%APPDATA%\com.orpheus.desktop\` |
+| Linux | `${XDG_DATA_HOME:-~/.local/share}/com.orpheus.desktop/` |
+
+**Settings → Storage** shows the resolved paths, opens either folder, and
+shows the log path once the log exists. The backend log is
+`data/logs/backend.log` in the app data directory; attach it when you report a
+problem. Models use the shared Hugging Face cache (normally
+`~/.cache/huggingface/hub`, also on Windows); set `HF_HOME` or `HF_HUB_CACHE`
+to move it.
+
+When the backend runs outside Tauri, it uses repository-local `data/`,
+`output/`, and `temp/`. Standalone `scripts/setup_runtime.py` keeps
+`runtime-setup.json` in the desktop app data directory listed above, so the
+desktop app sees the result. If `AUDIOBOOK_DATA_DIR` is set, setup state goes
+in its parent directory; the desktop shell sets this automatically. State that
+earlier builds wrote to `~/Library/Application Support/Orpheus/`,
+`%LOCALAPPDATA%\Orpheus\`, or `${XDG_DATA_HOME:-~/.local/share}/orpheus/` is
+still read until the next setup write; it is never modified or removed.
+
+## Running the Backend Directly
 
 ```bash
-python run_tests.py --contract
-python -m pytest tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py -q -o addopts=
-cd desktop
-npm run typecheck
-npm run build
-cd src-tauri
-cargo test
-cargo check
-cd ../..
-cd desktop
-npm run desktop:build
-npm run desktop:install
+python -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0
 ```
 
-The first command is the Python/core gate. The remaining commands cover the
-desktop UI, Tauri shell, sidecar packaging, release bundle, and installed-app
-path.
+- `--host` accepts loopback addresses only (`127.0.0.1` or `localhost`).
+- `--port` accepts `0`–`65535`; `0` picks an ephemeral port.
+- After binding, stdout prints exactly one ready line:
+  `{"event":"ready","host":"127.0.0.1","port":54321,"token":"...","runtime_profile":"development"}`.
+  Send the token as a bearer token on `/api/*` requests. A packaged sidecar
+  reports its bundled profile (`base`, `mlx`, or `cuda`) as `runtime_profile`.
+- Without `AUDIOBOOK_*` overrides, the library lives in the checkout's `data/`,
+  `output/`, and `temp/` folders, which Git ignores.
+- The process shuts down cleanly on `SIGTERM`.
 
-### Unsigned macOS release install
+The full startup handshake and auth rules are in
+[ARCHITECTURE.md](ARCHITECTURE.md#desktop-runtime).
 
-Published Apple Silicon DMGs are **unsigned** and **unnotarized**. End users
-should follow [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): verify
-`SHA256SUMS` with `shasum -a 256` before first open, then use right-click
-**Open** or System Settings **Open Anyway**.
+## Packaging
 
-Maintainers producing a GitHub Release must run the full local gate in
-[RELEASING_MACOS.md](RELEASING_MACOS.md) (`scripts/release_qualification.py`).
-Source CI (`.github/workflows/source-validation.yml`) remains source validation
-only and does not publish release artifacts.
+### Build the desktop bundle
 
-### Packaged app smoke (manual/ops)
+`npm run desktop:build` is the release build. Do not prebuild the sidecar.
+Choose the runtime profile through the environment so Tauri's build hook
+inherits it, and install that profile first:
 
-Launch and close the installed packaged app:
+```bash
+# POSIX shell
+cd desktop
+ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build   # or mlx / cuda
+```
+
+```powershell
+# PowerShell (the build hook calls `python`, so put the checkout's .venv first on PATH)
+$env:Path = (Resolve-Path .\.venv\Scripts).Path + ";" + $env:Path
+Set-Location desktop
+$env:ORPHEUS_RUNTIME_PROFILE = "base" # or "mlx" / "cuda"
+npm.cmd run desktop:build
+Remove-Item Env:ORPHEUS_RUNTIME_PROFILE
+```
+
+When `ORPHEUS_RUNTIME_PROFILE` is unset, a rebuild keeps the profile recorded
+in the previous sidecar's `runtime-profile.json`, so rebuilding the UI cannot
+silently drop the local runtime. A first build defaults to `mlx` for an Apple
+Silicon target and `base` elsewhere. Only `base`, `mlx`, and `cuda` are
+accepted.
+
+Tauri's `beforeBuildCommand` runs `python ../scripts/build_desktop_backend.py`
+and then `npm run build`. The sidecar build:
+
+- validates only the selected profile's dependencies, plus PyInstaller and the
+  system binaries the sidecar needs;
+- builds `apps.launchers.desktop_backend` with `desktop/backend-sidecar.spec`
+  into the PyInstaller onedir folder
+  `desktop/src-tauri/binaries/orpheus-desktop-backend/`;
+- copies the resolved `ffmpeg` and `ffprobe` into the sidecar's `bin/` folder
+  and fails if either is missing;
+- removes stale sidecar files from `desktop/src-tauri/binaries/`.
+
+Tauri exports the Rust target as `TAURI_ENV_TARGET_TRIPLE`. The sidecar
+builder reads it before `CARGO_BUILD_TARGET` or `TARGET` and rejects a host and
+target OS or architecture mismatch before probing dependencies, so a
+wrong-architecture PyInstaller executable cannot enter the bundle. Tauri then
+embeds `binaries/` as a resource, and the packaged app runs that sidecar
+instead of a repository interpreter.
+
+To diagnose the sidecar builder on its own, run it directly. An explicit
+`--runtime-profile` overrides the environment:
+
+```bash
+python scripts/build_desktop_backend.py --runtime-profile base
+python scripts/build_desktop_backend.py --validate-existing
+```
+
+### Windows installer
+
+The Windows installer bundles the `cuda` profile and is built with Inno Setup 7,
+which handles the long paths in the PyTorch runtime. From the repository root,
+after installing the CUDA profile and the build prerequisites:
+
+```powershell
+$env:Path = (Resolve-Path .\.venv\Scripts).Path + ";" + $env:Path
+$env:ORPHEUS_RUNTIME_PROFILE = "cuda"
+Set-Location desktop
+npm.cmd ci
+npm.cmd run desktop:build -- --no-bundle
+& "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe" windows-installer.iss
+Get-FileHash .\release\Orpheus_1.0.0_x64-setup.exe -Algorithm SHA256
+```
+
+Adjust the compiler path if Inno Setup is installed elsewhere. The installer
+script validates the CUDA sidecar before compiling. Publish the installer with
+its SHA-256 checksum. The Rust executable alone is not a portable app; it needs
+the matching `binaries/orpheus-desktop-backend/` folder.
+
+Installer behavior:
+
+- It installs per user into `%LOCALAPPDATA%\Orpheus` and installs WebView2 if
+  it is missing. Upgrades and uninstalls keep the app data directory and the
+  shared model cache.
+- Only one installer runs at a time. An upgrade stages the new app and backend
+  and keeps the previous versions until setup succeeds. A failed activation
+  restores both, reports the failure, and does not offer to launch the app. If
+  setup is interrupted during activation, running it again restores the
+  previous app and backend before trying again.
+- `/EXTRACTONLY=1 /DIR=<empty temporary directory>` extracts the payload
+  without registering an install, creating shortcuts, or launching the app.
+  Check the exit code and compare the files with the build output. This does
+  not exercise installation or WebView2 setup.
+
+For a realistic launch check, open the installer and the installed app from
+Windows Explorer. A process started by another packaged (MSIX) Windows
+application can inherit that application's file-system virtualization and see
+a different app data folder at the same path. If Orpheus then reports a
+storage ownership mismatch, keep the library and its ownership markers and
+retry from Explorer; do not reset or force-adopt the data.
+
+### macOS install
+
+```bash
+cd desktop
+npm run desktop:install   # copy the last build into /Applications
+npm run desktop:release   # build, then replace /Applications/Orpheus.app
+```
+
+`desktop:release` runs the same Tauri build (fresh sidecar, frontend, bundle),
+replaces `/Applications/Orpheus.app`, and removes the build-output `.app` so
+Spotlight shows only the installed copy. Prefix it with
+`ORPHEUS_RUNTIME_PROFILE=base|mlx|cuda` to choose a profile.
+
+The bundle keeps a stable name and identifier, `Orpheus.app` and
+`com.orpheus.desktop`, at version `1.0.0`. Dragging from the `.dmg` or running
+`desktop:install` replaces the same app instead of adding a second
+Applications entry.
+
+### Unsigned macOS releases
+
+Published Apple Silicon DMGs are unsigned and unnotarized. Users should follow
+[UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): verify `SHA256SUMS`
+with `shasum -a 256` before the first open, then use right-click **Open** or
+**Open Anyway** in System Settings. Maintainers follow
+[RELEASING_MACOS.md](RELEASING_MACOS.md), which runs the full local release
+gate (`scripts/release_qualification.py`). Source CI
+(`.github/workflows/source-validation.yml`) validates source only and does not
+publish artifacts.
+
+## Troubleshooting
+
+If a conversion fails, check:
+
+- the **Event log** in the conversion details panel;
+- `data/logs/backend.log` in the app data directory;
+- the desktop devtools console and network log when running `desktop:dev`;
+- `output/` for generated files and `temp/` for intermediate files;
+- **Settings → Storage** for the resolved data paths.
+
+To check an installed macOS build, launch and quit it:
 
 ```bash
 open "/Applications/Orpheus.app"
 osascript -e 'tell application "Orpheus" to quit'
 ```
 
-Expected:
-- app process starts
-- bundled `orpheus-desktop-backend` starts
-- normal app quit stops backend sidecar
-
-To exercise sidecar startup plus packaged `ffmpeg`/`ffprobe` under a Finder-like
-reduced `PATH` without running an ML conversion:
+The bundled `orpheus-desktop-backend` should start with the app and stop when
+it quits normally. If the app is force-killed, the backend notices that its
+parent is gone and exits; if one is ever left behind, stop it with:
 
 ```bash
-python scripts/desktop_runtime_smoke.py --backend sidecar --reduced-path --check-ffmpeg-runtime
+pkill -f "Orpheus.app/Contents/Resources/binaries/orpheus-desktop-backend"
 ```
 
-Known behavior:
-- If the app process is force-killed (not normal quit), backend sidecar can remain running and should be manually cleaned up:
-
-```bash
-pkill -f "Orpheus.app/Contents/MacOS/orpheus-desktop-backend"
-```
+Automated packaged-app smoke checks are in
+[TESTING.md](TESTING.md#packaged-app-smoke-macos).

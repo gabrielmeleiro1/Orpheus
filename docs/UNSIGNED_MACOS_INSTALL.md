@@ -1,12 +1,12 @@
 # Installing unsigned Orpheus on macOS
 
-Orpheus desktop releases for the first target platform are built for
-**Apple Silicon** on **macOS 14+**. Published GitHub Release DMGs are
-**unsigned** and **unnotarized**. macOS Gatekeeper will warn on first open;
-that warning is expected and does not mean the download is automatically safe.
+Orpheus macOS releases are built for **Apple Silicon** on **macOS 14+**.
+Published GitHub Release DMGs are **unsigned** and **unnotarized**, so macOS
+Gatekeeper warns on first open. That warning is expected; it does not tell you
+whether the download is safe.
 
 Treat every download as untrusted until you verify its checksum against the
-release’s `SHA256SUMS`.
+release's `SHA256SUMS`.
 
 ## Before you open the app
 
@@ -44,7 +44,7 @@ protections for every app.
 ## Security trade-off
 
 An unsigned, unnotarized build is not Apple-notarized. You are trusting the
-GitHub Release publisher and the checksum match, not Apple’s notarization
+GitHub Release publisher and the checksum match, not Apple's notarization
 pipeline. Prefer releases that also publish `SHA256SUMS` and a qualification
 report, and verify hashes yourself.
 
@@ -58,8 +58,8 @@ on first open.
 - **Uninstall / removal:** quit Orpheus, then move `/Applications/Orpheus.app`
   to Trash (or delete that bundle). Remove leftover app-support data only if
   you intend to wipe local library state.
-- **Rollback:** download the previous release’s DMG, verify it with that
-  release’s `SHA256SUMS`, install it the same way, and replace
+- **Rollback:** download the previous release's DMG, verify it with that
+  release's `SHA256SUMS`, install it the same way, and replace
   `/Applications/Orpheus.app`.
 
 ## Maintainer / packaging reference

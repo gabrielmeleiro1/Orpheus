@@ -1,31 +1,45 @@
 # Documentation
 
-Maintained project documentation lives under `docs/`. The root `README.md` is the public entry point.
+The [project README](../README.md) is the entry point. These guides cover the
+details.
 
-## Reading Order
+## Using and building Orpheus
 
-1. [README.md](../README.md)
-2. [DEPENDENCIES.md](DEPENDENCIES.md)
-3. [ARCHITECTURE.md](ARCHITECTURE.md)
-4. [CURRENT_STATE.md](CURRENT_STATE.md)
-5. [RUN_APPLICATION.md](RUN_APPLICATION.md)
-6. [TESTING.md](TESTING.md)
-7. [RELEASING_MACOS.md](RELEASING_MACOS.md)
-8. [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md)
-9. [COMMIT_WORKFLOW.md](COMMIT_WORKFLOW.md)
+- [DEPENDENCIES.md](DEPENDENCIES.md): system prerequisites, Python runtime
+  profiles, model assets, and the clean-environment release gate.
+- [RUN_APPLICATION.md](RUN_APPLICATION.md): running from source, first-launch
+  setup, model management, library maintenance, data locations, packaging,
+  and the Windows and macOS installers.
+- [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): installing an
+  unsigned macOS release, with checksum verification and the supported
+  Gatekeeper first-open steps.
 
-## Active Docs
+## How it works
 
-- [ARCHITECTURE.md](ARCHITECTURE.md): system boundaries, runtime contracts, and [where to change X](ARCHITECTURE.md#where-to-change-x).
-- [CURRENT_STATE.md](CURRENT_STATE.md): what is currently supported and how the product behaves.
-- [DEPENDENCIES.md](DEPENDENCIES.md): system prerequisites and package manifests for GitHub clones.
-- [RUN_APPLICATION.md](RUN_APPLICATION.md): setup, launch, packaging, and install workflow.
-- [RUNTIME_SELECTION.md](RUNTIME_SELECTION.md): how a TTS runtime provider is selected per platform.
-- [TESTING.md](TESTING.md): contract, smoke, lint, and release verification commands.
-- [RELEASING_MACOS.md](RELEASING_MACOS.md): local qualification gate vs source CI, portable checksum staging, and manual GitHub Release draft/review/publish.
-- [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): end-user checksum verification and supported Gatekeeper Open / Open Anyway install.
-- [COMMIT_WORKFLOW.md](COMMIT_WORKFLOW.md): commit order, message style, staging, and verification rules.
+- [ARCHITECTURE.md](ARCHITECTURE.md): components, the desktop runtime
+  contract, request flow, API surface, pipeline, storage, and
+  [where to change X](ARCHITECTURE.md#where-to-change-x).
+- [RUNTIME_SELECTION.md](RUNTIME_SELECTION.md): how the Kokoro TTS provider is
+  chosen on each platform.
+- [ENVIRONMENT.md](ENVIRONMENT.md): every environment variable the backend,
+  shell, scripts, and tests read.
 
-## Local Runtime State
+## Contributing and releasing
 
-- `data/`, `output/`, and `temp/` are local-only runtime state.
+- [CONTRIBUTING.md](../CONTRIBUTING.md): branches, commits, checks, and pull
+  requests.
+- [TESTING.md](TESTING.md): test tiers, focused checks, CI workflows, the
+  pre-push hook, and release verification.
+- [RELEASING_MACOS.md](RELEASING_MACOS.md): the full local release gate
+  (`scripts/release_qualification.py`) and the manual GitHub Release
+  procedure. Source CI (`.github/workflows/source-validation.yml`) is not a
+  release gate.
+- [Frontend stress harness](../tools/frontend_stress/README.md): Playwright
+  journeys, the interaction-state audit, screen capture, and frontend
+  performance baselines.
+
+## Local runtime state
+
+`data/`, `output/`, and `temp/` hold local runtime state when the backend runs
+from the checkout. Their contents are ignored by Git; see
+[data/README.md](../data/README.md).

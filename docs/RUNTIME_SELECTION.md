@@ -1,7 +1,8 @@
 # TTS Runtime Selection
 
-How Orpheus picks a Kokoro TTS provider on each platform, and how that choice
-flows from API/frontend input through `TTSRuntimeSpec` into the engine factory.
+This page explains how Orpheus picks a Kokoro TTS provider on each platform,
+and how that choice flows from the UI or API through `TTSRuntimeSpec` into the
+engine factory.
 
 ## Platform default provider (Kokoro)
 
@@ -11,14 +12,20 @@ is the single source of truth when the caller does not set `tts_provider`.
 | Platform | Condition | Default provider | Default model |
 |----------|-----------|------------------|---------------|
 | macOS Apple Silicon | `Darwin` + `arm64` / `aarch64` | `mlx` | `mlx-community/Kokoro-82M` |
-| Windows / Linux with CUDA | `torch.cuda.is_available()` | `cuda` | `hexgrad/Kokoro-82M` |
+| Windows / Linux with CUDA | a small CUDA kernel runs successfully | `cuda` | `hexgrad/Kokoro-82M` |
 | CPU-only (no MLX, no CUDA) | fallback | `cpu` | `hexgrad/Kokoro-82M` |
 
 Notes:
 
-- MLX is only considered on Apple Silicon; CUDA probing uses `torch.cuda.is_available()`.
-- Non-Kokoro engines default to provider `local` (API-backed engines).
-- Explicit `tts_provider` / `tts_device` from the API always override these defaults.
+- MLX is only considered on Apple Silicon. The CUDA check imports `torch`,
+  requires `torch.cuda.is_available()`, and then runs and synchronizes a tiny
+  kernel, so a broken driver falls back to CPU.
+- The MLX engine appends the quantization suffix at load time, so downloads
+  and cache checks use the concrete `mlx-community/Kokoro-82M-bf16` repository.
+- Kokoro is the only shipped engine; any other engine name would default to
+  provider `local`.
+- An explicit `tts_provider` or `tts_device` from the API always overrides
+  these defaults.
 
 ## Decision flow
 
@@ -60,28 +67,6 @@ execution:
 - **CUDA cleaner/TTS**: `probe_cleaner_backend("cuda")` validates `torch`, GPU
   presence, and optional `bitsandbytes` for default quantization.
 
-Contract tests mock `torch` import and `cuda.is_available()`; real GPU runs belong
-in explicit hardware smoke/benchmark commands only.
-
-## Benchmark evidence
-
-Per-run `benchmark_summary.json` (schema v3) and suite-level `bench_summary.json`
-include `tts_provider` and `tts_device` alongside `tts_engine`, `tts_model_name`,
-and `tts_quantization` so CPU / MLX / CUDA runs are comparable from artifacts alone.
-
-Example commands:
-
-```bash
-# Parse-only (no TTS load); still records resolved provider/device from PipelineConfig
-python -m orpheus bench parse book.epub
-
-# Full conversion on Apple Silicon (default MLX)
-python -m orpheus bench full book.epub
-
-# Full conversion with explicit CUDA provider (when hardware available)
-python scripts/benchmark_nagel_pipeline.py book.epub --full \
-  --tts-engine kokoro
-```
-
-Use `scripts/benchmark_nagel_pipeline.py` flags and pipeline `tts_runtime_options`
-for provider/device overrides when comparing runtimes on the same machine.
+Contract tests mock the `torch` import and `cuda.is_available()`. Real GPU runs
+belong in explicit hardware smoke checks and GPU tests; see
+[TESTING.md](TESTING.md#gpu-tests).

@@ -1,172 +1,147 @@
-# Testing Guide
+# Testing
 
-See [Architecture](ARCHITECTURE.md) for system boundaries and
-[where to change X](ARCHITECTURE.md#where-to-change-x).
-
-## Test Tiers
-
-Orpheus uses layered validation so fast checks stay fast and slow or
-environment-dependent work stays opt-in.
-
-| Tier | Command | What it proves | What it does not prove |
-| --- | --- | --- | --- |
-| Contract | `python run_tests.py --contract` | Python/core pytest gate with coverage floor (`--cov-fail-under=85`), strict markers, and the default marker filter (`not property`, `not benchmark`, `not slow`, `not ui`) | Desktop build, Tauri/Rust shell, packaged sidecar, release installer, real GPU hardware, property fuzzing, long benchmarks |
-| Smoke | `python run_tests.py` | Curated script/pytest modules in `SMOKE_TEST_MODULES` for quick local iteration | Full contract coverage, desktop release matrix, optional suites |
-| Focused pytest | `python -m pytest --no-cov <paths>` | Targeted regression for one subsystem without global coverage enforcement | Cross-surface release readiness |
-| Property | `pytest -m property` | Invariant/fuzz coverage for parsers and cleaners | Runtime performance or UI behavior |
-| Benchmark | `pytest -m benchmark` or `python -m orpheus bench ...` | Performance regressions and pipeline timing evidence | Functional correctness by itself |
-| Slow | `pytest -m slow` | Long-running integration paths that are too heavy for contract | Fast pre-commit feedback |
-| UI | `cd desktop && npm test -- --run` | Desktop UI behavior via Vitest (the `ui` pytest marker is registered but currently has zero tests; `pytest -m ui` exits 5) | Real browser-engine rendering, manual accessibility |
-| GPU | `pytest -m gpu` | Real CUDA/ANE hardware paths when explicitly run | Default laptop/CI environments without hardware |
-
-Tracked parser fixtures live under `tests/fixtures/` and `tests/samples/`.
-Tests must not rewrite those paths; generated samples belong in temp dirs or
-`.artifacts/`.
-
-## Python/Core Regression Gate
-
-Install development dependencies before running the test and static-analysis
-commands:
+Orpheus uses layered checks: fast gates run on every change, and slow or
+hardware-dependent checks are opt-in. Install the development dependencies
+first:
 
 ```bash
 python -m pip install -r requirements-dev.txt
 ```
 
-Run this as the Python/core gate before committing. Pair it with the desktop and
-release checks below before publishing changes that affect those surfaces:
+Commands below assume an activated virtual environment. On Windows, replace
+`python` with `.\.venv\Scripts\python.exe` and `npm` with `npm.cmd`.
+
+## Test Tiers
+
+| Tier | Command | What it covers | What it does not cover |
+| --- | --- | --- | --- |
+| Contract | `python run_tests.py --contract` | The Python gate: all of `tests/` except `property`, `benchmark`, and `slow`, with strict markers and an 85% coverage floor | Desktop build, Rust shell, packaged sidecar, installers, real GPU hardware |
+| Smoke | `python run_tests.py` | A curated list of modules (`SMOKE_TEST_MODULES` in `run_tests.py`) for quick iteration | Full contract coverage |
+| Focused | `python -m pytest --no-cov <paths>` | One subsystem, without the global coverage floor | Cross-surface readiness |
+| Property | `python -m pytest -m property` | Hypothesis invariants for parsers and the cleaner | Performance or UI behavior |
+| Slow | `python -m pytest -m slow` | Long-running integration paths | Fast feedback |
+| Benchmark | `python -m pytest -m benchmark` | Performance baselines | Correctness |
+| GPU | `python -m pytest --no-cov -m gpu` | Real CUDA or Apple hardware paths | Machines without that hardware |
+| Frontend | `cd desktop && npm run typecheck && npm test -- --run` | TypeScript contracts and Vitest UI tests | Real WebView rendering |
+| Rust | `cd desktop/src-tauri && cargo test && cargo check` | Shell lifecycle, paths, setup supervision, capabilities | The packaged app |
+| Browser harness | `npm --prefix tools/frontend_stress test` | Harness unit contracts; the full run drives the real UI and backend | The packaged Tauri app |
+
+A run that selects only `property`, `benchmark`, `slow`, or `ui` skips the
+global coverage floor automatically (see `tests/conftest.py`). Other
+marker-only runs, such as `-m gpu`, need `--no-cov`.
+
+Tracked parser fixtures live in `tests/fixtures/`. Tests must not modify them;
+write generated samples to a temporary directory or `.artifacts/`.
+
+## Python Contract Gate
 
 ```bash
 python run_tests.py --contract
 ```
 
-This command runs the repo's Python/core pytest contract:
+This runs pytest on `tests/` with the `CORE_MARKER_EXPRESSION` from
+`run_tests.py` (`not property and not benchmark and not slow`) and keeps the
+`pytest.ini` defaults: `--strict-markers`, coverage reporting, and
+`--cov-fail-under=85`. Use the runner rather than raw pytest so the marker
+filter stays in sync. Coverage output goes to `.artifacts/coverage/`, so runs
+do not leave `htmlcov/`, `coverage.xml`, or `.coverage` at the repository root.
 
-```bash
-python -m pytest tests -m "not property and not benchmark and not slow and not ui"
-```
+The contract is the Python gate only. It does not cover the desktop build, the
+Rust shell, the packaged sidecar, installers, or the optional suites.
 
-The contract keeps `pytest.ini` defaults intact, including:
-- `--strict-markers`
-- coverage reporting
-- `--cov-fail-under=85`
-
-Coverage output is generated under `.artifacts/coverage/` so contract runs do
-not leave `htmlcov/`, `coverage.xml`, or `.coverage` at the repository root.
-
-This is not a full desktop, sidecar, release, property, benchmark, slow, or UI
-verification pass. The `Source validation` GitHub Actions workflow runs this
-gate plus Ruff, frontend type/tests, and Rust test/check on macOS and Windows.
-It validates source checkouts only: it does not package or sign applications,
-build installers, publish releases, or upload binaries. A local contract pass
-does not mean the remote GitHub Actions jobs are green; check the commit's CI
-status after pushing.
-
-## Local Smoke Suite
-
-For a fast local sanity check, run:
+## Smoke Suite
 
 ```bash
 python run_tests.py
 ```
 
-This is a curated smoke suite defined by `SMOKE_TEST_MODULES` in `run_tests.py`.
-It intentionally mixes:
-- `script` mode: `python <test_file>.py`
-- `pytest` mode: `python -m pytest <test_file> -q -o addopts=`
-
-A green smoke run is useful for iteration, but it does **not** prove that the
-Python/core pytest contract is green.
+The smoke suite runs each module in `SMOKE_TEST_MODULES` either as a script
+(`python <test_file>.py`) or with pytest
+(`python -m pytest <test_file> -q -o addopts=`). It is useful while iterating,
+but a green smoke run does not mean the contract passes.
 
 ## Focused Checks
 
-Use these when you change one subsystem and want signal without the full
-contract or desktop release matrix.
+Run these when you change one subsystem.
 
-Parser or cleaner changes:
+Parsers and the cleaner:
 
 ```bash
 python -m pytest --no-cov tests/test_pdf_parser.py tests/test_epub_parser.py tests/test_markdown_parser.py tests/test_text_parser.py tests/test_ingestion.py
 python -m pytest --no-cov tests/test_cleaner.py tests/test_cleaner_golden_set.py tests/test_cleaner_heuristic.py tests/test_cleaner_text_preservation.py
 ```
 
-TTS or runtime changes:
+TTS and runtime:
 
 ```bash
 python -m pytest --no-cov tests/test_tts.py tests/test_tts_engine_modularization.py tests/test_tts_factory_contract.py tests/test_tts_resilience.py tests/test_tts_runtime_lock.py tests/test_runtime_recovery.py tests/test_parallel_fallback.py
 ```
 
-API or frontend payload changes:
+API and frontend payloads:
 
 ```bash
 python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_conversion_service.py
 cd desktop && npm run typecheck && npm test -- --run
 ```
 
-Browser harness changes (also checked by source CI):
+Storage and paths:
+
+```bash
+python -m pytest --no-cov tests/test_storage_migrations.py tests/test_storage_repository.py tests/test_storage_maintenance.py tests/test_library_service.py
+python -m pytest --no-cov tests/test_book_source_reservations.py tests/test_book_deletion_durability.py tests/test_book_deletion_kill.py
+```
+
+Desktop backend and sidecar:
+
+```bash
+python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py tests/test_web_desktop_auth.py
+cd desktop
+ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build
+cd src-tauri && cargo test && cargo check
+```
+
+In PowerShell, set the profile with `$env:ORPHEUS_RUNTIME_PROFILE = "base"`
+before `npm.cmd run desktop:build`. The build hook always rebuilds the sidecar
+before the frontend, so no separate sidecar build is needed.
+
+Browser harness (also run by source CI):
 
 ```bash
 npm --prefix tools/frontend_stress ci
 npm --prefix tools/frontend_stress test
 ```
 
-Run the real Chromium journeys using the prerequisites and commands in
-[the harness README](../tools/frontend_stress/README.md). Unit contracts do not
-replace the model-backed browser run.
+The real Chromium journeys need local models; see
+[the harness README](../tools/frontend_stress/README.md). Its unit contracts do
+not replace a model-backed browser run.
 
-Storage or path changes:
-
-```bash
-python -m pytest --no-cov tests/test_storage_migrations.py tests/test_storage_repository.py tests/test_storage_maintenance.py tests/test_library_service.py
-```
-
-Desktop sidecar changes:
-
-```bash
-python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py
-cd desktop
-ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build
-cd src-tauri && cargo test && cargo check
-```
-
-PowerShell uses
-`$env:ORPHEUS_RUNTIME_PROFILE = "base"; npm run desktop:build`. The Tauri build
-hook always creates the sidecar afresh before the frontend, so no separate
-prebuild command is required.
-
-Static cleanup checks:
-
-```bash
-.venv/bin/python -m ruff check .
-.venv/bin/python -m vulture apps modules scripts tools tests vulture_whitelist.py --min-confidence 80 --sort-by-size
-cd desktop
-npm run typecheck
-npm exec --yes knip -- --include dependencies,devDependencies,files,exports,types
-```
-
-Notes:
-- Vulture is useful for candidates, not automatic deletion. Include `tests` for the safer pass so test-referenced Python public surface is not misclassified.
-- The desktop TypeScript config already enables `noUnusedLocals` and `noUnusedParameters`.
-- Knip reports unused exported frontend surface; prefer making internal types non-exported before deleting runtime code.
-
-Focused web/API checks:
-
-```bash
-python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py
-```
-
-Focused runner checks:
+Test runner:
 
 ```bash
 python -m pytest --no-cov tests/test_run_tests.py
 ```
 
-## Desktop Contained Verification
+## Static Analysis
 
-The desktop UI is verified through the contained Tauri path, not a separate
-preview harness:
+```bash
+python -m ruff check .
+python -m vulture apps modules scripts tools tests vulture_whitelist.py --min-confidence 80 --sort-by-size
+cd desktop
+npm run typecheck
+npm exec --yes knip -- --include dependencies,devDependencies,files,exports,types
+```
 
-Desktop Node commands require Node 20 or newer. The repository root
-`.node-version` and `desktop/package.json` both declare this floor.
+- Vulture lists candidates, not certain dead code. Include `tests` so public
+  surface used only by tests is not misreported.
+- The desktop TypeScript config enables `noUnusedLocals` and
+  `noUnusedParameters`.
+- Knip reports unused frontend exports. Prefer making internal types
+  non-exported before deleting runtime code.
+
+## Desktop Checks
+
+Desktop commands need Node 22 or newer (`.node-version` and
+`desktop/package.json` both declare this floor).
 
 ```bash
 cd desktop
@@ -178,87 +153,100 @@ cargo test
 cargo check
 ```
 
-What this exercises:
-- TypeScript contracts and React production build
-- Vitest desktop unit coverage, including the UI workflow behavioral journey
-  (`desktop/src/app/uiWorkflowJourney.test.ts`) that composes production
-  reducers/presentation helpers (primary actions, terminal progress semantics,
-  playback labels/duration, tab keyboard mapping, log filtering) without
-  Playwright/WebDriver. App shell auto-routing to Progress/Library is not
-  asserted there; confirm that in native smoke.
-- Tauri/Rust shell lifecycle and path handling tests
-- frontend assets as bundled for the desktop app
+These cover TypeScript contracts, the React production build, the Vitest
+suite, and the Rust shell's lifecycle and path handling. The Vitest suite does
+not use Playwright or WebDriver, and it does not prove that the app shell
+switches between Create and Library on its own; confirm that in a native smoke
+test.
 
-### Desktop runtime smoke (Python sidecar/API)
+To run every source gate in one command with a log per step under
+`.artifacts/validation/`:
 
-Fast default smoke (no model download, no GPU conversion):
+```bash
+python scripts/check_desktop.py
+python scripts/check_desktop.py --only python frontend
+python scripts/check_desktop.py --dry-run
+```
+
+It runs lint, the Python contract with coverage, frontend types, tests, and
+build, Rust tests and check, and an isolated backend smoke. Python, Node
+dependencies, Rust, and FFmpeg must already be installed. The groups are
+`lint`, `python`, `frontend`, `rust`, and `smoke`.
+
+## Desktop Runtime Smoke
+
+The default smoke needs no models and no GPU:
 
 ```bash
 python scripts/desktop_runtime_smoke.py
 python -m pytest --no-cov tests/test_desktop_runtime_smoke.py -q -o addopts=
 ```
 
-What the default smoke proves:
-- Backend launch on an ephemeral loopback port with bearer token handshake
-- Health, authenticated library, text/source upload, invalid conversion reject,
-  active-job empty state, optional SSE ping
-- Always tears down the backend and temporary runtime directories
+It launches the backend on an ephemeral loopback port with the bearer-token
+handshake, then checks health, the authenticated library, text and source
+upload, rejection of an invalid conversion, the empty active-job state, and an
+optional SSE ping. It always tears down the backend and its temporary
+directories.
 
-Opt-in production-contract conversion journey (capability-aware; skips the
-model-backed portion unless an **explicit** runtime-ready signal is present —
-`runtime_probe.tts.available === true` and/or `mlx_runtime_available === true`.
-Factory catalog fields like `available_tts_engines` / `default_tts_engine` are
-**not** sufficient and must not trigger downloads). When the probe is still
-`pending` / `refresh_in_progress`, the journey polls `/api/system/capabilities`
-up to `--probe-wait-seconds` (default 25) before skipping with a distinct
-timeout reason. An explicit finished-unavailable probe skips immediately.
-
-The journey launches the child backend with Hugging Face / Transformers offline
-flags (`HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`) so model resolution cannot
-surprise-download weights. Cached local weights are required for a successful
-model-backed conversion; missing weights fail (or skip only when the probe
-already reports unavailable) rather than reaching the network. The journey also
-tracks the started job id and resulting `book_id` / title
-(`Conversion Journey Smoke`) instead of assuming library item zero:
+The opt-in conversion journey also runs a short real conversion when a local
+TTS runtime is ready:
 
 ```bash
 python scripts/desktop_runtime_smoke.py --conversion-journey --conversion-timeout-seconds 180 --probe-wait-seconds 25
 ```
 
-When a positive runtime probe is present and conversion runs, this also verifies
-the matching library item (by terminal `book_id` or unique expected title) and a
-non-empty authenticated audio response. Otherwise the upload/preflight contract
-still runs and the conversion portion prints an explicit skip reason.
+- It runs the model-backed part only when the runtime probe explicitly reports
+  TTS as ready (`runtime_probe.tts.available === true` or
+  `mlx_runtime_available === true`). Catalog fields such as
+  `available_tts_engines` are not enough and never trigger downloads.
+- While the probe is `pending` or `refresh_in_progress`, it polls
+  `/api/system/capabilities` for up to `--probe-wait-seconds` (default 25),
+  then skips with a distinct timeout reason. A finished, unavailable probe
+  skips at once.
+- The backend runs with `HF_HUB_OFFLINE=1` and `TRANSFORMERS_OFFLINE=1`, so
+  weights must already be cached. Missing weights fail the run instead of
+  reaching the network.
+- It tracks the started job and its `book_id` and title
+  (`Conversion Journey Smoke`), then checks the matching library item and a
+  non-empty authenticated audio response. When the conversion is skipped, the
+  upload and preflight checks still run and the skip reason is printed.
 
-The Vitest UI workflow journey (`desktop/src/app/uiWorkflowJourney.test.ts`)
-composes production reducers/presentation helpers. It does **not** claim to
-prove App shell tab routing; Progress/Library auto-navigation remains a native
-manual smoke.
+## Continuous Integration
 
-### What still requires native manual release smoke
+| Workflow | Trigger | What it runs |
+| --- | --- | --- |
+| `Source validation` (`.github/workflows/source-validation.yml`) | Every push and pull request | On macOS 15 (Apple Silicon) and Windows: Ruff, the base setup dry run, the Python contract, frontend types, tests, and production build, browser harness unit tests, and Rust test and check |
+| `Release artifact validation` (`.github/workflows/release-artifact-validation.yml`) | Manual dispatch, `v*` tags, and `release/**` branches | On macOS 15 (Apple Silicon): a clean `base` profile check, the source gates, a `base` desktop build, and verification of the packaged app |
 
-- Packaged installer launch/quit
-- File picker / drag-drop UX inside Tauri
-- Real GPU/ANE conversion quality and listen-through
-- Visual confirmation of the workflow-clarity UI fixes after a real conversion
+Source validation never builds, signs, or uploads applications. The release
+artifact workflow builds with `ORPHEUS_RUNTIME_PROFILE=base` and checks that
+the `.app`, the DMG, the embedded sidecar, `ffmpeg`, and `ffprobe` exist, are
+executable, and match the runner architecture. It then runs the smoke harness
+against that sidecar with a reduced, Finder-like `PATH`, and uploads the
+`.app`, the DMG, and the logs as workflow artifacts even when a later step
+fails. Neither workflow publishes a release.
 
-## Desktop Release Readiness Verification
+A local pass does not mean CI is green; check the commit's status after
+pushing.
 
-Use this full matrix before desktop release candidates. The Python/core contract
-is only the first command in the release evidence set.
+### Pre-push hook
 
-For a full local release gate on Apple Silicon (unsigned DMG qualification,
-artifact inspection, lifecycle budgets, and Computer Use checklist recording),
-run `scripts/release_qualification.py`. That command composes the automated
-matrix below plus packaging and installed-app evidence. The existing GitHub
-Actions workflow (`.github/workflows/source-validation.yml`) remains source
-validation only and is not a release publisher.
+`bash scripts/install-git-hooks.sh` copies `scripts/hooks/pre-push` into
+`.git/hooks/`. Before each push it runs Ruff, the Python tests with the
+contract markers, `npm ci`, the frontend type check and Vitest, and
+`cargo test` and `cargo check`. Any failure blocks the push. It needs Python
+3.12 (the checkout's `.venv` is preferred) and FFmpeg.
+
+## Release Verification
+
+Run the full matrix before a desktop release candidate. The Python contract is
+only the first item.
 
 ```bash
-.venv/bin/python -m ruff check .
-.venv/bin/python run_tests.py --contract
-.venv/bin/python run_tests.py --verify-profile base --verify-profile mlx
-.venv/bin/python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py -q -o addopts=
+python -m ruff check .
+python run_tests.py --contract
+python run_tests.py --verify-profile base --verify-profile mlx
+python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_web_desktop_auth.py tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py -q -o addopts=
 cd desktop
 npm ci
 npm run typecheck
@@ -267,43 +255,32 @@ npm run build
 cd src-tauri
 cargo test --locked -- --test-threads=1
 cargo check --locked
-cd ../..
-.venv/bin/python -m orpheus bench quick
-cd desktop
+cd ..
 ORPHEUS_RUNTIME_PROFILE=mlx npm run desktop:build
 npm run desktop:install
 ```
 
-Release-candidate evidence should include:
-- `.venv/bin/python -m ruff check .`
-- `.venv/bin/python run_tests.py --contract`
-- `.venv/bin/python run_tests.py --verify-profile base --verify-profile mlx`
-- focused desktop/web pytest command above (with `--no-cov`)
-- `cd desktop && npm ci && npm run typecheck && npm test -- --run && npm run build`
-- `cd desktop/src-tauri && cargo test --locked -- --test-threads=1 && cargo check --locked`
-- `.venv/bin/python -m orpheus bench quick`
-- `cd desktop && ORPHEUS_RUNTIME_PROFILE=mlx npm run desktop:build` (the Tauri
-  fresh-build hook runs the sidecar and frontend first)
-- installed-app launch/quit smoke, plus one real short conversion/playback before
-  considering a release candidate reliable
+Then launch and quit the installed app, and run one real short conversion with
+playback. Manual checks still cover:
 
-Coverage note:
-- The Python/core contract does not exercise the desktop TypeScript build,
-  Vitest unit coverage, Tauri/Rust shell, packaged sidecar, release installer,
-  or installed app.
-- The additional commands above cover frontend build/type/test contracts, Rust
-  shell behavior, backend launcher/runtime checks, sidecar packaging, and app
-  install.
-- Packaged-user-flow checks (file picker through completed conversion/playback)
-  still require installed-app smoke validation.
+- installer launch and quit;
+- the Tauri file picker and drag and drop;
+- conversion quality on real GPU or Apple hardware, with a listen-through;
+- the UI after a real conversion.
+
+On Apple Silicon, `scripts/release_qualification.py` is the full local release
+gate: it composes this matrix with
+packaging, artifact inspection, lifecycle performance budgets, and a recorded
+manual checklist. Its `lifecycle_performance` phase and configured budgets are
+required. See [RELEASING_MACOS.md](RELEASING_MACOS.md). Profile verification
+details are in
+[DEPENDENCIES.md](DEPENDENCIES.md#clean-environment-release-gate).
 
 ### Packaged app smoke (macOS)
 
-To exercise sidecar startup plus packaged `ffmpeg`/`ffprobe` under a Finder-like
-reduced `PATH` without running an ML conversion, point the smoke harness at the
-actual `.app` bundle. The resolver accepts only the embedded resource at
-`Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend`
-and never falls back to `desktop/src-tauri/binaries`:
+To check sidecar startup and the packaged `ffmpeg` and `ffprobe` under a
+reduced, Finder-like `PATH`, without an ML conversion, point the smoke harness
+at the built `.app`:
 
 ```bash
 python scripts/desktop_runtime_smoke.py \
@@ -313,118 +290,58 @@ python scripts/desktop_runtime_smoke.py \
   --check-ffmpeg-runtime
 ```
 
-### Release artifact validation (macOS)
+The resolver accepts only the embedded sidecar at
+`Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend`
+and never falls back to `desktop/src-tauri/binaries`.
 
-The `Release artifact validation` workflow runs on `workflow_dispatch`, `v*`
-tags, and `release/**` branches. It installs the repository toolchain, runs
-the source/desktop gates, builds with `ORPHEUS_RUNTIME_PROFILE=base`, and
-verifies the `.app`, DMG, embedded sidecar, `ffmpeg`, and `ffprobe` all exist,
-are executable, and match the runner architecture. It then runs the smoke
-harness against that same embedded sidecar with the reduced Finder-like
-`PATH`. The `.app`, DMG, verification log, and smoke output are uploaded even
-when a later validation step fails.
-
-## Optional Extended Suites
-
-These suites stay outside the default contract because they are slow, noisy, or
-environment-dependent:
-- `property` tests
-- `benchmark` tests
-- `slow` tests
-
-Run them explicitly as needed:
+## Optional Suites
 
 ```bash
-pytest -m property
-pytest -m benchmark
-pytest -m slow
+python -m pytest -m property
+python -m pytest -m slow
+python -m pytest -m benchmark
 ```
 
-The `ui` marker stays registered (and excluded from the contract filter) so a
-Python UI test can be added without config changes, but no such test exists
-today: `pytest -m ui` collects nothing and exits 5. The desktop Vitest suite
-(`cd desktop && npm test -- --run`) is the actual UI gate.
+The `ui` marker is excluded from coverage gating, but no Python UI tests
+exist, so `pytest -m ui` collects nothing and exits 5. The Vitest suite is the
+UI gate.
 
-Examples:
-- `tests/test_cleaner_api_trace_multichapter_real.py` requires real API credentials/network.
-- `tests/test_perf_smoke.py` and `tests/test_performance_benchmark.py` are performance-only checks.
+`tests/test_cleaner_api_trace_multichapter_real.py` needs real API credentials
+and network access.
 
-## Empirical Benchmark Suite
+### GPU tests
 
-Use the unified benchmark CLI when you need comparable local evidence for
-parsing, cleaning, TTS, or full-pipeline changes:
+`pytest.ini` registers `@pytest.mark.gpu` for tests that need real GPU
+hardware (NVIDIA CUDA or Apple hardware, depending on the test).
+
+- CUDA cleaner unit and lifecycle tests (for example
+  `tests/test_cleaner_cuda.py` and `tests/test_cleaner_cuda_lifecycle.py`) mock
+  PyTorch and run in the contract without hardware.
+- Tests that load models on real hardware carry `@pytest.mark.gpu` and skip
+  when the device is unavailable, for example
+  `@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU required")`.
+- The contract does not exclude `gpu`, so keep real-hardware tests behind
+  explicit skip guards.
+
+Run them explicitly when the hardware is present:
 
 ```bash
-python -m orpheus bench parse path/to/book.pdf
-python -m orpheus bench clean path/to/book.pdf
-python -m orpheus bench full path/to/book.pdf --chapter-limit 1 --profile-tts-chunks
-python -m orpheus bench suite path/to/small.md path/to/medium.pdf --modes parse,clean
+python -m pytest --no-cov -m gpu
 ```
 
-By default the suite writes summaries and temp files under
-`.artifacts/benchmarks/`, which is ignored local artifact state. Each command
-writes a top-level `bench_summary.json` plus the existing per-run
-`benchmark_summary.json` files from `scripts/benchmark_nagel_pipeline.py`.
+`tests/test_cleaner_cuda_real.py` runs real Qwen inference and also needs
+`ORPHEUS_TEST_CUDA_CLEANER=1` and `ORPHEUS_TEST_HF_HOME`; see
+[ENVIRONMENT.md](ENVIRONMENT.md#test-and-harness-inputs).
 
-Recommended workflow:
-- Use small or medium project-authored fixtures for quick regression checks.
-- Use local real books only for local baseline evidence; do not commit them.
-- Run `parse,clean` first for fast signal, then run `full` only on bounded
-  chapter limits unless you intentionally want a long TTS benchmark.
-- Compare `wall_time_seconds`, `parse_seconds`, cleaner gate counts,
-  `tts_seconds_total`, `artifact_quality`, chapter counts, chunk counts, and
-  output validity across branches.
+## Evidence by Change Area
 
-### Presets and regression reports
-
-Deterministic suite presets live under `tests/fixtures/benchmark_suite/`:
-
-```bash
-python -m orpheus bench quick
-python -m orpheus bench policy
-python -m orpheus bench compare BASELINE/current/repeated_benchmark_summary.json CURRENT/repeated_benchmark_summary.json --output-dir .artifacts/benchmarks/report
-python -m orpheus bench report path/to/repeated_benchmark_summary.json --output-dir .artifacts/benchmarks/report
-```
-
-`quick` runs parse and clean against short synthetic markdown fixtures with
-`chapter_limit=1`. `policy` runs parse and clean against heading-structure and
-cleaner-noise fixtures with bounded chapter limits.
-
-Repeated-run summaries from `scripts/benchmark_nagel_repeated.py` can be compared
-branch-to-branch with `bench compare` or inspected alone with `bench report`.
-Both commands write `report.json` and `report.md` using the shared validity
-thresholds in `orpheus/bench/validity.py`.
-
-### Evidence command matrix
-
-| Change area | Fast evidence | Deeper evidence (opt-in) |
+| Change area | Focused evidence | Additional verification |
 | --- | --- | --- |
-| Parser / ingestion | `python -m pytest --no-cov tests/test_*parser*.py tests/test_ingestion.py` | `python -m orpheus bench policy` |
-| Cleaner / normalization | `python -m pytest --no-cov tests/test_cleaner*.py` | `python -m orpheus bench clean tests/fixtures/benchmark_suite/policy_cleaner_noise.md` |
-| TTS / runtime | `python -m pytest --no-cov tests/test_tts*.py tests/test_runtime_recovery.py` | `python -m orpheus bench full path/to/book.md --chapter-limit 1 --profile-tts-chunks` |
-| API / web payloads | `python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_conversion_service.py` | `cd desktop && npm run typecheck && npm test -- --run` |
-| Storage / library paths | `python -m pytest --no-cov tests/test_storage_*.py tests/test_library_service.py tests/test_book_workspace.py` | — |
-| Desktop sidecar / packaging | `python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py` | `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build && cd src-tauri && cargo test` |
-| Benchmark / perf regressions | `python -m orpheus bench quick` | `scripts/benchmark_nagel_repeated.py …` then `python -m orpheus bench compare BASELINE CURRENT` |
-| Full release candidate | `python run_tests.py --contract` | Desktop release matrix in [Desktop Release Readiness Verification](#desktop-release-readiness-verification) |
-
-## GPU Test Markers and Skip Policy
-
-`pytest.ini` defines `@pytest.mark.gpu` for tests that require real GPU hardware
-(NVIDIA CUDA and/or Apple Neural Engine, depending on the test).
-
-Policy:
-- CUDA cleaner unit and lifecycle tests (for example `tests/test_cleaner_cuda.py`,
-  `tests/test_cleaner_cuda_lifecycle.py`) use mocked PyTorch and run in the default
-  contract without hardware.
-- Tests that load models on real CUDA hardware should carry `@pytest.mark.gpu` and
-  skip when the required device is unavailable (for example
-  `@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU required")`).
-- Run GPU-only suites explicitly when hardware is present:
-
-```bash
-pytest -m gpu
-```
-
-The default contract does not exclude `gpu` today; keep real-hardware tests behind
-explicit skip guards until they are moved behind the marker in a follow-up change.
+| Parser or ingestion | `python -m pytest --no-cov tests/test_*parser*.py tests/test_ingestion.py` | `python -m pytest -m property` |
+| Cleaner or normalization | `python -m pytest --no-cov tests/test_cleaner*.py` | `python -m pytest -m property` |
+| TTS or runtime | `python -m pytest --no-cov tests/test_tts*.py tests/test_runtime_recovery.py` | [GPU tests](#gpu-tests) and a real short conversion with playback |
+| API or web payloads | `python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_conversion_service.py` | `cd desktop && npm run typecheck && npm test -- --run` |
+| Storage or library paths | `python -m pytest --no-cov tests/test_storage_*.py tests/test_library_service.py tests/test_book_workspace.py` | [Browser library journeys](../tools/frontend_stress/README.md#scenarios) |
+| Frontend rendering or playback performance | `node tools/frontend_stress/performance.mjs --label=candidate --output-dir=.artifacts/local-performance/frontend-candidate` | Compare serial baseline and candidate runs with the [frontend performance harness](../tools/frontend_stress/README.md#portable-frontend-performance-baseline) |
+| Desktop sidecar or packaging | `python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py` | `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build && cd src-tauri && cargo test` |
+| Release candidate | `python run_tests.py --contract` | The [release verification](#release-verification) matrix, including lifecycle performance budgets |

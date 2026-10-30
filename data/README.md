@@ -1,24 +1,26 @@
 # Data Directory
 
-`data/` is local runtime state, not project source.
+When the backend runs from a source checkout outside the desktop shell, it
+keeps its local state here. Nothing in this directory except this README is
+source; Git ignores the rest.
 
-## What Lives Here
+## Contents
 
-- `audiobooks.db`: the local SQLite library database created by the app.
-- `audiobooks.db-wal`
-- `audiobooks.db-shm`
+- `audiobooks.db`: the SQLite library database.
+- `audiobooks.db-wal`, `audiobooks.db-shm`: SQLite write-ahead log files.
+- `audiobooks.db.lock`, `.orpheus-database-locks`: process locks.
+- `sources/`: durable copies of source documents used by the library.
+- `backups/`: database backups and the safety copies made before a restore.
+- `reports/`: storage cleanup reports.
 
-These files represent the current state of one local workspace. They are not sample fixtures and they should not be treated as canonical repository content.
+The app recreates these files as needed. Do not edit them while the backend is
+running.
 
-## Safe Expectations
+## Related directories
 
-- The database files can be recreated by the application.
-- WAL and SHM files are transient SQLite sidecar files.
-- Do not hand-edit these files while the app is running.
+- `output/`: generated audiobooks.
+- `temp/`: intermediate files during conversion.
 
-## Related Local Output
-
-- `output/` stores generated audiobook artifacts.
-- `temp/` stores transient processing artifacts.
-
-Those directories are local runtime output as well.
+The desktop app does not use these repository folders. It keeps the same
+layout in its app data directory; see
+[data locations](../docs/RUN_APPLICATION.md#data-locations).
