@@ -4,13 +4,16 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../../api/client";
+import { createApiClient, type ApiClient } from "../../api/client";
+import { createLibrarySession } from "../library/librarySession";
 import type { UseLibraryResult } from "../library/useLibrary";
 import { readPlaybackCheckpoint, writePlaybackCheckpoint } from "./playbackCheckpoint";
 import { usePlaybackPersistence } from "./playbackPersistence";
 
 function checkpointIdentity(bookId: number): string {
   return JSON.stringify([
+    "library",
+    "epoch",
     bookId,
     `created-${bookId}`,
     `/source/${bookId}.epub`,
@@ -22,6 +25,8 @@ function createLibrary(bookId = 1): UseLibraryResult {
     selectedBookId: bookId,
     selectedBookDetail: {
       id: bookId,
+      library_id: "library",
+      library_epoch: "epoch",
       created_at: `created-${bookId}`,
       source_path: `/source/${bookId}.epub`,
       playback_path: `/library/${bookId}.m4b`,
@@ -52,6 +57,7 @@ describe("playback persistence serialization", () => {
     window.localStorage.clear();
     container.remove();
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   async function mount(
@@ -202,13 +208,60 @@ describe("playback persistence serialization", () => {
       second = result.persistBookPlaybackPosition(1, 120, { force: true });
     });
     expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(1);
-    expect(updateBookPlaybackPosition).toHaveBeenLastCalledWith(1, 60);
+    expect(updateBookPlaybackPosition).toHaveBeenLastCalledWith(1, 60, { expectedEpoch: "epoch", timeoutMs: 15_000 });
 
     await act(async () => resolveFirst({ position_sec: 60 }));
     await vi.waitFor(() => expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(2));
-    expect(updateBookPlaybackPosition).toHaveBeenLastCalledWith(1, 120);
+    expect(updateBookPlaybackPosition).toHaveBeenLastCalledWith(1, 120, { expectedEpoch: "epoch", timeoutMs: 15_000 });
     await expect(first).resolves.toBe(60);
     await expect(second).resolves.toBe(120);
+  });
+
+  it("releases stalled saves and preserves the newest checkpoint", async () => {
+    vi.useFakeTimers();
+    let stalledSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockImplementationOnce((_input, init) => new Promise((_resolve, reject) => {
+        stalledSignal = init?.signal;
+        stalledSignal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      }))
+      .mockImplementation(async () => new Response(JSON.stringify({ position_sec: 120 })));
+    await mount(createApiClient({ baseUrl: "http://desktop.test" }));
+
+    let first!: Promise<number | null>;
+    let second!: Promise<number | null>;
+    await act(async () => {
+      first = result.persistBookPlaybackPosition(1, 60, { force: true });
+      second = result.persistBookPlaybackPosition(1, 120, { force: true });
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(readPlaybackCheckpoint(1, checkpointIdentity(1))).toBe(120);
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+
+    expect(stalledSignal?.aborted).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await expect(first).resolves.toBeNull();
+    await expect(second).resolves.toBe(120);
+    expect(readPlaybackCheckpoint(1, checkpointIdentity(1))).toBe(120);
+  });
+
+  it("lets library restore drain a stalled playback save", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    const session = createLibrarySession();
+    const library = { ...createLibrary(), session, libraryGeneration: session.generation };
+    await mount(createApiClient({ baseUrl: "http://desktop.test" }), library);
+    await act(async () => { void result.persistBookPlaybackPosition(1, 60, { force: true }); });
+
+    const drained = vi.fn();
+    const draining = session.suspendAndDrain().then(drained);
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+
+    expect(drained).toHaveBeenCalledOnce();
+    await draining;
+    expect(readPlaybackCheckpoint(1, checkpointIdentity(1))).toBe(60);
   });
 
   it("continues the queue after a failed save", async () => {
@@ -229,7 +282,7 @@ describe("playback persistence serialization", () => {
 
     await act(async () => rejectFirst(new Error("offline")));
     await vi.waitFor(() => expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(2));
-    expect(updateBookPlaybackPosition).toHaveBeenLastCalledWith(1, 120);
+    expect(updateBookPlaybackPosition).toHaveBeenLastCalledWith(1, 120, { expectedEpoch: "epoch", timeoutMs: 15_000 });
   });
 
   it("does not throttle against an optimistic marker after queued failures", async () => {
@@ -242,7 +295,7 @@ describe("playback persistence serialization", () => {
     const second = result.persistBookPlaybackPosition(1, 120, { force: true, silent: true });
     await Promise.all([first, second]);
     await result.persistBookPlaybackPosition(1, 70, { silent: true });
-    expect(updateBookPlaybackPosition).toHaveBeenNthCalledWith(3, 1, 70);
+    expect(updateBookPlaybackPosition).toHaveBeenNthCalledWith(3, 1, 70, { expectedEpoch: "epoch", timeoutMs: 15_000 });
   });
 
   it("serializes each book independently", async () => {
@@ -259,9 +312,9 @@ describe("playback persistence serialization", () => {
       void result.persistBookPlaybackPosition(1, 10, { force: true });
       void result.persistBookPlaybackPosition(2, 20, { force: true });
     });
-    await vi.waitFor(() => expect(updateBookPlaybackPosition).toHaveBeenCalledWith(2, 20));
+    await vi.waitFor(() => expect(updateBookPlaybackPosition).toHaveBeenCalledWith(2, 20, { expectedEpoch: undefined, timeoutMs: 15_000 }));
     expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(2);
-    expect(updateBookPlaybackPosition).toHaveBeenNthCalledWith(1, 1, 10);
+    expect(updateBookPlaybackPosition).toHaveBeenNthCalledWith(1, 1, 10, { expectedEpoch: "epoch", timeoutMs: 15_000 });
     resolveBookOne({ position_sec: 10 });
   });
 
@@ -291,7 +344,7 @@ describe("playback persistence serialization", () => {
     expect(library.setSelectedPlaybackPosition).not.toHaveBeenCalled();
 
     await expect(result.persistBookPlaybackPosition(1, 90, { force: true })).resolves.toBe(90);
-    expect(newClient.updateBookPlaybackPosition).toHaveBeenCalledWith(1, 90);
+    expect(newClient.updateBookPlaybackPosition).toHaveBeenCalledWith(1, 90, { expectedEpoch: "epoch", timeoutMs: 15_000 });
     expect(library.setSelectedPlaybackPosition).toHaveBeenCalledWith(90);
   });
 
@@ -320,7 +373,7 @@ describe("playback persistence serialization", () => {
 
     await mounted.swapClient(newClient);
     const currentSave = result.persistBookPlaybackPosition(1, 65, { silent: true });
-    await vi.waitFor(() => expect(newClient.updateBookPlaybackPosition).toHaveBeenCalledWith(1, 65));
+    await vi.waitFor(() => expect(newClient.updateBookPlaybackPosition).toHaveBeenCalledWith(1, 65, { expectedEpoch: "epoch", timeoutMs: 15_000 }));
     await expect(currentSave).resolves.toBe(65);
 
     resolveHungSave({ position_sec: 61 });

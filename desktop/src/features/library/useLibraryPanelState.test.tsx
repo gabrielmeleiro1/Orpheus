@@ -53,6 +53,34 @@ describe("useLibraryPanelState cleaning preview ownership", () => {
     delete (globalThis as typeof globalThis & { panelStateProbe?: unknown }).panelStateProbe;
   });
 
+  it.each(["Second", "A"])("preserves the newer title %s while a metadata save is pending", async (newTitle) => {
+    const save = deferred<void>();
+    const model = libraryModel(bookA, vi.fn(async () => null));
+    model.updateSelectedBookMetadata = vi.fn(() => save.promise);
+    await act(async () => { root = createRoot(container); root.render(<Probe library={model} />); });
+    await act(async () => {
+      getProbe().setEditTitle("First");
+      getProbe().setEditAuthor("First author");
+      getProbe().setEditTags("first");
+    });
+    const pending = getProbe().saveMetadata();
+    await act(async () => {
+      getProbe().setEditTitle(newTitle);
+      getProbe().setEditAuthor("Second author");
+      getProbe().setEditTags("second");
+    });
+    await act(async () => {
+      save.resolve();
+      await pending;
+      root.render(<Probe library={{ ...model, selectedBookDetail: { ...bookA, title: "First", author: "First author", tags: "first" } }} />);
+    });
+    expect(getProbe().editTitle).toBe(newTitle);
+    expect(getProbe().editAuthor).toBe("Second author");
+    expect(getProbe().editTags).toBe("second");
+    await act(async () => root.render(<Probe library={libraryModel(bookB, vi.fn(async () => null))} />));
+    expect(getProbe().editTitle).toBe("B");
+  });
+
   it("does not let an older preview replace a newer selected book or clear its spinner", async () => {
     const previewA = deferred<CleaningPreviewResponse>();
     const previewB = deferred<CleaningPreviewResponse>();

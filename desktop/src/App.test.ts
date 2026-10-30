@@ -1,33 +1,29 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveAutoTabSwitch } from "./App";
+import { resolveCompletionNotice } from "./app/completionNotice";
 import {
   decideBackendRecovery,
+  describeBackendRecoveryFailure,
   nextBrowserHealthState,
   resolveBackendMonitorFailure,
 } from "./app/useBackendClient";
 
-describe("resolveAutoTabSwitch", () => {
-  it("switches a passive tab to Progress when a job starts running", () => {
-    expect(resolveAutoTabSwitch({ previousUiState: "idle", uiState: "running", activeTab: "dashboard" })).toBe("progress");
-    expect(resolveAutoTabSwitch({ previousUiState: "idle", uiState: "running", activeTab: "progress" })).toBe("progress");
+describe("resolveCompletionNotice", () => {
+  it("acknowledges a job this session saw finish or fail", () => {
+    expect(resolveCompletionNotice({ previousUiState: "running", uiState: "completed" })).toBe("completed");
+    expect(resolveCompletionNotice({ previousUiState: "unknown", uiState: "completed" })).toBe("completed");
+    expect(resolveCompletionNotice({ previousUiState: "running", uiState: "failed" })).toBe("failed");
   });
 
-  it("switches a passive tab to Library when a job completes", () => {
-    expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "completed", activeTab: "dashboard" })).toBe("library");
+  it("stays quiet for jobs that had already ended before this session observed them", () => {
+    expect(resolveCompletionNotice({ previousUiState: "idle", uiState: "completed" })).toBeNull();
+    expect(resolveCompletionNotice({ previousUiState: "idle", uiState: "failed" })).toBeNull();
   });
 
-  it("does not steal focus from an active working tab", () => {
-    for (const activeTab of ["convert", "document", "logs", "library", "settings"] as const) {
-      expect(resolveAutoTabSwitch({ previousUiState: "idle", uiState: "running", activeTab })).toBeNull();
-      expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "completed", activeTab })).toBeNull();
-    }
-  });
-
-  it("returns null when there is no running/completed transition", () => {
-    expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "running", activeTab: "dashboard" })).toBeNull();
-    expect(resolveAutoTabSwitch({ previousUiState: "completed", uiState: "completed", activeTab: "dashboard" })).toBeNull();
-    expect(resolveAutoTabSwitch({ previousUiState: "running", uiState: "idle", activeTab: "dashboard" })).toBeNull();
+  it("stays quiet for cancellation and non-terminal transitions", () => {
+    expect(resolveCompletionNotice({ previousUiState: "running", uiState: "cancelled" })).toBeNull();
+    expect(resolveCompletionNotice({ previousUiState: "idle", uiState: "running" })).toBeNull();
+    expect(resolveCompletionNotice({ previousUiState: "running", uiState: "running" })).toBeNull();
   });
 });
 
@@ -107,6 +103,25 @@ describe("nextBrowserHealthState", () => {
   });
 });
 
+
+describe("describeBackendRecoveryFailure", () => {
+  it("shows a named startup cause on its own", () => {
+    expect(
+      describeBackendRecoveryFailure(
+        "failed to start desktop backend: This library was created by a newer version of Orpheus.",
+      ),
+    ).toBe("This library was created by a newer version of Orpheus.");
+  });
+
+  it("keeps the retry guidance for any other failure", () => {
+    expect(describeBackendRecoveryFailure(null)).toBe(
+      "backend failed to recover after multiple attempts; retry the connection or reload the app",
+    );
+    expect(describeBackendRecoveryFailure("exit code: 1")).toBe(
+      "backend failed to recover after multiple attempts; retry the connection or reload the app. exit code: 1",
+    );
+  });
+});
 
 describe("decideBackendRecovery", () => {
   it("restarts failed backends and consumes a recovery attempt", () => {

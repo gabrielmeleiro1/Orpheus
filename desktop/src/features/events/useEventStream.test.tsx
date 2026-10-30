@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../../api/client";
+import { createApiClient, type ApiClient } from "../../api/client";
 import type { ActiveConversionResponse, DesktopEventPayload } from "../../types/api";
 import { useConversionJob } from "../conversion/useConversionJob";
 import { useEventStream } from "./useEventStream";
@@ -66,7 +66,130 @@ describe("useEventStream reconciliation fencing", () => {
     container.remove();
     delete (globalThis as typeof globalThis & { eventProbe?: unknown }).eventProbe;
     delete (globalThis as typeof globalThis & { eventApi?: unknown }).eventApi;
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("releases a stalled reconciliation so the next poll can discover completion", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(activeResponse("job-a"))))
+      .mockImplementationOnce((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }))
+      .mockImplementation(async () => new Response(JSON.stringify({ active: false, job: { ...activeResponse("job-a").job!, status: "completed" } })));
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = createApiClient({ baseUrl: "http://desktop.test" });
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    await act(async () => vi.advanceTimersByTimeAsync(8000));
+    expect(getProbe().logs.some((log) => log.msg === "active conversion lookup failed")).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(getProbe().uiState).toBe("completed");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts a slow cancellation snapshot without superseding it with another poll", async () => {
+    vi.useFakeTimers();
+    const running = activeResponse("job-a");
+    const getActiveConversion = vi.fn().mockResolvedValueOnce(running)
+      .mockImplementation(() => new Promise<ActiveConversionResponse>((resolve) => {
+        setTimeout(() => resolve({ active: false, job: { ...running.job!, status: "cancelled" } }), 3000);
+      }));
+    const cancelConversion = vi.fn().mockResolvedValue({ cancelled: true });
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = { getActiveConversion, cancelConversion } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    await act(async () => { await getProbe().cancelActiveConversion(); });
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+
+    expect(getProbe().uiState).toBe("cancelled");
+    expect(getProbe().isCancelling).toBe(false);
+    expect(getActiveConversion).toHaveBeenCalledTimes(2);
+  });
+
+  it("accepts an authoritative terminal snapshot after a different job was last observed", async () => {
+    const getActiveConversion = vi.fn().mockResolvedValueOnce(activeResponse("job-a"))
+      .mockResolvedValue({ active: false, job: { ...activeResponse("job-b").job!, status: "completed" } });
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = { getActiveConversion } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+
+    await act(async () => { await getProbe().refreshActiveConversionState(); });
+
+    expect(getProbe().uiState).toBe("completed");
+    expect(getProbe().activeJobId).toBeNull();
+  });
+
+  it("releases cancellation when its job lookup stalls without sending a cancel", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ active: false, job: null })))
+      .mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }));
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = createApiClient({ baseUrl: "http://desktop.test" });
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    await act(async () => { void getProbe().cancelActiveConversion(); });
+    expect(getProbe().isCancelling).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(8000));
+    expect(getProbe().isCancelling).toBe(false);
+    expect(getProbe().logs.some((log) => log.msg === "request timed out")).toBe(true);
+    expect(fetchMock.mock.calls.every(([, init]) => init?.method !== "POST")).toBe(true);
+  });
+
+  it("closes the startup snapshot gap on the first stream open", async () => {
+    const running = activeResponse("job-a");
+    const getActiveConversion = vi.fn().mockResolvedValueOnce(running)
+      .mockResolvedValue({ active: false, job: { ...running.job!, status: "completed" } });
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = { getActiveConversion } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    expect(getProbe().uiState).toBe("running");
+    await act(async () => transport.onOpen?.());
+    expect(getProbe().uiState).toBe("completed");
+    expect(getProbe().activeJobId).toBeNull();
+  });
+
+  it("keeps job discovery valid when a log arrives during the lookup", async () => {
+    const lookup = deferred<ActiveConversionResponse>();
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = {
+      getActiveConversion: vi.fn(() => lookup.promise),
+    } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    await act(async () => transport.onPayload?.({ event_type: "log", job_id: "job-a", message: "Loading model" }));
+    await act(async () => lookup.resolve(activeResponse("job-a")));
+    expect(getProbe().activeJobId).toBe("job-a");
+  });
+
+  it("acquires the active job identity from progress before discovery resolves", async () => {
+    const lookup = deferred<ActiveConversionResponse>();
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = {
+      getActiveConversion: vi.fn(() => lookup.promise),
+    } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    await act(async () => transport.onPayload?.({ event_type: "progress", job_id: "job-a", progress: 42 }));
+    await act(async () => lookup.resolve({ active: false, job: null }));
+    expect(getProbe().uiState).toBe("running");
+    expect(getProbe().activeJobId).toBe("job-a");
+    expect(getProbe().progressPct).toBe(42);
+  });
+
+  it.each(["recovered", "started"])("keeps reconciling a %s job after its waiter returns unknown", async (origin) => {
+    vi.useFakeTimers();
+    const running = activeResponse("job-a");
+    const getActiveConversion = vi.fn().mockResolvedValueOnce(origin === "recovered" ? running : { active: false, job: null })
+      .mockRejectedValue(new Error("Backend unavailable"));
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = { getActiveConversion } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    if (origin === "started") await act(async () => getProbe().markConversionStarted("job-a"));
+    let terminal!: ReturnType<ReturnType<typeof useEventStream>["waitForTerminalState"]>;
+    await act(async () => { terminal = getProbe().waitForTerminalState("job-a"); });
+    for (let poll = 0; poll < 4; poll += 1) {
+      await act(async () => vi.advanceTimersByTimeAsync(1500));
+    }
+    expect((await terminal).status).toBe("unknown");
+    getActiveConversion.mockResolvedValue({ active: false, job: { ...running.job!, status: "completed" } });
+    await act(async () => vi.advanceTimersByTimeAsync(2000));
+    expect(getProbe().uiState).toBe("completed");
+    expect(getProbe().activeJobId).toBeNull();
   });
 
   it("does not let an older inactive lookup clear a job marked started", async () => {
@@ -195,6 +318,49 @@ describe("useEventStream reconciliation fencing", () => {
 
     expect(cancelConversion).not.toHaveBeenCalled();
     expect(getProbe().activeJobId).toBe("job-b");
+    expect(getProbe().isCancelling).toBe(false);
+  });
+
+  it("retires an in-flight cancellation lookup when its backend client is replaced", async () => {
+    const lookup = deferred<ActiveConversionResponse>();
+    const oldClient = {
+      getActiveConversion: vi.fn().mockResolvedValueOnce({ active: false, job: null })
+        .mockReturnValue(lookup.promise),
+      cancelConversion: vi.fn().mockResolvedValue({ cancelled: true }),
+    } as unknown as ApiClient;
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = oldClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    let cancellation!: Promise<void>;
+    await act(async () => { cancellation = getProbe().cancelActiveConversion(); });
+    expect(getProbe().isCancelling).toBe(true);
+
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = {
+      getActiveConversion: vi.fn().mockRejectedValue(new Error("new backend is unavailable")),
+    } as unknown as ApiClient;
+    await act(async () => root.render(<Probe />));
+    await act(async () => { lookup.resolve(activeResponse("old-job")); await cancellation; });
+
+    expect(oldClient.cancelConversion).not.toHaveBeenCalled();
+    expect(getProbe().activeJobId).toBeNull();
+    expect(getProbe().isCancelling).toBe(false);
+  });
+
+  it("ignores a retained cancellation callback from a replaced backend", async () => {
+    const oldClient = {
+      getActiveConversion: vi.fn().mockResolvedValue(activeResponse("old-job")),
+      cancelConversion: vi.fn().mockResolvedValue({ cancelled: true }),
+    } as unknown as ApiClient;
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = oldClient;
+    await act(async () => { root = createRoot(container); root.render(<Probe />); });
+    const staleCancel = getProbe().cancelActiveConversion;
+    (globalThis as typeof globalThis & { eventApi: ApiClient }).eventApi = {
+      getActiveConversion: vi.fn().mockResolvedValue(activeResponse("new-job")),
+    } as unknown as ApiClient;
+    await act(async () => root.render(<Probe />));
+    await act(async () => staleCancel());
+
+    expect(oldClient.cancelConversion).not.toHaveBeenCalled();
+    expect(getProbe().activeJobId).toBe("new-job");
     expect(getProbe().isCancelling).toBe(false);
   });
 
@@ -446,7 +612,7 @@ describe("useEventStream startup reconciliation", () => {
     delete (globalThis as typeof globalThis & { streamProbe?: unknown }).streamProbe;
   });
 
-  it("reconciles once at startup, skips the first open, and refreshes on reconnect", async () => {
+  it("reconciles at startup and on every stream open", async () => {
     const getActiveConversion = vi.fn(async () => ({ active: false, job: null }));
     const client = { getActiveConversion } as unknown as ApiClient;
 
@@ -457,10 +623,10 @@ describe("useEventStream startup reconciliation", () => {
     expect(getActiveConversion).toHaveBeenCalledTimes(1);
 
     await act(async () => transport.onOpen?.());
-    expect(getActiveConversion).toHaveBeenCalledTimes(1);
+    expect(getActiveConversion).toHaveBeenCalledTimes(2);
 
     await act(async () => transport.onOpen?.());
-    expect(getActiveConversion).toHaveBeenCalledTimes(2);
+    expect(getActiveConversion).toHaveBeenCalledTimes(3);
   });
 
   it("does not let a late reconnect refresh overwrite a newer stream event", async () => {

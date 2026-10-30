@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeSpeedInput, parseSpeed } from "./conversionOptionsShared";
+import { normalizeSpeedInput, parseSpeed, resolveOptionValue } from "./conversionOptionsShared";
+
+describe("resolveOptionValue", () => {
+  const options = [{ value: "first" }, { value: "saved" }, { value: "default" }, { value: "" }];
+
+  it.each([
+    ["first", ["saved", "default"], "first"],
+    ["", ["saved"], ""],
+    ["missing", [" saved ", "default"], "saved"],
+    ["missing", ["unavailable", " default "], "default"],
+    ["missing", [undefined, null, "", "  "], "first"],
+    [" saved ", [], "first"],
+  ])("resolves %j with fallbacks %j to %j", (current, fallbacks, expected) => {
+    expect(resolveOptionValue(options, current, ...fallbacks)).toBe(expected);
+  });
+
+  it("returns an empty value when no options are available", () => {
+    expect(resolveOptionValue([], "saved", "default")).toBe("");
+  });
+});
 
 describe("parseSpeed", () => {
   it("falls back to 1 for non-positive or non-numeric input", () => {

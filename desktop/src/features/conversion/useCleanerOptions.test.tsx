@@ -113,7 +113,7 @@ describe("useCleanerOptions API-key model fetching", () => {
     });
 
     expect(fetchOpenAiModelIds).toHaveBeenCalledTimes(1);
-    expect(fetchOpenAiModelIds).toHaveBeenCalledWith(VALID_KEY);
+    expect(fetchOpenAiModelIds).toHaveBeenCalledWith(VALID_KEY, { timeoutMs: 30_000 });
     expect(getProbe().cleanerModelOptions).toEqual([
       { value: "gpt-real-a", label: "gpt-real-a" },
       { value: "gpt-real-b", label: "gpt-real-b" },

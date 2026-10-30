@@ -1,10 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   compactSample,
-  describeSourceDisplay,
   extractDroppedPaths,
-  middleTruncate,
   pathsFromUriList,
   normalizeQuantizationValue,
   splitPath,
@@ -12,29 +10,6 @@ import {
 import { isTauriRuntime } from "../../platform/tauriRuntime";
 
 describe("conversion panel helpers", () => {
-  it("describes upload handles with a friendly basename and no directory", () => {
-    const display = describeSourceDisplay("upload:1699_ab_Pasted Document.md", "Pasted Document.md");
-    expect(display.name).toBe("Pasted Document.md");
-    expect(display.dir).toBe("");
-  });
-
-  it("strips the upload prefix from a handle when no friendly label is available", () => {
-    const display = describeSourceDisplay("upload:1784641704_6851dab0_Pasted Document.md");
-    expect(display.name).toBe("Pasted Document.md");
-    expect(display.dir).toBe("");
-  });
-
-  it("describes real file paths with a basename and its directory", () => {
-    const display = describeSourceDisplay("/Users/me/Books/source.epub");
-    expect(display.name).toBe("source.epub");
-    expect(display.dir).toBe("/Users/me/Books");
-  });
-
-  it("middle-truncates long values while keeping both ends", () => {
-    expect(middleTruncate("short", 40)).toBe("short");
-    expect(middleTruncate("/a/very/long/directory/path/that/keeps/going/on", 20)).toContain("…");
-  });
-
   it("detects Tauri runtime from window internals", () => {
     const originalWindow = globalThis.window;
     Object.defineProperty(globalThis, "window", { configurable: true, value: {} });
@@ -67,7 +42,7 @@ describe("conversion panel helpers", () => {
 
   it("compacts whitespace and truncates long samples", () => {
     expect(compactSample("  hello\n\nworld\t ")).toBe("hello world");
-    expect(compactSample("abcdefghijklmnopqrstuvwxyz", 10)).toBe("abcdefg...");
+    expect(compactSample("abcdefghijklmnopqrstuvwxyz", 10)).toBe("abcdefghi…");
   });
 
   it("normalizes quantization aliases and arbitrary values", () => {
@@ -98,9 +73,5 @@ describe("conversion panel helpers", () => {
         "",
       ].join("\r\n")),
     ).toEqual(["/Users/me/My Book.epub", "//server/share/Book.epub"]);
-  });
-
-  it("does not depend on timers", () => {
-    vi.useRealTimers();
   });
 });

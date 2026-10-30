@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../api/client";
+import { createApiClient, type ApiClient } from "../api/client";
 import { getRuntimeBootstrap, invalidateRuntimeBootstrap, updateRuntimeBootstrapCapabilities } from "./runtimeBootstrapCache";
 
 function clientWith(
@@ -11,6 +11,36 @@ function clientWith(
 }
 
 describe("runtimeBootstrapCache", () => {
+  it.each(["/api/options/models", "/api/system/capabilities"])("evicts a stalled %s read even after a capability update", async (path) => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (String(input).endsWith(path)) {
+        signal = init?.signal;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+      }
+      return Promise.resolve(new Response(JSON.stringify({})));
+    });
+    const client = createApiClient({ baseUrl: "http://desktop.test" });
+    const failed = vi.fn();
+    void getRuntimeBootstrap(client).catch(failed);
+    updateRuntimeBootstrapCapabilities(client, {} as Awaited<ReturnType<ApiClient["getSystemCapabilities"]>>);
+    void getRuntimeBootstrap(client).catch(() => {});
+    try {
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(signal?.aborted).toBe(true);
+      expect(failed).toHaveBeenCalledWith(expect.objectContaining({ code: "timeout", retriable: true }));
+      fetchMock.mockImplementation(async () => new Response(JSON.stringify({})));
+      await expect(getRuntimeBootstrap(client)).resolves.toEqual({ models: {}, capabilities: {} });
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.restoreAllMocks();
+      vi.useRealTimers();
+    }
+  });
+
   it("reloads model and capability data after runtime settings are saved", async () => {
     const models = {} as Awaited<ReturnType<ApiClient["getModelOptions"]>>;
     const capabilities = {} as Awaited<ReturnType<ApiClient["getSystemCapabilities"]>>;

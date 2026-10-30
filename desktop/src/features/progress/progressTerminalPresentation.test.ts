@@ -5,6 +5,8 @@ import { createProgressStages, doneStages } from "../events/progressStageModel";
 import {
   buildProgressTerminalPresentation,
   dashboardNowStageLabel,
+  formatStageDisplayName,
+  parallelLimitNote,
 } from "./progressTerminalPresentation";
 
 function stage(
@@ -62,10 +64,11 @@ describe("buildProgressTerminalPresentation", () => {
     expect(presentation.operationTitle).toBe("complete");
     expect(presentation.showLiveActiveTask).toBe(false);
     expect(presentation.showLiveWorkers).toBe(false);
-    expect(presentation.workerSummary).not.toMatch(/0\/4/);
-    expect(presentation.workerSummary).toBe("4 workers");
-    expect(presentation.modeSummary.toLowerCase()).not.toContain("waiting");
-    expect(presentation.modeSummary).toBe("parallel");
+    const values = Object.fromEntries(presentation.metrics.map((metric) => [metric.label, metric.value]));
+    // A finished job reports its pool size, never a live "0 of 4".
+    expect(values["Parallel chapters"]).toBe("4");
+    expect(values.Mode).toBe("Parallel");
+    expect(presentation.metrics.some((metric) => metric.value.toLowerCase().includes("waiting"))).toBe(false);
     expect(presentation.activeTaskSummary).toBe("Conversion complete");
   });
 
@@ -79,8 +82,16 @@ describe("buildProgressTerminalPresentation", () => {
       progressPct: 100,
     });
 
-    expect(presentation.throughputSummary).toContain("chunk/s");
-    expect(presentation.elapsedSummary).toContain("12");
+    expect(presentation.metrics.map((metric) => [metric.label, metric.value])).toEqual([
+      ["Parallel chapters", "4"],
+      ["Chapters done", "3"],
+      ["Cleaning", "1.20 chunks/s"],
+      ["Narration", "40.0 characters/s"],
+      ["Encoding", "0.50 chapters/s"],
+      ["Elapsed", "12s"],
+      ["Mode", "Parallel"],
+    ]);
+    expect(presentation.elapsed).toBe("12s");
     expect(presentation.snapshotKind).toBe("final");
   });
 
@@ -97,10 +108,8 @@ describe("buildProgressTerminalPresentation", () => {
     expect(presentation.operationTitle).toBe("complete");
     expect(presentation.showLiveWorkers).toBe(false);
     expect(presentation.showLiveActiveTask).toBe(false);
-    expect(presentation.workerSummary).toBe("Not available");
-    expect(presentation.throughputSummary).toBe("Not available");
-    expect(presentation.modeSummary).toBe("Not recorded");
-    expect(presentation.queueSummary).toBe("Queue idle");
+    expect(presentation.metrics).toEqual([]);
+    expect(presentation.elapsed).toBe("");
     expect(presentation.activeTaskSummary).toBe("Conversion complete");
     expect(presentation.snapshotKind).toBe("neutral");
   });
@@ -118,17 +127,10 @@ describe("buildProgressTerminalPresentation", () => {
       progressPct: 2,
     });
 
-    expect(presentation.workerSummary).toBe("—");
-    expect(presentation.modeSummary).toBe("Not reported yet");
-    expect(presentation.throughputSummary).toBe("Measuring…");
-    expect(presentation.elapsedSummary).toBe("Elapsed —");
+    // Nothing measured yet means nothing listed: no "—" or "Not reported" rows.
+    expect(presentation.metrics).toEqual([]);
+    expect(presentation.elapsed).toBe("");
     expect(presentation.activeTaskSummary).toBe("Waiting for updates");
-    for (const value of Object.values(presentation)) {
-      if (typeof value === "string") {
-        expect(value).not.toContain("--");
-        expect(value.toLowerCase()).not.toContain("waiting / waiting");
-      }
-    }
   });
 
   it("keeps live metrics while running", () => {
@@ -152,10 +154,14 @@ describe("buildProgressTerminalPresentation", () => {
     expect(presentation.operationTitle).toBe("cleaning");
     expect(presentation.showLiveWorkers).toBe(true);
     expect(presentation.showLiveActiveTask).toBe(true);
-    expect(presentation.workerSummary).toContain("0/4");
-    expect(presentation.modeSummary).toBe("manual / parallel");
-    expect(presentation.queueSummary).toBe("0 running · 0 queued");
-    expect(presentation.chaptersSummary).toBe("3 done · 0 failed");
+    const values = Object.fromEntries(presentation.metrics.map((metric) => [metric.label, metric.value]));
+    expect(values["Parallel chapters"]).toBe("0 of 4");
+    expect(values.Mode).toBe("Manual, parallel");
+    expect(values["Chapters done"]).toBe("3");
+    expect(buildProgressTerminalPresentation({
+      uiState: "running", stages, currentStage: "cleaning", currentMessage: "",
+      performance: { ...livePerformance, failed_chapters: 1 }, progressPct: 40,
+    }).metrics.find((metric) => metric.label === "Chapters done")?.value).toBe("3 · 1 failed");
     expect(presentation.activeTaskSummary).toBe("cleaning chapter 2");
     expect(presentation.snapshotKind).toBe("live");
   });
@@ -174,5 +180,45 @@ describe("buildProgressTerminalPresentation", () => {
       expect(presentation.showLiveActiveTask).toBe(false);
       expect(presentation.snapshotKind).not.toBe("live");
     }
+  });
+});
+
+describe("formatStageDisplayName", () => {
+  it.each([
+    ["audio_encoding", "Audio encoding"],
+    ["Text Cleaning", "Text cleaning"],
+    ["tts_synthesis", "TTS synthesis"],
+    ["loading_CUDA", "Loading CUDA"],
+    ["API_request", "API request"],
+    ["m4b_packaging", "M4B packaging"],
+    ["rocm_setup", "ROCm setup"],
+    ["pdf_ingestion", "PDF ingestion"],
+    ["epub_ingestion", "EPUB ingestion"],
+    ["fp16", "FP16"],
+  ])("displays %s as %s", (name, expected) => {
+    expect(formatStageDisplayName(name)).toBe(expected);
+  });
+});
+
+describe("parallelLimitNote", () => {
+  const log = (msg: string) => ({ msg });
+
+  it("says why fewer chapters run at once than were requested, from the newest matching event", () => {
+    expect(parallelLimitNote([
+      log("Chapter 2 cleaned"),
+      log("[PARALLEL] Using 1 worker of 2 requested: the TTS model and the CUDA cleaner share one GPU"),
+      log("[PARALLEL] Using 2 workers of 4 requested: memory headroom limits parallel workers"),
+    ], null)).toBe("Using 1 of 2 requested parallel chapters: the TTS model and the CUDA cleaner share one GPU.");
+  });
+
+  it("falls back to the measured counts when the event is not in the log", () => {
+    const performance: PerformanceSnapshot = { requested_parallel_chapters: 2, effective_parallel_chapters: 1 };
+    expect(parallelLimitNote([log("[PARALLEL] Using shared worker pool manager")], performance))
+      .toBe("Using 1 of 2 requested parallel chapters.");
+  });
+
+  it("stays silent when the request was honoured", () => {
+    expect(parallelLimitNote([], { requested_parallel_chapters: 2, effective_parallel_chapters: 2 })).toBe("");
+    expect(parallelLimitNote([log("[PARALLEL] Using 2 concurrent workers (manual)")], null)).toBe("");
   });
 });

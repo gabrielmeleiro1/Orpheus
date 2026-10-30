@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RuntimeSetupStatusResponse } from "../types/api";
-import { runtimeTtsReady } from "./runtimeReadiness";
+import { conversionRuntimeState, runtimeTtsReady } from "./runtimeReadiness";
 
 function readyStatus(): RuntimeSetupStatusResponse {
   return {
@@ -51,5 +51,25 @@ describe("dashboard speech readiness", () => {
     status.installed_runtime.model_groups[0].assets_ready = true;
     status.restart_required = true;
     expect(runtimeTtsReady(status)).toBe(false);
+  });
+});
+
+describe("what Create may do with the runtime", () => {
+  const settled = { checking: false, checkFailed: false };
+  it("allows conversion only with a verified speech runtime", () => {
+    expect(conversionRuntimeState(readyStatus(), settled)).toBe("ready");
+  });
+  it("reports a library-only setup as unavailable rather than ready", () => {
+    const status = readyStatus();
+    status.selected_profile = "base";
+    status.selected_model_groups = [];
+    expect(conversionRuntimeState(status, settled)).toBe("unavailable");
+  });
+  it("waits while the status is unanswered or the runtime is still being verified", () => {
+    expect(conversionRuntimeState(null, settled)).toBe("checking");
+    expect(conversionRuntimeState(readyStatus(), { checking: true, checkFailed: false })).toBe("checking");
+  });
+  it("stops waiting once the status read has failed", () => {
+    expect(conversionRuntimeState(null, { checking: false, checkFailed: true })).toBe("unavailable");
   });
 });

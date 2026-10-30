@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type { SourcePreflight } from "../../types/api";
-import { createQueueItem } from "./conversionPanelModel";
+import { pastedTextEstimate } from "./conversionPanelHelpers";
+import {
+  createQueueItem,
+  estimatedAudioNote,
+  isPreflightConvertible,
+  preflightBlockingReason,
+} from "./conversionPanelModel";
 
 function preflight(overrides: Partial<SourcePreflight> = {}): SourcePreflight {
   return {
@@ -20,11 +26,8 @@ function preflight(overrides: Partial<SourcePreflight> = {}): SourcePreflight {
 
 describe("conversion queue item creation", () => {
   it("creates a preflighting item from a source path", () => {
-    vi.spyOn(Date, "now").mockReturnValue(123);
-    vi.spyOn(Math, "random").mockReturnValue(0.5);
-
     expect(createQueueItem(" /tmp/source.epub ", "audiobook")).toEqual({
-      id: "123-i",
+      id: expect.any(String),
       conversionMode: "audiobook",
       sourcePath: "/tmp/source.epub",
       label: "source.epub",
@@ -35,14 +38,14 @@ describe("conversion queue item creation", () => {
       preflight: null,
       jobId: null,
     });
+  });
 
-    vi.restoreAllMocks();
+  it("gives every created item its own id", () => {
+    expect(createQueueItem("/tmp/source.epub", "audiobook").id)
+      .not.toBe(createQueueItem("/tmp/source.epub", "audiobook").id);
   });
 
   it("uses label and preflight metadata when present", () => {
-    vi.spyOn(Date, "now").mockReturnValue(456);
-    vi.spyOn(Math, "random").mockReturnValue(0.25);
-
     expect(
       createQueueItem(
         " /tmp/source.pdf ",
@@ -51,7 +54,6 @@ describe("conversion queue item creation", () => {
         preflight({ title: " Title ", author: " Author " }),
       ),
     ).toMatchObject({
-      id: "456-9",
       conversionMode: "document_audio",
       sourcePath: "/tmp/source.pdf",
       label: "Source Label",
@@ -60,8 +62,6 @@ describe("conversion queue item creation", () => {
       status: "ready",
       preflight: preflight({ title: " Title ", author: " Author " }),
     });
-
-    vi.restoreAllMocks();
   });
 
   it("marks items with preflight warnings as warning", () => {
@@ -99,5 +99,53 @@ describe("conversion queue item creation", () => {
       status: "failed",
       error: "This PDF requires OCR before conversion.",
     });
+  });
+
+  it.each([
+    ["source_empty", "This file is empty, so there is nothing to convert."],
+    ["source_unreadable", "This file could not be read."],
+    ["pdf_password_protected", "This PDF is password-protected. Remove the password, then add it again."],
+    ["pdf_damaged", "This PDF is damaged and cannot be opened."],
+    ["epub_damaged", "This EPUB is damaged and cannot be opened."],
+    ["epub_drm_protected", "This EPUB is copy-protected (DRM) and cannot be converted."],
+  ])("explains a %s source in the backend's own words", (code, message) => {
+    const blocked = preflight({ chapter_count: 0, warnings: [message], blocking_error: { code, message } });
+
+    expect(preflightBlockingReason(blocked)).toBe(message);
+    expect(isPreflightConvertible(blocked)).toBe(false);
+    expect(createQueueItem("/tmp/blocked", "audiobook", undefined, blocked)).toMatchObject({
+      status: "failed",
+      error: message,
+    });
+  });
+
+  it("falls back to the generic reason when the backend gives no message", () => {
+    expect(preflightBlockingReason(preflight({ chapter_count: 0, blocking_error: null })))
+      .toBe("No readable chapters found in this source.");
+    expect(preflightBlockingReason(preflight({ chapter_count: 0, blocking_error: { code: "source_empty", message: " " } })))
+      .toBe("No readable chapters found in this source.");
+    expect(preflightBlockingReason(preflight({ blocking_error: null }))).toBeNull();
+  });
+});
+
+describe("estimated audio length", () => {
+  it("states the length of a long source", () => {
+    expect(estimatedAudioNote(preflight({ estimated_audio_seconds: 12_000 }))).toBe("About 3 hr 20 min of audio");
+    expect(estimatedAudioNote(preflight({ estimated_audio_seconds: 3_600 }))).toBe("About 1 hr of audio");
+  });
+
+  it("gives pasted text the same length before and after it is queued", () => {
+    const characters = 6_327_424;
+    // What the backend reports for this many characters at its 18.5 characters a second.
+    const queuedRow = estimatedAudioNote(preflight({ estimated_audio_seconds: Math.round(characters / 18.5) }));
+    expect(queuedRow).toBe("About 95 hr of audio");
+    expect(pastedTextEstimate("x".repeat(characters))).toBe(`6,327,424 characters · ${queuedRow}`);
+  });
+
+  it("stays silent for short or unestimated sources", () => {
+    expect(estimatedAudioNote(preflight({ estimated_audio_seconds: 3_599 }))).toBe("");
+    expect(estimatedAudioNote(preflight({ estimated_audio_seconds: null }))).toBe("");
+    expect(estimatedAudioNote(preflight())).toBe("");
+    expect(estimatedAudioNote(null)).toBe("");
   });
 });

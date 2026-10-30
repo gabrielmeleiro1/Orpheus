@@ -67,6 +67,24 @@ describe("event stream payload normalization", () => {
     });
   });
 
+  it("treats null, blank and boolean numeric fields as absent rather than zero", () => {
+    const payload = normalizeEventPayload({
+      event_type: "progress",
+      overall_progress: null,
+      progress: 0.4,
+      eta: null,
+      chapter_total: "",
+      chunk_total: true,
+    });
+    expect(payload).toEqual({ event_type: "progress", progress: 0.4 });
+
+    const state = eventStreamReducer(createInitialEventStreamState(), {
+      type: "progress",
+      payload: payload!,
+    }).state;
+    expect(state.progressPct).toBe(40);
+  });
+
   it("returns null for non-object payloads and payloads without an event type", () => {
     expect(normalizeEventPayload(null)).toBeNull();
     expect(normalizeEventPayload("progress")).toBeNull();
@@ -138,8 +156,8 @@ describe("event stream reducer progress stages", () => {
       state: "active",
       pct: 55,
       detail: [
-        { label: "chapter", value: "3/3", pct: 100 },
-        { label: "chunk", value: "2/4", pct: 50 },
+        { label: "Chapter", value: "3 of 3", pct: 100 },
+        { label: "Chunks", value: "2/4", pct: 50 },
       ],
     });
   });
@@ -274,23 +292,19 @@ describe("event stream reducer actions", () => {
       isCancelling: true,
     };
 
-    expect(eventStreamReducer(running, { type: "refreshNoClient" }).state).toMatchObject({
-      activeJobId: null,
-      uiState: "idle",
-    });
     expect(eventStreamReducer(running, { type: "refreshInactive" }).state).toMatchObject({
       activeJobId: null,
       runningJobId: null,
       isCancelling: false,
       uiState: "idle",
-      statusText: "ready",
+      statusText: "Ready",
     });
     expect(
       eventStreamReducer(running, { type: "refreshActive", job: { id: "job-2", status: "running" } }).state,
     ).toMatchObject({
       activeJobId: "job-2",
       uiState: "running",
-      statusText: "active job: running",
+      statusText: "Conversion running",
     });
     expect(eventStreamReducer(running, { type: "cancelStart" }).state.isCancelling).toBe(true);
     expect(eventStreamReducer(running, { type: "cancelRejected" }).state.isCancelling).toBe(false);
@@ -370,6 +384,43 @@ describe("event stream reducer actions", () => {
       cancellingJobId: null,
       runningJobId: null,
     });
+  });
+
+  it("keeps the live progress message while the reconcile poll confirms the same job", () => {
+    const running = eventStreamReducer(createInitialEventStreamState(), {
+      type: "state",
+      payload: { event_type: "state", state: "running", job_id: "job-1" },
+    }).state;
+    const progressing = eventStreamReducer(running, {
+      type: "progress",
+      payload: { event_type: "progress", job_id: "job-1", stage: "synthesizing", message: "Chapter 3 of 12" },
+    }).state;
+
+    const confirmed = eventStreamReducer(progressing, {
+      type: "refreshActive",
+      job: { id: "job-1", status: "running" },
+    }).state;
+    expect(confirmed).toBe(progressing);
+    expect(confirmed.statusText).toBe("Chapter 3 of 12");
+  });
+
+  it("does not keep a vanished job's live message once the backend reports no job", () => {
+    const progressing = eventStreamReducer(createInitialEventStreamState(), {
+      type: "progress",
+      payload: { event_type: "progress", job_id: "job-1", stage: "synthesizing", message: "Chapter 3 of 12" },
+    }).state;
+    // The backend no longer knows a running job: it was lost with the process.
+    expect(eventStreamReducer(progressing, { type: "refreshInactive" }).state).toMatchObject({
+      uiState: "failed",
+      activeJobId: null,
+      statusText: expect.stringMatching(/interrupted.*Repair audio/),
+    });
+
+    const failed = eventStreamReducer(progressing, {
+      type: "state",
+      payload: { event_type: "state", job_id: "job-1", state: "failed", message: "Disk full" },
+    }).state;
+    expect(eventStreamReducer(failed, { type: "refreshInactive" }).state.statusText).toBe("Disk full");
   });
 
   it("keeps the cancellation status while the reconcile poll still sees the job running", () => {
@@ -513,5 +564,20 @@ describe("terminal state helpers", () => {
         message: "",
       }),
     ).toEqual({ jobId: "job-1", status: "failed", message: "conversion failed" });
+  });
+});
+
+describe("event log scope", () => {
+  it("starts a new conversion with its own log", () => {
+    let state = eventStreamReducer(createInitialEventStreamState(), {
+      type: "state", payload: { event_type: "state", job_id: "job-1", state: "running" }, logId: 1,
+    }).state;
+    for (let index = 0; index < 5; index += 1) {
+      state = eventStreamReducer(state, { type: "log", payload: { event_type: "log", job_id: "job-1", message: `old ${index}` }, logId: 10 + index }).state;
+    }
+    state = eventStreamReducer(state, { type: "state", payload: { event_type: "state", job_id: "job-1", state: "completed" }, logId: 20 }).state;
+    expect(state.logs.length).toBeGreaterThan(5);
+    state = eventStreamReducer(state, { type: "state", payload: { event_type: "state", job_id: "job-2", state: "running" }, logId: 21 }).state;
+    expect(state.logs.map((entry) => entry.msg)).toEqual(["state running (job-2)"]);
   });
 });

@@ -1,0 +1,13 @@
+{
+  "items": [
+    {
+      "book_count": 2,
+      "created_at": "2026-01-01T00:00:00+00:00",
+      "filename": "library_20260101_000000.db",
+      "id": "library_20260101_000000.db",
+      "kind": "backup",
+      "label": "<backup label>",
+      "size": 4096
+    }
+  ]
+}

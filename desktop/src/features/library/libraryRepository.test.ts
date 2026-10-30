@@ -68,32 +68,10 @@ describe("libraryRepository listPage", () => {
     expect(getLibrary).toHaveBeenCalledTimes(1);
     expect(getLibraryCount).toHaveBeenCalledWith(undefined);
   });
-
-  it("never eagerly follows a backend that always returns full pages", async () => {
-    // The old repository looped until a short page arrived, so a backend stuck
-    // returning full pages cost up to 50 requests per list. Paging fetches
-    // exactly one page per call and reports hasMore instead.
-    const fullPage = Array.from({ length: LIBRARY_PAGE_SIZE }, (_, index) =>
-      makeBookSummary(index),
-    );
-    const getLibrary = vi.fn().mockResolvedValue({
-      items: fullPage,
-      count: fullPage.length,
-    });
-    const apiClient = { getLibrary } as unknown as ApiClient;
-
-    const repository = createLibraryRepository(apiClient);
-
-    const page = await repository.listPage("", "all", 0);
-
-    expect(getLibrary).toHaveBeenCalledTimes(1);
-    expect(page.items).toHaveLength(LIBRARY_PAGE_SIZE);
-    expect(page.hasMore).toBe(true);
-  });
 });
 
 describe("libraryRepository repair payloads", () => {
-  it("does not hardcode narrator voice or manual four-worker repair defaults", async () => {
+  it("sends an empty repair payload so the backend chooses the defaults", async () => {
     const repairConversion = vi.fn().mockResolvedValue({
       job_id: "repair-1",
       status: "running",

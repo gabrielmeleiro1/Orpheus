@@ -1,0 +1,78 @@
+{
+  "backend": {
+    "instance_id": "<instance_id>",
+    "status": "running"
+  },
+  "configured": false,
+  "installed_runtime": null,
+  "packages": {
+    "incompatible": [],
+    "missing": [],
+    "ready": false
+  },
+  "probe": {
+    "checks": [],
+    "ready": false
+  },
+  "profiles": [
+    {
+      "compatible": true,
+      "description": "Library, playback, and source inspection. Converting requires a local voice runtime \u2014 you can add one later from Settings.",
+      "id": "base",
+      "label": "Library only",
+      "model_groups": [],
+      "reason": null,
+      "risk": null
+    },
+    {
+      "compatible": false,
+      "description": "Private local TTS and cleaning for macOS 14+ on arm64 Apple Silicon.",
+      "id": "mlx",
+      "label": "Apple Silicon (MLX)",
+      "model_groups": [
+        "tts-mlx",
+        "cleaner-mlx",
+        "cleaner-mlx-small"
+      ],
+      "reason": "MLX requires macOS 14 or newer on an arm64 Apple Silicon Mac.",
+      "risk": null
+    },
+    {
+      "compatible": true,
+      "description": "Local narration on CPU or NVIDIA GPU for Linux/Windows. Local text cleaners require an NVIDIA GPU with a CUDA 12.6 driver.",
+      "device": "cpu",
+      "group_availability": {
+        "cleaner-cuda": {
+          "available": false,
+          "unavailable_reason": "Needs an NVIDIA GPU with a CUDA 12.6 driver"
+        },
+        "cleaner-cuda-large": {
+          "available": false,
+          "unavailable_reason": "Needs an NVIDIA GPU with a CUDA 12.6 driver"
+        },
+        "tts-cpu-cuda": {
+          "available": true,
+          "unavailable_reason": null
+        }
+      },
+      "id": "cuda",
+      "label": "NVIDIA CUDA",
+      "model_groups": [
+        "tts-cpu-cuda",
+        "cleaner-cuda",
+        "cleaner-cuda-large"
+      ],
+      "reason": null,
+      "risk": null
+    }
+  ],
+  "ready": false,
+  "recommended_profile": "cuda",
+  "restart_required": false,
+  "risk": null,
+  "schema_version": 1,
+  "selected_model_groups": [],
+  "selected_profile": null,
+  "state": "unconfigured",
+  "state_error": null
+}

@@ -5,6 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
+import { createApiClient } from "../../api/client";
 import { createConversionApi } from "../../api/resources/conversion";
 import type { ConversionJobTerminalEvent, DesktopEventPayload, StartConversionRequest } from "../../types/api";
 import { useTerminalStateWaiters } from "../events/useTerminalStateWaiters";
@@ -86,8 +87,8 @@ it.each(["completed", "cancelled"])("reconciles an unknown result and waits for 
   const getActiveConversion = vi.fn(async () => ({ active: true, job: { id: "job", status: "running" } }));
   const client = { getActiveConversion } as unknown as ApiClient;
   const job = jobController({ waitForTerminalState: vi.fn(async (jobId) => ({ jobId, status: "unknown" as const, message: "" })) });
-  const hook = await mount(() => useConversionQueueRunner({ apiClient: client, conversionJob: job,
-    queueItems: [first, second], selectedQueueItem: first, buildStartPayload: payload,
+  const hook = await mount(() => useConversionQueueRunner({ runtimeOptionsReady: true, apiClient: client, conversionJob: job,
+    queueItems: [first, second], selectedQueueItem: first, buildStartPayload: payload, addQueueItems: vi.fn(),
     updateQueueItem: vi.fn(), syncSelectedQueueEdits: vi.fn(), setQueueStatus: vi.fn() }));
   let running: Promise<void>;
   await act(async () => { running = hook.current.onRunQueue(); });
@@ -95,21 +96,56 @@ it.each(["completed", "cancelled"])("reconciles an unknown result and waits for 
   expect(job.startConversion).toHaveBeenCalledTimes(1);
   getActiveConversion.mockResolvedValue({ active: false, job: { id: "job", status: terminalStatus } });
   await act(async () => { await vi.advanceTimersByTimeAsync(1500); await running; });
-  expect(job.startConversion).toHaveBeenCalledTimes(terminalStatus === "completed" ? 2 : 1);
+  // A cancelled book stops only that book; the queue goes on to the next one.
+  expect(job.startConversion).toHaveBeenCalledTimes(2);
 });
 
 it("pauses the queue if reconciliation cannot reach the backend", async () => {
   const items = ["first.txt", "second.txt"].map((path) => ({ ...createQueueItem(path, "audiobook"), status: "ready" as const }));
   const job = jobController({ waitForTerminalState: vi.fn(async (jobId) => ({ jobId, status: "unknown" as const, message: "" })) });
   const status = vi.fn();
-  const hook = await mount(() => useConversionQueueRunner({
+  const hook = await mount(() => useConversionQueueRunner({ runtimeOptionsReady: true,
     apiClient: { getActiveConversion: vi.fn(async () => { throw new Error("offline"); }) } as unknown as ApiClient,
-    conversionJob: job, queueItems: items, selectedQueueItem: items[0], buildStartPayload: payload,
+    conversionJob: job, queueItems: items, selectedQueueItem: items[0], buildStartPayload: payload, addQueueItems: vi.fn(),
     updateQueueItem: vi.fn(), syncSelectedQueueEdits: vi.fn(), setQueueStatus: status,
   }));
   await act(async () => hook.current.onRunQueue());
   expect(job.startConversion).toHaveBeenCalledTimes(1);
   expect(status).toHaveBeenLastCalledWith(expect.stringContaining("Queue paused"));
+});
+
+it("releases queue commands when reconciliation times out and the final refresh hangs", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => new Promise((_resolve, reject) => {
+    init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+  }));
+  let items = ["first.txt", "second.txt"].map((path) => ({ ...createQueueItem(path, "audiobook"), status: "ready" as const }));
+  const job = jobController({
+    waitForTerminalState: vi.fn(async (jobId) => ({ jobId, status: "unknown" as const, message: "" })),
+    refreshActiveConversion: vi.fn(() => new Promise<void>(() => {})),
+  });
+  const status = vi.fn();
+  const client = createApiClient({ baseUrl: "http://desktop.test" });
+  const hook = await mount(() => useConversionQueueRunner({ runtimeOptionsReady: true,
+    apiClient: client, conversionJob: job, queueItems: items, selectedQueueItem: items[0],
+    buildStartPayload: payload, addQueueItems: vi.fn(), updateQueueItem: vi.fn(),
+    syncSelectedQueueEdits: vi.fn(), setQueueStatus: status,
+  }));
+  const settled = vi.fn();
+  await act(async () => { void hook.current.onRunQueue().then(settled); });
+  expect(hook.current.queueRunning).toBe(true);
+  await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
+  expect(job.refreshActiveConversion).toHaveBeenCalledOnce();
+  expect(status).toHaveBeenLastCalledWith(expect.stringContaining("Queue paused"));
+  expect(hook.current.queueRunning).toBe(false);
+  expect(settled).toHaveBeenCalledOnce();
+  expect(job.startConversion).toHaveBeenCalledOnce();
+
+  // A new command must reach the empty-queue check after the user clears it.
+  items = [];
+  await hook.rerender();
+  await act(async () => hook.current.onRunQueue());
+  expect(status).toHaveBeenLastCalledWith("No queued items to convert.");
+  expect(job.startConversion).toHaveBeenCalledOnce();
 });
 
 it("removes a waiting upload during a run and does not submit the removed row", async () => {
@@ -119,8 +155,8 @@ it("removes a waiting upload during a run and does not submit the removed row", 
   const job = jobController({ waitForTerminalState: vi.fn(() => new Promise<ConversionJobTerminalEvent>((resolve) => { finish = resolve; })) });
   const hook = await mount(() => {
     const queue = useConversionQueueController({ apiClient: client });
-    const runner = useConversionQueueRunner({ apiClient: client, conversionJob: job,
-      queueItems: queue.queueItems, selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload,
+    const runner = useConversionQueueRunner({ runtimeOptionsReady: true, apiClient: client, conversionJob: job,
+      queueItems: queue.queueItems, selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload, addQueueItems: vi.fn(),
       updateQueueItem: queue.updateQueueItem, syncSelectedQueueEdits: queue.syncSelectedQueueEdits, setQueueStatus: queue.setQueueStatus });
     return { queue, runner };
   });
@@ -149,7 +185,9 @@ it("Clear finished removes only finished rows", async () => {
   const clear = [...container.querySelectorAll("button")].find((button) => button.textContent === "Clear finished")!;
   await act(async () => clear.click());
   expect(removeQueueItem.mock.calls.flat()).toEqual(["done", "failed", "cancelled", "warning"]);
-  const removeButtons = [...container.querySelectorAll("button")].filter((button) => button.textContent === "Remove");
+  const removeButtons = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label="Remove"]')];
+  expect(removeButtons).toHaveLength(rows.length);
+  expect(removeButtons.every((button) => button.dataset.tip === "Remove")).toBe(true);
   expect(removeButtons[4].disabled).toBe(false);
   expect(removeButtons[5].disabled).toBe(true);
 });
@@ -200,8 +238,8 @@ it("observes reordering of waiting rows while keeping the running row fixed", as
     : Promise.resolve({ jobId, status: "completed" as const, message: "" })) });
   const hook = await mount(() => {
     const queue = useConversionQueueController({ apiClient: client });
-    const runner = useConversionQueueRunner({ apiClient: client, conversionJob: job,
-      queueItems: queue.queueItems, selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload,
+    const runner = useConversionQueueRunner({ runtimeOptionsReady: true, apiClient: client, conversionJob: job,
+      queueItems: queue.queueItems, selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload, addQueueItems: vi.fn(),
       updateQueueItem: queue.updateQueueItem, syncSelectedQueueEdits: queue.syncSelectedQueueEdits, setQueueStatus: queue.setQueueStatus });
     return { queue, runner };
   });
@@ -248,8 +286,8 @@ it.each(["blank", "edited", "preflighting", "failed"] as const)("skips a waiting
     .mockResolvedValue({ jobId: "job", status: "completed", message: "" }) });
   const hook = await mount(() => {
     const queue = useConversionQueueController({ apiClient: client });
-    const runner = useConversionQueueRunner({ apiClient: client, conversionJob: job, queueItems: queue.queueItems,
-      selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload, updateQueueItem: queue.updateQueueItem,
+    const runner = useConversionQueueRunner({ runtimeOptionsReady: true, apiClient: client, conversionJob: job, queueItems: queue.queueItems,
+      selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload, addQueueItems: vi.fn(), updateQueueItem: queue.updateQueueItem,
       syncSelectedQueueEdits: queue.syncSelectedQueueEdits, setQueueStatus: queue.setQueueStatus });
     return { queue, runner };
   });
@@ -268,24 +306,34 @@ it.each(["blank", "edited", "preflighting", "failed"] as const)("skips a waiting
   expect(hook.current.queue.queueItems[2].status).toBe("done");
 });
 
-it("uses the replacement conversion controller after reconciling with the new client", async () => {
+it("retires the previous queue on client replacement and accepts a fresh command", async () => {
   let finish!: (value: ConversionJobTerminalEvent) => void;
   const oldJob = jobController({ waitForTerminalState: vi.fn(() => new Promise<ConversionJobTerminalEvent>((resolve) => { finish = resolve; })) });
   const newJob = jobController();
   let job = oldJob;
   let client = {} as ApiClient;
   const items = ["a.txt", "b.txt"].map((path) => ({ ...createQueueItem(path, "audiobook"), status: "ready" as const }));
-  const hook = await mount(() => useConversionQueueRunner({ apiClient: client, conversionJob: job, queueItems: items,
-    selectedQueueItem: items[0], buildStartPayload: payload, updateQueueItem: vi.fn(), syncSelectedQueueEdits: vi.fn(), setQueueStatus: vi.fn() }));
-  let running: Promise<void>;
-  await act(async () => { running = hook.current.onRunQueue(); });
+  const hook = await mount(() => {
+    const queue = useConversionQueueController({ apiClient: client });
+    const runner = useConversionQueueRunner({ runtimeOptionsReady: true, apiClient: client, conversionJob: job,
+      queueItems: queue.queueItems, selectedQueueItem: queue.selectedQueueItem, buildStartPayload: payload,
+      addQueueItems: vi.fn(), updateQueueItem: queue.updateQueueItem, syncSelectedQueueEdits: queue.syncSelectedQueueEdits,
+      setQueueStatus: queue.setQueueStatus });
+    return { queue, runner };
+  });
+  await act(async () => items.forEach((item) => hook.current.queue.addPastedSource(item)));
+  let running!: Promise<void>;
+  await act(async () => { running = hook.current.runner.onRunQueue(); });
   job = newJob;
   client = { getActiveConversion: vi.fn(async () => ({ active: false, job: null })) } as unknown as ApiClient;
   await hook.rerender();
-  await act(async () => { finish({ jobId: "job", status: "unknown", message: "" }); });
-  expect(client.getActiveConversion).toHaveBeenCalledOnce();
+  expect(hook.current.runner.queueRunning).toBe(false);
+  expect(hook.current.queue.queueItems[0].status).toBe("warning");
+  await act(async () => { finish({ jobId: "job", status: "unknown", message: "" }); await running; });
+  expect(client.getActiveConversion).not.toHaveBeenCalled();
   expect(oldJob.startConversion).toHaveBeenCalledTimes(1);
-  expect(newJob.startConversion).toHaveBeenCalledWith(expect.objectContaining({ source_path: "b.txt" }));
-  await act(async () => { await running; });
-  expect(newJob.refreshActiveConversion).toHaveBeenCalledOnce();
+  expect(newJob.startConversion).not.toHaveBeenCalled();
+  await act(async () => hook.current.runner.onStartConversion(hook.current.queue.queueItems[1]));
+  expect(newJob.startConversion).toHaveBeenCalledWith(expect.objectContaining({ source_path: "b.txt" }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(hook.current.queue.queueItems[1].status).toBe("done");
 });

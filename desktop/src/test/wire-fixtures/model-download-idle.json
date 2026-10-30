@@ -1,0 +1,12 @@
+{
+  "bytes_done": null,
+  "bytes_total": null,
+  "completed_models": 0,
+  "current_model": null,
+  "current_model_group": null,
+  "error": null,
+  "lifecycle": "idle",
+  "model_groups": [],
+  "profile": null,
+  "total_models": 0
+}

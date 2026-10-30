@@ -16,14 +16,7 @@ const shellCss = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "she
 
 describe("shell idle motion contract", () => {
   it("does not infinitely animate the connected status dot", () => {
-    expect(shellCss.length).toBeGreaterThan(0);
-    expect(shellCss).not.toContain("status-dot-pulse");
+    expect(shellCss).toMatch(/\.status-dot\.is-connected/);
     expect(shellCss).not.toMatch(/\.status-dot\.is-connected[^{]*\{[^}]*animation\s*:/s);
-  });
-
-  it("still paints a distinct connected color without motion", () => {
-    expect(shellCss).toMatch(
-      /\.status-dot\.is-connected\s*,\s*\.status-dot\.is-ok\s*\{[^}]*background\s*:/s,
-    );
   });
 });

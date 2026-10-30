@@ -4,6 +4,7 @@ import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useConversionQueueController } from "./useConversionQueueController";
 import { useConversionSourceQueue } from "./useConversionSourceQueue";
 
 const { invokeMock, listenMock } = vi.hoisted(() => ({
@@ -126,7 +127,7 @@ describe("useConversionSourceQueue", () => {
     } } as never);
     expect(uploadSourceFile).toHaveBeenCalledTimes(2);
     await act(async () => {
-      root.render(<Probe apiClient={apiClient} queueController={queueController} conversionMode="document_audio" />);
+      root.render(<Probe apiClient={{ uploadSourceFile: vi.fn() }} queueController={queueController} />);
     });
     await act(async () => {
       releases.forEach((release) => release());
@@ -150,6 +151,31 @@ describe("useConversionSourceQueue", () => {
     });
 
     expect(setPreflightStatus).toHaveBeenCalledWith("Could not open file picker: dialog unavailable");
+  });
+
+  it("uploads normal browser file drops through the same source intake as the picker", async () => {
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+    const file = new File(["A dropped document"], "dropped.md", { type: "text/markdown" });
+    const uploadSourceFile = vi.fn(async () => ({ source_handle: "upload:dropped", original_name: file.name, preflight: null }));
+    const addQueueItems = vi.fn();
+    const setPreflightStatus = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe apiClient={{ uploadSourceFile }} queueController={{
+        sourcePath: "", selectedQueueId: null, addQueueItems, setPreflightStatus,
+      }} />);
+    });
+    const preventDefault = vi.fn();
+    await act(async () => {
+      (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> })
+        .sourceQueueProbe.onDropZoneDrop({ preventDefault, dataTransfer: { getData: () => "", files: [file] } } as never);
+    });
+    expect(preventDefault).toHaveBeenCalled();
+    expect(uploadSourceFile).toHaveBeenCalledWith(file);
+    expect(addQueueItems).toHaveBeenCalledWith([
+      expect.objectContaining({ sourcePath: "upload:dropped", label: "dropped.md" }),
+    ], { selectFirst: true });
+    expect(setPreflightStatus).toHaveBeenLastCalledWith("");
   });
 
   it("keeps current source callbacks live through StrictMode effect replay", async () => {
@@ -238,7 +264,8 @@ describe("useConversionSourceQueue", () => {
       ],
       { selectFirst: true },
     );
-    expect(setPreflightStatus).toHaveBeenLastCalledWith("Added 2 sources; 1 upload failed.");
+    // The file that was not added is named, with its reason.
+    expect(setPreflightStatus).toHaveBeenLastCalledWith(`Added 2 sources. Not added: ${secondFile.name}: second upload failed`);
   });
 
   it("does not apply a browser upload completion after unmount", async () => {
@@ -289,7 +316,7 @@ describe("useConversionSourceQueue", () => {
     expect(addQueueItems).not.toHaveBeenCalled();
     expect(clearFormError).not.toHaveBeenCalled();
     expect(setPreflightStatus).toHaveBeenCalledTimes(1);
-    expect(setPreflightStatus).toHaveBeenLastCalledWith("Uploading stale.md...");
+    expect(setPreflightStatus).toHaveBeenLastCalledWith("Adding stale.md…");
   });
 
   it("queues concurrent browser file selections and uses the latest selection for final status", async () => {
@@ -364,11 +391,11 @@ describe("useConversionSourceQueue", () => {
       [expect.objectContaining({ sourcePath: "upload:old" })],
       { selectFirst: false },
     );
-    expect(setPreflightStatus).toHaveBeenLastCalledWith("Source uploaded.");
+    expect(setPreflightStatus).toHaveBeenLastCalledWith("");
   });
 
   it.each(["api client", "conversion mode"] as const)(
-    "ignores a browser upload completion after the %s changes",
+    "keeps a browser upload only when the %s change still belongs to the same backend",
     async (changedContext) => {
       type UploadResponse = { source_handle: string; original_name: string; preflight: null };
       let resolveUpload!: (value: UploadResponse) => void;
@@ -423,15 +450,21 @@ describe("useConversionSourceQueue", () => {
         await uploadPromise;
       });
 
-      expect(addQueueItems).not.toHaveBeenCalled();
-      expect(clearFormError).not.toHaveBeenCalled();
-      expect(setPreflightStatus).toHaveBeenCalledTimes(1);
-      expect(setPreflightStatus).toHaveBeenLastCalledWith("Uploading old.md...");
+      if (changedContext === "api client") {
+        expect(addQueueItems).not.toHaveBeenCalled();
+        expect(clearFormError).not.toHaveBeenCalled();
+        expect(setPreflightStatus).toHaveBeenCalledTimes(1);
+      } else {
+        expect(addQueueItems).toHaveBeenCalledWith([
+          expect.objectContaining({ sourcePath: "upload:old", conversionMode: "document_audio" }),
+        ], { selectFirst: true });
+        expect(setPreflightStatus).toHaveBeenLastCalledWith("");
+      }
     },
   );
 
   it.each(["api client", "conversion mode", "unmount"] as const)(
-    "ignores a deferred native browse result after %s",
+    "accepts a deferred native browse result only in its original mounted backend after %s",
     async (staleReason) => {
       let resolvePicker!: (paths: string[]) => void;
       invokeMock.mockImplementationOnce(
@@ -486,8 +519,14 @@ describe("useConversionSourceQueue", () => {
         await browsePromise;
       });
 
-      expect(addQueueItems).not.toHaveBeenCalled();
-      expect(clearFormError).not.toHaveBeenCalled();
+      if (staleReason === "conversion mode") {
+        expect(addQueueItems).toHaveBeenCalledWith([
+          expect.objectContaining({ sourcePath: "/old.md", conversionMode: "document_audio" }),
+        ], { selectFirst: true });
+      } else {
+        expect(addQueueItems).not.toHaveBeenCalled();
+        expect(clearFormError).not.toHaveBeenCalled();
+      }
     },
   );
 
@@ -643,6 +682,44 @@ describe("useConversionSourceQueue", () => {
     expect(getProbe().pastedAuthor).toBe("");
   });
 
+  it.each(["all fields", "text", "title", "author"])("preserves edits to %s made while a paste upload is pending", async (edited) => {
+    let resolveUpload!: (value: { source_handle: string; original_name: string; preflight: null }) => void;
+    const uploadSourceText = vi.fn(() => new Promise<{ source_handle: string; original_name: string; preflight: null }>((resolve) => {
+      resolveUpload = resolve;
+    }));
+    const addPastedSource = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<Probe apiClient={{ uploadSourceText }} queueController={{
+        sourcePath: "", selectedQueueId: null, addPastedSource,
+      }} />);
+    });
+    const getProbe = () => (globalThis as typeof globalThis & {
+      sourceQueueProbe: ReturnType<typeof useConversionSourceQueue>;
+    }).sourceQueueProbe;
+    await act(async () => {
+      getProbe().setPastedText("  Submitted text  ");
+      getProbe().setPastedTitle("  Submitted title  ");
+      getProbe().setPastedAuthor("  Submitted author  ");
+    });
+    let pending!: ReturnType<ReturnType<typeof useConversionSourceQueue>["onAddPastedText"]>;
+    await act(async () => { pending = getProbe().onAddPastedText(); });
+    await act(async () => {
+      if (edited === "all fields" || edited === "text") getProbe().setPastedText("New text");
+      if (edited === "all fields" || edited === "title") getProbe().setPastedTitle("New title");
+      if (edited === "all fields" || edited === "author") getProbe().setPastedAuthor("New author");
+    });
+    await act(async () => {
+      resolveUpload({ source_handle: "upload:submitted.md", original_name: "submitted.md", preflight: null });
+      await pending;
+    });
+    expect(uploadSourceText).toHaveBeenCalledWith({ text: "Submitted text", title: "Submitted title" });
+    expect(addPastedSource).toHaveBeenCalledWith(expect.objectContaining({ title: "Submitted title", author: "Submitted author" }), { selectItem: true });
+    expect(getProbe().pastedText).toBe(edited === "all fields" || edited === "text" ? "New text" : "");
+    expect(getProbe().pastedTitle).toBe(edited === "all fields" || edited === "title" ? "New title" : "");
+    expect(getProbe().pastedAuthor).toBe(edited === "all fields" || edited === "author" ? "New author" : "");
+  });
+
   it("selects a manually inspected source so its preflight can gate Start", async () => {
     const addQueueItems = vi.fn();
     const queueController = {
@@ -671,7 +748,7 @@ describe("useConversionSourceQueue", () => {
   });
 
   it.each(["api client", "conversion mode"] as const)(
-    "ignores a pasted-source completion after the %s changes",
+    "keeps a pasted-source completion only when the %s change still belongs to the same backend",
     async (changedContext) => {
       type UploadResponse = { source_handle: string; original_name: string; preflight: null };
       let resolveUpload!: (value: UploadResponse) => void;
@@ -731,11 +808,18 @@ describe("useConversionSourceQueue", () => {
         returnedItem = await pastePromise;
       });
 
-      expect(returnedItem!).toBeNull();
-      expect(addPastedSource).not.toHaveBeenCalled();
-      expect(clearFormError).not.toHaveBeenCalled();
-      expect(getProbe().pastedText).toBe("Context-owned draft");
-      expect(getProbe().pasteStatus).not.toBe("Pasted markdown source added.");
+      if (changedContext === "api client") {
+        expect(returnedItem!).toBeNull();
+        expect(addPastedSource).not.toHaveBeenCalled();
+        expect(clearFormError).not.toHaveBeenCalled();
+        expect(getProbe().pastedText).toBe("Context-owned draft");
+        expect(getProbe().pasteStatus).toBe("Idle");
+      } else {
+        expect(returnedItem!).toMatchObject({ sourcePath: "upload:old-paste", conversionMode: "document_audio" });
+        expect(addPastedSource).toHaveBeenCalledWith(expect.objectContaining({ conversionMode: "document_audio" }), { selectItem: true });
+        expect(getProbe().pastedText).toBe("");
+        expect(getProbe().pasteStatus).toBe("");
+      }
       expect(getProbe().pasteBusy).toBe(false);
     },
   );
@@ -968,5 +1052,101 @@ describe("useConversionSourceQueue", () => {
     expect(getProbe().pastedTitle).toBe("Draft title");
     expect(getProbe().pastedAuthor).toBe("Draft author");
     expect(getProbe().pasteStatus).toBe("upload unavailable");
+  });
+});
+
+describe("adding files that cannot all be queued", () => {
+  it("names the file that was not added and the one already queued", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const unsupported = new Error("This file type is not supported. Choose a PDF, EPUB, TXT or Markdown file.");
+    const uploadSourceFile = vi.fn(async (file: File) => {
+      if (file.name.endsWith(".docx")) throw unsupported;
+      return { source_handle: `upload:${file.name}`, original_name: file.name, preflight: null };
+    });
+    const addQueueItems = vi.fn();
+    const setPreflightStatus = vi.fn();
+    const queued = new File(["same"], "notes.md");
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe apiClient={{ uploadSourceFile }} queueController={{
+      sourcePath: "", selectedQueueId: null, addQueueItems, setPreflightStatus,
+      queueItems: [{ label: "notes.md", preflight: { size_bytes: queued.size } }],
+    }} />));
+    const probe = (globalThis as typeof globalThis & { sourceQueueProbe: ReturnType<typeof useConversionSourceQueue> }).sourceQueueProbe;
+    await act(async () => {
+      await probe.onBrowserFilesSelected({ target: {
+        files: [queued, new File(["x"], "story.txt"), new File(["y"], "report.docx")], value: "selected",
+      } } as never);
+    });
+    expect(uploadSourceFile).toHaveBeenCalledTimes(2);
+    expect(addQueueItems).toHaveBeenCalledWith([expect.objectContaining({ label: "story.txt" })], expect.anything());
+    expect(setPreflightStatus).toHaveBeenLastCalledWith(
+      "Added 1 source. Not added: report.docx: This file type is not supported. Choose a PDF, EPUB, TXT or Markdown file. notes.md is already in the queue.",
+    );
+    await act(async () => root.unmount());
+  });
+
+  /** The source intake wired to the real queue, as the page mounts them. */
+  function mountIntake(uploadSourceFile: (file: File) => Promise<unknown>) {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const apiClient = { uploadSourceFile } as never;
+    const view = {} as {
+      queue: ReturnType<typeof useConversionQueueController>;
+      intake: ReturnType<typeof useConversionSourceQueue>;
+    };
+    function Intake(): null {
+      view.queue = useConversionQueueController({ apiClient });
+      view.intake = useConversionSourceQueue({
+        apiClient, conversionMode: "audiobook", conversionJob: { clearFormError: vi.fn() } as never, queueController: view.queue,
+      });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    const select = (names: string[]) => act(async () => {
+      await view.intake.onBrowserFilesSelected({ target: {
+        files: names.map((name) => new File([name], name)), value: "selected",
+      } } as never);
+    });
+    return { view, root, select, Intake };
+  }
+
+  const uploadedPreflight = (title: string) => ({
+    title, author: null, chapter_count: 1, source_type: "md", sample: "s", warnings: [], size_bytes: title.length,
+    requires_ocr: false, pdf_text_layer: null,
+  });
+
+  it("still names the skipped files when two or more others were added", async () => {
+    const unsupported = "This file type is not supported. Choose a PDF, EPUB, TXT or Markdown file.";
+    const { view, root, select, Intake } = mountIntake(async (file) => {
+      if (file.name.endsWith(".docx")) throw new Error(unsupported);
+      if (file.name.endsWith(".txt")) throw new Error("The file is empty.");
+      return { source_handle: `upload:${file.name}`, original_name: file.name, preflight: uploadedPreflight(file.name) };
+    });
+    await act(async () => root.render(<Intake />));
+    await select(["a.md", "report.docx", "empty.txt", "b.md"]);
+    expect(view.queue.queueItems.map((item) => item.label)).toEqual(["a.md", "b.md"]);
+    expect(view.queue.preflightStatus).toBe(
+      `Added 2 sources. Not added: report.docx: ${unsupported}; empty.txt: The file is empty.`,
+    );
+    await act(async () => root.unmount());
+  });
+
+  it("selects a newly added book when the selected row has already finished", async () => {
+    const { view, root, select, Intake } = mountIntake(async (file) => (
+      { source_handle: `upload:${file.name}`, original_name: file.name, preflight: uploadedPreflight(file.name) }
+    ));
+    await act(async () => root.render(<Intake />));
+    await select(["first.md"]);
+    const first = view.queue.queueItems[0];
+    expect(view.queue.selectedQueueId).toBe(first.id);
+    await select(["waiting.md"]);
+    // An unfinished selection is the book being edited; it keeps the selection.
+    expect(view.queue.selectedQueueId).toBe(first.id);
+
+    await act(async () => view.queue.updateQueueItem(first.id, (item) => ({ ...item, status: "done", jobId: "job-1" })));
+    await select(["next.md"]);
+    const next = view.queue.queueItems.find((item) => item.label === "next.md")!;
+    expect(view.queue.selectedQueueId).toBe(next.id);
+    expect(view.queue.sourcePath).toBe("upload:next.md");
+    await act(async () => root.unmount());
   });
 });

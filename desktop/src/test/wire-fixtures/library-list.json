@@ -1,0 +1,25 @@
+{
+  "count": 1,
+  "items": [
+    {
+      "audio_available": false,
+      "author": null,
+      "completed_chapters": 0,
+      "conversion_mode": "audiobook",
+      "created_at": "2026-01-01T00:00:00+00:00",
+      "favorite": false,
+      "id": 2,
+      "library_epoch": "<library_epoch>",
+      "library_id": "<library_id>",
+      "source_available": false,
+      "source_path": "<workspace>/missing.txt",
+      "tags": "",
+      "title": "Unconverted",
+      "total_chapters": 0
+    }
+  ],
+  "library_epoch": "<library_epoch>",
+  "library_id": "<library_id>",
+  "limit": 1,
+  "offset": 1
+}

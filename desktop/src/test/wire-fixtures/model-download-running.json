@@ -1,0 +1,16 @@
+{
+  "bytes_done": null,
+  "bytes_total": null,
+  "cleaner_cuda_quantization": "4bit",
+  "completed_models": 0,
+  "configure_runtime": false,
+  "current_model": "hexgrad/Kokoro-82M",
+  "current_model_group": "tts-cpu-cuda",
+  "error": null,
+  "lifecycle": "running",
+  "model_groups": [
+    "tts-cpu-cuda"
+  ],
+  "profile": "cuda",
+  "total_models": 1
+}

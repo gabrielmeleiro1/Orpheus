@@ -1,0 +1,11 @@
+{
+  "backend_instance_id": "<backend_instance_id>",
+  "client_request_id": null,
+  "event_id": "3",
+  "event_sequence": 3,
+  "event_type": "state",
+  "job_id": "job-1",
+  "message": "Complete",
+  "state": "completed",
+  "timestamp": "2026-01-01T00:00:00+00:00"
+}

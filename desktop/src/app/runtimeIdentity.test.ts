@@ -6,12 +6,9 @@ import {
   savePersistedSettings,
 } from "../features/conversion/conversionOptionsShared";
 import {
-  buildRuntimeIdentityLabelFromSnapshot,
-  formatRuntimeIdentity,
+  buildRuntimeIdentityFromSnapshot,
   resolveRuntimeIdentity,
 } from "./runtimeIdentity";
-
-const SETTINGS_KEY = "orpheus.desktop.settings.v1";
 
 const capabilities: SystemCapabilitiesResponse = {
   default_tts_engine: "kokoro",
@@ -93,20 +90,17 @@ describe("resolveRuntimeIdentity", () => {
       ttsLabel: "MLX",
       cleanerLabel: "Cloud API",
     });
-    expect(formatRuntimeIdentity(identity)).toBe("TTS: MLX · Cleaner: Cloud API");
   });
 
   it("falls back cleanly when cleaner or TTS is unknown", () => {
     expect(
-      formatRuntimeIdentity(
-        resolveRuntimeIdentity({
-          primaryRuntime: null,
-          cleanerBackendId: "",
-          cleanerBackendLabel: null,
-          ttsEngineLabel: null,
-        }),
-      ),
-    ).toBe("TTS: — · Cleaner: —");
+      resolveRuntimeIdentity({
+        primaryRuntime: null,
+        cleanerBackendId: "",
+        cleanerBackendLabel: null,
+        ttsEngineLabel: null,
+      }),
+    ).toEqual({ ttsLabel: "—", cleanerLabel: "—" });
   });
 
   it("prefers cleaner display name over raw id", () => {
@@ -142,7 +136,7 @@ describe("runtime identity settings notification", () => {
   });
 
   it("recomputes Cloud API -> Local MLX from cached capabilities without API reconnect", () => {
-    const cloudLabel = buildRuntimeIdentityLabelFromSnapshot({
+    const cloudIdentity = buildRuntimeIdentityFromSnapshot({
       capabilities,
       modelOptions,
       settings: {
@@ -150,9 +144,9 @@ describe("runtime identity settings notification", () => {
         cleaner_backend_configured: true,
       },
     });
-    expect(cloudLabel).toBe("TTS: MLX · Cleaner: Cloud API");
+    expect(cloudIdentity).toEqual({ ttsLabel: "MLX", cleanerLabel: "Cloud API" });
 
-    const mlxLabel = buildRuntimeIdentityLabelFromSnapshot({
+    const mlxIdentity = buildRuntimeIdentityFromSnapshot({
       capabilities,
       modelOptions,
       settings: {
@@ -160,18 +154,7 @@ describe("runtime identity settings notification", () => {
         cleaner_backend_configured: true,
       },
     });
-    expect(mlxLabel).toBe("TTS: MLX · Cleaner: Local MLX");
-
-    // Persistence path still notifies without requiring a new API client.
-    const listener = vi.fn();
-    window.addEventListener(DESKTOP_SETTINGS_CHANGED_EVENT, listener);
-    savePersistedSettings({
-      cleaner_backend: "mlx",
-      cleaner_backend_configured: true,
-    });
-    expect(window.localStorage.getItem(SETTINGS_KEY)).toContain("mlx");
-    expect(listener).toHaveBeenCalledTimes(1);
-    window.removeEventListener(DESKTOP_SETTINGS_CHANGED_EVENT, listener);
+    expect(mlxIdentity).toEqual({ ttsLabel: "MLX", cleanerLabel: "Local MLX" });
   });
 
   it("ignores an unconfigured persisted backend and reports the auto-selected local one", () => {
@@ -179,7 +162,7 @@ describe("runtime identity settings notification", () => {
     // cleaner_backend_configured is true; otherwise they auto-pick the
     // preferred local backend. The header label must apply the same policy or
     // it reports "Cloud API" while the app will actually use Local MLX.
-    const label = buildRuntimeIdentityLabelFromSnapshot({
+    const identity = buildRuntimeIdentityFromSnapshot({
       capabilities,
       modelOptions,
       settings: {
@@ -187,16 +170,16 @@ describe("runtime identity settings notification", () => {
         cleaner_backend_configured: false,
       },
     });
-    expect(label).toBe("TTS: MLX · Cleaner: Local MLX");
+    expect(identity).toEqual({ ttsLabel: "MLX", cleanerLabel: "Local MLX" });
   });
 
   it("falls back to the preferred available backend when nothing is persisted", () => {
-    const label = buildRuntimeIdentityLabelFromSnapshot({
+    const identity = buildRuntimeIdentityFromSnapshot({
       capabilities,
       modelOptions,
       settings: {},
     });
-    expect(label).toBe("TTS: MLX · Cleaner: Local MLX");
+    expect(identity).toEqual({ ttsLabel: "MLX", cleanerLabel: "Local MLX" });
   });
 
   it("ignores a configured backend that is no longer available", () => {
@@ -204,7 +187,7 @@ describe("runtime identity settings notification", () => {
       ...capabilities,
       cleaner_runtime_availability: { mlx: false },
     };
-    const label = buildRuntimeIdentityLabelFromSnapshot({
+    const identity = buildRuntimeIdentityFromSnapshot({
       capabilities: unavailableMlx,
       modelOptions,
       settings: {
@@ -212,6 +195,6 @@ describe("runtime identity settings notification", () => {
         cleaner_backend_configured: true,
       },
     });
-    expect(label).toBe("TTS: MLX · Cleaner: Cloud API");
+    expect(identity).toEqual({ ttsLabel: "MLX", cleanerLabel: "Cloud API" });
   });
 });

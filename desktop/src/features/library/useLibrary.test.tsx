@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { ApiError, createApiClient } from "../../api/client";
 import type { ApiClient } from "../../api/client";
 import type { CleaningPreviewResponse, LibraryBookDetail, LibraryBookSummary } from "../../types/api";
 import {
@@ -11,6 +12,7 @@ import {
   readPlaybackCheckpoint,
   writePlaybackCheckpoint,
 } from "../player/playbackCheckpoint";
+import { useLibraryPanelState } from "./useLibraryPanelState";
 import { useLibrary, type UseLibraryResult } from "./useLibrary";
 
 const book: LibraryBookSummary = {
@@ -99,9 +101,125 @@ describe("useLibrary indexed total", () => {
     window.localStorage.clear();
     container.remove();
     delete (globalThis as typeof globalThis & { libraryProbe?: UseLibraryResult }).libraryProbe;
-    Reflect.deleteProperty(window, "confirm");
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("clears a stalled cleaning preview spinner and allows another preview", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }))
+      .mockImplementation(async () => new Response(JSON.stringify(cleaningPreview)));
+    const apiClient = {
+      ...createApiClient({ baseUrl: "http://desktop.test" }),
+      getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
+      getLibraryBook: vi.fn(async () => detail),
+      getLibraryCount: vi.fn(async () => ({ count: 1 })),
+    } as ApiClient;
+    let panel!: ReturnType<typeof useLibraryPanelState>;
+    let library!: UseLibraryResult;
+    function PreviewProbe() {
+      library = useLibrary({ apiClient });
+      panel = useLibraryPanelState({ library });
+      return null;
+    }
+    await act(async () => { root = createRoot(container); root.render(<PreviewProbe />); });
+    await act(async () => { void panel.loadCleaningPreview(1); });
+    expect(panel.cleaningPreviewLoading).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(30000));
+    expect(panel.cleaningPreviewLoading).toBe(false);
+    expect(panel.cleaningPreview).toBeNull();
+    expect(library.errorMessage).toBe("request timed out");
+    await act(async () => panel.loadCleaningPreview(1));
+    expect(panel.cleaningPreview).toEqual(cleaningPreview);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains a valid selected book outside the refreshed first page", async () => {
+    const offPage = { ...book, id: 151, title: "Later book" };
+    const getLibrary = vi.fn().mockResolvedValueOnce({ items: [book, offPage], count: 2 })
+      .mockResolvedValue({ items: [book], count: 2 });
+    const getLibraryBook = vi.fn(async (id: number) => ({ ...detail, id, title: id === 151 ? "Later book" : detail.title }));
+    const apiClient = { getLibrary, getLibraryBook } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<LibraryProbe apiClient={apiClient} />); });
+    await act(async () => { await getLibraryProbe().selectBook(1); });
+    getLibraryBook.mockClear();
+    await act(async () => getLibraryProbe().refreshLibrary());
+    expect(getLibraryProbe().selectedBookId).toBe(151);
+    expect(getLibraryProbe().selectedBookDetail?.title).toBe("Later book");
+    expect(getLibraryProbe().selectedBookIndex).toBe(-1);
+    expect(getLibraryBook).toHaveBeenCalledWith(151, expect.anything());
+  });
+
+  it("clears a filtered selection when the selected book no longer exists", async () => {
+    const getLibrary = vi.fn().mockResolvedValueOnce({ items: [book], count: 1 })
+      .mockResolvedValue({ items: [], count: 0 });
+    const getLibraryBook = vi.fn().mockResolvedValue(detail);
+    const apiClient = { getLibrary, getLibraryCount: vi.fn(async () => ({ count: 1 })), getLibraryBook } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<LibraryProbe apiClient={apiClient} />); });
+    await act(async () => getLibraryProbe().setSearchQuery("other book"));
+    await act(async () => vi.advanceTimersByTimeAsync(220));
+    expect(getLibraryProbe().selectedBookId).toBe(1);
+    getLibraryBook.mockRejectedValue(new ApiError({ message: "Book not found", status: 404, code: "http", detail: "Book not found", retriable: false }));
+    await act(async () => getLibraryProbe().refreshLibrary());
+    expect(getLibraryProbe().selectedBookId).toBeNull();
+    expect(getLibraryProbe().selectedBookDetail).toBeNull();
+    expect(getLibraryProbe().selectedBookPlayable).toBe(false);
+  });
+
+  it("allows only one metadata save per book until its request settles", async () => {
+    const save = deferred<LibraryBookDetail>();
+    const updateLibraryBook = vi.fn().mockImplementationOnce(() => save.promise)
+      .mockResolvedValue({ ...detail, title: "Second" });
+    const apiClient = {
+      getLibrary: vi.fn(async () => ({ items: [book], count: 1 })),
+      getLibraryBook: vi.fn(async () => detail),
+      updateLibraryBook,
+    } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<LibraryProbe apiClient={apiClient} />); });
+    let first!: Promise<void>;
+    await act(async () => {
+      first = getLibraryProbe().updateSelectedBookMetadata({ title: "First", author: "Author", tags: "" });
+      void getLibraryProbe().updateSelectedBookMetadata({ title: "Second", author: "Author", tags: "" });
+    });
+    expect(updateLibraryBook).toHaveBeenCalledTimes(1);
+    expect(getLibraryProbe().savingMetadata).toBe(true);
+    await act(async () => { save.resolve({ ...detail, title: "First" }); await first; });
+    expect(getLibraryProbe().savingMetadata).toBe(false);
+    await act(async () => getLibraryProbe().updateSelectedBookMetadata({ title: "Second", author: "Author", tags: "" }));
+    expect(updateLibraryBook).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["selection", "metadata", "repair", "delete", "dismiss"])("clears pending deletion feedback on %s", async (action) => {
+    const second = { ...book, id: 2, title: "Second" };
+    const getLibrary = vi.fn().mockResolvedValueOnce({ items: [book, second], count: 2 })
+      .mockResolvedValue({ items: [second], count: 1 });
+    const apiClient = {
+      getLibrary,
+      getLibraryBook: vi.fn(async (id: number) => ({ ...detail, id })),
+      deleteBook: vi.fn().mockResolvedValueOnce({ book_id: 1, deleted: true, files_pending: true, path: "temp/delete_staging/trash" })
+        .mockResolvedValue({ book_id: 2, deleted: true }),
+      updateBook: vi.fn(async () => ({ ...detail, id: 2, title: "Updated" })),
+      repairConversion: vi.fn(async () => ({ job_id: "repair" })),
+    } as unknown as ApiClient;
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    await act(async () => getLibraryProbe().deleteSelectedBook());
+    expect(getLibraryProbe().pendingDeletionPath).toBe("temp/delete_staging/trash");
+    await act(async () => {
+      const library = getLibraryProbe();
+      if (action === "selection") await library.selectBook(0);
+      if (action === "metadata") await library.updateSelectedBookMetadata({ title: "Updated", author: "", tags: "" });
+      if (action === "repair") await library.repairSelectedBook();
+      if (action === "delete") await library.deleteSelectedBook();
+      if (action === "dismiss") library.dismissPendingDeletion!();
+    });
+    expect(getLibraryProbe().pendingDeletionPath).toBeNull();
+    // The status names the book, never the job id.
+    if (action === "repair") expect(getLibraryProbe().statusMessage).toBe("Repair started for Indexed book.");
+    if (action === "dismiss") expect(getLibraryProbe().statusMessage).toBe("");
   });
 
   it.each([false, true])("keeps selection and detail consistent when filtering a pending selection (has results: %s)", async (hasResults) => {
@@ -187,7 +305,7 @@ describe("useLibrary indexed total", () => {
     });
     libraryProbe = getLibraryProbe();
     expect(libraryProbe.selectedBookIndex).toBe(0);
-    expect(getLibraryBook).toHaveBeenCalledTimes(2);
+    expect(getLibraryBook).toHaveBeenCalledTimes(3);
   });
 
   it("retains pending-file feedback and opens the returned deletion folder", async () => {
@@ -212,7 +330,8 @@ describe("useLibrary indexed total", () => {
       .fn()
       .mockResolvedValueOnce({ items: [book], count: 1 })
       .mockResolvedValueOnce({ items: [], count: 0 });
-    const getLibraryBook = vi.fn(async () => detail);
+    const getLibraryBook = vi.fn().mockResolvedValueOnce(detail)
+      .mockRejectedValue(new ApiError({ message: "Book not found", status: 404, code: "http", detail: "Book not found", retriable: false }));
     const apiClient = { getLibrary, getLibraryBook } as unknown as ApiClient;
 
     await act(async () => {
@@ -694,7 +813,7 @@ describe("useLibrary indexed total", () => {
       await repairPromise;
     });
 
-    expect(getLibraryProbe().statusMessage).not.toBe("Repair started: stale-repair");
+    expect(getLibraryProbe().statusMessage).not.toMatch(/Repair started/);
   });
 
   it("ignores an open-folder success from a previously selected book", async () => {
@@ -900,8 +1019,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn(async () => ({ book_id: book.id, deleted: true }));
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
-    const browserConfirm = vi.fn(() => false);
-    Object.defineProperty(window, "confirm", { configurable: true, value: browserConfirm });
     const checkpointIdentity = playbackCheckpointBookIdentity(detail);
     writePlaybackCheckpoint(book.id, 120, checkpointIdentity);
 
@@ -919,7 +1036,6 @@ describe("useLibrary indexed total", () => {
     });
 
     expect(deleted).toBe(true);
-    expect(browserConfirm).not.toHaveBeenCalled();
     expect(deleteBook).toHaveBeenCalledWith(book.id, {
       signal: expect.any(AbortSignal),
     });
@@ -940,7 +1056,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async (bookId: number) => (bookId === 2 ? detail2 : detail));
     const deleteBook = vi.fn(async () => ({ book_id: book.id, deleted: true }));
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -981,7 +1096,6 @@ describe("useLibrary indexed total", () => {
     });
     const deleteBook = vi.fn(async () => ({ book_id: book.id, deleted: true }));
     const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1016,7 +1130,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn().mockRejectedValue(new Error("delete failed"));
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1321,7 +1434,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn(() => deleteRequest.promise);
     const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1355,7 +1467,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn(() => deleteRequest.promise);
     const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1545,7 +1656,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn(() => deleteRequest.promise);
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1600,7 +1710,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn(() => deleteRequest.promise);
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1653,7 +1762,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn(() => deleteRequest.promise);
     const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1706,7 +1814,6 @@ describe("useLibrary indexed total", () => {
     const getLibraryBook = vi.fn(async () => detail);
     const deleteBook = vi.fn().mockRejectedValue(new Error("delete failed"));
     const apiClient = { getLibrary, getLibraryBook, deleteBook } as unknown as ApiClient;
-    Object.defineProperty(window, "confirm", { configurable: true, value: () => true });
 
     await act(async () => {
       root = createRoot(container);
@@ -1766,6 +1873,44 @@ describe("useLibrary indexed total", () => {
     });
 
     expect(getLibraryProbe()).toBe(first);
+  });
+
+  it.each(["success", "error"])("keeps pagination occupied when an obsolete page settles with %s", async (outcome) => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ ...book, id: index + 1 }));
+    const oldPage = deferred<{ items: LibraryBookSummary[]; count: number }>();
+    const newPage = deferred<{ items: LibraryBookSummary[]; count: number }>();
+    const getLibrary = vi.fn()
+      .mockResolvedValueOnce({ items: firstPage, count: 100 })
+      .mockReturnValueOnce(oldPage.promise)
+      .mockResolvedValueOnce({ items: firstPage, count: 100 })
+      .mockReturnValue(newPage.promise);
+    const apiClient = { getLibrary, getLibraryCount: vi.fn(async () => ({ count: 101 })),
+      getLibraryBook: vi.fn(async () => detail) } as unknown as ApiClient;
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<LibraryProbe apiClient={apiClient} />);
+    });
+    let oldLoad!: Promise<void>;
+    let newLoad!: Promise<void>;
+    await act(async () => { oldLoad = getLibraryProbe().loadMore(); });
+    await act(async () => { await getLibraryProbe().refreshLibrary(); });
+    await act(async () => { newLoad = getLibraryProbe().loadMore(); });
+    expect(getLibrary).toHaveBeenCalledTimes(4);
+    await act(async () => {
+      if (outcome === "success") oldPage.resolve({ items: [{ ...book, id: 999 }], count: 1 });
+      else oldPage.reject(new Error("old page failed"));
+      await oldLoad;
+    });
+    expect(getLibraryProbe().loadingMore).toBe(true);
+    let duplicateLoad!: Promise<void>;
+    await act(async () => { duplicateLoad = getLibraryProbe().loadMore(); });
+    expect(getLibrary).toHaveBeenCalledTimes(4);
+    await act(async () => {
+      newPage.resolve({ items: [firstPage[99], { ...book, id: 101 }], count: 2 });
+      await Promise.all([newLoad, duplicateLoad]);
+    });
+    expect(getLibraryProbe().loadingMore).toBe(false);
+    expect(getLibraryProbe().items.map((item) => item.id)).toEqual([...firstPage.map((item) => item.id), 101]);
   });
 
   it("appends one load-more page without duplicate rows or duplicate requests", async () => {
@@ -1852,6 +1997,30 @@ describe("useLibrary indexed total", () => {
     expect(getLibraryProbe().selectedBookDetail?.id).toBe(101);
   });
 
+  it.each([0, 99])("preserves a newer selection at row %s while next-page navigation is pending", async (newIndex) => {
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({ ...book, id: index + 1 }));
+    const nextPage = deferred<{ items: LibraryBookSummary[]; count: number }>();
+    const apiClient = {
+      getLibrary: vi.fn((_search?: string, _limit?: number, filters?: { offset?: number }) =>
+        filters?.offset === 100 ? nextPage.promise : Promise.resolve({ items: firstPage, count: 100 })),
+      getLibraryCount: vi.fn(async () => ({ count: 101 })),
+      getLibraryBook: vi.fn(async (id: number) => ({ ...detail, id })),
+    } as unknown as ApiClient;
+    await act(async () => { root = createRoot(container); root.render(<LibraryProbe apiClient={apiClient} />); });
+    await act(async () => { await getLibraryProbe().selectBook(99); });
+    let navigation!: Promise<LibraryBookDetail | null>;
+    await act(async () => { navigation = getLibraryProbe().selectRelative(1); });
+    await act(async () => { await getLibraryProbe().selectBook(newIndex); });
+    await act(async () => {
+      nextPage.resolve({ items: [{ ...book, id: 101 }], count: 1 });
+      expect(await navigation).toBeNull();
+    });
+    expect(getLibraryProbe().items).toHaveLength(101);
+    expect(getLibraryProbe().selectedBookIndex).toBe(newIndex);
+    expect(getLibraryProbe().selectedBookId).toBe(newIndex + 1);
+    expect(getLibraryProbe().selectedBookDetail?.id).toBe(newIndex + 1);
+  });
+
   it("invalidates an in-flight load-more page as soon as the query changes", async () => {
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
       ...book,
@@ -1877,7 +2046,8 @@ describe("useLibrary indexed total", () => {
         return Promise.resolve({ items: firstPage, count: firstPage.length });
       },
     );
-    const getLibraryCount = vi.fn(async () => ({ count: 100 }));
+    // The library holds a second page, which is still in flight when the query changes.
+    const getLibraryCount = vi.fn(async () => ({ count: 101 }));
     const getLibraryBook = vi.fn(async (bookId: number) => ({ ...detail, id: bookId }));
     const apiClient = { getLibrary, getLibraryCount, getLibraryBook } as unknown as ApiClient;
 

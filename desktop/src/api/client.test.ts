@@ -16,6 +16,7 @@ describe("api client errors", () => {
     [{ error: "assets_missing" }, "Required model files are missing. Install or repair the selected models."],
     [{ error: "download_in_progress", message: "  " }, "A model download is already running. Wait for it to finish or cancel it."],
     [{ error: "unknown_code", internal: "private data" }, "The request could not be completed. Try again."],
+    [{ error: "constructor" }, "The request could not be completed. Try again."],
   ])("normalizes structured setup errors: %j", async (detail, message) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ detail }, 422));
     const client = createApiClient({ baseUrl: "http://127.0.0.1" });
@@ -27,20 +28,6 @@ describe("api client errors", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
-  });
-
-  it("throws typed HTTP errors with string detail while preserving message text", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ detail: "bad source" }, 400));
-    const client = createApiClient({ baseUrl: "http://127.0.0.1" });
-
-    await expect(client.requestJson("/api/test")).rejects.toMatchObject({
-      name: "ApiError",
-      message: "API request failed (400): bad source",
-      status: 400,
-      code: "http",
-      detail: "bad source",
-      retriable: false,
-    });
   });
 
   it.each([
@@ -70,7 +57,7 @@ describe("api client errors", () => {
     const client = createApiClient({ baseUrl: "http://127.0.0.1" });
 
     await expect(client.requestJson("/api/test")).rejects.toMatchObject({
-      message: "API request failed (422): source_path: field required; runtime_options.voice: none is not allowed",
+      message: "source_path: field required; runtime_options.voice: none is not allowed",
       status: 422,
       code: "http",
       detail: "source_path: field required; runtime_options.voice: none is not allowed",
@@ -83,24 +70,26 @@ describe("api client errors", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
 
     fetchMock.mockResolvedValueOnce(jsonResponse({ message: "not found" }, 404));
-    await expect(client.requestJson("/api/message")).rejects.toThrow("API request failed (404): not found");
+    await expect(client.requestJson("/api/message")).rejects.toThrow("not found");
 
     fetchMock.mockResolvedValueOnce(new Response("plain failure", { status: 500 }));
     await expect(client.requestJson("/api/text")).rejects.toMatchObject({
-      message: "API request failed (500): plain failure",
+      message: "plain failure",
       detail: "plain failure",
       retriable: true,
     });
 
     fetchMock.mockResolvedValueOnce(new Response("", { status: 404 }));
     await expect(client.requestJson("/api/empty")).rejects.toMatchObject({
-      message: "API request failed (404)",
+      // The status stays on the error; users see a sentence, not a transport prefix.
+      message: "The backend could not complete the request (error 404).",
+      status: 404,
       detail: "",
     });
 
     fetchMock.mockResolvedValueOnce(new Response("{bad json", { status: 400 }));
     await expect(client.requestJson("/api/malformed")).rejects.toMatchObject({
-      message: "API request failed (400): {bad json",
+      message: "{bad json",
       detail: "{bad json",
     });
   });

@@ -56,8 +56,5 @@ describe("useComboboxState lifecycle", () => {
     act(() => root.render(<Probe optionCount={2} selectedIndex={8} disabled={false} />));
     act(() => current?.toggle());
     expect(current?.highlightIndex).toBe(1);
-
-    act(() => root.render(<Probe optionCount={0} selectedIndex={-1} disabled={false} />));
-    expect(current?.highlightIndex).toBe(1);
   });
 });

@@ -1,0 +1,11 @@
+{
+  "backend_instance_id": "<backend_instance_id>",
+  "event_id": "2",
+  "event_sequence": 2,
+  "event_type": "log",
+  "job_id": null,
+  "level": "info",
+  "message": "Starting",
+  "performance": {},
+  "timestamp": "2026-01-01T00:00:00+00:00"
+}

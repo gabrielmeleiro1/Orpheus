@@ -1,0 +1,29 @@
+{
+  "backend_instance_id": "<backend_instance_id>",
+  "chapter_current": 1,
+  "chapter_total": 2,
+  "chunk_current": 2,
+  "chunk_total": 4,
+  "client_request_id": null,
+  "eta": 12.0,
+  "event_id": "1",
+  "event_sequence": 1,
+  "event_type": "progress",
+  "job_id": "job-1",
+  "message": "Reading",
+  "overall_progress": 0.5,
+  "performance": {
+    "active_workers": 1,
+    "completed_chapters": 0,
+    "eta_seconds": 12.0,
+    "failed_chapters": 0,
+    "max_workers": 2,
+    "pipeline_mode": "parallel",
+    "queued_chapters": 0,
+    "running_chapters": 0
+  },
+  "progress": 0.5,
+  "stage": "synthesis",
+  "stage_progress": 0.5,
+  "timestamp": "2026-01-01T00:00:00+00:00"
+}

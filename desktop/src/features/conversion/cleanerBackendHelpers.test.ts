@@ -227,7 +227,7 @@ describe("cleaner runtime status", () => {
       isError: true,
     });
     expect(deriveCleanerRuntimeStatus(capabilities({}), option)).toEqual({
-      message: "Checking Local CUDA cleaner runtime...",
+      message: "Checking Local CUDA cleaner runtime…",
       isError: false,
     });
   });
@@ -244,7 +244,7 @@ describe("cleaner runtime status", () => {
       isError: true,
     });
     expect(deriveCleanerRuntimeStatus(capabilities({}), option)).toEqual({
-      message: "Checking local CUDA cleaner runtime...",
+      message: "Checking local CUDA cleaner runtime…",
       isError: false,
     });
   });

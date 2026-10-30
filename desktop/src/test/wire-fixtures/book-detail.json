@@ -1,0 +1,47 @@
+{
+  "audio_available": true,
+  "author": "An author",
+  "chapters": [
+    {
+      "duration_ms": 1250,
+      "id": 1,
+      "mp3_path": "<workspace>/output/book.m4b",
+      "number": 1,
+      "packaged_start_ms": 0,
+      "title": "Opening"
+    },
+    {
+      "duration_ms": 2500,
+      "id": 2,
+      "mp3_path": null,
+      "number": 2,
+      "packaged_start_ms": 1280,
+      "title": "Ending"
+    },
+    {
+      "duration_ms": null,
+      "id": 3,
+      "mp3_path": null,
+      "number": 3,
+      "packaged_start_ms": null,
+      "title": "Unfinished"
+    }
+  ],
+  "completed_chapters": 3,
+  "conversion_mode": "audiobook",
+  "created_at": "2026-01-01T00:00:00+00:00",
+  "favorite": true,
+  "id": 1,
+  "library_epoch": "<library_epoch>",
+  "library_id": "<library_id>",
+  "playback_path": "<workspace>/output/book.m4b",
+  "playback_position_sec": 0.0,
+  "playback_status": "packaged",
+  "playback_url": "/api/library/1/audio",
+  "source_available": true,
+  "source_path": "<workspace>/source.txt",
+  "source_type": "txt",
+  "tags": "fiction",
+  "title": "A small book",
+  "total_chapters": 3
+}

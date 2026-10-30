@@ -1,0 +1,12 @@
+{
+  "active": false,
+  "job": {
+    "author": null,
+    "book_id": 1,
+    "client_request_id": "desktop-request_123",
+    "error": null,
+    "id": "job-1",
+    "status": "completed",
+    "title": "A small book"
+  }
+}

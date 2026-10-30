@@ -1,0 +1,98 @@
+{
+  "backend": {
+    "instance_id": "<instance_id>",
+    "status": "running"
+  },
+  "cleaner_cuda_quantization": "4bit",
+  "configured": true,
+  "installed_runtime": null,
+  "packages": {
+    "incompatible": [],
+    "missing": [
+      {
+        "expected": "==0.9.4",
+        "installed": null,
+        "name": "kokoro"
+      }
+    ],
+    "ready": false
+  },
+  "probe": {
+    "checks": [
+      {
+        "id": "tts-cpu-cuda",
+        "ready": false
+      }
+    ],
+    "ready": false
+  },
+  "profiles": [
+    {
+      "compatible": true,
+      "description": "Library, playback, and source inspection. Converting requires a local voice runtime \u2014 you can add one later from Settings.",
+      "id": "base",
+      "label": "Library only",
+      "model_groups": [],
+      "reason": null,
+      "risk": null
+    },
+    {
+      "compatible": false,
+      "description": "Private local TTS and cleaning for macOS 14+ on arm64 Apple Silicon.",
+      "id": "mlx",
+      "label": "Apple Silicon (MLX)",
+      "model_groups": [
+        "tts-mlx",
+        "cleaner-mlx",
+        "cleaner-mlx-small"
+      ],
+      "reason": "MLX requires macOS 14 or newer on an arm64 Apple Silicon Mac.",
+      "risk": null
+    },
+    {
+      "compatible": true,
+      "description": "Local narration on CPU or NVIDIA GPU for Linux/Windows. Local text cleaners require an NVIDIA GPU with a CUDA 12.6 driver.",
+      "device": "cpu",
+      "group_availability": {
+        "cleaner-cuda": {
+          "available": false,
+          "unavailable_reason": "Needs an NVIDIA GPU with a CUDA 12.6 driver"
+        },
+        "cleaner-cuda-large": {
+          "available": false,
+          "unavailable_reason": "Needs an NVIDIA GPU with a CUDA 12.6 driver"
+        },
+        "tts-cpu-cuda": {
+          "available": true,
+          "unavailable_reason": null
+        }
+      },
+      "id": "cuda",
+      "label": "NVIDIA CUDA",
+      "model_groups": [
+        "tts-cpu-cuda",
+        "cleaner-cuda",
+        "cleaner-cuda-large"
+      ],
+      "reason": null,
+      "risk": null
+    }
+  ],
+  "ready": false,
+  "recommended_profile": "cuda",
+  "restart_required": false,
+  "risk": null,
+  "schema_version": 1,
+  "selected_model_groups": [
+    {
+      "assets_ready": false,
+      "assets_reason": "missing",
+      "id": "tts-cpu-cuda",
+      "ready": false,
+      "runtime_ready": false
+    }
+  ],
+  "selected_profile": "cuda",
+  "state": "unavailable",
+  "state_error": "The Kokoro voice model is missing. Install it to create audio."
+}

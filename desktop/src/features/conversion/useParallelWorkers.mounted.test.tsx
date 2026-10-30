@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 
-import { act } from "react";
+import { act, useRef } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -32,10 +32,12 @@ let root: Root;
 let current: ReturnType<typeof useParallelWorkers> | null = null;
 
 function Probe({ persisted = {} }: { persisted?: { parallel_manual_max?: number } }) {
-  const persistedSettingsRef = { current: persisted };
+  const persistedSettingsRef = useRef(persisted);
+  const apiClient = useRef({} as never);
+  const systemCapabilities = useRef(capabilities());
   current = useParallelWorkers({
-    apiClient: {} as never,
-    systemCapabilities: capabilities(),
+    apiClient: apiClient.current,
+    systemCapabilities: systemCapabilities.current,
     persistedSettingsRef,
   });
   return null;
@@ -65,5 +67,27 @@ describe("useParallelWorkers recommendation defaults", () => {
     act(() => root.render(<Probe persisted={{ parallel_manual_max: 3 }} />));
     expect(current?.parallelManualMax).toBe("3");
     expect(current?.selectedParallelWorkerLimit).toBe(3);
+  });
+
+  it("says how many of a larger request will run on this computer", () => {
+    act(() => root.render(<Probe />));
+    expect(current?.usableParallelWorkerLimit).toBe(1);
+    expect(current?.parallelWorkerStatus).toBe("This computer has memory for one chapter at a time.");
+
+    act(() => current!.setParallelManualMax("2"));
+    expect(current?.selectedParallelWorkerLimit).toBe(2);
+    expect(current?.usableParallelWorkerLimit).toBe(1);
+    expect(current?.parallelWorkerStatus).toBe(
+      "Runs 1 of the 2 requested: this computer has memory for one chapter at a time.",
+    );
+  });
+
+  it.each([
+    ["1.5", "1"], ["-3", "1"], ["2e0", "2"], ["0", "1"], ["999", "4"], ["invalid", "1"],
+  ])("normalizes the numeric worker count %s without joining unrelated digits", (input, expected) => {
+    act(() => root.render(<Probe />));
+    act(() => current!.setParallelManualMax(input));
+    expect(current?.parallelManualMax).toBe(expected);
+    expect(current?.selectedParallelWorkerLimit).toBe(Number(expected));
   });
 });

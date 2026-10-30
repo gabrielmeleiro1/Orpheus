@@ -4,7 +4,8 @@ import {
   formatClock,
   formatClockWithHours,
   formatDurationClock,
-  formatDurationClockWithHours,
+  formatListeningLength,
+  formatRemainingClock,
 } from "./time";
 
 describe("formatClock", () => {
@@ -61,14 +62,24 @@ describe("formatDurationClock", () => {
   });
 });
 
-describe("formatDurationClockWithHours", () => {
-  it("returns a placeholder for empty or non-positive durations", () => {
-    expect(formatDurationClockWithHours(null)).toBe("--:--");
-    expect(formatDurationClockWithHours(0)).toBe("--:--");
+describe("formatListeningLength", () => {
+  it("reads as words at every scale", () => {
+    expect(formatListeningLength(0)).toBe("0 sec");
+    expect(formatListeningLength(45.4)).toBe("45 sec");
+    expect(formatListeningLength(89)).toBe("1 min");
+    expect(formatListeningLength(12 * 60 + 20)).toBe("12 min");
+    expect(formatListeningLength(3600)).toBe("1 hr");
+    expect(formatListeningLength(3 * 3600 + 5 * 60)).toBe("3 hr 5 min");
+    // Truncated like every clock in the app: 59:40 is not yet an hour.
+    expect(formatListeningLength(59 * 60 + 40)).toBe("59 min");
+    expect(formatListeningLength(43 * 60 + 30)).toBe("43 min");
+    expect(formatListeningLength(24.6)).toBe("24 sec");
   });
 
-  it("renders an hours segment from milliseconds when needed", () => {
-    expect(formatDurationClockWithHours(65_000)).toBe("01:05");
-    expect(formatDurationClockWithHours(3_661_000)).toBe("1:01:01");
+  it("keeps elapsed plus remaining equal to the total", () => {
+    expect(formatRemainingClock(2610, 40.6)).toBe("42:50");
+    expect(formatRemainingClock(2610.9, 40.6)).toBe("42:50");
+    expect(formatRemainingClock(10, 12)).toBe("00:00");
+    expect(formatListeningLength(Number.NaN)).toBe("0 sec");
   });
 });

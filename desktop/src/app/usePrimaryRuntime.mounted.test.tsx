@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../api/client";
+import { createApiClient, type ApiClient } from "../api/client";
 import type { ModelOptionsResponse, RuntimeSetupStatusResponse, SystemCapabilitiesResponse } from "../types/api";
 
 const { getRuntimeBootstrap, updateRuntimeBootstrapCapabilities } = vi.hoisted(() => ({
@@ -17,6 +17,7 @@ vi.mock("./runtimeBootstrapCache", () => ({
   updateRuntimeBootstrapCapabilities,
 }));
 
+import { DESKTOP_SETTINGS_CHANGED_EVENT } from "../features/conversion/conversionOptionsShared";
 import { useRuntimeIdentity } from "./usePrimaryRuntime";
 
 type RuntimeIdentityState = ReturnType<typeof useRuntimeIdentity>;
@@ -118,6 +119,30 @@ describe("useRuntimeIdentity capability polling", () => {
     delete (globalThis as typeof globalThis & { runtimeIdentityProbe?: RuntimeIdentityState }).runtimeIdentityProbe;
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("retries a stalled bootstrap on the next settings change", async () => {
+    const cache = await vi.importActual<typeof import("./runtimeBootstrapCache")>("./runtimeBootstrapCache");
+    getRuntimeBootstrap.mockImplementation(cache.getRuntimeBootstrap);
+    const snapshot = capabilities({ probeState: "fresh", refreshInProgress: false, mlxAvailable: true, ttsAvailable: true });
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (String(input).endsWith("/api/options/models")) {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+      }
+      return Promise.resolve(new Response(JSON.stringify(snapshot)));
+    });
+    const apiClient = createApiClient({ baseUrl: "http://desktop.test" });
+    await act(async () => root.render(<IdentityProbe apiClient={apiClient} />));
+    await act(async () => vi.advanceTimersByTimeAsync(8000));
+    expect(getIdentityProbe().ttsLabel).toBe("—");
+    fetchMock.mockImplementation(async (input) => new Response(JSON.stringify(
+      String(input).endsWith("/api/options/models") ? modelOptions : snapshot,
+    )));
+    await act(async () => { window.dispatchEvent(new Event(DESKTOP_SETTINGS_CHANGED_EVENT)); });
+    expect(getIdentityProbe().ttsLabel).toBe("MLX");
+    expect(getRuntimeBootstrap).toHaveBeenCalledTimes(2);
   });
 
   it.each([

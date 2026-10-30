@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { canRunConversionQueue, resolveConversionBlocker, resolveStartDisabled } from "./useConversionPanelState";
+import {
+  canRunConversionQueue,
+  resolveConnectionBlocker,
+  resolveConversionBlocker,
+  resolveRuntimeBlocker,
+  resolveStartDisabled,
+} from "./useConversionPanelState";
 
 describe("resolveStartDisabled", () => {
   const ready = {
@@ -72,7 +78,7 @@ describe("conversion blocker guidance", () => {
       cleanerModelOptionsCount: 0,
       cleanerModel: "",
     })).toEqual({
-      blockingReason: "Select a source before starting conversion.",
+      blockingReason: "Add a book to start.",
       showSettingsShortcut: false,
     });
   });
@@ -107,7 +113,7 @@ describe("conversion blocker guidance", () => {
       cleanerModelOptionsCount: 0,
       cleanerModel: "",
     })).toEqual({
-      blockingReason: "Select a TTS engine before starting conversion.",
+      blockingReason: "Choose a voice engine.",
       showSettingsShortcut: false,
     });
   });
@@ -141,5 +147,35 @@ describe("conversion blocker guidance", () => {
         showSettingsShortcut: true,
       },
     })).toBe(false);
+  });
+});
+
+describe("runtime blocker", () => {
+  it("lets a verified runtime through", () => {
+    expect(resolveRuntimeBlocker("ready")).toBeNull();
+  });
+
+  it("points a library-only setup at Settings", () => {
+    expect(resolveRuntimeBlocker("unavailable")).toEqual({
+      blockingReason: "Conversion is unavailable. Set up a voice model in Settings.",
+      showSettingsShortcut: true,
+    });
+  });
+
+  it("blocks starting while the backend is not answering", () => {
+    expect(resolveConnectionBlocker("connected")).toBeNull();
+    for (const state of ["checking", "error"] as const) {
+      expect(resolveConnectionBlocker(state)).toEqual({
+        blockingReason: "Orpheus is reconnecting. Start is available once it is back.",
+        showSettingsShortcut: false,
+      });
+    }
+  });
+
+  it("asks to wait while the runtime is still being checked", () => {
+    expect(resolveRuntimeBlocker("checking")).toEqual({
+      blockingReason: "Wait for the runtime check to finish.",
+      showSettingsShortcut: false,
+    });
   });
 });

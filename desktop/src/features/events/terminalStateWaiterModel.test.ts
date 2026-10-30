@@ -67,7 +67,7 @@ describe("terminal state waiter polling", () => {
       event: {
         jobId: "job-1",
         status: "unknown",
-        message: "conversion no longer active; terminal event likely missed",
+        message: "Conversion no longer active; terminal event likely missed",
       },
     });
   });
@@ -98,7 +98,6 @@ describe("terminal state waiter polling", () => {
       missingPollCount: 1,
       errorPollCount: 0,
       missingPollThreshold: 3,
-      errorPollThreshold: 5,
       onTerminalStatus: vi.fn(),
     });
 
@@ -112,7 +111,6 @@ describe("terminal state waiter polling", () => {
       missingPollCount: 0,
       errorPollCount: 4,
       missingPollThreshold: 3,
-      errorPollThreshold: 5,
       onTerminalStatus: vi.fn(),
     });
 
@@ -123,7 +121,7 @@ describe("terminal state waiter polling", () => {
       event: {
         jobId: "job-1",
         status: "unknown",
-        message: "conversion state unreachable; terminal event likely missed",
+        message: "Conversion state unreachable; terminal event likely missed",
       },
     });
   });
@@ -142,7 +140,6 @@ describe("terminal state waiter polling", () => {
       missingPollCount: 0,
       errorPollCount: 4,
       missingPollThreshold: 3,
-      errorPollThreshold: 5,
       onTerminalStatus: vi.fn(),
     });
 

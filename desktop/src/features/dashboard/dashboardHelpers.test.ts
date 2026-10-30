@@ -7,6 +7,19 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 import { waitForDesktopEndpoint } from "./dashboardHelpers";
 
 describe("waitForDesktopEndpoint", () => {
+  it.each(["backend_status", "backend_endpoint"])("bounds a hung %s IPC call and ignores its late rejection", async (hungCommand) => {
+    vi.useFakeTimers();
+    let rejectLate!: (error: Error) => void;
+    const hung = new Promise((_, reject) => { rejectLate = reject; });
+    invoke.mockImplementation((command: string) => command === hungCommand ? hung
+      : Promise.resolve({ lifecycle: "ready", endpoint: { base_url: "http://desktop.test" } }));
+    const result = waitForDesktopEndpoint();
+    await vi.advanceTimersByTimeAsync(120_000);
+    await expect(result).resolves.toBeNull();
+    rejectLate(new Error("late IPC failure"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it("allows a cold backend to finish after ninety seconds", async () => {
     vi.useFakeTimers();
     const startedAt = Date.now();

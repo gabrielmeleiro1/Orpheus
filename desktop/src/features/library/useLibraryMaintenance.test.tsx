@@ -5,27 +5,28 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useLibraryMaintenance, type UseLibraryMaintenanceResult } from "./useLibraryMaintenance";
-import type { ApiClient } from "../../api/client";
+import { createApiClient, type ApiClient } from "../../api/client";
 import type { MaintenanceDiagnosticsResponse } from "../../types/api";
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 const maintenanceNoop = () => undefined;
+const staticReloadContextGeneration = () => 0;
 
 function Probe(): null {
-  const result = useLibraryMaintenance({ apiClient: null, onAfterCleanup: vi.fn() });
+  const result = useLibraryMaintenance({ apiClient: null, onAfterCleanup: vi.fn(), getReloadContextGeneration: staticReloadContextGeneration });
   (globalThis as typeof globalThis & { maintenanceProbe?: UseLibraryMaintenanceResult }).maintenanceProbe = result;
   return null;
 }
 
 function CleanupProbe({ apiClient }: { apiClient: ApiClient }): null {
-  const result = useLibraryMaintenance({ apiClient, onAfterCleanup: maintenanceNoop });
+  const result = useLibraryMaintenance({ apiClient, onAfterCleanup: maintenanceNoop, getReloadContextGeneration: staticReloadContextGeneration });
   (globalThis as typeof globalThis & { maintenanceProbe?: UseLibraryMaintenanceResult }).maintenanceProbe = result;
   return null;
 }
 
 function MaintenanceProbeWithCallback({ apiClient, onAfterCleanup }: { apiClient: ApiClient; onAfterCleanup: () => void }): null {
-  const result = useLibraryMaintenance({ apiClient, onAfterCleanup });
+  const result = useLibraryMaintenance({ apiClient, onAfterCleanup, getReloadContextGeneration: staticReloadContextGeneration });
   (globalThis as typeof globalThis & { maintenanceProbe?: UseLibraryMaintenanceResult }).maintenanceProbe = result;
   return null;
 }
@@ -78,6 +79,110 @@ describe("useLibraryMaintenance", () => {
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
     delete (globalThis as typeof globalThis & { maintenanceProbe?: unknown }).maintenanceProbe;
     vi.clearAllMocks();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it.each(["diagnostics", "backups"])("clears loading after stalled %s and allows diagnostics to retry", async (resource) => {
+    vi.useFakeTimers();
+    let signal: AbortSignal | null | undefined;
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
+      if (String(input).endsWith(`/api/maintenance/${resource}`)) {
+        signal = init?.signal;
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+        });
+      }
+      return Promise.resolve(new Response(JSON.stringify({ items: [] })));
+    });
+    const apiClient = createApiClient({ baseUrl: "http://desktop.test" });
+    const probe = () => (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe;
+    await act(async () => { root = createRoot(container); root.render(<CleanupProbe apiClient={apiClient} />); });
+    await act(async () => { void probe().loadMaintenanceDiagnostics(); });
+    expect(probe().maintenanceLoading).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(30000));
+    expect(signal?.aborted).toBe(true);
+    expect(probe().maintenanceLoading).toBe(false);
+    expect(probe().maintenanceMessage).toBe("request timed out");
+    fetchMock.mockImplementation(async () => new Response(JSON.stringify({ items: [] })));
+    await act(async () => probe().loadMaintenanceDiagnostics());
+    expect(probe().maintenanceMessage).toBe("Diagnostics loaded");
+  });
+
+  it("reloads the library after restore even if diagnostics fail", async () => {
+    const requestJson = vi.fn(async () => ({ restored_id: "saved.db", safety_copy_path: "safety.db" }));
+    const getMaintenanceDiagnostics = vi.fn().mockRejectedValue(new Error("diagnostics unavailable"));
+    const apiClient = { requestJson, getMaintenanceDiagnostics } as unknown as ApiClient;
+    const reload = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<MaintenanceProbeWithCallback apiClient={apiClient} onAfterCleanup={reload} />);
+    });
+    await act(async () => {
+      await (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe.restoreBackup("saved.db");
+    });
+    expect(requestJson).toHaveBeenCalledWith("/api/maintenance/backups/saved.db/restore", { method: "POST" });
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads available backups with maintenance diagnostics", async () => {
+    const backup = { id: "saved.db", filename: "saved.db", created_at: "2026-09-01T12:00:00Z", size: 4096, book_count: 2 };
+    const apiClient = {
+      requestJson: vi.fn(async () => ({ items: [backup] })),
+      getMaintenanceDiagnostics: vi.fn(async () => ({ database_path: "db", output_path: "out", temp_path: "tmp", app_data_path: "app", audit: {} })),
+    } as unknown as ApiClient;
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<CleanupProbe apiClient={apiClient} />);
+    });
+    await act(async () => {
+      await (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe.loadMaintenanceDiagnostics();
+    });
+    expect((globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe.maintenanceBackups).toEqual([backup]);
+  });
+
+  it("ignores a restore completion after the API context changes", async () => {
+    const request = deferred<{ restored_id: string; safety_copy_path: string }>();
+    const apiClient = { requestJson: vi.fn(() => request.promise) } as unknown as ApiClient;
+    const reload = vi.fn();
+    await act(async () => {
+      root = createRoot(container);
+      root.render(<MaintenanceProbeWithCallback apiClient={apiClient} onAfterCleanup={reload} />);
+    });
+    let pending!: Promise<void>;
+    await act(async () => {
+      pending = (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe.restoreBackup("saved.db");
+    });
+    await act(async () => root.render(<MaintenanceProbeWithCallback apiClient={{} as ApiClient} onAfterCleanup={reload} />));
+    await act(async () => {
+      request.resolve({ restored_id: "saved.db", safety_copy_path: "safety.db" });
+      await pending;
+    });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it("finishes diagnostics when App data is opened while the read is pending", async () => {
+    const request = deferred<MaintenanceDiagnosticsResponse>();
+    const diagnostics = {
+      database_path: "db", output_path: "out", temp_path: "tmp", app_data_path: "app", audit: {},
+    } as MaintenanceDiagnosticsResponse;
+    const apiClient = {
+      requestJson: vi.fn(async () => ({ items: [] })),
+      getMaintenanceDiagnostics: vi.fn(() => request.promise),
+    } as unknown as ApiClient;
+    const probe = () => (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe;
+    await act(async () => { root = createRoot(container); root.render(<CleanupProbe apiClient={apiClient} />); });
+    let pending!: Promise<void>;
+    await act(async () => { pending = probe().loadMaintenanceDiagnostics(); });
+    expect(probe().maintenanceLoading).toBe(true);
+
+    await act(async () => { await probe().openAppDataFolder(); });
+    expect(invokeMock).toHaveBeenCalledWith("open_app_data_folder");
+    await act(async () => { request.resolve(diagnostics); await pending; });
+
+    expect(probe().maintenanceLoading).toBe(false);
+    expect(probe().maintenanceReport).toEqual(diagnostics);
+    expect(probe().maintenanceMessage).toBe("Diagnostics loaded");
   });
 
   it("surfaces an app-data-folder IPC failure", async () => {
@@ -159,25 +264,6 @@ describe("useLibraryMaintenance", () => {
     consoleError.mockRestore();
   });
 
-  it("runs an authorized cleanup without consulting the browser confirm dialog", async () => {
-    const cleanupStorage = vi.fn().mockRejectedValue(new Error("cleanup failed"));
-    const browserConfirm = vi.fn(() => false);
-    Object.defineProperty(window, "confirm", { configurable: true, value: browserConfirm });
-    const apiClient = { cleanupStorage } as unknown as ApiClient;
-
-    await act(async () => {
-      root = createRoot(container);
-      root.render(<CleanupProbe apiClient={apiClient} />);
-    });
-    await act(async () => {
-      await (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult })
-        .maintenanceProbe.cleanupStorage();
-    });
-
-    expect(browserConfirm).not.toHaveBeenCalled();
-    expect(cleanupStorage).toHaveBeenCalledTimes(1);
-  });
-
   it("does not run cleanup refresh after a newer maintenance request supersedes it", async () => {
     const diagnosticsA = deferred<MaintenanceDiagnosticsResponse>();
     const diagnostics = {
@@ -194,7 +280,7 @@ describe("useLibraryMaintenance", () => {
     });
     const cleanupStorage = vi.fn(async () => ({ deleted_files: 0, deleted_rows: 0 }));
     const onAfterCleanup = vi.fn();
-    const apiClient = { cleanupStorage, getMaintenanceDiagnostics } as unknown as ApiClient;
+    const apiClient = { cleanupStorage, getMaintenanceDiagnostics, requestJson: vi.fn(async () => ({ items: [] })) } as unknown as ApiClient;
 
     await act(async () => {
       root = createRoot(container);

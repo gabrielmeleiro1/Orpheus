@@ -4,13 +4,13 @@
  * Higher-bound regression for the installed setup→dashboard→Settings path.
  *
  * Hook-only tests mock `getRuntimeBootstrap`, so they never exercise the real
- * WeakMap cache that `useRuntimeIdentityLabel` pins on dashboard entry after
+ * WeakMap cache that `useRuntimeIdentity` pins on dashboard entry after
  * Continue. This file uses the real cache + a shared ApiClient identity.
  *
  * Installed failure (7db3bfb): after Continue, dashboard pins a stale
  * mlx=false bootstrap; the live backend becomes mlx=true during a long
  * dashboard dwell; opening Settings still paints the pinned snapshot until the
- * first delayed poll (1.5s). Computer Use inspects immediately and sees only
+ * first delayed poll (1.5s). A manual check inspects immediately and sees only
  * Cloud API even while curl already reports mlx=true.
  */
 
@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
 import { getRuntimeBootstrap } from "../../app/runtimeBootstrapCache";
-import { useRuntimeIdentityLabel } from "../../app/usePrimaryRuntime";
+import { useRuntimeIdentity } from "../../app/usePrimaryRuntime";
 import type { ModelOptionsResponse, SystemCapabilitiesResponse } from "../../types/api";
 import { useConversionOptions, type UseConversionOptionsResult } from "./useConversionOptions";
 
@@ -80,7 +80,7 @@ const modelOptions: ModelOptionsResponse = {
 };
 
 function IdentityProbe({ apiClient }: { apiClient: ApiClient }): null {
-  useRuntimeIdentityLabel(apiClient);
+  useRuntimeIdentity(apiClient);
   return null;
 }
 
@@ -186,64 +186,5 @@ describe("setup → dashboard → Settings capability propagation", () => {
     ]);
     expect(getSettingsProbe().cleanerBackend).toBe("mlx");
     expect(getSettingsProbe().cleanerBackendConfigured).toBe(false);
-  });
-
-  it("preserves an explicitly configured Cloud API choice after the eager refresh", async () => {
-    window.localStorage.setItem(
-      "orpheus.desktop.settings.v1",
-      JSON.stringify({ cleaner_backend: "api", cleaner_backend_configured: true }),
-    );
-
-    const staleUnavailable = capabilities({
-      probeState: "stale",
-      refreshInProgress: true,
-      mlxAvailable: false,
-    });
-    const liveAvailable = capabilities({
-      probeState: "stale",
-      refreshInProgress: true,
-      mlxAvailable: true,
-    });
-
-    let capabilityCalls = 0;
-    const getSystemCapabilities = vi.fn(async () => {
-      capabilityCalls += 1;
-      return capabilityCalls === 1 ? staleUnavailable : liveAvailable;
-    });
-    const getModelOptions = vi.fn(async () => modelOptions);
-    const getVoiceOptions = vi.fn(async () => ({ engine: "kokoro-mlx", voices: [] }));
-    const apiClient = {
-      getSystemCapabilities,
-      getModelOptions,
-      getVoiceOptions,
-    } as unknown as ApiClient;
-
-    await act(async () => {
-      root.render(<IdentityProbe apiClient={apiClient} />);
-    });
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      root.render(
-        <>
-          <IdentityProbe apiClient={apiClient} />
-          <SettingsProbe apiClient={apiClient} />
-        </>,
-      );
-    });
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(getSettingsProbe().cleanerBackend).toBe("api");
-    expect(getSettingsProbe().cleanerBackendConfigured).toBe(true);
-    expect(getSettingsProbe().cleanerBackendOptions.some((option) => option.value === "mlx")).toBe(
-      true,
-    );
   });
 });

@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { DesktopBackendStatus } from "../api/client";
+import type { DesktopBackendStatus } from "../types/api";
 
 const { waitForDesktopEndpoint, readDesktopBackendStatus } = vi.hoisted(() => ({
   waitForDesktopEndpoint: vi.fn(),
@@ -94,6 +94,30 @@ describe("useBackendClient explicit reconnect", () => {
     const firstClient = latest?.apiClient;
 
     await act(async () => { latest?.reconnectBackend(); });
+    expect(container.textContent).toBe("http://127.0.0.1:41002");
+    expect(latest?.apiClient).not.toBe(firstClient);
+    expect(waitForDesktopEndpoint).toHaveBeenCalledTimes(2);
+  });
+
+  it("reacquires the endpoint as soon as the supervisor reports a relaunched backend", async () => {
+    const first = { host: "127.0.0.1", port: 41001, base_url: "http://127.0.0.1:41001", token: "first" };
+    const second = { host: "127.0.0.1", port: 41002, base_url: "http://127.0.0.1:41002", token: "second" };
+    waitForDesktopEndpoint.mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    readDesktopBackendStatus.mockResolvedValueOnce({ lifecycle: "ready", endpoint: first, error: null })
+      .mockResolvedValue({ lifecycle: "ready", endpoint: second, error: null });
+
+    vi.useFakeTimers();
+    function Harness() {
+      latest = useBackendClient();
+      return <span>{latest.backendBaseUrl}</span>;
+    }
+    await act(async () => { root.render(<Harness />); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(latest?.connectionState).toBe("connected");
+    const firstClient = latest?.apiClient;
+
+    // The next health tick (interval mocked to 60 s) observes the new socket.
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
     expect(container.textContent).toBe("http://127.0.0.1:41002");
     expect(latest?.apiClient).not.toBe(firstClient);
     expect(waitForDesktopEndpoint).toHaveBeenCalledTimes(2);

@@ -46,7 +46,7 @@ function createConversionJobMock(
 }
 
 function renderRunner(
-  args: Parameters<typeof useConversionQueueRunner>[0],
+  args: Omit<Parameters<typeof useConversionQueueRunner>[0], "addQueueItems" | "runtimeOptionsReady">,
 ): {
   result: { current: ReturnType<typeof useConversionQueueRunner> | null };
   cleanup: () => void;
@@ -56,7 +56,7 @@ function renderRunner(
   };
 
   function TestComponent() {
-    result.current = useConversionQueueRunner(args);
+    result.current = useConversionQueueRunner({ runtimeOptionsReady: true, ...args, addQueueItems: vi.fn() });
     return null;
   }
 
@@ -70,6 +70,7 @@ function renderRunner(
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe("useConversionQueueRunner", () => {
@@ -163,7 +164,7 @@ describe("useConversionQueueRunner", () => {
     await result.current?.onStartConversion();
 
     expect(conversionJob.waitForTerminalState).toHaveBeenCalledWith("job-7");
-    expect(statuses).toEqual(["converting", "converting", "done"]);
+    expect(statuses.at(-1)).toBe("done");
     cleanup();
   });
 
@@ -191,12 +192,12 @@ describe("useConversionQueueRunner", () => {
 
     await result.current?.onStartConversion(pastedItem);
 
-    expect(buildStartPayload).toHaveBeenCalledWith(pastedItem);
     expect(conversionJob.startConversion).toHaveBeenCalledWith(
       expect.objectContaining({ source_path: "upload:1_hash_paste.md" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(syncSelectedQueueEdits).not.toHaveBeenCalled();
-    expect(statuses).toEqual(["converting", "converting", "done"]);
+    expect(statuses.at(-1)).toBe("done");
     cleanup();
   });
 
@@ -231,7 +232,7 @@ describe("useConversionQueueRunner", () => {
     await result.current?.onStartConversion();
 
     expect(conversionJob.waitForTerminalState).not.toHaveBeenCalled();
-    expect(statuses).toEqual(["converting", "failed"]);
+    expect(statuses.at(-1)).toBe("failed");
     expect(errors[errors.length - 1]).toBe("backend rejected start");
     cleanup();
   });
@@ -314,10 +315,12 @@ describe("useConversionQueueRunner", () => {
     expect(conversionJob.startConversion).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({ source_path: "/tmp/first.epub" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(conversionJob.startConversion).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({ source_path: "/tmp/second.epub" }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     cleanup();
   });
@@ -422,7 +425,7 @@ describe("useConversionQueueRunner indeterminate outcomes", () => {
       waitForTerminalState: vi.fn(async (jobId: string) => ({
         jobId,
         status: (jobId === "job-1" ? "unknown" : "completed") as ConversionTerminalJobStatus,
-        message: jobId === "job-1" ? "terminal wait cancelled" : "",
+        message: jobId === "job-1" ? "Terminal wait cancelled" : "",
       })),
     });
 

@@ -57,13 +57,30 @@ describe("mounted SetupPage", () => {
     vi.restoreAllMocks();
   });
 
-  async function renderPage(runtimeBridge: SetupPageBridge, props: Partial<Parameters<typeof SetupPage>[0]> = {}) {
+  /** Renders the page; the runtime/model choices are opened unless `collapsed` is set, as most tests drive them. */
+  async function renderPage(runtimeBridge: SetupPageBridge, props: Partial<Parameters<typeof SetupPage>[0]> = {}, { collapsed = false } = {}) {
     const api = props.apiClient ?? { getRuntimeSetupStatus: vi.fn(async () => setupStatus) } as unknown as ApiClient;
     await act(async () => {
       root.render(<SetupPage apiClient={api} initialStatus={setupStatus} initialError={null} onReady={vi.fn()} onContinueLibraryOnly={vi.fn()} onReconnectBackend={vi.fn()} bridge={runtimeBridge} {...props} />);
     });
+    const toggle = container.querySelector<HTMLButtonElement>('.setup-customize-toggle[aria-expanded="false"]');
+    if (toggle && !collapsed) await act(async () => toggle.click());
     return api;
   }
+
+  it("keeps first run to a summary until the choices are opened", async () => {
+    await renderPage(packagedSettingsBridge(), { initialStatus: cudaCatalogStatus() }, { collapsed: true });
+    const toggle = findButton(container, "Customize");
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(container.querySelector('input[name="setup-cleaner"]')).toBeNull();
+    expect(container.querySelector(".setup-plan")?.textContent).toContain("Recommended");
+    expect(container.querySelector(".setup-plan-detail")?.textContent).toBe("Kokoro TTS + Qwen 2.5 · 1.5B · 4-bit · 3.6 GB download");
+    expect(container.querySelector<HTMLButtonElement>(".setup-primary")!.textContent).toContain("Install");
+    await act(async () => toggle.click());
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.getElementById(toggle.getAttribute("aria-controls")!)).not.toBeNull();
+    expect(container.querySelectorAll('input[name="setup-cleaner"]')).toHaveLength(3);
+  });
 
   function readySettings(cleanerReady = true): RuntimeSetupStatusResponse {
     return {
@@ -77,6 +94,27 @@ describe("mounted SetupPage", () => {
   }
 
   const packagedSettingsBridge = () => bridge({ environment: vi.fn(async (): Promise<RuntimeSetupEnvironment> => ({ available: false, mode: "packaged", reason: "Bundled runtime." })) });
+
+  it("keeps the primary action enabled when an unselected cleaner times out", async () => {
+    const status = readySettings();
+    status.installed_runtime!.checking = true;
+    status.installed_runtime!.model_groups[1] = {
+      ...status.installed_runtime!.model_groups[1], ready: false, runtime_ready: false, runtime_state: "timeout",
+    };
+    await renderPage(packagedSettingsBridge(), { initialStatus: status, settingsEntry: true });
+    expect(container.textContent).not.toContain("Checking your hardware…");
+    expect(container.querySelector<HTMLButtonElement>(".setup-primary")!.disabled).toBe(false);
+    const cleaner = [...container.querySelectorAll<HTMLInputElement>("input")]
+      .find((input) => input.parentElement?.textContent?.includes("Llama 3.2 · 3B"))!;
+    await act(async () => cleaner.click());
+    expect(container.querySelector<HTMLButtonElement>(".setup-primary")!.disabled).toBe(true);
+    expect(container.textContent).toContain("Checking your hardware…");
+    const noCleaner = [...container.querySelectorAll<HTMLInputElement>("input")]
+      .find((input) => input.parentElement?.textContent?.includes("No local cleaner"))!;
+    await act(async () => noCleaner.click());
+    expect(container.querySelector<HTMLButtonElement>(".setup-primary")!.disabled).toBe(false);
+  });
+
   function cudaCatalogStatus(): RuntimeSetupStatusResponse {
     const groups = ["tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"];
     return {
@@ -85,6 +123,64 @@ describe("mounted SetupPage", () => {
       installed_runtime: { profile: "cuda", runtime_available: true, ready: false, model_groups: groups.map((id) => ({ id, runtime_ready: true, assets_ready: false, ready: false })) },
     };
   }
+
+  it("shows checking hardware and re-polls a timed-out runtime before enabling Install", async () => {
+    vi.useFakeTimers();
+    try {
+      const available = cudaCatalogStatus();
+      const pending = { ...available, installed_runtime: Object.assign({}, available.installed_runtime, {
+        checking: true, runtime_available: false,
+        model_groups: available.installed_runtime!.model_groups.map((group) => ({ ...group, runtime_ready: false, runtime_state: "timeout", runtime_reason: null })),
+      }) };
+      const getStatus = vi.fn(async () => available);
+      await renderPage(packagedSettingsBridge(), { initialStatus: pending, apiClient: { getRuntimeSetupStatus: getStatus } as unknown as ApiClient });
+      expect(container.textContent).toContain("Checking your hardware…");
+      expect(container.textContent).not.toContain("could not verify the installed runtime");
+      expect(container.textContent).not.toContain("This runtime is unavailable");
+      expect(container.querySelector<HTMLButtonElement>(".setup-primary")!.textContent).toContain("Checking");
+      await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+      expect(getStatus).toHaveBeenCalledOnce();
+      expect(container.textContent).not.toContain("Checking your hardware…");
+      expect(findButton(container, "Install").disabled).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(getStatus).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds automatic hardware checks and lets the user check again", async () => {
+    vi.useFakeTimers();
+    try {
+      const available = cudaCatalogStatus();
+      const pending = { ...available, checking: true, installed_runtime: {
+        ...available.installed_runtime!, checking: true, runtime_available: false,
+        model_groups: available.installed_runtime!.model_groups.map((group) => ({ ...group, runtime_ready: false, runtime_state: "timeout" as const })),
+      } };
+      const getStatus = vi.fn(async () => pending);
+      await renderPage(packagedSettingsBridge(), { initialStatus: pending, apiClient: { getRuntimeSetupStatus: getStatus } as unknown as ApiClient });
+      await act(async () => { await vi.advanceTimersByTimeAsync(360_000); });
+      expect(getStatus).toHaveBeenCalledTimes(120);
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+      expect(getStatus).toHaveBeenCalledTimes(120);
+      await act(async () => findButton(container, "Check again").click());
+      expect(getStatus).toHaveBeenCalledTimes(121);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disables Install with the definitive runtime failure reason", async () => {
+    const unavailable = cudaCatalogStatus();
+    unavailable.installed_runtime = Object.assign({}, unavailable.installed_runtime, {
+      runtime_available: false,
+      model_groups: unavailable.installed_runtime!.model_groups.map((group) => ({ ...group, runtime_ready: false, runtime_state: "unavailable", runtime_reason: "missing kokoro" })),
+    });
+    await renderPage(packagedSettingsBridge(), { initialStatus: unavailable });
+    expect(findButton(container, "Install").disabled).toBe(true);
+    expect(container.textContent).toContain("missing kokoro");
+    expect(container.textContent).not.toContain("Checking your hardware…");
+  });
 
   it.each([false, true])("allows CPU onboarding with disabled cleaners (assets ready: %s)", async (ready) => {
     const initial = cudaCatalogStatus();
@@ -104,7 +200,8 @@ describe("mounted SetupPage", () => {
     const start = vi.fn(async () => ({ lifecycle: "running", profile: "cuda", model_groups: ["tts-cpu-cuda"] }));
     await renderPage(packagedSettingsBridge(), { initialStatus: initial, apiClient: { adoptRuntimeSetup: adopt, startRuntimeModelDownload: start } as unknown as ApiClient });
     expect(container.textContent).toContain("NVIDIA CUDA — running on CPU");
-    expect(container.textContent).toContain("Basic cleanup is used instead");
+    await act(async () => container.querySelector<HTMLButtonElement>(".setup-plan .setup-tip")!.click());
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain("Basic cleanup is used instead");
     expect(container.textContent).not.toContain("could not verify the installed runtime");
     const cleaners = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')];
     expect(cleaners[0].checked).toBe(true);
@@ -124,9 +221,34 @@ describe("mounted SetupPage", () => {
     }
   });
 
+  it("installs CUDA narration when the cleaner driver requirement is unmet", async () => {
+    const initial = cudaCatalogStatus();
+    const reason = "Needs an NVIDIA GPU with a CUDA 12.6 driver";
+    initial.profiles = initial.profiles.map((profile) => profile.id === "cuda" ? {
+      ...profile, device: "cuda", group_availability: Object.fromEntries(["cleaner-cuda", "cleaner-cuda-large"].map((id) => [id, {
+        available: false, unavailable_reason: reason,
+      }])),
+    } : profile);
+    initial.installed_runtime!.device = "cuda";
+    initial.installed_runtime!.model_groups.forEach((group) => {
+      group.runtime_ready = group.id === "tts-cpu-cuda";
+    });
+    const start = vi.fn(async () => ({ lifecycle: "running", profile: "cuda", model_groups: ["tts-cpu-cuda"] }));
+    await renderPage(packagedSettingsBridge(), { initialStatus: initial, apiClient: { startRuntimeModelDownload: start } as unknown as ApiClient });
+    const cleaners = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')];
+    expect(cleaners[0].checked).toBe(true);
+    expect(cleaners.slice(1).every((input) => input.disabled && !input.checked)).toBe(true);
+    expect(container.textContent).toContain(reason);
+    const primary = container.querySelector<HTMLButtonElement>(".setup-primary")!;
+    expect(primary.disabled).toBe(false);
+    expect(primary.textContent).toContain("Install");
+    await act(async () => primary.click());
+    expect(start).toHaveBeenCalledWith(expect.objectContaining({ profile: "cuda", model_groups: ["tts-cpu-cuda"] }), expect.anything());
+  });
+
   it.each([false, true])("scrolls installation into view once, respecting reduced motion (%s)", async (reducedMotion) => {
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => undefined);
-    vi.spyOn(window, "matchMedia").mockReturnValue({ matches: reducedMotion } as MediaQueryList);
+    vi.spyOn(window, "matchMedia").mockReturnValue({ matches: reducedMotion, addEventListener: vi.fn(), removeEventListener: vi.fn() } as unknown as MediaQueryList);
     let onProgress!: (event: SetupProgressEvent) => void;
     const runtimeBridge = bridge({ listen: vi.fn(async (listener) => { onProgress = listener; return vi.fn(); }) });
     await renderPage(runtimeBridge);
@@ -135,7 +257,6 @@ describe("mounted SetupPage", () => {
     expect(scroll).toHaveBeenCalledExactlyOnceWith({ behavior: reducedMotion ? "instant" : "smooth", block: "start" });
     expect(scroll.mock.instances[0]).toBe(container.querySelector(".setup-progress"));
     const bar = container.querySelector('[role="progressbar"]');
-    expect(bar?.classList.contains("pbar-active")).toBe(true);
     expect(bar?.hasAttribute("aria-valuenow")).toBe(false);
     await act(async () => onProgress({ stage: "packages", message: "Installing", percent: 25 } as SetupProgressEvent));
     expect(scroll).toHaveBeenCalledTimes(1);
@@ -144,7 +265,9 @@ describe("mounted SetupPage", () => {
   it("shows model and precision choices on the first page and downloads only the chosen pair", async () => {
     const start = vi.fn(async () => ({ lifecycle: "running" }));
     await renderPage(packagedSettingsBridge(), { initialStatus: cudaCatalogStatus(), apiClient: { startRuntimeModelDownload: start } as unknown as ApiClient });
-    expect(container.textContent).toContain("Quantization stores model weights");
+    expect(container.querySelector(".setup-precision legend")?.textContent).toContain("Cleaner precision");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Cleaner precision details"]')!.click());
+    expect(document.querySelector('[role="tooltip"]')?.textContent).toContain("Quantization stores model weights");
     expect(container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]:checked')?.parentElement?.textContent).toContain("1.5B");
     const small = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')].find((input) => input.parentElement?.textContent?.includes("3B"))!;
     await act(async () => { small.click(); container.querySelector<HTMLInputElement>('input[value="8bit"]')!.click(); });
@@ -176,7 +299,7 @@ describe("mounted SetupPage", () => {
     const runtimeBridge = packagedSettingsBridge();
     await renderPage(runtimeBridge, { initialStatus, apiClient });
     const voiceRow = container.querySelector<HTMLInputElement>('.setup-model-row input[type="checkbox"]')!.parentElement!;
-    expect(voiceRow.textContent).toContain("Already downloaded");
+    expect(voiceRow.querySelector(".setup-state.is-success")?.textContent).toBe("Downloaded");
     const noCleaner = () => container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]')!;
     await act(async () => noCleaner().click());
     const refreshed = { ...initialStatus, installed_runtime: { ...initialStatus.installed_runtime! } };
@@ -187,7 +310,6 @@ describe("mounted SetupPage", () => {
     const primary = container.querySelector<HTMLButtonElement>(".setup-primary")!;
     expect(primary.disabled).toBe(true);
     expect(primary.textContent).toContain("Continue…");
-    expect(primary.querySelector(".braille-spinner")).not.toBeNull();
     expect(noCleaner().checked).toBe(true);
     expect(noCleaner().closest("fieldset")!.disabled).toBe(true);
     await act(async () => resolveSave({ ...initialStatus, configured: true, ready: true, state: "ready" }));
@@ -216,7 +338,7 @@ describe("mounted SetupPage", () => {
     const adopt = vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveSave = resolve; }));
     const onReady = vi.fn();
     const api = { adoptRuntimeSetup: adopt } as unknown as ApiClient;
-    await renderPage(packagedSettingsBridge(), { initialStatus, apiClient: api, settingsEntry: true, onReady, onExitSettings: vi.fn() });
+    await renderPage(packagedSettingsBridge(), { initialStatus, apiClient: api, settingsEntry: true, onReady });
     expect(findButton(container, "Done")).toBeTruthy();
     if (profile === "base") {
       await act(async () => container.querySelector<HTMLInputElement>('input[value="base"]')!.click());
@@ -228,9 +350,7 @@ describe("mounted SetupPage", () => {
     await act(async () => { save.click(); save.click(); });
     expect(adopt).toHaveBeenCalledTimes(1);
     expect(adopt).toHaveBeenCalledWith({ profile, model_groups: profile === "base" ? [] : ["tts-mlx", "cleaner-mlx"], accept_pytorch_risk: false, cleaner_cuda_quantization: "4bit" }, { timeoutMs: 120_000 });
-    expect(findButton(container, "Back to dashboard").disabled).toBe(true);
     expect(container.querySelector(".setup-primary")!.textContent).toContain("Saving…");
-    expect(container.querySelector(".setup-primary .braille-spinner")).not.toBeNull();
     expect([...container.querySelectorAll("fieldset")].every((fieldset) => fieldset.disabled)).toBe(true);
     await act(async () => resolveSave({ ...initialStatus, selected_profile: profile }));
     expect(onReady).toHaveBeenCalledOnce();
@@ -301,6 +421,57 @@ describe("mounted SetupPage", () => {
     expect(onReady).not.toHaveBeenCalled();
   });
 
+  it("shows a busy line while the runtime check runs, then what it found and when", async () => {
+    const initialStatus = readySettings();
+    let finish!: (status: RuntimeSetupStatusResponse) => void;
+    const api = { getRuntimeSetupStatus: vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { finish = resolve; })) } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus, settingsEntry: true, apiClient: api });
+    expect(container.querySelector(".setup-runtime-check")).toBeNull();
+    await act(async () => findButton(container, "Check runtime").click());
+    const busy = container.querySelector(".setup-runtime-check")!;
+    expect(busy.getAttribute("role")).toBe("status");
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    expect(busy.textContent).toContain("Checking the runtime…");
+    await act(async () => finish(initialStatus));
+    const result = container.querySelector(".setup-runtime-check")!;
+    expect(result.getAttribute("role")).toBe("status");
+    expect(result.getAttribute("aria-busy")).toBe("false");
+    expect(result.textContent).toMatch(/^Runtime ready\. Checked \d{1,2}[:.]\d{2}.*\.$/);
+    expect(result.classList.contains("is-error")).toBe(false);
+
+    await act(async () => findButton(container, "Check runtime").click());
+    const broken = readySettings();
+    broken.ready = false;
+    broken.state = "error";
+    broken.selected_model_groups = [{ id: "tts-mlx", runtime_ready: true, assets_ready: false, assets_reason: "corrupt", ready: false }];
+    await act(async () => finish(broken));
+    const problem = container.querySelector(".setup-runtime-check")!;
+    expect(problem.textContent).toContain("Kokoro TTS is damaged. Checked ");
+    expect(problem.classList.contains("is-error")).toBe(true);
+  });
+
+  it("leaves a failed runtime check to the error notice", async () => {
+    const api = { getRuntimeSetupStatus: vi.fn(async () => { throw new Error("backend offline"); }) } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(), settingsEntry: true, apiClient: api });
+    await act(async () => findButton(container, "Check runtime").click());
+    expect(container.querySelector(".setup-runtime-check")).toBeNull();
+    expect(container.querySelector(".setup-error")?.textContent).toContain("backend offline");
+  });
+
+  it("says the Settings cleaner choice sets the runtime's model, not the cleaner a book uses", async () => {
+    const api = { getRuntimeModelInventory: vi.fn(async () => ({ models: [] })) } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(), settingsEntry: true, apiClient: api });
+    const manager = container.querySelector(".setup-model-manager")!;
+    expect([...manager.querySelectorAll(".setup-group-label")].map((label) => label.textContent))
+      .toEqual(["Voice · required", "Text cleaner · runtime model"]);
+    const hint = manager.querySelector("#managed-cleaner-hint")!;
+    expect(hint.textContent).toBe("The model this runtime is set up with. Text cleaning in Settings chooses the cleaner your books use.");
+    const radios = [...manager.querySelectorAll<HTMLInputElement>('input[name="managed-cleaner"]')];
+    expect(radios.length).toBeGreaterThan(1);
+    expect(radios.every((radio) => radio.getAttribute("aria-describedby") === "managed-cleaner-hint")).toBe(true);
+    expect(radios.map((radio) => radio.getAttribute("aria-label")).filter(Boolean)).toEqual(["Set up this runtime with Llama 3.2 · 3B"]);
+  });
+
   it("confirms deletion of one model, guards duplicate clicks, and offers install again", async () => {
     let currentStatus = readySettings();
     let resolveDelete!: (value: { deleted_model_groups: string[]; freed_bytes: number; state_deleted: boolean }) => void;
@@ -319,8 +490,14 @@ describe("mounted SetupPage", () => {
     const deleteButton = container.querySelector<HTMLButtonElement>('[aria-label="Delete Llama 3.2 · 3B"]')!;
     await act(async () => deleteButton.click());
     expect(remove).not.toHaveBeenCalled();
-    await act(async () => findButton(container, "Keep model").click());
+    await act(async () => findButton(container, "Cancel").click());
     expect(container.textContent).not.toContain("Your books and audio will stay");
+    expect(document.activeElement).toBe(deleteButton);
+    await act(async () => deleteButton.click());
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector(".setup-model-confirm")).toBeNull();
+    expect(document.activeElement).toBe(deleteButton);
     await act(async () => deleteButton.click());
     await act(async () => { findButton(container, "Delete model").click(); findButton(container, "Delete model").click(); });
     expect(remove).toHaveBeenCalledExactlyOnceWith("cleaner-mlx", { timeoutMs: 120_000 });
@@ -330,8 +507,8 @@ describe("mounted SetupPage", () => {
     await act(async () => resolveDelete({ deleted_model_groups: ["cleaner-mlx"], freed_bytes: 2_000_000_000, state_deleted: false }));
     expect(container.textContent).toContain("Llama 3.2 · 3B deleted. Freed");
     expect(container.querySelector('[aria-label="Delete Kokoro TTS"]')).not.toBeNull();
-    const install = container.querySelector<HTMLButtonElement>('[aria-label="Install Llama 3.2 · 3B"]')!;
-    expect(install.textContent).toBe("Install again");
+    const install = container.querySelector<HTMLButtonElement>('[aria-label="Download Llama 3.2 · 3B"]')!;
+    expect(install.textContent).toBe("Download");
     await act(async () => install.click());
     expect(start).toHaveBeenCalledExactlyOnceWith({ profile: "mlx", model_groups: ["cleaner-mlx"], configure_runtime: false }, { timeoutMs: 15_000 });
   });
@@ -347,7 +524,7 @@ describe("mounted SetupPage", () => {
       adoptRuntimeSetup: adopt,
     } as unknown as ApiClient;
     await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(false), settingsEntry: true, apiClient: api, onReady });
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Install Llama 3.2 · 3B"]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Download Llama 3.2 · 3B"]')!.click());
     await act(async () => undefined);
     expect(adopt).not.toHaveBeenCalled();
     expect(api.getRuntimeSetupStatus).toHaveBeenCalled();
@@ -363,43 +540,49 @@ describe("mounted SetupPage", () => {
     await act(async () => findButton(container, "Delete model").click());
     expect(container.textContent).toContain("Wait for the current conversion to finish");
     expect(container.querySelector<HTMLButtonElement>('[aria-label="Delete Llama 3.2 · 3B"]')!.disabled).toBe(false);
-    expect(container.querySelector('[aria-label="Install Llama 3.2 · 3B"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Download Llama 3.2 · 3B"]')).toBeNull();
     expect(findButton(container, "Done").disabled).toBe(false);
   });
 
-  it("explains why an empty local model selection cannot be saved", async () => {
-    await renderPage(packagedSettingsBridge(), { initialStatus: readySettings(), settingsEntry: true });
-    await act(async () => [...container.querySelectorAll<HTMLInputElement>('input')]
-      .find((input) => input.parentElement?.textContent?.includes("Kokoro TTS"))!.click());
+  it("explains why a saved selection without the voice model cannot be used, and lets the user add it back", async () => {
+    const status = readySettings();
+    status.selected_model_groups = [{ id: "cleaner-mlx", runtime_ready: true, assets_ready: true, assets_reason: null, ready: true }];
+    await renderPage(packagedSettingsBridge(), { initialStatus: status, settingsEntry: true });
+    const kokoro = () => [...container.querySelectorAll<HTMLInputElement>('input')]
+      .find((input) => input.parentElement?.textContent?.includes("Kokoro TTS"))!;
+    expect(kokoro().checked).toBe(false);
     expect(findButton(container, "Continue").disabled).toBe(true);
     expect(container.textContent).toContain("Select the Kokoro voice model");
+    await act(async () => kokoro().click());
+    expect(kokoro().checked).toBe(true);
+    expect(kokoro().disabled).toBe(true);
+    expect(container.textContent).not.toContain("Select the Kokoro voice model");
   });
 
-  it("requires Kokoro even when a cleaner remains selected", async () => {
+  it("keeps the required Kokoro voice model selected while a cleaner changes", async () => {
     const start = vi.fn();
     await renderPage(packagedSettingsBridge(), { initialStatus: cudaCatalogStatus(), apiClient: { startRuntimeModelDownload: start } as unknown as ApiClient });
-    await act(async () => container.querySelector<HTMLInputElement>('.setup-model-list input[type="checkbox"]')!.click());
-    expect(container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]:checked')?.parentElement?.textContent).toContain("1.5B");
-    expect(findButton(container, "Continue").disabled).toBe(true);
-    expect(container.textContent).toContain("Select the Kokoro voice model");
+    const voice = container.querySelector<HTMLInputElement>('.setup-model-list input[type="checkbox"]')!;
+    expect(voice.checked).toBe(true);
+    expect(voice.disabled).toBe(true);
+    expect(voice.getAttribute("aria-label")).toBe("Kokoro TTS (required)");
+    await act(async () => voice.click());
+    expect(voice.checked).toBe(true);
+    const none = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')].find((input) => input.parentElement?.textContent?.includes("No local cleaner"))!;
+    await act(async () => none.click());
+    expect(voice.checked).toBe(true);
+    expect(findButton(container, "Install").disabled).toBe(false);
     expect(start).not.toHaveBeenCalled();
   });
 
-  it("shows the compatibility reason directly on disabled runtime cards", async () => {
+  it("shows a short compatibility reason on disabled runtime cards and keeps the full one available", async () => {
     await renderPage(bridge(), { settingsEntry: true });
     const cuda = container.querySelector<HTMLInputElement>('input[value="cuda"]')!;
     expect(cuda.disabled).toBe(true);
-    expect(cuda.closest("label")?.textContent).toContain("Not compatible: Unavailable.");
-  });
-
-  it("lets Settings close while a resumed download is stopping", async () => {
-    const exit = vi.fn();
-    const snapshot = { lifecycle: "stopping", profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0 };
-    await renderPage(packagedSettingsBridge(), { settingsEntry: true, onExitSettings: exit, apiClient: { getRuntimeModelDownloadStatus: vi.fn(async () => snapshot) } as unknown as ApiClient });
-    expect(container.textContent).toContain("Stopping download");
-    expect(findButton(container, "Back to dashboard").disabled).toBe(false);
-    await act(async () => findButton(container, "Back to dashboard").click());
-    expect(exit).toHaveBeenCalledOnce();
+    const card = cuda.closest("label")!;
+    expect(card.querySelector(".setup-card-description")?.textContent).toBe("Windows or Linux only");
+    expect(card.getAttribute("data-tip")).toBe("Unavailable.");
+    expect(card.textContent).toContain("Unavailable.");
   });
 
   it("shows damaged models and preserves Delete after a partial removal", async () => {
@@ -411,6 +594,16 @@ describe("mounted SetupPage", () => {
     await act(async () => findButton(container, "Delete model").click());
     expect(container.textContent).toContain("Couldn't delete some files");
     expect(container.querySelector('[aria-label="Delete Kokoro TTS"]')).not.toBeNull();
+  });
+
+  it("disables Delete with the backend's reason while a model is in use", async () => {
+    const reason = "Kokoro TTS is in use by the running conversion.";
+    const inventory = { models: [{ id: "tts-mlx", downloaded: true, size_bytes: 42, deletable: false, delete_blocked: { code: "model_in_use", message: reason } }] };
+    const api = { getRuntimeModelInventory: vi.fn(async () => inventory), getRuntimeSetupStatus: vi.fn(async () => readySettings()) } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { settingsEntry: true, initialStatus: readySettings(), apiClient: api });
+    const remove = container.querySelector<HTMLButtonElement>('[aria-label="Delete Kokoro TTS"]')!;
+    expect(remove.disabled).toBe(true);
+    expect(remove.getAttribute("data-tip")).toBe(reason);
   });
 
   it("ignores a save response from a disconnected backend", async () => {
@@ -437,7 +630,6 @@ describe("mounted SetupPage", () => {
     const runtimeBridge = bridge({ start, listen: vi.fn(async () => unlisten) });
     await renderPage(runtimeBridge);
 
-    await act(async () => findButton(container, "Change runtime").click());
     const mlx = container.querySelector<HTMLInputElement>('input[type="radio"][value="mlx"]')!;
     await act(async () => mlx.click());
     const cleaner = [...container.querySelectorAll<HTMLInputElement>('input[name="setup-cleaner"]')]
@@ -540,7 +732,7 @@ describe("mounted SetupPage", () => {
 
     expect(container.textContent).toContain("Progress connection unavailable");
     expect(findButton(container, "Copy diagnostics")).toBeTruthy();
-    const retry = findButton(container, "Retry progress connection");
+    const retry = findButton(container, "Retry");
     expect(findButton(container, "Use library only").disabled).toBe(true);
 
     await act(async () => retry.click());
@@ -656,7 +848,7 @@ describe("mounted SetupPage", () => {
     const cancelDownload = vi.fn(async () => ({ ...running, lifecycle: "stopping" as const }));
     const apiClient = { startRuntimeModelDownload: vi.fn(async () => running), cancelRuntimeModelDownload: cancelDownload } as unknown as ApiClient;
     await renderPage(runtimeBridge, { initialStatus: initial, settingsEntry: true, apiClient });
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label^="Install "]')!.click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label^="Download "]')!.click());
     await act(async () => findButton(container, "Cancel").click());
     expect(container.textContent).toContain("Stopping download");
     await act(async () => findButton(container, "Cancel").click());
@@ -670,6 +862,46 @@ describe("mounted SetupPage", () => {
     await renderPage(runtimeBridge);
     await act(async () => findButton(container, "Cancel").click());
     expect(runtimeBridge.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("deduplicates pending model cancellation and ignores its result after backend replacement", async () => {
+    const running = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0 };
+    type CancelledDownload = Omit<typeof running, "lifecycle"> & { lifecycle: "cancelled" };
+    let resolveCancel!: (value: CancelledDownload) => void;
+    const cancelDownload = vi.fn(() => new Promise<CancelledDownload>((resolve) => { resolveCancel = resolve; }));
+    const oldApi = {
+      getRuntimeModelDownloadStatus: vi.fn(async () => running),
+      cancelRuntimeModelDownload: cancelDownload,
+    } as unknown as ApiClient;
+    const runtimeBridge = packagedSettingsBridge();
+    await renderPage(runtimeBridge, { apiClient: oldApi });
+    await act(async () => {
+      findButton(container, "Cancel").click();
+      findButton(container, "Cancel").click();
+    });
+    expect(cancelDownload).toHaveBeenCalledOnce();
+
+    const newApi = { getRuntimeModelDownloadStatus: vi.fn(async () => running) } as unknown as ApiClient;
+    await renderPage(runtimeBridge, { apiClient: newApi });
+    await act(async () => resolveCancel({ ...running, lifecycle: "cancelled" }));
+    expect(container.textContent).not.toContain("Model download cancelled.");
+    expect(findButton(container, "Cancel")).toBeTruthy();
+    expect(container.querySelector("#setup-progress-heading")).not.toBeNull();
+  });
+
+  it("allows retry after model cancellation fails", async () => {
+    const running = { lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0 };
+    const cancelDownload = vi.fn()
+      .mockRejectedValueOnce(new Error("Temporary connection failure"))
+      .mockResolvedValue({ ...running, lifecycle: "stopping" });
+    const apiClient = { getRuntimeModelDownloadStatus: vi.fn(async () => running), cancelRuntimeModelDownload: cancelDownload } as unknown as ApiClient;
+    await renderPage(packagedSettingsBridge(), { apiClient });
+    await act(async () => findButton(container, "Cancel").click());
+    expect(container.textContent).toContain("Temporary connection failure");
+    await act(async () => findButton(container, "Cancel").click());
+    expect(cancelDownload).toHaveBeenCalledTimes(2);
+    expect(container.textContent).toContain("Stopping download");
+    expect(container.textContent).not.toContain("Temporary connection failure");
   });
 
   it("stays busy while an async cancel is still in flight", async () => {
@@ -729,7 +961,6 @@ describe("mounted SetupPage", () => {
     expect(onReady).not.toHaveBeenCalled();
     expect(container.querySelector('[role="alert"]')).toBeNull();
     expect(container.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow")).toBe("100");
-    expect(container.querySelector('[role="progressbar"]')?.classList.contains("pbar-done")).toBe(true);
     expect(container.textContent).toContain("Installation complete. Restart Orpheus to load the selected runtime.");
     expect(findButton(container, "Restart Orpheus").disabled).toBe(false);
   });
@@ -808,6 +1039,8 @@ describe("mounted SetupPage", () => {
     expect(onReady).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Restart Orpheus");
     expect(container.textContent).toContain("Orpheus restarted, but the selected runtime is not ready.");
+    // The message names the control that is actually offered.
+    expect(container.textContent).toContain("Select Retry to install it again.");
     expect(runtimeBridge.listen).toHaveBeenCalledOnce();
     expect(findButton(container, "Use library only").disabled).toBe(false);
     await act(async () => findButton(container, "Retry").click());
@@ -865,6 +1098,7 @@ describe("mounted SetupPage", () => {
     expect(runtimeBridge.status).not.toHaveBeenCalled();
     // The primary action must stay usable without the Tauri installer: it
     // resolves to the library-only fallback instead of a dead button.
+    expect([...container.querySelectorAll("button")].filter((button) => button.textContent === "Use library only")).toHaveLength(1);
     const libraryOnly = findButton(container, "Use library only");
     expect(libraryOnly.disabled).toBe(false);
     await act(async () => libraryOnly.click());
@@ -916,7 +1150,7 @@ describe("mounted SetupPage", () => {
     const api = { getRuntimeSetupStatus: vi.fn(async () => installedStatus), adoptRuntimeSetup: adopt } as unknown as ApiClient;
     await renderPage(bridge(), { apiClient: api, initialStatus: installedStatus, onReady });
 
-    expect(container.textContent).toContain("Installed MLX runtime ready");
+    expect(container.querySelector('.setup-plan [role="note"]')?.textContent).toContain("Installed MLX runtime ready");
     await act(async () => container.querySelector<HTMLInputElement>('input[name="setup-cleaner"]')!.click());
     const cta = findButton(container, "Continue");
     expect(cta.disabled).toBe(false);
@@ -960,6 +1194,7 @@ describe("mounted SetupPage", () => {
     const api = { getRuntimeSetupStatus: vi.fn(async () => cudaInstalled), adoptRuntimeSetup: adopt } as unknown as ApiClient;
     await renderPage(bridge(), { apiClient: api, initialStatus: cudaInstalled });
 
+    expect(container.querySelectorAll('.setup-risk input[type="checkbox"]')).toHaveLength(1);
     expect(findButton(container, "Continue").disabled).toBe(true);
     const risk = container.querySelector<HTMLInputElement>('.setup-risk input[type="checkbox"]')!;
     await act(async () => risk.click());
@@ -1001,24 +1236,23 @@ describe("mounted SetupPage", () => {
     expect(continueLibrary).toHaveBeenCalledOnce();
   });
 
-  it("shows a configured packaged runtime as ready and exits settings without reinstalling", async () => {
+  it("shows a configured packaged runtime as ready and confirms it without reinstalling", async () => {
     const ready = readySettings();
-    const exit = vi.fn();
+    const onReady = vi.fn();
     const packagedBridge = bridge({ environment: vi.fn(async () => ({ available: false, mode: "packaged" as const, reason: "Packaged runtime" })) });
-    await renderPage(packagedBridge, { initialStatus: ready, settingsEntry: true, onExitSettings: exit });
-    expect(container.textContent).toContain("Apple Silicon (MLX) runtime is ready");
+    await renderPage(packagedBridge, { initialStatus: ready, settingsEntry: true, onReady });
+    expect(container.querySelector('.setup-plan [role="status"]')?.textContent).toContain("Apple Silicon (MLX) runtime is ready");
     expect(container.textContent).not.toContain("Audio creation is unavailable");
-    expect(container.querySelector(".setup-environment")).toBeNull();
-    expect(container.querySelector(".setup-intro #setup-back-btn")).not.toBeNull();
     await act(async () => findButton(container, "Done").click());
-    expect(exit).toHaveBeenCalledOnce();
+    expect(onReady).toHaveBeenCalledExactlyOnceWith(ready);
     expect(packagedBridge.start).not.toHaveBeenCalled();
   });
 
   it("arms then confirms deletion of local runtime data and reports freed space", async () => {
+    const onReady = vi.fn();
     const del = vi.fn(async () => ({ deleted_model_groups: ["tts-mlx"], freed_bytes: 734003200, state_deleted: true }));
     const api = { getRuntimeSetupStatus: vi.fn(async () => setupStatus), deleteRuntimeSetupData: del } as unknown as ApiClient;
-    await renderPage(bridge(), { apiClient: api, settingsEntry: true });
+    await renderPage(bridge(), { apiClient: api, settingsEntry: true, onReady });
 
     expect(container.querySelector("h1")?.textContent).toBe("Runtime setup");
     const disclosure = container.querySelector<HTMLDetailsElement>(".setup-danger")!;
@@ -1033,7 +1267,13 @@ describe("mounted SetupPage", () => {
     expect(findButton(container, "Delete local runtime data")).toBeTruthy();
     await act(async () => { disclosure.open = true; });
     await act(async () => findButton(container, "Delete local runtime data").click());
-    expect(document.activeElement?.textContent).toBe("Keep");
+    expect(document.activeElement?.textContent).toBe("Cancel");
+    await act(async () => document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector(".setup-model-confirm")).toBeNull();
+    expect(document.activeElement).toBe(findButton(container, "Delete local runtime data"));
+    await act(async () => findButton(container, "Delete local runtime data").click());
+    await act(async () => findButton(container, "Cancel").click());
+    expect(document.activeElement).toBe(findButton(container, "Delete local runtime data"));
     await act(async () => findButton(container, "Delete local runtime data").click());
     expect(del).not.toHaveBeenCalled();
     await act(async () => {
@@ -1043,6 +1283,7 @@ describe("mounted SetupPage", () => {
     });
     expect(del).toHaveBeenCalledOnce();
     expect(container.textContent).toContain("Freed 700 MB.");
+    expect(onReady).toHaveBeenCalledWith(setupStatus);
   });
 
   it("hides the delete affordance outside Settings and during an install", async () => {
@@ -1145,6 +1386,35 @@ describe("mounted SetupPage", () => {
     expect(container.textContent).toContain("Stopping download");
   });
 
+  it.each([[1, 0], [2, 0], [2, 1]])("shows indeterminate progress until a count-only download completes (%s models, %s completed)", async (total, completed) => {
+    vi.useFakeTimers();
+    try {
+      let complete = false;
+      const snapshot = {
+        lifecycle: "running" as const, profile: "mlx", model_groups: ["tts-mlx", "cleaner-mlx"],
+        total_models: total, completed_models: completed, current_model_group: "cleaner-mlx", error: null,
+      };
+      const api = {
+        getRuntimeSetupStatus: vi.fn(async () => setupStatus),
+        getRuntimeModelDownloadStatus: vi.fn(async () => complete
+          ? { ...snapshot, lifecycle: "complete" as const, completed_models: total, current_model_group: null }
+          : snapshot),
+        adoptRuntimeSetup: vi.fn(async () => readySettings()),
+      } as unknown as ApiClient;
+      await renderPage(packagedSettingsBridge(), { apiClient: api });
+      const bar = container.querySelector('[role="progressbar"]')!;
+      expect(bar.hasAttribute("aria-valuenow")).toBe(false);
+      expect(container.querySelector(".setup-progress-message")?.textContent)
+        .toBe(`Downloading model ${completed + 1} of ${total}: Llama 3.2 · 3B`);
+
+      complete = true;
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+      expect(bar.getAttribute("aria-valuenow")).toBe("100");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps a slow packaged download cancellable without overlapping polls or consulting the bridge", async () => {
     vi.useFakeTimers();
     try {
@@ -1228,6 +1498,16 @@ describe("mounted SetupPage", () => {
     expect(container.textContent).not.toContain("Copy diagnostics");
   });
 
+  it("explains an unreachable status check in words and keeps the raw error as a secondary detail", async () => {
+    const api = { getRuntimeSetupStatus: vi.fn(() => new Promise<RuntimeSetupStatusResponse>(() => undefined)) } as unknown as ApiClient;
+    await renderPage(bridge(), { apiClient: api, initialStatus: null, initialError: "Failed to fetch" });
+
+    const notice = container.querySelector<HTMLElement>(".setup-recovery")!;
+    expect(notice.querySelector("strong")?.textContent).toBe("Setup status unavailable");
+    expect(notice.querySelector("p")?.textContent).toBe("Orpheus couldn't check this computer's setup. Retry, or use your library for now.");
+    expect(notice.querySelector(".error-detail")?.textContent).toBe("Failed to fetch");
+  });
+
   it("guards the status Retry against duplicate clicks while a refresh is in flight", async () => {
     let resolveStatus!: (value: RuntimeSetupStatusResponse) => void;
     const getStatus = vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveStatus = resolve; }));
@@ -1255,7 +1535,76 @@ describe("mounted SetupPage", () => {
     await act(async () => resolveOld({ ...setupStatus, configured: true, ready: true, state: "ready", selected_profile: "base" }));
     expect(onReady).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Library-only mode is ready");
-    expect(findButton(container, "Change runtime")).toBeTruthy();
+    expect(findButton(container, "Customize")).toBeTruthy();
+  });
+
+  it("does not restart download polling when an old backend acknowledges Install", async () => {
+    const runtimeBridge = packagedSettingsBridge();
+    const bakedStatus: RuntimeSetupStatusResponse = {
+      ...setupStatus, recommended_profile: "mlx",
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [
+        { id: "tts-mlx", runtime_ready: true, assets_ready: false, ready: false },
+        { id: "cleaner-mlx", runtime_ready: true, assets_ready: false, ready: false },
+      ] },
+    };
+    const idle = { lifecycle: "idle", profile: null, model_groups: [], completed_models: 0, total_models: 0 };
+    let resolveStart!: () => void;
+    const oldClient = {
+      getRuntimeSetupStatus: vi.fn(async () => bakedStatus),
+      getRuntimeModelDownloadStatus: vi.fn(async () => idle),
+      startRuntimeModelDownload: vi.fn(() => new Promise<void>((resolve) => { resolveStart = resolve; })),
+    } as unknown as ApiClient;
+    const newClient = {
+      getRuntimeSetupStatus: vi.fn(async () => bakedStatus),
+      getRuntimeModelDownloadStatus: vi.fn(async () => idle),
+      adoptRuntimeSetup: vi.fn(),
+    } as unknown as ApiClient;
+    await renderPage(runtimeBridge, { apiClient: oldClient, initialStatus: bakedStatus });
+    await act(async () => findButton(container, "Install").click());
+    await renderPage(runtimeBridge, { apiClient: newClient, initialStatus: bakedStatus });
+    await act(async () => resolveStart());
+    expect(newClient.getRuntimeModelDownloadStatus).toHaveBeenCalledOnce();
+    expect(newClient.adoptRuntimeSetup).not.toHaveBeenCalled();
+    expect(findButton(container, "Install").disabled).toBe(false);
+  });
+
+  it("does not replay a pending download adoption against a replacement backend", async () => {
+    const runtimeBridge = packagedSettingsBridge();
+    const snapshot = { lifecycle: "running", profile: "mlx", model_groups: ["tts-mlx"], total_models: 1, completed_models: 0, error: null };
+    let resolveAdopt!: (value: RuntimeSetupStatusResponse) => void;
+    const oldClient = {
+      getRuntimeSetupStatus: vi.fn(async () => setupStatus),
+      getRuntimeModelDownloadStatus: vi.fn().mockResolvedValueOnce(snapshot).mockResolvedValue({ ...snapshot, lifecycle: "complete", completed_models: 1 }),
+      adoptRuntimeSetup: vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveAdopt = resolve; })),
+    } as unknown as ApiClient;
+    const newClient = {
+      getRuntimeSetupStatus: vi.fn(async () => setupStatus),
+      getRuntimeModelDownloadStatus: vi.fn(async () => ({ ...snapshot, lifecycle: "idle" })),
+      adoptRuntimeSetup: vi.fn(async () => setupStatus),
+    } as unknown as ApiClient;
+    const onReady = vi.fn();
+    await renderPage(runtimeBridge, { apiClient: oldClient, onReady });
+    expect(oldClient.adoptRuntimeSetup).toHaveBeenCalledOnce();
+    await renderPage(runtimeBridge, { apiClient: newClient, onReady });
+    await act(async () => resolveAdopt({ ...setupStatus, ready: true, configured: true, state: "ready" }));
+    expect(newClient.adoptRuntimeSetup).not.toHaveBeenCalled();
+    expect(onReady).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Verifying and adopting");
+  });
+
+  it("ignores a replaced backend's library-only adoption", async () => {
+    const runtimeBridge = packagedSettingsBridge();
+    let resolveAdopt!: (value: RuntimeSetupStatusResponse) => void;
+    const oldClient = { adoptRuntimeSetup: vi.fn(() => new Promise<RuntimeSetupStatusResponse>((resolve) => { resolveAdopt = resolve; })) } as unknown as ApiClient;
+    const newClient = {} as ApiClient;
+    const onReady = vi.fn();
+    const onContinueLibraryOnly = vi.fn();
+    await renderPage(runtimeBridge, { apiClient: oldClient, onReady, onContinueLibraryOnly });
+    await act(async () => findButton(container, "Use library only").click());
+    await renderPage(runtimeBridge, { apiClient: newClient, onReady, onContinueLibraryOnly });
+    await act(async () => resolveAdopt({ ...setupStatus, configured: true, ready: true, state: "ready", selected_profile: "base" }));
+    expect(onReady).not.toHaveBeenCalled();
+    expect(onContinueLibraryOnly).not.toHaveBeenCalled();
   });
 
   it("marks progress failed when the download poll loses the backend", async () => {

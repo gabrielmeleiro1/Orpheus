@@ -22,6 +22,7 @@ function optionState(overrides: Partial<OptionState> = {}): OptionState {
   const base: OptionState = {
     loading: false,
     error: "",
+    retryRuntimeOptions: () => undefined,
     selectedEngine: "kokoro",
     setSelectedEngine: () => undefined,
     selectedVoice: "af_sarah",
@@ -60,6 +61,7 @@ function optionState(overrides: Partial<OptionState> = {}): OptionState {
     setParallelManualMax: () => undefined,
     manualParallelWorkerUpperBound: 4,
     selectedParallelWorkerLimit: 1,
+    usableParallelWorkerLimit: 1,
     parallelRecommendation: null,
     parallelWorkerStatus: "",
     parallelWorkerError: false,

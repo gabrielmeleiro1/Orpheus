@@ -1,0 +1,46 @@
+{
+  "models": [
+    {
+      "deletable": false,
+      "delete_blocked": null,
+      "downloaded": false,
+      "id": "tts-mlx",
+      "size_bytes": 0
+    },
+    {
+      "deletable": false,
+      "delete_blocked": null,
+      "downloaded": false,
+      "id": "tts-cpu-cuda",
+      "size_bytes": 0
+    },
+    {
+      "deletable": false,
+      "delete_blocked": null,
+      "downloaded": false,
+      "id": "cleaner-mlx",
+      "size_bytes": 0
+    },
+    {
+      "deletable": false,
+      "delete_blocked": null,
+      "downloaded": false,
+      "id": "cleaner-cuda",
+      "size_bytes": 0
+    },
+    {
+      "deletable": false,
+      "delete_blocked": null,
+      "downloaded": false,
+      "id": "cleaner-cuda-large",
+      "size_bytes": 0
+    },
+    {
+      "deletable": false,
+      "delete_blocked": null,
+      "downloaded": false,
+      "id": "cleaner-mlx-small",
+      "size_bytes": 0
+    }
+  ]
+}

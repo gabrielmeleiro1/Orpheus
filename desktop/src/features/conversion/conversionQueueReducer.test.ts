@@ -39,7 +39,8 @@ describe("conversionQueueReducer", () => {
     expect(state.queueItems).toEqual([item]);
     expect(state.selectedQueueId).toBe(item.id);
     expect(state.sourcePath).toBe("/tmp/book.epub");
-    expect(state.queueStatus).toBe("1 item added");
+    // The new row is the confirmation; no status sentence.
+    expect(state.queueStatus).toBe("");
   });
 
   it("removes selected items and applies the next item selection", () => {
@@ -77,7 +78,7 @@ describe("conversionQueueReducer", () => {
     expect(state.selectedQueueId).toBe(first.id);
   });
 
-  it("edits selected items and bumps revision when the source path changes", () => {
+  it("edits selected items and drops the old preflight when the source path changes", () => {
     const item = createQueueItem("/tmp/book.epub", "audiobook", undefined, preflight());
     let state = conversionQueueReducer(createConversionQueueInitialState(), {
       type: "itemsAdded",
@@ -99,10 +100,9 @@ describe("conversionQueueReducer", () => {
       error: "",
     });
     expect(state.sourcePath).toBe("/tmp/changed.epub");
-    expect(state.itemRevisions[item.id]).toBe(1);
   });
 
-  it("clears stale preflight state and bumps revision when the source path is emptied", () => {
+  it("clears stale preflight state when the source path is emptied", () => {
     const inspected = createQueueItem(
       "/tmp/book.epub",
       "audiobook",
@@ -132,7 +132,6 @@ describe("conversionQueueReducer", () => {
       error: "",
     });
     expect(state.sourcePath).toBe("");
-    expect(state.itemRevisions[inspected.id]).toBe(1);
     expect(state.preflightStatus).toBe("");
     expect(state.previewText).toBeNull();
   });
@@ -234,7 +233,7 @@ describe("conversionQueueReducer", () => {
     expect(state.titleOverride).toBe("Detected");
     expect(state.authorOverride).toBe("Author");
     expect(state.previewText).toBe("This is a long enough sample to become preview text.");
-    expect(state.preflightStatus).toBe("Preflight completed.");
+    expect(state.preflightStatus).toBe("");
   });
 
   it("marks a completed zero-chapter preflight as non-runnable", () => {
@@ -259,7 +258,8 @@ describe("conversionQueueReducer", () => {
       status: "failed",
       error: "No readable chapters found in this source.",
     });
-    expect(state.preflightStatus).toBe("No readable chapters found in this source.");
+    // The row carries the error, so the intake does not repeat it.
+    expect(state.preflightStatus).toBe("");
   });
 
   it("blocks an OCR-required PDF with an actionable preflight error", () => {
@@ -281,6 +281,71 @@ describe("conversionQueueReducer", () => {
       status: "failed",
       error: "This PDF requires OCR before conversion.",
     });
-    expect(state.preflightStatus).toBe("This PDF requires OCR before conversion.");
+    expect(state.preflightStatus).toBe("");
+  });
+});
+
+describe("a row whose book another job finishes", () => {
+  function queued(...overrides: Array<Partial<ReturnType<typeof createQueueItem>>>) {
+    const items = overrides.map((override, index) => ({
+      ...createQueueItem(`/tmp/book-${index}.epub`, "audiobook", undefined, preflight()),
+      ...override,
+    }));
+    const state = conversionQueueReducer(createConversionQueueInitialState(), {
+      type: "itemsAdded", items, selectFirst: true,
+    });
+    return { items, state };
+  }
+
+  it("remembers which book a row's own job wrote to", () => {
+    const { state } = queued({ status: "converting", jobId: "job-1" });
+    const next = conversionQueueReducer(state, { type: "jobBookObserved", jobId: "job-1", bookId: 7, completed: false });
+
+    expect(next.queueItems[0]).toMatchObject({ status: "converting", jobId: "job-1", bookId: 7 });
+    // Repeated snapshots of the same job change nothing.
+    expect(conversionQueueReducer(next, { type: "jobBookObserved", jobId: "job-1", bookId: 7, completed: false })).toBe(next);
+  });
+
+  it("marks a cancelled row done once a repair completes its book", () => {
+    const { state } = queued(
+      { status: "failed", error: "conversion cancelled", jobId: "job-1", bookId: 7 },
+      { status: "failed", error: "conversion cancelled", jobId: "job-2", bookId: 8 },
+      { status: "ready" },
+    );
+
+    const running = conversionQueueReducer(state, { type: "jobBookObserved", jobId: "repair_7_1", bookId: 7, completed: false });
+    expect(running).toBe(state);
+
+    const repaired = conversionQueueReducer(state, { type: "jobBookObserved", jobId: "repair_7_1", bookId: 7, completed: true });
+    expect(repaired.queueItems.map((item) => [item.status, item.error])).toEqual([
+      ["done", ""],
+      ["failed", "conversion cancelled"],
+      ["ready", ""],
+    ]);
+    // The row keeps the job it ran; only its outcome is superseded.
+    expect(repaired.queueItems[0].jobId).toBe("job-1");
+  });
+
+  it("leaves a row alone when its own job is the one that completed", () => {
+    const { state } = queued({ status: "converting", jobId: "job-1", bookId: 7 });
+
+    expect(conversionQueueReducer(state, { type: "jobBookObserved", jobId: "job-1", bookId: 7, completed: true })).toBe(state);
+  });
+
+  it("marks a row done when the job it lost sight of is seen to complete", () => {
+    const unconfirmed = "Could not confirm the conversion. Check Library before retrying.";
+    const { state } = queued(
+      { status: "warning", error: unconfirmed, jobId: "job-1" },
+      { status: "failed", error: "synthesis failed", jobId: "job-2", bookId: 8 },
+    );
+
+    const stillRunning = conversionQueueReducer(state, { type: "jobBookObserved", jobId: "job-1", bookId: 7, completed: false });
+    expect(stillRunning.queueItems[0]).toMatchObject({ status: "warning", error: unconfirmed, bookId: 7 });
+
+    const completed = conversionQueueReducer(stillRunning, { type: "jobBookObserved", jobId: "job-1", bookId: 7, completed: true });
+    expect(completed.queueItems.map((item) => [item.status, item.error])).toEqual([
+      ["done", ""],
+      ["failed", "synthesis failed"],
+    ]);
   });
 });

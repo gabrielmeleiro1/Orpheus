@@ -11,6 +11,7 @@ import {
   diagnosticsSnapshot,
   modelDownloadProgressEvent,
   profileChoices,
+  runtimeCheckResult,
   selectProfile,
   shouldShowRuntimeSetup,
   toggleModelGroup,
@@ -40,9 +41,9 @@ function status(overrides: Partial<RuntimeSetupStatusResponse> = {}): RuntimeSet
 }
 
 describe("runtime setup selection", () => {
-  it("defaults to CPU narration without selecting unavailable CUDA cleaners", () => {
+  it.each(["cpu", "cuda"] as const)("defaults to narration on %s without selecting unavailable CUDA cleaners", (device) => {
     const cpuStatus = status({ recommended_profile: "cuda", profiles: status().profiles.map((profile) => profile.id === "cuda" ? {
-      ...profile, compatible: true, reason: null, risk: null, device: "cpu",
+      ...profile, compatible: true, reason: null, risk: null, device,
       group_availability: { "cleaner-cuda": { available: false, unavailable_reason: "Needs an NVIDIA GPU with a CUDA 12.6 driver" } },
     } : profile) });
     const selection = createSelection(cpuStatus);
@@ -85,8 +86,6 @@ describe("runtime setup selection", () => {
     expect(canStartSetup(mlx, status())).toBe(true);
     const nothingChecked = { ...mlx, modelGroups: [] };
     expect(canStartSetup(nothingChecked, status())).toBe(false);
-    // base has no model groups of its own, so it stays installable.
-    expect(canStartSetup(createSelection(status()), status())).toBe(true);
   });
 
   it("preselects the recommended profile only when no profile was persisted", () => {
@@ -234,10 +233,11 @@ describe("packaged backend install flow", () => {
       current_model_group: "cleaner-mlx",
       error: null,
     };
-    const state = applyProgressEvent(undefined, modelDownloadProgressEvent(running));
-    expect(state).toMatchObject({ lifecycle: "running", stage: "models", percent: 50 });
+    const packages = applyProgressEvent(undefined, { event: "status", stage: "packages", percent: 30 });
+    const state = applyProgressEvent(packages, modelDownloadProgressEvent(running));
+    expect(state).toMatchObject({ lifecycle: "running", stage: "models", percent: null });
     expect(state.completedStages).toEqual(["packages"]);
-    expect(state.message).toBe("Downloading Llama 3.2 · 3B (2 of 2)…");
+    expect(state.message).toBe("Downloading model 2 of 2: Llama 3.2 · 3B");
 
     const stopping = modelDownloadProgressEvent({ ...running, lifecycle: "stopping" });
     expect(stopping.message).toContain("Stopping download");
@@ -259,5 +259,35 @@ describe("packaged backend install flow", () => {
       error: "disk full",
     }));
     expect(failed).toMatchObject({ lifecycle: "failed", message: "disk full" });
+  });
+});
+
+describe("runtime check result", () => {
+  const group = { id: "tts-mlx", runtime_ready: true, assets_ready: true, assets_reason: null, ready: true };
+  const configured = (overrides: Partial<RuntimeSetupStatusResponse> = {}) =>
+    status({ configured: true, state: "ready", ready: true, selected_profile: "mlx", selected_model_groups: [group], ...overrides });
+
+  it("reports ready, pending and restart states in plain words", () => {
+    expect(runtimeCheckResult(configured())).toEqual({ tone: "ready", text: "Runtime ready." });
+    expect(runtimeCheckResult(configured({ selected_profile: "base", selected_model_groups: [] })))
+      .toEqual({ tone: "ready", text: "Library only is ready. Creating audiobooks needs a voice runtime." });
+    expect(runtimeCheckResult(configured({ state: "checking", ready: false }))).toEqual({ tone: "pending", text: "Still checking this device." });
+    expect(runtimeCheckResult(configured({ restart_required: true })).text).toBe("Restart Orpheus to finish applying the runtime.");
+    expect(runtimeCheckResult(status())).toEqual({ tone: "problem", text: "No runtime is set up yet." });
+  });
+
+  it("names the first thing that is wrong", () => {
+    const broken = (overrides: Partial<RuntimeSetupStatusResponse>) => runtimeCheckResult(configured({ state: "error", ready: false, ...overrides }));
+    expect(broken({ selected_model_groups: [{ ...group, assets_ready: false, assets_reason: "missing", ready: false }] }))
+      .toEqual({ tone: "problem", text: "Kokoro TTS is not downloaded." });
+    expect(broken({
+      selected_model_groups: [{ ...group, runtime_ready: false, ready: false }],
+      installed_runtime: { profile: "mlx", ready: false, runtime_available: true, model_groups: [
+        { id: "tts-mlx", runtime_ready: false, runtime_reason: "MLX could not load.", assets_ready: true, ready: false },
+      ] },
+    }).text).toBe("Kokoro TTS cannot run: MLX could not load.");
+    expect(broken({ packages: { ready: false, missing: [{ name: "torch", expected: "2.6", installed: null }], incompatible: [] } }).text)
+      .toBe("1 runtime package is missing or out of date.");
+    expect(broken({}).text).toBe("The runtime is not ready.");
   });
 });

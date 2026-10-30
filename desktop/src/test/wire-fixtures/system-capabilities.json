@@ -1,0 +1,72 @@
+{
+  "available_tts_engines": [
+    "kokoro"
+  ],
+  "cleaner_backends": [
+    "api",
+    "basic",
+    "cuda",
+    "mlx"
+  ],
+  "cleaner_runtime_availability": {
+    "api": true,
+    "basic": true,
+    "cuda": false,
+    "mlx": false
+  },
+  "default_tts_engine": "kokoro",
+  "default_tts_quantization": "bf16",
+  "global_api_limiter": {
+    "max_concurrency": 6,
+    "wait_count": 0,
+    "wait_ms_total": 0.0
+  },
+  "metrics": {
+    "global_api_limiter_wait_count": 0,
+    "global_api_limiter_wait_ms": 0.0,
+    "last_runtime_validation_ms": null,
+    "preview_generation_count": 0,
+    "runtime_validation_hits": 0,
+    "runtime_validation_misses": 0,
+    "worker_pool_restarts": 0,
+    "worker_pool_reuse_hits": 0
+  },
+  "mlx_cleaner_runtime_available": false,
+  "mlx_runtime_available": false,
+  "parallel_processing_enabled": false,
+  "parallel_worker_recommendation": {
+    "available_memory_bytes": 17179869184,
+    "calculation": "available - reserved = 16.0 GiB - 8.0 GiB = 8.0 GiB; 1 + floor(headroom / worker_estimate) capped at 4",
+    "estimated_per_worker_memory_bytes": 4294967296,
+    "headroom_memory_bytes": 8589934592,
+    "max_safe_parallel_chapters": 3,
+    "memory_measurement_available": true,
+    "reason": "memory headroom limits parallel workers",
+    "recommended_parallel_chapters": 3,
+    "requested_parallel_chapters": 4,
+    "reserved_memory_bytes": 8589934592,
+    "static_estimated_worker_bytes": 4294967296,
+    "total_memory_bytes": 34359738368,
+    "warmup_memory_delta_bytes": null
+  },
+  "primary_runtime": "cpu",
+  "runtime_probe": {
+    "cache_hit": true,
+    "cache_ttl_seconds": 60.0,
+    "cleaner": {
+      "available": false,
+      "error": "Runtime unavailable",
+      "latency_ms": 1.0
+    },
+    "mode": "import",
+    "refresh_in_progress": false,
+    "state": "fresh",
+    "tts": {
+      "available": false,
+      "error": "Runtime unavailable",
+      "latency_ms": 1.0
+    }
+  },
+  "runtime_validation_cache_size": 0,
+  "worker_pool": {}
+}

@@ -1,0 +1,375 @@
+{
+  "engine": "kokoro",
+  "voices": [
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_alloy",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Alloy",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_aoede",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Aoede",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "Warm, conversational American female voice",
+      "gender": "female",
+      "id": "af_bella",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Bella",
+      "sample_text": "The quick brown fox jumps over the lazy dog.",
+      "style_tags": [
+        "conversational",
+        "warm"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_heart",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Heart",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_jessica",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Jessica",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_kore",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Kore",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_nicole",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Nicole",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_nova",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Nova",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_river",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "River",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "Professional, clear American female voice",
+      "gender": "female",
+      "id": "af_sarah",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Sarah",
+      "sample_text": "Please listen carefully to the following chapter summary.",
+      "style_tags": [
+        "clear",
+        "professional"
+      ]
+    },
+    {
+      "description": "American English female voice",
+      "gender": "female",
+      "id": "af_sky",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Sky",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "Deep, authoritative American male voice",
+      "gender": "male",
+      "id": "am_adam",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Adam",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "narrative",
+        "authoritative"
+      ]
+    },
+    {
+      "description": "American English male voice",
+      "gender": "male",
+      "id": "am_echo",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Echo",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English male voice",
+      "gender": "male",
+      "id": "am_eric",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Eric",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English male voice",
+      "gender": "male",
+      "id": "am_fenrir",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Fenrir",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English male voice",
+      "gender": "male",
+      "id": "am_liam",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Liam",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "Friendly, casual American male voice",
+      "gender": "male",
+      "id": "am_michael",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Michael",
+      "sample_text": "Every good story starts with one clear sentence.",
+      "style_tags": [
+        "casual",
+        "friendly"
+      ]
+    },
+    {
+      "description": "American English male voice",
+      "gender": "male",
+      "id": "am_onyx",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Onyx",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English male voice",
+      "gender": "male",
+      "id": "am_puck",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Puck",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "American English male voice",
+      "gender": "male",
+      "id": "am_santa",
+      "is_multilingual": false,
+      "language": "en-US",
+      "locale": "en-US",
+      "name": "Santa",
+      "sample_text": "A few light taps upon the pane made him turn to the window.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "British English female voice",
+      "gender": "female",
+      "id": "bf_alice",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "Alice",
+      "sample_text": "A thin rain swept over the moor as dusk approached.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "Refined, articulate British female voice",
+      "gender": "female",
+      "id": "bf_emma",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "Emma",
+      "sample_text": "A thin rain swept over the moor as dusk approached.",
+      "style_tags": [
+        "refined",
+        "articulate"
+      ]
+    },
+    {
+      "description": "British English female voice",
+      "gender": "female",
+      "id": "bf_isabella",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "Isabella",
+      "sample_text": "A thin rain swept over the moor as dusk approached.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "British English female voice",
+      "gender": "female",
+      "id": "bf_lily",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "Lily",
+      "sample_text": "A thin rain swept over the moor as dusk approached.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "British English male voice",
+      "gender": "male",
+      "id": "bm_daniel",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "Daniel",
+      "sample_text": "A thin rain swept over the moor as dusk approached.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "British English male voice",
+      "gender": "male",
+      "id": "bm_fable",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "Fable",
+      "sample_text": "A thin rain swept over the moor as dusk approached.",
+      "style_tags": [
+        "standard"
+      ]
+    },
+    {
+      "description": "Classic, distinguished British male voice",
+      "gender": "male",
+      "id": "bm_george",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "George",
+      "sample_text": "The station clock struck twice as the train departed.",
+      "style_tags": [
+        "classic",
+        "distinguished"
+      ]
+    },
+    {
+      "description": "British English male voice",
+      "gender": "male",
+      "id": "bm_lewis",
+      "is_multilingual": false,
+      "language": "en-GB",
+      "locale": "en-GB",
+      "name": "Lewis",
+      "sample_text": "A thin rain swept over the moor as dusk approached.",
+      "style_tags": [
+        "standard"
+      ]
+    }
+  ]
+}

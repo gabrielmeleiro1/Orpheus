@@ -2,9 +2,9 @@
 
 import { act, useRef, type MutableRefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { ApiClient } from "../../api/client";
+import { createApiClient, type ApiClient } from "../../api/client";
 import type { ModelOptionsResponse, SystemCapabilitiesResponse } from "../../types/api";
 import { useCleanerOptions, type UseCleanerOptionsResult } from "./useCleanerOptions";
 import { syncSetupPreferences } from "../setup/setupPreferences";
@@ -96,7 +96,27 @@ describe("useCleanerOptions capability transitions", () => {
       root.unmount();
     });
     container.remove();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
     delete (globalThis as typeof globalThis & { cleanerProbe?: UseCleanerOptionsResult }).cleanerProbe;
+  });
+
+  it("retires model discovery when the client changes directly and allows retry with the retained key", async () => {
+    let resolveOld!: (ids: string[]) => void;
+    const oldClient = { fetchOpenAiModelIds: vi.fn(() => new Promise<string[]>((resolve) => { resolveOld = resolve; })) } as unknown as ApiClient;
+    const newClient = { fetchOpenAiModelIds: vi.fn(async () => ["new-model"]) } as unknown as ApiClient;
+    root = createRoot(container);
+    await act(async () => root.render(<CleanerProbe apiClient={oldClient} systemCapabilities={capabilities(false)} />));
+    await act(async () => getCleanerProbe().setCleanerApiKey("key"));
+    await act(async () => { void getCleanerProbe().fetchOpenAiModelIds(); });
+    expect(getCleanerProbe().openAiModelFetchLoading).toBe(true);
+    await act(async () => root.render(<CleanerProbe apiClient={newClient} systemCapabilities={capabilities(false)} />));
+    await act(async () => resolveOld(["old-model"]));
+    expect(getCleanerProbe().cleanerModelOptions).toEqual([]);
+    expect(getCleanerProbe().openAiModelFetchLoading).toBe(false);
+    expect(getCleanerProbe().cleanerApiKey).toBe("key");
+    await act(async () => getCleanerProbe().fetchOpenAiModelIds());
+    expect(getCleanerProbe().cleanerModelOptions.map((option) => option.value)).toEqual(["new-model"]);
   });
 
   it.each([undefined, "", "   ", "cuda:1"])("uses the backend default for an empty persisted CUDA device (%s)", async (device) => {
@@ -109,6 +129,28 @@ describe("useCleanerOptions capability transitions", () => {
     expect(getCleanerProbe().cleanerCudaDevice).toBe(device?.trim() || "cuda");
     await act(async () => getCleanerProbe().setCleanerCudaDevice(""));
     expect(getCleanerProbe().cleanerCudaDevice).toBe("cuda");
+  });
+
+  it("clears stalled model discovery and allows a manual retry", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementationOnce((_input, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    }))
+      .mockImplementation(async () => new Response(JSON.stringify({ models: ["gpt-4o-mini"] })));
+    const apiClient = createApiClient({ baseUrl: "http://desktop.test" });
+    root = createRoot(container);
+    await act(async () => root.render(<CleanerProbe apiClient={apiClient} systemCapabilities={capabilities(false)}
+      persisted={{ cleaner_backend_configured: true, cleaner_backend: "openai" }} />));
+    await act(async () => getCleanerProbe().setCleanerApiKey("key"));
+    await act(async () => { void getCleanerProbe().fetchOpenAiModelIds(); });
+    expect(getCleanerProbe().openAiModelFetchLoading).toBe(true);
+    await act(async () => vi.advanceTimersByTimeAsync(30000));
+    expect(getCleanerProbe().openAiModelFetchLoading).toBe(false);
+    expect(getCleanerProbe().openAiModelFetchError).toBe(true);
+    expect(getCleanerProbe().openAiModelFetchStatus).toContain("request timed out");
+    await act(async () => getCleanerProbe().fetchOpenAiModelIds());
+    expect(getCleanerProbe().openAiModelFetchError).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it("defaults a fresh CUDA profile when older backend metadata omits the device", async () => {

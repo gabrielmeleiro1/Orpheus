@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { chapterPlaybackStatusLabel } from "./chapterPlaybackLabel";
+import { chapterDisplayLabel, chapterPlaybackStatusLabel } from "./chapterPlaybackLabel";
 import {
   resolvePlayerCanSeek,
   resolvePlayerDurationSec,
@@ -66,14 +66,7 @@ describe("resolvePlayerDurationSec", () => {
 });
 
 describe("resolvePlayerCanSeek", () => {
-  it("keeps seeded duration visible but disables seek until the selected book's audio is loaded", () => {
-    const seededDurationSec = resolvePlayerDurationSec({
-      audioDurationSec: 0,
-      bookDurationMs: 12_000,
-      chapterDurationMs: 4_000,
-    });
-    expect(seededDurationSec).toBe(12);
-
+  it("disables seek until the selected book's audio is loaded", () => {
     expect(
       resolvePlayerCanSeek({
         audioSrc: null,
@@ -135,5 +128,23 @@ describe("seekAudioIfReady", () => {
 
     expect(applied).toBe(true);
     expect(audio.currentTime).toBe(10);
+  });
+});
+
+describe("chapterDisplayLabel", () => {
+  it("does not repeat a chapter number the title already carries", () => {
+    expect(chapterDisplayLabel({ number: 1, title: "Chapter 1: The Keeper's Daughter" })).toBe("Chapter 1: The Keeper's Daughter");
+    expect(chapterDisplayLabel({ number: 3, title: "CHAPTER 3: Fog" })).toBe("CHAPTER 3: Fog");
+    expect(chapterDisplayLabel({ number: 4, title: "chapter 4" })).toBe("chapter 4");
+    expect(chapterDisplayLabel({ number: 2, title: "2. Arrival" })).toBe("2. Arrival");
+  });
+
+  it("prefixes titles that do not name the chapter", () => {
+    expect(chapterDisplayLabel({ number: 1, title: "The Keeper's Daughter" })).toBe("Chapter 1: The Keeper's Daughter");
+    // Another chapter's number in the title is still prefixed.
+    expect(chapterDisplayLabel({ number: 12, title: "Chapter 1 revisited" })).toBe("Chapter 12: Chapter 1 revisited");
+    expect(chapterDisplayLabel({ number: 1, title: "10 Rules" })).toBe("Chapter 1: 10 Rules");
+    expect(chapterDisplayLabel({ number: 5, title: "" })).toBe("Chapter 5");
+    expect(chapterDisplayLabel(null)).toBe("Chapter unknown");
   });
 });
