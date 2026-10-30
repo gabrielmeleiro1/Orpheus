@@ -5,7 +5,7 @@
  * containing .term-select-option rows with a .term-select-option-label.
  */
 
-export function termSelectButton(page, id) {
+function termSelectButton(page, id) {
   return page.locator(`#${id} button.term-select-btn`);
 }
 
@@ -26,7 +26,7 @@ export async function openTermSelect(page, id) {
   await page.locator(`#${id}-listbox`).waitFor({ state: "visible", timeout: 5_000 });
 }
 
-export async function closeTermSelect(page, id) {
+async function closeTermSelect(page, id) {
   const button = termSelectButton(page, id);
   const expanded = await button.getAttribute("aria-expanded");
   if (expanded === "true") {

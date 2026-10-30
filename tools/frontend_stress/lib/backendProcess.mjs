@@ -6,6 +6,26 @@ import path from "node:path";
 import { registerCleanup } from "./cleanupRegistry.mjs";
 
 /**
+ * The checkout backend by default. ORPHEUS_HARNESS_BACKEND_EXE runs a packaged
+ * sidecar (orpheus-desktop-backend.exe) instead, so a journey can prove what
+ * ships rather than the source tree. The sidecar starts in the isolated state
+ * folder: if an environment override were lost it would write there, not
+ * beside the build.
+ */
+export function resolveBackendCommand({ repoRoot, stateDir, environment = process.env }) {
+  const listen = ["--host", "127.0.0.1", "--port", "0"];
+  const packaged = String(environment.ORPHEUS_HARNESS_BACKEND_EXE ?? "").trim();
+  if (packaged) {
+    const command = path.resolve(packaged);
+    if (!fs.existsSync(command)) throw new Error(`ORPHEUS_HARNESS_BACKEND_EXE does not exist: ${command}`);
+    return { command, args: listen, cwd: stateDir };
+  }
+  const python = path.join(repoRoot, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
+  if (!fs.existsSync(python)) throw new Error("Checkout .venv Python is missing; follow the repository setup instructions first.");
+  return { command: python, args: ["-m", "apps.launchers.desktop_backend", ...listen], cwd: repoRoot };
+}
+
+/**
  * Spawns the Orpheus desktop backend (FastAPI/uvicorn) with isolated state
  * directories and parses its single-line JSON "ready" event from stdout.
  */
@@ -21,6 +41,9 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
   const env = {
     ...process.env,
     ORPHEUS_DESKTOP_DEV: "1",
+    // Keep cleaning traces in the isolated state so cleaner journeys can prove
+    // which backend actually cleaned each chunk.
+    SAVE_CLEANING_DEBUG: process.env.SAVE_CLEANING_DEBUG ?? "1",
     HF_HUB_OFFLINE: "1",
     TRANSFORMERS_OFFLINE: "1",
     AUDIOBOOK_DATA_DIR: dataDir,
@@ -29,14 +52,9 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
     AUDIOBOOK_DB_PATH: dbPath,
   };
 
-  const python = path.join(repoRoot, ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-  if (!fs.existsSync(python)) throw new Error("Checkout .venv Python is missing; follow the repository setup instructions first.");
-  log(`spawning backend: ${python} -m apps.launchers.desktop_backend --host 127.0.0.1 --port 0 (cwd=${repoRoot})`);
-  const proc = spawn(
-    python,
-    ["-m", "apps.launchers.desktop_backend", "--host", "127.0.0.1", "--port", "0"],
-    { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] },
-  );
+  const { command, args, cwd } = resolveBackendCommand({ repoRoot, stateDir });
+  log(`spawning backend: ${command} ${args.join(" ")} (cwd=${cwd})`);
+  const proc = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
 
   // Defined before the readiness wait (and registered immediately) so the
   // process is guaranteed to get torn down even if it never becomes ready —

@@ -2,11 +2,14 @@
   "name": "frontend-stress-harness",
   "private": true,
   "version": "1.0.0",
+  "license": "MIT",
   "type": "module",
   "description": "Playwright-based stress-test harness that simulates real users driving the Orpheus desktop React frontend.",
   "scripts": {
     "start": "node run.mjs",
-    "test": "node --test"
+    "test": "node --test",
+    "test:conversion-layout": "node conversion-layout.mjs",
+    "audit:interaction": "node interaction-audit.mjs"
   },
   "dependencies": {
     "playwright": "^1.61.1"

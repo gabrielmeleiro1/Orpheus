@@ -8,16 +8,50 @@ import {
   chooseTermSelectByLabel,
   currentTermSelectLabel,
   isTermSelectDisabled,
+  openTermSelect,
   termSelectOptions,
 } from "./lib/termSelect.mjs";
 
+// Cancel on a running book asks first; answer the question with "Stop conversion".
+async function confirmStop(page) {
+  await page.locator("#progress-cancel-btn").click();
+  await page.locator("#progress-cancel-confirm-stop").click({ timeout: 5_000 });
+}
 
 function panelIdForTab(tabId) {
+  if (tabId === "document") return "tab-convert";
+  if (tabId === "progress" || tabId === "logs") return "conversion-details";
   return tabId === "settings" ? "tab-config" : `tab-${tabId}`;
 }
 
 async function gotoTab(page, tabId) {
-  await page.locator(`#tab-btn-${tabId}`).click();
+  const drawer = page.getByRole("dialog", { name: "Conversion details", exact: true });
+  if (tabId === "progress" || tabId === "logs") {
+    if (await drawer.isVisible()) return;
+    await gotoTab(page, "convert");
+    const details = page.locator(".queue-details-btn, .rail-job").filter({ visible: true }).first();
+    const presentation = await waitFor(async () => {
+      if (await details.count()) return "details";
+      // The first local inference can keep Start pending while models warm.
+      // Very short jobs can finish before a Details control is painted.
+      const pending = /starting|checking/i.test(await page.locator("#start-btn").textContent() ?? "");
+      const { uiState } = await readProgressMeta(page);
+      return !pending && ["completed", "failed", "cancelled"].includes(uiState) ? "terminal" : null;
+    }, { timeoutMs: 60_000, message: "conversion details or a terminal announcement becomes available" });
+    if (presentation === "terminal") return;
+    await details.click();
+    await drawer.waitFor({ state: "visible" });
+    return;
+  }
+  if (await drawer.isVisible()) await drawer.getByRole("button", { name: "Close conversion details", exact: true }).click();
+  const actualTab = tabId === "document" ? "convert" : tabId;
+  const tab = page.locator(`#tab-btn-${actualTab}`);
+  if (!await tab.isVisible()) await page.getByRole("button", { name: "Show sidebar", exact: true }).click();
+  await tab.click();
+  if (tabId === "document") {
+    await page.locator('#tab-convert input[name="conversion-format"][value="document_audio"]').check();
+    await page.locator("#source-input-paste").click();
+  }
 }
 
 async function waitTabVisible(page, tabId, timeoutMs = 8000) {
@@ -29,8 +63,9 @@ async function waitTabVisible(page, tabId, timeoutMs = 8000) {
 }
 
 async function readProgressMeta(page) {
-  const classes = await page.locator("#tab-progress .progress-hero").getAttribute("class").catch(() => "");
-  return { uiState: classes?.match(/is-(running|completed|failed|cancelled)/)?.[1] ?? "idle" };
+  const announcement = await page.locator('.app-frame > .sr-only[role="status"]').textContent();
+  const state = announcement?.match(/Conversion (started|completed|failed|cancelled)\./)?.[1];
+  return { uiState: state === "started" || announcement?.includes("Stopping conversion") ? "running" : state ?? "idle" };
 }
 
 async function waitForUiState(page, states, { timeoutMs = 600_000, intervalMs = 1000 } = {}) {
@@ -45,15 +80,13 @@ async function waitForUiState(page, states, { timeoutMs = 600_000, intervalMs = 
 }
 
 async function clearQueue(page, tabId) {
+  if (tabId) {
+    // The details drawer overlays Create without hiding its DOM panel. Close
+    // it through navigation before trying to remove rows behind its backdrop.
+    await gotoTab(page, tabId);
+    await waitTabVisible(page, tabId);
+  }
   for (let i = 0; i < 25; i++) {
-    if (tabId) {
-      const id = panelIdForTab(tabId);
-      if (await page.locator(`#${id}`).isHidden()) {
-        await gotoTab(page, tabId);
-        await waitTabVisible(page, tabId).catch(() => {});
-      }
-    }
-
     const rows = page.locator(".queue-row");
     const count = await rows.count();
     if (count === 0) {
@@ -73,6 +106,7 @@ async function clearQueue(page, tabId) {
 }
 
 async function pasteSource(page, { title, text }) {
+  await page.locator("#source-input-paste").click();
   const rowsBefore = await page.locator(".queue-row").count();
   await page.locator("#paste-title-input").fill(title);
   await page.locator("#paste-text-input").fill(text);
@@ -113,28 +147,27 @@ async function scenarioConnect(ctx) {
 
   const url = `${frontendUrl}/?backend=${encodeURIComponent(backendBaseUrl)}&token=${encodeURIComponent(token)}`;
   ctx.log("navigating to the isolated frontend (credentials omitted)");
-  await page.goto(url, { waitUntil: "domcontentloaded" });
+  // The first load after source changes waits for Vite to re-optimize dependencies.
+  const healthRead = page.waitForResponse((response) => new URL(response.url()).pathname === "/health" && response.ok(), { timeout: 60_000 });
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await waitFor(async () => {
-    if (await page.locator("#tab-btn-document").count()) return true;
+    if (await page.locator("#tab-btn-convert").count()) return true;
     const proceed = page.getByRole("button", { name: "Continue", exact: true });
     if (await proceed.count() && await proceed.isEnabled()) await proceed.click();
     return false;
-  }, { timeoutMs: 45_000, message: "setup resolves and dashboard opens" });
+  }, { timeoutMs: 45_000, message: "setup resolves and main navigation appears" });
 
-  await waitFor(
-    async () => await page.getByRole("status", { name: "Backend connected", exact: true }).isVisible(),
-    { timeoutMs: 20_000, message: 'header status reaches "backend connected"' },
-  );
-  assert((await page.locator(".status-dot.is-connected").count()) > 0, "expected a connected status dot in the header");
+  await healthRead;
 
   await gotoTab(page, "convert");
   await waitTabVisible(page, "convert");
-  await waitFor(async () => !(await isTermSelectDisabled(page, "tts-engine-select")), {
+  // The engine picker is hidden while Kokoro is the only engine; a loaded voice list proves the options arrived.
+  await waitFor(async () => !(await isTermSelectDisabled(page, "voice-select")), {
     timeoutMs: 15_000,
-    message: "tts engine options loaded from /api/options/models",
+    message: "voice options loaded from /api/options/models",
   });
 
-  assert((await page.locator(".status-dot.is-connected").count()) > 0, "connection remains healthy after options load");
+  assert(!await page.getByRole("status", { name: "Backend error", exact: true }).isVisible(), "connection remains healthy after authenticated options load");
 }
 
 async function scenarioAddBookPaste(ctx) {
@@ -147,9 +180,10 @@ async function scenarioAddBookPaste(ctx) {
   const text = readFixture(fixturesDir, "benchmark_suite", "short_chapter.md");
   await pasteSource(page, { title: pasteLabel, text });
 
-  await waitFor(async () => (await page.locator("#paste-source-status").textContent())?.includes("added"), {
+  // The new queue row is the confirmation; there is no status sentence.
+  await waitFor(async () => (await page.locator(".queue-row", { hasText: expectedTitle }).count()) > 0, {
     timeoutMs: 15_000,
-    message: "paste status confirms source added",
+    message: "pasted source appears in the queue",
   });
 
   const row = page.locator(".queue-row", { hasText: expectedTitle });
@@ -162,11 +196,11 @@ async function scenarioAddBookPaste(ctx) {
   );
 
   await row.locator(".queue-item-main").click();
-  await waitFor(async () => (await page.locator(".preflight-card").count()) > 0, {
+  await waitFor(async () => (await page.locator(".queue-row.is-expanded .queue-item-detail").count()) > 0, {
     timeoutMs: 5_000,
-    message: "preflight card visible for selected item",
+    message: "selected item expands with its details",
   });
-  const meta = await page.locator(".preflight-card .preflight-title").textContent();
+  const meta = await page.locator(".queue-row.is-expanded .queue-item-meta").textContent();
   assert(meta && /chapter/.test(meta), `expected chapter/word info in preflight meta, got "${meta}"`);
 
   shared.pastedBookTitle = expectedTitle;
@@ -176,6 +210,7 @@ async function scenarioAddBookFiles(ctx) {
   const { page, fixturesDir, shared } = ctx;
   await gotoTab(page, "convert");
   await waitTabVisible(page, "convert");
+  await page.locator("#source-input-file").click();
 
   const rowsBefore = await page.locator(".queue-row").count();
   const files = [
@@ -227,9 +262,11 @@ async function scenarioOptionsSweep(ctx) {
   await gotoTab(page, "convert");
   await waitTabVisible(page, "convert");
 
-  const initialEngineLabel = await currentTermSelectLabel(page, "tts-engine-select");
-  const engineLabels = await termSelectOptions(page, "tts-engine-select");
-  assert(engineLabels.length > 0, "expected at least one tts engine option from the backend");
+  // A single engine offers no choice, so its picker is not shown.
+  const hasEngineChoice = (await page.locator("#tts-engine-select").count()) > 0;
+  const initialEngineLabel = hasEngineChoice ? await currentTermSelectLabel(page, "tts-engine-select") : "";
+  const engineLabels = hasEngineChoice ? await termSelectOptions(page, "tts-engine-select") : [];
+  assert(!hasEngineChoice || engineLabels.length > 1, "an engine picker is only shown with more than one engine");
 
   for (let i = 0; i < Math.min(2, engineLabels.length); i++) {
     const label = engineLabels[i];
@@ -247,11 +284,13 @@ async function scenarioOptionsSweep(ctx) {
     );
   }
 
-  await chooseTermSelectByLabel(page, "tts-engine-select", initialEngineLabel);
-  await waitFor(async () => (await currentTermSelectLabel(page, "tts-engine-select")) === initialEngineLabel, {
-    timeoutMs: 5_000,
-    message: "engine restored to its initial value",
-  });
+  if (hasEngineChoice) {
+    await chooseTermSelectByLabel(page, "tts-engine-select", initialEngineLabel);
+    await waitFor(async () => (await currentTermSelectLabel(page, "tts-engine-select")) === initialEngineLabel, {
+      timeoutMs: 5_000,
+      message: "engine restored to its initial value",
+    });
+  }
   await waitFor(
     async () => {
       const voiceLabel = await currentTermSelectLabel(page, "voice-select");
@@ -274,12 +313,14 @@ async function scenarioOptionsSweep(ctx) {
 
   if (voiceLabels.length > 1) {
     const needle = voiceLabels[0].slice(0, Math.max(1, Math.min(3, voiceLabels[0].length))).toLowerCase();
+    // Voice search lives inside the open voice menu.
+    await openTermSelect(page, "voice-select");
     await page.locator("#voice-search").fill(needle);
     await sleep(400);
-    const filtered = await termSelectOptions(page, "voice-select");
+    const filtered = (await page.locator("#voice-select-listbox .term-select-option-label").allTextContents()).map((label) => label.trim());
     assert(filtered.length > 0, `voice filter "${needle}" produced zero matches`);
     assert(filtered.length <= voiceLabels.length, "voice filter should never expand the option list");
-    await page.locator("#voice-search").fill("");
+    await page.keyboard.press("Escape");
     await sleep(400);
   }
 
@@ -396,10 +437,7 @@ async function scenarioConvertSingle(ctx, source = null) {
     });
   } catch (err) {
     shared.ttsAvailable = false;
-    await page
-      .locator(".rail-action.stop")
-      .click()
-      .catch(() => {});
+    await confirmStop(page).catch(() => {});
     throw new Error(`conversion never reached a terminal state within 10 minutes: ${err.message}`);
   }
 
@@ -411,7 +449,7 @@ async function scenarioConvertSingle(ctx, source = null) {
     timeoutMs: 10_000,
     message: "library tab opens after completion",
   });
-  await waitFor(async () => (await page.locator(".book-row", { hasText: title }).count()) > 0, {
+  await waitFor(async () => (await page.locator(".book-card", { hasText: title }).count()) > 0, {
     timeoutMs: 10_000,
     message: "converted book visible in library",
   });
@@ -425,6 +463,17 @@ async function scenarioCudaCleaner(ctx) {
   }
 }
 
+export function requireCudaCleanerTrace(traces) {
+  assert(Array.isArray(traces) && traces.length > 0,
+    "No saved CUDA cleaning traces. Start the backend with SAVE_CLEANING_DEBUG=1 before running this journey; cleaned prose alone does not prove LLM inference.");
+  const cleaned = traces.find((trace) => typeof trace?.original_text === "string" && trace.original_text.includes("Ibegin"));
+  assert(cleaned, `No saved cleaning trace matches the CUDA source fixture containing "Ibegin" (${traces.length} rows returned).`);
+  assert(cleaned.mode === "llm_success", `expected actual CUDA inference, got ${cleaned.mode}`);
+  assert(typeof cleaned.cleaned_text === "string" && cleaned.cleaned_text.includes("I am tired. I begin again. I wish the wall would stop moving."), "CUDA must repair the extraction artifacts without rewriting prose");
+  assert(!cleaned.llm_error, "CUDA cleaner must not silently fall back");
+  return cleaned;
+}
+
 export async function verifyCudaCleanerChoice(ctx, quantization, index, modelId = "Qwen/Qwen2.5-1.5B-Instruct") {
   const { page, backendBaseUrl, token, log } = ctx;
   await gotoTab(page, "settings");
@@ -435,10 +484,21 @@ export async function verifyCudaCleanerChoice(ctx, quantization, index, modelId 
   }, { timeoutMs: 60_000, message: "CUDA cleaner options load for the requested GPU test" });
   await chooseTermSelectByLabel(page, "cleaner-backend-select", cudaLabel);
   await chooseTermSelectByLabel(page, "cleaner-model-select", modelId);
+  // The device reads as text until changed.
+  await page.locator("#cleaner-cuda-device-change").click();
   await page.locator("#cleaner-cuda-device-input").fill("Cuda");
   assert(await page.locator("#cleaner-cuda-device-input").inputValue() === "CUDA", "device must display CUDA");
   assert(await page.locator("#cleaner-cuda-device-input").getAttribute("spellcheck") === "false", "GPU identifiers must not be spellchecked");
-  await chooseTermSelectByLabel(page, "cleaner-cuda-quantization-select", quantization);
+  await page.locator("#cleaner-cuda-device-input").press("Enter");
+  // Precision is one saved default, set with the Cleaner precision control and saved.
+  const precision = page.locator(`input[name="cleaner-precision"][value="${quantization}"]`);
+  if (!(await precision.isChecked())) {
+    await precision.check();
+    await page.getByRole("button", { name: "Save runtime settings", exact: true }).click();
+    await waitFor(async () => (await precision.isChecked()) && !(await page.getByRole("button", { name: "Saving…", exact: true }).count()), {
+      timeoutMs: 120_000, message: `cleaner precision ${quantization} saved`,
+    });
+  }
 
   let submitted = null;
   const capture = (request) => {
@@ -470,15 +530,24 @@ export async function verifyCudaCleanerChoice(ctx, quantization, index, modelId 
   const book = library.items.find((item) => item.title === title);
   assert(book, "CUDA conversion must be saved in the library");
   const detail = await get(`/api/library/${book.id}`);
-  const traces = [];
+  const previews = [];
   for (const chapter of detail.chapters) {
     const preview = await get(`/api/library/${book.id}/chapters/${chapter.number}/cleaning-preview`);
-    traces.push(...preview.trace_rows);
+    previews.push(preview);
   }
-  const cleaned = traces.find((trace) => trace.original_text.includes("Ibegin"));
-  assert(cleaned?.mode === "llm_success", `expected actual CUDA inference, got ${cleaned?.mode}`);
-  assert(cleaned.cleaned_text.includes("I am tired. I begin again. I wish the wall would stop moving."), "CUDA must repair the extraction artifacts without rewriting prose");
-  assert(!cleaned.llm_error, "CUDA cleaner must not silently fall back");
+  // Keep the exact API evidence even when an assertion fails. Only include the
+  // checked local runtime fields; submitted options may also carry API secrets.
+  const evidencePath = path.join(ctx.artifactsDir, `cuda-cleaner-${index + 1}-${quantization}-evidence.json`);
+  fs.writeFileSync(evidencePath, JSON.stringify({
+    bookId: book.id, title,
+    runtimeOptions: Object.fromEntries(["cleaner_backend", "cleaner_model", "cleaner_cuda_device", "cleaner_cuda_quantization"]
+      .map((key) => [key, submitted[key]])),
+    previews,
+  }, null, 2));
+  for (const preview of previews) {
+    assert(Array.isArray(preview.trace_rows), `Invalid cleaning-preview trace_rows for chapter ${preview.chapter_number}.`);
+  }
+  requireCudaCleanerTrace(previews.flatMap((preview) => preview.trace_rows));
   log(`${quantization}: verified UI selection, submitted precision, saved LLM trace, and corrected text`);
 }
 
@@ -513,11 +582,11 @@ async function scenarioConvertCancel(ctx) {
 
   log("conversion running; cancelling mid-flight");
   await sleep(1000);
-  assert(!(await page.locator(".rail-action.stop").isDisabled()), "expected the stop control to be enabled while running");
-  await page.locator(".rail-action.stop").click();
+  assert(!(await page.locator("#progress-cancel-btn").isDisabled()), "expected the stop control to be enabled while running");
+  await confirmStop(page);
 
   await waitForUiState(page, ["cancelled"], { timeoutMs: 60_000, intervalMs: 500 });
-  await waitFor(async () => (await page.locator(".rail-action.stop").count()) === 0 || await page.locator(".rail-action.stop").isDisabled(), {
+  await waitFor(async () => (await page.locator("#progress-cancel-btn").count()) === 0 || await page.locator("#progress-cancel-btn").isDisabled(), {
     timeoutMs: 10_000,
     message: "stop control disappears or disables after cancel",
   });
@@ -625,17 +694,18 @@ async function scenarioRapidFire(ctx) {
   );
 
   for (let i = 0; i < 2; i++) {
-    for (const tab of ["dashboard", "library", "logs", "progress", "convert", "document"]) {
-      await page.locator(`#tab-btn-${tab}`).click();
+    for (const tab of ["library", "settings", "logs", "progress", "convert", "document"]) {
+      await gotoTab(page, tab);
     }
   }
   await gotoTab(page, "document");
   assert((await readProgressMeta(page)).uiState === "running", "job should still be running after rapid tab switching");
 
+  await page.locator("#source-input-file").click();
   if (!(await page.locator(".manual-path").evaluate((el) => el.open))) await page.locator(".manual-path summary").click();
   for (const fixture of ["footnotes_stub.md", "policy_headings.md"]) {
     await page.locator("#source-path").fill(path.join(fixturesDir, "benchmark_suite", fixture));
-    await page.locator("#preflight-source-btn").click();
+    await page.locator("#source-path").press("Enter");
   }
   const rows = page.locator(".queue-row");
   const rowCount = await rows.count();
@@ -643,17 +713,13 @@ async function scenarioRapidFire(ctx) {
     await rows.nth(i).locator(".queue-item-main").click();
   }
 
-  const metadata = page.locator(".metadata-overrides");
-  if (!(await metadata.evaluate((el) => el.open))) await metadata.locator("summary").click();
   await page.locator("#title-input").fill("Edited mid-preflight");
   await sleep(2000);
   assert((await page.locator("#title-input").inputValue()) === "Edited mid-preflight", "late preflight overwrote the user title");
 
   log("cleaning up: cancelling the still-running rapid-fire job");
-  await page
-    .locator(".rail-action.stop")
-    .click()
-    .catch(() => {});
+  await gotoTab(page, "progress");
+  await confirmStop(page).catch(() => {});
   await gotoTab(page, "progress");
   await waitForUiState(page, ["cancelled", "completed"], { timeoutMs: 60_000, intervalMs: 500 });
   await clearQueue(page, "document");
@@ -670,7 +736,7 @@ async function scenarioPlayerSmoke(ctx) {
 
   await gotoTab(page, "library");
   await waitTabVisible(page, "library");
-  const row = page.locator(".book-row", { hasText: title });
+  const row = page.locator(".book-card", { hasText: title });
   await waitFor(async () => (await row.count()) > 0, { timeoutMs: 15_000, message: `library row for "${title}"` });
   await row.first().click();
   await waitFor(async () => (await page.locator("#book-title-edit").inputValue())?.includes(title), {
@@ -720,6 +786,7 @@ async function scenarioPlayerSmoke(ctx) {
   }
   await sleep(1000);
 
+  await gotoTab(page, "library");
   await row.first().click();
   await waitFor(async () => (await page.locator("#book-title-edit").inputValue())?.includes(title), {
     timeoutMs: 10_000,
@@ -738,15 +805,31 @@ async function scenarioPlayerSmoke(ctx) {
     !(await page.locator("#audio-player").evaluate((el) => Boolean(el.error))),
     "audio element reported a media error after rapid navigation",
   );
+  // Selecting a book exposes its duration before loading audio. Load the
+  // re-selected book through Play before exercising its seek control.
+  const seek = page.locator("#player-seek");
+  if (await seek.isDisabled()) {
+    await page.locator("#play-btn").click();
+    await waitFor(async () => !(await seek.isDisabled())
+      && await page.locator("#audio-player").evaluate((el) => !el.paused), {
+      timeoutMs: 10_000,
+      message: "re-selected book loads and becomes seekable after Play",
+    });
+  }
   if (!(await page.locator("#audio-player").evaluate((el) => el.paused))) await page.locator("#play-btn").click();
-  await page.locator("#player-seek").fill("4");
-  await page.locator("#player-seek").dispatchEvent("change");
-  await waitFor(async () => Math.abs(await page.locator("#audio-player").evaluate((el) => el.currentTime) - 4) < 0.5, { message: "seek reaches four seconds" });
+  await waitFor(async () => await page.locator("#audio-player").evaluate((el) => el.paused), {
+    timeoutMs: 5_000, message: "audio pauses before setting the resume position",
+  });
+  // Arrow keys step the scrubber by five seconds from the live position.
+  await seek.press("Home");
+  await waitFor(async () => await page.locator("#audio-player").evaluate((el) => el.currentTime) < 0.5, { message: "Home returns to the start" });
+  await seek.press("ArrowRight");
+  await waitFor(async () => Math.abs(await page.locator("#audio-player").evaluate((el) => el.currentTime) - 5) < 0.5, { message: "seek reaches five seconds" });
   await sleep(700);
   await page.reload();
   await page.locator("#tab-btn-library").waitFor({ timeout: 35_000 });
   await gotoTab(page, "library");
-  await page.locator(".book-row", { hasText: title }).first().click();
+  await page.locator(".book-card", { hasText: title }).first().click();
   await page.locator("#audio-player").evaluate((el) => {
     el.addEventListener("play", () => { el.dataset.resumeStarted = String(performance.now()); }, { once: true });
   });
@@ -757,7 +840,7 @@ async function scenarioPlayerSmoke(ctx) {
       playingFor: Math.max(0, (performance.now() - Number(el.dataset.resumeStarted)) / 1000),
     }));
     return hasRestoredPlaybackOffset(snapshot);
-  }, { timeoutMs: 1_500, intervalMs: 50, message: "saved four-second offset is restored, excluding naturally elapsed playback" });
+  }, { timeoutMs: 1_500, intervalMs: 50, message: "saved five-second offset is restored, excluding naturally elapsed playback" });
   await page.locator("#play-btn").click();
 }
 
@@ -772,7 +855,7 @@ async function scenarioLibraryCrud(ctx) {
 
   await gotoTab(page, "library");
   await waitTabVisible(page, "library");
-  const row = page.locator(".book-row", { hasText: title });
+  const row = page.locator(".book-card", { hasText: title });
   await waitFor(async () => (await row.count()) > 0, { timeoutMs: 15_000, message: `library row for "${title}"` });
   await row.first().click();
   await waitFor(async () => (await page.locator("#book-title-edit").inputValue()) === title, {
@@ -782,29 +865,27 @@ async function scenarioLibraryCrud(ctx) {
 
   const newTitle = `${title} (edited)`;
   const newAuthor = "Stress Harness Author";
+  await page.locator("#library-edit-toggle").click();
   await page.locator("#book-title-edit").fill(newTitle);
   await page.locator("#book-author-edit").fill(newAuthor);
   await page.locator("#library-save-metadata-btn").click();
-  await waitFor(async () => (await page.locator(".book-row", { hasText: newTitle }).count()) > 0, {
+  await waitFor(async () => (await page.locator(".album-title").textContent()) === newTitle, {
     timeoutMs: 10_000,
     message: "library list reflects the saved title",
   });
 
   const url = `${frontendUrl}/?backend=${encodeURIComponent(backendBaseUrl)}&token=${encodeURIComponent(token)}`;
-  await page.goto(url, { waitUntil: "domcontentloaded" });
+  // The first load after source changes waits for Vite to re-optimize dependencies.
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
   await waitFor(async () => {
-    if (await page.locator("#tab-btn-document").count()) return true;
+    if (await page.locator("#tab-btn-convert").count()) return true;
     const proceed = page.getByRole("button", { name: "Continue", exact: true });
     if (await proceed.count() && await proceed.isEnabled()) await proceed.click();
     return false;
-  }, { timeoutMs: 45_000, message: "setup resolves and dashboard opens" });
-  await waitFor(
-    async () => await page.getByRole("status", { name: "Backend connected", exact: true }).isVisible(),
-    { timeoutMs: 20_000, message: "reconnected after reload" },
-  );
+  }, { timeoutMs: 45_000, message: "setup resolves and main navigation appears" });
   await gotoTab(page, "library");
   await waitTabVisible(page, "library");
-  const reloadedRow = page.locator(".book-row", { hasText: newTitle });
+  const reloadedRow = page.locator(".book-card", { hasText: newTitle });
   await waitFor(async () => (await reloadedRow.count()) > 0, {
     timeoutMs: 15_000,
     message: "edited title persisted after reload",
@@ -815,14 +896,20 @@ async function scenarioLibraryCrud(ctx) {
     message: "edited author persisted after reload",
   });
 
-  const countBefore = await page.locator(".book-row").count();
+  await gotoTab(page, "library");
+  const countBefore = await page.locator(".book-card").count();
+  await reloadedRow.first().click();
   await page.locator("#library-delete-btn").click();
+  const deletionResponse = page.waitForResponse((response) => response.request().method() === "DELETE"
+    && /\/api\/library\/\d+$/.test(new URL(response.url()).pathname));
   await page.locator("#library-delete-confirm-btn").click();
-  await waitFor(async () => (await page.locator(".book-row", { hasText: newTitle }).count()) === 0, {
+  const deletion = await deletionResponse;
+  assert(deletion.ok(), `book deletion must commit successfully before restart (HTTP ${deletion.status()})`);
+  await waitFor(async () => (await page.locator(".album-view").count()) === 0 && (await page.locator(".book-card", { hasText: newTitle }).count()) === 0, {
     timeoutMs: 10_000,
     message: "deleted book removed from the list",
   });
-  const countAfter = await page.locator(".book-row").count();
+  const countAfter = await page.locator(".book-card").count();
   assert(countAfter === countBefore - 1, `expected library count to drop by 1 after delete (was ${countBefore}, now ${countAfter})`);
 
   shared.bookTitles = shared.bookTitles.filter((candidate) => candidate !== title);
@@ -834,8 +921,12 @@ async function scenarioReconnect(ctx) {
     throw new Skip("reconnect scenario requires self-started backend mode");
   }
 
-  await gotoTab(page, "dashboard");
-  await waitTabVisible(page, "dashboard");
+  await gotoTab(page, "library");
+  await waitTabVisible(page, "library");
+  await waitFor(async () => await page.locator("#library-list").getAttribute("aria-busy") === "false", {
+    timeoutMs: 15_000, message: "library snapshot settles before restart",
+  });
+  const titlesBefore = await page.locator("#library-list .book-card-title").allTextContents();
 
   const errorsBefore = ctx.getConsoleErrorCount();
   log("killing the backend process to simulate a crash mid-session");
@@ -851,12 +942,18 @@ async function scenarioReconnect(ctx) {
   ctx.backend = replacement;
   ctx.backendBaseUrl = replacement.baseUrl;
   ctx.token = replacement.token;
+  const healthRead = page.waitForResponse((response) => new URL(response.url()).pathname === "/health" && response.ok(), { timeout: 60_000 });
   await page.goto(`${ctx.frontendUrl}/?backend=${encodeURIComponent(replacement.baseUrl)}&token=${encodeURIComponent(replacement.token)}`);
-  await waitFor(async () => (await page.locator(".status-dot.is-connected").count()) > 0, {
-    timeoutMs: 45_000, message: "restarted backend reconnects with its rotated endpoint",
-  });
+  await healthRead;
+  await page.locator("#tab-btn-library").waitFor({ timeout: 45_000 });
   await gotoTab(page, "library");
-  await waitFor(async () => (await page.locator(".book-row").count()) > 0, { timeoutMs: 15_000, message: "library survives backend restart" });
+  await waitFor(async () => await page.locator("#library-list").getAttribute("aria-busy") === "false", {
+    timeoutMs: 15_000, message: "library loads from the replacement backend",
+  });
+  const titlesAfter = await page.locator("#library-list .book-card-title").allTextContents();
+  assert(JSON.stringify(titlesAfter) === JSON.stringify(titlesBefore),
+    `library book titles survive backend restart (before ${JSON.stringify(titlesBefore)}, after ${JSON.stringify(titlesAfter)})`);
+  if (titlesBefore.length === 0) assert(await page.locator(".library-empty").isVisible(), "an empty library remains usable after backend restart");
 
 }
 

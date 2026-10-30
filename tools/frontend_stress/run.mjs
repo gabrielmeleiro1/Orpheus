@@ -11,10 +11,17 @@ import { cleanupAll, registerCleanup } from "./lib/cleanupRegistry.mjs";
 import { startFrontend } from "./lib/frontendProcess.mjs";
 import { formatDuration, nowIso, redactSecrets } from "./lib/util.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
+import { selectScenarios } from "./lib/scenarioSelection.mjs";
 
 async function launchChromium({ headless }) {
+  const args = ["--host-resolver-rules=MAP localhost 127.0.0.1"];
+  if (process.env.ORPHEUS_HARNESS_CHROMIUM?.trim()) {
+    const executablePath = resolveFallbackChromiumExecutable({ headless });
+    console.warn(`using ORPHEUS_HARNESS_CHROMIUM browser at ${executablePath}`);
+    return chromium.launch({ headless, executablePath, args });
+  }
   try {
-    return await chromium.launch({ headless, args: ["--host-resolver-rules=MAP localhost 127.0.0.1"] });
+    return await chromium.launch({ headless, args });
   } catch (err) {
     if (!/Executable doesn't exist/.test(String(err.message))) {
       throw err;
@@ -24,7 +31,7 @@ async function launchChromium({ headless }) {
       throw err;
     }
     console.warn(`playwright's pinned chromium build is missing; falling back to cached build at ${executablePath}`);
-    return chromium.launch({ headless, executablePath, args: ["--host-resolver-rules=MAP localhost 127.0.0.1"] });
+    return chromium.launch({ headless, executablePath, args });
   }
 }
 
@@ -38,8 +45,10 @@ const safe = (value) => redactSecrets(value, secrets);
 
 function parseArgs(argv) {
   const args = { only: null, headed: false, keepOpen: false, backendUrl: null, token: null, frontendUrl: null, stateDir: null, frontendPort: 5173 };
+  const valueFlags = new Set(["--only", "--backend-url", "--token", "--frontend-url", "--state-dir", "--frontend-port"]);
   for (const raw of argv) {
     const [flag, value] = raw.includes("=") ? raw.split(/=(.*)/s) : [raw, undefined];
+    if (valueFlags.has(flag) && !value?.trim()) throw new Error(`${flag} requires a value`);
     switch (flag) {
       case "--only":
         args.only = value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -64,6 +73,9 @@ function parseArgs(argv) {
         break;
       case "--frontend-port":
         args.frontendPort = Number(value);
+        if (!Number.isInteger(args.frontendPort) || args.frontendPort < 1 || args.frontendPort > 65535) {
+          throw new Error("--frontend-port must be an integer from 1 to 65535");
+        }
         break;
       case "--help":
       case "-h":
@@ -71,9 +83,7 @@ function parseArgs(argv) {
         process.exit(0);
         break;
       default:
-        if (flag.startsWith("--")) {
-          console.warn(`unrecognized flag: ${flag}`);
-        }
+        throw new Error(`unrecognized argument: ${flag}`);
     }
   }
   return args;
@@ -132,6 +142,10 @@ async function main() {
 
   const args = parseArgs(process.argv.slice(2));
   if (args.token) secrets.push(args.token);
+  selectScenarios(SCENARIOS, args.only);
+  if ((args.backendUrl || args.token || args.frontendUrl) && !(args.backendUrl && args.token && args.frontendUrl)) {
+    throw new Error("Reuse mode requires --backend-url, --token, and --frontend-url together");
+  }
   fs.mkdirSync(artifactsDir, { recursive: true });
 
   const reuseMode = Boolean(args.backendUrl && args.token && args.frontendUrl);
@@ -230,9 +244,7 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
     getConsoleErrorCount: () => consoleEvents.length,
   };
 
-  const scenariosToRun = args.only
-    ? SCENARIOS.filter((s) => args.only.includes(s.id) || args.only.includes(s.name))
-    : SCENARIOS.filter((s) => !s.optIn);
+  const scenariosToRun = selectScenarios(SCENARIOS, args.only);
 
   const results = [];
   let hadFailure = false;
@@ -277,6 +289,18 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
 
     if (status === "fail") {
       hadFailure = true;
+      if (scenarioConsoleErrors.length > 0) {
+        // A failed scenario's console errors usually explain it; keep the most frequent ones.
+        const counts = new Map();
+        for (const entry of scenarioConsoleErrors) {
+          const key = `[${entry.kind}] ${entry.text.slice(0, 500)}`;
+          counts.set(key, (counts.get(key) ?? 0) + 1);
+        }
+        const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5);
+        scenarioLog(`console errors during this scenario (${scenarioConsoleErrors.length}):`);
+        for (const [text, count] of top) scenarioLog(`  ${count}× ${text}`);
+        error = [error, "console errors:", ...top.map(([text, count]) => `  ${count}× ${text}`)].join("\n");
+      }
       try {
         const screenshotPath = path.join(artifactsDir, `${scenario.id}-${scenario.name}.png`);
         await page.screenshot({ path: screenshotPath, fullPage: true });

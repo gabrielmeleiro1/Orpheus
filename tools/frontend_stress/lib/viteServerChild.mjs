@@ -6,7 +6,7 @@
 // checkout's `desktop/node_modules` (outside this worktree). Vite's default
 // `server.fs.strict` only serves files that resolve under the project root,
 // so any package asset resolved through that symlink (e.g. the
-// @fontsource/jetbrains-mono .woff2 files loaded via `/@fs/...`) comes back
+// @fontsource-variable/geist .woff2 files loaded via `/@fs/...`) comes back
 // 403 Forbidden. That 403 surfaces as a real browser console error, which
 // would fail every scenario under this harness's console-error policy.
 //
