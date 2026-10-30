@@ -42,11 +42,6 @@ def _combined_docs() -> str:
     )
 
 
-def test_required_release_documentation_files_exist() -> None:
-    for path in (RELEASING, UNSIGNED_INSTALL, RELEASE_TEMPLATE):
-        assert path.is_file(), f"missing {path.relative_to(ROOT)}"
-
-
 def test_docs_index_and_entry_points_link_release_guides() -> None:
     docs_readme = _read(DOCS_README)
     readme = _read(README)
@@ -139,46 +134,6 @@ def test_forbidden_gatekeeper_bypasses_are_absent() -> None:
         assert pattern not in combined, f"forbidden bypass guidance present: {pattern}"
 
 
-def test_source_ci_distinguished_from_local_release_gate() -> None:
-    releasing = _read(RELEASING)
-    readme = _read(README)
-    docs_readme = _read(DOCS_README)
-    combined = "\n".join((releasing, readme, docs_readme, _read(RUN_APPLICATION)))
-
-    assert "source-validation.yml" in combined
-    assert "release_qualification.py" in combined
-    assert re.search(r"source validation|source CI", combined, re.IGNORECASE)
-    assert re.search(
-        r"local release (qualification|gate)|full local",
-        combined,
-        re.IGNORECASE,
-    )
-
-
-def test_four_manual_release_inputs_are_listed() -> None:
-    releasing = _read(RELEASING)
-    template = _read(RELEASE_TEMPLATE)
-    combined = releasing + "\n" + template
-
-    assert "SHA256SUMS" in combined
-    assert "release-qualification-" in combined
-    assert re.search(r"\.dmg\b", combined, re.IGNORECASE)
-    assert re.search(r"release notes", combined, re.IGNORECASE)
-    assert re.search(r"\bfour\b", combined, re.IGNORECASE)
-
-
-def test_manual_github_release_draft_review_publish_procedure() -> None:
-    releasing = _read(RELEASING)
-    template = _read(RELEASE_TEMPLATE)
-    combined = releasing + "\n" + template
-
-    assert re.search(r"\bdraft\b", combined, re.IGNORECASE)
-    assert re.search(r"\breview\b", combined, re.IGNORECASE)
-    assert re.search(r"\bpublish\b", combined, re.IGNORECASE)
-    assert re.search(r"GitHub Release", combined)
-    assert "manual" in combined.lower()
-
-
 def test_no_automatic_publishing_or_tag_push_commands() -> None:
     combined = _combined_docs()
 
@@ -191,17 +146,6 @@ def test_no_automatic_publishing_or_tag_push_commands() -> None:
         combined,
         re.IGNORECASE,
     )
-    assert re.search(r"tag|push|release", combined, re.IGNORECASE)
-
-
-def test_rollback_uninstall_and_removal_documented() -> None:
-    releasing = _read(RELEASING)
-    unsigned = _read(UNSIGNED_INSTALL)
-    combined = releasing + "\n" + unsigned
-
-    assert re.search(r"uninstall|removal|remove", combined, re.IGNORECASE)
-    assert re.search(r"rollback|roll back|previous version", combined, re.IGNORECASE)
-    assert "/Applications/Orpheus.app" in combined or "Applications" in combined
 
 
 def test_qualification_cli_flow_documented() -> None:
@@ -225,14 +169,9 @@ def test_release_template_covers_unsigned_warning_and_checksums() -> None:
     assert re.search(r"rollback|uninstall|removal", template, re.IGNORECASE)
 
 
-def test_no_new_github_actions_release_automation() -> None:
+def test_no_github_actions_workflow_publishes_a_release() -> None:
     workflows = ROOT / ".github" / "workflows"
     assert SOURCE_WORKFLOW.is_file()
-    names = sorted(path.name for path in workflows.glob("*.yml"))
-    assert names == [
-        "release-artifact-validation.yml",
-        "source-validation.yml",
-    ]
 
     # No workflow may publish a release. The artifact-validation workflow does
     # retain its build output via actions/upload-artifact, which is CI

@@ -7,10 +7,9 @@ import math
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable, Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from .macos_processes import (
-    ProcessIdentity,
     ProcessSample,
     attribute_orpheus_tree,
     sample_processes,
@@ -23,21 +22,6 @@ class BudgetDecision:
     passed: bool
     detail: str
     metrics: dict[str, object] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class CycleResult:
-    iteration: int
-    passed: bool
-    detail: str
-
-
-@dataclass(frozen=True)
-class CycleSummary:
-    passed: bool
-    failing_iteration: int | None
-    detail: str
-    results: tuple[CycleResult, ...]
 
 
 def percentile(values: Sequence[float], pct: float) -> float:
@@ -155,54 +139,6 @@ def evaluate_shutdown(
             metrics=metrics,
         )
     return BudgetDecision(passed=True, detail="ok", metrics=metrics)
-
-
-def detect_cycle_survivors(
-    *,
-    prior: Iterable[ProcessIdentity] | None = None,
-    current: Iterable[ProcessIdentity] | None = None,
-    prior_pids: Iterable[int] | None = None,
-    current_pids: Iterable[int] | None = None,
-) -> set[int]:
-    if prior is not None and current is not None:
-        current_by_key = {(item.pid, item.start_time, item.exe): item.pid for item in current}
-        survivors: set[int] = set()
-        for item in prior:
-            key = (item.pid, item.start_time, item.exe)
-            if key in current_by_key:
-                survivors.add(item.pid)
-        return survivors
-    if prior_pids is None or current_pids is None:
-        raise ValueError("prior/current identities or pid sets are required")
-    return set(prior_pids) & set(current_pids)
-
-
-def summarize_launch_cycles(
-    results: Sequence[CycleResult],
-    *,
-    expected_count: int,
-) -> CycleSummary:
-    if len(results) != expected_count:
-        return CycleSummary(
-            passed=False,
-            failing_iteration=None,
-            detail=f"expected {expected_count} cycles, got {len(results)}",
-            results=tuple(results),
-        )
-    for result in results:
-        if not result.passed:
-            return CycleSummary(
-                passed=False,
-                failing_iteration=result.iteration,
-                detail=result.detail,
-                results=tuple(results),
-            )
-    return CycleSummary(
-        passed=True,
-        failing_iteration=None,
-        detail="ok",
-        results=tuple(results),
-    )
 
 
 def evaluate_soak_memory(

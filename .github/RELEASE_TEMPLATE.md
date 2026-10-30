@@ -1,9 +1,9 @@
 # Orpheus macOS release notes template
 
-Use this template when drafting a **manual** GitHub Release. Do not automate
-publishing. Create a draft, attach the four inputs, review, then publish only
-after final review. Tagging, pushing, and releasing each need a **separate
-explicit request**.
+Use this template when drafting a **manual** GitHub Release. Publishing is not
+automated: create a draft, attach the four inputs, review it, and publish only
+after that final review. The full procedure is in
+`docs/RELEASING_MACOS.md`.
 
 ## Title
 
@@ -64,4 +64,4 @@ open; supported right-click Open / System Settings Open Anyway only).
 - [ ] `cd` into the report dir and `shasum -a 256 -c SHA256SUMS` reported OK
 - [ ] Staged DMG and `release-qualification-<version>.md` are beside `SHA256SUMS`
 - [ ] Draft GitHub Release reviewed; no automatic release CLI or new Actions used
-- [ ] No tag or push performed without a separate explicit request
+- [ ] Release tag created and pushed deliberately by the release owner

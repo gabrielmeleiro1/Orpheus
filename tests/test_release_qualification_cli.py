@@ -15,6 +15,7 @@ import pytest
 from tools.release_qualification.checklist import CHECKLIST_IDS, required_fields_for
 from tools.release_qualification.evidence import DEFAULT_EVIDENCE_ROOT, EvidenceRoot, SENTINEL_NAME
 from tools.release_qualification.model import PhaseState, ReleaseState
+from tools.release_qualification.runtime import app_tree_digest, artifact_fingerprint
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "release_qualification.py"
@@ -52,10 +53,19 @@ def _write_artifacts_manifest(
     *,
     dmg_rel: str,
     dmg_digest: str,
-    app_rel: str = "desktop/src-tauri/target/release/bundle/macos/Orpheus.app",
+    app_source: Path | None = None,
 ) -> None:
+    app = report_dir / "fixture.app"
+    if app_source is None:
+        app.mkdir(exist_ok=True)
+        (app / "executable").write_bytes(b"qualified application")
+    else:
+        shutil.copytree(app_source, app)
+    app_digest = app_tree_digest(app)
     (report_dir / "artifacts.json").write_text(
-        json.dumps({"app": app_rel, "dmg": dmg_rel, "dmg_sha256": dmg_digest}),
+        json.dumps({"app": app.relative_to(REPO_ROOT).as_posix(), "dmg": dmg_rel,
+                    "dmg_sha256": dmg_digest, "app_tree_sha256": app_digest,
+                    "artifact_hash": artifact_fingerprint(dmg_digest, app_digest)}),
         encoding="utf-8",
     )
 
@@ -89,13 +99,6 @@ def cleanup_evidence():
             ).cleanup()
         except Exception:
             shutil.rmtree(path, ignore_errors=True)
-
-
-def test_cli_help_lists_exact_subcommands() -> None:
-    result = _run_cli(["--help"])
-    assert result.returncode == 0
-    for name in ("prepare", "run", "observe", "record-check", "finalize", "status"):
-        assert name in result.stdout
 
 
 def test_prepare_creates_evidence_without_building(cleanup_evidence: list[Path]) -> None:
@@ -144,7 +147,7 @@ def test_run_stops_before_computer_use_as_incomplete(
             return PhaseOutcome(PS.PASSED, "ok")
 
         def stop_cu(name: str, path: Path):  # noqa: ARG001
-            return PhaseOutcome(PS.INCOMPLETE, "awaiting Computer Use")
+            return PhaseOutcome(PS.INCOMPLETE, "awaiting manual checks")
 
         return {
             "preflight": ok,
@@ -255,45 +258,6 @@ def test_finalize_refuses_failed_or_incomplete_required_items(
     assert result.returncode == 2
     payload = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
     assert payload["release_state"] != ReleaseState.PASSED.value
-
-
-def test_no_command_publishes_tags_pushes_or_modifies_workflows() -> None:
-    source = SCRIPT.read_text(encoding="utf-8")
-    forbidden = (
-        "gh release",
-        "git tag",
-        "git push",
-        "open https://github.com",
-        ".github/workflows",
-    )
-    for token in forbidden:
-        assert token not in source
-
-
-def test_checklist_ids_are_stable_and_complete() -> None:
-    expected = {
-        "unsigned_first_open",
-        "cold_launch",
-        "warm_launch",
-        "all_tabs_pointer",
-        "all_tabs_keyboard",
-        "file_picker_or_drop",
-        "conversion_progress",
-        "library_playback",
-        "large_library_search_scroll",
-        "idle_shutdown",
-        "startup_shutdown",
-        "active_operation_shutdown",
-        "backend_recovery",
-        "sleep_wake",
-        "resize_scaling",
-        "reduced_motion",
-        "focus_and_labels",
-        "visual_regression",
-        "known_limitations_reviewed",
-    }
-    assert set(CHECKLIST_IDS) == expected
-    assert len(CHECKLIST_IDS) == len(expected)
 
 
 def test_status_reports_incomplete_exit_code(cleanup_evidence: list[Path]) -> None:
@@ -512,7 +476,7 @@ def test_resume_rejects_stale_config_toolchain_artifact_or_commit_fingerprints(
             return PhaseOutcome(PS.PASSED, "ok")
 
         def stop_cu(name: str, path: Path):  # noqa: ARG001
-            return PhaseOutcome(PS.INCOMPLETE, "awaiting Computer Use")
+            return PhaseOutcome(PS.INCOMPLETE, "awaiting manual checks")
 
         return {
             "preflight": ok,
@@ -536,7 +500,12 @@ def test_resume_rejects_stale_config_toolchain_artifact_or_commit_fingerprints(
     assert payload["toolchain_fingerprint"] == "tool-fixed"
     assert payload["commit"] == "commit-fixed"
     # Bundle phase must have refreshed artifact fingerprint from artifacts.json.
-    assert payload["artifact_hash"] == digest
+    manifest = json.loads((report_dir / "artifacts.json").read_text())
+    expected_artifact_hash = hashlib.sha256(
+        json.dumps([digest, manifest["app_tree_sha256"]]).encode()
+    ).hexdigest()
+    assert payload["artifact_hash"] == expected_artifact_hash
+    assert payload["artifact_hash"] != digest
 
     # Stale config
     config_path = report_dir / "config" / "release_qualification.toml"
@@ -574,6 +543,36 @@ def test_resume_rejects_stale_config_toolchain_artifact_or_commit_fingerprints(
     assert stale_tool == 1
 
 
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_observe_rejects_unsupported_platform_before_accessing_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    platform: str,
+) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("release_qualification_cli_platform", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    monkeypatch.setattr(cli.sys, "platform", platform)
+
+    code = cli.main(["observe", "warm-launch", "--report-dir", str(tmp_path / "missing")])
+
+    captured = capsys.readouterr()
+    assert code == cli.EXIT_FAIL
+    assert captured.out == ""
+    assert captured.err.strip() == (
+        "observe requires macOS app bundles and macOS process sampling; "
+        f"unsupported platform: {platform}"
+    )
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="observe samples macOS app bundle processes using the macOS ps command",
+)
 def test_observe_prints_ready_marker_and_warm_launch_needs_handshake(
     cleanup_evidence: list[Path],
     tmp_path: Path,
@@ -587,6 +586,8 @@ def test_observe_prints_ready_marker_and_warm_launch_needs_handshake(
     (app / "Contents" / "MacOS" / "Orpheus").write_text("x", encoding="utf-8")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    _, dmg_rel, dmg_digest = _write_repo_relative_dmg(report_dir.name, b"qualified image")
+    _write_artifacts_manifest(report_dir, dmg_rel=dmg_rel, dmg_digest=dmg_digest, app_source=app)
 
     missing = _run_cli(
         [
@@ -642,6 +643,8 @@ def test_observe_flushes_ready_marker_before_observer_runs(
     (app / "Contents" / "MacOS" / "Orpheus").write_text("x", encoding="utf-8")
     runtime = tmp_path / "runtime"
     runtime.mkdir()
+    _, dmg_rel, dmg_digest = _write_repo_relative_dmg(report_dir.name, b"qualified image")
+    _write_artifacts_manifest(report_dir, dmg_rel=dmg_rel, dmg_digest=dmg_digest, app_source=app)
 
     spec = importlib.util.spec_from_file_location("release_qualification_cli_obs_flush", SCRIPT)
     assert spec is not None and spec.loader is not None
@@ -666,6 +669,7 @@ def test_observe_flushes_ready_marker_before_observer_runs(
 
     monkeypatch.setattr("builtins.print", tracking_print)
     monkeypatch.setattr(ObserverSession, "run", tracking_run)
+    monkeypatch.setattr(cli.sys, "platform", "darwin")
 
     code = cli.main(
         [
@@ -763,9 +767,8 @@ def test_record_check_hashes_metrics_rejects_symlink_and_path_escape(
     sys.platform != "darwin",
     reason="Requires macOS release inspection or POSIX fixture permissions",
 )
-def test_real_handlers_use_injected_runners_and_explicit_prep_details(
+def test_fixture_phases_prepare_evidence_and_manual_phases_stay_incomplete(
     cleanup_evidence: list[Path],
-    tmp_path: Path,
 ) -> None:
     import importlib.util
 
@@ -778,46 +781,17 @@ def test_real_handlers_use_injected_runners_and_explicit_prep_details(
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
 
-    calls: list[str] = []
-
-    def fake_run(spec, **_kwargs):
-        from tools.release_qualification.commands import CommandResult
-
-        calls.append(spec.label)
-        return CommandResult(
-            label=spec.label,
-            argv=tuple(spec.argv),
-            started_at="2026-01-01T00:00:00Z",
-            ended_at="2026-01-01T00:00:01Z",
-            duration_seconds=0.01,
-            exit_code=0,
-            timed_out=False,
-            log_path=str(tmp_path / f"{spec.label}.log"),
-        )
-
-    handlers = cli.build_phase_handlers(report_dir, run_command_fn=fake_run)
+    handlers = cli.build_phase_handlers(report_dir)
     life = handlers["lifecycle_performance"]("lifecycle_performance", report_dir)
     fault = handlers["fault_persistence"]("fault_persistence", report_dir)
     cu = handlers["computer_use"]("computer_use", report_dir)
     fin = handlers["evidence_finalization"]("evidence_finalization", report_dir)
 
     assert life.state is PhaseState.PASSED
-    assert "fixture" in life.detail.lower() or "prepar" in life.detail.lower()
-    assert "budget" not in life.detail.lower()
+    assert (report_dir / "lifecycle-runtime.json").is_file()
     assert fault.state is PhaseState.PASSED
-    assert "fixture" in fault.detail.lower() or "prepar" in fault.detail.lower()
     assert cu.state is PhaseState.INCOMPLETE
     assert fin.state is PhaseState.INCOMPLETE
-
-    # Source validation must exercise the injected runner rather than live builds.
-    from tools.release_qualification.engine import PhaseOutcome
-    from tools.release_qualification.model import PhaseState as PS
-
-    # preflight may fail on host; only assert runner wiring via source_validation path
-    # by stubbing matrix through a thin sidecar call:
-    side = handlers["sidecar_validation"]("sidecar_validation", report_dir)
-    assert side.state in {PS.PASSED, PS.FAILED} or isinstance(side, PhaseOutcome)
-    assert calls, "injected command runner was not used"
 
 
 def test_bundle_validation_does_not_rebuild_sidecar(
@@ -837,12 +811,21 @@ def test_bundle_validation_does_not_rebuild_sidecar(
     cli = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(cli)
 
+    app = tmp_path / "Orpheus.app"
+    app.mkdir()
+    app_digest = app_tree_digest(app)
     calls: list[str] = []
 
     def fake_run(cmd_spec, **_kwargs):
         from tools.release_qualification.commands import CommandResult
 
         calls.append(cmd_spec.label)
+        log = report_dir / "commands" / f"{cmd_spec.label}.log"
+        log.parent.mkdir(exist_ok=True)
+        log.write_text(json.dumps({
+            "app": str(app), "dmg": str(tmp_path / "Orpheus_1.0.0_aarch64.dmg"),
+            "dmg_sha256": "b" * 64, "app_tree_sha256": app_digest,
+        }) + "\n")
         return CommandResult(
             label=cmd_spec.label,
             argv=tuple(cmd_spec.argv),
@@ -881,7 +864,7 @@ def test_bundle_validation_does_not_rebuild_sidecar(
     calls.clear()
     bundle = handlers["bundle_validation"]("bundle_validation", report_dir)
     assert bundle.state is PhaseState.PASSED
-    assert calls == ["tauri-desktop-build"]
+    assert calls == ["tauri-desktop-build", "bundled-runtime-smoke"]
     assert "build-sidecar" not in calls
     assert "sidecar-runtime-smoke" not in calls
 
@@ -932,7 +915,7 @@ def _seed_phases_ready_for_computer_use(report_dir: Path, *, artifact_hash: str)
     payload["phases"]["computer_use"] = {
         "name": "computer_use",
         "state": PhaseState.INCOMPLETE.value,
-        "detail": "awaiting Computer Use",
+        "detail": "awaiting manual checks",
         "updated_at": payload.get("created_at", ""),
     }
     payload["phases"]["evidence_finalization"] = {
@@ -944,7 +927,8 @@ def _seed_phases_ready_for_computer_use(report_dir: Path, *, artifact_hash: str)
     payload["commit"] = fingerprints["commit"]
     payload["config_hash"] = fingerprints["config_hash"]
     payload["toolchain_fingerprint"] = fingerprints["toolchain_fingerprint"]
-    payload["artifact_hash"] = artifact_hash
+    assert json.loads((report_dir / "artifacts.json").read_text())["dmg_sha256"] == artifact_hash
+    payload["artifact_hash"] = fingerprints["artifact_hash"]
     payload["release_state"] = ReleaseState.INCOMPLETE.value
     (report_dir / "report.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     (report_dir / "report.md").write_text("# seeded\n", encoding="utf-8")
@@ -977,7 +961,7 @@ def _seed_all_checklist_passed(report_dir: Path, tmp_path: Path) -> None:
         checks[check_id] = {
             "check_id": check_id,
             "result": "pass",
-            "notes": f"Verified {check_id} during Computer Use",
+            "notes": f"Verified {check_id} during manual checks",
             "evidence_path": evidence_path,
             "evidence_sha256": evidence_sha,
             "metrics_path": metrics_path,

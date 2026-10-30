@@ -20,7 +20,6 @@ FOCUSED_DESKTOP_WEB_TESTS: tuple[str, ...] = (
 @dataclass(frozen=True)
 class MatrixDecision:
     ok: bool
-    blocks_build_qualification: bool
     failed_labels: tuple[str, ...]
 
 
@@ -33,10 +32,8 @@ class ValidationMatrix:
         failed = tuple(
             label for label, code in results if label in known and int(code) != 0
         )
-        blocked = bool(failed)
         return MatrixDecision(
-            ok=not blocked,
-            blocks_build_qualification=blocked,
+            ok=not failed,
             failed_labels=failed,
         )
 
@@ -112,11 +109,6 @@ def build_validation_matrix(*, repo_root: Path) -> ValidationMatrix:
             label="cargo-check",
             argv=("cargo", "check", "--locked"),
             cwd=tauri,
-        ),
-        CommandSpec(
-            label="bench-quick",
-            argv=(python, "-m", "orpheus", "bench", "quick"),
-            cwd=str(root),
         ),
     )
     return ValidationMatrix(commands=commands)

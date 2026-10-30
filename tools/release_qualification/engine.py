@@ -161,7 +161,7 @@ class PhaseEngine:
             return
         if not isinstance(data, dict):
             return
-        digest = data.get("dmg_sha256")
+        digest = data.get("artifact_hash", data.get("dmg_sha256"))
         if isinstance(digest, str) and digest:
             self.artifact_hash = digest
 

@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import os
 import random
 import shutil
+import sqlite3
 import stat
-import struct
-import wave
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
+from modules.storage.db_ownership import DIRECTORY_GATE_NAME, acquire_database
+from modules.storage.managed_roots import STORAGE_OWNER_NAME
 from modules.storage.models import BookCreate, ConversionMode, SourceType
 from modules.storage.sqlite_repo import SQLiteRepository
 
@@ -61,15 +62,6 @@ class RuntimePaths:
     db_path: Path
 
 
-def runtime_env(runtime: RuntimePaths) -> dict[str, str]:
-    return {
-        "AUDIOBOOK_DATA_DIR": str(runtime.data_dir),
-        "AUDIOBOOK_OUTPUT_DIR": str(runtime.output_dir),
-        "AUDIOBOOK_TEMP_DIR": str(runtime.temp_dir),
-        "AUDIOBOOK_DB_PATH": str(runtime.db_path),
-    }
-
-
 @dataclass
 class FixtureRoot:
     evidence_path: Path
@@ -112,12 +104,6 @@ class FixtureRoot:
             raise ValueError(f"runtime already exists: {name}")
         return _materialize_runtime(runtime_root, self.release_id)
 
-    def pristine_backup_path(self, digest: str) -> Path:
-        cleaned = digest.strip().lower()
-        if len(cleaned) != 64 or any(ch not in "0123456789abcdef" for ch in cleaned):
-            raise ValueError("pristine backup digest must be sha256 hex")
-        return self.backups_root / f"{cleaned}.db"
-
 
 def generate_large_library(
     runtime: RuntimePaths,
@@ -150,25 +136,6 @@ def generate_large_library(
     if inserted != count or counted != count:
         raise RuntimeError(f"expected {count} books, inserted {inserted}, found {counted}")
     return counted
-
-
-def generate_playable_audio_fixture(
-    runtime: RuntimePaths,
-    *,
-    seed: int,
-    expected_qualification_root: Path,
-    release_id: str,
-) -> Path:
-    _assert_mutable_runtime(
-        runtime,
-        expected_qualification_root=expected_qualification_root,
-        release_id=release_id,
-    )
-    audio_dir = runtime.output_dir / "playable"
-    audio_dir.mkdir(parents=True, exist_ok=True)
-    audio_path = audio_dir / "qualification-tone.wav"
-    _write_generated_wav(audio_path, seed=seed)
-    return audio_path
 
 
 def create_scenario_copy(
@@ -205,59 +172,46 @@ def create_scenario_copy(
     if target_root.exists():
         raise ValueError(f"scenario already exists: {scenario}")
 
-    _assert_safe_tree_for_copy(source.root, expected_qualification_root=expected)
-    shutil.copytree(source.root, target_root, symlinks=True)
-    _write_sentinel(target_root, release_id)
-    runtime = _runtime_from_root(target_root)
+    with acquire_database(source.db_path) as source_owner, source_owner.lock:
+        _assert_safe_tree_for_copy(source.root, expected_qualification_root=expected)
+        runtime = _runtime_from_root(target_root)
+        with acquire_database(runtime.db_path) as target_owner, target_owner.lock:
+            shutil.copytree(
+                source.root, target_root, symlinks=True, dirs_exist_ok=True,
+                ignore=lambda directory, names: [
+                    name for name in names
+                    if name in {STORAGE_OWNER_NAME, DIRECTORY_GATE_NAME}
+                    or (Path(directory) == source.data_dir and name == source.db_path.name + ".lock")
+                ],
+            )
+            _write_sentinel(target_root, release_id)
 
-    if scenario == "corrupt-db":
-        _preserve_pristine_backup(
-            source,
-            backups_root,
-            expected_qualification_root=expected,
-            release_id=release_id,
-        )
-        runtime.db_path.write_bytes(b"CORRUPTED-RELEASE-QUALIFICATION-DB\n")
-    elif scenario == "missing-output":
-        if runtime.output_dir.exists():
-            for child in list(runtime.output_dir.iterdir()):
-                if child.name == SENTINEL_NAME:
-                    continue
-                if child.is_symlink():
-                    child.unlink()
-                elif child.is_dir():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
-        runtime.output_dir.mkdir(parents=True, exist_ok=True)
-    elif scenario == "read-only-copy":
-        _make_tree_read_only(runtime.root)
-    elif scenario in {"clean", "large-library"}:
-        pass
+            if scenario == "corrupt-db":
+                _preserve_pristine_backup(
+                    source,
+                    backups_root,
+                    expected_qualification_root=expected,
+                    release_id=release_id,
+                )
+                runtime.db_path.write_bytes(b"CORRUPTED-RELEASE-QUALIFICATION-DB\n")
+            elif scenario == "missing-output":
+                if runtime.output_dir.exists():
+                    for child in list(runtime.output_dir.iterdir()):
+                        if child.name == SENTINEL_NAME:
+                            continue
+                        if child.is_symlink():
+                            child.unlink()
+                        elif child.is_dir():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                runtime.output_dir.mkdir(parents=True, exist_ok=True)
+            elif scenario == "read-only-copy":
+                _make_tree_read_only(runtime.root)
+            elif scenario in {"clean", "large-library"}:
+                pass
 
-    return runtime
-
-
-def cleanup_fixture_paths(
-    runtime: RuntimePaths,
-    *,
-    expected_qualification_root: Path,
-    release_id: str,
-) -> None:
-    root = runtime.root.resolve()
-    expected = expected_qualification_root.resolve()
-    _reject_live_paths(root)
-
-    if not root.is_relative_to(expected):
-        raise ValueError("refuse cleanup: path outside qualification evidence root")
-    if root == expected:
-        raise ValueError("refuse cleanup: refusing qualification evidence root itself")
-
-    _assert_sentinel_matches(root, release_id)
-
-    if root.exists():
-        _make_tree_writable(root)
-        shutil.rmtree(root)
+            return runtime
 
 
 def _reject_live_paths(path: Path) -> None:
@@ -295,14 +249,33 @@ def _assert_mutable_runtime(
         raise ValueError("refuse: path outside qualification evidence root")
     if root == expected:
         raise ValueError("refuse: refusing qualification evidence root itself")
-    if runtime.root.is_symlink():
+    if _is_link(runtime.root):
         raise ValueError("refuse: runtime root must not be a symlink")
     _assert_sentinel_matches(runtime.root, release_id)
     for child in (runtime.data_dir, runtime.output_dir, runtime.temp_dir, runtime.db_path):
-        resolved = child.resolve()
-        _reject_live_paths(resolved)
-        if not resolved.is_relative_to(expected):
-            raise ValueError("refuse: runtime child escapes qualification evidence root")
+        _assert_confined_path(child, root)
+    for suffix in (".lock", "-wal", "-shm"):
+        _assert_confined_path(Path(str(runtime.db_path) + suffix), root)
+    _assert_confined_path(runtime.db_path.parent / DIRECTORY_GATE_NAME, root)
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or path.is_junction()
+
+
+def _assert_confined_path(path: Path, root: Path) -> None:
+    """Reject linked managed paths before opening, chmodding or removing them."""
+    resolved = path.resolve()
+    _reject_live_paths(resolved)
+    if resolved == root or not resolved.is_relative_to(root):
+        raise ValueError("refuse: runtime child escapes its fixture root")
+    current = path
+    while current.resolve() != root:
+        if _is_link(current):
+            raise ValueError("refuse: managed fixture paths must not contain symlinks or junctions")
+        if current == current.parent:
+            raise ValueError("refuse: runtime child escapes its fixture root")
+        current = current.parent
 
 
 def _assert_safe_tree_for_copy(
@@ -315,7 +288,7 @@ def _assert_safe_tree_for_copy(
         base = Path(dirpath)
         for name in list(dirnames):
             child = base / name
-            if child.is_symlink():
+            if _is_link(child):
                 raise ValueError(f"refuse: unsafe directory symlink child {child}")
         for name in filenames:
             child = base / name
@@ -402,63 +375,65 @@ def _preserve_pristine_backup(
         raise ValueError("refuse: backups root outside qualification evidence root")
     _assert_sentinel_matches(backups_root, release_id)
     backups_root.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(source.db_path.read_bytes()).hexdigest()
-    backup_path = backups_root / f"{digest}.db"
-    if backup_path.exists() or backup_path.is_symlink():
+    with acquire_database(source.db_path) as ownership, ownership.lock:
+        # The shared repository lock excludes commits while WAL pages are copied.
+        with closing(sqlite3.connect(source.db_path.resolve().as_uri() + "?mode=rw", uri=True)) as connection:
+            busy, _, _ = connection.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+            if busy:
+                raise ValueError("cannot checkpoint pristine database while readers are active")
+        digest = hashlib.sha256(source.db_path.read_bytes()).hexdigest()
+        backup_path = backups_root / f"{digest}.db"
         if backup_path.is_symlink():
             raise ValueError("refuse: pristine backup path is a symlink")
-        return backup_path
-    shutil.copy2(source.db_path, backup_path)
-    return backup_path
-
-
-def _write_generated_wav(path: Path, *, seed: int, duration_seconds: float = 0.25) -> None:
-    rng = random.Random(seed)
-    sample_rate = 24_000
-    frequency = 220.0 + (rng.randint(0, 20) * 10.0)
-    frame_count = int(sample_rate * duration_seconds)
-    frames = bytearray()
-    for index in range(frame_count):
-        sample = int(16000 * math.sin(2 * math.pi * frequency * (index / sample_rate)))
-        frames.extend(struct.pack("<h", sample))
-    with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(sample_rate)
-        handle.writeframes(bytes(frames))
+        with acquire_database(backup_path) as backup_owner, backup_owner.lock:
+            if not backup_path.exists():
+                shutil.copy2(source.db_path, backup_path)
+            return backup_path
 
 
 def _iter_tree_entries(root: Path):
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         base = Path(dirpath)
         # Never descend through directory symlinks.
-        dirnames[:] = [name for name in dirnames if not (base / name).is_symlink()]
-        for name in dirnames:
+        children = list(dirnames)
+        dirnames[:] = [name for name in dirnames if not _is_link(base / name)]
+        for name in children:
             yield base / name
         for name in filenames:
             yield base / name
 
 
+def _chmod_regular_path(path: Path, mode: int) -> None:
+    if _is_link(path):
+        return
+    # Python 3.12 on Windows cannot pass follow_symlinks=False to chmod.
+    # Links and junctions have already been excluded from this fixture walk.
+    if os.chmod in os.supports_follow_symlinks:
+        path.chmod(mode, follow_symlinks=False)
+    else:
+        path.chmod(mode)
+
+
 def _make_tree_read_only(root: Path) -> None:
     entries = sorted(_iter_tree_entries(root), reverse=True)
     for path in entries:
-        if path.is_symlink():
+        if _is_link(path):
             continue
         mode = path.lstat().st_mode
-        path.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH), follow_symlinks=False)
-    if not root.is_symlink():
+        _chmod_regular_path(path, mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
+    if not _is_link(root):
         mode = root.lstat().st_mode
-        root.chmod(mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH), follow_symlinks=False)
+        _chmod_regular_path(root, mode & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH))
 
 
 def _make_tree_writable(root: Path) -> None:
     if not root.exists():
         return
-    if not root.is_symlink():
+    if not _is_link(root):
         mode = root.lstat().st_mode
-        root.chmod(mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
+        _chmod_regular_path(root, mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)
     for path in _iter_tree_entries(root):
-        if path.is_symlink():
+        if _is_link(path):
             continue
         mode = path.lstat().st_mode
-        path.chmod(mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR, follow_symlinks=False)
+        _chmod_regular_path(path, mode | stat.S_IWUSR | stat.S_IRUSR | stat.S_IXUSR)

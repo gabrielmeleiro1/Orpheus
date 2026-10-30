@@ -40,9 +40,6 @@ _BUDGET_KEYS = frozenset(
         "idle_cpu_p95_percent",
         "soak_memory_growth_mib",
         "soak_memory_growth_percent",
-        "library_long_task_ms",
-        "candidate_launch_cycles",
-        "final_launch_cycles",
     }
 )
 _TOP_LEVEL_KEYS = frozenset({"release", "budgets"})
@@ -94,9 +91,6 @@ class PerformanceBudgets:
     idle_cpu_p95_percent: float
     soak_memory_growth_mib: float
     soak_memory_growth_percent: float
-    library_long_task_ms: float
-    candidate_launch_cycles: int
-    final_launch_cycles: int
 
     def __post_init__(self) -> None:
         numeric_fields = (
@@ -108,9 +102,6 @@ class PerformanceBudgets:
             self.idle_cpu_p95_percent,
             self.soak_memory_growth_mib,
             self.soak_memory_growth_percent,
-            self.library_long_task_ms,
-            float(self.candidate_launch_cycles),
-            float(self.final_launch_cycles),
         )
         if any(value <= 0 for value in numeric_fields):
             raise ValueError("performance budgets must be positive")
@@ -121,10 +112,6 @@ class PerformanceBudgets:
         if self.idle_cpu_median_percent >= self.idle_cpu_p95_percent:
             raise ValueError(
                 "idle_cpu_median_percent must be less than idle_cpu_p95_percent"
-            )
-        if self.candidate_launch_cycles >= self.final_launch_cycles:
-            raise ValueError(
-                "candidate_launch_cycles must be less than final_launch_cycles"
             )
 
 
@@ -180,14 +167,8 @@ class QualificationConfig:
                 idle_cpu_p95_percent=float(budgets["idle_cpu_p95_percent"]),
                 soak_memory_growth_mib=float(budgets["soak_memory_growth_mib"]),
                 soak_memory_growth_percent=float(budgets["soak_memory_growth_percent"]),
-                library_long_task_ms=float(budgets["library_long_task_ms"]),
-                candidate_launch_cycles=int(budgets["candidate_launch_cycles"]),
-                final_launch_cycles=int(budgets["final_launch_cycles"]),
             ),
         )
-
-    def is_supported_host(self, *, system: str, machine: str) -> bool:
-        return system == "darwin" and machine == self.architecture
 
     def require_version(self, version: str) -> str:
         cleaned = version.strip()

@@ -75,32 +75,6 @@ class ArtifactInspectionResult:
     detail: str = ""
 
 
-def expected_app_bundle_path(repo_root: Path, config: QualificationConfig) -> Path:
-    return (
-        Path(repo_root)
-        / "desktop"
-        / "src-tauri"
-        / "target"
-        / "release"
-        / "bundle"
-        / "macos"
-        / f"{config.product_name}.app"
-    )
-
-
-def expected_dmg_path(repo_root: Path, *, version: str) -> Path:
-    return (
-        Path(repo_root)
-        / "desktop"
-        / "src-tauri"
-        / "target"
-        / "release"
-        / "bundle"
-        / "dmg"
-        / f"Orpheus_{version}_aarch64.dmg"
-    )
-
-
 def build_sidecar_commands(*, repo_root: Path) -> tuple[CommandSpec, ...]:
     root = Path(repo_root)
     python = str(root / ".venv" / "bin" / "python")
@@ -150,12 +124,13 @@ def build_bundle_commands(*, repo_root: Path) -> tuple[CommandSpec, ...]:
             argv=("npm", "run", "desktop:build"),
             cwd=str(root / "desktop"),
         ),
-    )
-
-
-def build_packaging_commands(*, repo_root: Path) -> tuple[CommandSpec, ...]:
-    return build_sidecar_commands(repo_root=repo_root) + build_bundle_commands(
-        repo_root=repo_root
+        CommandSpec(
+            label="bundled-runtime-smoke",
+            argv=(str(root / ".venv/bin/python"), "-m", "tools.release_qualification.runtime",
+                  "--repo-root", str(root)),
+            cwd=str(root),
+            timeout_seconds=240,
+        ),
     )
 
 

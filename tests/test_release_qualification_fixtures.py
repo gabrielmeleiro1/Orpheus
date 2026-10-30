@@ -6,7 +6,6 @@ import hashlib
 import stat
 import sys
 import time
-import wave
 from pathlib import Path
 
 import pytest
@@ -18,11 +17,8 @@ from tools.release_qualification.fixtures import (
     SCENARIO_NAMES,
     FixtureRoot,
     RuntimePaths,
-    cleanup_fixture_paths,
     create_scenario_copy,
     generate_large_library,
-    generate_playable_audio_fixture,
-    runtime_env,
 )
 
 # These fixtures exercise the macOS qualification sandbox, including POSIX
@@ -35,7 +31,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture
-def evidence_root() -> EvidenceRoot:
+def evidence_root(tmp_path, monkeypatch) -> EvidenceRoot:
+    from tools.release_qualification import evidence, fixtures
+
+    repo_root = tmp_path / "repository"
+    monkeypatch.setattr(sys.modules[__name__], "REPO_ROOT", repo_root)
+    monkeypatch.setattr(evidence, "_repo_root", lambda: repo_root)
+    monkeypatch.setattr(fixtures, "__file__", str(repo_root / "tools" / "release_qualification" / "fixtures.py"))
     root = EvidenceRoot.create(
         release_id="1.0.0-fixtures",
         base=REPO_ROOT / DEFAULT_EVIDENCE_ROOT,
@@ -67,25 +69,6 @@ def test_fixture_runtime_paths_live_below_sentinelled_qualification_root(
         runtime.db_path.parent,
     ):
         assert path.resolve().is_relative_to(evidence_root.path.resolve())
-
-
-def test_runtime_env_uses_existing_audiobook_path_contract(evidence_root: EvidenceRoot) -> None:
-    fixtures = FixtureRoot.create(evidence_root)
-    runtime = fixtures.create_runtime("clean")
-    env = runtime_env(runtime)
-
-    assert env == {
-        "AUDIOBOOK_DATA_DIR": str(runtime.data_dir),
-        "AUDIOBOOK_OUTPUT_DIR": str(runtime.output_dir),
-        "AUDIOBOOK_TEMP_DIR": str(runtime.temp_dir),
-        "AUDIOBOOK_DB_PATH": str(runtime.db_path),
-    }
-    assert set(env) == {
-        "AUDIOBOOK_DATA_DIR",
-        "AUDIOBOOK_OUTPUT_DIR",
-        "AUDIOBOOK_TEMP_DIR",
-        "AUDIOBOOK_DB_PATH",
-    }
 
 
 def test_large_library_generates_10000_valid_records_via_storage_api(
@@ -166,34 +149,6 @@ def test_fixture_generation_is_deterministic_from_seed(evidence_root: EvidenceRo
     assert tags_a == tags_b
 
 
-def test_playable_fixture_uses_only_project_generated_audio(
-    evidence_root: EvidenceRoot,
-) -> None:
-    fixtures = FixtureRoot.create(evidence_root)
-    runtime = fixtures.create_runtime("playable")
-
-    audio_path = generate_playable_audio_fixture(
-        runtime,
-        seed=11,
-        expected_qualification_root=evidence_root.path,
-        release_id=evidence_root.release_id,
-    )
-    assert audio_path.is_file()
-    assert audio_path.resolve().is_relative_to(runtime.root.resolve())
-    assert audio_path.suffix.lower() == ".wav"
-    assert audio_path.stat().st_size > 44
-
-    with wave.open(str(audio_path), "rb") as handle:
-        assert handle.getnchannels() == 1
-        assert handle.getsampwidth() == 2
-        assert handle.getframerate() == 24_000
-        assert handle.getnframes() > 0
-
-    # Must not reference external downloads or live library media.
-    assert "Library/Application Support" not in str(audio_path)
-    assert "/Downloads/" not in str(audio_path)
-
-
 def test_corruption_scenarios_operate_on_copies_with_hash_backup(
     evidence_root: EvidenceRoot,
 ) -> None:
@@ -220,7 +175,7 @@ def test_corruption_scenarios_operate_on_copies_with_hash_backup(
     assert corrupt.root.resolve() != pristine.root.resolve()
     assert corrupt.db_path.resolve() != pristine.db_path.resolve()
 
-    backup = fixtures.pristine_backup_path(pristine_hash)
+    backup = fixtures.backups_root / f"{pristine_hash}.db"
     assert backup.is_file()
     assert hashlib.sha256(backup.read_bytes()).hexdigest() == pristine_hash
     assert backup.read_bytes() == pristine_bytes
@@ -238,12 +193,6 @@ def test_all_required_scenario_roots_are_independent(evidence_root: EvidenceRoot
         pristine,
         seed=5,
         count=10,
-        expected_qualification_root=evidence_root.path,
-        release_id=evidence_root.release_id,
-    )
-    generate_playable_audio_fixture(
-        pristine,
-        seed=5,
         expected_qualification_root=evidence_root.path,
         release_id=evidence_root.release_id,
     )
@@ -323,13 +272,6 @@ def test_mutating_ops_refuse_forged_sentinel_on_live_application_support(
                 expected_qualification_root=evidence_root.path,
                 release_id=evidence_root.release_id,
             )
-        with pytest.raises(ValueError, match="refuse|live|repository"):
-            generate_playable_audio_fixture(
-                forged_repo,
-                seed=1,
-                expected_qualification_root=evidence_root.path,
-                release_id=evidence_root.release_id,
-            )
         scenarios = evidence_root.path / "fixtures" / "scenarios"
         scenarios.mkdir(parents=True, exist_ok=True)
         (scenarios / SENTINEL_NAME).write_text(f"{evidence_root.release_id}\n", encoding="utf-8")
@@ -404,63 +346,3 @@ def test_scenario_copy_preserves_external_symlinks_and_refuses_unsafe_children(
             release_id=evidence_root.release_id,
             backups_root=fixtures.backups_root,
         )
-
-
-def test_cleanup_refuses_live_application_support_and_repository_data(
-    evidence_root: EvidenceRoot,
-    tmp_path: Path,
-) -> None:
-    fixtures = FixtureRoot.create(evidence_root)
-    runtime = fixtures.create_runtime("clean")
-
-    live_app_support = Path.home() / "Library" / "Application Support" / "Orpheus"
-    with pytest.raises(ValueError, match="Application Support|refuse|live"):
-        cleanup_fixture_paths(
-            RuntimePaths(
-                root=live_app_support,
-                data_dir=live_app_support / "data",
-                output_dir=live_app_support / "output",
-                temp_dir=live_app_support / "temp",
-                db_path=live_app_support / "data" / "audiobooks.db",
-            ),
-            expected_qualification_root=evidence_root.path,
-            release_id=evidence_root.release_id,
-        )
-
-    repo_data = REPO_ROOT / "data"
-    with pytest.raises(ValueError, match="repository|refuse|live|data"):
-        cleanup_fixture_paths(
-            RuntimePaths(
-                root=repo_data,
-                data_dir=repo_data,
-                output_dir=REPO_ROOT / "output",
-                temp_dir=REPO_ROOT / "temp",
-                db_path=repo_data / "audiobooks.db",
-            ),
-            expected_qualification_root=evidence_root.path,
-            release_id=evidence_root.release_id,
-        )
-
-    # Outside the sentinelled qualification tree is refused even if temporary.
-    foreign = tmp_path / "foreign-runtime"
-    foreign.mkdir()
-    (foreign / SENTINEL_NAME).write_text(f"{evidence_root.release_id}\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="refuse|outside|qualification|sentinel"):
-        cleanup_fixture_paths(
-            RuntimePaths(
-                root=foreign,
-                data_dir=foreign / "data",
-                output_dir=foreign / "output",
-                temp_dir=foreign / "temp",
-                db_path=foreign / "data" / "library.db",
-            ),
-            expected_qualification_root=evidence_root.path,
-            release_id=evidence_root.release_id,
-        )
-
-    cleanup_fixture_paths(
-        runtime,
-        expected_qualification_root=evidence_root.path,
-        release_id=evidence_root.release_id,
-    )
-    assert not runtime.root.exists()

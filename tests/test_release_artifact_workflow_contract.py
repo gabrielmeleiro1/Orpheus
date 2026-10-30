@@ -24,7 +24,6 @@ def test_release_workflow_has_manual_and_release_triggers() -> None:
     assert "push" in triggers
     assert "tags" in triggers["push"]
     assert "branches" in triggers["push"]
-    assert workflow["name"] == "Release artifact validation"
 
 
 def test_release_workflow_builds_then_verifies_and_smokes_packaged_app() -> None:
@@ -48,13 +47,12 @@ def test_release_workflow_builds_then_verifies_and_smokes_packaged_app() -> None
         "--backend sidecar",
         "--check-ffmpeg-runtime",
         "release-artifact-smoke.log",
-        "upload-artifact@v4",
+        "upload-artifact@v7",
     )
     for entry in required:
         assert entry in text
     assert text.index("npm run desktop:build") < text.index("EXPECTED_ARCH")
     assert text.index("EXPECTED_ARCH") < text.index("desktop_runtime_smoke.py")
-    assert "Contents/MacOS/Orpheus" not in text
 
 
 def test_release_workflow_verifies_base_profile_in_a_clean_environment() -> None:

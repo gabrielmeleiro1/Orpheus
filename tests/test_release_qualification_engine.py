@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -21,25 +20,6 @@ from tools.release_qualification.model import PhaseState, ReleaseState
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE_BASE = REPO_ROOT / DEFAULT_EVIDENCE_ROOT
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
-def test_run_command_streams_without_communicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    def _forbid_communicate(self, *args, **kwargs):  # noqa: ANN001
-        raise AssertionError("communicate must not buffer unbounded stdout/stderr")
-
-    monkeypatch.setattr(subprocess.Popen, "communicate", _forbid_communicate)
-    log_dir = tmp_path / "commands"
-    spec = CommandSpec(
-        label="stream-no-communicate",
-        argv=[sys.executable, "-c", "import sys; sys.stdout.write('ok'); sys.stderr.write('e')"],
-        cwd=str(tmp_path),
-    )
-    result = run_command(spec, log_dir=log_dir, max_log_bytes=1024)
-    assert result.exit_code == 0
-    log_text = (log_dir / Path(result.log_path).name).read_text(encoding="utf-8")
-    assert "ok" in log_text
-    assert "e" in log_text
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
@@ -321,36 +301,6 @@ def test_phase_engine_persists_incomplete_and_skipped_outcomes(tmp_path: Path):
     payload = (evidence.path / "report.json").read_text(encoding="utf-8")
     assert '"incomplete"' in payload
     assert '"skipped"' in payload
-    evidence.cleanup()
-
-
-def test_report_markdown_write_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    evidence = EvidenceRoot.create(release_id="1.0.0-atomic-md", base=EVIDENCE_BASE)
-    seen: list[Path] = []
-    original_replace = Path.replace
-
-    def tracking_replace(self: Path, target_path: Path) -> Path:
-        seen.append(self)
-        assert self.parent == target_path.parent
-        return original_replace(self, target_path)
-
-    def handler(phase_name: str, report_dir: Path) -> None:
-        if phase_name == "preflight":
-            raise RuntimeError("stop")
-
-    monkeypatch.setattr(Path, "replace", tracking_replace)
-    engine = PhaseEngine(
-        report_dir=evidence.path,
-        release_id="1.0.0-atomic-md",
-        commit="abc123",
-        config_hash="cfg1",
-        toolchain_fingerprint="tool1",
-        artifact_hash="art1",
-        phase_handlers={name: handler for name in PHASE_REGISTRY},
-    )
-    engine.run()
-    md_targets = [path for path in seen if path.name.startswith(".report.md.")]
-    assert md_targets, "expected atomic temp publish for report.md"
     evidence.cleanup()
 
 

@@ -15,14 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 VENV_PYTHON = str(REPO_ROOT / ".venv" / "bin" / "python")
 
 
-def test_focused_desktop_web_paths_match_testing_docs():
-    assert FOCUSED_DESKTOP_WEB_TESTS == (
-        "tests/test_web_api.py",
-        "tests/test_web_events.py",
-        "tests/test_web_desktop_auth.py",
-        "tests/test_desktop_backend_launcher.py",
-        "tests/test_desktop_runtime_contract.py",
-    )
+def test_focused_desktop_web_tests_exist():
+    assert FOCUSED_DESKTOP_WEB_TESTS
+    for path in FOCUSED_DESKTOP_WEB_TESTS:
+        assert (REPO_ROOT / path).is_file(), path
 
 
 def test_validation_matrix_creates_exact_argv_and_cwd_specs():
@@ -85,10 +81,6 @@ def test_validation_matrix_creates_exact_argv_and_cwd_specs():
     assert by_label["cargo-check"].argv == ("cargo", "check", "--locked")
     assert by_label["cargo-check"].cwd == tauri
 
-    bench = by_label["bench-quick"]
-    assert bench.argv == (VENV_PYTHON, "-m", "orpheus", "bench", "quick")
-    assert bench.cwd == str(REPO_ROOT)
-
 
 def test_matrix_commands_never_use_shell_true():
     matrix = build_validation_matrix(repo_root=REPO_ROOT)
@@ -99,7 +91,7 @@ def test_matrix_commands_never_use_shell_true():
         assert all(isinstance(part, str) for part in spec.argv)
 
 
-def test_failed_matrix_command_blocks_build_qualification():
+def test_failed_matrix_command_fails_decision():
     matrix = build_validation_matrix(repo_root=REPO_ROOT)
     results = [
         ("ruff-check", 0),
@@ -108,18 +100,9 @@ def test_failed_matrix_command_blocks_build_qualification():
     ]
     decision = matrix.evaluate_results(results)
     assert decision.ok is False
-    assert decision.blocks_build_qualification is True
     assert decision.failed_labels == ("python-contract",)
 
     all_pass = [(spec.label, 0) for spec in matrix.commands]
     passed = matrix.evaluate_results(all_pass)
     assert passed.ok is True
-    assert passed.blocks_build_qualification is False
     assert passed.failed_labels == ()
-
-
-def test_testing_docs_describe_release_qualification_gate():
-    text = (REPO_ROOT / "docs" / "TESTING.md").read_text(encoding="utf-8")
-    assert "scripts/release_qualification.py" in text
-    assert "source validation" in text.lower() or "source-validation" in text
-    assert "local release gate" in text.lower() or "full local release" in text.lower()

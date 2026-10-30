@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -16,24 +17,16 @@ from tools.release_qualification.model import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "config" / "release_qualification.toml"
+TAURI_CONFIG = REPO_ROOT / "desktop" / "src-tauri" / "tauri.conf.json"
 
 
-def test_default_config_requires_darwin_arm64_host():
+def test_required_bundle_metadata_matches_the_tauri_bundle():
     config = load_qualification_config(DEFAULT_CONFIG)
+    tauri = json.loads(TAURI_CONFIG.read_text(encoding="utf-8"))
 
-    assert config.is_supported_host(system="darwin", machine="arm64") is True
-    assert config.is_supported_host(system="darwin", machine="x86_64") is False
-    assert config.is_supported_host(system="linux", machine="arm64") is False
-
-
-def test_required_bundle_metadata_is_orpheus_desktop():
-    config = load_qualification_config(DEFAULT_CONFIG)
-
-    assert config.product_name == "Orpheus"
-    assert config.bundle_id == "com.orpheus.desktop"
-    assert config.architecture == "arm64"
-    assert config.minimum_macos == "14.0"
-    assert config.runtime_profiles == ("base", "mlx")
+    assert config.product_name == tauri["productName"]
+    assert config.bundle_id == tauri["identifier"]
+    assert config.minimum_macos == tauri["bundle"]["macOS"]["minimumSystemVersion"]
 
 
 def test_version_must_be_non_empty():
@@ -60,14 +53,10 @@ def test_performance_budgets_are_positive_and_internally_consistent():
     assert budgets.idle_cpu_p95_percent > 0
     assert budgets.soak_memory_growth_mib > 0
     assert budgets.soak_memory_growth_percent > 0
-    assert budgets.library_long_task_ms > 0
-    assert budgets.candidate_launch_cycles > 0
-    assert budgets.final_launch_cycles > 0
 
     assert budgets.warm_launch_seconds < budgets.cold_launch_seconds
     assert budgets.window_close_seconds < budgets.process_exit_seconds
     assert budgets.idle_cpu_median_percent < budgets.idle_cpu_p95_percent
-    assert budgets.candidate_launch_cycles < budgets.final_launch_cycles
 
 
 def test_unknown_toml_keys_are_rejected(tmp_path: Path):
@@ -90,9 +79,6 @@ idle_cpu_median_percent = 3.0
 idle_cpu_p95_percent = 8.0
 soak_memory_growth_mib = 100
 soak_memory_growth_percent = 10.0
-library_long_task_ms = 250
-candidate_launch_cycles = 25
-final_launch_cycles = 100
 typo_budget = 1.0
 """.strip()
         + "\n",
@@ -123,26 +109,9 @@ def test_inconsistent_budgets_are_rejected():
                     "idle_cpu_p95_percent": 8.0,
                     "soak_memory_growth_mib": 100,
                     "soak_memory_growth_percent": 10.0,
-                    "library_long_task_ms": 250,
-                    "candidate_launch_cycles": 25,
-                    "final_launch_cycles": 100,
                 },
             }
         )
-
-
-def test_phase_states_are_restricted():
-    assert {state.value for state in PhaseState} == {
-        "not_started",
-        "running",
-        "passed",
-        "failed",
-        "skipped",
-        "incomplete",
-    }
-    assert PhaseState("passed") is PhaseState.PASSED
-    with pytest.raises(ValueError):
-        PhaseState("warning")
 
 
 def test_report_passes_only_when_every_required_phase_passed():

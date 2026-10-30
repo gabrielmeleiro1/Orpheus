@@ -7,23 +7,35 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os:
-          - macos-14
+          - macos-15
           - windows-latest
+    defaults:
+      run:
+        # Bash runs with -e and pipefail on every OS, so a failing line in a
+        # multi-line step fails the step on Windows too.
+        shell: bash
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -33,9 +45,9 @@ jobs:
             requirements/base.txt
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
@@ -77,6 +89,10 @@ jobs:
       - name: Test desktop frontend
         working-directory: desktop
         run: npm test -- --run
+
+      - name: Build desktop frontend
+        working-directory: desktop
+        run: npm run build
 
       - name: Test browser harness contracts
         working-directory: tools/frontend_stress

@@ -8,21 +8,16 @@ from pathlib import Path
 import pytest
 
 from tools.release_qualification.macos_processes import (
-    ProcessIdentity,
     ProcessSample,
     attribute_orpheus_tree,
     parse_ps_output,
-    terminate_pid_if_safe,
 )
 from tools.release_qualification.metrics import (
-    CycleResult,
     ObserverSession,
-    detect_cycle_survivors,
     evaluate_idle_cpu,
     evaluate_launch,
     evaluate_shutdown,
     evaluate_soak_memory,
-    summarize_launch_cycles,
     write_jsonl_samples,
 )
 from tools.release_qualification.model import PerformanceBudgets
@@ -50,9 +45,6 @@ def _budgets(**overrides: float | int) -> PerformanceBudgets:
         "idle_cpu_p95_percent": 8.0,
         "soak_memory_growth_mib": 100,
         "soak_memory_growth_percent": 10.0,
-        "library_long_task_ms": 250,
-        "candidate_launch_cycles": 25,
-        "final_launch_cycles": 100,
     }
     values.update(overrides)
     return PerformanceBudgets(**values)  # type: ignore[arg-type]
@@ -143,57 +135,6 @@ def test_fast_window_close_fails_when_backend_remains_alive() -> None:
     assert "backend" in decision.detail.lower() or "alive" in decision.detail.lower()
 
 
-def test_prior_cycle_processes_must_not_survive_into_next_cycle() -> None:
-    prior = [
-        ProcessIdentity(
-            pid=1001,
-            start_time="100",
-            exe="/Applications/Orpheus.app/Contents/MacOS/Orpheus",
-        ),
-        ProcessIdentity(
-            pid=1003,
-            start_time="101",
-            exe="/Applications/Orpheus.app/Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend",
-        ),
-    ]
-    current = [
-        ProcessIdentity(
-            pid=1001,
-            start_time="100",
-            exe="/Applications/Orpheus.app/Contents/MacOS/Orpheus",
-        ),
-        ProcessIdentity(
-            pid=1005,
-            start_time="200",
-            exe="/Applications/Orpheus.app/Contents/MacOS/Orpheus",
-        ),
-    ]
-    reused = [
-        ProcessIdentity(
-            pid=1001,
-            start_time="999",
-            exe="/Applications/Orpheus.app/Contents/MacOS/Orpheus",
-        ),
-    ]
-    found = detect_cycle_survivors(prior=prior, current=current)
-    assert found == {1001}
-    assert detect_cycle_survivors(prior=prior, current=reused) == set()
-
-
-def test_cycle_summary_identifies_exact_failing_iteration() -> None:
-    results = [CycleResult(iteration=i, passed=True, detail="ok") for i in range(1, 26)]
-    results[12] = CycleResult(iteration=13, passed=False, detail="backend orphan")
-    summary = summarize_launch_cycles(results, expected_count=25)
-    assert summary.passed is False
-    assert summary.failing_iteration == 13
-    assert summary.detail == "backend orphan"
-
-    final_results = [CycleResult(iteration=i, passed=True, detail="ok") for i in range(1, 101)]
-    final_results[76] = CycleResult(iteration=77, passed=False, detail="slow exit")
-    final_summary = summarize_launch_cycles(final_results, expected_count=100)
-    assert final_summary.failing_iteration == 77
-
-
 def test_soak_memory_uses_settled_baseline_and_trend_not_single_sample() -> None:
     rss_mib = [1500.0, 800.0, 1200.0] + [1000.0] * 10 + [1008.0, 1016.0, 1024.0, 1032.0, 1040.0]
     ok = evaluate_soak_memory(rss_mib, budgets=_budgets())
@@ -217,118 +158,6 @@ def test_jsonl_sample_writer_emits_one_object_per_line(tmp_path: Path) -> None:
     first = json.loads(lines[0])
     assert first["pid"] == 1001
     assert first["scenario"] == "idle-dashboard"
-
-
-def test_terminate_requires_fresh_resampled_identity_inside_bundle_or_runtime(
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / "Orpheus.app"
-    runtime = tmp_path / "runtime"
-    (bundle / "Contents" / "MacOS").mkdir(parents=True)
-    (runtime / "bin").mkdir(parents=True)
-    safe_exe = bundle / "Contents" / "MacOS" / "Orpheus"
-    safe_exe.write_text("x", encoding="utf-8")
-    runtime_exe = runtime / "bin" / "helper"
-    runtime_exe.write_text("x", encoding="utf-8")
-    foreign = tmp_path / "other" / "binary"
-    foreign.parent.mkdir()
-    foreign.write_text("x", encoding="utf-8")
-
-    killed: list[int] = []
-    live: dict[int, ProcessSample] = {
-        42: ProcessSample(
-            pid=42,
-            ppid=1,
-            pcpu=0.0,
-            rss_kib=1,
-            comm="Orpheus",
-            args=str(safe_exe),
-            start_time="100",
-        ),
-        43: ProcessSample(
-            pid=43,
-            ppid=1,
-            pcpu=0.0,
-            rss_kib=1,
-            comm="helper",
-            args=str(runtime_exe),
-            start_time="101",
-        ),
-        44: ProcessSample(
-            pid=44,
-            ppid=1,
-            pcpu=0.0,
-            rss_kib=1,
-            comm="foreign",
-            args=str(foreign),
-            start_time="102",
-        ),
-        45: ProcessSample(
-            pid=45,
-            ppid=1,
-            pcpu=0.0,
-            rss_kib=1,
-            comm="foreign",
-            args=str(foreign),
-            start_time="999",
-        ),
-    }
-
-    def fake_kill(pid: int, sig: int) -> None:
-        killed.append(pid)
-
-    def read_process(pid: int) -> ProcessSample | None:
-        return live.get(pid)
-
-    assert (
-        terminate_pid_if_safe(
-            42,
-            expected_exe_path=safe_exe,
-            expected_start_time="100",
-            app_bundle=bundle,
-            runtime_root=runtime,
-            kill=fake_kill,
-            read_process=read_process,
-        )
-        is True
-    )
-    assert (
-        terminate_pid_if_safe(
-            43,
-            expected_exe_path=runtime_exe,
-            expected_start_time="101",
-            app_bundle=bundle,
-            runtime_root=runtime,
-            kill=fake_kill,
-            read_process=read_process,
-        )
-        is True
-    )
-    assert (
-        terminate_pid_if_safe(
-            44,
-            expected_exe_path=foreign,
-            expected_start_time="102",
-            app_bundle=bundle,
-            runtime_root=runtime,
-            kill=fake_kill,
-            read_process=read_process,
-        )
-        is False
-    )
-    assert (
-        terminate_pid_if_safe(
-            45,
-            expected_exe_path=safe_exe,
-            expected_start_time="100",
-            app_bundle=bundle,
-            runtime_root=runtime,
-            kill=fake_kill,
-            read_process=read_process,
-        )
-        is False
-    )
-    assert killed == [42, 43]
 
 
 def test_observer_warm_launch_requires_external_action_ready_handshake(
@@ -465,7 +294,7 @@ def _proc(
 
 
 def test_observer_shutdown_waits_for_external_exit_then_passes(tmp_path: Path) -> None:
-    """Ready marker handshake: keep sampling until Computer Use quit clears the tree."""
+    """Ready marker handshake: keep sampling until the manual quit clears the tree."""
     app, runtime, ui_exe, backend_exe = _shutdown_fixture_paths(tmp_path)
     clock = {"t": 0.0}
     calls = {"n": 0}

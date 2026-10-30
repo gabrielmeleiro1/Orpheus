@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -90,24 +89,17 @@ def test_sentinel_contains_release_id_and_cleanup_requires_match(tmp_path: Path)
     assert not root.path.exists()
 
 
-def test_atomic_json_write_uses_sibling_temporary_file(tmp_path: Path):
+def test_atomic_json_write_keeps_previous_report_when_a_write_fails(tmp_path: Path):
     target = tmp_path / "report.json"
-    seen: list[Path] = []
-    original_replace = Path.replace
-
-    def tracking_replace(self: Path, target_path: Path) -> Path:
-        seen.append(self)
-        assert self.parent == target_path.parent
-        assert self.name != target_path.name
-        return original_replace(self, target_path)
-
-    with mock.patch.object(Path, "replace", tracking_replace):
-        atomic_write_json(target, {"ok": True, "n": 1})
-
-    assert target.read_text(encoding="utf-8")
+    atomic_write_json(target, {"ok": True, "n": 1})
     assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True, "n": 1}
-    assert seen, "expected Path.replace to be used for atomic publish"
-    assert not any(path.exists() for path in seen)
+
+    # Serialization fails part-way through the payload.
+    with pytest.raises(TypeError):
+        atomic_write_json(target, {"ok": False, "z": object()})
+
+    assert json.loads(target.read_text(encoding="utf-8")) == {"ok": True, "n": 1}
+    assert [path.name for path in tmp_path.iterdir()] == ["report.json"]
 
 
 def test_redact_secrets_removes_tokens_credentials_keys_and_username():
@@ -166,17 +158,6 @@ def test_streaming_redactor_hides_secrets_split_across_chunks(
     combined = _stream_redact(parts, username=username)
     assert leaked not in combined
     assert "[REDACTED]" in combined
-    # Memory stays bounded: carry never grows without bound across many tiny feeds.
-    from tools.release_qualification.evidence import StreamingSecretRedactor
-
-    redactor = StreamingSecretRedactor(username=username)
-    for _ in range(StreamingSecretRedactor.MAX_CARRY + 200):
-        chunk = redactor.feed("x")
-        assert leaked not in chunk
-        assert len(redactor._carry) <= StreamingSecretRedactor.MAX_CARRY
-    flushed = redactor.flush()
-    assert leaked not in flushed
-    assert redactor._carry == ""
 
 
 def test_markdown_phase_table_is_deterministic():

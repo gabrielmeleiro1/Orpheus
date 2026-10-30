@@ -1,4 +1,4 @@
-"""Stable Computer Use / manual checklist for release qualification."""
+"""Stable manual checklist for release qualification."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def required_fields_for(check_id: str) -> frozenset[str]:
 
 def render_manual_checklist_markdown(*, release_id: str) -> str:
     lines = [
-        f"# Manual / Computer Use checklist: {release_id}",
+        f"# Manual checklist: {release_id}",
         "",
         "Record each item with `record-check`. Only `pass` counts toward release.",
         "",
@@ -324,7 +324,7 @@ def _revalidate_passed_item(
 
 def _render_progress_markdown(release_id: str, checks: Mapping[str, object]) -> str:
     lines = [
-        f"# Manual / Computer Use checklist: {release_id}",
+        f"# Manual checklist: {release_id}",
         "",
     ]
     for check_id in CHECKLIST_IDS:

@@ -8,6 +8,7 @@ import json
 import os
 import queue
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -115,7 +116,6 @@ class ApiCheckMetrics:
 
 @dataclass(frozen=True)
 class ConversionJourneyResult:
-    attempted: bool
     completed: bool
     skipped: bool
     reason: str | None = None
@@ -248,6 +248,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def resolve_default_sidecar_path() -> Path:
     if DEFAULT_APP_SIDECAR.is_file():
         return DEFAULT_APP_SIDECAR
+    if os.name == "nt":
+        return DEFAULT_RESOURCE_SIDECAR.with_name(f"{DEFAULT_RESOURCE_SIDECAR.name}.exe")
     return DEFAULT_RESOURCE_SIDECAR
 
 
@@ -389,11 +391,16 @@ def encode_multipart_file(
     return body, f"multipart/form-data; boundary={boundary}"
 
 
-def _reader_thread(stream: Any, output: list[str], lines: queue.Queue[str]) -> None:
-    for raw_line in iter(stream.readline, ""):
+def _reader_thread(stream: Any, output: list[str], lines: queue.Queue[str] | None) -> None:
+    for raw_line in iter(lambda: stream.readline(16384), ""):
         line = raw_line.rstrip("\n")
         output.append(line)
-        lines.put(line)
+        del output[:-200]
+        if lines is not None:
+            try:
+                lines.put_nowait(line)
+            except queue.Full:
+                pass
 
 
 def _parse_ready_payload(raw: dict[str, Any]) -> ReadyPayload:
@@ -440,6 +447,7 @@ def build_child_env(
 ) -> dict[str, str]:
     env = os.environ.copy()
     env.update(runtime_paths.as_env())
+    env["ORPHEUS_DESKTOP_PARENT_PID"] = str(os.getpid())
     if backend == "python":
         existing_pythonpath = env.get("PYTHONPATH")
         env["PYTHONPATH"] = (
@@ -548,7 +556,8 @@ def _run_runtime_command(
         completed = subprocess.run(
             command,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout_seconds,
             env=env,
         )
@@ -625,6 +634,71 @@ def run_ffmpeg_runtime_check(
         raise SmokeFailure(f"ffprobe runtime check returned non-positive duration: {duration}")
 
 
+def _own_windows_process_tree(process: subprocess.Popen[str]) -> None:
+    """Keep descendants in a kill-on-close job, even if their parent exits."""
+    import ctypes
+    from ctypes import wintypes
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.c_size_t),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimits),
+            ("IoInfo", ctypes.c_uint64 * 6),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel.SetInformationJobObject.restype = wintypes.BOOL
+    kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        limits = ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not kernel.AssignProcessToJobObject(job, int(process._handle)):
+            raise ctypes.WinError(ctypes.get_last_error())
+    except BaseException:
+        kernel.CloseHandle(job)
+        raise
+    process._close_process_tree = lambda: kernel.CloseHandle(job)
+
+
+def _resume_windows_process(process: subprocess.Popen[str]) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    resume = ctypes.WinDLL("ntdll").NtResumeProcess
+    resume.argtypes = [wintypes.HANDLE]
+    resume.restype = ctypes.c_long
+    status = resume(int(process._handle))
+    if status < 0:
+        raise OSError(f"cannot resume backend process: NTSTATUS {status & 0xffffffff:#x}")
+
+
 def start_backend(
     *,
     backend: str,
@@ -653,57 +727,116 @@ def start_backend(
         ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
+        # The launcher writes UTF-8. Decoding with the Windows ANSI code page
+        # kills the reader thread on the first unmappable byte, and the
+        # undrained pipe then blocks the backend's next write.
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
+        start_new_session=os.name != "nt" and os.environ.get("ORPHEUS_SMOKE_PROCESS_GROUP") != "1",
+        creationflags=0x4 if os.name == "nt" else 0,  # CREATE_SUSPENDED
     )
-    assert process.stdout is not None
-    assert process.stderr is not None
-    stdout: list[str] = []
-    stderr: list[str] = []
-    lines: queue.Queue[str] = queue.Queue()
-    threading.Thread(target=_reader_thread, args=(process.stdout, stdout, lines), daemon=True).start()
-    threading.Thread(target=_reader_thread, args=(process.stderr, stderr, queue.Queue()), daemon=True).start()
-
-    deadline = time.monotonic() + timeout_seconds
-    last_decode_error: str | None = None
-    while time.monotonic() < deadline:
-        while True:
+    process._owns_process_group = os.environ.get("ORPHEUS_SMOKE_PROCESS_GROUP") != "1"
+    try:
+        if os.name == "nt":
             try:
-                line = lines.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError as exc:
-                last_decode_error = str(exc)
-                continue
-            return process, _parse_ready_payload(parsed), stdout, stderr
+                _own_windows_process_tree(process)
+                _resume_windows_process(process)
+            except BaseException:
+                # A process without containment must never execute user code.
+                process.kill()
+                process.wait(timeout=timeout_seconds)
+                raise
+        assert process.stdout is not None
+        assert process.stderr is not None
+        stdout: list[str] = []
+        stderr: list[str] = []
+        lines: queue.Queue[str] = queue.Queue(maxsize=200)
+        threading.Thread(target=_reader_thread, args=(process.stdout, stdout, lines), daemon=True).start()
+        threading.Thread(target=_reader_thread, args=(process.stderr, stderr, None), daemon=True).start()
 
-        ready_from_file = _load_ready_file(runtime_paths.ready_file)
-        if ready_from_file is not None:
-            return process, ready_from_file, stdout, stderr
+        deadline = time.monotonic() + timeout_seconds
+        last_decode_error: str | None = None
+        while time.monotonic() < deadline:
+            while True:
+                try:
+                    line = lines.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    last_decode_error = str(exc)
+                    continue
+                return process, _parse_ready_payload(parsed), stdout, stderr
 
-        return_code = process.poll()
-        if return_code is not None:
-            detail = _format_process_output(stdout, stderr)
-            raise SmokeFailure(f"backend exited before ready, code={return_code}\n{detail}")
-        time.sleep(0.05)
+            ready_from_file = _load_ready_file(runtime_paths.ready_file)
+            if ready_from_file is not None:
+                return process, ready_from_file, stdout, stderr
 
-    detail = _format_process_output(stdout, stderr)
-    if last_decode_error:
-        detail = f"last JSON decode error: {last_decode_error}\n{detail}"
-    raise SmokeFailure(f"timed out waiting for ready payload after {timeout_seconds:.1f}s\n{detail}")
+            return_code = process.poll()
+            if return_code is not None:
+                detail = _format_process_output(stdout, stderr)
+                raise SmokeFailure(f"backend exited before ready, code={return_code}\n{detail}")
+            time.sleep(0.05)
+
+        detail = _format_process_output(stdout, stderr)
+        if last_decode_error:
+            detail = f"last JSON decode error: {last_decode_error}\n{detail}"
+        raise SmokeFailure(f"timed out waiting for ready payload after {timeout_seconds:.1f}s\n{detail}")
+    except BaseException as exc:
+        try:
+            stop_backend(process)
+        except Exception as cleanup_error:
+            exc.add_note(f"backend cleanup failed: {cleanup_error}")
+        raise
 
 
 def stop_backend(process: subprocess.Popen[str], timeout_seconds: float = 5.0) -> None:
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
+    if os.name == "nt":
+        close_tree = getattr(process, "_close_process_tree", None)
+        if close_tree is not None:
+            close_tree()
+            process._close_process_tree = None
+        else:
+            taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+            try:
+                subprocess.run(
+                    [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    check=False, timeout=timeout_seconds,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=timeout_seconds)
+    elif not getattr(process, "_owns_process_group", True):
+        # The enclosing smoke driver owns and cleans the shared process group.
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                process.kill()
+    else:
+        # The group outlives its leader, including an early startup exit.
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            pass
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
         process.kill()
-        process.wait(timeout=timeout_seconds)
+    process.wait(timeout=timeout_seconds)
 
 
 def http_request(
@@ -743,10 +876,13 @@ def fetch_desktop_query_token(
     scope: str,
     timeout_seconds: float,
     book_id: int | None = None,
+    expected_epoch: str | None = None,
 ) -> str:
     payload: dict[str, object] = {"scope": scope}
     if book_id is not None:
         payload["book_id"] = book_id
+    if expected_epoch is not None:
+        payload["expected_epoch"] = expected_epoch
 
     response = expect_status(
         http_request(
@@ -1334,7 +1470,6 @@ def run_conversion_journey(
     capabilities = probe_wait.capabilities
     if probe_wait.readiness is not TtsProbeReadiness.READY:
         return ConversionJourneyResult(
-            attempted=False,
             completed=False,
             skipped=True,
             reason=probe_wait.reason
@@ -1409,18 +1544,22 @@ def run_conversion_journey(
     if status != "completed":
         raise SmokeFailure(f"conversion journey ended with status={status!r}: {terminal!r}")
 
-    book_id, _book = wait_for_conversion_journey_book(
+    book_id, book = wait_for_conversion_journey_book(
         ready,
         book_id=_coerce_positive_book_id(terminal.get("book_id")),
         expected_title=CONVERSION_JOURNEY_TITLE,
         timeout_seconds=min(30.0, max(5.0, conversion_timeout_seconds)),
     )
+    library_epoch = book.get("library_epoch")
+    if not isinstance(library_epoch, str) or not library_epoch.strip():
+        raise SmokeFailure(f"conversion journey book is missing its library epoch: {book!r}")
 
     audio_token = fetch_desktop_query_token(
         ready,
         scope="audio",
         timeout_seconds=timeout_seconds,
         book_id=book_id,
+        expected_epoch=library_epoch,
     )
     audio = expect_status(
         http_request(
@@ -1435,7 +1574,6 @@ def run_conversion_journey(
         raise SmokeFailure("conversion journey audio response was empty")
 
     return ConversionJourneyResult(
-        attempted=True,
         completed=True,
         skipped=False,
         job_id=job_id,
@@ -1538,7 +1676,22 @@ def run_iteration(
     finally:
         if process is not None:
             stop_backend(process)
-        shutil.rmtree(runtime_paths.root, ignore_errors=True)
+        _remove_runtime_root(runtime_paths.root)
+
+
+def _remove_runtime_root(root: Path, *, attempts: int = 10, delay_seconds: float = 0.2) -> None:
+    """Delete an iteration's temp root, allowing Windows a moment to release handles.
+
+    On Windows the venv ``python.exe`` is a launcher; the backend (and its open
+    SQLite library) lives in a child that can outlive the launcher's exit by a
+    moment, so a single ``rmtree`` silently left ``data/audiobooks.db*`` behind.
+    """
+    for _ in range(max(1, attempts)):
+        shutil.rmtree(root, ignore_errors=True)
+        if not root.exists():
+            return
+        time.sleep(delay_seconds)
+    print(f"warning: could not remove smoke workspace {root}", file=sys.stderr)
 
 
 def validate_args(args: argparse.Namespace) -> None:

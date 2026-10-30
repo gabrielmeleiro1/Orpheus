@@ -11,19 +11,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   package-and-smoke:
     name: Package and smoke (macOS)
-    runs-on: macos-14
+    runs-on: macos-15
+    timeout-minutes: 90
     env:
       ORPHEUS_RUNTIME_PROFILE: base
 
     steps:
       - name: Check out source
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -33,9 +40,9 @@ jobs:
             requirements/base.txt
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version-file: .node-version
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
@@ -144,7 +151,7 @@ jobs:
 
       - name: Upload release artifacts and smoke logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: orpheus-macos-release-artifacts
           if-no-files-found: warn

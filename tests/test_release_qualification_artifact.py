@@ -15,16 +15,12 @@ from tools.release_qualification.artifact import (
     CodesignInfo,
     SigningState,
     build_bundle_commands,
-    build_packaging_commands,
     build_sidecar_commands,
-    expected_app_bundle_path,
-    expected_dmg_path,
     inspect_app_bundle,
     inspect_dmg,
     parse_codesign_info,
     sha256_file,
 )
-from tools.release_qualification.commands import CommandSpec
 from tools.release_qualification.model import load_qualification_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -102,47 +98,6 @@ def _make_app(
     if include_icon:
         (resources / "Orpheus.icns").write_bytes(b"icns")
     return app
-
-
-def test_deterministic_bundle_paths():
-    config = load_qualification_config(DEFAULT_CONFIG)
-    app = expected_app_bundle_path(REPO_ROOT, config)
-    dmg = expected_dmg_path(REPO_ROOT, version="1.0.0")
-    assert app == REPO_ROOT / "desktop/src-tauri/target/release/bundle/macos/Orpheus.app"
-    assert dmg == (
-        REPO_ROOT
-        / "desktop/src-tauri/target/release/bundle/dmg/Orpheus_1.0.0_aarch64.dmg"
-    )
-    assert "aarch64" in dmg.name
-    assert "1.0.0" in dmg.name
-
-
-def test_build_packaging_commands_are_argv_only():
-    specs = build_packaging_commands(repo_root=REPO_ROOT)
-    assert all(isinstance(spec, CommandSpec) for spec in specs)
-    assert all(spec.shell is False for spec in specs)
-    by_label = {spec.label: spec for spec in specs}
-    python = str(REPO_ROOT / ".venv" / "bin" / "python")
-    assert by_label["build-sidecar"].argv == (
-        python,
-        "scripts/build_desktop_backend.py",
-        "--runtime-profile",
-        "mlx",
-    )
-    assert by_label["build-sidecar"].cwd == str(REPO_ROOT)
-    assert by_label["tauri-desktop-build"].argv == ("npm", "run", "desktop:build")
-    assert by_label["tauri-desktop-build"].cwd == str(REPO_ROOT / "desktop")
-
-
-def test_sidecar_and_bundle_command_helpers_are_disjoint():
-    sidecar = build_sidecar_commands(repo_root=REPO_ROOT)
-    bundle = build_bundle_commands(repo_root=REPO_ROOT)
-    assert [spec.label for spec in sidecar] == [
-        "build-sidecar",
-        "sidecar-runtime-smoke",
-    ]
-    assert [spec.label for spec in bundle] == ["tauri-desktop-build"]
-    assert build_packaging_commands(repo_root=REPO_ROOT) == sidecar + bundle
 
 
 def test_sidecar_runtime_smoke_requires_local_tts_without_downloads():
@@ -826,3 +781,62 @@ def test_dmg_detach_failure_is_release_blocking_after_retry(tmp_path: Path):
             list_mounted_entries=None,
         )
     assert len(detach_calls) >= 2
+
+
+def test_bundle_commands_smoke_the_embedded_runtime_after_tauri_build():
+    commands = build_bundle_commands(repo_root=REPO_ROOT)
+    assert [command.label for command in commands] == ["tauri-desktop-build", "bundled-runtime-smoke"]
+    assert commands[1].argv == (
+        str(REPO_ROOT / ".venv/bin/python"), "-m", "tools.release_qualification.runtime",
+        "--repo-root", str(REPO_ROOT),
+    )
+
+
+@pytest.mark.parametrize("mutation", [None, "rebuild", "during_smoke", "resource", "dmg", "smoke_failure"])
+def test_bundled_smoke_binds_evidence_to_final_embedded_bytes(tmp_path, mutation):
+    import hashlib
+    from tools.release_qualification.runtime import qualify_bundled_runtime
+
+    app = _make_app(tmp_path / "built")
+    mounted = tmp_path / "mounted"
+    shipped_app = _make_app(mounted)
+    relative = Path("Contents/Resources/binaries/orpheus-desktop-backend/orpheus-desktop-backend")
+    dmg = tmp_path / "Orpheus_1.0.0_aarch64.dmg"
+    dmg.write_bytes(b"disk image")
+    if mutation == "rebuild":
+        (shipped_app / relative).write_bytes(b"rebuilt by tauri")
+    else:
+        for candidate in (app, shipped_app):
+            (candidate / relative).write_bytes(b"final backend")
+    calls = []
+    detached = []
+
+    def smoke(argv, **kwargs):
+        calls.append(argv)
+        assert argv[argv.index("--app-bundle") + 1] == str(shipped_app)
+        if mutation == "during_smoke":
+            (shipped_app / relative).write_bytes(b"changed")
+        if mutation == "resource":
+            (shipped_app / relative.parent / "bin/ffmpeg").write_bytes(b"changed dependency")
+        if mutation == "dmg":
+            dmg.write_bytes(b"changed image")
+        if mutation == "smoke_failure":
+            raise RuntimeError("smoke failed")
+
+    kwargs = dict(
+        app=app, dmg=dmg, repo_root=tmp_path,
+        run=smoke, mount_dmg=lambda *_: mounted, detach_dmg=detached.append,
+    )
+    if mutation == "smoke_failure":
+        with pytest.raises(RuntimeError, match="smoke failed"):
+            qualify_bundled_runtime(**kwargs)
+    elif mutation:
+        with pytest.raises(ArtifactInspectionError, match="changed|differ"):
+            qualify_bundled_runtime(**kwargs)
+    else:
+        result = qualify_bundled_runtime(**kwargs)
+        assert result["sidecar_sha256"] == hashlib.sha256(b"final backend").hexdigest()
+        assert result["dmg_sha256"] == sha256_file(dmg)
+        assert len(result["sidecar_tree_sha256"]) == 64
+        assert len(calls) == 1
+    assert detached == [mounted]

@@ -64,6 +64,9 @@ from tools.release_qualification.preflight import (  # noqa: E402
     compute_toolchain_fingerprint,
 )
 from tools.release_qualification.report import render_markdown_report  # noqa: E402
+from tools.release_qualification.runtime import (  # noqa: E402
+    app_tree_digest, artifact_fingerprint,
+)
 
 DEFAULT_CONFIG = REPO_ROOT / "config" / "release_qualification.toml"
 EXIT_PASS = 0
@@ -84,7 +87,7 @@ def build_phase_handlers(
     """Compose phase handlers from existing qualification modules.
 
     Lifecycle/fault phases only prepare isolated fixtures; actual performance and
-    Computer Use measurements are recorded via ``observe`` / ``record-check``.
+    Manual measurements are recorded via ``observe`` / ``record-check``.
     ``computer_use`` and ``evidence_finalization`` stay incomplete until finalize.
     """
 
@@ -132,10 +135,25 @@ def build_phase_handlers(
         # Sidecar build evidence lives in sidecar_validation; do not rebuild here.
         commands = build_bundle_commands(repo_root=REPO_ROOT)
         log_dir = path / "commands"
+        smoke_evidence = None
         for spec in commands:
             result = run_command_fn(spec, log_dir=log_dir)
             if result.exit_code != 0:
                 return PhaseOutcome(PhaseState.FAILED, f"{spec.label} failed")
+            if spec.label == "bundled-runtime-smoke":
+                try:
+                    log_path = Path(result.log_path)
+                    if not log_path.is_absolute():
+                        log_path = path / log_path
+                    for line in log_path.read_text(encoding="utf-8").splitlines():
+                        try:
+                            candidate = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if isinstance(candidate, dict) and "dmg_sha256" in candidate:
+                            smoke_evidence = candidate
+                except OSError as exc:
+                    return PhaseOutcome(PhaseState.FAILED, f"missing bundled smoke evidence: {exc}")
         config = load_qualification_config(path / "config" / "release_qualification.toml")
         app = _locate_app_bundle()
         dmg = _locate_dmg(_release_version_from_report(path))
@@ -150,15 +168,32 @@ def build_phase_handlers(
                 product_name=config.product_name,
                 release_version=_release_version_from_report(path),
             )
+            if smoke_evidence is None:
+                raise ValueError("missing bundled smoke digests")
+            artifact_hash = str(smoke_evidence.get("dmg_sha256", ""))
+            app_hash = str(smoke_evidence.get("app_tree_sha256", ""))
+            if sha256_file(dmg) != artifact_hash:
+                raise ValueError("DMG changed after bundled smoke")
+            if app_tree_digest(app) != app_hash:
+                raise ValueError("app bundle changed after bundled smoke")
+            smoked_app = Path(str(smoke_evidence.get("app", "")))
+            smoked_dmg = Path(str(smoke_evidence.get("dmg", "")))
+            if not smoked_app.is_absolute():
+                smoked_app = REPO_ROOT / smoked_app
+            if not smoked_dmg.is_absolute():
+                smoked_dmg = REPO_ROOT / smoked_dmg
+            if smoked_app.resolve() != app.resolve() or smoked_dmg.resolve() != dmg.resolve():
+                raise ValueError("bundled smoke artifact paths differ")
         except Exception as exc:  # noqa: BLE001 - phase boundary
             return PhaseOutcome(PhaseState.FAILED, str(exc))
-        artifact_hash = sha256_file(dmg)
         atomic_write_json(
             path / "artifacts.json",
             {
                 "app": _repo_relative_posix(app),
                 "dmg": _repo_relative_posix(dmg),
                 "dmg_sha256": artifact_hash,
+                "app_tree_sha256": app_hash,
+                "artifact_hash": artifact_fingerprint(artifact_hash, app_hash),
             },
         )
         return PhaseOutcome(PhaseState.PASSED, "bundle validation ok")
@@ -223,7 +258,7 @@ def build_phase_handlers(
         )
 
     def computer_use(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
-        return PhaseOutcome(PhaseState.INCOMPLETE, "awaiting Computer Use checklist")
+        return PhaseOutcome(PhaseState.INCOMPLETE, "awaiting manual checklist")
 
     def evidence_finalization(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
         return PhaseOutcome(
@@ -347,10 +382,27 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_observe(args: argparse.Namespace) -> int:
+    if sys.platform != "darwin":
+        print(
+            "observe requires macOS app bundles and macOS process sampling; "
+            f"unsupported platform: {sys.platform}",
+            file=sys.stderr,
+        )
+        return EXIT_FAIL
     report_dir = Path(args.report_dir).resolve()
     _assert_report_dir(report_dir)
     config = load_qualification_config(report_dir / "config" / "release_qualification.toml")
     app_bundle = Path(args.app_bundle) if args.app_bundle else _locate_app_bundle()
+    try:
+        artifacts = json.loads((report_dir / "artifacts.json").read_text(encoding="utf-8"))
+        if not isinstance(artifacts, dict):
+            raise ValueError("invalid artifacts.json")
+        if app_tree_digest(app_bundle) != artifacts.get("app_tree_sha256"):
+            raise ValueError("app bundle changed since qualification")
+        _current_artifact_hash(report_dir)
+    except (OSError, ValueError, ResumeRejectedError) as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAIL
     runtime_root = Path(args.runtime_root) if args.runtime_root else report_dir / "fixtures"
     session = ObserverSession(
         scenario=args.scenario,
@@ -440,7 +492,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     report.set_phase(
         "computer_use",
         PhaseState.PASSED,
-        "all required Computer Use checklist records passed",
+        "all required manual checklist records passed",
     )
     report.set_phase(
         "evidence_finalization",
@@ -653,7 +705,7 @@ def _build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--final", action="store_true")
     prepare.add_argument("--config", default=str(DEFAULT_CONFIG))
 
-    run = sub.add_parser("run", help="Run automated gates until Computer Use")
+    run = sub.add_parser("run", help="Run automated gates up to the manual checklist")
     run.add_argument("--report-dir", required=True)
     run.add_argument("--resume", action="store_true")
 
@@ -788,7 +840,16 @@ def _current_artifact_hash(report_dir: Path) -> str:
     if not dmg.is_file():
         # Manifest exists but DMG is gone → treat as changed/missing artifact.
         raise ResumeRejectedError("resume rejected: DMG artifact missing")
-    return sha256_file(dmg)
+    dmg_hash = sha256_file(dmg)
+    if "app_tree_sha256" not in data:
+        raise ResumeRejectedError("resume rejected: missing app bundle fingerprint")
+    try:
+        app_hash = app_tree_digest(_resolve_repo_relative(data.get("app", "")))
+    except (OSError, ValueError) as exc:
+        raise ResumeRejectedError(f"resume rejected: {exc}") from exc
+    if dmg_hash != data.get("dmg_sha256") or app_hash != data.get("app_tree_sha256"):
+        raise ResumeRejectedError("resume rejected: qualified artifacts changed")
+    return artifact_fingerprint(dmg_hash, app_hash)
 
 
 def _assert_saved_fingerprints(

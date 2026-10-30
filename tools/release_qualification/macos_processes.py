@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import signal
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,13 +16,6 @@ PS_COMMAND: tuple[str, ...] = (
     "-o",
     "pid=,ppid=,pcpu=,rss=,args=",
 )
-
-
-@dataclass(frozen=True)
-class ProcessIdentity:
-    pid: int
-    start_time: str | None
-    exe: str | None
 
 
 @dataclass(frozen=True)
@@ -102,35 +94,6 @@ def sample_processes(
     return parse_ps_output(text)
 
 
-def read_process_by_pid(
-    pid: int,
-    *,
-    runner: Callable[[Sequence[str]], str] | None = None,
-) -> ProcessSample | None:
-    command = (
-        "ps",
-        "-p",
-        str(pid),
-        "-o",
-        "pid=,ppid=,pcpu=,rss=,args=",
-    )
-    if runner is None:
-        completed = subprocess.run(
-            list(command),
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        text = completed.stdout or ""
-    else:
-        text = runner(command)
-    samples = parse_ps_output(text)
-    for sample in samples:
-        if sample.pid == pid:
-            return sample
-    return None
-
-
 def attribute_orpheus_tree(
     samples: Iterable[ProcessSample],
     *,
@@ -173,43 +136,6 @@ def attribute_orpheus_tree(
                 stack.append(child.pid)
 
     return [by_pid[pid] for pid in sorted(included)]
-
-
-def terminate_pid_if_safe(
-    pid: int,
-    *,
-    app_bundle: Path,
-    runtime_root: Path,
-    expected_exe_path: Path | None = None,
-    expected_start_time: str | None = None,
-    kill: Callable[[int, int], None] | None = None,
-    read_process: Callable[[int], ProcessSample | None] | None = None,
-    sig: int = signal.SIGTERM,
-) -> bool:
-    expected = expected_exe_path
-    reader = read_process or read_process_by_pid
-    current = reader(pid)
-    if current is None:
-        return False
-    current_exe = current.exe_path
-    if current_exe is None:
-        return False
-    bundle = app_bundle.resolve()
-    runtime = runtime_root.resolve()
-    if not _path_in_roots(current_exe, bundle=bundle, runtime=runtime):
-        return False
-    if expected is not None:
-        try:
-            if current_exe.resolve() != Path(expected).resolve():
-                return False
-        except OSError:
-            if str(current_exe) != str(expected):
-                return False
-    if expected_start_time is not None and current.start_time != expected_start_time:
-        return False
-    killer = kill or os.kill
-    killer(pid, sig)
-    return True
 
 
 def _path_in_roots(

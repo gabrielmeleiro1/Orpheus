@@ -131,8 +131,13 @@ def _collect(host: FakeHost, *, release_version: str = "1.0.0"):
     )
 
 
-def test_pinned_rust_version_is_exact_toolchain():
-    assert PINNED_RUST_VERSION == "1.88.0"
+@pytest.mark.parametrize(
+    "workflow", ["source-validation.yml", "release-artifact-validation.yml"]
+)
+def test_pinned_rust_version_matches_the_ci_toolchain(workflow: str):
+    text = (REPO_ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+    assert f"rustup toolchain install {PINNED_RUST_VERSION} " in text
+    assert f"rustup default {PINNED_RUST_VERSION}" in text
 
 
 def test_non_darwin_host_fails():
