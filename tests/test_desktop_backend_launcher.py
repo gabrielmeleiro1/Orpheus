@@ -183,7 +183,11 @@ def test_library_lock_rejects_second_launcher_before_app_creation_and_releases_o
     else:
         contender_env["AUDIOBOOK_DATA_DIR"] = str(tmp_path / "other-data")
     if database_reference == "relative":
-        contender_env["AUDIOBOOK_DB_PATH"] = os.path.relpath(database)
+        try:
+            contender_env["AUDIOBOOK_DB_PATH"] = os.path.relpath(database)
+        except ValueError:
+            # Windows has no relative path between drives (CI checks out on D:).
+            pytest.skip("the test folder is on a different drive than the working directory")
     elif database_reference == "symlink":
         database.parent.mkdir(parents=True, exist_ok=True)
         database.touch()
