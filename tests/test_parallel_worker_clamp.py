@@ -175,7 +175,8 @@ def test_idle_pool_shuts_down_after_the_idle_timeout_but_not_mid_run():
         )
 
         assert _wait_until(lambda: not manager.snapshot()["running"])
-        assert not manager.cleanup_pending
+        # The pool reports stopped a moment before its teardown signals done.
+        assert _wait_until(lambda: not manager.cleanup_pending)
 
         # The next job starts a fresh pool normally.
         again = manager.run_parallel(

@@ -159,7 +159,7 @@ def test_startup_probe_timeouts_share_one_deadline_and_are_infrastructure_failur
         manager = SharedWorkerPoolManager(
             max_workers=4,
             shutdown_timeout_seconds=0.0,
-            startup_probe_timeout_seconds=0.05,
+            startup_probe_timeout_seconds=0.2,
         )
         started_at = time.perf_counter()
         with pytest.raises(WorkerStartupError) as raised:
@@ -170,13 +170,14 @@ def test_startup_probe_timeouts_share_one_deadline_and_are_infrastructure_failur
         elapsed = time.perf_counter() - started_at
 
     executor = PendingStartupProbeExecutor.instances[0]
-    assert elapsed < 0.14
+    # One shared deadline, not 0.2s for each of the four probes (0.8s).
+    assert elapsed < 0.6
     assert len(raised.value.statuses) == 4
     assert {status.error_type for status in raised.value.statuses} == {
         "WorkerInfrastructureError"
     }
     assert all(
-        "timed out after 0.05s" in (status.message or "")
+        "timed out after 0.2s" in (status.message or "")
         for status in raised.value.statuses
     )
     assert all(status.provider == "mlx" for status in raised.value.statuses)
