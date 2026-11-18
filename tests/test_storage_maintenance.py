@@ -308,6 +308,11 @@ def test_backup_database_includes_committed_wal_pages_and_uses_unique_names(tmp_
 def test_prune_backup_and_report_are_owner_only(tmp_path):
     db_path, output_dir, temp_dir = _storage_paths(tmp_path)
     SQLiteRepository(db_path, output_dir=output_dir, temp_dir=temp_dir).close()
+    # A backup is kept only when the cleanup changes something; give it an
+    # orphaned durable source to remove.
+    orphan_source = db_path.parent / "sources" / "orphan.epub"
+    orphan_source.parent.mkdir(parents=True, exist_ok=True)
+    orphan_source.write_bytes(b"%EPUB orphan")
 
     previous_umask = os.umask(0o022)
     try:
@@ -316,10 +321,13 @@ def test_prune_backup_and_report_are_owner_only(tmp_path):
             output_dir=output_dir,
             temp_dir=temp_dir,
             aggressive=True,
+            grace_seconds=0.0,
         )
     finally:
         os.umask(previous_umask)
 
+    assert not orphan_source.exists()
+    assert report["backup_path"] is not None
     backup_path = Path(report["backup_path"])
     report_path = Path(report["report_path"])
     assert backup_path.stat().st_mode & 0o777 == 0o600

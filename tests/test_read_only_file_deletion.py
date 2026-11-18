@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+import shutil
 import stat
 from types import SimpleNamespace
 
@@ -7,6 +8,16 @@ import pytest
 
 from modules.contracts import durable_files
 from modules.storage import deletion
+
+
+def _walk_like_windows(monkeypatch):
+    """Use the walk-based rmtree that Windows runs, on every platform.
+
+    POSIX Pythons remove trees through directory descriptors and report a
+    failed child again for its parent folder, which a simulated Windows
+    handler cannot reproduce faithfully.
+    """
+    monkeypatch.setattr(shutil, "_use_fd_functions", False, raising=False)
 
 
 @pytest.mark.parametrize("kind", ["file", "child", "directory"])
@@ -56,6 +67,7 @@ def test_staged_read_only_artifacts_retry_with_writable_mode(tmp_path, monkeypat
 
 
 def test_staged_tree_deletion_does_not_change_a_symlink_target(tmp_path, monkeypatch):
+    _walk_like_windows(monkeypatch)
     target = tmp_path / "target.txt"
     target.write_bytes(b"retained")
     staged = tmp_path / "staged"
@@ -83,6 +95,7 @@ def test_staged_tree_deletion_does_not_change_a_symlink_target(tmp_path, monkeyp
 
 
 def test_staged_tree_deletion_retries_a_sharing_violation_only_once(tmp_path, monkeypatch):
+    _walk_like_windows(monkeypatch)
     staged = tmp_path / "staged"
     staged.mkdir()
     child = staged / "chapter.mp3"

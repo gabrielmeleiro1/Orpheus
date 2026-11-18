@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 
 
 def owner_only(path: Path, *, directory: bool = False) -> None:
@@ -11,7 +12,12 @@ def owner_only(path: Path, *, directory: bool = False) -> None:
     if os.name == "nt":
         return
     try:
-        os.chmod(path, 0o700 if directory else 0o600)
+        if directory:
+            os.chmod(path, 0o700)
+        else:
+            # Hide the file from other users without granting the owner write
+            # access it lacks: a read-only library must stay read-only.
+            os.chmod(path, stat.S_IMODE(os.stat(path).st_mode) & 0o600)
     except OSError:
         # Permissions are defense-in-depth; storage remains usable on unusual
         # filesystems where chmod is unavailable.
