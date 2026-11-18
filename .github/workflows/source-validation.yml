@@ -62,7 +62,14 @@ jobs:
 
       - name: Install FFmpeg on Windows
         if: runner.os == 'Windows'
-        run: choco install ffmpeg --yes --no-progress
+        # Chocolatey's ffmpeg.exe is a shim that starts the real binary as a
+        # child; killing the shim on a timeout leaves that child holding the
+        # output pipes. Put the real binaries first on PATH.
+        run: |
+          choco install ffmpeg --yes --no-progress
+          $ffmpeg = Get-ChildItem "$env:ChocolateyInstall\lib\ffmpeg" -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          if (-not $ffmpeg) { throw "FFmpeg binaries not found under the Chocolatey package" }
+          $ffmpeg.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
 
       - name: Install Python dependencies
         run: |
