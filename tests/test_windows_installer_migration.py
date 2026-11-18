@@ -39,13 +39,30 @@ def test_legacy_registration_cleanup_is_success_only_and_metadata_only():
     assert INSTALLER.count("RemoveOrphanLegacyRegistration;") == 2  # Declaration and successful-install call.
 
 
+def _inno_major_version(compiler):
+    try:
+        banner = subprocess.run(
+            [str(compiler)], capture_output=True, text=True, timeout=30,
+            **background_process_kwargs(),
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    match = re.search(r"Inno Setup (\d+)", banner)
+    return int(match.group(1)) if match else None
+
+
 def _inno_compiler():
+    # The installer script needs Inno Setup 7; an older ISCC on PATH (CI
+    # images ship 6) rejects its syntax.
     candidates = [
-        Path(shutil.which("ISCC.exe") or "__missing_iscc__"),
         _ORIGINAL_LOCAL_APP_DATA / "Programs/Inno Setup 7/ISCC.exe",
         Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Inno Setup 7/ISCC.exe",
+        Path(shutil.which("ISCC.exe") or "__missing_iscc__"),
     ]
-    return next((path for path in candidates if path.is_file()), None)
+    return next(
+        (path for path in candidates if path.is_file() and (_inno_major_version(path) or 0) >= 7),
+        None,
+    )
 
 
 def _pascal_string(value):
