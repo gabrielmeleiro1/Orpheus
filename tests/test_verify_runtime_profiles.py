@@ -481,21 +481,92 @@ def test_timeout_supervisor_starts_and_terminates_process_group(monkeypatch) -> 
     ]
 
 
-def test_failed_command_output_is_bounded_and_redacted() -> None:
+def test_failed_command_summary_is_redacted() -> None:
     result = verifier.run_command(
         [
             sys.executable,
             "-c",
-            "import sys; sys.stderr.write('x'*100000 + ' password=hunter2\\n'); raise SystemExit(1)",
+            "import sys; sys.stderr.write('x'*100000 + '\\npassword=hunter2\\n'); raise SystemExit(1)",
         ],
         cwd=verifier.REPO_ROOT,
         timeout=5,
         env=verifier.clean_environment(),
     )
 
+    summary = verifier._stage("install", result, "").summary  # noqa: SLF001
     assert result.returncode == 1
-    assert len(result.stderr) <= verifier.COMMAND_OUTPUT_TAIL_CHARS
-    assert "hunter2" not in result.stderr
+    assert summary == "password=[REDACTED]"
+
+
+def test_oversized_command_output_is_bounded_and_fails(monkeypatch) -> None:
+    monkeypatch.setattr(verifier, "COMMAND_OUTPUT_MAX_BYTES", 1024)
+    result = verifier.run_command(
+        [sys.executable, "-c", "print('x' * 5000)"],
+        cwd=verifier.REPO_ROOT,
+        timeout=5,
+        env=verifier.clean_environment(),
+    )
+
+    assert result.returncode == 70
+    assert len(result.stdout) <= 1024
+    assert verifier._stage("install", result, "").summary == (  # noqa: SLF001
+        "command output exceeded safety bound"
+    )
+
+
+def test_failed_command_summary_is_the_last_output_line() -> None:
+    script = (
+        "import sys\n"
+        "for index in range(40):\n"
+        "    print(f'Collecting package-{index} from somewhere long line', file=sys.stderr)\n"
+        "print('ERROR: No matching distribution found for torch==9', file=sys.stderr)\n"
+        "raise SystemExit(1)\n"
+    )
+    result = verifier.run_command(
+        [sys.executable, "-c", script],
+        cwd=verifier.REPO_ROOT,
+        timeout=5,
+        env=verifier.clean_environment(),
+    )
+
+    stage = verifier._stage("install", result, "")  # noqa: SLF001
+    assert stage.status == "failed"
+    assert stage.summary == "ERROR: No matching distribution found for torch==9"
+
+
+def test_failing_audit_output_reaches_the_json_parser_unchanged(tmp_path) -> None:
+    # pip-audit exits 1 when it finds a vulnerability; its JSON must survive
+    # untouched even when large or when advisory text resembles a credential.
+    payload = {
+        "dependencies": [
+            {
+                "name": f"package-{index}",
+                "version": "1.0",
+                "vulns": [
+                    {
+                        "id": f"PYSEC-{index}",
+                        "description": 'See https://example.test/a?token=abc" for details.',
+                        "fix_versions": [],
+                    }
+                ],
+            }
+            for index in range(1000)
+        ],
+        "fixes": [],
+    }
+    encoded = tmp_path / "audit.json"
+    encoded.write_text(json.dumps(payload), encoding="utf-8")
+    assert encoded.stat().st_size > 64 * 1024
+    script = "import sys; sys.stdout.write(open(sys.argv[1]).read()); raise SystemExit(1)"
+    result = verifier.run_command(
+        [sys.executable, "-c", script, str(encoded)],
+        cwd=verifier.REPO_ROOT,
+        timeout=5,
+        env=verifier.clean_environment(),
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stdout) == payload
 
 
 def test_venv_python_symlink_identity_is_preserved_through_audit(monkeypatch, tmp_path) -> None:

@@ -6,34 +6,12 @@ import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 
 import { startBackend } from "./lib/backendProcess.mjs";
-import { resolveFallbackChromiumExecutable } from "./lib/chromiumResolver.mjs";
+import { launchChromium } from "./lib/chromiumResolver.mjs";
 import { cleanupAll, registerCleanup } from "./lib/cleanupRegistry.mjs";
 import { startFrontend } from "./lib/frontendProcess.mjs";
 import { formatDuration, nowIso, redactSecrets } from "./lib/util.mjs";
 import { SCENARIOS } from "./scenarios.mjs";
 import { selectScenarios } from "./lib/scenarioSelection.mjs";
-
-async function launchChromium({ headless }) {
-  const args = ["--host-resolver-rules=MAP localhost 127.0.0.1"];
-  if (process.env.ORPHEUS_HARNESS_CHROMIUM?.trim()) {
-    const executablePath = resolveFallbackChromiumExecutable({ headless });
-    console.warn(`using ORPHEUS_HARNESS_CHROMIUM browser at ${executablePath}`);
-    return chromium.launch({ headless, executablePath, args });
-  }
-  try {
-    return await chromium.launch({ headless, args });
-  } catch (err) {
-    if (!/Executable doesn't exist/.test(String(err.message))) {
-      throw err;
-    }
-    const executablePath = resolveFallbackChromiumExecutable({ headless });
-    if (!executablePath) {
-      throw err;
-    }
-    console.warn(`playwright's pinned chromium build is missing; falling back to cached build at ${executablePath}`);
-    return chromium.launch({ headless, executablePath, args });
-  }
-}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..", "..");
@@ -106,7 +84,7 @@ Self-starting mode (default): spawns an isolated backend + vite dev server.
 Reuse mode: point the harness at services you already started.
   --backend-url=<url>   e.g. http://127.0.0.1:54231
   --token=<token>       Desktop API bearer token
-  --frontend-url=<url>  e.g. http://127.0.0.1:5173
+  --frontend-url=<url>  e.g. http://localhost:5173
   (all three must be provided together to enable reuse mode)
 
 Other options:
@@ -138,6 +116,7 @@ function installSignalHandlers() {
 }
 
 async function main() {
+  const runStartedAt = nowIso();
   installSignalHandlers();
 
   const args = parseArgs(process.argv.slice(2));
@@ -193,7 +172,7 @@ async function main() {
 }
 
 async function runWithBrowser({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend }) {
-  const browser = await launchChromium({ headless: !args.headed });
+  const browser = await launchChromium(chromium, { headless: !args.headed, args: ["--host-resolver-rules=MAP localhost 127.0.0.1"] });
   registerCleanup(() => browser.close());
   return runScenarios({ args, backend, frontendUrl, backendBaseUrl, token, reuseMode, frontend, browser });
 }
@@ -324,7 +303,7 @@ async function runScenarios({ args, backend, frontendUrl, backendBaseUrl, token,
   }
 
   const report = {
-    startedAt: nowIso(),
+    startedAt: runStartedAt,
     mode: reuseMode ? "reuse" : "self-start",
     backendBaseUrl,
     frontendUrl,

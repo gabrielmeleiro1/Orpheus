@@ -30,8 +30,8 @@ const CACHE_LAYOUTS = {
  * `ORPHEUS_HARNESS_CHROMIUM` names an explicit Chromium-based executable
  * (for example an installed Chrome) and takes precedence over the cache.
  *
- * Returns an `executablePath` to pass to `chromium.launch()`, or `null` to
- * let Playwright use its own default resolution (when that already works).
+ * Returns an `executablePath` to pass to `chromium.launch()`, or `null`.
+ * Use it through `launchChromium`, which tries Playwright's pinned build first.
  */
 export function resolveFallbackChromiumExecutable({
   headless,
@@ -72,4 +72,33 @@ export function resolveFallbackChromiumExecutable({
   }
 
   return null;
+}
+
+/**
+ * Launch Playwright's pinned Chromium, falling back to a cached build only when
+ * that pinned executable is missing. `chromium` is Playwright's browser type.
+ */
+export async function launchChromium(chromium, {
+  headless,
+  args = [],
+  env = process.env,
+  platform = process.platform,
+  home = os.homedir(),
+  warn = console.warn,
+}) {
+  const resolve = () => resolveFallbackChromiumExecutable({ headless, env, platform, home });
+  if (env.ORPHEUS_HARNESS_CHROMIUM?.trim()) {
+    const executablePath = resolve();
+    warn(`using ORPHEUS_HARNESS_CHROMIUM browser at ${executablePath}`);
+    return chromium.launch({ headless, args, executablePath });
+  }
+  try {
+    return await chromium.launch({ headless, args });
+  } catch (err) {
+    if (!/Executable doesn't exist/.test(String(err.message))) throw err;
+    const executablePath = resolve();
+    if (!executablePath) throw err;
+    warn(`playwright's pinned chromium build is missing; falling back to cached build at ${executablePath}`);
+    return chromium.launch({ headless, args, executablePath });
+  }
 }

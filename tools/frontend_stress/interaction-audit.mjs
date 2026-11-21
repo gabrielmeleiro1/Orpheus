@@ -20,21 +20,20 @@ import { chromium } from "playwright";
 
 import { startBackend } from "./lib/backendProcess.mjs";
 import { startFrontend } from "./lib/frontendProcess.mjs";
-import { resolveFallbackChromiumExecutable } from "./lib/chromiumResolver.mjs";
+import { launchChromium } from "./lib/chromiumResolver.mjs";
 import { cleanupAll, registerCleanup } from "./lib/cleanupRegistry.mjs";
-import { assert, sleep, waitFor, redactSecrets } from "./lib/util.mjs";
+import { assert, sleep, waitFor, waitForConversion, redactSecrets } from "./lib/util.mjs";
 import { installInteractionProbe } from "./lib/interactionProbe.mjs";
 import { measureFocusIndicator, measureLabelVisibility, measureStateDistinct } from "./lib/interactionPixels.mjs";
 import {
   downloadFailed, downloadRunning, failedActive, failedEventStream, libraryCount, libraryPage,
-  mockedSuccess, runningActive, runtimeNotReadyStatus,
+  isGuardedRequest, mockedSuccess, runningActive, runtimeNotReadyStatus,
 } from "./lib/interactionMocks.mjs";
 import {
   checkClipping, checkCoverage, checkFloatingInViewport, checkFocusIndicator, checkFocusLanding, checkFocusVisible,
   checkForcedLabel, checkForcedState, checkHorizontalScroll, checkSnapshot, checkTooltip, failureKey, hoverTipLingers, layoutShifts,
   parseArgs, rebuiltTwins, selectStates, selectViewports,
 } from "./lib/interactionChecks.mjs";
-import { waitForScreenConversion } from "./screens.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../..");
@@ -124,16 +123,9 @@ function backendMatcher(baseUrl) {
   return (url) => url.origin === origin;
 }
 
-// Requests that change data or reach outside the browser (deleting, starting
-// work, opening Explorer). They never reach the backend: each is answered with
-// a faithful mocked success so the UI completes its transition. Outside the
-// activation pass nothing should send one, so there it is also a failure.
-const GUARDED = [
-  { method: "DELETE", pattern: /^\/api\// },
-  { method: "POST", pattern: /^\/api\/(conversions(\/[^/]+\/cancel)?|conversions\/repair\/.*|maintenance\/(cleanup|backups\/[^/]+\/restore|delete-staging\/open-folder)|setup\/(adopt|models\/download(\/cancel)?)|library\/\d+\/open-folder|system\/storage\/[^/]+\/open)$/ },
-  { method: "PATCH", pattern: /^\/api\/library\// },
-];
-
+// Guarded requests (lib/interactionMocks.mjs) never reach the backend: each is
+// answered with a faithful mocked success so the UI completes its transition.
+// Outside the activation pass nothing should send one, so there it is also a failure.
 async function guardedAnswer(route, request, url) {
   const method = request.method();
   const sent = () => { try { return request.postDataJSON(); } catch { return null; } };
@@ -178,7 +170,7 @@ async function installRoutes(context, ctx, state, recordGuard, guard = { activat
       const body = await mock.json(await response.json().catch(() => null), url);
       return route.fulfill({ response, status: mock.status ?? 200, json: body });
     }
-    if (request.method() !== "OPTIONS" && GUARDED.some((rule) => rule.method === request.method() && rule.pattern.test(url.pathname))
+    if (isGuardedRequest(request.method(), url.pathname)
       && !(state.allowRequests ?? []).some((pattern) => pattern.test(`${request.method()} ${url.pathname}`))) {
       if (!guard.activating) recordGuard(`${request.method()} ${url.pathname}`);
       return guardedAnswer(route, request, url);
@@ -857,7 +849,7 @@ function createPhases(ctx) {
       await phases.setup();
       if ((await libraryItems(ctx.api)).length === 0) {
         log("converting the first book");
-        await waitForScreenConversion(ctx.api, await startConversion(ctx.api, "The Lighthouse Keeper", "Mara Quinn", SHORT_TEXT));
+        await waitForConversion(ctx.api, await startConversion(ctx.api, "The Lighthouse Keeper", "Mara Quinn", SHORT_TEXT));
       }
       const [first] = await libraryItems(ctx.api);
       ctx.realDetail = await ctx.api("GET", `/api/library/${first.id}`);
@@ -865,8 +857,8 @@ function createPhases(ctx) {
     longBooks: () => run("longBooks", async () => {
       await phases.oneBook();
       log("converting books with long, CJK and RTL metadata");
-      await waitForScreenConversion(ctx.api, await startConversion(ctx.api, CJK_TITLE, "", SHORT_TEXT));
-      await waitForScreenConversion(ctx.api, await startConversion(ctx.api, LONG_SPACED, LONG_AUTHOR, SHORT_TEXT));
+      await waitForConversion(ctx.api, await startConversion(ctx.api, CJK_TITLE, "", SHORT_TEXT));
+      await waitForConversion(ctx.api, await startConversion(ctx.api, LONG_SPACED, LONG_AUTHOR, SHORT_TEXT));
       const items = await libraryItems(ctx.api);
       const first = items.find((item) => item.title === "The Lighthouse Keeper");
       if (first) await ctx.api("PATCH", `/api/library/${first.id}`, { title: LONG_UNBROKEN, author: RTL_AUTHOR });
@@ -888,7 +880,7 @@ function createPhases(ctx) {
       const active = await ctx.api("GET", "/api/conversions/active");
       if (!active.active) return;
       await ctx.api("POST", `/api/conversions/${active.job.id}/cancel`, {});
-      await waitForScreenConversion(ctx.api, active.job.id, { allowedStatuses: ["completed", "cancelled", "failed"] });
+      await waitForConversion(ctx.api, active.job.id, { allowedStatuses: ["completed", "cancelled", "failed"] });
     },
   };
   return phases;
@@ -1614,8 +1606,7 @@ async function main() {
     // Isolation proof: the backend's storage must live in this run's folder.
     await waitFor(() => fs.existsSync(backend.dbPath), { timeoutMs: 30_000, message: `database created at ${backend.dbPath}` });
     const frontend = await startFrontend({ desktopDir: path.join(repoRoot, "desktop"), port: 5173, log });
-    const executablePath = resolveFallbackChromiumExecutable({ headless: !options.headed }) ?? undefined;
-    const browser = await chromium.launch({ headless: !options.headed, executablePath, args: ["--host-resolver-rules=MAP localhost 127.0.0.1", "--mute-audio"] });
+    const browser = await launchChromium(chromium, { headless: !options.headed, args: ["--host-resolver-rules=MAP localhost 127.0.0.1", "--mute-audio"] });
     registerCleanup(() => browser.close());
     const ctx = { backend, frontend, browser, api: createApi(backend), shared: { indicators: new Map(), activated: new Set(), forcedSeen: new Set() } };
     report.browser = browser.version();

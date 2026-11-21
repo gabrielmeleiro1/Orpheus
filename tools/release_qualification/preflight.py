@@ -14,7 +14,6 @@ from typing import Callable, Mapping, Sequence
 from .model import QualificationConfig, parse_version_tuple
 
 PINNED_RUST_VERSION = "1.88.0"
-MINIMUM_MACOS = (14, 0)
 MINIMUM_PYTHON = (3, 12)
 MINIMUM_NODE_MAJOR = 20
 REQUIRED_TOOLS: tuple[str, ...] = (
@@ -35,7 +34,6 @@ class PreflightError(ValueError):
 
 @dataclass(frozen=True)
 class PreflightFacts:
-    ok: bool
     system: str
     machine: str
     macos_version: str
@@ -314,8 +312,9 @@ def collect_preflight(
 
     macos_version = macos_product_version()
     os_build = macos_build_version()
-    if _normalize_version_tuple(macos_version, width=len(MINIMUM_MACOS)) < MINIMUM_MACOS:
-        errors.append(f"macOS {macos_version} is below required 14.0")
+    minimum_macos = _parse_version_tuple(config.minimum_macos)
+    if _normalize_version_tuple(macos_version, width=len(minimum_macos)) < minimum_macos:
+        errors.append(f"macOS {macos_version} is below required {config.minimum_macos}")
 
     py = python_version_info()
     python_version = f"{py[0]}.{py[1]}.{py[2]}"
@@ -359,7 +358,7 @@ def collect_preflight(
 
     package_version = read_package_version(root)
     tauri_version = read_tauri_version(root)
-    requested = config.require_version(release_version)
+    requested = release_version.strip()
     if not (package_version == tauri_version == requested):
         errors.append(
             "version mismatch: "
@@ -399,7 +398,6 @@ def collect_preflight(
         raise PreflightError("; ".join(errors))
 
     return PreflightFacts(
-        ok=True,
         system=system,
         machine=machine,
         macos_version=macos_version,

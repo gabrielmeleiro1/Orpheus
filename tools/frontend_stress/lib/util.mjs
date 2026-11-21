@@ -53,10 +53,6 @@ export function formatDuration(ms) {
   return `${minutes}m ${remainderSec}s`;
 }
 
-export function requireSuccessfulConversion(status) {
-  assert(status === "completed", `Conversion did not complete: ${status ?? "no terminal state"}`);
-}
-
 export function redactSecrets(text, secrets) {
   let safe = String(text);
   for (const secret of secrets.filter(Boolean)) {
@@ -67,4 +63,50 @@ export function redactSecrets(text, secrets) {
 
 export function hasRestoredPlaybackOffset({ currentTime, playingFor }) {
   return currentTime - playingFor >= 3.5;
+}
+
+/**
+ * Polls GET /api/conversions/active until the submitted job leaves the active
+ * slot. Failed and cancelled jobs are idle too, so the exact job id and its
+ * status are required.
+ */
+export async function waitForConversion(api, jobId, {
+  timeoutMs = 300_000,
+  intervalMs = 500,
+  allowedStatuses = ["completed"],
+} = {}) {
+  assert(typeof jobId === "string" && jobId.trim(), "Conversion start did not return a job id");
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const active = await api("GET", "/api/conversions/active");
+    assert(active.job?.id === jobId, `Expected conversion ${jobId}, received ${active.job?.id ?? "no job"}`);
+    if (!active.active) {
+      assert(allowedStatuses.includes(active.job.status),
+        `Conversion ${jobId} did not complete as expected: ${active.job.status ?? "unknown"}${active.job.error ? `: ${active.job.error}` : ""}`);
+      return active;
+    }
+    await sleep(intervalMs);
+  }
+  throw new Error(`Conversion ${jobId} did not finish within ${timeoutMs}ms`);
+}
+
+/** Idempotent SIGTERM-then-SIGKILL stop for a spawned child. */
+export function makeStopFn(proc) {
+  let stopped = false;
+  return async () => {
+    // A child killed by a signal keeps exitCode null and has already emitted "exit".
+    if (stopped || proc.exitCode !== null || proc.signalCode !== null) {
+      stopped = true;
+      return;
+    }
+    stopped = true;
+    await new Promise((resolve) => {
+      const escalate = setTimeout(() => proc.kill("SIGKILL"), 5_000);
+      proc.once("exit", () => {
+        clearTimeout(escalate);
+        resolve();
+      });
+      proc.kill("SIGTERM");
+    });
+  };
 }

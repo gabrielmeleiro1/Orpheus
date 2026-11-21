@@ -222,12 +222,47 @@ def write_jsonl_samples(
             handle.write("\n")
 
 
+# Every configured budget has a scenario; finalize requires a passing decision for each.
 OBSERVER_SCENARIOS: tuple[str, ...] = (
+    "cold-launch",
     "warm-launch",
     "idle-dashboard",
     "shutdown",
     "soak",
 )
+
+
+def decision_path(report_dir: Path, scenario: str) -> Path:
+    return Path(report_dir) / "metrics" / f"{scenario}-decision.json"
+
+
+def observe_decisions_gate(report_dir: Path, *, artifact_hash: str) -> tuple[bool, str, int]:
+    """Return ``(blocked, reason, exit_code)`` where exit 1=fail, 2=incomplete.
+
+    Every scenario needs a passing decision observed against the qualified artifact.
+    """
+    incomplete_reason = ""
+    for scenario in OBSERVER_SCENARIOS:
+        path = decision_path(report_dir, scenario)
+        if not path.is_file():
+            incomplete_reason = incomplete_reason or f"missing observe decision: {scenario}"
+            continue
+        try:
+            decision = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return True, f"invalid observe decision: {scenario}", 1
+        if not isinstance(decision, dict):
+            return True, f"invalid observe decision: {scenario}", 1
+        if decision.get("artifact_hash") != artifact_hash:
+            incomplete_reason = incomplete_reason or (
+                f"observe decision is for a different artifact, re-run observe: {scenario}"
+            )
+            continue
+        if decision.get("passed") is not True:
+            return True, f"performance budget failed: {scenario} ({decision.get('detail')})", 1
+    if incomplete_reason:
+        return True, incomplete_reason, 2
+    return False, "ok", 0
 
 
 @dataclass
@@ -275,9 +310,11 @@ class ObserverSession:
         if out.exists():
             out.unlink()
 
-        if self.scenario == "warm-launch":
+        if self.scenario in {"cold-launch", "warm-launch"}:
             if action_started_at is None or ui_ready_at is None:
-                raise ValueError("warm-launch requires action_started_at and ui_ready_at handshake")
+                raise ValueError(
+                    f"{self.scenario} requires action_started_at and ui_ready_at handshake"
+                )
             samples = self.sampler()
             tree = attribute_orpheus_tree(
                 samples,
@@ -296,7 +333,7 @@ class ObserverSession:
             )
             return evaluate_launch(
                 budgets=self.budgets,
-                mode="warm",
+                mode=self.scenario.removesuffix("-launch"),
                 started_at=action_started_at,
                 ready_at=ui_ready_at,
             )
@@ -304,11 +341,13 @@ class ObserverSession:
         started = self.monotonic_clock()
         if self.scenario == "idle-dashboard":
             duration = float(seconds if seconds is not None else 60.0)
-            series = self._sample_series(
+            series, unattributed = self._sample_series(
                 out,
                 duration_seconds=duration,
                 value_fn=lambda tree: sum(proc.pcpu for proc in tree),
             )
+            if unattributed:
+                return _unattributed_decision(unattributed, len(series))
             return evaluate_idle_cpu(series, budgets=self.budgets)
 
         if self.scenario == "shutdown":
@@ -320,11 +359,13 @@ class ObserverSession:
             )
 
         duration_minutes = float(minutes if minutes is not None else 30.0)
-        rss_series = self._sample_series(
+        rss_series, unattributed = self._sample_series(
             out,
             duration_seconds=duration_minutes * 60.0,
             value_fn=lambda tree: sum(proc.rss_kib for proc in tree) / 1024.0,
         )
+        if unattributed:
+            return _unattributed_decision(unattributed, len(rss_series))
         return evaluate_soak_memory(rss_series, budgets=self.budgets)
 
     def _observe_shutdown(
@@ -456,8 +497,10 @@ class ObserverSession:
         *,
         duration_seconds: float,
         value_fn: Callable[[list[ProcessSample]], float],
-    ) -> list[float]:
+    ) -> tuple[list[float], int]:
+        """Return the sampled series and how many samples had no attributed backend."""
         series: list[float] = []
+        unattributed = 0
         started = self.monotonic_clock()
         deadline = started + duration_seconds
         while True:
@@ -471,6 +514,8 @@ class ObserverSession:
                 runtime_root=self.runtime_root,
             )
             series.append(float(value_fn(tree)))
+            if not any(_is_backend_process(proc) for proc in tree):
+                unattributed += 1
             write_jsonl_samples(
                 out,
                 tree,
@@ -486,7 +531,18 @@ class ObserverSession:
                 break
             remaining = deadline - now
             self.sleep(min(self.sample_interval_seconds, remaining))
-        return series
+        return series, unattributed
+
+
+def _unattributed_decision(unattributed: int, sample_count: int) -> BudgetDecision:
+    return BudgetDecision(
+        passed=False,
+        detail=(
+            f"no Orpheus backend attributed in {unattributed} of {sample_count} samples; "
+            "is the app running from --app-bundle?"
+        ),
+        metrics={"unattributed_samples": unattributed, "sample_count": sample_count},
+    )
 
 
 def _is_backend_process(sample: ProcessSample) -> bool:

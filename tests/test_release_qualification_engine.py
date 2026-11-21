@@ -26,7 +26,8 @@ EVIDENCE_BASE = REPO_ROOT / DEFAULT_EVIDENCE_ROOT
 def test_command_result_argv_elements_are_sanitized(tmp_path: Path):
     log_dir = tmp_path / "commands"
     secret = "super-secret-token"
-    username = os.environ.get("USER") or "testuser"
+    # Synthetic name that cannot occur in the interpreter or checkout path.
+    username = "qualuser7f3a"
     spec = CommandSpec(
         label="sanitize-argv",
         argv=[
@@ -45,6 +46,7 @@ def test_command_result_argv_elements_are_sanitized(tmp_path: Path):
     assert secret not in joined
     assert "hunter2" not in joined
     assert username not in joined
+    assert result.argv[-1] == "/Users/[REDACTED]/secret-file"
     assert all(isinstance(part, str) for part in result.argv)
     assert len(result.argv) == len(spec.argv)
 
@@ -89,7 +91,6 @@ def test_command_spec_requires_argv_array_not_shell_string():
 
     spec = CommandSpec(label="ok", argv=[sys.executable, "-c", "print(1)"], cwd=".")
     assert isinstance(spec.argv, tuple)
-    assert spec.shell is False
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
@@ -166,6 +167,31 @@ def test_timeout_terminates_process_group_and_records_failure(tmp_path: Path):
     assert result.started_at
     assert result.ended_at
     assert result.duration_seconds >= 0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")
+def test_timeout_kills_a_command_that_ignores_sigterm_after_the_grace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from tools.release_qualification import commands
+
+    monkeypatch.setattr(commands, "TERMINATE_GRACE_SECONDS", 0.5)
+    script = (
+        "import signal, sys, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "while True:\n    print('still here', flush=True); time.sleep(0.05)"
+    )
+    spec = CommandSpec(
+        label="ignores-term",
+        argv=[sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        timeout_seconds=0.5,
+    )
+    started = time.monotonic()
+    result = run_command(spec, log_dir=tmp_path / "commands")
+
+    assert result.timed_out is True
+    assert result.exit_code != 0
+    assert time.monotonic() - started < 5
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Release command runner requires POSIX process groups")

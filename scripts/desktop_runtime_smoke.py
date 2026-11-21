@@ -458,20 +458,9 @@ def build_child_env(
     if reduced_path:
         env["PATH"] = REDUCED_MACOS_PATH
     if conversion_journey:
-        _ensure_offline_model_resolution_env(env)
+        # The conversion journey must resolve models from the local cache only.
+        env.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
     return env
-
-
-def _ensure_offline_model_resolution_env(env: dict[str, str]) -> None:
-    """Force Hugging Face/Transformers offline model resolution for conversion journey.
-
-    Never weakens an already-enabled parent offline setting.
-    """
-    for key in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"):
-        current = str(env.get(key, "")).strip().lower()
-        if current in {"1", "true", "yes", "on"}:
-            continue
-        env[key] = "1"
 
 
 def _runtime_command_env(*, reduced_path: bool) -> dict[str, str]:

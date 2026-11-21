@@ -2,19 +2,14 @@
 // Runs the desktop app's Vite dev server programmatically instead of via the
 // `vite` CLI binary.
 //
-// Why: this worktree's `desktop/node_modules` is a symlink to the main
-// checkout's `desktop/node_modules` (outside this worktree). Vite's default
-// `server.fs.strict` only serves files that resolve under the project root,
-// so any package asset resolved through that symlink (e.g. the
-// @fontsource-variable/geist .woff2 files loaded via `/@fs/...`) comes back
-// 403 Forbidden. That 403 surfaces as a real browser console error, which
-// would fail every scenario under this harness's console-error policy.
-//
-// Loading Vite's JS API directly (resolved from the desktop directory via
-// createRequire, since this script's own package.json only depends on
-// playwright) lets us pass `server.fs.strict: false` as an override on top
-// of the project's real vite.config.ts, without editing any file outside
-// tools/frontend_stress/.
+// Why: `desktop/node_modules` may be a symlink (a git worktree sharing another
+// checkout's install). Package assets such as the @fontsource .woff2 files then
+// resolve outside the project root, Vite's `server.fs.strict` answers 403, and
+// the browser console error fails every scenario. Vite's JS API (resolved from
+// the desktop directory, since this package only depends on playwright) lets
+// the harness add that one resolved directory to Vite's default allow list on
+// top of the project's vite.config.ts; everything else on disk stays denied.
+import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,7 +20,8 @@ async function main() {
 
   const requireFromDesktop = createRequire(path.join(desktopDir, "package.json"));
   const vitePath = requireFromDesktop.resolve("vite");
-  const { createServer } = await import(pathToFileURL(vitePath).href);
+  const { createServer, searchForWorkspaceRoot } = await import(pathToFileURL(vitePath).href);
+  const nodeModules = fs.realpathSync(path.join(desktopDir, "node_modules"));
 
   const server = await createServer({
     root: desktopDir,
@@ -34,7 +30,7 @@ async function main() {
       host: "127.0.0.1",
       port,
       strictPort: true,
-      fs: { strict: false },
+      fs: { allow: [searchForWorkspaceRoot(desktopDir), nodeModules] },
     },
   });
 

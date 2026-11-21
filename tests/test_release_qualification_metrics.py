@@ -195,29 +195,18 @@ def test_observer_idle_honors_monotonic_duration_with_cadence_and_jsonl(
         sleeps.append(seconds)
         clock["t"] += seconds
 
+    app, runtime, ui_exe, backend_exe = _shutdown_fixture_paths(tmp_path)
+
     def sampler() -> list[ProcessSample]:
         sample_n["n"] += 1
-        return [
-            ProcessSample(
-                pid=1,
-                ppid=0,
-                pcpu=1.0,
-                rss_kib=1024,
-                comm="Orpheus",
-                args=str(tmp_path / "Orpheus.app" / "Contents" / "MacOS" / "Orpheus"),
-                start_time="1",
-            )
-        ]
+        return [_proc(1, 0, ui_exe, pcpu=1.0), _proc(2, 1, backend_exe, pcpu=0.0)]
 
-    (tmp_path / "Orpheus.app" / "Contents" / "MacOS").mkdir(parents=True)
-    (tmp_path / "Orpheus.app" / "Contents" / "MacOS" / "Orpheus").write_text("x")
-    (tmp_path / "runtime").mkdir()
     session = ObserverSession(
         scenario="idle-dashboard",
         report_dir=tmp_path,
         budgets=_budgets(),
-        app_bundle=tmp_path / "Orpheus.app",
-        runtime_root=tmp_path / "runtime",
+        app_bundle=app,
+        runtime_root=runtime,
         monotonic_clock=mono,
         sampler=sampler,
         sleep=sleeper,
@@ -291,6 +280,50 @@ def _proc(
         args=str(exe),
         start_time=str(pid),
     )
+
+
+def test_observer_cold_launch_uses_the_cold_budget(tmp_path: Path) -> None:
+    (tmp_path / "Orpheus.app").mkdir()
+    (tmp_path / "runtime").mkdir()
+    session = ObserverSession(
+        scenario="cold-launch",
+        report_dir=tmp_path,
+        budgets=_budgets(cold_launch_seconds=15.0, warm_launch_seconds=5.0),
+        app_bundle=tmp_path / "Orpheus.app",
+        runtime_root=tmp_path / "runtime",
+        sampler=lambda: [],
+    )
+    decision = session.run(action_started_at=10.0, ui_ready_at=20.0)
+    assert decision.passed is True
+    assert decision.metrics["mode"] == "cold"
+    assert decision.metrics["budget_seconds"] == 15.0
+
+
+@pytest.mark.parametrize("scenario", ["idle-dashboard", "soak"])
+@pytest.mark.parametrize("with_ui_only", [False, True])
+def test_observer_idle_and_soak_fail_without_an_attributed_backend(
+    tmp_path: Path, scenario: str, with_ui_only: bool
+) -> None:
+    """An app that is not running (or not under --app-bundle) must not read as idle."""
+    app, runtime, ui_exe, _backend_exe = _shutdown_fixture_paths(tmp_path)
+    clock = {"t": 0.0}
+
+    def sleeper(seconds: float) -> None:
+        clock["t"] += seconds
+
+    session = ObserverSession(
+        scenario=scenario,
+        report_dir=tmp_path,
+        budgets=_budgets(),
+        app_bundle=app,
+        runtime_root=runtime,
+        monotonic_clock=lambda: clock["t"],
+        sampler=lambda: [_proc(1, 0, ui_exe)] if with_ui_only else [],
+        sleep=sleeper,
+    )
+    decision = session.run(seconds=20.0, minutes=0.5)
+    assert decision.passed is False
+    assert "no orpheus backend" in decision.detail.lower()
 
 
 def test_observer_shutdown_waits_for_external_exit_then_passes(tmp_path: Path) -> None:

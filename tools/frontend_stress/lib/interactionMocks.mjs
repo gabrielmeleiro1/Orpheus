@@ -74,7 +74,7 @@ const FAILED_JOB_ID = "audit-failed-job";
 export function runningActive({ title, author, clientRequestId = "desktop-audit-failed" }) {
   return {
     active: true,
-    job: { author, book_id: null, client_request_id: clientRequestId, error: null, id: FAILED_JOB_ID, status: "running", title },
+    job: { author, book_id: null, client_request_id: clientRequestId, error: null, id: FAILED_JOB_ID, status: "running", title, repair: false },
   };
 }
 
@@ -82,7 +82,7 @@ export function runningActive({ title, author, clientRequestId = "desktop-audit-
 export function failedActive({ title, author, error, clientRequestId = "desktop-audit-failed" }) {
   return {
     active: false,
-    job: { author, book_id: null, client_request_id: clientRequestId, error, id: FAILED_JOB_ID, status: "failed", title },
+    job: { author, book_id: null, client_request_id: clientRequestId, error, id: FAILED_JOB_ID, status: "failed", title, repair: false },
   };
 }
 
@@ -105,6 +105,20 @@ export function failedEventStream({ backendInstanceId, error, clientRequestId = 
   return `retry: 600000\n\n${events.map((event) => `id: ${event.event_id}\ndata: ${JSON.stringify(event)}\n\n`).join("")}`;
 }
 
+// Requests that change data or reach outside the browser (deleting, starting
+// work, backing up, opening Explorer). Playback-position saves stay live: the
+// player states play and pause on entry. Uploads and voice previews only stage
+// temporary files, and later steps need their real handles.
+const GUARDED = [
+  { method: "DELETE", pattern: /^\/api\// },
+  { method: "POST", pattern: /^\/api\/(conversions(\/[^/]+\/cancel)?|conversions\/repair\/.*|maintenance\/(backup|cleanup|backups\/[^/]+\/restore|delete-staging\/open-folder)|setup\/(adopt|models\/download(\/cancel)?)|library\/\d+\/open-folder|system\/storage\/[^/]+\/open)$/ },
+  { method: "PATCH", pattern: /^\/api\/library\// },
+];
+
+export function isGuardedRequest(method, pathname) {
+  return GUARDED.some((rule) => rule.method === method && rule.pattern.test(pathname));
+}
+
 /** Answers for requests the audit must not let through but must not leave unanswered. */
 export function mockedSuccess(method, pathname, body) {
   let match;
@@ -116,6 +130,7 @@ export function mockedSuccess(method, pathname, body) {
   }
   if (method === "POST" && /^\/api\/system\/storage\/[^/]+\/open$/.test(pathname)) return { folder_path: "C:\\Audiobooks" };
   if (method === "POST" && pathname === "/api/maintenance/delete-staging/open-folder") return { folder_path: "C:\\Audiobooks\\.delete-staging" };
+  if (method === "POST" && pathname === "/api/maintenance/backup") return { backup_path: "C:\\Audiobooks\\backups\\audiobooks_audit.db" };
   if (method === "POST" && pathname === "/api/maintenance/cleanup") {
     return { backup_path: "C:\\Audiobooks\\backups\\audiobooks_audit.db", deleted_book_rows: [], deleted_chapter_rows: [], deleted_output_dirs: [], deleted_temp_stage_dirs: [], deleted_temp_uploads: [], moved_sources: [] };
   }

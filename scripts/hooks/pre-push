@@ -70,15 +70,6 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "> Ruff"
-run_with_timeout 120 "$PYTHON" -m ruff check .
-
-echo ""
-echo "> Python contract tests"
-run_with_timeout 600 "$PYTHON" -m pytest tests \
-  -m "not property and not benchmark and not slow and not ui"
-
-echo ""
 echo "> Desktop dependencies"
 (
   cd desktop
@@ -86,36 +77,8 @@ echo "> Desktop dependencies"
 )
 
 echo ""
-echo "> Desktop typecheck"
-(
-  cd desktop
-  run_with_timeout 180 npm run typecheck
-)
-
-echo ""
-echo "> Desktop Vitest"
-(
-  cd desktop
-  run_with_timeout 180 npm test -- --run
-)
-
-echo ""
-echo "> Tauri resource directories"
-mkdir -p desktop/src-tauri/binaries
-
-echo ""
-echo "> Tauri tests"
-(
-  cd desktop/src-tauri
-  CARGO_BUILD_JOBS=1 run_with_timeout 900 cargo test
-)
-
-echo ""
-echo "> Tauri check"
-(
-  cd desktop/src-tauri
-  CARGO_BUILD_JOBS=1 run_with_timeout 600 cargo check
-)
+echo "> Source gates (scripts/check_desktop.py)"
+run_with_timeout 3600 "$PYTHON" scripts/check_desktop.py --only lint python frontend rust
 
 echo ""
 echo "PRE-PUSH VALIDATION PASSED"

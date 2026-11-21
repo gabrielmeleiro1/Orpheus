@@ -10,50 +10,47 @@ import sys
 import time
 from pathlib import Path
 
-SCRIPT = "script"
-PYTEST = "pytest"
 CORE_MARKER_EXPRESSION = "not property and not benchmark and not slow"
 REPO_ROOT = Path(__file__).resolve().parent
 
 # Smoke modules to run (in order)
-SMOKE_TEST_MODULES: list[tuple[str, str]] = [
-    ("tests/test_pdf_parser.py", SCRIPT),
-    ("tests/test_epub_parser.py", SCRIPT),
-    ("tests/test_storage_migrations.py", PYTEST),
-    ("tests/test_storage_repository.py", PYTEST),
-    ("tests/test_storage_maintenance.py", PYTEST),
-    ("tests/test_cleaner.py", PYTEST),
-    ("tests/test_cleaner_golden_set.py", SCRIPT),
-    ("tests/test_cleaner_hallucination_guard.py", SCRIPT),
-    ("tests/test_cleaner_heuristic.py", SCRIPT),
-    ("tests/test_cleaner_latency.py", SCRIPT),
-    ("tests/test_cleaner_api_global_limiter.py", PYTEST),
-    ("tests/test_cleaner_api_trace_multichapter.py", SCRIPT),
-    ("tests/test_cleaner_text_preservation.py", SCRIPT),
-    ("tests/test_pipeline_packaging.py", SCRIPT),
-    ("tests/test_parallel_fallback.py", SCRIPT),
-    ("tests/test_runtime_recovery.py", SCRIPT),
-    ("tests/test_tts_runtime_lock.py", SCRIPT),
-    ("tests/test_library_service.py", PYTEST),
-    ("tests/test_markdown_parser.py", PYTEST),
-    ("tests/test_text_parser.py", PYTEST),
-    ("tests/test_voice_service_thread_safety.py", PYTEST),
-    ("tests/test_tts_resilience.py", PYTEST),
-    ("tests/test_events.py", SCRIPT),
-    ("tests/test_conversion_service.py", PYTEST),
-    ("tests/test_run_tests.py", PYTEST),
-    ("tests/test_web_api.py", SCRIPT),
-    ("tests/test_web_events.py", SCRIPT),
-    ("tests/test_voice_recommender.py", PYTEST),
-    ("tests/test_audio.py", PYTEST),
-    ("tests/test_ingestion.py", PYTEST),
-    ("tests/test_memory_management.py", PYTEST),
-    ("tests/test_pool_manager.py", PYTEST),
-    ("tests/test_parallel_pipeline.py", PYTEST),
-    ("tests/test_pipeline.py", PYTEST),
-    ("tests/test_tts.py", PYTEST),
-    ("tests/test_tts_engine_modularization.py", PYTEST),
-    ("tests/test_tts_factory_contract.py", PYTEST),
+SMOKE_TEST_MODULES: list[str] = [
+    "tests/test_pdf_parser.py",
+    "tests/test_epub_parser.py",
+    "tests/test_storage_migrations.py",
+    "tests/test_storage_repository.py",
+    "tests/test_storage_maintenance.py",
+    "tests/test_cleaner.py",
+    "tests/test_cleaner_golden_set.py",
+    "tests/test_cleaner_hallucination_guard.py",
+    "tests/test_cleaner_heuristic.py",
+    "tests/test_cleaner_latency.py",
+    "tests/test_cleaner_api_global_limiter.py",
+    "tests/test_cleaner_api_trace_multichapter.py",
+    "tests/test_cleaner_text_preservation.py",
+    "tests/test_pipeline_packaging.py",
+    "tests/test_parallel_fallback.py",
+    "tests/test_runtime_recovery.py",
+    "tests/test_tts_runtime_lock.py",
+    "tests/test_library_service.py",
+    "tests/test_markdown_parser.py",
+    "tests/test_text_parser.py",
+    "tests/test_voice_service_thread_safety.py",
+    "tests/test_tts_resilience.py",
+    "tests/test_events.py",
+    "tests/test_conversion_service.py",
+    "tests/test_run_tests.py",
+    "tests/test_web_api.py",
+    "tests/test_web_events.py",
+    "tests/test_voice_recommender.py",
+    "tests/test_audio.py",
+    "tests/test_ingestion.py",
+    "tests/test_pool_manager.py",
+    "tests/test_parallel_pipeline.py",
+    "tests/test_pipeline.py",
+    "tests/test_tts.py",
+    "tests/test_tts_engine_modularization.py",
+    "tests/test_tts_factory_contract.py",
 ]
 
 
@@ -83,11 +80,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def build_smoke_command(test_path: str, mode: str) -> list[str]:
+def build_smoke_command(test_path: str) -> list[str]:
     """Build the command used for a smoke-suite test module."""
-    if mode == PYTEST:
-        return [sys.executable, "-m", "pytest", test_path, "-q", "-o", "addopts="]
-    return [sys.executable, test_path]
+    return [sys.executable, "-m", "pytest", test_path, "-q", "-o", "addopts="]
 
 
 def build_contract_command() -> list[str]:
@@ -114,7 +109,7 @@ def build_profile_verification_command(
     return command
 
 
-def run_test(test_path: str, mode: str) -> tuple[bool, float]:
+def run_test(test_path: str) -> tuple[bool, float]:
     """
     Run a single test module.
 
@@ -125,7 +120,7 @@ def run_test(test_path: str, mode: str) -> tuple[bool, float]:
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
     result = subprocess.run(
-        build_smoke_command(test_path, mode),
+        build_smoke_command(test_path),
         capture_output=True,
         env=env,
         text=True,
@@ -137,7 +132,7 @@ def run_test(test_path: str, mode: str) -> tuple[bool, float]:
 
     if not passed:
         print(f"\n{'=' * 50}")
-        print(f"FAILED: {test_path} ({mode})")
+        print(f"FAILED: {test_path}")
         print(f"{'=' * 50}")
         print(result.stdout)
         print(result.stderr)
@@ -151,25 +146,25 @@ def run_smoke_suite() -> int:
     print("   ORPHEUS - SMOKE SUITE")
     print("=" * 60 + "\n")
 
-    results: list[tuple[str, str, bool, float]] = []
+    results: list[tuple[str, bool, float]] = []
     total_start = time.time()
 
-    for test_path, mode in SMOKE_TEST_MODULES:
+    for test_path in SMOKE_TEST_MODULES:
         if not (REPO_ROOT / test_path).exists():
             # A renamed or deleted module means the suite silently stopped
             # covering something, so record it as a failure rather than
             # reporting PASSED for a shorter run than the caller asked for.
             print(f"FAIL: {test_path} (not found)")
-            results.append((test_path, mode, False, 0.0))
+            results.append((test_path, False, 0.0))
             continue
 
-        print(f"> Running {test_path} [{mode}]...", end=" ", flush=True)
-        passed, duration = run_test(test_path, mode)
+        print(f"> Running {test_path}...", end=" ", flush=True)
+        passed, duration = run_test(test_path)
 
         status = "PASS" if passed else "FAIL"
         print(f"{status} ({duration:.1f}s)")
 
-        results.append((test_path, mode, passed, duration))
+        results.append((test_path, passed, duration))
 
     total_duration = time.time() - total_start
 
@@ -178,13 +173,13 @@ def run_smoke_suite() -> int:
     print("   RESULTS SUMMARY")
     print("=" * 60)
 
-    passed_count = sum(1 for _, _, p, _ in results if p)
+    passed_count = sum(1 for _, p, _ in results if p)
     failed_count = len(results) - passed_count
 
-    for test_path, mode, passed, duration in results:
+    for test_path, passed, duration in results:
         status = "PASS" if passed else "FAIL"
         name = Path(test_path).stem
-        print(f"  {status} {name} [{mode}]: {duration:.1f}s")
+        print(f"  {status} {name}: {duration:.1f}s")
 
     print(f"\n  Total: {passed_count} passed, {failed_count} failed")
     print(f"  Duration: {total_duration:.1f}s")

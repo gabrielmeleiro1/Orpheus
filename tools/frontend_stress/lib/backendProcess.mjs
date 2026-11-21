@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { registerCleanup } from "./cleanupRegistry.mjs";
+import { makeStopFn } from "./util.mjs";
 
 /**
  * The checkout backend by default. ORPHEUS_HARNESS_BACKEND_EXE runs a packaged
@@ -60,23 +61,7 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
   // process is guaranteed to get torn down even if it never becomes ready —
   // whether via the timeout/error paths below, an interrupt, or a later
   // stage of the harness failing first.
-  let stopped = false;
-  const stop = async () => {
-    if (stopped || proc.exitCode !== null || proc.killed) {
-      stopped = true;
-      return;
-    }
-    stopped = true;
-    await new Promise((resolve) => {
-      proc.once("exit", () => resolve());
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        if (proc.exitCode === null) {
-          proc.kill("SIGKILL");
-        }
-      }, 5_000);
-    });
-  };
+  const stop = makeStopFn(proc);
   registerCleanup(stop);
 
   const stderrChunks = [];

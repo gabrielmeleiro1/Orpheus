@@ -8,31 +8,9 @@ import { chromium } from "playwright";
 
 import { startBackend } from "./lib/backendProcess.mjs";
 import { startFrontend } from "./lib/frontendProcess.mjs";
-import { resolveFallbackChromiumExecutable } from "./lib/chromiumResolver.mjs";
+import { launchChromium } from "./lib/chromiumResolver.mjs";
 import { cleanupAll, registerCleanup } from "./lib/cleanupRegistry.mjs";
-import { assert, sleep, waitFor } from "./lib/util.mjs";
-
-// An idle backend alone does not prove the seed succeeded: failed/cancelled
-// jobs are idle too. Keep the exact submitted job and require its outcome.
-export async function waitForScreenConversion(api, jobId, {
-  timeoutMs = 300_000,
-  intervalMs = 500,
-  allowedStatuses = ["completed"],
-} = {}) {
-  assert(typeof jobId === "string" && jobId.trim(), "Conversion start did not return a job id");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const active = await api("GET", "/api/conversions/active");
-    assert(active.job?.id === jobId, `Expected conversion ${jobId}, received ${active.job?.id ?? "no job"}`);
-    if (!active.active) {
-      assert(allowedStatuses.includes(active.job.status),
-        `Conversion ${jobId} did not complete as expected: ${active.job.status ?? "unknown"}${active.job.error ? `: ${active.job.error}` : ""}`);
-      return active;
-    }
-    await sleep(intervalMs);
-  }
-  throw new Error(`Conversion ${jobId} did not finish within ${timeoutMs}ms`);
-}
+import { assert, sleep, waitFor, waitForConversion } from "./lib/util.mjs";
 
 async function main() {
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -51,8 +29,7 @@ const log = (message) => console.log(`[screens] ${message}`);
 try {
 const backend = await startBackend({ repoRoot, stateDir, log });
 const frontend = await startFrontend({ desktopDir: path.join(repoRoot, "desktop"), port: 5173, log });
-const executablePath = resolveFallbackChromiumExecutable({ headless: true }) ?? undefined;
-const browser = await chromium.launch({ headless: true, executablePath, args: ["--host-resolver-rules=MAP localhost 127.0.0.1", "--mute-audio"] });
+const browser = await launchChromium(chromium, { headless: true, args: ["--host-resolver-rules=MAP localhost 127.0.0.1", "--mute-audio"] });
 registerCleanup(() => browser.close());
 
 const api = async (method, route, body) => {
@@ -132,8 +109,8 @@ async function tab(page, id) {
       await tab(page, "library");
       await shoot(page, `library-empty-${suffix}`);
       log("seeding the library");
-      await waitForScreenConversion(api, await convert("The Lighthouse Keeper", "Mara Quinn", lighthouse));
-      await waitForScreenConversion(api, await convert("Field Notes", "A. Moreau", "Field notes from the coast.\n\nThe tide pools were full of anemones and small crabs this morning.", "document_audio"));
+      await waitForConversion(api, await convert("The Lighthouse Keeper", "Mara Quinn", lighthouse));
+      await waitForConversion(api, await convert("Field Notes", "A. Moreau", "Field notes from the coast.\n\nThe tide pools were full of anemones and small crabs this morning.", "document_audio"));
       seeded = true;
     } else {
       await page.locator("#tab-btn-convert").waitFor({ state: "attached", timeout: 120_000 });
@@ -196,7 +173,7 @@ async function tab(page, id) {
     const active = await api("GET", "/api/conversions/active");
     assert(active.job?.id === runningJobId, "The running screenshot conversion was replaced unexpectedly");
     if (active.active) await api("POST", `/api/conversions/${runningJobId}/cancel`, {});
-    await waitForScreenConversion(api, runningJobId, { allowedStatuses: ["completed", "cancelled"] });
+    await waitForConversion(api, runningJobId, { allowedStatuses: ["completed", "cancelled"] });
     await page.close();
   }
 } finally {

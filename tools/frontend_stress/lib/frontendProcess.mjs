@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { registerCleanup } from "./cleanupRegistry.mjs";
+import { makeStopFn } from "./util.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const VITE_SERVER_CHILD = path.join(__dirname, "viteServerChild.mjs");
@@ -11,10 +12,7 @@ const VITE_SERVER_CHILD = path.join(__dirname, "viteServerChild.mjs");
 /**
  * Spawns the Vite dev server for the desktop React app via a small
  * programmatic child (lib/viteServerChild.mjs) rather than the `vite` CLI
- * binary, so we can force `server.fs.strict: false`. This worktree's
- * `desktop/node_modules` is a symlink to the main checkout's node_modules,
- * so package assets (e.g. @fontsource woff2 files) resolve to real paths
- * outside the project root and Vite's default fs.strict would 403 them.
+ * binary, so it can also serve a symlinked `desktop/node_modules`.
  */
 export async function startFrontend({ desktopDir, port, log, readyTimeoutMs = 30_000 }) {
   if (!fs.existsSync(path.join(desktopDir, "node_modules"))) {
@@ -66,24 +64,4 @@ export async function startFrontend({ desktopDir, port, log, readyTimeoutMs = 30
     await stop();
     throw error;
   }
-}
-
-function makeStopFn(proc) {
-  let stopped = false;
-  return async () => {
-    if (stopped || proc.exitCode !== null || proc.killed) {
-      stopped = true;
-      return;
-    }
-    stopped = true;
-    await new Promise((resolve) => {
-      proc.once("exit", () => resolve());
-      proc.kill("SIGTERM");
-      setTimeout(() => {
-        if (proc.exitCode === null) {
-          proc.kill("SIGKILL");
-        }
-      }, 5_000);
-    });
-  };
 }

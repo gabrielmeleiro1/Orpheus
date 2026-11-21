@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { resolveFallbackChromiumExecutable } from "./lib/chromiumResolver.mjs";
+import { launchChromium } from "./lib/chromiumResolver.mjs";
 import { performanceSourceOptions, performanceSourceProvenance, validatePerformanceDependencies } from "./lib/performanceSources.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
@@ -71,8 +71,7 @@ const server = http.createServer((request, response) => {
 await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
 let browser;
 try {
-  const executablePath = resolveFallbackChromiumExecutable({ headless: true });
-  browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  browser = await launchChromium(chromium, { headless: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));

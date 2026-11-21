@@ -167,6 +167,8 @@ try {
     pass("four real conversions while switching 4-bit, 8-bit, FP16, 4-bit");
     phase("delete isolated Qwen 2.5 3B model and verify retained books");
     const before = await get("/api/library");
+    const userLargeCache = path.join(sourceCache, "models--Qwen--Qwen2.5-3B-Instruct");
+    const userLargeFiles = fs.readdirSync(userLargeCache, { recursive: true });
     await page.locator("#tab-btn-settings").click();
     await page.locator("#managed-models-heading").scrollIntoViewIfNeeded();
     await page.getByRole("button", { name: "Delete Qwen 2.5 · 3B", exact: true }).click();
@@ -178,7 +180,8 @@ try {
     await until(async () => !(await get("/api/setup/models")).models.find((model) => model.id === "cleaner-cuda-large").downloaded, "selected test model deleted");
     const after = await get("/api/library");
     check(JSON.stringify(before.items.map((book) => book.id)) === JSON.stringify(after.items.map((book) => book.id)), "Deleting a model must preserve every book");
-    check(fs.existsSync(path.join(sourceCache, "models--Qwen--Qwen2.5-1.5B-Instruct")), "Original model cache must remain intact");
+    // The isolated copy is hard-linked to these files; existsSync also catches dangling snapshot links.
+    check(userLargeFiles.length > 0 && userLargeFiles.every((name) => fs.existsSync(path.join(userLargeCache, name))), "Original Qwen 2.5 3B cache must remain intact");
     check((await get("/api/setup/models")).models.find((model) => model.id === "cleaner-cuda").downloaded, "Other installed model must remain intact");
     await page.getByRole("button", { name: "Download Qwen 2.5 · 3B", exact: true }).waitFor();
     pass("delete one model, preserve other models and books, offer reinstall");

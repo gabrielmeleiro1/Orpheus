@@ -40,10 +40,6 @@ class CommandSpec:
         object.__setattr__(self, "env", dict(env) if env is not None else None)
         object.__setattr__(self, "timeout_seconds", timeout_seconds)
 
-    @property
-    def shell(self) -> bool:
-        return False
-
 
 @dataclass(frozen=True)
 class CommandResult:
@@ -127,9 +123,16 @@ def _sanitize_env(
     return {key: str(source[key]) for key in allow if key in source}
 
 
-def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+# On timeout the group gets SIGTERM first so commands can run their cleanup
+# (the bundled smoke detaches its DMG); SIGKILL follows after this grace.
+TERMINATE_GRACE_SECONDS = 30.0
+
+
+def _kill_process_group(
+    process: subprocess.Popen[bytes], sig: signal.Signals = signal.SIGKILL
+) -> None:
     try:
-        os.killpg(process.pid, signal.SIGKILL)
+        os.killpg(process.pid, sig)
     except ProcessLookupError:
         pass
 
@@ -149,6 +152,7 @@ def _stream_command_output(
         None if timeout_seconds is None else time.monotonic() + float(timeout_seconds)
     )
     drain_deadline: float | None = None
+    kill_at: float | None = None
     redactors = {
         "stdout": StreamingSecretRedactor(username=username),
         "stderr": StreamingSecretRedactor(username=username),
@@ -161,12 +165,20 @@ def _stream_command_output(
 
         while open_streams:
             now = time.monotonic()
+            if kill_at is not None and (now >= kill_at or process.poll() is not None):
+                # Grace elapsed, or the leader finished its cleanup: stop the whole group.
+                _kill_process_group(process)
+                kill_at = None
+                drain_deadline = now + 1.0
             if process.poll() is not None and drain_deadline is None:
                 # Process exited (or was killed): keep reading until EOF or grace elapses.
                 drain_deadline = now + (1.0 if timed_out else 0.5)
             select_timeout: float | None
             if drain_deadline is not None:
                 select_timeout = max(0.0, drain_deadline - now)
+            elif kill_at is not None:
+                # Poll so a leader that exits while others hold the pipes is noticed.
+                select_timeout = min(0.1, max(0.0, kill_at - now))
             elif deadline is not None:
                 select_timeout = max(0.0, deadline - now)
             else:
@@ -183,8 +195,8 @@ def _stream_command_output(
                     and process.poll() is None
                 ):
                     timed_out = True
-                    _kill_process_group(process)
-                    drain_deadline = time.monotonic() + 1.0
+                    _kill_process_group(process, signal.SIGTERM)
+                    kill_at = time.monotonic() + TERMINATE_GRACE_SECONDS
                     continue
                 if drain_deadline is not None and now >= drain_deadline:
                     break
@@ -218,6 +230,7 @@ def _stream_command_output(
         exit_code = process.wait(timeout=1)
 
     if timed_out:
+        _kill_process_group(process)
         if exit_code == 0:
             exit_code = -9
         elif exit_code is None:
@@ -233,9 +246,6 @@ def run_command(
     max_log_bytes: int = 1_000_000,
     username: str | None = None,
 ) -> CommandResult:
-    if spec.shell:
-        raise RuntimeError("shell commands are not permitted")
-
     log_dir = Path(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_name = f"{spec.label}.log"

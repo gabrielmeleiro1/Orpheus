@@ -23,3 +23,14 @@ def test_failed_command_retains_unicode_diagnostics_on_legacy_console(tmp_path, 
     assert "Failed at \u276f test.py:1" in (output / "lint-1.log").read_text(encoding="utf-8")
     assert b"test.py:1" in raw_console.getvalue()
     assert json.loads((output / "results.json").read_text(encoding="utf-8"))[0]["exit_code"] == 3
+
+
+def test_source_gates_run_the_same_commands_as_ci():
+    """The pre-push hook delegates here, so drift from CI would pass bad pushes."""
+    workflow = (check_desktop.REPO_ROOT / ".github/workflows/source-validation.yml").read_text(
+        encoding="utf-8"
+    )
+    plan = check_desktop.commands()
+    for stage in ("lint", "python", "frontend", "rust"):
+        for _cwd, command in plan[stage]:
+            assert " ".join(command[1:]) in workflow, command

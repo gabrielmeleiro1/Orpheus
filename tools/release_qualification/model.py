@@ -27,7 +27,6 @@ _RELEASE_KEYS = frozenset(
         "bundle_id",
         "minimum_macos",
         "architecture",
-        "runtime_profiles",
     }
 )
 _BUDGET_KEYS = frozenset(
@@ -121,7 +120,6 @@ class QualificationConfig:
     bundle_id: str
     minimum_macos: str
     architecture: str
-    runtime_profiles: tuple[str, ...]
     budgets: PerformanceBudgets
 
     @classmethod
@@ -148,16 +146,11 @@ class QualificationConfig:
         if missing_budgets:
             raise ValueError(f"missing budget keys: {sorted(missing_budgets)}")
 
-        profiles = release["runtime_profiles"]
-        if not isinstance(profiles, list) or not profiles:
-            raise ValueError("runtime_profiles must be a non-empty list")
-
         return cls(
             product_name=str(release["product_name"]),
             bundle_id=str(release["bundle_id"]),
             minimum_macos=str(release["minimum_macos"]),
             architecture=str(release["architecture"]),
-            runtime_profiles=tuple(str(item) for item in profiles),
             budgets=PerformanceBudgets(
                 cold_launch_seconds=float(budgets["cold_launch_seconds"]),
                 warm_launch_seconds=float(budgets["warm_launch_seconds"]),
@@ -169,12 +162,6 @@ class QualificationConfig:
                 soak_memory_growth_percent=float(budgets["soak_memory_growth_percent"]),
             ),
         )
-
-    def require_version(self, version: str) -> str:
-        cleaned = version.strip()
-        if not cleaned:
-            raise ValueError("version must be non-empty")
-        return cleaned
 
 
 def load_qualification_config(path: Path | str) -> QualificationConfig:

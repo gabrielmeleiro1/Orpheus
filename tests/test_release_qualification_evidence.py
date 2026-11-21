@@ -89,6 +89,20 @@ def test_sentinel_contains_release_id_and_cleanup_requires_match(tmp_path: Path)
     assert not root.path.exists()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+def test_cleanup_removes_read_only_fixture_copies():
+    root = EvidenceRoot.create(release_id="1.0.0-read-only", base=REPO_ROOT / DEFAULT_EVIDENCE_ROOT)
+    read_only = root.path / "fixtures" / "scenarios" / "read-only-copy" / "data"
+    read_only.mkdir(parents=True)
+    (read_only / "audiobooks.db").write_bytes(b"db")
+    for path in (read_only / "audiobooks.db", read_only, read_only.parent):
+        path.chmod(0o500 if path.is_dir() else 0o400)
+
+    root.cleanup()
+
+    assert not root.path.exists()
+
+
 def test_atomic_json_write_keeps_previous_report_when_a_write_fails(tmp_path: Path):
     target = tmp_path / "report.json"
     atomic_write_json(target, {"ok": True, "n": 1})

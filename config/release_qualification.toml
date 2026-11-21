@@ -3,7 +3,6 @@ product_name = "Orpheus"
 bundle_id = "com.orpheus.desktop"
 minimum_macos = "14.0"
 architecture = "arm64"
-runtime_profiles = ["base", "mlx"]
 
 [budgets]
 cold_launch_seconds = 15.0

@@ -1,16 +1,19 @@
 """Keep default user storage inside each test's temporary directory."""
 
+import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
+import uuid
 
 from huggingface_hub import constants
 from huggingface_hub.utils import _cache_manager
 import pytest
 
-from modules.runtime_setup.state import default_state_path
+from modules.runtime_setup.state import default_state_path, persist_backend_instance
 from tests import conftest
 
 
@@ -110,7 +113,7 @@ def test_session_reports_repository_storage_changes_without_removing_files(
         root.mkdir(parents=True)
         database.write_bytes(b"original")
     monkeypatch.setattr(conftest, "PROJECT_ROOT", str(project))
-    monkeypatch.setattr(conftest, "_ORIGINAL_SETUP_ROOT", tmp_path / "user-setup")
+    monkeypatch.setattr(conftest, "_ORIGINAL_SETUP_STATE", tmp_path / "user-setup" / "runtime-setup.json")
     monkeypatch.setattr(conftest, "_session_exit_status", 0)
     session = SimpleNamespace(exitstatus=0)
     conftest.pytest_sessionstart(session)
@@ -125,10 +128,10 @@ def test_session_reports_repository_storage_changes_without_removing_files(
         root.mkdir(parents=True, exist_ok=True)
         (root / "library.db.lock").write_bytes(b"new")
 
-    before_finish = conftest._setup_file_snapshot(root)
+    before_finish = conftest._tree_snapshot(root)
     conftest.pytest_sessionfinish(session, 0)
 
-    assert conftest._setup_file_snapshot(root) == before_finish
+    assert conftest._tree_snapshot(root) == before_finish
     if change == "unchanged":
         assert session.exitstatus == 0
         assert not capsys.readouterr().err
@@ -140,34 +143,63 @@ def test_session_reports_repository_storage_changes_without_removing_files(
         assert ("library.db.lock" if change in {"added", "created-root"} else "library.db") in message
 
 
-@pytest.mark.parametrize("change", ["unchanged", "added", "modified", "created-root"])
-def test_session_fails_only_when_user_setup_files_are_added_or_modified(
+def test_setup_guard_watches_where_setup_state_is_written(monkeypatch):
+    monkeypatch.delenv("AUDIOBOOK_DATA_DIR", raising=False)
+    spec = importlib.util.spec_from_file_location("fresh_conftest", Path(conftest.__file__))
+    fresh = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fresh)
+
+    assert fresh._ORIGINAL_SETUP_STATE == default_state_path()
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["unchanged", "added", "modified", "removed", "created-root", "library-only", "running-app"],
+)
+def test_session_fails_only_when_user_setup_state_changes(
     tmp_path, monkeypatch, capsys, change,
 ):
-    root = tmp_path / "original-setup"
-    state = root / "nested" / "runtime-setup.json"
+    root = tmp_path / "com.orpheus.desktop"
+    state = root / "runtime-setup.json"
+    database = root / "data" / "library.db"
+    original = {"installation_id": "a" * 32, "profile": "base", "restart_required": True}
     if change != "created-root":
-        state.parent.mkdir(parents=True)
-        state.write_text("original", encoding="utf-8")
-    monkeypatch.setattr(conftest, "_ORIGINAL_SETUP_ROOT", root)
+        database.parent.mkdir(parents=True)
+        database.write_bytes(b"original")
+    if change not in {"added", "created-root"}:
+        state.write_text(json.dumps(original), encoding="utf-8")
+    monkeypatch.setattr(conftest, "_ORIGINAL_SETUP_STATE", state)
     monkeypatch.setattr(conftest, "PROJECT_ROOT", str(tmp_path / "project"))
     monkeypatch.setattr(conftest, "_session_exit_status", 0)
     session = SimpleNamespace(exitstatus=0)
     conftest.pytest_sessionstart(session)
 
     if change == "modified":
-        stat = state.stat()
-        state.write_text("modified", encoding="utf-8")
-        os.utime(state, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        state.write_text(json.dumps({**original, "profile": "mlx"}), encoding="utf-8")
+    elif change == "removed":
+        state.unlink()
     elif change in {"added", "created-root"}:
         root.mkdir(exist_ok=True)
-        (root / "backend-instance.json").write_text("new", encoding="utf-8")
+        state.write_text(json.dumps(original), encoding="utf-8")
+    elif change == "library-only":
+        # The desktop app's library lives beside setup state; it is not setup.
+        (root / "data" / "library.db-wal").write_bytes(b"new")
+        (root / "backend-ready.json").write_text("{}", encoding="utf-8")
+    elif change == "running-app":
+        # A backend launching mid-run records its nonce under the setup lock,
+        # may still hold that lock, and acknowledges a pending restart.
+        persist_backend_instance(uuid.uuid4().hex, state_path=state)
+        (root / "runtime-setup.json.lock").mkdir()
+        (root / "runtime-setup.json.lock" / "owner.json").write_text("{}", encoding="utf-8")
+        state.write_text(
+            json.dumps({**original, "restart_required": False}, indent=2), encoding="utf-8"
+        )
 
-    before_finish = conftest._setup_file_snapshot(root)
+    before_finish = conftest._setup_state_snapshot(root)
     conftest.pytest_sessionfinish(session, 0)
 
-    assert conftest._setup_file_snapshot(root) == before_finish
-    if change == "unchanged":
+    assert conftest._setup_state_snapshot(root) == before_finish
+    if change in {"unchanged", "library-only", "running-app"}:
         assert session.exitstatus == 0
         assert not capsys.readouterr().err
     else:
@@ -176,4 +208,4 @@ def test_session_fails_only_when_user_setup_files_are_added_or_modified(
         message = capsys.readouterr().err
         assert "[conftest] real user setup files added or modified" in message
         assert str(root) in message
-        assert (str(state.relative_to(root)) if change == "modified" else "backend-instance.json") in message
+        assert "runtime-setup.json" in message

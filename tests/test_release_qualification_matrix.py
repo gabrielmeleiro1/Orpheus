@@ -29,7 +29,6 @@ def test_validation_matrix_creates_exact_argv_and_cwd_specs():
     ruff = by_label["ruff-check"]
     assert ruff.argv == (VENV_PYTHON, "-m", "ruff", "check", ".")
     assert ruff.cwd == str(REPO_ROOT)
-    assert ruff.shell is False
 
     contract = by_label["python-contract"]
     assert contract.argv == (VENV_PYTHON, "run_tests.py", "--contract")
@@ -82,11 +81,10 @@ def test_validation_matrix_creates_exact_argv_and_cwd_specs():
     assert by_label["cargo-check"].cwd == tauri
 
 
-def test_matrix_commands_never_use_shell_true():
+def test_matrix_commands_are_argv_tuples():
     matrix = build_validation_matrix(repo_root=REPO_ROOT)
     for spec in matrix.commands:
         assert isinstance(spec, CommandSpec)
-        assert spec.shell is False
         assert isinstance(spec.argv, tuple)
         assert all(isinstance(part, str) for part in spec.argv)
 

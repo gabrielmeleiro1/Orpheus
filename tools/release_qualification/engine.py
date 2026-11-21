@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Mapping, Union
 
 from .evidence import atomic_write_json, atomic_write_text, redact_secrets
-from .model import REQUIRED_PHASES, PhaseState, QualificationReport
+from .model import REQUIRED_PHASES, PhaseRecord, PhaseState, QualificationReport
 from .report import render_markdown_report
 
 PHASE_REGISTRY: tuple[str, ...] = REQUIRED_PHASES
@@ -110,39 +110,14 @@ class PhaseEngine:
 
     def _persist(self, report: QualificationReport) -> None:
         self._sync_artifact_hash_from_manifest()
-        payload = {
-            "release_id": report.release_id,
-            "commit": report.commit,
-            "created_at": report.created_at,
-            "config_hash": self.config_hash,
-            "toolchain_fingerprint": self.toolchain_fingerprint,
-            "artifact_hash": self.artifact_hash,
-            "release_state": report.release_state.value,
-            "required_phases": list(report.required_phases),
-            "phases": {
-                name: {
-                    "name": record.name,
-                    "state": record.state.value,
-                    "detail": redact_secrets(record.detail, username=self.username),
-                    "updated_at": record.updated_at,
-                }
-                for name, record in report.phases.items()
-            },
-        }
-        # Keep in-memory details redacted too once persisted.
-        for name, record in list(report.phases.items()):
-            redacted = redact_secrets(record.detail, username=self.username)
-            if redacted != record.detail:
-                report.phases[name] = type(record)(
-                    name=record.name,
-                    state=record.state,
-                    detail=redacted,
-                    updated_at=record.updated_at,
-                )
-                payload["phases"][name]["detail"] = redacted
-        atomic_write_json(self.report_dir / "report.json", payload)
-        markdown = render_markdown_report(report)
-        atomic_write_text(self.report_dir / "report.md", markdown)
+        persist_report(
+            self.report_dir,
+            report,
+            config_hash=self.config_hash,
+            toolchain_fingerprint=self.toolchain_fingerprint,
+            artifact_hash=self.artifact_hash,
+            username=self.username,
+        )
 
     def _load_payload(self) -> dict:
         path = self.report_dir / "report.json"
@@ -180,28 +155,10 @@ class PhaseEngine:
                 )
 
     def _report_from_payload(self, payload: Mapping[str, object]) -> QualificationReport:
-        report = QualificationReport.new(
-            release_id=str(payload["release_id"]),
-            commit=str(payload["commit"]),
-        )
-        report.created_at = str(payload.get("created_at", report.created_at))
-        phases = payload.get("phases", {})
-        if not isinstance(phases, dict):
-            raise ResumeRejectedError("resume rejected: invalid phases payload")
-        for name in report.required_phases:
-            raw = phases.get(name, {})
-            if not isinstance(raw, dict):
-                continue
-            state = PhaseState(str(raw.get("state", PhaseState.NOT_STARTED.value)))
-            detail = redact_secrets(str(raw.get("detail", "")), username=self.username)
-            updated_at = str(raw.get("updated_at", report.created_at))
-            report.phases[name] = type(report.phases[name])(
-                name=name,
-                state=state,
-                detail=detail,
-                updated_at=updated_at,
-            )
-        return report
+        try:
+            return report_from_payload(payload, username=self.username)
+        except ValueError as exc:
+            raise ResumeRejectedError(f"resume rejected: {exc}") from exc
 
     def _resume_index(self, report: QualificationReport) -> int:
         for index, name in enumerate(PHASE_REGISTRY):
@@ -211,3 +168,66 @@ class PhaseEngine:
             if state is PhaseState.NOT_STARTED:
                 return index
         return len(PHASE_REGISTRY)
+
+
+def persist_report(
+    report_dir: Path,
+    report: QualificationReport,
+    *,
+    config_hash: str,
+    toolchain_fingerprint: str,
+    artifact_hash: str,
+    username: str | None = None,
+) -> None:
+    """Write report.json and report.md, redacting phase details in memory too."""
+    for name, record in list(report.phases.items()):
+        redacted = redact_secrets(record.detail, username=username)
+        if redacted != record.detail:
+            report.phases[name] = replace(record, detail=redacted)
+    payload = {
+        "release_id": report.release_id,
+        "commit": report.commit,
+        "created_at": report.created_at,
+        "config_hash": config_hash,
+        "toolchain_fingerprint": toolchain_fingerprint,
+        "artifact_hash": artifact_hash,
+        "release_state": report.release_state.value,
+        "required_phases": list(report.required_phases),
+        "phases": {
+            name: {
+                "name": record.name,
+                "state": record.state.value,
+                "detail": record.detail,
+                "updated_at": record.updated_at,
+            }
+            for name, record in report.phases.items()
+        },
+    }
+    atomic_write_json(Path(report_dir) / "report.json", payload)
+    atomic_write_text(Path(report_dir) / "report.md", render_markdown_report(report))
+
+
+def report_from_payload(
+    payload: Mapping[str, object],
+    *,
+    username: str | None = None,
+) -> QualificationReport:
+    report = QualificationReport.new(
+        release_id=str(payload["release_id"]),
+        commit=str(payload["commit"]),
+    )
+    report.created_at = str(payload.get("created_at", report.created_at))
+    phases = payload.get("phases", {})
+    if not isinstance(phases, dict):
+        raise ValueError("invalid phases payload")
+    for name in report.required_phases:
+        raw = phases.get(name, {})
+        if not isinstance(raw, dict):
+            continue
+        report.phases[name] = PhaseRecord(
+            name=name,
+            state=PhaseState(str(raw.get("state", PhaseState.NOT_STARTED.value))),
+            detail=redact_secrets(str(raw.get("detail", "")), username=username),
+            updated_at=str(raw.get("updated_at", report.created_at)),
+        )
+    return report

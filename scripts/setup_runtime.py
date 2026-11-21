@@ -47,7 +47,6 @@ from modules.runtime_setup.state import (  # noqa: E402
     BACKEND_INSTANCE_FILENAME as BACKEND_INSTANCE_FILENAME,
     LOCK_STALE_SECONDS as LOCK_STALE_SECONDS,
     DEFAULT_LOCK_TIMEOUT_SECONDS as DEFAULT_LOCK_TIMEOUT_SECONDS,
-    _LEGACY_PYTORCH_RISK_IDS as _LEGACY_PYTORCH_RISK_IDS,
     SetupLock as SetupLock,
     _pid_is_running as _pid_is_running,
     _windows_pid_is_running as _windows_pid_is_running,
@@ -110,7 +109,6 @@ class InstallPlan:
     model_groups: tuple[str, ...]
     pip_command: tuple[str, ...]
     model_command: tuple[str, ...] | None
-    accepted_risks: tuple[str, ...]
 
     @property
     def commands(self) -> tuple[tuple[str, ...], ...]:
@@ -131,16 +129,10 @@ def _fixed_requirements_path(profile: RuntimeProfile) -> Path:
     return path
 
 
-def build_install_plan(
-    profile_id: str,
-    model_groups: Iterable[str] = (),
-    *,
-    accept_pytorch_risk: bool = False,
-) -> InstallPlan:
+def build_install_plan(profile_id: str, model_groups: Iterable[str] = ()) -> InstallPlan:
     """Validate identifiers and return fixed, shell-free argument arrays."""
     profile = _validated_profile(profile_id)
     groups = _validated_model_groups(profile, model_groups)
-    del accept_pytorch_risk  # Retained as a no-op for older desktop clients/commands.
 
     executable = sys.executable
     pip_command = (
@@ -179,7 +171,6 @@ def build_install_plan(
         model_groups=groups,
         pip_command=pip_command,
         model_command=model_command,
-        accepted_risks=(),
     )
 
 
@@ -336,7 +327,6 @@ def run_setup(
     *,
     profile_id: str,
     model_groups: Iterable[str] = (),
-    accept_pytorch_risk: bool = False,
     cleaner_cuda_quantization: str = "4bit",
     dry_run: bool = False,
     state_path: Path | None = None,
@@ -351,11 +341,7 @@ def run_setup(
     """Validate, install dependencies/models, then atomically record state."""
     if cleaner_cuda_quantization not in ("4bit", "8bit", "fp16"):
         raise SetupValidationError("Unsupported cleaner quantization.")
-    plan = build_install_plan(
-        profile_id,
-        model_groups,
-        accept_pytorch_risk=accept_pytorch_risk,
-    )
+    plan = build_install_plan(profile_id, model_groups)
     validate_model_selection(plan.model_groups)
     require_voice_model(plan.profile.id, plan.model_groups)
     _validate_stage_timeout("Dependency installation", pip_timeout_seconds)
@@ -367,7 +353,6 @@ def run_setup(
         "commands": [list(command) for command in plan.commands],
         "dry_run": dry_run,
         "restart_required": not dry_run,
-        "risk": None,
     }
     event_emitter = emit or (lambda event: None)
     event_emitter({"event": "plan", "percent": SETUP_PLAN_PERCENT, **result})
@@ -427,7 +412,6 @@ def run_setup(
             setup_state_path,
             profile_id=plan.profile.id,
             model_groups=plan.model_groups,
-            accepted_risks=plan.accepted_risks,
             cleaner_cuda_quantization=cleaner_cuda_quantization,
             backend_instance_id=backend_instance_id,
         )
@@ -456,11 +440,6 @@ def build_parser() -> argparse.ArgumentParser:
         dest="model_groups",
         default=[],
         help="Allowlisted model group id. May be repeated.",
-    )
-    parser.add_argument(
-        "--accept-pytorch-risk",
-        action="store_true",
-        help=argparse.SUPPRESS,  # Legacy no-op accepted for older launchers only.
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--status", action="store_true")
@@ -522,7 +501,6 @@ def main(argv: list[str] | None = None) -> int:
         result = run_setup(
             profile_id=args.profile,
             model_groups=args.model_groups,
-            accept_pytorch_risk=args.accept_pytorch_risk,
             cleaner_cuda_quantization=args.cleaner_cuda_quantization,
             dry_run=args.dry_run,
             emit=emit,
@@ -531,29 +509,24 @@ def main(argv: list[str] | None = None) -> int:
             pip_timeout_seconds=args.pip_timeout,
             model_timeout_seconds=args.model_timeout,
         )
-        plan_event = {"event": "plan", **result}
         if args.progress_json:
-            pass
+            _print_event(
+                {
+                    "event": "complete",
+                    "profile": result["profile"],
+                    "restart_required": result["restart_required"],
+                    "percent": SETUP_COMPLETE_PERCENT,
+                    "terminal": True,
+                }
+            )
         elif args.json:
-            _print_event({**plan_event, "terminal": True})
-            return 0
+            _print_event({"event": "plan", **result, "terminal": True})
         else:
             print(f"Runtime profile: {result['profile']}")
             for command in result["commands"]:
                 print("Command: " + " ".join(command))
             if result["restart_required"]:
                 print("Setup complete. Restart the backend to load the new runtime.")
-            return 0
-
-        _print_event(
-            {
-                "event": "complete",
-                "profile": result["profile"],
-                "restart_required": result["restart_required"],
-                "percent": SETUP_COMPLETE_PERCENT,
-                "terminal": True,
-            }
-        )
         return 0
     except SetupValidationError as exc:
         payload = {

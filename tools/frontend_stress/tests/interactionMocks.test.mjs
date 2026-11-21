@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   downloadFailed, downloadRunning, failedActive, failedEventStream, libraryCount, libraryPage, runningActive,
-  mockedSuccess, runtimeNotReadyStatus,
+  isGuardedRequest, mockedSuccess, runtimeNotReadyStatus,
 } from "../lib/interactionMocks.mjs";
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../desktop");
@@ -101,10 +101,24 @@ test("mocked successes for blocked requests have their response shapes", () => {
   assertInterface(mockedSuccess("DELETE", "/api/library/7"), "DeleteBookResponse", { extraAllowed: ["library_id", "library_epoch"] });
   assertInterface(mockedSuccess("POST", "/api/library/7/open-folder"), "OpenBookFolderResponse");
   assertInterface(mockedSuccess("POST", "/api/maintenance/backups/b1/restore"), "MaintenanceRestoreResponse");
+  assertInterface(mockedSuccess("POST", "/api/maintenance/backup"), "MaintenanceBackupResponse");
   assertInterface(mockedSuccess("DELETE", "/api/setup/models/cleaner-cuda"), "RuntimeSetupRuntimeDeleteResponse");
   assertInterface(mockedSuccess("DELETE", "/api/setup/runtime"), "RuntimeSetupRuntimeDeleteResponse");
   assertInterface(mockedSuccess("POST", "/api/conversions/job-1/cancel"), "CancelConversionResponse");
   assertShape(mockedSuccess("POST", "/api/setup/models/download"), fixture("model-download-running"));
   assert.deepEqual(Object.keys(mockedSuccess("POST", "/api/system/storage/output/open")), ["folder_path"]);
   assert.equal(mockedSuccess("GET", "/api/library"), null);
+});
+
+test("every guarded request has a mocked success, and reads pass through", () => {
+  for (const [method, pathname] of [
+    ["POST", "/api/maintenance/backup"], ["POST", "/api/maintenance/cleanup"], ["POST", "/api/conversions"],
+    ["DELETE", "/api/library/7"], ["POST", "/api/library/7/open-folder"], ["POST", "/api/setup/models/download"],
+  ]) {
+    assert.equal(isGuardedRequest(method, pathname), true, `${method} ${pathname}`);
+  }
+  assert.ok(mockedSuccess("POST", "/api/maintenance/backup"));
+  for (const [method, pathname] of [["GET", "/api/maintenance/backups"], ["POST", "/api/sources/preflight"], ["OPTIONS", "/api/library/7"]]) {
+    assert.equal(isGuardedRequest(method, pathname), false, `${method} ${pathname}`);
+  }
 });

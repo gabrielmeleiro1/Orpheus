@@ -104,6 +104,16 @@ class FixtureRoot:
             raise ValueError(f"runtime already exists: {name}")
         return _materialize_runtime(runtime_root, self.release_id)
 
+    def discard(self, relative: str) -> None:
+        """Remove a fixture subtree left by an earlier attempt so a phase can re-run."""
+        _assert_sentinel_matches(self.path, self.release_id)
+        target = self.path / relative
+        if not target.exists() and not _is_link(target):
+            return
+        _assert_confined_path(target, self.path.resolve())
+        _make_tree_writable(target)
+        shutil.rmtree(target)
+
 
 def generate_large_library(
     runtime: RuntimePaths,
@@ -173,7 +183,7 @@ def create_scenario_copy(
         raise ValueError(f"scenario already exists: {scenario}")
 
     with acquire_database(source.db_path) as source_owner, source_owner.lock:
-        _assert_safe_tree_for_copy(source.root, expected_qualification_root=expected)
+        _assert_safe_tree_for_copy(source.root)
         runtime = _runtime_from_root(target_root)
         with acquire_database(runtime.db_path) as target_owner, target_owner.lock:
             shutil.copytree(
@@ -278,29 +288,14 @@ def _assert_confined_path(path: Path, root: Path) -> None:
         current = current.parent
 
 
-def _assert_safe_tree_for_copy(
-    root: Path,
-    *,
-    expected_qualification_root: Path,
-) -> None:
-    expected = expected_qualification_root.resolve()
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+def _assert_safe_tree_for_copy(root: Path) -> None:
+    """Refuse directory links; file symlinks are copied as links, never followed."""
+    for dirpath, dirnames, _filenames in os.walk(root, followlinks=False):
         base = Path(dirpath)
-        for name in list(dirnames):
+        for name in dirnames:
             child = base / name
             if _is_link(child):
                 raise ValueError(f"refuse: unsafe directory symlink child {child}")
-        for name in filenames:
-            child = base / name
-            if not child.is_symlink():
-                continue
-            # File symlinks are preserved; reject only if the link itself escapes.
-            link_path = child.resolve(strict=False)
-            # Allow external file targets, but refuse links whose path text escapes
-            # via `..` components that place the link node outside the evidence tree.
-            if not child.parent.resolve().is_relative_to(expected):
-                raise ValueError(f"refuse: unsafe symlink child {child}")
-            _ = link_path  # preserved; target is not materialized
 
 
 def _materialize_runtime(runtime_root: Path, release_id: str) -> RuntimePaths:

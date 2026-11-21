@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,50 +36,41 @@ def test_build_contract_command_uses_repo_pytest_contract() -> None:
     assert "addopts=" not in " ".join(command)
 
 
+def _run_coverage_threshold_hook(markexpr: str, args: list[str]) -> int:
+    cov_plugin = SimpleNamespace(options=SimpleNamespace(cov_fail_under=85))
+    config = SimpleNamespace(
+        args=args,
+        option=SimpleNamespace(markexpr=markexpr),
+        pluginmanager=SimpleNamespace(
+            getplugin=lambda name: cov_plugin if name == "_cov" else None
+        ),
+    )
+    hook = conftest.pytest_runtestloop(SimpleNamespace(config=config))
+    next(hook)
+    with pytest.raises(StopIteration):
+        hook.send(True)
+    return cov_plugin.options.cov_fail_under
+
+
 @pytest.mark.parametrize(
-    ("markexpr", "expected_threshold"),
+    ("markexpr", "args", "expected_threshold"),
     [
-        ("property", 0),
-        ("benchmark", 0),
-        ("slow", 0),
-        ("ui", 0),
-        ("not slow", 85),
-        ("", 85),
+        ("property", [], 0),
+        ("benchmark", [], 0),
+        ("slow", [], 0),
+        ("", ["tests/test_web_route_contract.py"], 0),
+        ("not slow", [], 85),
+        ("property or benchmark", [], 85),
+        ("", [], 85),
+        ("", ["tests/test_web_route_contract.py", "tests/test_run_tests.py"], 85),
     ],
 )
-def test_marker_only_commands_disable_global_coverage_threshold(
+def test_focused_runs_disable_the_global_coverage_threshold(
     markexpr: str,
+    args: list[str],
     expected_threshold: int,
 ) -> None:
-    class Options:
-        pass
-
-    Options.markexpr = markexpr
-    Options.cov_fail_under = 85
-
-    class Config:
-        option = Options()
-        args = []
-
-    config = Config()
-    conftest.pytest_configure(config)
-
-    assert config.option.cov_fail_under == expected_threshold
-
-
-def test_marker_only_coverage_helper_requires_exact_expression() -> None:
-    class Options:
-        markexpr = "property or benchmark"
-        cov_fail_under = 85
-
-    class Config:
-        option = Options()
-        args = []
-
-    config = Config()
-    conftest.pytest_configure(config)
-
-    assert config.option.cov_fail_under == 85
+    assert _run_coverage_threshold_hook(markexpr, args) == expected_threshold
 
 
 def test_main_smoke_success_mentions_contract_not_checked(
@@ -163,26 +155,22 @@ def test_profile_verification_can_allow_hardware_skips() -> None:
 
 
 def test_smoke_suite_resolves_tests_from_repo_root(monkeypatch, tmp_path) -> None:
-    calls: list[tuple[str, str]] = []
+    calls: list[str] = []
 
-    def fake_run_test(test_path: str, mode: str) -> tuple[bool, float]:
-        calls.append((test_path, mode))
+    def fake_run_test(test_path: str) -> tuple[bool, float]:
+        calls.append(test_path)
         return True, 0.0
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        run_tests, "SMOKE_TEST_MODULES", [("tests/test_run_tests.py", run_tests.PYTEST)]
-    )
+    monkeypatch.setattr(run_tests, "SMOKE_TEST_MODULES", ["tests/test_run_tests.py"])
     monkeypatch.setattr(run_tests, "run_test", fake_run_test)
 
     assert run_tests.run_smoke_suite() == 0
-    assert calls == [("tests/test_run_tests.py", run_tests.PYTEST)]
+    assert calls == ["tests/test_run_tests.py"]
 
 
 def test_smoke_suite_fails_when_no_tests_run(monkeypatch) -> None:
-    monkeypatch.setattr(
-        run_tests, "SMOKE_TEST_MODULES", [("tests/not_a_real_test.py", run_tests.PYTEST)]
-    )
+    monkeypatch.setattr(run_tests, "SMOKE_TEST_MODULES", ["tests/not_a_real_test.py"])
 
     assert run_tests.run_smoke_suite() == 1
 
@@ -194,20 +182,28 @@ def test_smoke_suite_fails_when_one_module_is_missing(monkeypatch) -> None:
     e.g. renaming tests/test_tts.py -- silently stopped running it while the
     suite still reported PASSED.
     """
-    calls: list[tuple[str, str]] = []
+    calls: list[str] = []
     monkeypatch.setattr(
-        run_tests,
-        "run_test",
-        lambda path, mode: (calls.append((path, mode)), (True, 0.0))[1],
+        run_tests, "run_test", lambda path: (calls.append(path), (True, 0.0))[1]
     )
     monkeypatch.setattr(
         run_tests,
         "SMOKE_TEST_MODULES",
-        [
-            ("tests/test_run_tests.py", run_tests.PYTEST),
-            ("tests/renamed_away.py", run_tests.PYTEST),
-        ],
+        ["tests/test_run_tests.py", "tests/renamed_away.py"],
     )
 
     assert run_tests.run_smoke_suite() == 1
-    assert calls == [("tests/test_run_tests.py", run_tests.PYTEST)]
+    assert calls == ["tests/test_run_tests.py"]
+
+
+def test_every_smoke_module_runs_all_of_its_tests_through_pytest() -> None:
+    """A module's __main__ block runs one aggregator; pytest collects every test."""
+    for test_path in run_tests.SMOKE_TEST_MODULES:
+        assert run_tests.build_smoke_command(test_path) == [
+            sys.executable, "-m", "pytest", test_path, "-q", "-o", "addopts=",
+        ]
+
+
+def test_every_smoke_module_exists() -> None:
+    missing = [p for p in run_tests.SMOKE_TEST_MODULES if not (run_tests.REPO_ROOT / p).is_file()]
+    assert not missing

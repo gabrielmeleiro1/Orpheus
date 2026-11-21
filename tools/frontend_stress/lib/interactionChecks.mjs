@@ -12,12 +12,14 @@ export const VIEWPORTS = Object.freeze([
   Object.freeze({ width: 1920, height: 1080 }),
 ]);
 
+const AUDIT_FLAGS = new Set(["out", "viewport", "state", "list-states", "headed", "quick"]);
+
 /** Parse `--name=value` flags; bare `--flag` becomes true. */
 export function parseArgs(argv) {
   const options = {};
   for (const arg of argv) {
     const match = /^--([a-z][a-z0-9-]*)(?:=(.*))?$/.exec(arg);
-    if (!match) throw new Error(`Unknown argument: ${arg}`);
+    if (!match || !AUDIT_FLAGS.has(match[1])) throw new Error(`Unknown argument: ${arg}`);
     options[match[1]] = match[2] ?? true;
   }
   return options;

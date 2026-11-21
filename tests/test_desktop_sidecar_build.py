@@ -734,12 +734,6 @@ def test_ensure_mlx_native_dylib_closure_copies_missing_rpath_siblings(
     lib_dir.mkdir(parents=True)
     (lib_dir / "libmlx.dylib").write_bytes(b"packaged-mlx")
 
-    monkeypatch.setattr(
-        build_desktop_backend,
-        "_mlx_site_lib_dir",
-        lambda: source_root,
-    )
-
     def read_dependencies(path: Path) -> tuple[str, ...]:
         if Path(path).name == "libmlx.dylib":
             return ("@rpath/libjaccl.dylib", "/usr/lib/libSystem.B.dylib")
@@ -747,11 +741,31 @@ def test_ensure_mlx_native_dylib_closure_copies_missing_rpath_siblings(
 
     build_desktop_backend.ensure_mlx_native_dylib_closure(
         sidecar_dir,
+        site_lib_dir=source_root,
         read_dependencies=read_dependencies,
         read_rpaths=lambda _path: ["@loader_path"],
     )
 
     assert (lib_dir / "libjaccl.dylib").read_bytes() == b"src-jaccl"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX interpreter wrapper")
+@pytest.mark.parametrize("importable", [True, False])
+def test_mlx_site_lib_dir_comes_from_the_bundled_interpreter(tmp_path: Path, importable) -> None:
+    """The closure source must be the --python env PyInstaller used, not this script's."""
+    site = tmp_path / "build-env-site"
+    (site / "mlx" / "lib").mkdir(parents=True)
+    (site / "mlx" / "__init__.py").write_text(
+        "" if importable else "raise ImportError('no mlx here')\n", encoding="utf-8"
+    )
+    build_python = _write_executable(
+        tmp_path / "build-python",
+        f'#!/bin/sh\nPYTHONPATH="{site}" exec "{sys.executable}" "$@"\n',
+    )
+
+    found = build_desktop_backend._mlx_site_lib_dir(str(build_python))  # noqa: SLF001
+
+    assert found == ((site / "mlx" / "lib").resolve() if importable else None)
 
 
 @pytest.mark.skipif(
@@ -786,8 +800,14 @@ def test_copy_sidecar_for_tauri_rejects_incomplete_mlx_rpath_closure(
     )
     monkeypatch.setattr(
         build_desktop_backend,
+        "_mlx_site_lib_dir",
+        lambda python_executable: Path("/mlx-lib-of") / Path(python_executable).name,
+    )
+    closure_sources = []
+    monkeypatch.setattr(
+        build_desktop_backend,
         "ensure_mlx_native_dylib_closure",
-        lambda *_args, **_kwargs: None,
+        lambda _sidecar, *, site_lib_dir: closure_sources.append(site_lib_dir),
     )
 
     def fail_closure(sidecar_dir: Path, **_kwargs) -> None:  # noqa: ANN003
@@ -804,8 +824,10 @@ def test_copy_sidecar_for_tauri_rejects_incomplete_mlx_rpath_closure(
             "aarch64-apple-darwin",
             ffmpeg_binaries={"ffmpeg": ffmpeg_source, "ffprobe": ffprobe_source},
             runtime_profile="mlx",
+            python_executable="/build-env/bin/python",
         )
 
+    assert closure_sources == [Path("/mlx-lib-of/python")]
     assert executable.is_file()
 
 

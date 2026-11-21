@@ -39,7 +39,6 @@ DEFAULT_COMMAND_TIMEOUT = 120.0
 DEFAULT_INSTALL_TIMEOUT = 1800.0
 SUMMARY_MAX_CHARS = 300
 COMMAND_OUTPUT_MAX_BYTES = 8 * 1024 * 1024
-COMMAND_OUTPUT_TAIL_CHARS = 64 * 1024
 PROCESS_TERMINATION_GRACE_SECONDS = 2.0
 SESSION_MARKER_NAME = ".orpheus-profile-verify-owner.json"
 SESSION_PREFIX = ".orpheus-profile-verify-"
@@ -726,22 +725,13 @@ def run_command(
             timed_out = True
             _terminate_process_tree(process)
 
-        output_limit = (
-            COMMAND_OUTPUT_TAIL_CHARS
-            if timed_out or process.returncode
-            else COMMAND_OUTPUT_MAX_BYTES
-        )
-        stdout, stdout_truncated = _read_output_tail(stdout_file, output_limit)
-        stderr, stderr_truncated = _read_output_tail(stderr_file, output_limit)
-        if timed_out or process.returncode or stdout_truncated or stderr_truncated:
-            stdout = sanitize_output(stdout, limit=COMMAND_OUTPUT_TAIL_CHARS)
-            stderr = sanitize_output(stderr, limit=COMMAND_OUTPUT_TAIL_CHARS)
+        # Output stays raw: pip-audit exits 1 with JSON that must parse, and
+        # summaries need the original lines. _safe_summary redacts for reports.
+        stdout, stdout_truncated = _read_output_tail(stdout_file, COMMAND_OUTPUT_MAX_BYTES)
+        stderr, stderr_truncated = _read_output_tail(stderr_file, COMMAND_OUTPUT_MAX_BYTES)
         if stdout_truncated or stderr_truncated:
             returncode = process.returncode if process.returncode else 70
-            stderr = sanitize_output(
-                f"command output exceeded safety bound; {stderr}",
-                limit=COMMAND_OUTPUT_TAIL_CHARS,
-            )
+            stderr = f"{stderr}\ncommand output exceeded safety bound"
         else:
             returncode = process.returncode if process.returncode is not None else -1
         return CommandResult(

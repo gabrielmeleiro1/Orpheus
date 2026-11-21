@@ -17,6 +17,9 @@ const clip = (overrides = {}) => ({
 test("arguments, viewports and states are parsed strictly", () => {
   assert.deepEqual(parseArgs(["--state=a,b", "--headed"]), { state: "a,b", headed: true });
   assert.throws(() => parseArgs(["state=a"]), /Unknown argument/);
+  assert.throws(() => parseArgs(["--states=library-*"]), /Unknown argument: --states/);
+  assert.throws(() => parseArgs(["--viewports=960"]), /Unknown argument: --viewports/);
+  assert.deepEqual(parseArgs(["--out=x", "--viewport=960", "--list-states", "--quick"]), { out: "x", viewport: "960", "list-states": true, quick: true });
   assert.deepEqual(selectViewports(undefined), [...VIEWPORTS]);
   assert.deepEqual(selectViewports("960x640,1920").map((v) => v.width), [960, 1920]);
   // Any explicit size can be audited, to probe the smallest supported window.

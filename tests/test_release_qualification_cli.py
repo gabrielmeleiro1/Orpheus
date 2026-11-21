@@ -14,6 +14,7 @@ import pytest
 
 from tools.release_qualification.checklist import CHECKLIST_IDS, required_fields_for
 from tools.release_qualification.evidence import DEFAULT_EVIDENCE_ROOT, EvidenceRoot, SENTINEL_NAME
+from tools.release_qualification.metrics import OBSERVER_SCENARIOS
 from tools.release_qualification.model import PhaseState, ReleaseState
 from tools.release_qualification.runtime import app_tree_digest, artifact_fingerprint
 
@@ -85,20 +86,14 @@ def cleanup_evidence():
     created: list[Path] = []
     yield created
     for path in created:
-        if not path.exists():
-            continue
         sentinel = path / SENTINEL_NAME
         if not sentinel.exists():
-            # best-effort restore for cleanup helpers
             continue
-        try:
-            EvidenceRoot(
-                path=path,
-                release_id=sentinel.read_text(encoding="utf-8").strip(),
-                expected_root=(REPO_ROOT / DEFAULT_EVIDENCE_ROOT).resolve(),
-            ).cleanup()
-        except Exception:
-            shutil.rmtree(path, ignore_errors=True)
+        EvidenceRoot(
+            path=path,
+            release_id=sentinel.read_text(encoding="utf-8").strip(),
+            expected_root=(REPO_ROOT / DEFAULT_EVIDENCE_ROOT).resolve(),
+        ).cleanup()
 
 
 def test_prepare_creates_evidence_without_building(cleanup_evidence: list[Path]) -> None:
@@ -122,6 +117,12 @@ def test_prepare_creates_evidence_without_building(cleanup_evidence: list[Path])
     if commands_dir.exists():
         logs = list(commands_dir.glob("*"))
         assert not any("build" in path.name.lower() for path in logs)
+
+
+def test_prepare_rejects_a_blank_version() -> None:
+    result = _run_cli(["prepare", "--version", "   "])
+    assert result.returncode == 1
+    assert "version must be non-empty" in result.stderr
 
 
 def test_run_stops_before_computer_use_as_incomplete(
@@ -166,6 +167,36 @@ def test_run_stops_before_computer_use_as_incomplete(
     payload = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
     assert payload["phases"]["computer_use"]["state"] == PhaseState.INCOMPLETE.value
     assert payload["release_state"] == ReleaseState.INCOMPLETE.value
+
+
+def test_resume_straight_after_prepare_starts_from_the_first_phase(
+    cleanup_evidence: list[Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import importlib.util
+
+    prepare = _run_cli(["prepare", "--version", "1.0.0-resume-fresh"])
+    report_dir = _extract_report_dir(prepare.stdout)
+    cleanup_evidence.append(report_dir)
+
+    spec = importlib.util.spec_from_file_location("release_qualification_cli_fresh", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    from tools.release_qualification.engine import PhaseOutcome
+
+    ran: list[str] = []
+
+    def record(name: str, path: Path):  # noqa: ARG001
+        ran.append(name)
+        return PhaseOutcome(PhaseState.INCOMPLETE, "stop")
+
+    monkeypatch.setattr(
+        cli, "build_phase_handlers", lambda _dir: {name: record for name in cli.PHASE_REGISTRY}
+    )
+    assert cli.main(["run", "--resume", "--report-dir", str(report_dir)]) == 2
+    assert ran == ["preflight"]
 
 
 def test_record_check_copies_and_hashes_evidence(
@@ -369,6 +400,41 @@ def test_finalize_failed_checklist_exits_1_incomplete_exits_2(
     assert failed.returncode == 1
 
 
+def test_finalize_requires_a_passing_observe_decision_for_every_budget(
+    cleanup_evidence: list[Path],
+    tmp_path: Path,
+) -> None:
+    version = "1.0.0-budgets"
+    prepare = _run_cli(["prepare", "--version", version])
+    report_dir = _extract_report_dir(prepare.stdout)
+    cleanup_evidence.append(report_dir)
+    _source, dmg_rel, digest = _write_repo_relative_dmg(version, b"budget-dmg")
+    _write_artifacts_manifest(report_dir, dmg_rel=dmg_rel, dmg_digest=digest)
+    _seed_phases_ready_for_computer_use(report_dir, artifact_hash=digest)
+    _seed_all_checklist_passed(report_dir, tmp_path)
+    artifact_hash = json.loads((report_dir / "report.json").read_text())["artifact_hash"]
+
+    (report_dir / "metrics" / "soak-decision.json").unlink()
+    missing = _run_cli(["finalize", "--report-dir", str(report_dir)])
+    assert missing.returncode == 2
+    assert "soak" in missing.stderr
+
+    _write_observe_decision(report_dir, "soak", artifact_hash="older-build")
+    stale = _run_cli(["finalize", "--report-dir", str(report_dir)])
+    assert stale.returncode == 2
+    assert "soak" in stale.stderr
+
+    _write_observe_decision(report_dir, "soak", artifact_hash=artifact_hash)
+    _write_observe_decision(report_dir, "idle-dashboard", artifact_hash=artifact_hash, passed=False)
+    failed = _run_cli(["finalize", "--report-dir", str(report_dir)])
+    assert failed.returncode == 1
+    assert "idle-dashboard" in failed.stderr
+
+    payload = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
+    assert payload["release_state"] != ReleaseState.PASSED.value
+    assert not (report_dir / "SHA256SUMS").exists()
+
+
 def test_status_fails_integrity_when_passed_without_finalization_marker(
     cleanup_evidence: list[Path],
     tmp_path: Path,
@@ -399,6 +465,18 @@ def test_status_fails_integrity_when_passed_without_finalization_marker(
     assert not (report_dir / FINALIZATION_COMPLETE_MARKER).exists()
     payload = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
     assert payload["phases"]["evidence_finalization"]["state"] == PhaseState.FAILED.value
+
+    # The failure detail is persisted with the same redaction as engine-run phases.
+    def leaky(_report_dir: Path):
+        raise OSError(f"copy failed: /Users/{_USERNAME}/Library/staged.dmg")
+
+    cli.write_and_verify_checksums = leaky  # type: ignore[method-assign]
+    assert cli.main(["finalize", "--report-dir", str(report_dir)]) == 1
+    for name in ("report.json", "report.md"):
+        text = (report_dir / name).read_text(encoding="utf-8")
+        assert "/Users/[REDACTED]/Library/staged.dmg" in text
+        assert f"/Users/{_USERNAME}/" not in text
+    payload = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
 
     # Simulate hard crash: release_state passed, no marker, no valid sums.
     payload["release_state"] = ReleaseState.PASSED.value
@@ -794,12 +872,42 @@ def test_fixture_phases_prepare_evidence_and_manual_phases_stay_incomplete(
     assert fin.state is PhaseState.INCOMPLETE
 
 
-def test_bundle_validation_does_not_rebuild_sidecar(
+@pytest.mark.skipif(
+    sys.platform != "darwin",
+    reason="Requires macOS release inspection or POSIX fixture permissions",
+)
+def test_fixture_phases_can_rerun_after_a_previous_attempt(
+    cleanup_evidence: list[Path],
+) -> None:
+    """run --resume and a repeated run re-enter fixture phases on the same report dir."""
+    import importlib.util
+
+    prepare = _run_cli(["prepare", "--version", "1.0.0-rerun"])
+    report_dir = _extract_report_dir(prepare.stdout)
+    cleanup_evidence.append(report_dir)
+
+    spec = importlib.util.spec_from_file_location("release_qualification_cli_rerun", SCRIPT)
+    assert spec is not None and spec.loader is not None
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+
+    handlers = cli.build_phase_handlers(report_dir)
+    for _attempt in range(2):
+        life = handlers["lifecycle_performance"]("lifecycle_performance", report_dir)
+        fault = handlers["fault_persistence"]("fault_persistence", report_dir)
+        assert life.state is PhaseState.PASSED
+        assert fault.state is PhaseState.PASSED
+
+    read_only = report_dir / "fixtures" / "scenarios" / "read-only-copy"
+    assert not os.access(read_only, os.W_OK)
+
+
+def test_bundle_validation_does_not_invoke_the_sidecar_builder_itself(
     cleanup_evidence: list[Path],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """sidecar_validation owns build+smoke; bundle_validation only packages."""
+    """bundle_validation runs only the Tauri build and the bundled smoke."""
     import importlib.util
 
     prepare = _run_cli(["prepare", "--version", "1.0.0-no-dup-sidecar"])
@@ -930,8 +1038,22 @@ def _seed_phases_ready_for_computer_use(report_dir: Path, *, artifact_hash: str)
     assert json.loads((report_dir / "artifacts.json").read_text())["dmg_sha256"] == artifact_hash
     payload["artifact_hash"] = fingerprints["artifact_hash"]
     payload["release_state"] = ReleaseState.INCOMPLETE.value
+    for scenario in OBSERVER_SCENARIOS:
+        _write_observe_decision(report_dir, scenario, artifact_hash=fingerprints["artifact_hash"])
     (report_dir / "report.json").write_text(json.dumps(payload, indent=2), encoding="utf-8")
     (report_dir / "report.md").write_text("# seeded\n", encoding="utf-8")
+
+
+def _write_observe_decision(
+    report_dir: Path, scenario: str, *, artifact_hash: str, passed: bool = True
+) -> None:
+    path = report_dir / "metrics" / f"{scenario}-decision.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"passed": passed, "detail": "seeded", "metrics": {},
+                    "artifact_hash": artifact_hash}),
+        encoding="utf-8",
+    )
 
 
 def _seed_all_checklist_passed(report_dir: Path, tmp_path: Path) -> None:

@@ -161,8 +161,21 @@ def test_macos_below_14_fails():
 def test_macos_major_only_14_is_accepted():
     host = FakeHost(macos_version="14")
     facts = _collect(host)
-    assert facts.ok is True
     assert facts.macos_version == "14"
+
+
+def test_macos_minimum_comes_from_config():
+    from dataclasses import replace
+
+    config = replace(load_qualification_config(DEFAULT_CONFIG), minimum_macos="15.1")
+    with pytest.raises(PreflightError, match="below required 15.1"):
+        collect_preflight(
+            repo_root=REPO_ROOT,
+            config=config,
+            config_path=DEFAULT_CONFIG,
+            release_version="1.0.0",
+            **_readers(FakeHost(macos_version="15.0")),
+        )
 
 
 def test_python_below_3_12_fails():
@@ -207,8 +220,7 @@ def test_dirty_tracked_files_fail_while_ignored_evidence_does_not():
 
     # Ignored evidence paths are not reported as dirty tracked files by the git reader.
     host = FakeHost(git_dirty_tracked=())
-    facts = _collect(host)
-    assert facts.ok is True
+    _collect(host)
 
 
 def test_default_git_status_tracked_dirty_vs_ignored_evidence(tmp_path: Path):
@@ -349,7 +361,6 @@ def test_matching_tag_and_versions_pass():
     host = FakeHost()
     facts = _collect(host, release_version="1.0.0")
     assert isinstance(facts, PreflightFacts)
-    assert facts.ok is True
     assert facts.release_version == "1.0.0"
     assert facts.rust_version == PINNED_RUST_VERSION
     assert facts.python_version.startswith("3.12")
@@ -359,7 +370,6 @@ def test_matching_tag_and_versions_pass():
 def test_github_actions_workflow_is_informational_not_a_dependency():
     host = FakeHost(workflow_exists=False)
     facts = _collect(host)
-    assert facts.ok is True
     payload = facts.as_allowlisted_dict()
     assert "source_validation_workflow" in payload
     assert payload["source_validation_workflow"] == "missing_informational"

@@ -346,3 +346,24 @@ def test_scenario_copy_preserves_external_symlinks_and_refuses_unsafe_children(
             release_id=evidence_root.release_id,
             backups_root=fixtures.backups_root,
         )
+
+
+def test_discard_removes_prior_runtime_but_refuses_linked_or_escaping_targets(
+    evidence_root: EvidenceRoot,
+    tmp_path: Path,
+) -> None:
+    fixtures = FixtureRoot.create(evidence_root)
+    fixtures.create_runtime("again")
+    fixtures.discard("runtimes/again")
+    assert not (fixtures.path / "runtimes" / "again").exists()
+    fixtures.create_runtime("again")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep", encoding="utf-8")
+    (fixtures.path / "runtimes" / "linked").symlink_to(outside)
+    with pytest.raises(ValueError, match="refuse"):
+        fixtures.discard("runtimes/linked")
+    with pytest.raises(ValueError, match="refuse"):
+        fixtures.discard("..")
+    assert (outside / "keep.txt").is_file()

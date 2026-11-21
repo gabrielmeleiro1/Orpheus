@@ -1,3 +1,4 @@
+import json
 import multiprocessing
 import os
 import threading
@@ -13,21 +14,34 @@ if PROJECT_ROOT in sys.path:
     sys.path.remove(PROJECT_ROOT)
 sys.path.insert(0, PROJECT_ROOT)
 
-_MARKER_ONLY_COVERAGE_GATES = frozenset({"property", "benchmark", "slow", "ui"})
-_ORIGINAL_HOME = Path.home()
-if sys.platform == "darwin":
-    _ORIGINAL_SETUP_ROOT = _ORIGINAL_HOME / "Library" / "Application Support" / "Orpheus"
-elif os.name == "nt":
-    _ORIGINAL_SETUP_ROOT = Path(
-        os.environ.get("LOCALAPPDATA") or _ORIGINAL_HOME / "AppData" / "Local"
-    ) / "Orpheus"
-else:
-    _ORIGINAL_SETUP_ROOT = Path(
-        os.environ.get("XDG_DATA_HOME") or _ORIGINAL_HOME / ".local" / "share"
-    ) / "orpheus"
+from modules.runtime_setup.state import STATE_FILENAME, default_state_path  # noqa: E402
+
+_MARKER_ONLY_COVERAGE_GATES = frozenset({"property", "benchmark", "slow"})
+# Resolved at import, before the autouse fixtures redirect HOME and APPDATA.
+_ORIGINAL_SETUP_STATE = default_state_path()
 
 
-def _setup_file_snapshot(root):
+def _setup_state_snapshot(directory):
+    """Record the setup state's content, not what a running Orpheus app rewrites.
+
+    The live app shares this folder: each backend launch writes
+    backend-instance.json under the setup lock directory and may clear
+    restart_required. A test leak changes the rest of the state.
+    """
+    try:
+        raw = (directory / STATE_FILENAME).read_bytes()
+    except FileNotFoundError:
+        return {}
+    try:
+        state = json.loads(raw)
+    except ValueError:
+        return {STATE_FILENAME: raw}
+    if isinstance(state, dict):
+        state.pop("restart_required", None)
+    return {STATE_FILENAME: state}
+
+
+def _tree_snapshot(root):
     """Record file names and timestamps without reading contents or following links."""
     def raise_walk_error(error):
         raise error
@@ -43,13 +57,13 @@ def _setup_file_snapshot(root):
 
 
 def pytest_sessionstart(session):
-    roots = (
-        ("real user setup", _ORIGINAL_SETUP_ROOT),
-        ("repository data", Path(PROJECT_ROOT) / "data"),
-        ("repository test data", Path(PROJECT_ROOT) / "tests" / "data"),
+    watched = (
+        ("real user setup", _ORIGINAL_SETUP_STATE.parent, _setup_state_snapshot),
+        ("repository data", Path(PROJECT_ROOT) / "data", _tree_snapshot),
+        ("repository test data", Path(PROJECT_ROOT) / "tests" / "data", _tree_snapshot),
     )
     session._storage_snapshots = [
-        (label, root, _setup_file_snapshot(root)) for label, root in roots
+        (label, root, snapshot, snapshot(root)) for label, root, snapshot in watched
     ]
 
 
@@ -57,12 +71,6 @@ def _marker_only_coverage_gate(config) -> bool:
     """Return whether a focused marker run should skip the global threshold."""
     markexpr = str(getattr(config.option, "markexpr", "") or "").strip()
     return markexpr in _MARKER_ONLY_COVERAGE_GATES
-
-
-def pytest_configure(config):
-    selected_args = {Path(arg).as_posix() for arg in config.args}
-    if selected_args == {"tests/test_web_route_contract.py"} or _marker_only_coverage_gate(config):
-        config.option.cov_fail_under = 0
 
 
 @pytest.hookimpl(wrapper=True, trylast=True)
@@ -80,10 +88,10 @@ _session_exit_status = 0
 
 def pytest_sessionfinish(session, exitstatus):
     global _session_exit_status
-    for label, root, before in session._storage_snapshots:
+    for label, root, snapshot, before in session._storage_snapshots:
         try:
-            after = _setup_file_snapshot(root)
-            changed = sorted(name for name, mtime in after.items() if before.get(name) != mtime)
+            after = snapshot(root)
+            changed = sorted(name for name, value in after.items() if before.get(name) != value)
             removed = sorted(before.keys() - after.keys())
             if not changed and not removed:
                 continue

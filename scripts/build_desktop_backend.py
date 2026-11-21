@@ -959,41 +959,42 @@ def resolve_macho_dependency_path(
     return None
 
 
-def _mlx_site_lib_dir() -> Path | None:
-    """Return the build-environment mlx/lib directory when importable."""
-    try:
-        import mlx  # noqa: PLC0415
-    except ImportError:
+def _mlx_site_lib_dir(python_executable: str) -> Path | None:
+    """Return mlx/lib of the interpreter PyInstaller bundled from, when importable."""
+    probe = subprocess.run(
+        [
+            python_executable,
+            "-c",
+            "import mlx, pathlib; print(pathlib.Path(list(mlx.__path__)[0]).resolve())",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = probe.stdout.strip().splitlines()
+    if probe.returncode != 0 or not lines:
         return None
-    module_file = getattr(mlx, "__file__", None)
-    if module_file:
-        package_root = Path(module_file).resolve().parent
-    else:
-        module_paths = getattr(mlx, "__path__", None)
-        if not module_paths:
-            return None
-        package_root = Path(list(module_paths)[0]).resolve()
-    lib_dir = package_root / "lib"
+    lib_dir = Path(lines[-1]) / "lib"
     return lib_dir if lib_dir.is_dir() else None
 
 
 def ensure_mlx_native_dylib_closure(
     sidecar_dir: Path,
     *,
+    site_lib_dir: Path | None,
     read_dependencies: Callable[[Path], Sequence[str]] | None = None,
     read_rpaths: Callable[[Path], Sequence[str]] | None = None,
-    site_lib_dir: Path | None = None,
 ) -> None:
-    """Copy missing @rpath MLX native libs from the build env into the sidecar."""
+    """Copy missing @rpath MLX native libs from the build env's mlx/lib into the sidecar."""
     nested_dylib = Path(sidecar_dir) / MLX_NESTED_DYLIB
     if not nested_dylib.is_file():
         return
 
     reader = read_dependencies or default_read_macho_dependencies
     rpath_reader = read_rpaths or _macho_rpaths
-    source_lib = Path(site_lib_dir) if site_lib_dir is not None else _mlx_site_lib_dir()
-    if source_lib is None or not source_lib.is_dir():
+    if site_lib_dir is None or not Path(site_lib_dir).is_dir():
         return
+    source_lib = Path(site_lib_dir)
 
     queue: list[Path] = [nested_dylib.resolve()]
     seen: set[Path] = set()
@@ -1220,13 +1221,15 @@ def _copy_sidecar_for_tauri(
     *,
     ffmpeg_binaries: Mapping[str, Path] | None = None,
     runtime_profile: str | None = None,
+    python_executable: str | None = None,
     _locked: bool = False,
 ) -> Path:
     if not _locked:
         with _sidecar_publication_lock():
             return _copy_sidecar_for_tauri(
                 target_triple, ffmpeg_binaries=ffmpeg_binaries,
-                runtime_profile=runtime_profile, _locked=True,
+                runtime_profile=runtime_profile, python_executable=python_executable,
+                _locked=True,
             )
     pyinstaller_binary_name = (
         f"{SIDE_CAR_STEM}.exe" if _is_windows_target(target_triple) else SIDE_CAR_STEM
@@ -1269,7 +1272,10 @@ def _copy_sidecar_for_tauri(
         )
         if resolved_profile == "mlx":
             _normalize_mlx_dylib_layout(staged)
-            ensure_mlx_native_dylib_closure(staged)
+            ensure_mlx_native_dylib_closure(
+                staged,
+                site_lib_dir=_mlx_site_lib_dir(python_executable or _default_python_executable()),
+            )
         # The Windows launcher hands espeak-ng an explicit data path, so a root
         # copy there would only duplicate the speech data in the installer.
         if resolved_profile in {"mlx", "cuda"} and not _is_windows_target(target_triple):
@@ -1351,6 +1357,7 @@ def main() -> int:
             ffmpeg_binaries=ffmpeg_binaries,
             _locked=True,
             runtime_profile=runtime_profile,
+            python_executable=args.python,
         )
 
     print(f"Built desktop backend sidecar for target: {target_triple}")

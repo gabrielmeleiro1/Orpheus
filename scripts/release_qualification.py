@@ -38,6 +38,8 @@ from tools.release_qualification.engine import (  # noqa: E402
     PhaseEngine,
     PhaseOutcome,
     ResumeRejectedError,
+    persist_report,
+    report_from_payload,
 )
 from tools.release_qualification.evidence import (  # noqa: E402
     DEFAULT_EVIDENCE_ROOT,
@@ -51,6 +53,8 @@ from tools.release_qualification.matrix import build_validation_matrix  # noqa: 
 from tools.release_qualification.metrics import (  # noqa: E402
     OBSERVER_SCENARIOS,
     ObserverSession,
+    decision_path,
+    observe_decisions_gate,
 )
 from tools.release_qualification.model import (  # noqa: E402
     PhaseState,
@@ -63,7 +67,6 @@ from tools.release_qualification.preflight import (  # noqa: E402
     collect_preflight,
     compute_toolchain_fingerprint,
 )
-from tools.release_qualification.report import render_markdown_report  # noqa: E402
 from tools.release_qualification.runtime import (  # noqa: E402
     app_tree_digest, artifact_fingerprint,
 )
@@ -86,8 +89,8 @@ def build_phase_handlers(
 ) -> dict[str, object]:
     """Compose phase handlers from existing qualification modules.
 
-    Lifecycle/fault phases only prepare isolated fixtures; actual performance and
-    Manual measurements are recorded via ``observe`` / ``record-check``.
+    Lifecycle/fault phases only prepare isolated fixtures; performance budgets are
+    measured by ``observe`` and enforced at ``finalize``, manual checks by ``record-check``.
     ``computer_use`` and ``evidence_finalization`` stay incomplete until finalize.
     """
 
@@ -103,8 +106,6 @@ def build_phase_handlers(
         except PreflightError as exc:
             return PhaseOutcome(PhaseState.FAILED, str(exc))
         atomic_write_json(path / "preflight.json", facts.as_allowlisted_dict())
-        if not facts.ok:
-            return PhaseOutcome(PhaseState.FAILED, "preflight failed")
         return PhaseOutcome(PhaseState.PASSED, "preflight ok")
 
     def source_validation(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
@@ -132,7 +133,8 @@ def build_phase_handlers(
         return PhaseOutcome(PhaseState.PASSED, "sidecar validation ok")
 
     def bundle_validation(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
-        # Sidecar build evidence lives in sidecar_validation; do not rebuild here.
+        # `tauri build` rebuilds the sidecar via beforeBuildCommand, so the copy smoked
+        # in sidecar_validation is not the shipped one; bundled-runtime-smoke covers that.
         commands = build_bundle_commands(repo_root=REPO_ROOT)
         log_dir = path / "commands"
         smoke_evidence = None
@@ -205,11 +207,12 @@ def build_phase_handlers(
             expected_root=(REPO_ROOT / DEFAULT_EVIDENCE_ROOT).resolve(),
         )
         fixtures = FixtureRoot.create(evidence)
+        fixtures.discard("runtimes/lifecycle")
         runtime = fixtures.create_runtime("lifecycle")
         atomic_write_json(path / "lifecycle-runtime.json", {"root": str(runtime.root)})
         return PhaseOutcome(
             PhaseState.PASSED,
-            "lifecycle fixtures prepared; measurements require observe/checklist",
+            "lifecycle fixtures prepared; finalize requires passing observe decisions",
         )
 
     def fault_persistence(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
@@ -218,17 +221,10 @@ def build_phase_handlers(
             release_id=_release_id_from_report(path),
             expected_root=(REPO_ROOT / DEFAULT_EVIDENCE_ROOT).resolve(),
         )
-        fixtures_path = path / "fixtures"
-        if not fixtures_path.exists():
-            fixtures = FixtureRoot.create(evidence)
-        else:
-            fixtures = FixtureRoot(
-                evidence_path=path,
-                release_id=_release_id_from_report(path),
-                path=fixtures_path,
-                scenarios_root=fixtures_path / "scenarios",
-                backups_root=fixtures_path / "pristine-backups",
-            )
+        fixtures = FixtureRoot.create(evidence)
+        scenarios = ("corrupt-db", "missing-output", "read-only-copy")
+        for relative in ("runtimes/fault-pristine", *(f"scenarios/{name}" for name in scenarios)):
+            fixtures.discard(relative)
         pristine = fixtures.create_runtime("fault-pristine")
         from tools.release_qualification.fixtures import (
             create_scenario_copy,
@@ -243,7 +239,7 @@ def build_phase_handlers(
             expected_qualification_root=path,
             release_id=release_id,
         )
-        for scenario in ("corrupt-db", "missing-output", "read-only-copy"):
+        for scenario in scenarios:
             create_scenario_copy(
                 pristine,
                 fixtures.scenarios_root,
@@ -304,7 +300,6 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         return EXIT_FAIL
     config_path = Path(args.config) if getattr(args, "config", None) else DEFAULT_CONFIG
     config = load_qualification_config(config_path)
-    config.require_version(version)
 
     release_id = version
     if args.final:
@@ -321,11 +316,11 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     commit = _git_commit()
     report = QualificationReport.new(release_id=release_id, commit=commit)
     # prepare leaves every required phase incomplete/not started → incomplete release.
-    _persist_report(
+    persist_report(
         report_dir,
         report,
         config_hash=sha256_file(config_dir / "release_qualification.toml"),
-        toolchain_fingerprint="prepare",
+        toolchain_fingerprint=compute_toolchain_fingerprint(),
         artifact_hash="",
     )
     atomic_write_text(
@@ -399,7 +394,7 @@ def cmd_observe(args: argparse.Namespace) -> int:
             raise ValueError("invalid artifacts.json")
         if app_tree_digest(app_bundle) != artifacts.get("app_tree_sha256"):
             raise ValueError("app bundle changed since qualification")
-        _current_artifact_hash(report_dir)
+        artifact_hash = _current_artifact_hash(report_dir)
     except (OSError, ValueError, ResumeRejectedError) as exc:
         print(str(exc), file=sys.stderr)
         return EXIT_FAIL
@@ -423,8 +418,13 @@ def cmd_observe(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return EXIT_FAIL
     atomic_write_json(
-        report_dir / "metrics" / f"{args.scenario}-decision.json",
-        {"passed": decision.passed, "detail": decision.detail, "metrics": decision.metrics},
+        decision_path(report_dir, args.scenario),
+        {
+            "passed": decision.passed,
+            "detail": decision.detail,
+            "metrics": decision.metrics,
+            "artifact_hash": artifact_hash,
+        },
     )
     print(f"budget_passed={decision.passed} detail={decision.detail}")
     return EXIT_PASS if decision.passed else EXIT_FAIL
@@ -453,7 +453,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     report_dir = Path(args.report_dir).resolve()
     _assert_report_dir(report_dir)
     payload = _load_report_payload(report_dir)
-    report = _report_from_payload(payload)
+    report = report_from_payload(payload)
 
     blocked, reason, gate_code = checklist_finalize_gate(
         load_checklist(report_dir),
@@ -481,6 +481,14 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return EXIT_FAIL
 
+    blocked, reason, gate_code = observe_decisions_gate(
+        report_dir,
+        artifact_hash=fingerprints["artifact_hash"],
+    )
+    if blocked:
+        print(f"finalize refused: {reason}", file=sys.stderr)
+        return gate_code
+
     precheck = validate_finalization_inputs(report_dir)
     if precheck.state is not PhaseState.PASSED:
         print(f"finalize refused: {precheck.detail}", file=sys.stderr)
@@ -489,6 +497,11 @@ def cmd_finalize(args: argparse.Namespace) -> int:
     # Drop stale portable release inputs before retry so a prior crash cannot linger.
     _clear_stale_finalization_outputs(report_dir)
 
+    report.set_phase(
+        "lifecycle_performance",
+        PhaseState.PASSED,
+        f"observed budgets passed: {', '.join(OBSERVER_SCENARIOS)}",
+    )
     report.set_phase(
         "computer_use",
         PhaseState.PASSED,
@@ -499,7 +512,7 @@ def cmd_finalize(args: argparse.Namespace) -> int:
         PhaseState.PASSED,
         "evidence finalization ok",
     )
-    _persist_report(
+    persist_report(
         report_dir,
         report,
         config_hash=fingerprints["config_hash"],
@@ -748,37 +761,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _persist_report(
-    report_dir: Path,
-    report: QualificationReport,
-    *,
-    config_hash: str,
-    toolchain_fingerprint: str,
-    artifact_hash: str,
-) -> None:
-    payload = {
-        "release_id": report.release_id,
-        "commit": report.commit,
-        "created_at": report.created_at,
-        "config_hash": config_hash,
-        "toolchain_fingerprint": toolchain_fingerprint,
-        "artifact_hash": artifact_hash,
-        "release_state": report.release_state.value,
-        "required_phases": list(report.required_phases),
-        "phases": {
-            name: {
-                "name": record.name,
-                "state": record.state.value,
-                "detail": record.detail,
-                "updated_at": record.updated_at,
-            }
-            for name, record in report.phases.items()
-        },
-    }
-    atomic_write_json(report_dir / "report.json", payload)
-    atomic_write_text(report_dir / "report.md", render_markdown_report(report))
-
-
 def _load_report_payload(report_dir: Path) -> dict:
     path = report_dir / "report.json"
     with path.open(encoding="utf-8") as handle:
@@ -786,27 +768,6 @@ def _load_report_payload(report_dir: Path) -> dict:
     if not isinstance(payload, dict):
         raise ValueError("invalid report.json")
     return payload
-
-
-def _report_from_payload(payload: Mapping[str, object]) -> QualificationReport:
-    report = QualificationReport.new(
-        release_id=str(payload["release_id"]),
-        commit=str(payload["commit"]),
-    )
-    report.created_at = str(payload.get("created_at", report.created_at))
-    phases = payload.get("phases", {})
-    if isinstance(phases, dict):
-        for name in report.required_phases:
-            raw = phases.get(name, {})
-            if not isinstance(raw, dict):
-                continue
-            report.phases[name] = type(report.phases[name])(
-                name=name,
-                state=PhaseState(str(raw.get("state", PhaseState.NOT_STARTED.value))),
-                detail=str(raw.get("detail", "")),
-                updated_at=str(raw.get("updated_at", report.created_at)),
-            )
-    return report
 
 
 def _current_fingerprints(report_dir: Path) -> dict[str, str]:
@@ -858,8 +819,6 @@ def _assert_saved_fingerprints(
 ) -> None:
     for key in ("commit", "config_hash", "toolchain_fingerprint", "artifact_hash"):
         saved = str(payload.get(key, ""))
-        # Prepare placeholder toolchain is replaced on first run; finalize/run after
-        # prepare without a successful run still compares against saved values.
         if saved != current[key]:
             raise ResumeRejectedError(
                 f"resume rejected: {key} changed ({saved!r} != {current[key]!r})"
@@ -948,7 +907,7 @@ def _invalidate_failed_finalization(
     if marker.exists() or marker.is_symlink():
         marker.unlink()
     report.set_phase("evidence_finalization", PhaseState.FAILED, detail)
-    _persist_report(
+    persist_report(
         report_dir,
         report,
         config_hash=fingerprints["config_hash"],
@@ -1009,13 +968,7 @@ def _locate_app_bundle() -> Path:
 
 def _locate_dmg(version: str) -> Path:
     dmg_dir = REPO_ROOT / "desktop" / "src-tauri" / "target" / "release" / "bundle" / "dmg"
-    expected = dmg_dir / f"Orpheus_{version}_aarch64.dmg"
-    if expected.is_file():
-        return expected
-    matches = sorted(dmg_dir.glob("Orpheus_*_aarch64.dmg"))
-    if matches:
-        return matches[-1]
-    return expected
+    return dmg_dir / f"Orpheus_{version}_aarch64.dmg"
 
 
 if __name__ == "__main__":

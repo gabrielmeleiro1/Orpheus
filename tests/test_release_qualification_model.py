@@ -29,18 +29,6 @@ def test_required_bundle_metadata_matches_the_tauri_bundle():
     assert config.minimum_macos == tauri["bundle"]["macOS"]["minimumSystemVersion"]
 
 
-def test_version_must_be_non_empty():
-    config = load_qualification_config(DEFAULT_CONFIG)
-
-    with pytest.raises(ValueError, match="version"):
-        config.require_version("")
-
-    with pytest.raises(ValueError, match="version"):
-        config.require_version("   ")
-
-    assert config.require_version("1.0.0") == "1.0.0"
-
-
 def test_performance_budgets_are_positive_and_internally_consistent():
     config = load_qualification_config(DEFAULT_CONFIG)
     budgets = config.budgets
@@ -68,7 +56,6 @@ product_name = "Orpheus"
 bundle_id = "com.orpheus.desktop"
 minimum_macos = "14.0"
 architecture = "arm64"
-runtime_profiles = ["base", "mlx"]
 
 [budgets]
 cold_launch_seconds = 15.0
@@ -98,7 +85,6 @@ def test_inconsistent_budgets_are_rejected():
                     "bundle_id": "com.orpheus.desktop",
                     "minimum_macos": "14.0",
                     "architecture": "arm64",
-                    "runtime_profiles": ["base", "mlx"],
                 },
                 "budgets": {
                     "cold_launch_seconds": 5.0,

@@ -7,7 +7,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { resolveFallbackChromiumExecutable } from "./lib/chromiumResolver.mjs";
+import { launchChromium } from "./lib/chromiumResolver.mjs";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const desktopRequire = createRequire(path.join(repo, "desktop/package.json"));
@@ -33,8 +33,7 @@ await new Promise((resolve, reject) => { server.once("error", reject); server.li
 let browser;
 const results = [];
 try {
-  const executablePath = resolveFallbackChromiumExecutable({ headless: true });
-  browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : {}) });
+  browser = await launchChromium(chromium, { headless: true });
   for (const [width, height] of [[1920, 1030], [1440, 900], [1280, 800], [1024, 768], [800, 600], [640, 480], [3840, 2056]]) {
     for (const documentMode of [false, true]) {
       const name = `${documentMode ? "document" : "convert"}-${width}x${height}`;

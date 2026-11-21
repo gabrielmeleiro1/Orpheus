@@ -141,10 +141,17 @@ def qualify_bundled_runtime(
     }
 
 
+def _raise_system_exit(signum: int, _frame: object) -> None:
+    raise SystemExit(128 + signum)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, required=True)
     args = parser.parse_args()
+    # The command runner's timeout sends SIGTERM first; unwinding through the
+    # finally blocks stops the smoke and detaches the mounted DMG.
+    signal.signal(signal.SIGTERM, _raise_system_exit)
     tauri = args.repo_root / "desktop/src-tauri"
     config = json.loads((tauri / "tauri.conf.json").read_text(encoding="utf-8"))
     product, version = config["productName"], config["version"]

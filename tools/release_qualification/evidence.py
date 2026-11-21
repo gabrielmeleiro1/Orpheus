@@ -91,6 +91,11 @@ class EvidenceRoot:
         if contents != self.release_id:
             raise ValueError("refuse cleanup: sentinel mismatched")
 
+        # Deferred: fixtures imports this module. The read-only scenario copy
+        # would otherwise make rmtree fail part-way.
+        from .fixtures import _make_tree_writable
+
+        _make_tree_writable(path)
         shutil.rmtree(path)
 
 

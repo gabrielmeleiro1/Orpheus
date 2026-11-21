@@ -8,6 +8,7 @@ import signal
 import shutil
 import sqlite3
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -371,3 +372,39 @@ def test_bundled_smoke_launcher_kills_and_cleans_up_when_containment_fails(
     process.kill.assert_called_once_with()
     process.wait.assert_called_once_with(timeout=5)
     cleanup.assert_called_once_with(process)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups and SIGTERM")
+def test_outer_timeout_lets_bundled_smoke_detach_its_dmg(tmp_path, mounted_bundle_workspace):
+    """The command runner's timeout must not skip qualify_bundled_runtime's detach."""
+    from tools.release_qualification.commands import CommandSpec, run_command
+
+    app, dmg, mounted, _shipped_app, _frontend = mounted_bundle_workspace
+    detached = tmp_path / "detached"
+    repo_root = Path(__file__).resolve().parents[1]
+    script = f"""
+import signal, sys, time
+from pathlib import Path
+sys.path.insert(0, {str(repo_root)!r})
+from tools.release_qualification import runtime
+signal.signal(signal.SIGTERM, runtime._raise_system_exit)
+runtime.qualify_bundled_runtime(
+    app=Path({str(app)!r}), dmg=Path({str(dmg)!r}), repo_root=Path({str(repo_root)!r}),
+    run=lambda *a, **k: time.sleep(60),
+    mount_dmg=lambda *a: Path({str(mounted)!r}),
+    detach_dmg=lambda mount: Path({str(detached)!r}).write_text(str(mount)),
+)
+"""
+    spec = CommandSpec(
+        label="bundled-smoke-timeout",
+        argv=[sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        timeout_seconds=2,
+    )
+    started = time.monotonic()
+    result = run_command(spec, log_dir=tmp_path / "commands")
+
+    assert result.timed_out is True
+    assert result.exit_code != 0
+    assert detached.read_text() == str(mounted)
+    assert time.monotonic() - started < 15

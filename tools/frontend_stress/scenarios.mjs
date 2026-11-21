@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { startBackend } from "./lib/backendProcess.mjs";
 
-import { assert, sleep, Skip, waitFor, requireSuccessfulConversion, hasRestoredPlaybackOffset } from "./lib/util.mjs";
+import { assert, sleep, Skip, waitFor, waitForConversion, hasRestoredPlaybackOffset } from "./lib/util.mjs";
 import {
   chooseTermSelectByIndex,
   chooseTermSelectByLabel,
@@ -11,6 +11,9 @@ import {
   openTermSelect,
   termSelectOptions,
 } from "./lib/termSelect.mjs";
+
+// The sidebar's connection badge, which is only shown while the backend is not connected.
+const CONNECTION_BADGE = /^(Backend disconnected|Connecting to backend)$/;
 
 // Cancel on a running book asks first; answer the question with "Stop conversion".
 async function confirmStop(page) {
@@ -60,6 +63,17 @@ async function waitTabVisible(page, tabId, timeoutMs = 8000) {
     timeoutMs,
     message: `#${id} visible`,
   });
+}
+
+/** GET helper for the isolated backend, shaped like waitForConversion's `api`. */
+function backendApi({ backendBaseUrl, token }) {
+  return async (method, route) => {
+    const response = await fetch(`${backendBaseUrl}${route}`, {
+      method, headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000),
+    });
+    assert(response.ok, `${route} returned ${response.status}`);
+    return response.json();
+  };
 }
 
 async function readProgressMeta(page) {
@@ -167,7 +181,7 @@ async function scenarioConnect(ctx) {
     message: "voice options loaded from /api/options/models",
   });
 
-  assert(!await page.getByRole("status", { name: "Backend error", exact: true }).isVisible(), "connection remains healthy after authenticated options load");
+  assert(await page.getByRole("status", { name: CONNECTION_BADGE }).count() === 0, "connection remains healthy after authenticated options load");
 }
 
 async function scenarioAddBookPaste(ctx) {
@@ -410,38 +424,32 @@ async function scenarioConvertSingle(ctx, source = null) {
   });
 
   const errorBefore = (await page.locator("#form-error").textContent()) ?? "";
+  // The progress announcement keeps the previous job's "completed" until this job
+  // reports progress, so follow the submitted job id rather than the UI state.
+  const accepted = page.waitForResponse(
+    (response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/conversions",
+    { timeout: 90_000 },
+  ).catch(() => null);
   await page.locator("#start-btn").click();
-  await gotoTab(page, "progress");
-
-  const reachedRunning = await waitFor(
-    async () => ["running", "completed"].includes((await readProgressMeta(page)).uiState),
-    { timeoutMs: 20_000, message: "job reaches running state" },
-  )
-    .then(() => true)
-    .catch(() => false);
-
-  if (!reachedRunning) {
+  const response = await accepted;
+  if (!response?.ok()) {
     const errorAfter = (await page.locator("#form-error").textContent()) ?? "";
     shared.ttsAvailable = false;
     throw new Error(
-      `conversion never reached running or completed. form error: "${errorAfter || errorBefore}"`,
+      `conversion was not accepted (${response ? `HTTP ${response.status()}` : "no start request"}). form error: "${errorAfter || errorBefore}"`,
     );
   }
+  const { job_id: jobId } = await response.json();
+  await gotoTab(page, "progress");
 
   log("conversion accepted; waiting for successful completion");
-  let terminal;
   try {
-    terminal = await waitForUiState(page, ["completed", "failed", "cancelled"], {
-      timeoutMs: 10 * 60_000,
-      intervalMs: 2000,
-    });
+    await waitForConversion(backendApi(ctx), jobId, { timeoutMs: 10 * 60_000, intervalMs: 2000 });
   } catch (err) {
     shared.ttsAvailable = false;
     await confirmStop(page).catch(() => {});
-    throw new Error(`conversion never reached a terminal state within 10 minutes: ${err.message}`);
+    throw err;
   }
-
-  requireSuccessfulConversion(terminal);
 
   shared.ttsAvailable = true;
   await gotoTab(page, "library");
@@ -475,7 +483,7 @@ export function requireCudaCleanerTrace(traces) {
 }
 
 export async function verifyCudaCleanerChoice(ctx, quantization, index, modelId = "Qwen/Qwen2.5-1.5B-Instruct") {
-  const { page, backendBaseUrl, token, log } = ctx;
+  const { page, log } = ctx;
   await gotoTab(page, "settings");
   await waitTabVisible(page, "settings");
   const cudaLabel = await waitFor(async () => {
@@ -519,13 +527,8 @@ export async function verifyCudaCleanerChoice(ctx, quantization, index, modelId 
     cleaner_cuda_device: "cuda", cleaner_cuda_quantization: quantization,
   })) assert(submitted?.[key] === value, `conversion must submit ${key}=${value}`);
 
-  const get = async (route) => {
-    const response = await fetch(`${backendBaseUrl}${route}`, {
-      headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10_000),
-    });
-    assert(response.ok, `${route} returned ${response.status}`);
-    return response.json();
-  };
+  const api = backendApi(ctx);
+  const get = (route) => api("GET", route);
   const library = await get(`/api/library?search=${encodeURIComponent(title)}`);
   const book = library.items.find((item) => item.title === title);
   assert(book, "CUDA conversion must be saved in the library");
@@ -932,7 +935,7 @@ async function scenarioReconnect(ctx) {
   log("killing the backend process to simulate a crash mid-session");
   await backend.stop();
 
-  await waitFor(async () => await page.getByRole("status", { name: "Backend error", exact: true }).isVisible(), {
+  await waitFor(async () => await page.getByRole("status", { name: "Backend disconnected", exact: true }).isVisible(), {
     timeoutMs: 30_000, message: "backend failure becomes an explicit error state",
   });
   const delta = ctx.getConsoleErrorCount() - errorsBefore;

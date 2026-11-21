@@ -1,32 +1,24 @@
 #!/usr/bin/env bash
-# Install the Orpheus pre-push validation hook for this clone.
+# Point Git at the tracked Orpheus hooks so every worktree runs the current copy.
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-chmod +x \
-  "$ROOT/scripts/hooks/pre-push" \
-  "$ROOT/scripts/install-git-hooks.sh"
-
-mkdir -p "$ROOT/.git/hooks"
-cp "$ROOT/scripts/hooks/pre-push" "$ROOT/.git/hooks/pre-push"
-chmod +x "$ROOT/.git/hooks/pre-push"
+# A relative hooksPath resolves against each worktree's root when a hook runs.
+git config core.hooksPath scripts/hooks
 
 cat <<EOF
-Installed Orpheus pre-push validation for this repository clone.
+Installed Orpheus pre-push validation (core.hooksPath = scripts/hooks).
 
 Before every:
   git push
 
-this clone will run:
-  - python -m ruff check .
-  - python -m pytest tests -m "not property and not benchmark and not slow and not ui"
+this repository will run:
   - npm ci
-  - npm run typecheck
-  - npm test -- --run
-  - cargo test
-  - cargo check
+  - python scripts/check_desktop.py --only lint python frontend rust
+    (Ruff, run_tests.py --contract, the frontend type check, Vitest and
+    build, and the locked Tauri tests and check, as in CI)
 
 The push is blocked if any check fails.
 EOF
