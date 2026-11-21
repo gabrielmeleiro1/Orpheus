@@ -43,3 +43,30 @@ def test_trailing_folio_titles_still_corroborate_across_pages():
 
 def test_wrapped_words_still_join_after_linear_anchor():
     assert repair_text_layout("an extra-\nordinary voyage") == "an extraordinary voyage"
+
+
+_SCORE_TABLE = (
+    "Round one\nSmith    12\nJones    9\n"
+    "Round two\nSmith    15\nJones    11\n"
+    "The final went to Smith on the last day."
+)
+
+
+@pytest.mark.parametrize("suffix", [".txt", ".md"])
+def test_column_aligned_numbers_in_flowing_text_are_content(tmp_path, suffix):
+    from modules.ingestion.markdown_parser import MarkdownParser
+    from modules.ingestion.text_parser import TextParser
+
+    source = tmp_path / f"scores{suffix}"
+    source.write_text(_SCORE_TABLE, encoding="utf-8")
+    parser = TextParser if suffix == ".txt" else MarkdownParser
+
+    content = "\n".join(chapter.content for chapter in parser(source).parse().chapters)
+
+    for line in ("Smith    12", "Jones    9", "Smith    15", "Jones    11"):
+        assert line in content
+
+
+def test_paged_text_still_drops_running_header_folios():
+    text = "The Voyage    12\nThe ship sailed.\n\fThe Voyage    13\nThe ship returned."
+    assert repair_text_layout(text) == "The ship sailed.\n\fThe ship returned."

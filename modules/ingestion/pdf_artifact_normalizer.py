@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 import re
 
+from .content_filter import _CITATION_LINE_RE, is_copyright_notice
 from .text_layout import repair_line_break_hyphenation as repair_wrapped_words
 from .text_layout import corroborated_folio_titles, hyphenation_word_forms, numbered_folio_title, strip_page_furniture
 
@@ -29,42 +30,42 @@ _LINE_BREAK_HYPHEN_RE = re.compile(
 # The left-hand compound is matched atomically (lookahead capture + backref)
 # and its hyphenated segments are bounded, so a hyphen-dense page cannot drive
 # the quadratic backtracking the naive ``[A-Za-z]+(?:-[A-Za-z]+)*`` form causes.
-# ``run`` keeps the trailing hyphen; the known-repair dictionary keys never
+# ``run`` keeps the trailing hyphen; the known compounds never
 # exceed a couple of hyphenated segments, so the {1,4}/{0,4} bounds are ample.
 _KNOWN_HYPHENATED_LINE_BREAK_RE = re.compile(
     r"\b(?=(?P<run>(?:[A-Za-z]+-){1,4}))(?P=run)\s*\n\s*"
     r"(?P<right>[a-z]+(?:-[a-z]+){0,4})\b"
 )
-_KNOWN_HYPHENATED_LINE_BREAK_REPAIRS = {
-    "alto-relievo": "alto-relievo",
-    "auto-immune": "auto-immune",
-    "auto-nomy": "auto-nomy",
-    "auto-pause": "auto-pause",
-    "auto-pilot": "auto-pilot",
-    "coming-into-being": "coming-into-being",
-    "crypto-political": "crypto-political",
-    "gameto-technical": "gameto-technical",
-    "into-just": "into-just",
-    "lacto-ovo": "lacto-ovo",
-    "lotto-game": "lotto-game",
-    "mosquito-nets": "mosquito-nets",
-    "parieto-occipital": "parieto-occipital",
-    "photo-reconnaissance": "photo-reconnaissance",
-    "potato-digger": "potato-digger",
-    "proto-awareness": "proto-awareness",
-    "proto-cities": "proto-cities",
-    "proto-evolutionary": "proto-evolutionary",
-    "proto-imperial": "proto-imperial",
-    "proto-intuitionistic": "proto-intuitionistic",
-    "proto-modernist": "proto-modernist",
-    "proto-nationalist": "proto-nationalist",
-    "proto-palaces": "proto-palaces",
-    "proto-romantics": "proto-romantics",
-    "proto-scouting": "proto-scouting",
-    "proto-soul": "proto-soul",
-    "proto-types": "proto-types",
-    "putto-like": "putto-like",
-}
+_KNOWN_HYPHENATED_LINE_BREAK_COMPOUNDS = frozenset({
+    "alto-relievo",
+    "auto-immune",
+    "auto-nomy",
+    "auto-pause",
+    "auto-pilot",
+    "coming-into-being",
+    "crypto-political",
+    "gameto-technical",
+    "into-just",
+    "lacto-ovo",
+    "lotto-game",
+    "mosquito-nets",
+    "parieto-occipital",
+    "photo-reconnaissance",
+    "potato-digger",
+    "proto-awareness",
+    "proto-cities",
+    "proto-evolutionary",
+    "proto-imperial",
+    "proto-intuitionistic",
+    "proto-modernist",
+    "proto-nationalist",
+    "proto-palaces",
+    "proto-romantics",
+    "proto-scouting",
+    "proto-soul",
+    "proto-types",
+    "putto-like",
+})
 _HYPHENATION_PREFIX_EXCEPTIONS = {
     "body",
     "mind",
@@ -114,27 +115,30 @@ _JSTOR_COVER_MARKERS = (
     "your use of the jstor archive",
     "jstor is a not-for-profit",
 )
-_COPYRIGHT_FRONT_MATTER_MARKERS = (
-    "copyright",
-    "all rights reserved",
-    "no part of this publication may be reproduced",
-    "isbn",
-)
 # Horizontal whitespace only: a line-anchored ``\s*`` rescans a run of blank
 # lines from each of its line starts, which is quadratic on blank-heavy pages.
 _TOC_HEADING_RE = re.compile(
     r"^[^\S\n]*(?:contents|table of contents)[^\S\n]*$", re.IGNORECASE | re.MULTILINE,
 )
 _DOTTED_TOC_LINE_RE = re.compile(r"\.{3,}|…{2,}")
-_CAPTION_LINE_RE = re.compile(
-    r"^\s*(?:"
-    r"fig(?:ure)?\.?\s*\d[\w.\-]*|"
-    r"image\s+caption:|"
-    r"caption:|"
-    r"plate\s+\d[\w.\-]*"
-    r").*$",
-    re.IGNORECASE,
+_CAPTION_LABEL_RE = re.compile(r"^\s*(?i:image\s+caption:|caption:)")
+# A figure label, with an optional panel label ("(a)"), opens a caption only
+# when a separator, a capitalised title or the line end follows it;
+# "Figure 2, the ...", "Figure 2 shows" and "Figure 2 (left) shows" are prose.
+_FIGURE_CAPTION_RE = re.compile(
+    r"^\s*(?i:fig(?:ure)?\.?|plate)\s*\d[\w.\-]*(?:\s*\([^()\s]{1,8}\))?"
+    r"(?:\s*[.:\u2014\u2013-](?:\s|$)|\s+[^\s,(a-z]|\s*$)"
 )
+_MAX_CAPTION_CHARS = 120
+_SENTENCE_END_RE = re.compile(r"[.!?:;\u2026\"'\u201d\u2019)\]]\s*$")
+_NUMBERED_HEADING_PREFIX_RE = re.compile(r"^\s*\d+(?:\.\d+)*\.?\s+")
+_TITLE_SMALL_WORDS = frozenset(
+    {"a", "an", "the", "and", "or", "of", "by", "for", "in", "on", "to", "at", "from", "with"}
+)
+# "Surname, Given." / "Surname, G." -- not "However, I ..." prose.
+_AUTHOR_ENTRY_RE = re.compile(r"^[A-Z][\w'\u2019\-]+(?:\s[A-Z][\w'\u2019\-]+)?,\s+[A-Z][\w'\u2019\-]*\.")
+_NUMBERED_NOTE_RE = re.compile(r"^(?:\[\d{1,4}\]|\d{1,4}[.)])\s+\S")
+_REFERENCE_LOCATOR_RE = re.compile(r"\bibid\b|\bpp?\.\s*\d", re.IGNORECASE)
 _REFERENCE_SECTION_HEADING_RE = re.compile(
     r"^\s*(?:bibliography|references|endnotes|notes)\s*$",
     re.IGNORECASE,
@@ -159,14 +163,6 @@ def _is_jstor_cover_page(text: str) -> bool:
     return all(marker in normalized for marker in _JSTOR_COVER_MARKERS)
 
 
-def _is_copyright_front_matter_page(text: str) -> bool:
-    normalized = re.sub(r"\s+", " ", text).casefold()
-    return (
-        "copyright" in normalized
-        and sum(1 for marker in _COPYRIGHT_FRONT_MATTER_MARKERS if marker in normalized) >= 2
-    )
-
-
 def _is_toc_duplicate_page(text: str) -> bool:
     if not _TOC_HEADING_RE.search(text):
         return False
@@ -180,22 +176,96 @@ def _is_toc_duplicate_page(text: str) -> bool:
     return dotted_lines >= 2 or numbered_lines >= 3
 
 
+def _looks_like_heading(line: str) -> bool:
+    """A short Title Case line, optionally numbered ("2.3 Growth of the Cities")."""
+    words = _NUMBERED_HEADING_PREFIX_RE.sub("", line).split()
+    return 0 < len(words) <= 12 and words[0][:1].isupper() and all(
+        word[:1].isupper() or word[:1].isdigit() or word.lower() in _TITLE_SMALL_WORDS
+        for word in words
+    )
+
+
+def _is_caption_line(line: str, previous_line: str) -> bool:
+    if _CAPTION_LABEL_RE.match(line):
+        return True
+    # A hard-wrapped sentence can put a figure reference at a line start.
+    continues_sentence = (
+        bool(previous_line)
+        and not _SENTENCE_END_RE.search(previous_line)
+        and not _looks_like_heading(previous_line)
+    )
+    return (
+        len(line.strip()) <= _MAX_CAPTION_CHARS
+        and not continues_sentence
+        and bool(_FIGURE_CAPTION_RE.match(line))
+    )
+
+
 def _strip_caption_lines(text: str) -> str:
-    return "\n".join(
-        line
-        for line in text.splitlines()
-        if not _CAPTION_LINE_RE.match(line)
-    ).strip()
+    kept: list[str] = []
+    previous_line = ""
+    for line in text.splitlines():
+        if _is_caption_line(line, previous_line):
+            continue
+        kept.append(line)
+        if line.strip():
+            previous_line = line
+    return "\n".join(kept).strip()
+
+
+def _reference_entries(lines: list[str]) -> list[tuple[Optional[int], str]]:
+    """Group the lines under a notes heading into (note number, text) entries.
+
+    A numbered or "Surname, Given." line starts an entry and the lines after
+    it are its wrapped continuation; lines before the first such start stand
+    alone, so a prose box is weighed line by line.
+    """
+    entries: list[tuple[Optional[int], str]] = []
+    started = False
+    for line in filter(None, map(str.strip, lines)):
+        number = _extract_reference_number(line)
+        if number is not None or _AUTHOR_ENTRY_RE.match(line):
+            started = True
+            entries.append((number, line))
+        elif started:
+            entries[-1] = (entries[-1][0], f"{entries[-1][1]} {line}")
+        else:
+            entries.append((None, line))
+    return entries
+
+
+def _is_reference_entry(number: Optional[int], text: str, in_note_run: bool) -> bool:
+    if (
+        (number is not None and in_note_run)
+        or _NUMBERED_NOTE_RE.match(text)
+        or _AUTHOR_ENTRY_RE.match(text)
+        or _REFERENCE_LOCATOR_RE.search(text)
+    ):
+        return True
+    numbered = _TRAILING_REFERENCE_ENTRY_RE.match(text) if number is not None else None
+    tokens = _CITATION_LINE_RE.finditer(text, numbered.end() - 1 if numbered else 0)
+    # A bare year is citation evidence only in a numbered note ("1 Darwin to
+    # Hooker, 1859."); dated prose and quantities ("4 ripe plums") are text.
+    return any(numbered or not token.group().isdigit() for token in tokens)
 
 
 def _strip_reference_sections(text: str) -> str:
     lines = text.splitlines()
-    kept: list[str] = []
-    for line in lines:
-        if _REFERENCE_SECTION_HEADING_RE.fullmatch(line.strip()):
-            break
-        kept.append(line)
-    return "\n".join(kept).rstrip()
+    for index, line in enumerate(lines):
+        if not _REFERENCE_SECTION_HEADING_RE.fullmatch(line.strip()):
+            continue
+        # The same words head a recipe's or textbook's notes box; only a
+        # heading over mostly citation-shaped entries (or over nothing)
+        # starts a reference section. Notes numbered 1, 2, 3 ... count
+        # whatever their wording; quantities ("4 plums", "200 g flour") do
+        # not run in sequence.
+        entries = _reference_entries(lines[index + 1:])
+        numbers = [number for number, _ in entries if number is not None]
+        in_note_run = len(numbers) >= 2 and all(b == a + 1 for a, b in zip(numbers, numbers[1:]))
+        references = sum(_is_reference_entry(number, text, in_note_run) for number, text in entries)
+        if 2 * references >= len(entries):
+            return "\n".join(lines[:index]).rstrip()
+    return "\n".join(lines).rstrip()
 
 
 def repair_line_break_hyphenation(
@@ -208,12 +278,11 @@ def repair_line_break_hyphenation(
     def _repair_known_compound(match: re.Match[str]) -> str:
         run = match.group("run")  # includes the trailing line-break hyphen
         candidate = f"{run}{match.group('right')}".casefold()
-        repair = _KNOWN_HYPHENATED_LINE_BREAK_REPAIRS.get(candidate)
-        if repair is None:
+        if candidate not in _KNOWN_HYPHENATED_LINE_BREAK_COMPOUNDS:
             return match.group(0)
         if run[:1].isupper():
-            return repair[:1].upper() + repair[1:]
-        return repair
+            return candidate[:1].upper() + candidate[1:]
+        return candidate
 
     def _join(match: re.Match[str]) -> str:
         prefix = match.group("prefix")
@@ -434,7 +503,7 @@ class FrontMatterPolicy:
 
             page_text = str(page.get("text", ""))
             if before_body and (
-                _is_copyright_front_matter_page(page_text)
+                is_copyright_notice(page_text)
                 or _is_toc_duplicate_page(page_text)
             ):
                 cleaned_pages.append(_copy_page_with_text(page, ""))

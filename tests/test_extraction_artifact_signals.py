@@ -119,3 +119,9 @@ def test_normalize_extracted_document_leaves_under_cap_chapters_untouched():
     )
 
     assert normalized.chapters == document.chapters
+
+
+def test_footnote_leak_detector_ignores_part_headings_before_a_problem_title():
+    assert has_pdf_page_footnote_leakage("Part I The Problem of Knowledge") is False
+    assert has_pdf_page_footnote_leakage("Book I The problem of induction is posed.") is False
+    assert has_pdf_page_footnote_leakage("interrupted from I The problem I am going to raise.")

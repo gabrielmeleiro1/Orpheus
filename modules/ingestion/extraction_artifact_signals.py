@@ -24,7 +24,8 @@ PDF_INTERNAL_HYPHEN_FRAGMENT_RE = re.compile(
 PDF_PAGE_FOOTNOTE_LEAK_RE = re.compile(
     r"(?i)\b(?:"
     r"\d{1,4}[il]\s+[a-z]{3,}|"
-    r"[a-z]{2,}\s+I\s+The problem\b|"
+    # Case-sensitive, so a "Part I The Problem of ..." heading is not residue.
+    r"(?-i:[a-z]{2,}\s+I\s+The problem)\b|"
     r"This content downloaded from\b|"
     r"All use subject to\b|"
     r"Stable URL:|"

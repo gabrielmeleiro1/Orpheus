@@ -16,7 +16,7 @@ _BOM_ENCODINGS: tuple[tuple[bytes, str], ...] = (
 
 # utf-8-sig is intentionally absent: BOM-prefixed data is handled above, and
 # utf-8-sig accepts exactly the byte strings utf-8 does.
-_FALLBACK_ENCODINGS = ("utf-8", "cp1252", "latin-1")
+_FALLBACK_ENCODINGS = ("utf-8", "cp1252")
 
 
 def _decode_with(data: bytes, encoding: str) -> str | None:
@@ -74,7 +74,8 @@ def _decode_source_bytes(data: bytes) -> str:
         if decoded is not None:
             return decoded
 
-    return data.decode("utf-8", errors="replace")
+    # latin-1 maps every byte, so it always decodes.
+    return data.decode("latin-1")
 
 
 def read_source_text(path: Path | str) -> str:

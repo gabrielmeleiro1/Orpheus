@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterator
+from itertools import takewhile
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 import codecs
@@ -351,38 +352,39 @@ class _EPUBSectionBuilder:
                 continue
             resolved_entries.append((entry, document))
 
-        sections: list[EPUBSection] = []
-        index = 0
-        while index < len(resolved_entries):
-            entry, document = resolved_entries[index]
+        # A document listed again later (a "Begin Reading" entry ahead of the
+        # front matter) is split once, by all its entries, at its first position.
+        entries_by_document: dict[str, list[_TOCEntry]] = {}
+        ordered: list[EPUBSection | _DocumentPart] = []
+        for index, (entry, document) in enumerate(resolved_entries):
             if not self._has_readable_content(document):
                 if _is_structural_title(entry.title, entry.source_name):
-                    index += 1
                     continue
-                next_document = self._next_toc_document_after(resolved_entries, index)
                 recovered = self._section_from_unreadable_toc_marker(
                     entry,
                     document,
-                    next_document,
+                    self._next_toc_document_after(resolved_entries, index),
                     documents,
                 )
                 if recovered is not None:
-                    sections.append(recovered)
-                index += 1
+                    ordered.append(recovered)
                 continue
 
             # Structural entries still delimit neighboring narrative sections.
             # Keep them through splitting; _filter_sections removes their bodies.
-            entries_for_document = [entry]
-            index += 1
-            while (
-                index < len(resolved_entries)
-                and resolved_entries[index][1].source_name == document.source_name
-            ):
-                entries_for_document.append(resolved_entries[index][0])
-                index += 1
+            if document.source_name not in entries_by_document:
+                entries_by_document[document.source_name] = []
+                ordered.append(document)
+            entries_by_document[document.source_name].append(entry)
 
-            sections.extend(self._sections_from_toc_document(document, entries_for_document))
+        sections: list[EPUBSection] = []
+        for item in ordered:
+            if isinstance(item, EPUBSection):
+                sections.append(item)
+            else:
+                sections.extend(
+                    self._sections_from_toc_document(item, entries_by_document[item.source_name])
+                )
 
         return self._filter_sections(sections)
 
@@ -394,7 +396,12 @@ class _EPUBSectionBuilder:
         fragment_entries = [entry for entry in entries_for_document if entry.fragment]
 
         if len(fragment_entries) >= 2:
-            split_sections = self._split_document_by_toc_fragments(document, fragment_entries)
+            # Fragment-less entries ahead of the fragments (the parent chapter
+            # of a nested TOC) name the document's opening.
+            parent_entries = list(takewhile(lambda entry: not entry.fragment, entries_for_document))
+            split_sections = self._split_document_by_toc_fragments(
+                document, fragment_entries, _document_entry_title(document, parent_entries),
+            )
             if split_sections:
                 return split_sections
 
@@ -403,8 +410,8 @@ class _EPUBSectionBuilder:
             if split_sections:
                 return split_sections
 
-        entry = entries_for_document[0]
-        return [self._section_from_document(document, title=entry.title)]
+        title = _document_entry_title(document, entries_for_document) or entries_for_document[0].title
+        return [self._section_from_document(document, title=title)]
 
     @staticmethod
     def _next_toc_document_after(
@@ -513,6 +520,7 @@ class _EPUBSectionBuilder:
         self,
         document: _DocumentPart,
         entries: list[_TOCEntry],
+        opening_title: Optional[str],
     ) -> list[EPUBSection]:
         markers: list[tuple[str, Tag]] = []
         for entry in entries:
@@ -520,7 +528,7 @@ class _EPUBSectionBuilder:
             if marker is None:
                 return []
             markers.append((entry.title, marker))
-        return self._split_document_at_markers(document, markers)
+        return self._split_document_at_markers(document, markers, opening_title=opening_title)
 
     def _split_document_by_toc_titles(
         self,
@@ -528,6 +536,7 @@ class _EPUBSectionBuilder:
         entries: list[_TOCEntry],
     ) -> list[EPUBSection]:
         markers: list[tuple[str, Tag]] = []
+        opening_title: Optional[str] = None
         used: set[int] = set()
         headings = _find_split_headings(document.soup)
         for entry in entries:
@@ -539,9 +548,12 @@ class _EPUBSectionBuilder:
                     used.add(id(heading))
                     markers.append((entry.title, heading))
                     break
+            else:
+                if not markers and opening_title is None:
+                    opening_title = entry.title
         if len(markers) < 2:
             return []
-        return self._split_document_at_markers(document, markers)
+        return self._split_document_at_markers(document, markers, opening_title=opening_title)
 
     def _sections_from_document_headings(self, documents: list[_DocumentPart]) -> list[EPUBSection]:
         sections: list[EPUBSection] = []
@@ -652,9 +664,13 @@ class _EPUBSectionBuilder:
         self,
         document: _DocumentPart,
         markers: list[tuple[str, Tag]],
+        *,
+        opening_title: Optional[str] = None,
     ) -> list[EPUBSection]:
         root = _common_content_parent([marker for _, marker in markers], document.soup)
-        children = list(root.children)
+        # A named opening may start outside the element wrapping the markers.
+        opening = _body_content_before(root, document.soup) if opening_title else []
+        children = [*opening, *root.children]
         child_indexes = {id(child): index for index, child in enumerate(children)}
         marker_indexes: list[tuple[str, int]] = []
         for title, marker in markers:
@@ -671,6 +687,14 @@ class _EPUBSectionBuilder:
                 continue
             seen_indexes.add(index)
             deduped_marker_indexes.append((title, index))
+
+        # Content before the first marker is the document's opening. Only a
+        # TOC entry naming it (a nested TOC's parent chapter) makes it a
+        # section, which _filter_sections drops when too short or structural.
+        # An untitled opening is title pages, dedications, blurbs and licence
+        # headers far more often than prose, so it is not narrated.
+        if opening_title and deduped_marker_indexes[0][1] > 0:
+            deduped_marker_indexes = [(opening_title, 0), *deduped_marker_indexes]
 
         sections: list[EPUBSection] = []
         for position, (title, start_index) in enumerate(deduped_marker_indexes):
@@ -850,6 +874,20 @@ def _is_structural_title(title: Optional[str], source_name: str = "") -> bool:
     return bool(stem and _STRUCTURAL_TITLE_RE.match(stem))
 
 
+def _document_entry_title(document: _DocumentPart, entries: list[_TOCEntry]) -> Optional[str]:
+    """Title from a document's fragment-less TOC entries: the one naming its
+    heading, else the last one (an earlier one is usually a "Begin Reading"
+    alias)."""
+    whole_document_entries = [entry for entry in entries if not entry.fragment]
+    if not whole_document_entries:
+        return None
+    heading = _normalize_title(document.title)
+    return next(
+        (entry.title for entry in whole_document_entries if _normalize_title(entry.title) == heading),
+        whole_document_entries[-1].title,
+    )
+
+
 def _is_generic_container_title(title: Optional[str]) -> bool:
     normalized = _normalize_title(title)
     return bool(normalized and _GENERIC_CONTAINER_TITLE_RE.match(normalized))
@@ -898,6 +936,19 @@ def _common_content_parent(markers: list[Tag], soup: BeautifulSoup) -> Tag:
 
     body = soup.find("body")
     return body if isinstance(body, Tag) else soup
+
+
+def _body_content_before(root: Tag, soup: BeautifulSoup) -> list[PageElement]:
+    """Return the body content before a nested root, in document order."""
+    body = soup.find("body")
+    before: list[PageElement] = []
+    if not isinstance(body, Tag) or not _contains(body, root):
+        return before
+    node: Tag = root
+    while node is not body and node.parent is not None:
+        before[:0] = reversed(list(node.previous_siblings))
+        node = node.parent
+    return before
 
 
 def _contains(parent: Tag, child: Tag) -> bool:

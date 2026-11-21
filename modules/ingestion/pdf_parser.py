@@ -1,8 +1,8 @@
 """
 PDF Parser Module
 =================
-Converts PDF files to structured Markdown using PyMuPDF4LLM.
-Optimized for Apple Silicon.
+Extracts per-page PDF text with PyMuPDF and splits it into chapters by the
+outline or, without one, by page headings.
 """
 
 from pathlib import Path
@@ -11,6 +11,7 @@ from typing import Literal
 import re
 import pymupdf4llm
 
+from .epub_sections import _is_structural_title
 from .models import Chapter as IngestionChapter
 from .models import Document as IngestionDocument
 from .pdf_artifact_normalizer import normalize_pdf_artifacts
@@ -21,8 +22,6 @@ from modules.errors import (
     validate_pdf,
     PDFParsingError,
     CorruptedFileError,
-    EmptyChapterError,
-    ChapterTooLongError,
     OCRRequiredPDFError,
 )
 
@@ -42,17 +41,19 @@ class Document(IngestionDocument):
 
 PDFExtractionBackend = Literal["pymupdf4llm", "fitz", "auto"]
 
-_STRUCTURAL_TOC_TITLE_RE = re.compile(
+# Outline entries that are never chapters: book matter, and Part dividers.
+_BOOK_MATTER_TOC_TITLE_RE = re.compile(
     r"^(?:"
     r"contents|table of contents|"
     r"list of\b.*|"
-    r"part\s+(?:[ivxlcdm]+|\d+)\b.*|"
     r"subject index|name index|index|"
     r"bibliography|references|notes|endnotes|"
-    r"copyright(?: page)?|title page|half title"
+    r"copyright(?: page)?|title page|half[ -]title|"
+    r"front ?matter|back ?matter|prelims|preliminary pages"
     r")$",
     re.IGNORECASE,
 )
+_PART_TOC_TITLE_RE = re.compile(r"^part\s+(?:[ivxlcdm]+|\d+)\b.*$", re.IGNORECASE)
 _NUMBERED_TOC_TITLE_RE = re.compile(r"^\s*(?:chapter\s+)?\d{1,3}[.)]?\s+\S", re.IGNORECASE)
 _INTRO_TOC_TITLE_RE = re.compile(r"^\s*(?:introduction|preface|prologue)\b", re.IGNORECASE)
 _PAGE_NUMBER_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdmIVXLCDM]{1,12})\s*$")
@@ -69,15 +70,8 @@ _NO_TOC_PAGE_HEADING_RE = re.compile(
 
 
 class PDFParser:
-    """
-    Parses PDF files into structured Markdown format.
-    
-    Uses PyMuPDF4LLM for fast, accurate extraction optimized for LLMs.
-    """
-    
-    # Maximum words per chapter before warning
-    MAX_CHAPTER_WORDS = 50000
-    
+    """Parses PDF files into chapters of page text."""
+
     def __init__(
         self,
         file_path: Path | str,
@@ -131,29 +125,19 @@ class PDFParser:
         self._metadata = None
         self._total_pages = None
     
-    def parse(self, skip_empty: bool = True, max_chapter_words: int = None) -> Document:
+    def parse(self) -> Document:
         """
-        Parse the PDF into a Document object.
-        
-        Args:
-            skip_empty: If True, silently skip empty chapters. If False, raise EmptyChapterError.
-            max_chapter_words: Maximum words per chapter (raises ChapterTooLongError if exceeded).
-                              Defaults to MAX_CHAPTER_WORDS class attribute.
-        
+        Parse the PDF into a Document object, skipping chapters without text.
+
         Returns:
             Document with extracted content and chapters
-        
+
         Raises:
             PDFParsingError: If PDF cannot be parsed
             CorruptedFileError: If PDF structure is invalid
-            EmptyChapterError: If chapter is empty and skip_empty=False
-            ChapterTooLongError: If chapter exceeds max_chapter_words
         """
         import fitz
-        
-        max_words = max_chapter_words or self.MAX_CHAPTER_WORDS
-        enforce_max_words = max_chapter_words is not None
-        
+
         try:
             pages_data = self._extract_pages()
         except Exception as e:
@@ -235,8 +219,8 @@ class PDFParser:
             )
         
         # Extract chapters structure from TOC or page-heading fallback.
-        chapters = self._extract_chapters(total_pages, pages_data)
-        
+        chapters = self._extract_chapters(self.extract_toc(), pages_data, total_pages, title)
+
         # Populate content for each chapter based on page ranges
         valid_chapters = []
         for chapter in chapters:
@@ -248,25 +232,12 @@ class PDFParser:
             chapter_pages = pages_data[start_idx:end_idx]
             chapter.content = "\n\n".join(p["text"] for p in chapter_pages)
             chapter.heading_text = opening_heading_text(chapter.content, chapter.title)
-            
-            # Check for empty chapter
-            content_stripped = chapter.content.strip()
-            if not content_stripped:
-                if skip_empty:
-                    continue  # Skip this chapter
-                else:
-                    raise EmptyChapterError(chapter.number, chapter.title)
-            
-            # Check for extremely long chapter
-            word_count = len(content_stripped.split())
-            if enforce_max_words and word_count > max_words:
-                raise ChapterTooLongError(chapter.number, word_count, max_words)
-            
-            valid_chapters.append(chapter)
+            if chapter.content.strip():
+                valid_chapters.append(chapter)
         
         # Guard against a document that parsed to no readable narrative content
         # (0-byte/whitespace-only source), mirroring the EPUB empty-output guard.
-        if not any(chapter.content.strip() for chapter in valid_chapters):
+        if not valid_chapters:
             raise CorruptedFileError(
                 message="PDF contains no readable text",
                 file_path=self.file_path,
@@ -384,7 +355,7 @@ class PDFParser:
     @classmethod
     def _is_structural_toc_title(cls, title: str) -> bool:
         normalized = cls._normalize_title_for_structure(title)
-        return bool(_STRUCTURAL_TOC_TITLE_RE.match(normalized))
+        return bool(_BOOK_MATTER_TOC_TITLE_RE.match(normalized) or _PART_TOC_TITLE_RE.match(normalized))
 
     @classmethod
     def _select_toc_chapter_entries(
@@ -398,6 +369,55 @@ class PDFParser:
             and int(page) > 0
             and not cls._is_structural_toc_title(str(title))
         ]
+        selected = cls._select_chapter_level_entries(content_entries)
+        if not selected:
+            return []
+
+        # Content pages between the front matter and the first selected entry
+        # (a parent chapter's opening, an unnumbered foreword) would otherwise
+        # belong to no chapter. Such a lead must follow outlined front matter
+        # or sit at the level of a later chapter; a book-title root spanning
+        # every chapter opens on the title, copyright and contents pages. On
+        # the first page it must also open nested entries: a same-level entry
+        # there ("Front Matter", the book's title) spans those pages too.
+        first_page = min(page for _, page in selected)
+        front_matter_end = max(
+            (
+                int(page)
+                for _, title, page in toc
+                if 0 < int(page) < first_page and cls._is_book_matter_toc_title(str(title))
+            ),
+            default=0,
+        )
+        body_levels = {
+            level
+            for level, title, page in content_entries
+            if page >= first_page and not cls._is_book_matter_toc_title(title)
+        }
+        leads: list[tuple[str, int]] = []
+        for index, (level, title, page) in enumerate(content_entries):
+            opens_nested_entries = index + 1 < len(content_entries) and content_entries[index + 1][0] > level
+            if (
+                front_matter_end < page < first_page
+                and not cls._is_book_matter_toc_title(title)
+                and (front_matter_end or level in body_levels)
+                and (page > 1 or opens_nested_entries)
+            ):
+                leads.append((title, page))
+        lead = min(leads, key=lambda entry: entry[1], default=None)
+        return [lead, *selected] if lead else selected
+
+    @classmethod
+    def _is_book_matter_toc_title(cls, title: str) -> bool:
+        # The outline's own book-matter titles plus the EPUB ones (cover,
+        # dedication, also by, ...); Part dividers are body structure.
+        normalized = cls._normalize_title_for_structure(title)
+        return bool(_BOOK_MATTER_TOC_TITLE_RE.match(normalized) or _is_structural_title(normalized))
+
+    @staticmethod
+    def _select_chapter_level_entries(
+        content_entries: list[tuple[int, str, int]],
+    ) -> list[tuple[str, int]]:
         numbered_entries = [
             (level, title, page)
             for level, title, page in content_entries
@@ -466,13 +486,10 @@ class PDFParser:
         pages_data: list[dict[str, str]],
     ) -> list[tuple[str, int]]:
         candidates: list[tuple[str, int]] = []
-        seen_pages: set[int] = set()
         for page_index, page in enumerate(pages_data, start=1):
             heading = cls._page_heading_candidate(str(page.get("text", "")))
-            if heading is None or page_index in seen_pages:
-                continue
-            candidates.append((heading, page_index))
-            seen_pages.add(page_index)
+            if heading is not None:
+                candidates.append((heading, page_index))
         if len(candidates) < 2:
             return []
         return candidates
@@ -482,18 +499,21 @@ class PDFParser:
         entries: list[tuple[str, int]],
         total_pages: int,
     ) -> list[Chapter]:
+        # Chapters own whole pages, so entries that start on the same page
+        # (including pages clamped to the end) collapse into the first one.
+        ordered_entries: list[tuple[str, int]] = []
+        for title, page in sorted(entries, key=lambda item: item[1]):
+            page = min(page, total_pages)
+            if not ordered_entries or ordered_entries[-1][1] != page:
+                ordered_entries.append((title, page))
+
         chapters: list[Chapter] = []
-        ordered_entries = sorted(entries, key=lambda item: item[1])
         for i, (title, start_page) in enumerate(ordered_entries):
-            # Two TOC entries can start on the same page; never let the
-            # previous chapter's end slip before its own start page.
             end_page = (
-                max(start_page, ordered_entries[i + 1][1] - 1)
+                ordered_entries[i + 1][1] - 1
                 if i + 1 < len(ordered_entries)
                 else total_pages
             )
-            if start_page > end_page:
-                start_page = end_page
             chapters.append(
                 Chapter(
                     number=i + 1,
@@ -505,47 +525,22 @@ class PDFParser:
             )
         return chapters
 
+    @classmethod
     def _extract_chapters(
-        self,
+        cls,
+        toc: list[tuple[int, str, int]],
+        pages_data: list[dict[str, str]],
         total_pages: int,
-        pages_data: list[dict[str, str]] | None = None,
+        document_title: str,
     ) -> list[Chapter]:
         """
         Extract chapters based on TOC or heading detection.
-        
-        Args:
-            total_pages: Total page count to calculate end pages
-            
-        Returns:
-            List of Chapter objects
+
+        Without either, the whole document is one chapter named after the
+        document, as for plain-text sources.
         """
-        toc = self.extract_toc()
-        
-        if not toc:
-            if pages_data:
-                heading_entries = self._extract_heading_chapters_from_pages(pages_data)
-                if heading_entries:
-                    return self._chapters_from_entries(heading_entries, total_pages)
-            return [
-                Chapter(
-                    number=1,
-                    title="Full Document",
-                    content="",
-                    start_page=1,
-                    end_page=total_pages,
-                )
-            ]
-
-        entries = self._select_toc_chapter_entries(toc)
-        if not entries:
-            return [
-                Chapter(
-                    number=1,
-                    title="Full Document",
-                    content="",
-                    start_page=1,
-                    end_page=total_pages,
-                )
-            ]
-
-        return self._chapters_from_entries(entries, total_pages)
+        if toc:
+            entries = cls._select_toc_chapter_entries(toc)
+        else:
+            entries = cls._extract_heading_chapters_from_pages(pages_data)
+        return cls._chapters_from_entries(entries or [(document_title, 1)], total_pages)

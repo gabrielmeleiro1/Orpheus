@@ -77,7 +77,7 @@ def numbered_folio_title(line: str) -> str:
     return _TRAILING_FOLIO_RE.sub("", title, count=1).strip()
 
 
-def corroborated_folio_titles(lines: list[str]) -> set[str]:
+def corroborated_folio_titles(lines: list[str], *, require_facing_pages: bool = False) -> set[str]:
     """Require changing folios plus a layout gap or facing-page placement."""
     candidates: dict[str, list[tuple[str, str, bool]]] = defaultdict(list)
     for line in lines:
@@ -98,7 +98,10 @@ def corroborated_folio_titles(lines: list[str]) -> set[str]:
     return {
         title for title, occurrences in candidates.items()
         if len({number for number, _, _ in occurrences}) >= 2
-        and (len({side for _, side, _ in occurrences}) == 2 or all(gap for _, _, gap in occurrences))
+        and (
+            len({side for _, side, _ in occurrences}) == 2
+            or (not require_facing_pages and all(gap for _, _, gap in occurrences))
+        )
     }
 
 
@@ -107,7 +110,9 @@ def page_furniture_lines(text: str) -> set[int]:
     furniture: set[int] = set()
     candidates: dict[int, str] = {}
     lines = text.splitlines(keepends=True)
-    folio_titles = corroborated_folio_titles(lines)
+    # Without page breaks, one-sided "Smith    12" lines are as likely a table
+    # as a running header; only facing-page folios corroborate one there.
+    folio_titles = corroborated_folio_titles(lines, require_facing_pages="\f" not in text)
     page_edges: set[int] = set()
     if "\f" in text:
         start = 0

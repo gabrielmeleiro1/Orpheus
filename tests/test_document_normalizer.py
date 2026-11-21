@@ -382,7 +382,7 @@ def test_normalizer_keeps_minority_poem_chapter_in_prose_book(caplog):
 
 def test_normalizer_splits_overlong_single_paragraph_at_sentence_boundaries():
     # A hard-wrapped single paragraph above the word cap must fall
-    # back to sentence splitting instead of raising ChapterTooLongError.
+    # back to sentence splitting instead of failing.
     cap = 40
     sentences = [
         f"Sentence number {index} tells a small part of the long story here."
@@ -412,8 +412,7 @@ def test_normalizer_splits_overlong_single_paragraph_at_sentence_boundaries():
 
 
 def test_normalizer_splits_unpunctuated_text_into_bounded_parts():
-    # A huge paste with no sentence boundaries used to fail late with
-    # ChapterTooLongError; it is now split into word-bounded parts.
+    # A huge paste with no sentence boundaries is split into word-bounded parts.
     cap = 10
     content = "word " * 60  # 60 words, no sentence boundaries at all
     document = Document(

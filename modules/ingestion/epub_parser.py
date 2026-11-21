@@ -28,8 +28,6 @@ from modules.errors import (
     validate_epub,
     EPUBParsingError,
     CorruptedFileError,
-    EmptyChapterError,
-    ChapterTooLongError,
 )
 
 
@@ -106,10 +104,7 @@ class EPUBParser:
     
     Uses EbookLib for EPUB extraction and BeautifulSoup4 for HTML parsing.
     """
-    
-    # Maximum words per chapter before warning
-    MAX_CHAPTER_WORDS = 50000
-    
+
     def __init__(self, file_path: Path | str, validate: bool = True):
         """
         Initialize the parser with an EPUB file.
@@ -183,36 +178,14 @@ class EPUBParser:
             publisher=metadata.get("publisher")
         )
     
-    def extract_chapters(self, skip_empty: bool = True, max_chapter_words: int = None) -> list[Chapter]:
-        """
-        Extract all chapters from the EPUB.
-        
-        Args:
-            skip_empty: If True, silently skip empty chapters. If False, raise EmptyChapterError.
-            max_chapter_words: Maximum words per chapter (raises ChapterTooLongError if exceeded).
-        
-        Returns:
-            List of Chapter objects with cleaned text content
-            
-        Raises:
-            EmptyChapterError: If chapter is empty and skip_empty=False
-            ChapterTooLongError: If chapter exceeds max_chapter_words
-        """
-        max_words = max_chapter_words or self.MAX_CHAPTER_WORDS
-        enforce_max_words = max_chapter_words is not None
+    def extract_chapters(self) -> list[Chapter]:
+        """Extract the EPUB's readable sections as chapters, skipping empty ones."""
         sections = self._extract_sections()
         chapters: list[Chapter] = []
 
         for chapter_num, section in enumerate(sections, start=1):
-            content_stripped = section.content.strip()
-            if not content_stripped:
-                if not skip_empty:
-                    raise EmptyChapterError(chapter_num)
+            if not section.content.strip():
                 continue
-
-            word_count = len(content_stripped.split())
-            if enforce_max_words and word_count > max_words:
-                raise ChapterTooLongError(chapter_num, word_count, max_words)
 
             heading_text = ""
             soup = parse_epub_markup(section.html_content)

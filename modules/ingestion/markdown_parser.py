@@ -101,8 +101,12 @@ def detect_title_block(raw_text: str) -> tuple[str, str | None] | None:
             if author is None and level == 1:
                 return None
             return title, author
-        if title is None or not stripped:
+        if not stripped:
             continue
+        if title is None:
+            # Body text before the first heading: the document does not open
+            # with a title block, so that heading is a chapter.
+            return None
         byline = _BYLINE_RE.match(stripped)
         if byline is None or author is not None:
             return None

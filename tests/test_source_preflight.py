@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from modules.ingestion.preflight import preflight_source
 from modules.ingestion.pdf_preflight import (
     analyze_extracted_pdf_text_layer,
@@ -194,7 +196,7 @@ def test_pdf_text_layer_preflight_classifies_native_text_pdf(tmp_path: Path) -> 
     assert payload["requires_ocr"] is False
     assert payload["pdf_text_layer"]["classification"] == "native_text"
     assert payload["pdf_text_layer"]["confidence"] >= 0.8
-    assert payload["chapter_titles"] == []
+    assert payload["chapter_titles"] == ["Native Text Fixture"]
     assert not any("OCR required" in warning for warning in payload["warnings"])
 
 
@@ -465,3 +467,103 @@ def test_markdown_sample_matches_full_normalization_for_line_and_fence_edges(tmp
         for limit in [-1, 0, 1, 4, 9, 20, 900]:
             result = preflight_source(source, max_sample_chars=limit)
             assert result["sample"] == expected[:limit].strip(), (text, limit)
+
+
+def test_markdown_preflight_counts_the_chapters_the_parser_produces(tmp_path: Path) -> None:
+    from modules.ingestion.markdown_parser import MarkdownParser
+
+    source = tmp_path / "pre.md"
+    source.write_text(
+        "A preamble line before the title.\n\n# The Book\n\n## One\n\nFirst body.\n\n## Two\n\nSecond body.",
+        encoding="utf-8",
+    )
+
+    payload = preflight_source(source)
+    chapters = MarkdownParser(source).parse().chapters
+
+    assert payload["chapter_titles"] == [chapter.title for chapter in chapters] == ["The Book", "One", "Two"]
+    assert payload["chapter_count"] == 3
+
+
+def test_pdf_preflight_lists_the_chapters_the_parser_produces(tmp_path: Path) -> None:
+    import fitz
+
+    from modules.ingestion.pdf_parser import PDFParser
+
+    source = tmp_path / "outline.pdf"
+    with fitz.open() as document:
+        for page_number in range(1, 9):
+            document.new_page().insert_text(
+                (72, 72), f"Readable prose for page {page_number}. " * 3, fontsize=10,
+            )
+        document.set_toc([
+            [1, "Contents", 1],
+            [1, "Chapter One", 2],
+            [2, "A section", 3],
+            [2, "B section", 3],
+            [1, "Chapter Two", 5],
+            [2, "C section", 6],
+            [1, "Index", 8],
+        ])
+        document.save(source)
+
+    payload = preflight_source(source)
+    chapters = PDFParser(source, extraction_backend="fitz").parse().chapters
+
+    assert payload["chapter_titles"] == [chapter.title for chapter in chapters]
+    assert payload["chapter_titles"] == ["Chapter One", "A section", "C section"]
+    assert payload["chapter_count"] == 3
+
+
+@pytest.mark.parametrize(
+    ("headings", "expected_titles"),
+    [
+        (["Prologue", "Introduction", "Epilogue"], ["Prologue", "Introduction", "Epilogue"]),
+        (["Harbour", "Quay", "Lighthouse"], ["Harbour Tales"]),
+    ],
+)
+def test_pdf_preflight_without_an_outline_lists_the_chapters_the_parser_produces(
+    tmp_path: Path, headings, expected_titles,
+) -> None:
+    import fitz
+
+    from modules.ingestion.pdf_parser import PDFParser
+
+    source = tmp_path / "no-outline.pdf"
+    with fitz.open() as document:
+        for heading in headings:
+            document.new_page().insert_textbox(
+                fitz.Rect(50, 50, 560, 800), f"{heading}\n\n" + "The ship came in at dusk. " * 20, fontsize=10,
+            )
+        document.set_metadata({"title": "Harbour Tales"})
+        document.save(source)
+
+    payload = preflight_source(source)
+    chapters = PDFParser(source, extraction_backend="fitz").parse().chapters
+
+    assert payload["chapter_titles"] == [chapter.title for chapter in chapters] == expected_titles
+    assert payload["chapter_count"] == len(expected_titles)
+
+
+def test_pdf_preflight_does_not_scan_every_page_of_a_long_pdf_without_an_outline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fitz
+
+    from modules.ingestion import preflight
+
+    source = tmp_path / "long.pdf"
+    with fitz.open() as document:
+        for heading in ("Prologue", "Introduction", "Epilogue"):
+            document.new_page().insert_textbox(
+                fitz.Rect(50, 50, 560, 800), f"{heading}\n\n" + "The ship came in at dusk. " * 20, fontsize=10,
+            )
+        document.set_metadata({"title": "Harbour Tales"})
+        document.save(source)
+    monkeypatch.setattr(preflight, "MAX_PDF_HEADING_SCAN_PAGES", 2)
+
+    payload = preflight_source(source)
+
+    # Past the bound the heading split is left to conversion.
+    assert payload["chapter_titles"] == ["Harbour Tales"]
+    assert payload["chapter_count"] == 1

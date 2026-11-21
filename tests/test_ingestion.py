@@ -486,6 +486,7 @@ def test_ingest_source_passes_pipeline_pdf_extraction_backend(tmp_path):
     document = SimpleNamespace(
         chapters=[SimpleNamespace(title="Book", content="Readable body text.")],
         title="Book",
+        skipped_non_prose_sections=[],
     )
 
     with patch("modules.ingestion.pdf_parser.PDFParser") as mock_parser:

@@ -69,7 +69,7 @@ def _remove_backlinks(text: str) -> str:
     return "".join(pieces)
 
 
-_NAV_TITLE_RE = re.compile(r"(?i)\b(?:table of contents|contents|toc|nav(?:igation)?|landmarks?)\b")
+_NAV_TITLE_RE = re.compile(r"(?i)^(?:table of contents|contents|toc|nav(?:igation)?|landmarks?)$")
 _EPUB_NON_NARRATIVE_TITLE_RE = re.compile(
     r"^(?:"
     r"also\s+by(?:\s+.+)?|"
@@ -435,7 +435,7 @@ def _sentences_for_split(paragraph: str) -> list[str]:
 
 
 def _split_units_for_overlong_chapter(
-    chapter: Chapter, paragraphs: list[str], *, max_chapter_words: int
+    paragraphs: list[str], *, max_chapter_words: int
 ) -> list[str]:
     """Return packable units no larger than the cap.
 
@@ -444,7 +444,6 @@ def _split_units_for_overlong_chapter(
     newlines) into word windows, so oversized input becomes bounded parts
     instead of failing late in the conversion.
     """
-    _ = chapter
     units: list[str] = []
     for paragraph in paragraphs:
         if len(paragraph.split()) <= max_chapter_words:
@@ -471,7 +470,7 @@ def _split_overlong_chapter(chapter: Chapter, *, max_chapter_words: int) -> list
         return [chapter]
 
     split_units = _split_units_for_overlong_chapter(
-        chapter, paragraphs, max_chapter_words=max_chapter_words
+        paragraphs, max_chapter_words=max_chapter_words
     )
 
     parts: list[str] = []
@@ -582,6 +581,8 @@ def normalize_extracted_document(
             max_chapter_words=max_chapter_words,
         )
 
+    for section in skipped_sections:
+        LOGGER.info("Skipped section %r during cleanup: %s", section.title, section.reason)
     return replace(
         document,
         chapters=normalized_chapters,

@@ -81,6 +81,12 @@ _COPYRIGHT_TERMS = (
 _WORD_RE = re.compile(r"[A-Za-z]{2,}")
 _ALPHA_RE = re.compile(r"[A-Za-z]")
 _NUMBER_ONLY_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdm]{1,10}|[A-Z])\s*$", re.IGNORECASE)
+_COPYRIGHT_NOTICE_MARKERS = (
+    "copyright",
+    "all rights reserved",
+    "no part of this publication may be reproduced",
+    "isbn",
+)
 # Real copyright / imprint pages are front matter of a few hundred words. A
 # longer chapter that merely discusses publishing (publishers, ISBNs,
 # permissions) is narrative prose and must never be deleted on term hits alone.
@@ -110,6 +116,15 @@ def classify_chapter_content(
         return ContentClassification(True, "low_prose_density", 0.88)
 
     return ContentClassification(False, None, 0.2)
+
+
+def is_copyright_notice(text: str) -> bool:
+    """True when text carries a publisher's copyright notice (front matter)."""
+    normalized = re.sub(r"\s+", " ", text).casefold()
+    return (
+        "copyright" in normalized
+        and sum(1 for marker in _COPYRIGHT_NOTICE_MARKERS if marker in normalized) >= 2
+    )
 
 
 def is_verse_like(content: str) -> bool:

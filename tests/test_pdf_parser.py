@@ -12,6 +12,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+import pytest
+
 from modules.ingestion.pdf_parser import PDFParser, Document
 
 
@@ -135,7 +137,7 @@ def test_pdf_parser_splits_large_no_toc_anthology_on_page_headings(tmp_path: Pat
     ]
     _write_pdf_with_pages(pdf_path, page_texts)
 
-    document = PDFParser(pdf_path, extraction_backend="fitz").parse(max_chapter_words=10_000)
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
 
     assert [chapter.title for chapter in document.chapters] == [
         "Prologue",
@@ -155,12 +157,12 @@ def test_pdf_parser_does_not_split_no_toc_body_lines_that_start_with_lowercase_f
         ],
     )
 
-    document = PDFParser(pdf_path, extraction_backend="fitz").parse(max_chapter_words=10_000)
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
 
-    assert [chapter.title for chapter in document.chapters] == ["Full Document"]
+    assert [chapter.title for chapter in document.chapters] == ["essay"]
 
 
-def test_chapters_from_entries_keeps_same_page_toc_entries_on_their_page() -> None:
+def test_chapters_from_entries_gives_a_shared_start_page_to_one_chapter() -> None:
     chapters = PDFParser._chapters_from_entries(
         [("Alpha", 5), ("Beta", 5), ("Gamma", 8)],
         total_pages=10,
@@ -169,10 +171,153 @@ def test_chapters_from_entries_keeps_same_page_toc_entries_on_their_page() -> No
     assert [
         (chapter.title, chapter.start_page, chapter.end_page) for chapter in chapters
     ] == [
-        ("Alpha", 5, 5),
-        ("Beta", 5, 7),
+        ("Alpha", 5, 7),
         ("Gamma", 8, 10),
     ]
+
+
+def _page_marker_counts(document: Document, page_count: int) -> list[int]:
+    joined = "\n".join(chapter.content for chapter in document.chapters)
+    return [joined.count(f"Marker page {page}.") for page in range(1, page_count + 1)]
+
+
+def test_pdf_parser_narrates_a_page_shared_by_two_outline_entries_once(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "sections.pdf"
+    _write_pdf_with_pages(
+        pdf_path,
+        [f"Marker page {page}." for page in range(1, 6)],
+        toc=[[1, "Contents", 1], [2, "A section", 2], [2, "B section", 2], [2, "C section", 4]],
+    )
+
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
+
+    assert [chapter.title for chapter in document.chapters] == ["A section", "C section"]
+    assert _page_marker_counts(document, 5) == [0, 1, 1, 1, 1]
+
+
+def test_pdf_parser_keeps_parent_opening_pages_before_the_selected_outline_level(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "nested.pdf"
+    _write_pdf_with_pages(
+        pdf_path,
+        [f"Marker page {page}." for page in range(1, 9)],
+        toc=[
+            [1, "Contents", 1],
+            [1, "Chapter One", 2],
+            [2, "A section", 3],
+            [2, "B section", 3],
+            [1, "Chapter Two", 5],
+            [2, "C section", 6],
+            [1, "Index", 8],
+        ],
+    )
+
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
+
+    assert [chapter.title for chapter in document.chapters] == ["Chapter One", "A section", "C section"]
+    assert _page_marker_counts(document, 8) == [0, 1, 1, 1, 1, 1, 1, 1]
+
+
+def test_pdf_parser_keeps_unnumbered_front_matter_before_numbered_chapters(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "numbered.pdf"
+    _write_pdf_with_pages(
+        pdf_path,
+        [f"Marker page {page}." for page in range(1, 8)],
+        toc=[
+            [1, "Copyright", 1],
+            [1, "Contents", 2],
+            [1, "Foreword", 3],
+            [1, "1 Beginnings", 5],
+            [1, "2 Endings", 6],
+        ],
+    )
+
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
+
+    assert [chapter.title for chapter in document.chapters] == ["Foreword", "1 Beginnings", "2 Endings"]
+    assert _page_marker_counts(document, 7) == [0, 0, 1, 1, 1, 1, 1]
+
+
+@pytest.mark.parametrize(
+    ("toc", "titles", "first_body_page"),
+    [
+        pytest.param(
+            [[1, "The Lighthouse Keeper", 1], [2, "Chapter 1", 4], [2, "Chapter 2", 6], [2, "Chapter 3", 8]],
+            ["Chapter 1", "Chapter 2", "Chapter 3"],
+            4,
+            id="book-title-root",
+        ),
+        pytest.param(
+            [[1, "Cover", 1], [1, "1 The Start", 4], [1, "2 The Middle", 6], [1, "3 The End", 8]],
+            ["1 The Start", "2 The Middle", "3 The End"],
+            4,
+            id="cover",
+        ),
+        pytest.param(
+            [[1, "Title Page", 1], [1, "Copyright", 2], [1, "Contents", 3], [1, "Dedication", 4],
+             [1, "1 The Start", 5], [1, "2 The Middle", 7]],
+            ["1 The Start", "2 The Middle"],
+            5,
+            id="dedication",
+        ),
+        pytest.param(
+            [[1, "Contents", 3], [1, "Also by Jane Doe", 4], [1, "1 The Start", 5], [1, "2 The Middle", 7]],
+            ["1 The Start", "2 The Middle"],
+            5,
+            id="also-by",
+        ),
+    ],
+)
+def test_pdf_parser_does_not_narrate_outlined_front_matter_as_a_lead_chapter(
+    tmp_path: Path, toc, titles, first_body_page,
+) -> None:
+    pdf_path = tmp_path / "front.pdf"
+    _write_pdf_with_pages(pdf_path, [f"Marker page {page}." for page in range(1, 10)], toc=toc)
+
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
+
+    assert [chapter.title for chapter in document.chapters] == titles
+    assert _page_marker_counts(document, 9) == [int(page >= first_body_page) for page in range(1, 10)]
+
+
+def test_pdf_parser_keeps_a_foreword_before_part_dividers(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "parts.pdf"
+    _write_pdf_with_pages(
+        pdf_path,
+        [f"Marker page {page}." for page in range(1, 9)],
+        toc=[
+            [1, "Copyright", 1],
+            [1, "Contents", 2],
+            [1, "Foreword", 3],
+            [1, "Part I The Sea", 5],
+            [2, "1 The Start", 6],
+            [2, "2 The Middle", 7],
+        ],
+    )
+
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
+
+    assert [chapter.title for chapter in document.chapters] == ["Foreword", "1 The Start", "2 The Middle"]
+    assert _page_marker_counts(document, 8) == [0, 0, 1, 1, 1, 1, 1, 1]
+
+
+def test_pdf_parser_keeps_a_parent_chapter_opening_on_the_first_page(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "nested.pdf"
+    _write_pdf_with_pages(
+        pdf_path,
+        [f"Marker page {page}." for page in range(1, 7)],
+        toc=[
+            [1, "Chapter One", 1],
+            [2, "A section", 2],
+            [2, "B section", 3],
+            [1, "Chapter Two", 4],
+            [2, "C section", 5],
+        ],
+    )
+
+    document = PDFParser(pdf_path, extraction_backend="fitz").parse()
+
+    assert [chapter.title for chapter in document.chapters] == ["Chapter One", "A section", "B section", "C section"]
+    assert _page_marker_counts(document, 6) == [1] * 6
 
 
 def test_validate_pdf_accepts_valid_pdf_smaller_than_tail_window(tmp_path: Path) -> None:

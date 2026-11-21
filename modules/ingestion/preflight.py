@@ -21,6 +21,11 @@ DEFAULT_SAMPLE_CHARS = 900
 MAX_CHAPTER_TITLES = 200
 MAX_CHAPTER_TITLE_CHARS = 160
 MAX_PDF_PREVIEW_PAGES = 20
+# Without an outline, the parser splits on page headings it finds after
+# normalizing every page (about 4 ms a page). Preflight runs that same path up
+# to this length; a longer outline-less PDF previews as one chapter, and its
+# headings are found during conversion.
+MAX_PDF_HEADING_SCAN_PAGES = 100
 TINY_SOURCE_BYTES = 64
 # Measured on Kokoro at speed 1.0 (a 524k-character novel became 7.9 h of
 # audio, chapter announcements and pauses included).
@@ -201,6 +206,9 @@ def _preflight_pdf(
     try:
         import fitz
 
+        from .pdf_artifact_normalizer import normalize_pdf_artifacts
+        from .pdf_parser import PDFParser
+
         text_layer = analyze_pdf_text_layer(source_path)
         payload.update(
             {
@@ -215,7 +223,17 @@ def _preflight_pdf(
             metadata = document.metadata or {}
             title = str(metadata.get("title") or "").strip() or payload["title"]
             author: Optional[str] = str(metadata.get("author") or "").strip() or None
-            toc = document.get_toc(simple=True)
+            # The chapters the parser will produce, not every outline entry.
+            chapter_titles: list[str] = []
+            if text_layer.text_chars > 0 and not text_layer.requires_ocr:
+                toc = document.get_toc(simple=True)
+                pages_data: list[dict[str, str]] = []
+                if not toc and len(document) <= MAX_PDF_HEADING_SCAN_PAGES:
+                    pages_data = normalize_pdf_artifacts([{"text": page.get_text("text")} for page in document])
+                chapter_titles = [
+                    chapter.title
+                    for chapter in PDFParser._extract_chapters(toc, pages_data, len(document), title)
+                ]
             page_samples: list[str] = []
             if not text_layer.requires_ocr:
                 for page in document[: min(len(document), MAX_PDF_PREVIEW_PAGES)]:
@@ -241,16 +259,11 @@ def _preflight_pdf(
                 if has_text and text_layer.sampled_pages
                 else None
             ),
-            "chapter_count": (len(toc) or 1) if has_text and not payload["requires_ocr"] else 0,
+            "chapter_count": len(chapter_titles),
             "chapter_titles": [
-                str(entry[1]).strip()[:MAX_CHAPTER_TITLE_CHARS]
-                for entry in toc[:MAX_CHAPTER_TITLES] if str(entry[1]).strip()
-            ] or (
-                [payload["title"][:MAX_CHAPTER_TITLE_CHARS]]
-                if has_text and not payload["requires_ocr"] and not toc
-                and not str(metadata.get("title") or "").strip()
-                else []
-            ),
+                chapter_title[:MAX_CHAPTER_TITLE_CHARS]
+                for chapter_title in chapter_titles[:MAX_CHAPTER_TITLES]
+            ],
             "sample": sample,
         }
     )

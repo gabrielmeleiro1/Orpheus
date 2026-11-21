@@ -9,13 +9,11 @@ import tempfile
 import warnings
 from pathlib import Path
 from bs4 import XMLParsedAsHTMLWarning
-import pytest
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from modules.errors import ChapterTooLongError, EmptyChapterError
 from modules.ingestion.epub_parser import EPUBParser, Document
 from modules.ingestion.epub_sections import EPUBSection
 
@@ -874,7 +872,7 @@ def _run_epub_parser_checks(sample_epub: Path) -> bool:
     return True
 
 
-def test_epub_extract_chapters_reapplies_options_after_cached_parse(tmp_path, monkeypatch):
+def test_epub_extract_chapters_skips_empty_sections(tmp_path, monkeypatch):
     sample_epub = tmp_path / "option-cache.epub"
     sample_epub.write_bytes(b"fixture")
     parser = EPUBParser(sample_epub, validate=False)
@@ -898,13 +896,7 @@ def test_epub_extract_chapters_reapplies_options_after_cached_parse(tmp_path, mo
     monkeypatch.setattr(parser, "_load_book", lambda: object())
     monkeypatch.setattr("modules.ingestion.epub_parser.build_epub_sections", lambda *args, **kwargs: sections)
 
-    assert len(parser.extract_chapters(max_chapter_words=10)) == 1
-
-    with pytest.raises(EmptyChapterError):
-        parser.extract_chapters(skip_empty=False)
-
-    with pytest.raises(ChapterTooLongError):
-        parser.extract_chapters(max_chapter_words=2)
+    assert [chapter.title for chapter in parser.extract_chapters()] == ["Readable"]
 
 
 def test_build_epub_sections_handles_bare_link_toc() -> None:

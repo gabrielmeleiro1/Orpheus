@@ -56,3 +56,38 @@ def test_epub_cleanup_is_linear_in_whitespace_runs(gap):
         _epub_document(content), source_type=".epub", skip_non_prose_sections=False,
     )
     assert time.perf_counter() - started < 2.0
+
+
+@pytest.mark.parametrize("title", ["Navigation by the Stars", "What the Contents Were", "Landmarks of the Coast"])
+def test_epub_chapter_whose_title_mentions_navigation_words_is_kept(title):
+    prose = "The tide came in slowly over the harbour wall, and the boats lifted. " * 8
+    document = Document(
+        title="Collected Pieces",
+        chapters=[
+            Chapter(number=1, title="The Harbour", content=prose),
+            Chapter(number=2, title=title, content=prose),
+            Chapter(number=3, title="Contents", content="The Harbour\n" + title),
+        ],
+    )
+
+    normalized = normalize_extracted_document(document, source_type="epub")
+
+    assert [chapter.title for chapter in normalized.chapters] == ["The Harbour", title]
+
+
+def test_skipped_sections_are_logged_with_title_and_reason(caplog):
+    prose = "The tide came in slowly over the harbour wall, and the boats lifted. " * 8
+    document = Document(
+        title="Collected Pieces",
+        chapters=[
+            Chapter(number=1, title="Contents", content="The Harbour\nThe Return"),
+            Chapter(number=2, title="The Harbour", content=prose),
+        ],
+    )
+
+    with caplog.at_level("INFO", logger="modules.text.document_normalizer"):
+        normalized = normalize_extracted_document(document, source_type="epub")
+
+    assert [section["title"] for section in normalized.skipped_non_prose_sections] == ["Contents"]
+    reason = normalized.skipped_non_prose_sections[0]["reason"]
+    assert any("'Contents'" in message and reason in message for message in caplog.messages)
