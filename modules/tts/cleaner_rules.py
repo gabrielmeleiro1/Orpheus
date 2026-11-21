@@ -378,8 +378,10 @@ def rule_based_clean(text: str) -> str:
     text = re.sub(r"(?m)^#{1,6}\s+", "", text)
     text = re.sub(r"[\*_]{1,3}([^\*_]+)[\*_]{1,3}", r"\1", text)
     text = text.replace("**", "")
-    text = replace_markdown_links(text)
+    # Images first: the link pass would otherwise consume ``[alt](src)`` and
+    # leave the image's ``!`` behind.
     text = replace_markdown_links(text, image=True)
+    text = replace_markdown_links(text)
     text = re.sub(r"`", "", text)
     text = re.sub(r"\|+", " ", text)
     # Runs of whitespace and of section marks are matched only from the start of

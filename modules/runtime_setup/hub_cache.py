@@ -32,6 +32,29 @@ def _manifest_shared_files(cache_root: Path, data: dict[str, Any]) -> set[Path]:
     return shared_files(cache_root, data)
 
 
+def _integrity_cache_path() -> Path | None:
+    """The desktop app's shared receipt-check cache, as model snapshots use it.
+
+    Without ``AUDIOBOOK_DATA_DIR`` (set by the desktop shell) checks stay in
+    memory rather than writing beside a guessed default.
+    """
+    if not os.environ.get("AUDIOBOOK_DATA_DIR", "").strip():
+        return None
+    from modules.runtime_setup.state import default_state_path
+
+    return default_state_path().with_name("model-integrity-cache.json")
+
+
+def _default_receipt_verifier() -> ModelReceiptVerifier:
+    # Resolved per call so it follows the current data directory; earlier
+    # content checks come from the shared file instead of re-hashing snapshots.
+    try:
+        cache_path = _integrity_cache_path()
+    except Exception:
+        cache_path = None
+    return ModelReceiptVerifier(cache_path=cache_path)
+
+
 def _repo_has_complete_revision(
     repo: Any,
     *,
@@ -65,7 +88,7 @@ def _check_model_group_assets(
     """Inspect the local HF cache without network access or path disclosure."""
     if not group_ids:
         return {}
-    verifier = receipt_verifier or ModelReceiptVerifier()
+    verifier = receipt_verifier or _default_receipt_verifier()
     if cache_scanner is None:
         # The curated catalog pins every model to a known snapshot. Its receipt
         # validates the exact files and their content, so reading unrelated HF

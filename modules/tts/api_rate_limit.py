@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import multiprocessing as mp
+import multiprocessing.synchronize as mp_synchronize
 import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
+
+
+# How often a queued acquire on a raw process semaphore checks for abandonment.
+_ABANDON_POLL_SECONDS = 0.05
 
 
 def _acquire_succeeded(result: Any) -> bool:
@@ -49,7 +54,14 @@ class _RecoverableSemaphore:
     def __reduce__(self):
         return _restore_worker_semaphore, (self._semaphore,)
 
-    def acquire(self, block: bool = True, timeout: Optional[float] = None) -> bool:
+    def acquire(
+        self,
+        block: bool = True,
+        timeout: Optional[float] = None,
+        *,
+        abandon: Optional[threading.Event] = None,
+    ) -> bool:
+        """Take a permit; a set ``abandon`` event ends a blocked wait with False."""
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
         waited_since = None
         with self._condition:
@@ -62,6 +74,8 @@ class _RecoverableSemaphore:
                     return True
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if not block or (remaining is not None and remaining <= 0):
+                    return False
+                if abandon is not None and abandon.is_set():
                     return False
                 if waited_since is None:
                     waited_since = time.monotonic()
@@ -99,6 +113,23 @@ class _RecoverableSemaphore:
             self._semaphore = replacement
             self._worker_generation = None
             self._condition.notify_all()
+
+
+def _acquire_process_semaphore(
+    semaphore: Any,
+    timeout: Optional[float],
+    abandon: threading.Event,
+) -> bool:
+    """Block on a raw process semaphore in slices so ``abandon`` can end the wait."""
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+    while True:
+        wait = _ABANDON_POLL_SECONDS
+        if deadline is not None:
+            wait = max(0.0, min(wait, deadline - time.monotonic()))
+        if semaphore.acquire(True, wait):
+            return True
+        if abandon.is_set() or (deadline is not None and time.monotonic() >= deadline):
+            return False
 
 
 class GlobalAPILimiter:
@@ -148,7 +179,15 @@ async def acquire_global_limiter_async(
         yield
         return
 
+    # Set on cancellation so a wait queued on a full limiter gives up promptly
+    # instead of holding the batch (and its thread) until a permit frees.
+    abandon = threading.Event()
+
     def _acquire() -> bool:
+        if isinstance(limiter, _RecoverableSemaphore):
+            return limiter.acquire(True, timeout, abandon=abandon)
+        if isinstance(limiter, mp_synchronize.SemLock):
+            return _acquire_process_semaphore(limiter, timeout, abandon)
         if timeout is None:
             return _acquire_succeeded(limiter.acquire())
         return _acquire_succeeded(limiter.acquire(True, timeout))
@@ -157,6 +196,7 @@ async def acquire_global_limiter_async(
     try:
         acquired = await asyncio.shield(acquire_task)
     except asyncio.CancelledError:
+        abandon.set()
         # Keep waiting for the worker thread: it may acquire after this task is
         # cancelled, and that permit must be returned before cancellation is
         # propagated to the caller.
@@ -178,4 +218,15 @@ async def acquire_global_limiter_async(
     try:
         yield
     finally:
-        await asyncio.to_thread(limiter.release)
+        # Finish the release before cancellation reaches the caller, so a
+        # cancelled request never returns while still holding its permit.
+        release_task = asyncio.create_task(asyncio.to_thread(limiter.release))
+        interrupted = False
+        while not release_task.done():
+            try:
+                await asyncio.shield(release_task)
+            except asyncio.CancelledError:
+                interrupted = True
+        release_task.result()
+        if interrupted:
+            raise asyncio.CancelledError

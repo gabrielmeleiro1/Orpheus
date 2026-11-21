@@ -5,14 +5,15 @@ from __future__ import annotations
 import gc
 import logging
 import threading
-import asyncio
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
+from .cleaner_trace import run_local_batch_async
 from .model_snapshots import installed_model_path
 
 MLX_LM_AVAILABLE = False
 MLX_LM_IMPORT_ERROR: Optional[Exception] = None
 _MLX_LM_RUNTIME_CHECKED = False
+_MLX_LM_RUNTIME_LOCK = threading.Lock()
 mx = None
 load = None
 stream_generate = None
@@ -31,13 +32,18 @@ def mlx_lm_runtime_error_message(import_error: Optional[Exception]) -> str:
 
 def ensure_mlx_lm_runtime() -> tuple[Any, Any, Any, Any]:
     """Import MLX-LM on demand and return runtime callables."""
+    if not _MLX_LM_RUNTIME_CHECKED:
+        with _MLX_LM_RUNTIME_LOCK:
+            if not _MLX_LM_RUNTIME_CHECKED:
+                _import_mlx_lm_runtime()
+    if not MLX_LM_AVAILABLE:
+        raise ImportError(mlx_lm_runtime_error_message(MLX_LM_IMPORT_ERROR))
+    return mx, load, stream_generate, make_sampler
+
+
+def _import_mlx_lm_runtime() -> None:
     global MLX_LM_AVAILABLE, MLX_LM_IMPORT_ERROR, _MLX_LM_RUNTIME_CHECKED
     global mx, load, stream_generate, make_sampler
-
-    if _MLX_LM_RUNTIME_CHECKED:
-        if not MLX_LM_AVAILABLE:
-            raise ImportError(mlx_lm_runtime_error_message(MLX_LM_IMPORT_ERROR))
-        return mx, load, stream_generate, make_sampler
 
     try:
         import mlx.core as mx_module
@@ -57,11 +63,6 @@ def ensure_mlx_lm_runtime() -> tuple[Any, Any, Any, Any]:
     finally:
         _MLX_LM_RUNTIME_CHECKED = True
 
-    if not MLX_LM_AVAILABLE:
-        raise ImportError(mlx_lm_runtime_error_message(MLX_LM_IMPORT_ERROR))
-
-    return mx, load, stream_generate, make_sampler
-
 
 _cleaner_model_cache: dict[str, tuple[Any, Any]] = {}
 _cleaner_cache_lock = threading.RLock()
@@ -80,17 +81,54 @@ def set_cached_cleaner(model_name: str, model: Any, tokenizer: Any) -> None:
         _cleaner_model_cache[model_name] = (model, tokenizer)
 
 
+_cleaner_model_locks: dict[str, threading.RLock] = {}
+
+
+def get_cleaner_model_lock(model_name: str) -> threading.RLock:
+    """Return the use-lock shared by every cleaner that can hold this model."""
+    with _cleaner_cache_lock:
+        lock = _cleaner_model_locks.get(model_name)
+        if lock is None:
+            lock = _cleaner_model_locks[model_name] = threading.RLock()
+        return lock
+
+
+def _free_mlx_memory_locked() -> None:
+    gc.collect()
+    if MLX_LM_AVAILABLE and mx is not None:
+        try:
+            mx.clear_cache()
+        except Exception:
+            pass
+    gc.collect()
+
+
 def clear_cleaner_cache() -> None:
     """Clear cleaner cache and best-effort free MLX memory."""
     with _cleaner_cache_lock:
         _cleaner_model_cache.clear()
-        gc.collect()
-        if MLX_LM_AVAILABLE and mx is not None:
-            try:
-                mx.clear_cache()
-            except Exception:
-                pass
-        gc.collect()
+        _free_mlx_memory_locked()
+
+
+def _evict_cached_cleaners() -> None:
+    """Free a cached model before loading its replacement, not after."""
+    with _cleaner_cache_lock:
+        if _cleaner_model_cache:
+            clear_cleaner_cache()
+
+
+def discard_cached_cleaner(model_name: str, model: Any) -> None:
+    """Drop the cache entry only when it holds ``model``; keep another cleaner's."""
+    with _cleaner_cache_lock:
+        cached = _cleaner_model_cache.get(model_name)
+        if cached is not None and cached[0] is model:
+            del _cleaner_model_cache[model_name]
+
+
+def release_cleaner_memory() -> None:
+    """Best-effort return of freed model memory to the system."""
+    with _cleaner_cache_lock:
+        _free_mlx_memory_locked()
 
 
 class CleanerMLXStrategy:
@@ -115,6 +153,8 @@ class CleanerMLXStrategy:
         ensure_mlx_lm_runtime()
         if cleaner._loaded:
             return
+        # Cleaners sharing a cached model must serialize generation on it.
+        cleaner._model_lock = get_cleaner_model_lock(cleaner.config.model_name)
 
         if cleaner.config.cache_model:
             cached = get_cached_cleaner(cleaner.config.model_name)
@@ -124,6 +164,7 @@ class CleanerMLXStrategy:
                 cleaner._loaded = True
                 logger.info("Text cleaner loaded from cache: %s", cleaner.config.model_name)
                 return
+            _evict_cached_cleaners()
 
         logger.info("Loading text cleaner: %s", cleaner.config.model_name)
         cleaner._model, cleaner._tokenizer = load(
@@ -137,13 +178,14 @@ class CleanerMLXStrategy:
 
         logger.info("Text cleaner loaded")
 
-    async def clean_batch_with_trace_async(self, cleaner: Any, texts: list[str]) -> list[Any]:
-        if not texts:
-            return []
-        results = []
-        for text in texts:
-            results.append(await asyncio.to_thread(cleaner.clean_with_trace, text))
-        return results
+    async def clean_batch_with_trace_async(
+        self,
+        cleaner: Any,
+        texts: list[str],
+        cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[Any]:
+        return await run_local_batch_async(cleaner, texts, cancel_requested, progress_callback)
 
     def generate_llm_response(self, cleaner: Any, prompt: str) -> str:
         return cleaner._generate_mlx_response(prompt)
@@ -151,12 +193,15 @@ class CleanerMLXStrategy:
     def unload(self, cleaner: Any, *, keep_in_cache: bool = True) -> None:
         if not cleaner._loaded:
             return
+        model = cleaner._model
         cleaner._model = None
         cleaner._tokenizer = None
         cleaner._loaded = False
 
         if not keep_in_cache:
-            clear_cleaner_cache()
+            discard_cached_cleaner(cleaner.config.model_name, model)
+            del model
+            release_cleaner_memory()
 
         logger.info("Text cleaner unloaded (cached: %s)", keep_in_cache)
 

@@ -28,6 +28,25 @@ logger = logging.getLogger(__name__)
 _CANCEL_POLL_SECONDS = 0.1
 
 
+async def _cancel_and_drain(tasks: list[asyncio.Task[Any]]) -> None:
+    """Cancel ``tasks`` and wait until each has finished its cleanup.
+
+    Waiting continues through repeated cancellation of the caller, which is
+    then re-raised once every task has finished.
+    """
+    for task in tasks:
+        task.cancel()
+    drained = asyncio.gather(*tasks, return_exceptions=True)
+    interrupted = False
+    while not drained.done():
+        try:
+            await asyncio.shield(drained)
+        except asyncio.CancelledError:
+            interrupted = True
+    if interrupted:
+        raise asyncio.CancelledError
+
+
 def _default_aiohttp_module() -> Any:
     try:
         import aiohttp
@@ -464,21 +483,26 @@ class CleanerAPIStrategy:
         *,
         api_session: Any = None,
         cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[Any]:
         """Clean ``texts`` with bounded concurrency.
 
         When ``cancel_requested`` turns true, in-flight requests are abandoned
         and unstarted chunks are skipped; their results stay ``None`` and the
         caller observes the cancellation instead of waiting out the batch.
+        ``progress_callback(completed, total)`` is called on the event loop
+        thread as each request finishes, in completion order.
         """
         results: list[Any] = [None] * len(texts)
         iterator = iter(enumerate(texts))
         worker_count = min(len(texts), cleaner._get_api_batch_concurrency())
+        completed = 0
 
         def cancelled() -> bool:
             return cancel_requested is not None and bool(cancel_requested())
 
         async def worker() -> None:
+            nonlocal completed
             for idx, text in iterator:
                 if cancelled():
                     return
@@ -487,23 +511,30 @@ class CleanerAPIStrategy:
                     semaphore,
                     api_session=api_session,
                 )
+                if progress_callback is not None:
+                    completed += 1
+                    progress_callback(completed, len(texts))
 
-        if cancel_requested is None:
-            await asyncio.gather(*(worker() for _ in range(worker_count)))
-            return results
-
-        batch = asyncio.gather(*(worker() for _ in range(worker_count)))
+        tasks = [asyncio.create_task(worker()) for _ in range(worker_count)]
         try:
-            while not batch.done():
-                if cancelled():
-                    batch.cancel()
-                    break
-                await asyncio.wait({batch}, timeout=_CANCEL_POLL_SECONDS)
-            await batch
-        except asyncio.CancelledError:
-            if not cancelled():
-                raise
-        return results
+            if cancel_requested is None:
+                await asyncio.gather(*tasks)
+                return results
+            pending = set(tasks)
+            while pending and not cancelled():
+                done, pending = await asyncio.wait(
+                    pending,
+                    timeout=_CANCEL_POLL_SECONDS,
+                    return_when=asyncio.FIRST_EXCEPTION,
+                )
+                for task in done:
+                    if not task.cancelled() and task.exception() is not None:
+                        raise task.exception()
+            return results
+        finally:
+            # Never return while a worker still runs: in-flight requests hold
+            # global limiter permits and the caller's shared API session.
+            await _cancel_and_drain(tasks)
 
     def load(self, cleaner: Any) -> None:
         if cleaner._loaded:
@@ -520,6 +551,7 @@ class CleanerAPIStrategy:
         cleaner: Any,
         texts: list[str],
         cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[Any]:
         if not texts:
             return []
@@ -531,6 +563,7 @@ class CleanerAPIStrategy:
                 texts,
                 semaphore,
                 cancel_requested=cancel_requested,
+                progress_callback=progress_callback,
             )
 
         timeout = aiohttp_runtime.ClientTimeout(total=cleaner.config.api_timeout_seconds)
@@ -541,6 +574,7 @@ class CleanerAPIStrategy:
                 semaphore,
                 api_session=api_session,
                 cancel_requested=cancel_requested,
+                progress_callback=progress_callback,
             )
 
     def generate_llm_response(self, cleaner: Any, prompt: str) -> str:

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import gc
 import logging
 import threading
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
+from modules.tts.cleaner_trace import run_local_batch_async
 from modules.tts.model_snapshots import installed_model_path
 
 from modules.tts.cleaner_config import (
@@ -25,6 +25,7 @@ from modules.tts.cleaner_errors import (
 TORCH_CUDA_AVAILABLE = False
 TORCH_CUDA_IMPORT_ERROR: Optional[Exception] = None
 _TORCH_CUDA_RUNTIME_CHECKED = False
+_TORCH_CUDA_RUNTIME_LOCK = threading.Lock()
 torch = None
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,17 @@ def cuda_runtime_error_message(import_error: Optional[Exception]) -> str:
 
 def ensure_cuda_runtime() -> tuple[Any]:
     """Import PyTorch on demand and verify CUDA availability."""
-    global TORCH_CUDA_AVAILABLE, TORCH_CUDA_IMPORT_ERROR, _TORCH_CUDA_RUNTIME_CHECKED, torch
+    if not _TORCH_CUDA_RUNTIME_CHECKED:
+        with _TORCH_CUDA_RUNTIME_LOCK:
+            if not _TORCH_CUDA_RUNTIME_CHECKED:
+                _import_cuda_runtime()
+    if not TORCH_CUDA_AVAILABLE:
+        raise ImportError(cuda_runtime_error_message(TORCH_CUDA_IMPORT_ERROR))
+    return (torch,)
 
-    if _TORCH_CUDA_RUNTIME_CHECKED:
-        if not TORCH_CUDA_AVAILABLE:
-            raise ImportError(cuda_runtime_error_message(TORCH_CUDA_IMPORT_ERROR))
-        return (torch,)
+
+def _import_cuda_runtime() -> None:
+    global TORCH_CUDA_AVAILABLE, TORCH_CUDA_IMPORT_ERROR, _TORCH_CUDA_RUNTIME_CHECKED, torch
 
     try:
         import torch as torch_module
@@ -60,11 +66,6 @@ def ensure_cuda_runtime() -> tuple[Any]:
         TORCH_CUDA_IMPORT_ERROR = exc
     finally:
         _TORCH_CUDA_RUNTIME_CHECKED = True
-
-    if not TORCH_CUDA_AVAILABLE:
-        raise ImportError(cuda_runtime_error_message(TORCH_CUDA_IMPORT_ERROR))
-
-    return (torch,)
 
 
 def _cuda_cache_key(cleaner: Any) -> str:
@@ -113,6 +114,18 @@ def set_cached_cleaner(cache_key: str, model: Any, tokenizer: Any) -> None:
         _cleaner_model_cache[cache_key] = (model, tokenizer)
 
 
+_cleaner_model_locks: dict[str, threading.RLock] = {}
+
+
+def get_cleaner_model_lock(cache_key: str) -> threading.RLock:
+    """Return the use-lock shared by every cleaner that can hold this model."""
+    with _cleaner_cache_lock:
+        lock = _cleaner_model_locks.get(cache_key)
+        if lock is None:
+            lock = _cleaner_model_locks[cache_key] = threading.RLock()
+        return lock
+
+
 def _best_effort_empty_cuda_cache() -> None:
     if TORCH_CUDA_AVAILABLE and torch is not None:
         try:
@@ -132,8 +145,40 @@ def clear_cleaner_cache() -> None:
         gc.collect()
 
 
-def _resolve_device_map(device: str) -> str | dict[str, str]:
-    return "auto" if device == "cuda" else {"": device}
+def _evict_cached_cleaners() -> None:
+    """Free a cached model before loading its replacement, not after."""
+    with _cleaner_cache_lock:
+        if _cleaner_model_cache:
+            clear_cleaner_cache()
+
+
+def discard_cached_cleaner(cache_key: str, model: Any) -> None:
+    """Drop the cache entry only when it holds ``model``; keep another cleaner's."""
+    with _cleaner_cache_lock:
+        cached = _cleaner_model_cache.get(cache_key)
+        if cached is not None and cached[0] is model:
+            del _cleaner_model_cache[cache_key]
+
+
+def release_cleaner_memory() -> None:
+    """Best-effort return of freed model memory to the device."""
+    with _cleaner_cache_lock:
+        gc.collect()
+        _best_effort_empty_cuda_cache()
+        gc.collect()
+
+
+def _runtime_unavailable(exc: ImportError) -> CleanerRuntimeUnavailable:
+    message = str(exc)
+    if not message.startswith("CUDA cleaner runtime unavailable."):
+        message = cuda_runtime_error_message(exc)
+    return CleanerRuntimeUnavailable(message)
+
+
+def _resolve_device_map(device: str) -> dict[str, str]:
+    # Pin the whole model to one GPU: "auto" would spread it across every
+    # visible GPU or offload to CPU, outside the per-device memory plan.
+    return {"": "cuda:0" if device == "cuda" else device}
 
 
 def _load_cuda_model(cleaner: Any, torch_module: Any) -> tuple[Any, Any]:
@@ -157,10 +202,14 @@ def _load_cuda_model(cleaner: Any, torch_module: Any) -> tuple[Any, Any]:
                 "Install it with: pip install bitsandbytes"
             ) from exc
 
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=quantization == "4bit",
-            load_in_8bit=quantization == "8bit",
-        )
+        bnb_kwargs: dict[str, Any] = {
+            "load_in_4bit": quantization == "4bit",
+            "load_in_8bit": quantization == "8bit",
+        }
+        if quantization == "4bit":
+            # The default fp32 compute dtype upcasts every 4-bit matmul.
+            bnb_kwargs["bnb_4bit_compute_dtype"] = torch_module.float16
+        bnb_config = BitsAndBytesConfig(**bnb_kwargs)
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             quantization_config=bnb_config,
@@ -188,6 +237,7 @@ def _cancel_stopping_criteria(cancel_requested: Any, torch_module: Any) -> Any:
 
     class _CancelRequested(StoppingCriteria):
         def __call__(self, input_ids, scores, **kwargs):
+            del scores, kwargs
             return torch_module.full(
                 (input_ids.shape[0],),
                 bool(cancel_requested()),
@@ -204,7 +254,7 @@ def generate_cuda_response(cleaner: Any, prompt: str) -> str:
         try:
             torch_module, = ensure_cuda_runtime()
         except ImportError as exc:
-            raise CleanerRuntimeUnavailable(cuda_runtime_error_message(exc)) from exc
+            raise _runtime_unavailable(exc) from exc
 
         tokenizer = cleaner._tokenizer
         model = cleaner._model
@@ -269,12 +319,14 @@ class CleanerCUDAStrategy:
         try:
             torch_module, = ensure_cuda_runtime()
         except ImportError as exc:
-            raise CleanerRuntimeUnavailable(cuda_runtime_error_message(exc)) from exc
+            raise _runtime_unavailable(exc) from exc
 
         if cleaner._loaded:
             return
 
         cache_key = _cuda_cache_key(cleaner)
+        # Cleaners sharing a cached model must serialize generation on it.
+        cleaner._model_lock = get_cleaner_model_lock(cache_key)
         if cleaner.config.cache_model:
             cached = get_cached_cleaner(cache_key)
             if cached is not None:
@@ -283,6 +335,7 @@ class CleanerCUDAStrategy:
                 cleaner._loaded = True
                 logger.info("Text cleaner loaded from cache: %s", cache_key)
                 return
+            _evict_cached_cleaners()
 
         logger.info(
             "Loading text cleaner: %s (device=%s, quantization=%s)",
@@ -302,13 +355,14 @@ class CleanerCUDAStrategy:
 
         logger.info("Text cleaner loaded")
 
-    async def clean_batch_with_trace_async(self, cleaner: Any, texts: list[str]) -> list[Any]:
-        if not texts:
-            return []
-        results = []
-        for text in texts:
-            results.append(await asyncio.to_thread(cleaner.clean_with_trace, text))
-        return results
+    async def clean_batch_with_trace_async(
+        self,
+        cleaner: Any,
+        texts: list[str],
+        cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[Any]:
+        return await run_local_batch_async(cleaner, texts, cancel_requested, progress_callback)
 
     def generate_llm_response(self, cleaner: Any, prompt: str) -> str:
         return generate_cuda_response(cleaner, prompt)
@@ -316,12 +370,15 @@ class CleanerCUDAStrategy:
     def unload(self, cleaner: Any, *, keep_in_cache: bool = True) -> None:
         if not cleaner._loaded:
             return
+        model = cleaner._model
         cleaner._model = None
         cleaner._tokenizer = None
         cleaner._loaded = False
 
         if not keep_in_cache:
-            clear_cleaner_cache()
+            discard_cached_cleaner(_cuda_cache_key(cleaner), model)
+            del model
+            release_cleaner_memory()
 
         logger.info("Text cleaner unloaded (cached: %s)", keep_in_cache)
 

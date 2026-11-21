@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, Protocol
@@ -228,9 +229,59 @@ def _emit_cleaning_progress(
     )
     if not log_preview:
         return
+    _log_chunk_preview(runtime, chunk_idx=chunk_idx, total_chunks=total_chunks, original_chunk=original_chunk)
 
+
+def _log_chunk_preview(runtime: Any, *, chunk_idx: int, total_chunks: int, original_chunk: str) -> None:
     preview = original_chunk[:50].replace("\n", " ") + "..."
     runtime.log_verbose(f"[CLEANER] Chunk {chunk_idx + 1}/{total_chunks}: {preview}", "info")
+
+
+class _LiveCleaningProgress:
+    """Chunk progress reported while a batch cleaner is still running.
+
+    The cleaner calls this as ``(completed, total)``. Progress is emitted only
+    on the stage thread that created the reporter, which is where local batches
+    and ``asyncio.run`` event loops call back. A call from any other thread (a
+    shared event-loop thread) only records the count: that thread does not carry
+    the stage thread's reporting state and must not run progress callbacks while
+    the stage thread waits on it. Recorded chunks are emitted afterwards, in
+    order, by ``_collect_batch_results``.
+    """
+
+    def __init__(self, runtime: Any, *, chapter_idx: int, total_chapters: int, chunks: list[str]) -> None:
+        self._runtime = runtime
+        self._chapter_idx = chapter_idx
+        self._total_chapters = total_chapters
+        self._chunks = chunks
+        self._owner = threading.get_ident()
+        self._lock = threading.Lock()
+        self._completed = 0
+        # Chunk progress events already emitted; touched only on the owner thread.
+        self.emitted = 0
+
+    def __call__(self, completed: int, total: int) -> None:
+        _ = total
+        with self._lock:
+            self._completed = max(self._completed, min(int(completed), len(self._chunks)))
+            target = self._completed
+        if threading.get_ident() != self._owner or self._runtime.check_cancelled():
+            return
+        while self.emitted < target:
+            self.emit_next(log_preview=False)
+
+    def emit_next(self, *, log_preview: bool) -> None:
+        chunk_idx = self.emitted
+        self.emitted += 1
+        _emit_cleaning_progress(
+            self._runtime,
+            chapter_idx=self._chapter_idx,
+            total_chapters=self._total_chapters,
+            chunk_idx=chunk_idx,
+            total_chunks=len(self._chunks),
+            original_chunk=self._chunks[chunk_idx],
+            log_preview=log_preview,
+        )
 
 
 def _collect_results_payload(
@@ -258,22 +309,25 @@ def _collect_batch_results(
     batch_outputs: list[Any],
     total_chunks: int,
     with_trace: bool,
+    progress: _LiveCleaningProgress | None = None,
 ) -> tuple[list[CleanedChunkResult], bool]:
-    """Report progress and normalize validated batch output in chunk order."""
+    """Report progress and normalize validated batch output in chunk order.
+
+    Chunk progress already emitted live through ``progress`` is not repeated.
+    """
+    if progress is None:
+        progress = _LiveCleaningProgress(
+            runtime, chapter_idx=chapter_idx, total_chapters=total_chapters, chunks=chunks,
+        )
     results: list[CleanedChunkResult] = []
     for chunk_idx, (chunk, output) in enumerate(zip(chunks, batch_outputs)):
         if runtime.check_cancelled():
             return results, True
 
-        _emit_cleaning_progress(
-            runtime,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            chunk_idx=chunk_idx,
-            total_chunks=total_chunks,
-            original_chunk=chunk,
-            log_preview=with_trace,
-        )
+        if chunk_idx >= progress.emitted:
+            progress.emit_next(log_preview=with_trace)
+        elif with_trace:
+            _log_chunk_preview(runtime, chunk_idx=chunk_idx, total_chunks=total_chunks, original_chunk=chunk)
         results.append(
             _build_cleaned_chunk_result(
                 chunk_idx=chunk_idx,
@@ -285,6 +339,17 @@ def _collect_batch_results(
             )
         )
     return results, False
+
+
+def _batch_options(clean_batch: Any, runtime: Any, progress: _LiveCleaningProgress) -> dict[str, Any]:
+    """Pass cancellation and live progress to batch cleaners that accept them."""
+    parameters = inspect.signature(clean_batch).parameters
+    options: dict[str, Any] = {}
+    if "cancel_requested" in parameters:
+        options["cancel_requested"] = runtime.check_cancelled
+    if "progress_callback" in parameters:
+        options["progress_callback"] = progress
+    return options
 
 
 def _run_batch_trace_cleaning(
@@ -306,11 +371,13 @@ def _run_batch_trace_cleaning(
         f"[CLEANER] Batch trace cleaning enabled for backend={cleaner_backend}",
         "info",
     )
+    progress = _LiveCleaningProgress(
+        runtime, chapter_idx=chapter_idx, total_chapters=total_chapters, chunks=chunks,
+    )
     try:
-        if "cancel_requested" in inspect.signature(clean_batch_with_trace_async).parameters:
-            batch = clean_batch_with_trace_async(chunks, cancel_requested=runtime.check_cancelled)
-        else:
-            batch = clean_batch_with_trace_async(chunks)
+        batch = clean_batch_with_trace_async(
+            chunks, **_batch_options(clean_batch_with_trace_async, runtime, progress),
+        )
         batch_traces = hooks.run_coroutine_sync(batch)
         if runtime.check_cancelled():
             return [], True
@@ -324,8 +391,11 @@ def _run_batch_trace_cleaning(
             batch_outputs=batch_traces,
             total_chunks=total_chunks,
             with_trace=True,
+            progress=progress,
         )
     except Exception as exc:
+        if runtime.check_cancelled():
+            return [], True
         runtime.log_verbose(
             f"[CLEANER] Batch trace cleaning failed ({exc}); falling back to per-chunk cleaning",
             "warning",
@@ -351,11 +421,13 @@ def _run_sync_trace_batch_cleaning(
         f"[CLEANER] Local batch trace cleaning enabled for backend={cleaner_backend}",
         "info",
     )
+    progress = _LiveCleaningProgress(
+        runtime, chapter_idx=chapter_idx, total_chapters=total_chapters, chunks=chunks,
+    )
     try:
-        if "cancel_requested" in inspect.signature(clean_chunks_with_trace).parameters:
-            batch_traces = clean_chunks_with_trace(chunks, cancel_requested=runtime.check_cancelled)
-        else:
-            batch_traces = clean_chunks_with_trace(chunks)
+        batch_traces = clean_chunks_with_trace(
+            chunks, **_batch_options(clean_chunks_with_trace, runtime, progress),
+        )
         if runtime.check_cancelled():
             return [], True
         _validate_batch_length(batch_traces, total_chunks)
@@ -367,8 +439,11 @@ def _run_sync_trace_batch_cleaning(
             batch_outputs=batch_traces,
             total_chunks=total_chunks,
             with_trace=True,
+            progress=progress,
         )
     except Exception as exc:
+        if runtime.check_cancelled():
+            return [], True
         runtime.log_verbose(
             f"[CLEANER] Local batch trace cleaning failed ({exc}); falling back to per-chunk cleaning",
             "warning",

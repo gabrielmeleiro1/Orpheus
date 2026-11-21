@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from functools import lru_cache
 import json
 import math
 import os
@@ -35,6 +36,7 @@ DEFAULT_LOCK_TIMEOUT_SECONDS = 2.0
 # Process start times and wall-clock lock timestamps come from different
 # clocks; only a clearly later start proves a recorded lock owner's PID was reused.
 _PID_REUSE_CLOCK_TOLERANCE_SECONDS = 5.0
+_RELEASE_GATE_MIN_TIMEOUT_SECONDS = 0.25
 _setup_gate_handles: set[BinaryIO] = set()
 
 
@@ -140,12 +142,14 @@ class SetupLock:
             created_at = 0.0
             own_released_lock = False
         if not own_released_lock and (
-            age < 0 or (pid > 0 and _pid_is_running(pid) and not _pid_reused_since(pid, created_at))
+            pid > 0 and _pid_is_running(pid) and not _pid_reused_since(pid, created_at)
         ):
             return
         # A recorded owner that no longer exists cannot still hold the lock.
         # Recover it immediately so an interrupted download does not block the
-        # next app launch for the generic ambiguous-lock grace period.
+        # next app launch for the generic ambiguous-lock grace period, even if
+        # the clock stepped back since. Only an ownerless lock relies on its
+        # age, and a future timestamp keeps that one held.
         if pid <= 0 and age < LOCK_STALE_SECONDS:
             return
         stale_path = self.path.with_name(f"{self.path.name}.stale-{uuid.uuid4().hex}")
@@ -162,7 +166,10 @@ class SetupLock:
             return
         # If the gate cannot be acquired, preserve ownership and surface the
         # bounded failure so the caller can retry instead of abandoning a live lock.
-        with self._metadata_gate(time.monotonic() + self.timeout_seconds):
+        # Contenders hold the gate only briefly, so a short or zero acquire
+        # timeout must not turn that contention into an orphaned lock.
+        timeout = max(self.timeout_seconds, _RELEASE_GATE_MIN_TIMEOUT_SECONDS)
+        with self._metadata_gate(time.monotonic() + timeout):
             self._release_owned_lock()
 
     def _release_owned_lock(self) -> None:
@@ -232,24 +239,44 @@ def _windows_pid_is_running(pid: int) -> bool:
     # broadcast fails it raises, making a live owner look dead and letting a
     # concurrent setup steal a held lock. Probe through the process API.
     import ctypes
+    from ctypes import wintypes
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     ERROR_ACCESS_DENIED = 5
     STILL_ACTIVE = 259
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    open_process, get_exit_code_process, close_handle = _windows_process_api()
+    handle = open_process(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
     if not handle:
         # Denied access still proves the process exists; treat the owner as
         # alive so the lock is never stolen on an ambiguous answer.
         return ctypes.get_last_error() == ERROR_ACCESS_DENIED
     try:
-        exit_code = ctypes.c_ulong()
-        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+        exit_code = wintypes.DWORD()
+        if not get_exit_code_process(handle, ctypes.byref(exit_code)):
             return True
         return exit_code.value == STILL_ACTIVE
     finally:
-        kernel32.CloseHandle(handle)
+        close_handle(handle)
+
+
+@lru_cache(maxsize=1)
+def _windows_process_api():
+    """Declare the Win32 process calls so 64-bit handles are not truncated."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    open_process = kernel32.OpenProcess
+    open_process.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    open_process.restype = wintypes.HANDLE
+    get_exit_code_process = kernel32.GetExitCodeProcess
+    get_exit_code_process.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    get_exit_code_process.restype = wintypes.BOOL
+    close_handle = kernel32.CloseHandle
+    close_handle.argtypes = (wintypes.HANDLE,)
+    close_handle.restype = wintypes.BOOL
+    return open_process, get_exit_code_process, close_handle
 
 
 def default_state_path(*, environ: Mapping[str, str] | None = None) -> Path:

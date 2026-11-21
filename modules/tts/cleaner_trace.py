@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import logging
@@ -10,7 +11,12 @@ from typing import Any
 
 from . import cleaner_rules as cleaner_rules_backend
 from .cleaner_config import build_cleaner_prompt
-from .cleaner_edits import abbreviation_expansion_allowance, reconcile_llm_edits, repair_source_backed_fragments
+from .cleaner_edits import (
+    abbreviation_expansion_allowance,
+    reconcile_llm_edits,
+    repair_source_backed_fragments,
+    tokenize_source,
+)
 
 
 @dataclass(frozen=True)
@@ -182,22 +188,30 @@ def _start_trace_decision_flow(
     )
 
 
-def _complete_trace_decision_flow(
+def _decide_trace_completion(
     cleaner: Any,
-    trace_cls,
     request: TraceDecisionRequest,
     response: str,
     *,
     warning_logger: logging.Logger | None = None,
-) -> Any:
+) -> tuple[Callable[..., Any], dict[str, Any]]:
+    """Choose the trace for an LLM response without touching cleaner counters.
+
+    Returns the trace builder and its arguments; applying it records the
+    outcome. Keeping this step free of shared writes lets the async path run
+    it off the event loop while counters are updated on the loop thread.
+    """
     artifact_score = _resolve_trace_artifact_score(cleaner, request)
     cleaned = cleaner._extract_result(response)  # noqa: SLF001
     final_text = cleaned
     final_text = cleaner._repair_known_leading_letter_fragments(final_text)  # noqa: SLF001
-    final_text = repair_source_backed_fragments(request.rule_based_text, final_text)
+    source_tokens = tokenize_source(request.rule_based_text)
+    final_text = repair_source_backed_fragments(
+        request.rule_based_text, final_text, source_tokens=source_tokens,
+    )
 
     source_length = len(request.rule_based_text)
-    expansion_allowance = abbreviation_expansion_allowance(request.rule_based_text)
+    expansion_allowance = abbreviation_expansion_allowance(request.rule_based_text, source=source_tokens)
     guard_message = None
     if not final_text.strip():
         guard_message = "LLM output is empty; using rule-based fallback"
@@ -215,9 +229,7 @@ def _complete_trace_decision_flow(
         )
     if guard_message:
         _warn(warning_logger, "Cleaner: %s", guard_message)
-        return make_fallback_trace(
-            cleaner,
-            trace_cls,
+        return make_fallback_trace, dict(
             original_text=request.original_text,
             rule_based_text=request.rule_based_text,
             start_time=request.start_time,
@@ -227,7 +239,7 @@ def _complete_trace_decision_flow(
             artifact_score=artifact_score,
         )
 
-    edits = reconcile_llm_edits(request.rule_based_text, final_text)
+    edits = reconcile_llm_edits(request.rule_based_text, final_text, source_tokens=source_tokens)
     rejected_count = len(edits.rejected_edits)
     if rejected_count:
         # The pipeline's fixed JSONL field list already retains artifact_score.
@@ -243,9 +255,7 @@ def _complete_trace_decision_flow(
         )
     if preservation_error:
         _warn(warning_logger, "Cleaner: %s", preservation_error)
-        return make_fallback_trace(
-            cleaner,
-            trace_cls,
+        return make_fallback_trace, dict(
             original_text=request.original_text,
             rule_based_text=request.rule_based_text,
             start_time=request.start_time,
@@ -263,9 +273,7 @@ def _complete_trace_decision_flow(
             rejected_count,
         )
 
-    return make_success_trace(
-        cleaner,
-        trace_cls,
+    return make_success_trace, dict(
         original_text=request.original_text,
         rule_based_text=request.rule_based_text,
         cleaned_text=edits.text,
@@ -274,6 +282,20 @@ def _complete_trace_decision_flow(
         artifact_score=artifact_score,
         llm_rejected_edits=edits.rejected_edits,
     )
+
+
+def _complete_trace_decision_flow(
+    cleaner: Any,
+    trace_cls,
+    request: TraceDecisionRequest,
+    response: str,
+    *,
+    warning_logger: logging.Logger | None = None,
+) -> Any:
+    build_trace, trace_args = _decide_trace_completion(
+        cleaner, request, response, warning_logger=warning_logger,
+    )
+    return build_trace(cleaner, trace_cls, **trace_args)
 
 
 def _exception_fallback_trace(
@@ -328,6 +350,42 @@ def run_trace_decision_flow(
         )
 
 
+async def run_local_batch_async(
+    cleaner: Any,
+    texts: list[str],
+    cancel_requested: Callable[[], bool] | None = None,
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> list[Any]:
+    """Clean chunks in order off the event loop for a local-model backend.
+
+    Once ``cancel_requested`` turns true, decoding of the current chunk stops
+    and later chunks are skipped; their slots stay ``None`` so every trace
+    keeps the index of its input chunk. ``progress_callback(completed, total)``
+    is called on the event loop thread after each chunk finishes.
+    """
+    if not texts:
+        return []
+
+    def clean_one(text: str) -> Any:
+        cleaner.generation_cancel_requested = cancel_requested
+        try:
+            return cleaner.clean_with_trace(text)
+        finally:
+            cleaner.generation_cancel_requested = None
+
+    results: list[Any] = [None] * len(texts)
+    for index, text in enumerate(texts):
+        if cancel_requested is None:
+            results[index] = await asyncio.to_thread(cleaner.clean_with_trace, text)
+        else:
+            if cancel_requested():
+                break
+            results[index] = await asyncio.to_thread(clean_one, text)
+        if progress_callback is not None:
+            progress_callback(index + 1, len(texts))
+    return results
+
+
 async def run_trace_decision_flow_async(
     cleaner: Any,
     trace_cls,
@@ -343,13 +401,16 @@ async def run_trace_decision_flow_async(
 
     try:
         response = await response_generator(request.prompt)
-        return _complete_trace_decision_flow(
+        # Alignment can take a while on long chunks; keep the loop free for
+        # concurrent requests and cancellation polling.
+        build_trace, trace_args = await asyncio.to_thread(
+            _decide_trace_completion,
             cleaner,
-            trace_cls,
             request,
             response,
             warning_logger=warning_logger,
         )
+        return build_trace(cleaner, trace_cls, **trace_args)
     except Exception as exc:
         return _exception_fallback_trace(
             cleaner,

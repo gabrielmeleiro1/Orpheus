@@ -54,7 +54,7 @@ class _Token:
 @dataclass(frozen=True)
 class _Evidence:
     words: Counter[str]
-    forms: set[str]
+    forms: frozenset[str] | set[str]
     capitals: frozenset[str]
 
 
@@ -75,9 +75,30 @@ class GuardedEdits:
     alignment_error: str | None = None
 
 
-def _tokens(text: str) -> list[_Token]:
+@dataclass(frozen=True)
+class SourceTokens:
+    """One rule-based source tokenized once for every post-LLM check."""
+
+    text: str
+    tokens: tuple[_Token, ...]
+    word_forms: frozenset[str]
+
+
+def tokenize_source(text: str) -> SourceTokens:
+    word_forms = frozenset(hyphenation_word_forms(text))
+    return SourceTokens(text, tuple(_tokens(text, word_forms)), word_forms)
+
+
+def _source_tokens(text: str, source: SourceTokens | None) -> SourceTokens:
+    if source is not None and source.text == text:
+        return source
+    return tokenize_source(text)
+
+
+def _tokens(text: str, word_forms: frozenset[str] | set[str] | None = None) -> list[_Token]:
     furniture = page_furniture_lines(text)
-    word_forms = hyphenation_word_forms(text)
+    if word_forms is None:
+        word_forms = hyphenation_word_forms(text)
     tokens = []
     offset = 0
     for index, line in enumerate(text.splitlines(keepends=True)):
@@ -125,11 +146,11 @@ def _tokens(text: str) -> list[_Token]:
     ]
 
 
-def abbreviation_expansion_allowance(text: str) -> int:
+def abbreviation_expansion_allowance(text: str, *, source: SourceTokens | None = None) -> int:
     """Allow the length added by standard expansions in the length safeguard."""
     return sum(
         max(0, max(map(len, token.expansions)) - (token.end - token.start))
-        for token in _tokens(text) if token.expansions
+        for token in _source_tokens(text, source).tokens if token.expansions
     )
 
 
@@ -218,18 +239,55 @@ def _align_block(source: list[_Token], output: list[_Token], evidence: _Evidence
     if (n + 1) * (m + 1) > _MAX_ALIGNMENT_CELLS:
         raise ValueError("LLM preservation guard could not align a large changed span")
     penalty = n + m + 1
+    # Costs only grow along a path, so a search bounded by ``bound`` finds the
+    # same optimum (and the same tie-breaks) whenever that optimum fits within
+    # it. Mostly unchanged text fits a small bound and skips nearly every cell.
+    for bound in (8, 2 * penalty + 8):
+        edits = _align_block_within(source, output, evidence, penalty, bound)
+        if edits is not None:
+            return edits
+    edits = _align_block_within(source, output, evidence, penalty, float("inf"))
+    assert edits is not None
+    return edits
+
+
+def _align_block_within(
+    source: list[_Token],
+    output: list[_Token],
+    evidence: _Evidence,
+    penalty: int,
+    bound: float,
+) -> list[_Edit] | None:
+    """Run the alignment search over cells costing at most ``bound``.
+
+    Returns ``None`` when the cheapest full alignment costs more than ``bound``.
+    """
+    n, m = len(source), len(output)
     costs = [[float("inf")] * (m + 1) for _ in range(n + 1)]
     paths: dict[tuple[int, int], _Edit] = {}
     costs[0][0] = 0
+    # Per row, the span of columns that received an offer within the bound.
+    row_first = [m + 1] * (n + 1)
+    row_last = [-1] * (n + 1)
+    row_first[0] = row_last[0] = 0
 
     def offer(i: int, j: int, a: int, b: int, allowed: bool, cost: int) -> None:
         candidate = costs[i][j] + cost
-        if candidate < costs[a][b]:
+        if candidate < costs[a][b] and candidate <= bound:
             costs[a][b] = candidate
             paths[a, b] = _Edit(i, a, j, b, allowed)
+            if b < row_first[a]:
+                row_first[a] = b
+            if b > row_last[a]:
+                row_last[a] = b
 
     for i in range(n + 1):
-        for j in range(m + 1):
+        row = costs[i]
+        j = row_first[i]
+        while j <= row_last[i]:
+            if row[j] > bound:
+                j += 1
+                continue
             if i < n and j < m:
                 before, after = source[i].word, output[j].word
                 if before.casefold() == after.casefold():
@@ -246,7 +304,10 @@ def _align_block(source: list[_Token], output: list[_Token], evidence: _Evidence
                 offer(i, j, i + 1, j, allowed, 1 if allowed else penalty)
             if j < m:
                 offer(i, j, i, j + 1, False, penalty)
+            j += 1
 
+    if costs[n][m] > bound:
+        return None
     edits = []
     i, j = n, m
     while i or j:
@@ -286,9 +347,12 @@ def _span(text: str, tokens: list[_Token], start: int, end: int) -> tuple[int, i
     return first, tokens[end - 1].end if end > start else first
 
 
-def repair_source_backed_fragments(source_text: str, output_text: str) -> str:
+def repair_source_backed_fragments(
+    source_text: str, output_text: str, *, source_tokens: SourceTokens | None = None,
+) -> str:
     """Restore a lost source initial or an unambiguous displaced drop cap."""
-    source, output = _tokens(source_text), _tokens(output_text)
+    source = list(_source_tokens(source_text, source_tokens).tokens)
+    output = _tokens(output_text)
     matcher = SequenceMatcher(
         None, [token.word.casefold() for token in source],
         [token.word.casefold() for token in output], autojunk=False,
@@ -320,7 +384,9 @@ def repair_source_backed_fragments(source_text: str, output_text: str) -> str:
     return output_text
 
 
-def reconcile_llm_edits(source_text: str, output_text: str) -> GuardedEdits:
+def reconcile_llm_edits(
+    source_text: str, output_text: str, *, source_tokens: SourceTokens | None = None,
+) -> GuardedEdits:
     """Keep allowed edits and restore rejected spans, including their separators.
 
     Rejection offsets are half-open character ranges in the rule-based source
@@ -328,10 +394,11 @@ def reconcile_llm_edits(source_text: str, output_text: str) -> GuardedEdits:
     Typography lives between word tokens and is permitted independently.
     """
     result = GuardedEdits(output_text)
-    source, output = _tokens(source_text), _tokens(output_text)
+    analysis = _source_tokens(source_text, source_tokens)
+    source, output = list(analysis.tokens), _tokens(output_text)
     evidence = _Evidence(
         Counter(token.word.casefold() for token in source),
-        hyphenation_word_forms(source_text),
+        analysis.word_forms,
         frozenset(token.word for token in source if token.drop_cap),
     )
     try:

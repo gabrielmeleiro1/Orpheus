@@ -132,7 +132,9 @@ def resolve_cleaner_model_name(
         if config_model in CLEANER_MODEL_CHOICES:
             return DEFAULT_CUDA_MODEL
         return config_model
-    if normalized_backend != "cuda" and config_model in CUDA_CLEANER_MODEL_CHOICES:
+    # Only the MLX backend loads MLX weights; API and basic backends keep the
+    # configured name instead of an MLX model they cannot use.
+    if normalized_backend == "mlx" and config_model in CUDA_CLEANER_MODEL_CHOICES:
         return CLEANER_MLX_DEFAULT_MODEL
     return config_model
 

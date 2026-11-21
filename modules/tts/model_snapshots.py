@@ -1,12 +1,29 @@
 """Resolve installed catalog and custom snapshots without network access."""
 
+import os
 from pathlib import Path
 
 from modules.errors import TTSInstallationError
 from modules.runtime_setup.catalog import pinned_revision_for
 from modules.runtime_setup.receipts import ModelReceiptVerifier
 
-_receipt_verifier = ModelReceiptVerifier()
+
+def _integrity_cache_path() -> Path | None:
+    """The desktop app's shared receipt-check cache (see the setup routes).
+
+    The desktop shell always provides ``AUDIOBOOK_DATA_DIR``; without it the
+    checks stay in memory rather than writing beside a guessed default.
+    """
+    if not os.environ.get("AUDIOBOOK_DATA_DIR", "").strip():
+        return None
+    from modules.runtime_setup.state import default_state_path
+
+    return default_state_path().with_name("model-integrity-cache.json")
+
+
+# Resolved on first use, so every process (including spawned workers) reuses
+# earlier content checks instead of re-hashing whole snapshots at startup.
+_receipt_verifier = ModelReceiptVerifier(cache_path_factory=_integrity_cache_path)
 
 
 def installed_model_path(model_name: str) -> str:

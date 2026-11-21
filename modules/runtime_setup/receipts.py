@@ -14,7 +14,7 @@ import shutil
 import stat as stat_module
 import threading
 import time
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from modules.contracts.durable_files import atomic_write_json, sync_directory_if_openable
 from modules.runtime_setup.catalog import _normalize_model_id, _REVISION_RE
@@ -500,31 +500,76 @@ def _validate_parsed_receipt(parsed: _ParsedReceipt) -> bool:
 class ModelReceiptVerifier:
     """Bounded, single-flight cache of valid content-integrity checks."""
 
-    def __init__(self, *, max_entries: int = 64, cache_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        max_entries: int = 64,
+        cache_path: Path | None = None,
+        cache_path_factory: Callable[[], Path | None] | None = None,
+    ) -> None:
+        """``cache_path_factory`` resolves the persistent cache on first use,
+        for verifiers created before the process environment is final."""
         self._max_entries = max(1, min(int(max_entries), 256))
         self._cache_path = cache_path
+        self._cache_path_factory = cache_path_factory
         self._persisted: OrderedDict[str, str] = OrderedDict()
         if cache_path is not None:
-            try:
-                with cache_path.open("rb") as handle:
-                    raw = handle.read(_MAX_RECEIPT_BYTES + 1)
-                if len(raw) <= _MAX_RECEIPT_BYTES:
-                    payload = json.loads(raw)
-                    if isinstance(payload, dict) and payload.get("schema_version") == 1:
-                        entries = payload.get("entries")
-                        if isinstance(entries, dict):
-                            self._persisted.update(
-                                (key, value) for key, value in entries.items()
-                                if isinstance(key, str) and _SHA256_RE.fullmatch(key)
-                                and isinstance(value, str) and _SHA256_RE.fullmatch(value)
-                            )
-            except (OSError, ValueError):
-                pass
+            self._persisted.update(self._read_persisted(cache_path))
         while len(self._persisted) > self._max_entries:
             self._persisted.popitem(last=False)
         self._condition = threading.Condition()
         self._entries: OrderedDict[tuple[str, str, bytes], tuple[Any, ...]] = OrderedDict()
         self._inflight: set[tuple[str, str, bytes]] = set()
+        # Serializes cache-file writes. Lock order: _save_lock, then _condition.
+        self._save_lock = threading.Lock()
+        self._revision = 0
+        self._saved_revision = 0
+        # Keys this verifier found stale, so a merge never restores them, and
+        # whether the file must be replaced rather than merged after invalidate().
+        self._dropped: set[str] = set()
+        self._replace_file = False
+
+    @staticmethod
+    def _read_persisted(cache_path: Path) -> dict[str, str]:
+        try:
+            with cache_path.open("rb") as handle:
+                raw = handle.read(_MAX_RECEIPT_BYTES + 1)
+            if len(raw) > _MAX_RECEIPT_BYTES:
+                return {}
+            payload = json.loads(raw)
+        except (OSError, ValueError, RecursionError):
+            return {}
+        entries = payload.get("entries") if isinstance(payload, dict) and payload.get("schema_version") == 1 else None
+        if not isinstance(entries, dict):
+            return {}
+        return {
+            key: value for key, value in entries.items()
+            if isinstance(key, str) and _SHA256_RE.fullmatch(key)
+            and isinstance(value, str) and _SHA256_RE.fullmatch(value)
+        }
+
+    def _load_deferred_cache(self) -> None:
+        if self._cache_path_factory is None:
+            return
+        with self._save_lock:
+            factory, self._cache_path_factory = self._cache_path_factory, None
+            if factory is None:
+                return
+            try:
+                cache_path = factory()
+            except Exception:
+                # The cache only saves work; an unresolvable path stays in memory.
+                cache_path = None
+            if cache_path is None:
+                return
+            loaded = self._read_persisted(cache_path)
+            with self._condition:
+                self._cache_path = cache_path
+                for key, value in loaded.items():
+                    # Checks made in this process are newer than the file.
+                    self._persisted.setdefault(key, value)
+                while len(self._persisted) > self._max_entries:
+                    self._persisted.popitem(last=False)
 
     @staticmethod
     def _key(parsed: _ParsedReceipt) -> tuple[str, str, bytes]:
@@ -537,20 +582,48 @@ class ModelReceiptVerifier:
         return hashlib.sha256(b"orpheus-receipt-fingerprint-v1\0" + encoded).hexdigest()
 
     def _save_persisted(self) -> None:
-        if self._cache_path is None:
-            return
-        try:
-            atomic_write_json(
-                self._cache_path,
-                {"schema_version": 1, "entries": self._persisted},
-                permissions=0o600, sync_parent=sync_directory_if_openable,
-                cleanup="before_replace",
-            )
-        except OSError:
-            # An unwritable performance cache must never change readiness.
-            pass
+        """Write the latest entries; call without holding ``_condition``.
+
+        The snapshot is taken under ``_save_lock``, so a write never replaces
+        the file with entries older than the previous write's.
+        """
+        with self._save_lock:
+            with self._condition:
+                cache_path = self._cache_path
+                if cache_path is None or self._saved_revision == self._revision:
+                    return
+                revision = self._revision
+                entries = OrderedDict(self._persisted)
+                dropped = set(self._dropped)
+                replace_file = self._replace_file
+            if not replace_file:
+                # Other verifiers (other processes) share the file; keep their
+                # checks. Every token still has to match a file's exact identity.
+                merged = OrderedDict(
+                    (key, value) for key, value in self._read_persisted(cache_path).items()
+                    if key not in dropped and key not in entries
+                )
+                merged.update(entries)
+                entries = merged
+                while len(entries) > self._max_entries:
+                    entries.popitem(last=False)
+            try:
+                atomic_write_json(
+                    cache_path,
+                    {"schema_version": 1, "entries": entries},
+                    permissions=0o600, sync_parent=sync_directory_if_openable,
+                    cleanup="before_replace",
+                )
+            except OSError:
+                # An unwritable performance cache must never change readiness.
+                pass
+            self._saved_revision = revision
+            with self._condition:
+                if self._revision == revision:
+                    self._replace_file = False
 
     def verify(self, snapshot_path: Path, *, model_id: str, revision: str) -> bool:
+        self._load_deferred_cache()
         while True:
             parsed = _parse_download_receipt(
                 snapshot_path,
@@ -580,6 +653,7 @@ class ModelReceiptVerifier:
                     break
                 self._condition.wait()
 
+        persist = False
         try:
             valid = _validate_parsed_receipt(parsed)
             after = (
@@ -603,15 +677,19 @@ class ModelReceiptVerifier:
                             self._entries.popitem(last=False)
                         self._persisted[persisted_key] = token
                         self._persisted.move_to_end(persisted_key)
+                        self._dropped.discard(persisted_key)
                         while len(self._persisted) > self._max_entries:
                             self._persisted.popitem(last=False)
-                        self._save_persisted()
+                        self._revision += 1
+                        persist = True
                     else:
                         self._entries.pop(key, None)
                 else:
                     self._entries.pop(key, None)
+                    self._dropped.add(persisted_key)
                     if self._persisted.pop(persisted_key, None) is not None:
-                        self._save_persisted()
+                        self._revision += 1
+                        persist = True
                     valid = False
             return valid
         finally:
@@ -620,13 +698,19 @@ class ModelReceiptVerifier:
             with self._condition:
                 self._inflight.discard(key)
                 self._condition.notify_all()
+            if persist:
+                self._save_persisted()
 
     def invalidate(self) -> None:
+        self._load_deferred_cache()
         with self._condition:
             self._entries.clear()
             self._persisted.clear()
-            self._save_persisted()
+            self._dropped.clear()
+            self._replace_file = True
+            self._revision += 1
             self._condition.notify_all()
+        self._save_persisted()
 
 
 def validate_download_receipt(

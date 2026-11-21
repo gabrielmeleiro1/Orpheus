@@ -136,7 +136,10 @@ class TextCleaner:
         return max(1, configured)
 
     async def clean_batch_with_trace_async(
-        self, texts: list[str], cancel_requested: Callable[[], bool] | None = None,
+        self,
+        texts: list[str],
+        cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
     ) -> list[_CleanTrace]:
         """
         Clean multiple chunks concurrently while preserving per-chunk trace data.
@@ -144,19 +147,30 @@ class TextCleaner:
         API backend runs fully async. Local MLX and CUDA backends use a sync
         per-chunk path via ``asyncio.to_thread`` to avoid blocking the event loop.
         Backends that accept ``cancel_requested`` stop early once it turns true,
-        leaving the remaining traces unset.
+        leaving the remaining traces unset. Backends that accept
+        ``progress_callback`` call it as ``(completed, total)`` on the event loop
+        thread whenever a chunk finishes.
         """
         clean_batch = self._backend_strategy.clean_batch_with_trace_async
-        if cancel_requested is None or (
-            "cancel_requested" not in inspect.signature(clean_batch).parameters
-        ):
-            return await clean_batch(self, texts)
-        return await clean_batch(self, texts, cancel_requested=cancel_requested)
+        parameters = inspect.signature(clean_batch).parameters
+        options: dict[str, Any] = {}
+        if cancel_requested is not None and "cancel_requested" in parameters:
+            options["cancel_requested"] = cancel_requested
+        if progress_callback is not None and "progress_callback" in parameters:
+            options["progress_callback"] = progress_callback
+        return await clean_batch(self, texts, **options)
 
     def clean_chunks_with_trace(
-        self, texts: list[str], cancel_requested: Callable[[], bool] | None = None,
-    ) -> list[_CleanTrace]:
-        """Synchronous batch-clean interface for local and fallback paths."""
+        self,
+        texts: list[str],
+        cancel_requested: Callable[[], bool] | None = None,
+        progress_callback: Callable[[int, int], None] | None = None,
+    ) -> list[_CleanTrace | None]:
+        """Synchronous batch-clean interface for local and fallback paths.
+
+        ``progress_callback(completed, total)`` runs on the calling thread
+        after each chunk finishes.
+        """
         indexed = list(enumerate(texts))
         indexed.sort(key=lambda item: len(item[1]))
         traces_by_index: dict[int, _CleanTrace] = {}
@@ -179,15 +193,18 @@ class TextCleaner:
                         start_time=start_time,
                         artifact_score=self._artifact_score_for(rule_based_text),
                     )
-                    continue
-
-                trace = self.clean_with_trace(text)
-                traces_by_index[index] = trace
-                if trace.mode == "hallucination_fallback":
-                    llm_cleaning_enabled = False
+                else:
+                    trace = self.clean_with_trace(text)
+                    traces_by_index[index] = trace
+                    if trace.mode == "hallucination_fallback":
+                        llm_cleaning_enabled = False
+                if progress_callback is not None:
+                    progress_callback(len(traces_by_index), len(texts))
         finally:
             self.generation_cancel_requested = None
-        return [traces_by_index[index] for index in sorted(traces_by_index)]
+        # Chunks skipped by cancellation stay ``None`` so each trace keeps the
+        # index of its input chunk.
+        return [traces_by_index.get(index) for index in range(len(texts))]
 
     def _artifact_score_for(self, text: str) -> dict[str, object]:
         return score_text_artifacts(text).as_trace_dict()
