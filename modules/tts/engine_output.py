@@ -12,6 +12,7 @@ import numpy as np
 from modules.errors import SynthesisError
 
 from . import mlx_compat as mlx_compat_backend
+from .voices import kokoro_language_code
 
 _WAV_COPY_FRAMES = 65_536
 
@@ -65,6 +66,7 @@ def synthesize_to_output_path(
         gen_kwargs = {
             "text": text,
             "voice": voice,
+            "lang_code": kokoro_language_code(voice),
             "speed": speed,
             "audio_format": "wav",
             "verbose": False,
@@ -84,7 +86,9 @@ def synthesize_to_output_path(
             file_prefix=output_path.stem,
             generate_fn=active_generate_fn,
         )
-        with mlx_compat_backend.use_installed_voices(engine._model_path):  # noqa: SLF001
+        with mlx_compat_backend.use_installed_voices(
+            engine._model_path, engine._voice_snapshot,  # noqa: SLF001
+        ):
             active_generate_fn(**gen_kwargs)
 
     if output_path.exists():
@@ -165,6 +169,7 @@ def synthesize_to_output_file(
         gen_kwargs = {
             "text": text,
             "voice": voice,
+            "lang_code": kokoro_language_code(voice),
             "speed": speed,
             "audio_format": "wav",
             "join_audio": True,
@@ -185,7 +190,9 @@ def synthesize_to_output_file(
             file_prefix=output_path.stem,
             generate_fn=active_generate_fn,
         )
-        with mlx_compat_backend.use_installed_voices(engine._model_path):  # noqa: SLF001
+        with mlx_compat_backend.use_installed_voices(
+            engine._model_path, engine._voice_snapshot,  # noqa: SLF001
+        ):
             active_generate_fn(**gen_kwargs)
 
     if output_path.exists():
@@ -231,6 +238,7 @@ def generate_temp_wav_paths(
             gen_kwargs = {
                 "text": text,
                 "voice": voice,
+                "lang_code": kokoro_language_code(voice),
                 "speed": speed,
                 "audio_format": "wav",
                 "join_audio": join_audio,
@@ -251,7 +259,9 @@ def generate_temp_wav_paths(
                 file_prefix="tts_output",
                 generate_fn=active_generate_fn,
             )
-            with mlx_compat_backend.use_installed_voices(engine._model_path):  # noqa: SLF001
+            with mlx_compat_backend.use_installed_voices(
+            engine._model_path, engine._voice_snapshot,  # noqa: SLF001
+        ):
                 active_generate_fn(**gen_kwargs)
 
         for _ in range(20):

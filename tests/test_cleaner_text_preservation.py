@@ -19,7 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
-from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
+from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy, fake_mlx_stream
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +33,6 @@ def _make_rule_only_cleaner() -> TextCleaner:
     cleaner._loaded = False
     cleaner._model = None
     cleaner._tokenizer = None
-    cleaner._manager = None
     cleaner._model_lock = threading.RLock()
     cleaner._total_chunks_cleaned = 0
     cleaner._total_time_ms = 0
@@ -53,17 +52,17 @@ def _make_mlx_cleaner_with_fake_llm(fake_response: str) -> TextCleaner:
 
 def _patch_generate(fake_response: str):
     """Context-free monkey-patch helpers for mlx generate + make_sampler."""
-    original_generate = cleaner_module.cleaner_mlx_backend.generate
+    original_generate = cleaner_module.cleaner_mlx_backend.stream_generate
     original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
 
     def _fake_generate(_model, _tokenizer, **kwargs):
         return fake_response
 
-    cleaner_module.cleaner_mlx_backend.generate = _fake_generate
+    cleaner_module.cleaner_mlx_backend.stream_generate = fake_mlx_stream(_fake_generate)
     cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
 
     def _restore():
-        cleaner_module.cleaner_mlx_backend.generate = original_generate
+        cleaner_module.cleaner_mlx_backend.stream_generate = original_generate
         cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
     return _restore
@@ -272,9 +271,9 @@ class TestFallbackBehavior:
         def _exploding_generate(*args, **kwargs):
             raise RuntimeError("local generation failed")
 
-        original_generate = cleaner_module.cleaner_mlx_backend.generate
+        original_generate = cleaner_module.cleaner_mlx_backend.stream_generate
         original_make_sampler = cleaner_module.cleaner_mlx_backend.make_sampler
-        cleaner_module.cleaner_mlx_backend.generate = _exploding_generate
+        cleaner_module.cleaner_mlx_backend.stream_generate = fake_mlx_stream(_exploding_generate)
         cleaner_module.cleaner_mlx_backend.make_sampler = lambda temp=0.0: ("sampler", temp)
         try:
             trace = cleaner.clean_with_trace("Iam tired today.")
@@ -285,7 +284,7 @@ class TestFallbackBehavior:
             assert stats["llm_fallback"] == 1
             assert stats["llm_success"] == 0
         finally:
-            cleaner_module.cleaner_mlx_backend.generate = original_generate
+            cleaner_module.cleaner_mlx_backend.stream_generate = original_generate
             cleaner_module.cleaner_mlx_backend.make_sampler = original_make_sampler
 
 

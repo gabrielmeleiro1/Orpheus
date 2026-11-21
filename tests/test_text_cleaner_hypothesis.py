@@ -236,8 +236,9 @@ class TestTextCleanerErrorHandling:
             expected = cleaner._rule_based_clean(text)
             with (
                 patch.object(cleaner, '_needs_llm_cleaning', return_value=True),
+                patch('modules.tts.cleaner_mlx.make_sampler', return_value="greedy"),
                 patch(
-                    'modules.tts.cleaner_mlx.generate', side_effect=RuntimeError("LLM Error"),
+                    'modules.tts.cleaner_mlx.stream_generate', side_effect=RuntimeError("LLM Error"),
                 ) as generate,
             ):
                 result = cleaner.clean(text)

@@ -102,11 +102,9 @@ def process_chapter_worker(
 def _process_chapter_worker_entry(
     chapter: Any,
     chapter_idx: int,
-    _file_manager: Any,
     output_dir: Path,
     total_chapters: Optional[int] = None,
 ) -> ChapterResult:
-    _ = _file_manager
     return process_chapter_worker(
         chapter=chapter,
         chapter_idx=chapter_idx,

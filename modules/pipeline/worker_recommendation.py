@@ -23,29 +23,6 @@ def detect_cpu_core_workers() -> int:
     return max(1, int(detected or 1))
 
 
-def build_cpu_core_worker_recommendation(*, requested_max: Optional[int] = None) -> dict[str, Any]:
-    """Return worker recommendation details for process-safe CPU-bound backends."""
-    detected_workers = detect_cpu_core_workers()
-    requested = max(1, int(requested_max or detected_workers))
-    recommended = min(requested, detected_workers)
-    return {
-        "memory_measurement_available": False,
-        "total_memory_bytes": None,
-        "available_memory_bytes": None,
-        "reserved_memory_bytes": None,
-        "headroom_memory_bytes": None,
-        "static_estimated_worker_bytes": None,
-        "warmup_memory_delta_bytes": None,
-        "estimated_per_worker_memory_bytes": None,
-        "requested_parallel_chapters": requested,
-        "detected_cpu_core_workers": detected_workers,
-        "max_safe_parallel_chapters": detected_workers,
-        "recommended_parallel_chapters": recommended,
-        "reason": "process-safe CPU-core auto worker policy",
-        "calculation": f"detected CPU core workers = {detected_workers}; capped at {requested}",
-    }
-
-
 def _gib(value: int) -> float:
     return round(max(0, int(value)) / 1024**3, 2)
 

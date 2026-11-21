@@ -15,6 +15,7 @@ from modules.tts.cleaner import TextCleaner
 
 
 from tests._factories_group2_cleaner import make_loaded_cleaner
+from tests.fixtures.fake_cleaner_backend import fake_mlx_stream
 
 
 def _make_cleaner(backend: str = "mlx") -> TextCleaner:
@@ -28,7 +29,9 @@ def test_output_within_bounds_is_accepted(monkeypatch: pytest.MonkeyPatch) -> No
     input_text = "The crash of 1987 forced 42 traders to react quickly in London."
 
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: input_text)
+    monkeypatch.setattr(
+        cleaner_module.cleaner_mlx_backend, "stream_generate", fake_mlx_stream(lambda _m, _t, **_k: input_text),
+    )
 
     trace = cleaner.clean_with_trace(input_text)
     assert trace.mode == "llm_success"
@@ -43,7 +46,9 @@ def test_standard_abbreviation_expansion_is_accepted(
     expanded = "Doctor Smith met Mister Jones in 1987."
 
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", lambda _m, _t, **_k: expanded)
+    monkeypatch.setattr(
+        cleaner_module.cleaner_mlx_backend, "stream_generate", fake_mlx_stream(lambda _m, _t, **_k: expanded),
+    )
 
     trace = cleaner.clean_with_trace(input_text)
     assert trace.mode == "llm_success"

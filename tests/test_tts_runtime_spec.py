@@ -295,39 +295,19 @@ def test_cuda_kokoro_default_model_uses_upstream_huggingface_id() -> None:
     assert spec.resolved_model() == "hexgrad/Kokoro-82M"
 
 
-def test_from_dict_coerces_legacy_cuda_string_options_for_runtime_options() -> None:
+def test_from_dict_reads_runtime_options_from_legacy_options() -> None:
     payload = {
-        "provider": "mlx",
+        "provider": "cpu",
         "engine": "kokoro",
         "model": "Kokoro-82M",
         "quantization": "bf16",
-        "device": "mps",
-        "options": {
-            "device_id": "1",
-            "use_tf32": "true",
-            "enable_cuda_graph": "false",
-            "gpu_mem_limit": "2147483648",
-            "dtype": "fp16",
-        },
+        "options": {"torch_compile": "true"},
     }
 
     spec = TTSRuntimeSpec.from_dict(payload)
-    kwargs = spec.factory_kwargs()
 
-    assert kwargs["runtime_options"] == {
-        "device_id": 1,
-        "dtype": "fp16",
-        "enable_cuda_graph": False,
-        "gpu_mem_limit": 2147483648,
-        "use_tf32": True,
-    }
-    assert spec.options == (
-        ("device_id", "1"),
-        ("dtype", "fp16"),
-        ("enable_cuda_graph", "false"),
-        ("gpu_mem_limit", "2147483648"),
-        ("use_tf32", "true"),
-    )
+    assert spec.factory_kwargs()["runtime_options"] == {"torch_compile": "true"}
+    assert spec.options == (("torch_compile", "true"),)
 
 
 def test_runtime_spec_round_trips_through_serialized_payload() -> None:
@@ -355,7 +335,7 @@ def test_from_legacy_preserves_cuda_kokoro_identity_until_runtime_load() -> None
         model="Kokoro-82M",
         provider="cuda",
         device="cuda:0",
-        options={"dtype": "fp16", "device_id": "1", "use_tf32": "true"},
+        options={"dtype": "fp16", "torch_compile": True},
     )
     restored = TTSRuntimeSpec.from_dict(spec.to_dict())
 
@@ -363,11 +343,7 @@ def test_from_legacy_preserves_cuda_kokoro_identity_until_runtime_load() -> None
     assert spec.device == "cuda:0"
     assert restored == spec
     assert restored.cache_key() == spec.cache_key()
-    assert dict(restored.runtime_options) == {
-        "device_id": 1,
-        "dtype": "fp16",
-        "use_tf32": True,
-    }
+    assert dict(restored.runtime_options) == {"dtype": "fp16", "torch_compile": True}
 
 
 def test_from_dict_preserves_cuda_kokoro_identity_until_runtime_load() -> None:

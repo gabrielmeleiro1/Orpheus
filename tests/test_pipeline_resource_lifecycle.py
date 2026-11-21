@@ -2,12 +2,22 @@
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock
+import wave
 
 import numpy as np
 import pytest
 
 from modules.pipeline.orchestrator import ConversionPipeline, PipelineConfig
 from modules.tts.strategies.base import SynthesisResult
+
+
+def _write_pcm16_wav(path, frames=4):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(24000)
+        wav_file.writeframes(np.ones(frames, dtype=np.int16).tobytes())
 
 
 def test_synthesis_closes_iterator_without_scheduling_more_chunks_on_cancel(tmp_path, monkeypatch):
@@ -44,29 +54,6 @@ def test_synthesis_closes_iterator_without_scheduling_more_chunks_on_cancel(tmp_
     assert pipeline._check_cancelled()
     assert processed == [0]
     assert closed == [True]
-
-
-def test_package_runtime_stops_batch_when_cancelled(monkeypatch):
-    from modules.tts.runtimes.kokoro_package import PackageKokoroRuntime
-    from modules.tts.strategies.base import SynthesisItem
-
-    runtime = object.__new__(PackageKokoroRuntime)
-    runtime.sample_rate = 24000
-    processed = []
-
-    def synthesize(text, *_args):
-        processed.append(text)
-        return np.ones(4, dtype=np.float32)
-
-    monkeypatch.setattr(runtime, "synthesize", synthesize)
-    results = list(runtime.iter_synthesize_batch(
-        items=[SynthesisItem(text=text, voice="am_adam", index=index)
-               for index, text in enumerate(["one", "two", "three"])],
-        cancel_requested=lambda: bool(processed),
-    ))
-
-    assert processed == ["one"]
-    assert len(results) == 1
 
 
 def test_force_shutdown_terminates_worker_descendants_before_workers(monkeypatch):
@@ -144,7 +131,6 @@ def test_cancelled_conversion_cleans_only_its_atomic_outputs_after_pool_stops(tm
 @pytest.mark.parametrize("background", [False, True])
 def test_aac_chapter_releases_master_after_required_encodes(tmp_path, monkeypatch, emit_mp3, background):
     from modules.pipeline.models import ChapterResult
-    from modules.pipeline.stages.encoding import write_wav_from_array
 
     pipeline = ConversionPipeline(PipelineConfig(
         output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
@@ -152,7 +138,7 @@ def test_aac_chapter_releases_master_after_required_encodes(tmp_path, monkeypatc
         enable_background_chapter_aac_encoding=background,
     ))
     master = pipeline.config.temp_dir / "chapter_01.wav"
-    write_wav_from_array(np.ones(4, dtype=np.float32), master, sample_rate=24000)
+    _write_pcm16_wav(master)
     events = []
     processor = pipeline.stages.chapter_processor
     mp3 = tmp_path / "chapter_01.mp3"
@@ -192,14 +178,13 @@ def test_aac_chapter_releases_master_after_required_encodes(tmp_path, monkeypatc
 
 def test_failed_aac_encode_keeps_master_for_recovery(tmp_path, monkeypatch):
     from modules.pipeline.models import ChapterResult
-    from modules.pipeline.stages.encoding import write_wav_from_array
 
     pipeline = ConversionPipeline(PipelineConfig(
         output_dir=tmp_path / "output", temp_dir=tmp_path / "temp",
         enable_chapter_aac_packaging=True, enable_background_chapter_aac_encoding=False,
     ))
     master = pipeline.config.temp_dir / "chapter_01.wav"
-    write_wav_from_array(np.ones(4, dtype=np.float32), master, sample_rate=24000)
+    _write_pcm16_wav(master)
 
     def encode_aac(**kwargs):
         raise RuntimeError("encode failed")
@@ -218,10 +203,9 @@ def test_failed_aac_encode_keeps_master_for_recovery(tmp_path, monkeypatch):
 
 def test_narration_releases_temporary_body_after_composition(tmp_path):
     from modules.pipeline.chapter_narration import add_chapter_narration
-    from modules.pipeline.stages.encoding import write_wav_from_array
 
     body = tmp_path / "body.wav"
-    write_wav_from_array(np.ones(4, dtype=np.float32), body, sample_rate=24000)
+    _write_pcm16_wav(body)
     runtime = SimpleNamespace(
         config=SimpleNamespace(temp_dir=tmp_path, conversion_mode="audiobook", voice="am_adam", speed=1),
         check_cancelled=lambda: False, tts_sample_rate=lambda: 24000,

@@ -208,7 +208,6 @@ class PipelineConfig:
     tts_worker_auto_mode: str = "memory_safe"
     tts_process_safe: bool = False
     enable_pipelining: bool = True
-    enable_chunk_overlap: bool = False
     enable_tts_file_batch_results: bool = False
     tts_file_batch_results_auto_threshold_chunks: int = 64
     keep_tts_engine_warm: bool = True
@@ -221,7 +220,6 @@ class PipelineConfig:
     device_memory_policy: Optional[DeviceMemoryPolicy] = None
     pre_chunk_document_cleanup: bool = True
     skip_non_prose_sections: bool = True
-    speech_normalization: bool = False
     worker_plan: WorkerPlan = field(init=False)
 
     def __post_init__(self) -> None:

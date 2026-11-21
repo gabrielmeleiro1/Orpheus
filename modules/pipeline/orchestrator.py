@@ -283,15 +283,6 @@ class ConversionPipeline:
             performance=performance,
         )
 
-    def estimate_eta(self) -> Optional[float]:
-        """
-        Estimate remaining time in seconds.
-
-        Returns:
-            Estimated seconds remaining, or None if not enough data
-        """
-        return self._progress.estimate_eta()
-
     def _build_worker_init_config(self) -> dict[str, Any]:
         """Serialize worker model settings used for per-process load and warm-up."""
         return build_worker_init_config(self.config)
@@ -627,10 +618,7 @@ class ConversionPipeline:
             return [
                 item
                 for item in self.config.temp_dir.iterdir()
-                if (
-                    item.is_dir()
-                    and (item.name.startswith("ch_") or item.name == "chapter_masters")
-                )
+                if (item.is_dir() and item.name.startswith("ch_"))
                 or (
                     item.is_file()
                     and item.name.startswith("chapter_")

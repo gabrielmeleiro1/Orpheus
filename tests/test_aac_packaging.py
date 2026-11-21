@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import gc
 import threading
-import weakref
+import wave
 from concurrent.futures import Future
 from contextlib import contextmanager
 from pathlib import Path
@@ -22,6 +21,17 @@ from modules.pipeline.result_validation import (
     select_packaging_audio_input,
     select_packaging_audio_inputs,
 )
+
+
+def _write_chapter_wav(directory: Path, number: int) -> Path:
+    path = directory / f"chapter_{number:02d}_narrated.wav"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(24_000)
+        wav_file.writeframes(np.zeros(24_000, dtype=np.int16).tobytes())
+    return path
 
 
 class TestPackagingInputSelection:
@@ -141,55 +151,6 @@ class TestBackgroundChapterAacEncoding:
         self._pipelines.append(pipeline)
         return pipeline
 
-    def test_background_aac_future_does_not_retain_chapter_numpy_array(
-        self,
-        tmp_path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        pipeline = self._pipeline(tmp_path)
-        chapter = SimpleNamespace(number=1, title="Chapter 1")
-        chapter_audio = np.zeros(24_000, dtype=np.float32)
-        audio_ref = weakref.ref(chapter_audio)
-
-        encode_started = threading.Event()
-        encode_release = threading.Event()
-        captured_sources: list[object] = []
-
-        def _blocked_encode_chapter_aac(*, context, chapter, chapter_wav, precomputed_rms=None, output_path=None):
-            captured_sources.append(chapter_wav)
-            encode_started.set()
-            assert encode_release.wait(timeout=2.0)
-            target = output_path or (context.config.temp_dir / f"chapter_{chapter.number:02d}.m4a")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"aac")
-            return target
-
-        monkeypatch.setattr(encoding_stage, "encode_chapter_aac", _blocked_encode_chapter_aac)
-
-        result = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
-        finalized = pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
-            result=result,
-            chapter_wav=chapter_audio,
-            chapter=chapter,
-            chapter_idx=0,
-            total_chapters=2,
-            output_dir=pipeline.config.output_dir,
-        )
-        del chapter_audio
-        gc.collect()
-
-        assert finalized.wav_path is not None
-        assert finalized.aac_future is not None
-        assert encode_started.wait(timeout=2.0)
-        assert audio_ref() is None, (
-            "queued AAC future must not retain the in-memory chapter array after WAV write"
-        )
-        assert captured_sources
-        assert all(isinstance(source, type(finalized.wav_path)) for source in captured_sources)
-
-        encode_release.set()
-        assert finalized.aac_future.result(timeout=2.0).exists()
-
     def test_background_aac_encoding_bounds_pending_work_to_one_inflight_encode(
         self,
         tmp_path,
@@ -215,7 +176,7 @@ class TestBackgroundChapterAacEncoding:
         first = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
         pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
             result=first,
-            chapter_wav=np.zeros(24_000, dtype=np.float32),
+            chapter_wav=_write_chapter_wav(pipeline.config.temp_dir, 1),
             chapter=SimpleNamespace(number=1, title="Chapter 1"),
             chapter_idx=0,
             total_chapters=2,
@@ -227,7 +188,7 @@ class TestBackgroundChapterAacEncoding:
             second_finalize_started.set()
             pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
                 result=ChapterResult(chapter_number=2, chapter_title="Chapter 2"),
-                chapter_wav=np.ones(24_000, dtype=np.float32),
+                chapter_wav=_write_chapter_wav(pipeline.config.temp_dir, 2),
                 chapter=SimpleNamespace(number=2, title="Chapter 2"),
                 chapter_idx=1,
                 total_chapters=2,
@@ -268,7 +229,7 @@ class TestBackgroundChapterAacEncoding:
         second = ChapterResult(chapter_number=2, chapter_title="Chapter 2")
         pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
             result=first,
-            chapter_wav=np.zeros(24_000, dtype=np.float32),
+            chapter_wav=_write_chapter_wav(pipeline.config.temp_dir, 1),
             chapter=SimpleNamespace(number=1, title="Chapter 1"),
             chapter_idx=0,
             total_chapters=2,
@@ -276,7 +237,7 @@ class TestBackgroundChapterAacEncoding:
         )
         pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
             result=second,
-            chapter_wav=np.ones(24_000, dtype=np.float32),
+            chapter_wav=_write_chapter_wav(pipeline.config.temp_dir, 2),
             chapter=SimpleNamespace(number=2, title="Chapter 2"),
             chapter_idx=1,
             total_chapters=2,
@@ -309,7 +270,7 @@ class TestBackgroundChapterAacEncoding:
         result = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
         pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
             result=result,
-            chapter_wav=np.zeros(24_000, dtype=np.float32),
+            chapter_wav=_write_chapter_wav(pipeline.config.temp_dir, 1),
             chapter=SimpleNamespace(number=1, title="Chapter 1"),
             chapter_idx=0,
             total_chapters=1,
@@ -362,7 +323,7 @@ class TestDurableChapterAacForRepair:
         result = ChapterResult(chapter_number=1, chapter_title="Chapter 1")
         finalized = pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
             result=result,
-            chapter_wav=np.zeros(24_000, dtype=np.float32),
+            chapter_wav=_write_chapter_wav(pipeline.config.temp_dir, 1),
             chapter=SimpleNamespace(number=1, title="Chapter 1"),
             chapter_idx=0,
             total_chapters=1,

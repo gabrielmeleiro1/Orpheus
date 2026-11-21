@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import logging
 import os
-from functools import partial
 from functools import lru_cache
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -25,7 +24,6 @@ __all__ = [
     "ParallelConfig",
     "VRAMBudget",
     "ParallelPipelineOrchestrator",
-    "get_optimal_worker_count",
     "create_parallel_config",
     "_init_worker",
     "get_worker_cached_models",
@@ -78,15 +76,6 @@ class VRAMBudget:
     safety_margin_gb: float = 1.0
 
     @property
-    def total_device_memory_gb(self) -> float:
-        """Compatibility-safe device-memory name for the old VRAM budget."""
-        return self.total_vram_gb
-
-    @total_device_memory_gb.setter
-    def total_device_memory_gb(self, value: float) -> None:
-        self.total_vram_gb = value
-
-    @property
     def available_vram_gb(self) -> float:
         """Calculate available VRAM for processing."""
         return self.total_vram_gb - self.reserved_vram_gb - self.safety_margin_gb
@@ -130,7 +119,7 @@ class ParallelConfig:
 
 class ParallelPipelineOrchestrator:
     """
-    Thin async facade over ``SharedWorkerPoolManager``.
+    Thin facade over ``SharedWorkerPoolManager``.
     """
 
     def __init__(
@@ -143,7 +132,6 @@ class ParallelPipelineOrchestrator:
         memory_policy: Optional[Any] = None,
     ):
         self.config = config or ParallelConfig()
-        self._cancelled = False
         self._pool_manager = pool_manager
         self._owns_pool_manager = pool_manager is None
         self._config_fingerprint = (
@@ -171,32 +159,17 @@ class ParallelPipelineOrchestrator:
         setattr(self._pool_manager, "_use_processes", self.config.use_processes)
         return self._pool_manager
 
-    def _effective_cancel_requested(
-        self,
-        cancel_requested: Callable[[], bool] | None,
-    ) -> Callable[[], bool]:
-        def _check() -> bool:
-            if self._cancelled:
-                return True
-            if cancel_requested is None:
-                return False
-            return bool(cancel_requested())
-
-        return _check
-
     def process_chapters_parallel(
         self,
         chapters: list[Any],
-        process_func: Callable[[Any, int, Any], Any],
+        process_func: Callable[[Any, int], Any],
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         cancel_requested: Callable[[], bool] | None = None,
     ) -> list[ChapterResult]:
         """
         Process chapters in parallel with VRAM-aware scheduling.
         """
-        if self._cancelled or (
-            cancel_requested is not None and bool(cancel_requested())
-        ):
+        if cancel_requested is not None and cancel_requested():
             return []
         if not chapters:
             return []
@@ -205,42 +178,18 @@ class ParallelPipelineOrchestrator:
         try:
             return pool_manager.run_parallel(
                 chapters=list(chapters),
-                process_func=partial(
-                    _process_chapter_wrapper,
-                    process_func=process_func,
-                ),
+                process_func=process_func,
                 progress_callback=progress_callback,
                 config_fingerprint=self._config_fingerprint,
                 max_workers=self.config.max_workers,
                 available_device_memory_gb=self.config.vram_budget.available_device_memory_gb,
                 worker_init_config=self._worker_init_config,
                 memory_policy=self._memory_policy,
-                cancel_requested=self._effective_cancel_requested(cancel_requested),
+                cancel_requested=cancel_requested,
             )
         finally:
             if self._owns_pool_manager and self._pool_manager is not None:
                 self._pool_manager.shutdown()
-
-    def cancel(self) -> None:
-        """Cancel parallel processing."""
-        self._cancelled = True
-
-
-def _process_chapter_wrapper(
-    chapter: Any,
-    chapter_idx: int,
-    _file_manager: Any,
-    process_func: Callable,
-) -> Any:
-    """
-    Wrapper for chapter processing in worker process.
-    """
-    _ = _file_manager
-    try:
-        return process_func(chapter, chapter_idx, None)
-    except Exception as e:
-        logger.error(f"Chapter {chapter_idx} processing failed: {e}")
-        raise
 
 
 # Convenience functions for pipeline configuration

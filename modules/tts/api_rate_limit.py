@@ -3,39 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import multiprocessing as mp
 import threading
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Optional
-
-
-def _invoke_acquire(acquire: Any, timeout: Optional[float]) -> Any:
-    """Call an acquire method using only a signature-compatible argument list."""
-    try:
-        signature = inspect.signature(acquire)
-    except (TypeError, ValueError):
-        # Built-in acquire methods generally expose the standard semaphore
-        # signature but cannot always be introspected. Invoke once so an
-        # internal TypeError is never mistaken for a signature mismatch.
-        if timeout is None:
-            return acquire()
-        return acquire(True, timeout)
-
-    candidates = [(), (True,)] if timeout is None else [(True, timeout), (timeout,)]
-    for args in candidates:
-        try:
-            signature.bind(*args)
-        except TypeError:
-            continue
-        return acquire(*args)
-
-    # Preserve the native error for an unsupported signature, without retrying
-    # after the method body has run.
-    if timeout is None:
-        return acquire()
-    return acquire(True, timeout)
 
 
 def _acquire_succeeded(result: Any) -> bool:
@@ -71,20 +43,28 @@ class _RecoverableSemaphore:
         self._condition = threading.Condition()
         self._parent_permits = 0
         self._worker_generation = None
+        self._wait_count = 0
+        self._wait_ms_total = 0.0
 
     def __reduce__(self):
         return _restore_worker_semaphore, (self._semaphore,)
 
     def acquire(self, block: bool = True, timeout: Optional[float] = None) -> bool:
         deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+        waited_since = None
         with self._condition:
             while True:
                 if self._semaphore.acquire(False):
                     self._parent_permits += 1
+                    if waited_since is not None:
+                        self._wait_count += 1
+                        self._wait_ms_total += (time.monotonic() - waited_since) * 1000
                     return True
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if not block or (remaining is not None and remaining <= 0):
                     return False
+                if waited_since is None:
+                    waited_since = time.monotonic()
                 # Worker releases cannot notify a parent-thread condition.
                 self._condition.wait(0.01 if remaining is None else min(0.01, remaining))
 
@@ -95,6 +75,11 @@ class _RecoverableSemaphore:
             self._semaphore.release()
             self._parent_permits -= 1
             self._condition.notify()
+
+    def wait_stats(self) -> tuple[int, float]:
+        """Parent requests that queued for a permit, and their total wait."""
+        with self._condition:
+            return self._wait_count, self._wait_ms_total
 
     def begin_worker_generation(self):
         with self._condition:
@@ -126,48 +111,21 @@ class GlobalAPILimiter:
 
     def __init__(self, max_concurrency: int):
         self.max_concurrency = max(1, int(max_concurrency))
-        self._semaphore = None
-        self._stats_lock = threading.Lock()
-        self._wait_count = 0
-        self._wait_ms_total = 0.0
-
-        # Keep construction lightweight while preserving process sharing for
-        # process-backed chapter workers. Stats remain local to this process.
+        # Process workers receive the raw semaphore, so wait stats cover only
+        # requests made from this process.
         self._semaphore = _RecoverableSemaphore(self.max_concurrency)
 
     @property
     def semaphore(self):
         return self._semaphore
 
-    def acquire(self, timeout: Optional[float] = None) -> None:
-        if self._semaphore is None:
-            return
-
-        start = time.perf_counter()
-        acquired = _invoke_acquire(self._semaphore.acquire, timeout)
-        if not _acquire_succeeded(acquired):
-            raise TimeoutError("Global API limiter acquire timed out")
-
-        wait_ms = (time.perf_counter() - start) * 1000
-        if wait_ms <= 0:
-            return
-
-        with self._stats_lock:
-            self._wait_count += 1
-            self._wait_ms_total += wait_ms
-
-    def release(self) -> None:
-        if self._semaphore is None:
-            return
-        self._semaphore.release()
-
     def snapshot(self) -> dict[str, float | int]:
-        with self._stats_lock:
-            return {
-                "max_concurrency": self.max_concurrency,
-                "wait_count": self._wait_count,
-                "wait_ms_total": round(self._wait_ms_total, 2),
-            }
+        wait_count, wait_ms_total = self._semaphore.wait_stats()
+        return {
+            "max_concurrency": self.max_concurrency,
+            "wait_count": wait_count,
+            "wait_ms_total": round(wait_ms_total, 2),
+        }
 
     def shutdown(self) -> None:
         """No-op: the semaphore is process-shared and owns no manager process."""
@@ -191,7 +149,9 @@ async def acquire_global_limiter_async(
         return
 
     def _acquire() -> bool:
-        return _acquire_succeeded(_invoke_acquire(limiter.acquire, timeout))
+        if timeout is None:
+            return _acquire_succeeded(limiter.acquire())
+        return _acquire_succeeded(limiter.acquire(True, timeout))
 
     acquire_task = asyncio.create_task(asyncio.to_thread(_acquire))
     try:

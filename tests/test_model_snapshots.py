@@ -217,8 +217,6 @@ def test_mlx_cleaner_loads_verified_snapshot_without_main_reference(monkeypatch,
     cleaner = SimpleNamespace(
         config=SimpleNamespace(model_name=model_name, cache_model=False),
         _loaded=False,
-        _manager=Mock(),
-        unload=Mock(),
     )
     cleaner_mlx.CleanerMLXStrategy().load(cleaner)
     assert (cleaner._model, cleaner._tokenizer) == (model, tokenizer)
@@ -279,6 +277,7 @@ def test_mlx_generation_uses_snapshot_voice_files_without_main_reference(
         _model_path=model_name,
         _model=model,
         _model_lock=threading.Lock(),
+        _voice_snapshot=None,
         config=SimpleNamespace(sample_rate=24000),
     )
 
@@ -351,6 +350,7 @@ def test_mlx_voice_parser_loads_intact_snapshot_paths_containing_commas(
     pipeline_module.load_voice_tensor.side_effect = lambda path: packs[Path(path).stem]
     engine = SimpleNamespace(
         _model_path=model_name, _model=object(), _model_lock=threading.Lock(),
+        _voice_snapshot=None,
         config=SimpleNamespace(sample_rate=24000),
     )
 
@@ -424,7 +424,7 @@ def test_mlx_loaders_accept_explicit_local_paths(monkeypatch, tmp_path):
         assert tts_load.call_args.kwargs["model_path"] == tmp_path
         cleaner = SimpleNamespace(
             config=SimpleNamespace(model_name=model_name, cache_model=False),
-            _loaded=False, _manager=Mock(), unload=Mock(),
+            _loaded=False,
         )
         cleaner_mlx.CleanerMLXStrategy().load(cleaner)
         cleaner_load.assert_called_with(model_name, tokenizer_config={"local_files_only": True})
@@ -460,7 +460,7 @@ def test_damaged_snapshot_is_rejected_before_mlx_loading(monkeypatch, offline_sn
             mlx_compat.load_tts_model(model_name)
         cleaner = SimpleNamespace(
             config=SimpleNamespace(model_name=model_name, cache_model=False),
-            _loaded=False, _manager=Mock(), unload=Mock(),
+            _loaded=False,
         )
         with pytest.raises(RuntimeError, match="Incomplete or damaged cache"):
             cleaner_mlx.CleanerMLXStrategy().load(cleaner)

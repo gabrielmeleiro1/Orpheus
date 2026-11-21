@@ -34,23 +34,21 @@ def _write_wav(path, duration_ms=240):
         output.setsampwidth(2)
         output.setframerate(24000)
         output.writeframes(pcm.tobytes())
-    return pcm.astype(np.float32) / 32768
 
 
-@pytest.mark.parametrize("source", ["wav", "array"])
 @pytest.mark.parametrize("suffix,codec", [("mp3", "mp3"), ("m4a", "aac")])
 def test_encoding_preserves_audio_with_unicode_and_quoted_paths(
-    tmp_path, encoder, source, suffix, codec
+    tmp_path, encoder, suffix, codec
 ):
     folder = tmp_path / "音声 author's chapters"
     folder.mkdir()
     # A double quote cannot occur in a Windows filename.
     quote = '"' if os.name != "nt" else "“"
     wav = folder / f"entrée {quote}one{quote}.wav"
-    audio = _write_wav(wav)
+    _write_wav(wav)
     output = wav.with_suffix(f".{suffix}")
-    method = getattr(encoder, f"{source}_to_{'mp3' if suffix == 'mp3' else 'aac'}")
-    assert method(wav if source == "wav" else audio, output) == output
+    method = encoder.wav_to_mp3 if suffix == "mp3" else encoder.wav_to_aac
+    assert method(wav, output) == output
     assert encoder.get_duration(output) == pytest.approx(0.24, abs=0.10)
     probe = run_ffmpeg_command(
         [resolve_ffmpeg_binary("ffprobe"), "-v", "error", "-show_streams",

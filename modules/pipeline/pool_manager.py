@@ -30,6 +30,7 @@ from .worker_runtime import _init_worker
 logger = logging.getLogger(__name__)
 
 _WAIT_POLL_TIMEOUT_SECONDS = 0.25
+_STARTUP_BARRIER_GRACE_SECONDS = 5.0
 
 __all__ = [
     "SharedWorkerPoolManager",
@@ -98,6 +99,9 @@ class SharedWorkerPoolManager:
         self._current_completed: set[int] = set()
         self._current_failed: set[int] = set()
         self._current_chapter_titles: dict[int, str] = {}
+        # Production always uses processes; tests switch to threads as a seam.
+        # Thread workers share one process, so _init_worker's process-global
+        # model slots do not model real per-worker state there.
         self._use_processes = True
         self._shutdown_timeout_seconds = max(0.0, float(shutdown_timeout_seconds))
         self._startup_probe_timeout_seconds = max(0.0, float(startup_probe_timeout_seconds))
@@ -315,14 +319,7 @@ class SharedWorkerPoolManager:
     ) -> None:
         if progress_callback is None:
             return
-        performance = self._current_performance_snapshot()
-        try:
-            progress_callback(current, total, message, performance)
-        except TypeError as original_error:
-            try:
-                progress_callback(current, total, message)
-            except TypeError:
-                raise original_error
+        progress_callback(current, total, message, self._current_performance_snapshot())
 
     @staticmethod
     def _is_cancel_requested(cancel_requested: Callable[[], bool] | None) -> bool:
@@ -376,12 +373,20 @@ class SharedWorkerPoolManager:
                 generation = limiter.begin_worker_generation()
                 init_config["cleaner_api_global_limiter"] = generation
             mp_context = mp.get_context("spawn")
+            # A barrier broken by its timeout lets a ready worker report
+            # success before its siblings answer, so the parent's deadline
+            # must always expire first.
+            startup_barrier = mp_context.Barrier(
+                max_workers,
+                timeout=self._startup_timeout_seconds(max_workers)
+                + _STARTUP_BARRIER_GRACE_SECONDS,
+            )
             try:
                 self._state.executor = ProcessPoolExecutor(
                     max_workers=max_workers,
                     mp_context=mp_context,
                     initializer=_init_worker,
-                    initargs=(available_vram_gb, max_workers, init_config),
+                    initargs=(available_vram_gb, max_workers, init_config, startup_barrier),
                 )
             except Exception:
                 if generation is not None:
@@ -402,6 +407,12 @@ class SharedWorkerPoolManager:
         self._state.use_processes = self._use_processes
         self._last_start_ms = round(time.time() * 1000, 2)
 
+    def _startup_timeout_seconds(self, worker_count: int) -> float:
+        # Workers load their models at the same time and contend for one disk,
+        # memory pool and accelerator, so a cold start of N workers can take up
+        # to N times as long as one. The configured timeout is per worker.
+        return self._startup_probe_timeout_seconds * max(1, worker_count)
+
     def _run_startup_probes_locked(self) -> None:
         executor = self._state.executor
         if executor is None:  # pragma: no cover - defensive guard
@@ -414,7 +425,8 @@ class SharedWorkerPoolManager:
             executor.submit(_worker_startup_probe) for _ in range(probe_count)
         ]
         failures: list[WorkerStartupStatus] = []
-        deadline = time.monotonic() + self._startup_probe_timeout_seconds
+        startup_timeout = self._startup_timeout_seconds(probe_count)
+        deadline = time.monotonic() + startup_timeout
         pending = set(futures)
         while pending:
             if self._stop_requested.is_set():
@@ -434,8 +446,7 @@ class SharedWorkerPoolManager:
             provider = str(runtime_config.get("provider") or provider)
             device = runtime_config.get("device")
         timeout_message = (
-            "worker startup probe timed out after "
-            f"{self._startup_probe_timeout_seconds:g}s"
+            f"worker startup probe timed out after {startup_timeout:g}s"
         )
 
         for future in futures:
@@ -487,9 +498,12 @@ class SharedWorkerPoolManager:
         Restarts the pool when fingerprint or worker count changes. A started
         pool that then sits unused is shut down after the idle timeout.
         """
-        self._cancel_idle_shutdown()
-        self._ensure_started_impl(config_fingerprint, **kwargs)
-        self._schedule_idle_shutdown()
+        # Holding the run lock keeps a restart from replacing the executor
+        # under an active run_parallel.
+        with self._run_lock:
+            self._cancel_idle_shutdown()
+            self._ensure_started_impl(config_fingerprint, **kwargs)
+            self._schedule_idle_shutdown()
 
     def _ensure_started_impl(
         self,
@@ -582,7 +596,7 @@ class SharedWorkerPoolManager:
         self,
         *,
         chapters: list[Any],
-        process_func: Callable[[Any, int, Any], Any],
+        process_func: Callable[[Any, int], Any],
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         config_fingerprint: Any,
         max_workers: Optional[int] = None,
@@ -615,7 +629,7 @@ class SharedWorkerPoolManager:
         self,
         *,
         chapters: list[Any],
-        process_func: Callable[[Any, int, Any], Any],
+        process_func: Callable[[Any, int], Any],
         progress_callback: Optional[Callable[[int, int, str], None]] = None,
         config_fingerprint: Any,
         max_workers: Optional[int] = None,
@@ -662,7 +676,7 @@ class SharedWorkerPoolManager:
             if memory_policy is not None:
                 should_submit_more = getattr(memory_policy, "should_submit_more", None)
                 if callable(should_submit_more) and not should_submit_more(
-                    len(submitted)
+                    len(submitted), workers_resident=True
                 ):
                     return False
 
@@ -671,7 +685,7 @@ class SharedWorkerPoolManager:
                 chapter = chapters[idx]
                 next_idx += 1
                 try:
-                    future = executor.submit(process_func, chapter, idx, None)
+                    future = executor.submit(process_func, chapter, idx)
                 except Exception as exc:
                     results[idx] = self._chapter_error_result(chapter, idx, str(exc))
                     completed += 1

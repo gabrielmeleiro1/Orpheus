@@ -25,6 +25,7 @@ _WORKER_PIPELINE_CONFIG: Any = None
 _WORKER_INIT_STATUS: Optional[WorkerStartupStatus] = None
 _WORKER_PROVIDER: str = "unknown"
 _WORKER_DEVICE: Optional[str] = None
+_WORKER_STARTUP_BARRIER: Any = None
 
 
 def _runtime_spec_from_worker_config(worker_init_config: dict[str, Any]):
@@ -114,6 +115,7 @@ def _init_worker(
     available_vram_gb: float,
     active_workers: int = 1,
     worker_init_config: Optional[dict[str, Any]] = None,
+    startup_barrier: Any = None,
 ) -> None:
     """
     Initialize worker process.
@@ -126,8 +128,10 @@ def _init_worker(
         _WORKER_PIPELINE_CONFIG, \
         _WORKER_INIT_STATUS, \
         _WORKER_PROVIDER, \
-        _WORKER_DEVICE
+        _WORKER_DEVICE, \
+        _WORKER_STARTUP_BARRIER
 
+    _WORKER_STARTUP_BARRIER = startup_barrier
     _start_parent_watchdog()
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
@@ -262,7 +266,22 @@ def get_worker_cached_config() -> Any:
 
 
 def get_worker_startup_status() -> WorkerStartupStatus:
-    """Return the worker startup status for startup probes."""
+    """Return the worker startup status for startup probes.
+
+    A process pool submits one probe per worker. Waiting on the startup barrier
+    keeps the first ready worker from answering every probe while its siblings
+    are still loading models. A worker whose own initialization failed breaks
+    the barrier instead: startup has failed whatever its siblings report, so
+    it answers at once with its real failure and releases any waiting worker.
+    """
+    if _WORKER_STARTUP_BARRIER is not None:
+        if _WORKER_INIT_STATUS is not None:
+            _WORKER_STARTUP_BARRIER.abort()
+        else:
+            try:
+                _WORKER_STARTUP_BARRIER.wait()
+            except threading.BrokenBarrierError:
+                pass
     if _WORKER_INIT_STATUS is None:
         return WorkerStartupStatus(
             success=True,

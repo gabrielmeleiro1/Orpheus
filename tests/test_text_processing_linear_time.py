@@ -79,7 +79,6 @@ def test_speech_typography_cost_does_not_rescan_the_chapter_per_chunk():
 
     class Runtime:
         class config:
-            speech_normalization = False
             voice = "am_adam"
             speed = 1.0
 

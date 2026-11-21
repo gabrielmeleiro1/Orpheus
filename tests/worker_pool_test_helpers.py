@@ -199,10 +199,9 @@ class ProgressCapture:
         chunk_idx: int,
         total_chunks: int,
         message: str,
-        eta: float | None,
         performance: dict[str, Any] | None = None,
     ) -> None:
-        _ = stage, chapter_idx, total_chapters, chunk_idx, total_chunks, eta
+        _ = stage, chapter_idx, total_chapters, chunk_idx, total_chunks
         self.messages.append(message)
         if performance:
             self.payloads.append(performance)

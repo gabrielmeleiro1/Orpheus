@@ -22,9 +22,18 @@ from modules.tts.cleaner_config import CleanerConfig
 from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
 
 
+def _write_pcm16_wav(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(24_000)
+        wav_file.writeframes(np.zeros(24_000, dtype=np.int16).tobytes())
+    return path
+
+
 @pytest.mark.benchmark
 def test_wav_master_packaging_skips_redundant_mp3_encode_stage(tmp_path: Path) -> None:
-    audio = np.zeros(24_000, dtype=np.float32)
     chapter = SimpleNamespace(number=1, title="Chapter 1")
 
     def _run_finalize(*, emit_chapter_mp3_artifacts: bool) -> float:
@@ -48,7 +57,7 @@ def test_wav_master_packaging_skips_redundant_mp3_encode_stage(tmp_path: Path) -
             started_at = time.perf_counter()
             finalized = pipeline.stages.chapter_processor.finalize_chapter_encoding(  # noqa: SLF001
                 result=result,
-                chapter_wav=audio,
+                chapter_wav=_write_pcm16_wav(cfg.temp_dir / "chapter_01_narrated.wav"),
                 chapter=chapter,
                 chapter_idx=0,
                 total_chapters=1,
@@ -128,7 +137,6 @@ def test_cleaner_api_batch_trace_throughput_with_bounded_concurrency() -> None:
     cleaner._loaded = True
     cleaner._model = None
     cleaner._tokenizer = None
-    cleaner._manager = None
     cleaner._model_lock = threading.RLock()
     cleaner._total_chunks_cleaned = 0
     cleaner._total_time_ms = 0
@@ -254,7 +262,6 @@ def test_file_backed_normalization_avoids_full_wav_read(tmp_path: Path) -> None:
         Path(output_path).write_bytes(b"mp3")
 
     fake_encoder.wav_to_mp3.side_effect = _wav_to_mp3
-    fake_encoder.array_to_mp3.side_effect = AssertionError("file-backed WAV should stream via ffmpeg")
 
     with patch("modules.audio.encoder.AudioEncoder", return_value=fake_encoder):
         mp3_path, duration_ms = pipeline.stages.chapter_processor.encode_chapter_audio(
@@ -290,7 +297,6 @@ def test_cleaner_api_batch_reuses_single_client_session() -> None:
     cleaner._loaded = True
     cleaner._model = None
     cleaner._tokenizer = None
-    cleaner._manager = None
     cleaner._model_lock = threading.RLock()
     cleaner._total_chunks_cleaned = 0
     cleaner._total_time_ms = 0

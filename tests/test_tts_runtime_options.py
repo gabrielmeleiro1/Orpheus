@@ -61,7 +61,7 @@ def test_cuda_shaped_payload_resolves_typed_fields_and_provider_options() -> Non
             "compile_mode": "cuda_graph",
             "batch_policy": "static",
             "model_path": "/models/kokoro.onnx",
-            "provider_options": {"use_tf32": 1, "device_id": 1},
+            "provider_options": {"torch_compile": True},
         }
     )
 
@@ -71,8 +71,8 @@ def test_cuda_shaped_payload_resolves_typed_fields_and_provider_options() -> Non
     assert options.compile_mode == "cuda_graph"
     assert options.batch_policy == "static"
     assert options.model_path == "/models/kokoro.onnx"
-    assert options.provider_options == (("device_id", "1"), ("use_tf32", "1"))
-    assert options.runtime_provider_options == (("device_id", 1), ("use_tf32", 1))
+    assert options.provider_options == (("torch_compile", "true"),)
+    assert options.runtime_provider_options == (("torch_compile", True),)
 
 
 def test_unknown_top_level_tts_option_fails_with_specific_message() -> None:
@@ -81,8 +81,10 @@ def test_unknown_top_level_tts_option_fails_with_specific_message() -> None:
 
 
 def test_provider_options_are_sorted_and_string_normalized() -> None:
-    options = TTSRuntimeOptions.from_payload(
-        {"provider_options": {"z": True, "a": 2, "none": None}}
+    options = TTSRuntimeOptions(
+        runtime_provider_options=TTSRuntimeSpec.canonicalize_runtime_options(
+            {"z": True, "a": 2, "none": None}
+        ),
     )
 
     assert options.provider_options == (("a", "2"), ("none", "null"), ("z", "true"))
@@ -184,12 +186,39 @@ def test_runtime_options_use_configured_tts_provider_and_model(tmp_path) -> None
 def test_validation_helpers_reject_invalid_cuda_device_and_provider_options() -> None:
     validate_quantization("cuda", "fp16")
     validate_device("cuda", "cuda:0")
-    validate_provider_options("cuda", {"device_id": "0", "enable_cuda_graph": "1"})
 
     with pytest.raises(ValueError, match="CUDA device"):
         validate_device("cuda", "mps")
-    with pytest.raises(ValueError, match="Unsupported CUDA provider option"):
+    with pytest.raises(ValueError, match="Unsupported cuda provider option"):
         validate_provider_options("cuda", {"not_a_cuda_option": "1"})
+
+
+@pytest.mark.parametrize("provider", ["cuda", "cpu", None])
+def test_documented_torch_compile_option_is_accepted_where_the_package_runtime_reads_it(
+    provider,
+) -> None:
+    options = TTSRuntimeOptions.from_payload(
+        {"provider": provider, "provider_options": {"torch_compile": True}},
+    )
+
+    assert dict(options.runtime_provider_options) == {"torch_compile": True}
+
+
+@pytest.mark.parametrize(
+    ("provider", "provider_options"),
+    [
+        ("cuda", {"gpu_mem_limit": 1}),
+        ("cuda", {"enable_cuda_graph": True}),
+        ("cpu", {"anything": [1, 2]}),
+        ("mlx", {"anything": [1, 2]}),
+        ("mlx", {"torch_compile": True}),
+    ],
+)
+def test_provider_options_no_runtime_reads_are_rejected(provider, provider_options) -> None:
+    with pytest.raises(ValueError, match="Unsupported .*provider option"):
+        TTSRuntimeOptions.from_payload(
+            {"provider": provider, "provider_options": provider_options},
+        )
 
 
 def test_from_payload_defers_quantization_validation_until_runtime_options() -> None:
@@ -233,7 +262,7 @@ def test_provider_only_in_provider_options_resolves_cuda_spec() -> None:
         {
             "device": "cuda:0",
             "dtype": "fp16",
-            "provider_options": {"provider": "cuda", "device_id": 0},
+            "provider_options": {"provider": "cuda", "torch_compile": True},
         }
     )
 
@@ -244,7 +273,7 @@ def test_provider_only_in_provider_options_resolves_cuda_spec() -> None:
     spec = options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
     assert spec.provider == "cuda"
     assert spec.device == "cuda:0"
-    assert dict(spec.runtime_options)["device_id"] == 0
+    assert dict(spec.runtime_options)["torch_compile"] is True
 
 
 def test_device_cuda_infers_provider_without_explicit_provider() -> None:
@@ -299,10 +328,6 @@ def test_runtime_options_reject_non_cuda_provider_with_cuda_shape() -> None:
     with pytest.raises(ValueError, match="cannot use CUDA device"):
         TTSRuntimeOptions.from_payload({"provider": "mlx", "device": "cuda:0"})
 
-    with pytest.raises(ValueError, match="CUDA provider option"):
-        TTSRuntimeOptions.from_payload(
-            {"provider": "mlx", "provider_options": {"enable_cuda_graph": True}}
-        )
 
 
 def test_resolve_tts_runtime_rejects_spec_and_options_runtime_option_conflicts() -> None:
@@ -353,18 +378,18 @@ def test_spec_options_preserves_typed_runtime_provider_options() -> None:
     }
 
 
-def test_from_serialized_coerces_legacy_provider_options_to_runtime_types() -> None:
+def test_from_serialized_reads_legacy_provider_options_as_runtime_options() -> None:
     options = TTSRuntimeOptions.from_serialized(
         {
             "provider": "cuda",
             "device": "cuda:0",
-            "provider_options": {"device_id": "1", "use_tf32": "true"},
+            "provider_options": {"torch_compile": "true"},
         }
     )
 
-    assert options.runtime_provider_options == (("device_id", 1), ("use_tf32", True))
+    assert options.runtime_provider_options == (("torch_compile", "true"),)
     spec = options.to_runtime_spec("kokoro", {"tts_quantization": "bf16"})
-    assert spec.factory_kwargs()["runtime_options"] == {"device_id": 1, "use_tf32": True}
+    assert spec.factory_kwargs()["runtime_options"] == {"torch_compile": "true"}
 
 
 def test_pipeline_and_worker_runtime_specs_stay_aligned(tmp_path: Path) -> None:

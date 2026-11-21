@@ -19,7 +19,6 @@ def make_loaded_cleaner(backend: str = "mlx") -> TextCleaner:
     cleaner._loaded = True
     cleaner._model = object()
     cleaner._tokenizer = object()
-    cleaner._manager = None
     cleaner._model_lock = threading.RLock()
     cleaner._total_chunks_cleaned = 0
     cleaner._total_time_ms = 0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from modules.tts.cleaner_backends.registry import get_cleaner_backend, validate_cleaner_backend
@@ -71,7 +72,6 @@ def make_partial_text_cleaner(
     cleaner._model = object() if loaded else None
     cleaner._tokenizer = object() if loaded else None
     cleaner._loaded = loaded
-    cleaner._manager = None
     cleaner._model_lock = threading.RLock()
     cleaner._api_ssl_context_cache = None
     cleaner._total_chunks_cleaned = 0
@@ -88,3 +88,12 @@ def attach_cleaner_backend_strategy(cleaner: TextCleaner) -> TextCleaner:
         validate_cleaner_backend(cleaner.config.backend)
     )
     return cleaner
+
+
+def fake_mlx_stream(respond):  # noqa: ANN001, ANN201
+    """Adapt a fake ``(model, tokenizer, **kwargs) -> str`` to mlx-lm ``stream_generate``."""
+
+    def stream_generate(model, tokenizer, **kwargs):  # noqa: ANN001, ANN202
+        yield SimpleNamespace(text=respond(model, tokenizer, **kwargs))
+
+    return stream_generate

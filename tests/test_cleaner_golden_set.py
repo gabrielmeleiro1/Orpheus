@@ -14,7 +14,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 import modules.tts.cleaner as cleaner_module
 from modules.tts.cleaner import TextCleaner
 from modules.tts.cleaner_config import CleanerConfig
-from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy
+from tests.fixtures.fake_cleaner_backend import attach_cleaner_backend_strategy, fake_mlx_stream
 
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "cleaner_golden_samples.json"
@@ -30,7 +30,6 @@ def _make_rule_only_cleaner() -> TextCleaner:
     cleaner._loaded = False
     cleaner._model = None
     cleaner._tokenizer = None
-    cleaner._manager = None
     cleaner._model_lock = threading.RLock()
     cleaner._total_chunks_cleaned = 0
     cleaner._total_time_ms = 0
@@ -68,7 +67,7 @@ def test_llm_fixes_trace_artifacts(sample: dict[str, object], monkeypatch: pytes
         return str(sample["expected_clean"])
 
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", _fake_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "stream_generate", fake_mlx_stream(_fake_generate))
 
     cleaned = cleaner.clean(str(sample["dirty"]))
     assert cleaned == sample["expected_clean"]

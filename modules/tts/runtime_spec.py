@@ -37,25 +37,9 @@ KOKORO_PACKAGE_DEFAULT_MODEL = "hexgrad/Kokoro-82M"
 CLEANER_MLX_DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
 CLEANER_CUDA_DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
-# CUDA provider option names and coercion keys (single source of truth).
-CUDA_RUNTIME_OPTION_BOOL_KEYS = frozenset(
-    {
-        "cudnn_conv1d_pad_to_nc1d",
-        "cudnn_conv_use_max_workspace",
-        "do_copy_in_default_stream",
-        "enable_cuda_graph",
-        "prefer_nhwc",
-        "use_tf32",
-    }
-)
-CUDA_RUNTIME_OPTION_INT_KEYS = frozenset({"device_id", "gpu_mem_limit"})
-CUDA_PROVIDER_OPTION_KEYS = CUDA_RUNTIME_OPTION_BOOL_KEYS | CUDA_RUNTIME_OPTION_INT_KEYS | frozenset(
-    {
-        "arena_extend_strategy",
-        "cudnn_conv_algo_search",
-        "user_compute_stream",
-    }
-)
+# Provider options a runtime actually reads: only the package (CPU/CUDA)
+# runtime's opt-in decoder compilation.
+PACKAGE_RUNTIME_OPTION_KEYS = frozenset({"torch_compile"})
 
 
 @dataclass(frozen=True)
@@ -96,9 +80,7 @@ class TTSRuntimeSpec:
             model=_normalize_text(model),
             quantization=normalized_quantization,
             device=None if str(device).strip().lower() == "auto" else _normalize_text(device),
-            runtime_options=cls.canonicalize_runtime_options(
-                cls.coerce_legacy_runtime_options(options)
-            ),
+            runtime_options=cls.canonicalize_runtime_options(options),
         )
         from modules.tts.runtime_options import validate_device, validate_quantization
 
@@ -134,50 +116,6 @@ class TTSRuntimeSpec:
                 return "mlx"
             return "cuda" if cls.cuda_available_on_current_platform() else "cpu"
         return "local"
-
-    @staticmethod
-    def _coerce_bool_value(value: object) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized == "true":
-                return True
-            if normalized == "false":
-                return False
-        return bool(value)
-
-    @staticmethod
-    def _coerce_int_value(value: object) -> int:
-        if isinstance(value, int) and not isinstance(value, bool):
-            return value
-        return int(str(value).strip())
-
-    @classmethod
-    def coerce_legacy_runtime_option_value(cls, key: str, value: object) -> object:
-        if key in CUDA_RUNTIME_OPTION_INT_KEYS:
-            return cls._coerce_int_value(value)
-        if key in CUDA_RUNTIME_OPTION_BOOL_KEYS:
-            return cls._coerce_bool_value(value)
-        return value
-
-    @classmethod
-    def coerce_legacy_runtime_options(
-        cls,
-        options: Mapping[str, object] | None,
-    ) -> dict[str, object]:
-        if not options:
-            return {}
-        coerced: dict[str, object] = {}
-        for key, value in options.items():
-            normalized_key = str(key).strip()
-            if not normalized_key:
-                continue
-            coerced[normalized_key] = cls.coerce_legacy_runtime_option_value(
-                normalized_key,
-                value,
-            )
-        return coerced
 
     @staticmethod
     def _stable_option_value(value: object) -> str:
@@ -289,10 +227,8 @@ class TTSRuntimeSpec:
                         "Serialized TTS runtime options disagree across "
                         "options and runtime_options."
                     )
-        elif option_mapping is not None:
-            runtime_option_mapping = cls.coerce_legacy_runtime_options(option_mapping)
         else:
-            runtime_option_mapping = None
+            runtime_option_mapping = option_mapping
         normalized_engine = (_normalize_text(payload.get("engine")) or "kokoro").lower()
         normalized_provider = canonical_provider(
             _normalize_text(payload.get("provider")) or cls.default_provider(normalized_engine)

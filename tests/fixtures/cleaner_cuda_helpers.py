@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -52,10 +51,6 @@ def make_partial_cuda_cleaner(
     cleaner._model = object() if loaded else None
     cleaner._tokenizer = object() if loaded else None
     cleaner._loaded = loaded
-    cleaner._manager = SimpleNamespace(
-        ensure_can_load=lambda *_args, **_kwargs: None,
-        register_model=lambda *_args, **_kwargs: None,
-    )
     cleaner._model_lock = threading.RLock()
     cleaner._api_ssl_context_cache = None
     cleaner._total_chunks_cleaned = 0

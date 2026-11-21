@@ -391,11 +391,11 @@ def rule_based_clean(text: str) -> str:
         r"(?:(?<![\w¶§])|(?<=\w[¶§]))[¶§]+(?![\w¶§]|\s*(?:\d|[IVXLCDM]+\b))", " ", text,
     )
     text = re.sub(r"\s+", " ", text)
-    text = re.sub(r"\n\s*\n", "\n\n", text)
     text = re.sub(r"(?<!\s)\s+([,.!?;:])", r"\1", text)
-    text = re.sub(r"([,.!?;:])([A-Za-z])", r"\1 \2", text)
-    text = re.sub(r"\be\.\s+g\.", "e.g.", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bi\.\s+e\.", "i.e.", text, flags=re.IGNORECASE)
+    text = re.sub(r"([,!?;:])([A-Za-z])", r"\1 \2", text)
+    # A period is a joined sentence boundary only after a word and before a
+    # capital; elsewhere it belongs to an initialism (Ph.D., p.m.) or a domain.
+    text = re.sub(r"(?<=[a-z]{2})\.(?=[A-Z])", ". ", text)
     text = strip_trailing_numeric_source_note(text)
     text = repair_split_uppercase_word_fragments(text)
     text = repair_spaced_caps_em_dash_attributions(text)

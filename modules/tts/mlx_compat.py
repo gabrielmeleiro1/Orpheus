@@ -25,17 +25,26 @@ _GENERATE_AUDIO_SIGNATURE_PARAM_CACHE_LOCK = threading.Lock()
 _VOICE_SNAPSHOT: ContextVar[tuple[str, str] | None] = ContextVar("voice_snapshot", default=None)
 
 
-@contextmanager
-def use_installed_voices(model_path: str):
-    """Resolve voice IDs after upstream blend parsing, within this generation."""
+def installed_voice_snapshot(model_path: str) -> tuple[str, str]:
+    """Verify the installed snapshot and prepare voice loading from it.
+
+    Verification re-checks the download receipt (tens of milliseconds), so
+    engines run it once per model load rather than once per chunk.
+    """
     resolved = installed_model_path(model_path)
-    snapshot = None
     if MLX_AVAILABLE or "mlx_audio.tts.models.kokoro.pipeline" in sys.modules:
         from mlx_audio.tts.models.kokoro.pipeline import KokoroPipeline
 
         require_local_phonemizer()
         patch_mlx_voice_loader_compat(KokoroPipeline)
-        snapshot = (model_path, resolved)
+    return (model_path, resolved)
+
+
+@contextmanager
+def use_installed_voices(model_path: str, snapshot: tuple[str, str] | None = None):
+    """Resolve voice IDs after upstream blend parsing, within this generation."""
+    if snapshot is None:
+        snapshot = installed_voice_snapshot(model_path)
     token = _VOICE_SNAPSHOT.set(snapshot)
     try:
         yield

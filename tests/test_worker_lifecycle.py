@@ -170,14 +170,15 @@ def test_startup_probe_timeouts_share_one_deadline_and_are_infrastructure_failur
         elapsed = time.perf_counter() - started_at
 
     executor = PendingStartupProbeExecutor.instances[0]
-    # One shared deadline, not 0.2s for each of the four probes (0.8s).
-    assert elapsed < 0.6
+    # One shared deadline of 0.2s per worker (0.8s), not 0.8s for each of the
+    # four probes in turn (3.2s).
+    assert 0.8 <= elapsed < 1.6
     assert len(raised.value.statuses) == 4
     assert {status.error_type for status in raised.value.statuses} == {
         "WorkerInfrastructureError"
     }
     assert all(
-        "timed out after 0.2s" in (status.message or "")
+        "timed out after 0.8s" in (status.message or "")
         for status in raised.value.statuses
     )
     assert all(status.provider == "mlx" for status in raised.value.statuses)

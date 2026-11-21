@@ -1,6 +1,5 @@
 
 import pytest
-import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from pathlib import Path
@@ -291,12 +290,6 @@ class TestConversionPipeline:
                 Path(output_path).parent.mkdir(parents=True, exist_ok=True)
                 Path(output_path).write_bytes(b"fake mp3 content")
             mock_enc.return_value.wav_to_mp3.side_effect = wav_to_mp3_side_effect
-
-            def array_to_mp3_side_effect(audio, output_path, sample_rate=24000, bitrate="128k"):
-                _ = audio, sample_rate, bitrate
-                Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-                Path(output_path).write_bytes(b"fake mp3 content")
-            mock_enc.return_value.array_to_mp3.side_effect = array_to_mp3_side_effect
 
             def create_m4b_side_effect(*args, **kwargs):
                 _ = args
@@ -664,38 +657,6 @@ class TestConversionPipeline:
         assert (chapters_dir / "chapter_01_before_cleaning.md").exists()
         assert (chapters_dir / "chapter_01_cleaned.md").exists()
 
-    def test_chunk_overlap_is_not_tied_to_global_pipelining(self, mock_components, tmp_path):
-        """Global pipelining should not force overlap mode for multi-chunk chapters."""
-        pipeline = _make_pipeline(tmp_path, enable_pipelining=True, enable_chunk_overlap=False)
-
-        chapter = MagicMock(number=1, title="Chapter 1", content="Text")
-        wav_path = tmp_path / "chapter.wav"
-        with wave.open(str(wav_path), "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(24000)
-            wav_file.writeframes(np.zeros(24000, dtype=np.int16).tobytes())
-        mp3_path = tmp_path / "chapter.mp3"
-
-        processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(type(processor.runtime), "synthesize_speech", return_value=np.ones(3, dtype=np.float32)), \
-             patch.object(processor, "ensure_chapter_tts_engine"), \
-             patch.object(processor, "chunk_chapter_content", return_value=["chunk1", "chunk2"]), \
-             patch.object(processor, "clean_chapter_content", return_value=(["clean1", "clean2"], False)), \
-             patch.object(processor, "synthesize_chapter_chunks", return_value=wav_path) as strict, \
-             patch.object(processor, "clean_and_synthesize_with_overlap", return_value=(wav_path, False)) as overlapped, \
-             patch.object(processor, "encode_chapter_audio", return_value=(mp3_path, 1000)):
-            result = pipeline.stages.process_chapter(
-                chapter=chapter,
-                chapter_idx=0,
-                total_chapters=1,
-                output_dir=tmp_path,
-            )
-
-        assert result.error is None
-        assert strict.called
-        assert not overlapped.called
-
     def test_ensure_chapter_tts_engine_uses_factory_selected_strategy(self, tmp_path):
         pipeline = _make_pipeline(tmp_path, tts_engine="kokoro", enable_parallel=False)
         fake_strategy = MagicMock()
@@ -712,7 +673,7 @@ class TestConversionPipeline:
         self, mock_components, tmp_path
     ):
         """In-memory chapter audio should be packaged from WAV without redundant MP3 encode."""
-        config = _pipeline_config(tmp_path, enable_chunk_overlap=False)
+        config = _pipeline_config(tmp_path)
         pipeline = ConversionPipeline(config)
 
         chapter = MagicMock(number=1, title="Chapter 1", content="Text")
@@ -749,7 +710,7 @@ class TestConversionPipeline:
         self, mock_components, tmp_path
     ):
         """Chapter MP3 artifacts remain available when explicitly requested."""
-        config = _pipeline_config(tmp_path, enable_chunk_overlap=False, emit_chapter_mp3_artifacts=True)
+        config = _pipeline_config(tmp_path, emit_chapter_mp3_artifacts=True)
         pipeline = ConversionPipeline(config)
 
         chapter = MagicMock(number=1, title="Chapter 1", content="Text")
@@ -782,9 +743,9 @@ class TestConversionPipeline:
         config = _pipeline_config(tmp_path)
         pipeline = ConversionPipeline(config)
 
-        current_master = config.temp_dir / "chapter_masters" / "chapter_01.wav"
-        current_master.parent.mkdir(parents=True, exist_ok=True)
-        current_master.write_bytes(b"wav")
+        current_chunk = config.temp_dir / "ch_001" / "chunk_0001.wav"
+        current_chunk.parent.mkdir(parents=True, exist_ok=True)
+        current_chunk.write_bytes(b"wav")
         stale_dir = config.temp_dir / "ch_999"
         stale_dir.mkdir()
         (stale_dir / "chunk.wav").write_bytes(b"old")
@@ -793,7 +754,7 @@ class TestConversionPipeline:
         keep_file = config.temp_dir / "keep.txt"
         keep_file.write_text("keep")
 
-        pipeline._runtime.track_temp_cleanup_path(current_master)  # noqa: SLF001
+        pipeline._runtime.track_temp_cleanup_path(current_chunk)  # noqa: SLF001
 
         original_iterdir = Path.iterdir
 
@@ -806,7 +767,7 @@ class TestConversionPipeline:
 
         pipeline._cleanup_temp()  # noqa: SLF001
 
-        assert not current_master.parent.exists()
+        assert not current_chunk.parent.exists()
         assert stale_dir.exists()
         assert stale_wav.exists()
         assert keep_file.exists()
@@ -821,9 +782,6 @@ class TestConversionPipeline:
         old_chunk_dir = config.temp_dir / "ch_001"
         old_chunk_dir.mkdir(parents=True)
         (old_chunk_dir / "chunk.wav").write_bytes(b"old")
-        old_master_dir = config.temp_dir / "chapter_masters"
-        old_master_dir.mkdir()
-        (old_master_dir / "chapter_01.wav").write_bytes(b"old")
         old_wav = config.temp_dir / "chapter_01.wav"
         old_wav.write_bytes(b"old")
         keep_file = config.temp_dir / "keep.txt"
@@ -832,41 +790,8 @@ class TestConversionPipeline:
         pipeline._cleanup_temp()  # noqa: SLF001
 
         assert not old_chunk_dir.exists()
-        assert not old_master_dir.exists()
         assert not old_wav.exists()
         assert keep_file.exists()
-
-    def test_encode_chapter_audio_falls_back_to_wav_file_on_array_failure(self, mock_components, tmp_path):
-        """Encoding stage should gracefully fall back to wav_to_mp3 when array path fails."""
-        pipeline = _make_pipeline(tmp_path, normalize_volume=False)
-        chapter = MagicMock(number=1, title="Chapter 1")
-        audio = np.zeros(24000, dtype=np.float32)
-
-        fake_encoder = MagicMock()
-        fake_encoder.get_duration.return_value = 1.0
-        fake_encoder.array_to_mp3.side_effect = RuntimeError("simulated array encode failure")
-
-        def _wav_to_mp3(input_path, output_path, bitrate="128k", cancel_requested=None):
-            _ = bitrate, cancel_requested
-            assert Path(input_path).exists()
-            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-            Path(output_path).write_bytes(b"mp3")
-
-        fake_encoder.wav_to_mp3.side_effect = _wav_to_mp3
-
-        with patch("modules.audio.encoder.AudioEncoder", return_value=fake_encoder):
-            mp3_path, duration_ms = pipeline.stages.chapter_processor.encode_chapter_audio(  # noqa: SLF001
-                chapter=chapter,
-                chapter_idx=0,
-                total_chapters=1,
-                output_dir=tmp_path,
-                chapter_wav=audio,
-            )
-
-        assert mp3_path.exists()
-        assert duration_ms == 1000
-        assert fake_encoder.array_to_mp3.call_count == 1
-        assert fake_encoder.wav_to_mp3.call_count == 1
 
     def test_synthesize_chapter_chunks_streams_large_audio_without_concat(self, mock_components, tmp_path):
         """Large chapters should stream directly to chapter WAV without temp concatenation."""
@@ -1356,159 +1281,6 @@ class TestConversionPipeline:
         assert isinstance(chapter_audio, np.ndarray)
         assert chapter_audio.tolist() == [1.0, 1.0, 2.0, 2.0]
 
-    def test_clean_and_synthesize_with_overlap_streams_large_audio_without_concat(self, mock_components, tmp_path):
-        """Overlap mode should stream directly to chapter WAV without temp concatenation."""
-        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
-        pipeline.config.max_in_memory_chapter_samples = 1
-        pipeline._tts_engine = mock_components["tts"].return_value
-
-        chapter = MagicMock(number=1, title="Chapter 1")
-
-        def _clean_chunk_safely(*, cleaner, chunk, llm_cleaning_enabled):  # noqa: ANN001
-            _ = cleaner
-            return f"cleaned {chunk}", llm_cleaning_enabled, None
-
-        processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(processor, "get_text_cleaner_for_chapter", return_value=MagicMock()), \
-             patch.object(processor, "clean_chunk_safely", side_effect=_clean_chunk_safely), \
-             patch.object(processor, "save_pre_clean_markdown"), \
-             patch.object(processor, "maybe_capture_cleaner_stats", return_value=None), \
-             patch.object(processor, "log_cleaner_stats_delta"), \
-             patch.object(processor, "save_cleaning_artifacts"):
-            chapter_wav, was_cancelled = processor.clean_and_synthesize_with_overlap(
-                chapter=chapter,
-                chapter_idx=0,
-                total_chapters=1,
-                chunks=["chunk one", "chunk two"],
-                output_dir=tmp_path,
-            )
-
-        assert was_cancelled is False
-        assert isinstance(chapter_wav, Path)
-        with wave.open(str(chapter_wav), "rb") as wav_file:
-            assert wav_file.getnframes() == 6
-            assert wav_file.getframerate() == 24000
-
-    def test_clean_and_synthesize_with_overlap_fails_when_tts_chunk_fails(
-        self,
-        mock_components,
-        tmp_path,
-    ):
-        """Overlap mode must not finalize partial audio when a chunk synthesis fails."""
-        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
-        pipeline._tts_engine = mock_components["tts"].return_value
-        pipeline._tts_engine.synthesize.side_effect = [
-            np.array([0.1, 0.2], dtype=np.float32),
-            RuntimeError("tts boom"),
-            np.array([0.3], dtype=np.float32),
-        ]
-
-        chapter = MagicMock(number=1, title="Chapter 1")
-
-        def _clean_chunk_safely(*, cleaner, chunk, llm_cleaning_enabled):  # noqa: ANN001
-            _ = cleaner
-            return f"cleaned {chunk}", llm_cleaning_enabled, None
-
-        processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(processor, "get_text_cleaner_for_chapter", return_value=MagicMock()), \
-             patch.object(processor, "clean_chunk_safely", side_effect=_clean_chunk_safely), \
-             patch.object(processor, "save_pre_clean_markdown"), \
-             patch.object(processor, "maybe_capture_cleaner_stats", return_value=None), \
-             patch.object(processor, "log_cleaner_stats_delta"), \
-             patch.object(processor, "save_cleaning_artifacts"):
-            chapter_wav, was_cancelled = processor.clean_and_synthesize_with_overlap(
-                chapter=chapter,
-                chapter_idx=0,
-                total_chapters=1,
-                chunks=["chunk one", "chunk two", "chunk three"],
-                output_dir=tmp_path,
-            )
-
-        assert was_cancelled is False
-        assert chapter_wav is None
-        # The failed chapter is discarded, so later chunks are not synthesized.
-        assert pipeline._tts_engine.synthesize.call_count == 2
-
-    def test_clean_and_synthesize_with_overlap_returns_when_producer_fails(self, mock_components, tmp_path):
-        """Producer exceptions should be delivered to the consumer instead of hanging queue.get()."""
-        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
-        pipeline._tts_engine = mock_components["tts"].return_value
-        chapter = MagicMock(number=1, title="Chapter 1")
-
-        def _run_overlap(result_holder):  # noqa: ANN001
-            try:
-                result_holder["result"] = pipeline.stages.chapter_processor.clean_and_synthesize_with_overlap(  # noqa: SLF001
-                    chapter=chapter,
-                    chapter_idx=0,
-                    total_chapters=1,
-                    chunks=["chunk one", "chunk two"],
-                    output_dir=tmp_path,
-                )
-            except Exception as exc:  # pragma: no cover - acceptable propagated failure
-                result_holder["error"] = exc
-
-        result_holder: dict[str, object] = {}
-        processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(processor, "get_text_cleaner_for_chapter", return_value=MagicMock()), \
-             patch.object(processor, "clean_chunk_safely", side_effect=RuntimeError("clean boom")), \
-             patch.object(processor, "save_pre_clean_markdown"), \
-             patch.object(processor, "maybe_capture_cleaner_stats", return_value=None), \
-             patch.object(processor, "log_cleaner_stats_delta"), \
-             patch.object(processor, "save_cleaning_artifacts"):
-            worker = threading.Thread(target=_run_overlap, args=(result_holder,), daemon=True)
-            worker.start()
-            worker.join(timeout=0.5)
-
-        assert not worker.is_alive()
-        assert "clean boom" in str(result_holder.get("error") or result_holder.get("result"))
-
-    def test_clean_and_synthesize_with_overlap_observes_cancellation_while_cleaner_is_blocked(
-        self,
-        mock_components,
-        tmp_path,
-    ):
-        """Overlap mode should poll cancellation while waiting for cleaner output."""
-        pipeline = _make_pipeline(tmp_path, enable_chunk_overlap=True)
-        pipeline._tts_engine = mock_components["tts"].return_value
-        chapter = MagicMock(number=1, title="Chapter 1")
-        cleaner_entered = threading.Event()
-        release_cleaner = threading.Event()
-        result_holder: dict[str, object] = {}
-
-        def _clean_chunk_safely(*, cleaner, chunk, llm_cleaning_enabled):  # noqa: ANN001
-            _ = (cleaner, chunk, llm_cleaning_enabled)
-            cleaner_entered.set()
-            release_cleaner.wait(timeout=2.0)
-            return "cleaned chunk", True, None
-
-        def _run_overlap() -> None:
-            result_holder["result"] = pipeline.stages.chapter_processor.clean_and_synthesize_with_overlap(  # noqa: SLF001
-                chapter=chapter,
-                chapter_idx=0,
-                total_chapters=1,
-                chunks=["chunk one", "chunk two"],
-                output_dir=tmp_path,
-            )
-
-        processor = pipeline.stages.chapter_processor  # noqa: SLF001 - stage collaborator contract
-        with patch.object(processor, "get_text_cleaner_for_chapter", return_value=MagicMock()), \
-             patch.object(processor, "clean_chunk_safely", side_effect=_clean_chunk_safely), \
-             patch.object(processor, "save_pre_clean_markdown"), \
-             patch.object(processor, "maybe_capture_cleaner_stats", return_value=None), \
-             patch.object(processor, "log_cleaner_stats_delta"), \
-             patch.object(processor, "save_cleaning_artifacts"):
-            worker = threading.Thread(target=_run_overlap, daemon=True)
-            worker.start()
-            assert cleaner_entered.wait(timeout=0.5)
-            pipeline.cancel()
-            worker.join(timeout=0.5)
-            was_still_blocked_after_cancel = worker.is_alive()
-            release_cleaner.set()
-            worker.join(timeout=1.0)
-
-        assert not was_still_blocked_after_cancel
-        assert result_holder["result"] == (None, True)
-
     def test_encode_chapter_audio_uses_source_duration_without_mp3_probe(self, mock_components, tmp_path):
         """Encoding should derive duration from source audio instead of probing MP3 output."""
         pipeline = _make_pipeline(tmp_path, normalize_volume=False)
@@ -1764,6 +1536,19 @@ def test_ingest_source_parses_text_and_markdown_by_extension(
     else:
         assert [chapter.title for chapter in document.chapters] == expected_titles
         assert "The overview paragraph." in content and "The usage paragraph." in content
+
+
+def test_ingest_source_logs_skipped_non_prose_sections():
+    source_path = Path(__file__).resolve().parent / "fixtures" / "policy" / "mixed-prose-and-back-matter.md"
+    runtime = MagicMock(config=SimpleNamespace())
+
+    document = ingest_source(runtime, source_path)
+
+    logged = [call.args[0] for call in runtime.log_verbose.call_args_list]
+    skipped = [line for line in logged if line.startswith("[PARSER] Skipped non-prose section")]
+    assert len(skipped) == len(document.skipped_non_prose_sections) > 0
+    for line, section in zip(skipped, document.skipped_non_prose_sections):
+        assert section["title"] in line and section["reason"] in line
 
 
 def test_ingest_source_describes_extensionless_file_clearly(tmp_path):

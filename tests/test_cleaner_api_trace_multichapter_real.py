@@ -37,7 +37,6 @@ def _make_real_api_cleaner() -> TextCleaner:
     cleaner._loaded = True
     cleaner._model = None
     cleaner._tokenizer = None
-    cleaner._manager = None
     cleaner._model_lock = threading.RLock()
     cleaner._total_chunks_cleaned = 0
     cleaner._total_time_ms = 0

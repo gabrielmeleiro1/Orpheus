@@ -79,3 +79,28 @@ def test_review_preservation_guard_rejects_a_i_uppercase_merges() -> None:
     assert _guard_rejects("I SWEAR I WOULD NEVER", "ISWEAR IWOULD NEVER")
     assert _guard_rejects("A PERSON SPOKE", "APERSON SPOKE")
     assert not _guard_rejects("C AVALRYMEN rode out.", "CAVALRYMEN rode out.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "She got her Ph.D. at M.I.T. in 1999.",
+        "We met at 5 p.m. in the U.S.A., then left.",
+        "See example.com for details.",
+        "Choose fruit, e.g. apples, i.e. something sweet.",
+    ],
+)
+def test_initialisms_and_domains_keep_their_internal_periods(text: str) -> None:
+    assert rule_based_clean(text) == text
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("The night fell.Morning came.", "The night fell. Morning came."),
+        ("He left.I stayed.", "He left. I stayed."),
+        ("Wait,what?Yes!no;fine:done", "Wait, what? Yes! no; fine: done"),
+    ],
+)
+def test_joined_sentences_and_clauses_still_get_a_space(text: str, expected: str) -> None:
+    assert rule_based_clean(text) == expected

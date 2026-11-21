@@ -15,7 +15,7 @@ MLX_LM_IMPORT_ERROR: Optional[Exception] = None
 _MLX_LM_RUNTIME_CHECKED = False
 mx = None
 load = None
-generate = None
+stream_generate = None
 make_sampler = None
 logger = logging.getLogger(__name__)
 
@@ -32,22 +32,22 @@ def mlx_lm_runtime_error_message(import_error: Optional[Exception]) -> str:
 def ensure_mlx_lm_runtime() -> tuple[Any, Any, Any, Any]:
     """Import MLX-LM on demand and return runtime callables."""
     global MLX_LM_AVAILABLE, MLX_LM_IMPORT_ERROR, _MLX_LM_RUNTIME_CHECKED
-    global mx, load, generate, make_sampler
+    global mx, load, stream_generate, make_sampler
 
     if _MLX_LM_RUNTIME_CHECKED:
         if not MLX_LM_AVAILABLE:
             raise ImportError(mlx_lm_runtime_error_message(MLX_LM_IMPORT_ERROR))
-        return mx, load, generate, make_sampler
+        return mx, load, stream_generate, make_sampler
 
     try:
         import mlx.core as mx_module
-        from mlx_lm import generate as mlx_lm_generate
         from mlx_lm import load as mlx_lm_load
+        from mlx_lm import stream_generate as mlx_lm_stream_generate
         from mlx_lm.sample_utils import make_sampler as mlx_make_sampler
 
         mx = mx_module
         load = mlx_lm_load
-        generate = mlx_lm_generate
+        stream_generate = mlx_lm_stream_generate
         make_sampler = mlx_make_sampler
         MLX_LM_AVAILABLE = True
         MLX_LM_IMPORT_ERROR = None
@@ -60,7 +60,7 @@ def ensure_mlx_lm_runtime() -> tuple[Any, Any, Any, Any]:
     if not MLX_LM_AVAILABLE:
         raise ImportError(mlx_lm_runtime_error_message(MLX_LM_IMPORT_ERROR))
 
-    return mx, load, generate, make_sampler
+    return mx, load, stream_generate, make_sampler
 
 
 _cleaner_model_cache: dict[str, tuple[Any, Any]] = {}
@@ -125,7 +125,6 @@ class CleanerMLXStrategy:
                 logger.info("Text cleaner loaded from cache: %s", cleaner.config.model_name)
                 return
 
-        cleaner._manager.ensure_can_load("text-cleaner")
         logger.info("Loading text cleaner: %s", cleaner.config.model_name)
         cleaner._model, cleaner._tokenizer = load(
             installed_model_path(cleaner.config.model_name),
@@ -136,7 +135,6 @@ class CleanerMLXStrategy:
         if cleaner.config.cache_model:
             set_cached_cleaner(cleaner.config.model_name, cleaner._model, cleaner._tokenizer)
 
-        cleaner._manager.register_model("text-cleaner", cleaner.unload)
         logger.info("Text cleaner loaded")
 
     async def clean_batch_with_trace_async(self, cleaner: Any, texts: list[str]) -> list[Any]:

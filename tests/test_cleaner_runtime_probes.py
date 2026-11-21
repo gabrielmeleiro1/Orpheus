@@ -443,7 +443,7 @@ def test_setup_verifies_selected_precision_instead_of_environment(monkeypatch, t
         "cleaner_cuda_quantization": precision,
     }
     if operation == "status":
-        setup_runtime.write_setup_state(state_path, accepted_risks=(), **selection)
+        setup_runtime.write_setup_state(state_path, **selection)
         status = setup_runtime.get_setup_status(state_path=state_path, probe_service=service)
         assert status["ready"] is (precision == "fp16")
     else:

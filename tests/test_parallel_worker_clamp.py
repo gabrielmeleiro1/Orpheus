@@ -143,13 +143,13 @@ def test_dispatch_logs_the_effective_worker_count_and_why():
     ) in logs
 
 
-def _chapter_result(chapter, idx, _manager):
+def _chapter_result(chapter, idx):
     return ChapterResult(chapter_number=idx + 1, chapter_title=str(chapter), duration_ms=1)
 
 
-def _slow_chapter_result(chapter, idx, _manager):
+def _slow_chapter_result(chapter, idx):
     time.sleep(0.4)
-    return _chapter_result(chapter, idx, _manager)
+    return _chapter_result(chapter, idx)
 
 
 def _wait_until(predicate, timeout: float = 5.0) -> bool:

@@ -8,8 +8,8 @@ from typing import Any, Mapping
 
 from modules.tts.quantization import CANONICAL_QUANTIZATIONS, QUANTIZATION_ALIASES
 from modules.tts.runtime_spec import (
-    CUDA_PROVIDER_OPTION_KEYS,
     KOKORO_PACKAGE_DEFAULT_MODEL,
+    PACKAGE_RUNTIME_OPTION_KEYS,
     TTSRuntimeSpec,
     canonical_provider,
 )
@@ -167,7 +167,7 @@ def validate_provider_options(
     provider: str | None,
     options: Mapping[str, object] | tuple[tuple[str, str], ...] | None,
 ) -> None:
-    """Validate provider-specific option names."""
+    """Reject provider options that no runtime for ``provider`` reads."""
     normalized_provider = canonical_provider(provider)
     if not options:
         return
@@ -176,17 +176,16 @@ def validate_provider_options(
         if isinstance(options, tuple)
         else [str(key).strip() for key in options]
     )
-    if normalized_provider != "cuda":
-        for key in keys:
-            if key in CUDA_PROVIDER_OPTION_KEYS:
-                scope = normalized_provider or "unspecified"
-                raise ValueError(
-                    f"CUDA provider option '{key}' is not supported for {scope} provider."
-                )
-        return
+    # An unspecified provider may still resolve to the package runtime.
+    allowed = (
+        PACKAGE_RUNTIME_OPTION_KEYS
+        if normalized_provider in {None, "cpu", "cuda"}
+        else frozenset()
+    )
     for key in keys:
-        if key not in CUDA_PROVIDER_OPTION_KEYS:
-            raise ValueError(f"Unsupported CUDA provider option '{key}'.")
+        if key not in allowed:
+            scope = normalized_provider or "unspecified"
+            raise ValueError(f"Unsupported {scope} provider option '{key}'.")
 
 
 @dataclass(frozen=True)
@@ -219,12 +218,8 @@ class TTSRuntimeOptions:
         runtime_provider_options = value.get("runtime_provider_options")
         if isinstance(runtime_provider_options, Mapping):
             runtime_provider_options_mapping = runtime_provider_options
-        elif provider_options_mapping:
-            runtime_provider_options_mapping = TTSRuntimeSpec.coerce_legacy_runtime_options(
-                provider_options_mapping
-            )
         else:
-            runtime_provider_options_mapping = {}
+            runtime_provider_options_mapping = provider_options_mapping
         return cls(
             model_name=_text(value.get("model_name")),
             quantization=_text(value.get("quantization")),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import tempfile
 import wave
 from pathlib import Path
 from typing import Any, Callable
@@ -29,41 +28,14 @@ class EncodingStageContext:
     cancel_requested: Callable[[], bool] | None = None
 
 
-def _measure_source_duration_ms(chapter_wav: Path | np.ndarray, *, sample_rate: int) -> int:
+def _measure_source_duration_ms(chapter_wav: Path) -> int:
     """Measure source audio duration without probing the encoded MP3."""
-    if isinstance(chapter_wav, Path):
-        with wave.open(str(chapter_wav), "rb") as wav_file:
-            frames = wav_file.getnframes()
-            rate = wav_file.getframerate()
-        if rate <= 0:
-            return 0
-        return int(frames / rate * 1000)
-
-    audio = np.asarray(chapter_wav, dtype=np.float32).reshape(-1)
-    if audio.size == 0 or sample_rate <= 0:
+    with wave.open(str(chapter_wav), "rb") as wav_file:
+        frames = wav_file.getnframes()
+        rate = wav_file.getframerate()
+    if rate <= 0:
         return 0
-    return int(len(audio) / sample_rate * 1000)
-
-
-def _normalize_audio_array(audio: np.ndarray, *, target_dBFS: float) -> np.ndarray:
-    """Normalize mono float audio in numpy space."""
-    samples = np.asarray(audio, dtype=np.float32).reshape(-1)
-    if samples.size == 0:
-        return samples
-
-    # Promote inside the ufunc: preserve float64 arithmetic without allocating
-    # both a converted chapter and its squared copy at the same time.
-    rms = float(np.sqrt(np.mean(np.square(samples, dtype=np.float64))))
-    if rms <= 0.0:
-        return samples
-
-    current_dBFS = 20.0 * np.log10(rms)
-    gain_db = target_dBFS - current_dBFS
-    if abs(gain_db) < 1e-6:
-        return samples
-
-    gain = float(np.power(10.0, gain_db / 20.0))
-    return np.clip(samples * gain, -1.0, 1.0).astype(np.float32, copy=False)
+    return int(frames / rate * 1000)
 
 
 def _measure_pcm16_wav_rms(wav_path: Path, *, chunk_frames: int = _WAV_RMS_CHUNK_FRAMES) -> float:
@@ -131,43 +103,13 @@ def _normalization_filter_for_wav(
     )
 
 
-def write_wav_from_array(audio: np.ndarray, output_path: Path, *, sample_rate: int) -> Path:
-    """Persist mono float audio as a PCM_16 WAV file."""
-    pcm = np.clip(np.asarray(audio, dtype=np.float32).reshape(-1), -1.0, 1.0)
-    pcm16 = (pcm * 32767.0).astype(np.int16, copy=False)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with wave.open(str(output_path), "wb") as wav_file:
-        wav_file.setnchannels(1)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(sample_rate)
-        wav_file.writeframes(pcm16.tobytes())
-    return output_path
-
-
-def _write_temp_wav_from_array(audio: np.ndarray, *, sample_rate: int) -> Path:
-    """Persist a temporary WAV for FFmpeg fallbacks."""
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        temp_wav = Path(tmp.name)
-
-    try:
-        write_wav_from_array(audio, temp_wav, sample_rate=sample_rate)
-    except Exception:
-        try:
-            temp_wav.unlink()
-        except Exception:
-            pass
-        raise
-
-    return temp_wav
-
-
 def encode_chapter_audio(
     context: EncodingStageContext,
     chapter: Any,
     chapter_idx: int,
     total_chapters: int,
     output_dir: Path,
-    chapter_wav: Path | np.ndarray,
+    chapter_wav: Path,
     *,
     precomputed_rms: float | None = None,
 ) -> tuple[Path, int]:
@@ -182,107 +124,51 @@ def encode_chapter_audio(
         message=chapter_progress_message(chapter_idx, total_chapters, "encoding"),
     )
     context.log_verbose("[ENCODER] Encoding to MP3...", "process")
-    sample_rate = int(context.sample_rate or 24000)
+    source_duration_ms = _measure_source_duration_ms(chapter_wav)
 
-    source_duration_ms = _measure_source_duration_ms(
-        chapter_wav,
-        sample_rate=sample_rate,
-    )
-
-    audio_array: np.ndarray | None = None
     audio_filter: str | None = None
     if context.config.normalize_volume:
         context.log_verbose("[ENCODER] Normalizing audio volume...", "info")
-
-    if isinstance(chapter_wav, np.ndarray):
-        audio_array = np.asarray(chapter_wav, dtype=np.float32).reshape(-1)
-    elif context.config.normalize_volume:
         audio_filter = _normalization_filter_for_wav(
             chapter_wav,
             target_dBFS=context.config.target_dbfs,
             precomputed_rms=precomputed_rms,
         )
 
-    # Normalize volume without writing a normalized WAV back to disk.
-    if context.config.normalize_volume and audio_array is not None:
-        audio_array = _normalize_audio_array(
-            audio_array,
-            target_dBFS=context.config.target_dbfs,
-        )
-
     # Recovery inventories record this same name before synthesis starts.
     chapter_mp3 = chapter_audio_path(chapter, output_dir, ".mp3")
 
-    encoder = AudioEncoder()
-    bitrate = context.config.mp3_bitrate
-    if audio_array is None:
-        encoder.wav_to_mp3(
-            chapter_wav,
-            chapter_mp3,
-            bitrate=bitrate,
-            audio_filter=audio_filter,
-            cancel_requested=cancel_requested,
-        )
-        return chapter_mp3, source_duration_ms
-
-    try:
-        encoder.array_to_mp3(
-            audio_array,
-            chapter_mp3,
-            sample_rate=sample_rate,
-            bitrate=bitrate,
-            cancel_requested=cancel_requested,
-        )
-    except Exception as exc:
-        if cancel_requested is not None and cancel_requested():
-            raise
-        context.log_verbose(
-            f"[ENCODER] array_to_mp3 failed ({exc}); falling back to wav_to_mp3",
-            "warning",
-        )
-        temp_wav = _write_temp_wav_from_array(audio_array, sample_rate=sample_rate)
-        try:
-            encoder.wav_to_mp3(
-                temp_wav, chapter_mp3, bitrate=bitrate, cancel_requested=cancel_requested,
-            )
-        finally:
-            temp_wav.unlink(missing_ok=True)
+    AudioEncoder().wav_to_mp3(
+        chapter_wav,
+        chapter_mp3,
+        bitrate=context.config.mp3_bitrate,
+        audio_filter=audio_filter,
+        cancel_requested=cancel_requested,
+    )
     return chapter_mp3, source_duration_ms
 
 
 def encode_chapter_aac(
     context: EncodingStageContext,
     chapter: Any,
-    chapter_wav: Path | np.ndarray,
+    chapter_wav: Path,
     *,
     precomputed_rms: float | None = None,
     output_path: Path | None = None,
 ) -> Path:
-    """Encode chapter WAV/audio payload to AAC/M4A for stream-copy packaging.
+    """Encode chapter WAV to AAC/M4A for stream-copy packaging.
 
     When ``output_path`` is provided, the AAC lands there (durable chapters dir
     for AAC-only conversions). Otherwise it is written under ``temp_dir``.
     """
     from modules.audio.encoder import AudioEncoder
 
-    cancel_requested = context.cancel_requested
-    sample_rate = int(context.sample_rate or 24000)
-
-    audio_array: np.ndarray | None = None
     audio_filter: str | None = None
-    if isinstance(chapter_wav, np.ndarray):
-        audio_array = np.asarray(chapter_wav, dtype=np.float32).reshape(-1)
-    elif context.config.normalize_volume:
+    if context.config.normalize_volume:
         audio_filter = _normalization_filter_for_wav(
             chapter_wav,
             target_dBFS=context.config.target_dbfs,
             precomputed_rms=precomputed_rms,
-        )
-
-    if context.config.normalize_volume and audio_array is not None:
-        audio_array = _normalize_audio_array(
-            audio_array,
-            target_dBFS=context.config.target_dbfs,
         )
 
     if output_path is not None:
@@ -292,22 +178,13 @@ def encode_chapter_aac(
         chapter_aac = context.config.temp_dir / f"chapter_{chapter.number:02d}.m4a"
     encoder = AudioEncoder(
         bitrate=context.config.mp3_bitrate,
-        sample_rate=sample_rate,
+        sample_rate=int(context.sample_rate or 24000),
     )
-    if audio_array is not None:
-        encoder.array_to_aac(
-            audio_array,
-            chapter_aac,
-            sample_rate=sample_rate,
-            bitrate=context.config.mp3_bitrate,
-            cancel_requested=cancel_requested,
-        )
-    else:
-        encoder.wav_to_aac(
-            chapter_wav,
-            chapter_aac,
-            bitrate=context.config.mp3_bitrate,
-            audio_filter=audio_filter,
-            cancel_requested=cancel_requested,
-        )
+    encoder.wav_to_aac(
+        chapter_wav,
+        chapter_aac,
+        bitrate=context.config.mp3_bitrate,
+        audio_filter=audio_filter,
+        cancel_requested=context.cancel_requested,
+    )
     return chapter_aac

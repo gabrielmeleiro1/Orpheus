@@ -8,7 +8,7 @@ import sys
 import time
 import wave
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Iterator
+from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
 
@@ -21,7 +21,9 @@ from modules.tts.strategies.base import (
     SynthesisItem,
     SynthesisProgressCallback,
     SynthesisResult,
+    has_no_speakable_text,
 )
+from modules.tts.voices import kokoro_language_code
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,7 @@ class PackageKokoroRuntime:
         self.provider = config.runtime_spec.provider
         self.sample_rate = config.sample_rate
         self._pipeline = None
+        self._language_pipelines: dict[str, object] = {}
         self._last_cached_pipeline = None
         self._model_dir: Path | None = None
         self._chunks_processed = 0
@@ -187,11 +190,8 @@ class PackageKokoroRuntime:
         )
 
     def _pipeline_kwargs(self) -> dict[str, object]:
-        language_code = "a"
-        if self._config.default_voice.startswith("b"):
-            language_code = "b"
         kwargs: dict[str, object] = {
-            "lang_code": language_code,
+            "lang_code": kokoro_language_code(self._config.default_voice),
             "repo_id": self._config.runtime_spec.resolved_model(),
         }
         kwargs["device"] = self._config.runtime_spec.device or self.provider
@@ -248,6 +248,7 @@ class PackageKokoroRuntime:
         elif keep_in_cache and pipeline is not None:
             self._last_cached_pipeline = pipeline
         self._pipeline = None
+        self._language_pipelines = {}
         self._model_dir = None
 
     def warmup(
@@ -270,7 +271,7 @@ class PackageKokoroRuntime:
             raise RuntimeError("Model not loaded. Call load() first.")
 
         started_at = time.perf_counter()
-        if not text.strip():
+        if has_no_speakable_text(text):
             # Keep blank chunks structurally valid for the pipeline. The MLX
             # adapter gets this behavior from TTSEngine; package-backed
             # runtimes need to provide the same short scene-break silence.
@@ -309,10 +310,24 @@ class PackageKokoroRuntime:
         self._total_chunk_time_ms += (time.perf_counter() - started_at) * 1000
         return audio
 
+    def _pipeline_for_voice(self, voice: str):  # noqa: ANN202
+        # KPipeline phonemizes in one language, so a British voice needs the
+        # British G2P. Sibling pipelines share the loaded model.
+        language_code = kokoro_language_code(voice)
+        if language_code == kokoro_language_code(self._config.default_voice):
+            return self._pipeline
+        pipeline = self._language_pipelines.get(language_code)
+        if pipeline is None:
+            from kokoro import KPipeline
+
+            pipeline = KPipeline(lang_code=language_code, model=self._pipeline.model)
+            self._language_pipelines[language_code] = pipeline
+        return pipeline
+
     def _run_pipeline(self, text: str, voice: str, speed: float) -> list[np.ndarray]:
         return [
             np.asarray(audio, dtype=np.float32)
-            for _graphemes, _phonemes, audio in self._pipeline(
+            for _graphemes, _phonemes, audio in self._pipeline_for_voice(voice)(
                 text,
                 voice=self._voice_arg(voice),
                 speed=speed,
@@ -341,12 +356,9 @@ class PackageKokoroRuntime:
         self,
         items: list[SynthesisItem],
         progress_callback: SynthesisProgressCallback | None = None,
-        cancel_requested: Callable[[], bool] | None = None,
     ) -> Iterator[SynthesisResult]:
         total = len(items)
         for offset, item in enumerate(items, start=1):
-            if cancel_requested is not None and cancel_requested():
-                return
             try:
                 audio = self.synthesize(
                     item.text,

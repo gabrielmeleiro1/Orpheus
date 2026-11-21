@@ -104,16 +104,16 @@ def load_model(engine, quantization: Optional[str] = None) -> None:  # noqa: ANN
     else:
         engine._model_cache_key = canonical_cache_key  # noqa: SLF001
 
+    voice_snapshot = mlx_compat_backend.installed_voice_snapshot(engine._model_path)  # noqa: SLF001
     cached_model = _get_cached_model(engine._model_cache_key)  # noqa: SLF001
     if cached_model is not None:
         engine._model = cached_model  # noqa: SLF001
-        engine._model_loaded = True  # noqa: SLF001
         logger.info("TTS Engine loaded from cache: %s", engine._model_cache_key)  # noqa: SLF001
-        return
-
-    engine._model = mlx_compat_backend.load_tts_model(engine._model_path)  # noqa: SLF001
+    else:
+        engine._model = mlx_compat_backend.load_tts_model(engine._model_path)  # noqa: SLF001
+        logger.info("TTS Engine loaded: %s", engine._model_path)  # noqa: SLF001
+    engine._voice_snapshot = voice_snapshot  # noqa: SLF001
     engine._model_loaded = True  # noqa: SLF001
-    logger.info("TTS Engine loaded: %s", engine._model_path)  # noqa: SLF001
 
 
 def warmup_model(
@@ -139,21 +139,15 @@ def warmup_model(
 def unload_model(engine, keep_in_cache: bool = True) -> None:  # noqa: ANN001
     """Unload the current model and reset runtime state."""
     if not keep_in_cache:
-        cache_key = getattr(engine, "_model_cache_key", None)
-        owned_model = getattr(engine, "_model", None)
+        # Discard only the model this engine loaded; one that never loaded owns
+        # nothing, and other engines may be keeping a model warm under its key.
+        owned_model = engine._model  # noqa: SLF001
         if owned_model is None:
-            owned_model = getattr(engine, "_last_cached_model", None)
-        if cache_key is not None and owned_model is not None:
+            owned_model = engine._last_cached_model  # noqa: SLF001
+        if owned_model is not None:
             model_cache_backend.discard_cached_model_if_same(
-                cache_key,
+                engine._model_cache_key,  # noqa: SLF001
                 owned_model,
-                mx_module=mlx_compat_backend.mx,
-                mlx_available=mlx_compat_backend.MLX_AVAILABLE,
-            )
-        else:
-            # Legacy/detached engines without ownership metadata still need a
-            # fail-safe hard clear.
-            model_cache_backend.clear_model_cache(
                 mx_module=mlx_compat_backend.mx,
                 mlx_available=mlx_compat_backend.MLX_AVAILABLE,
             )
@@ -167,6 +161,7 @@ def unload_model(engine, keep_in_cache: bool = True) -> None:  # noqa: ANN001
         engine._last_cached_model = engine._model  # noqa: SLF001
 
     engine._model = None  # noqa: SLF001
+    engine._voice_snapshot = None  # noqa: SLF001
     engine._model_loaded = False  # noqa: SLF001
     engine._warmup_complete = False  # noqa: SLF001
     engine._last_warmup_ms = None  # noqa: SLF001
@@ -182,15 +177,6 @@ def get_metrics(engine) -> dict[str, float | int | None]:  # noqa: ANN001
     if engine._first_audio_time is not None:  # noqa: SLF001
         startup_ms = (engine._first_audio_time - engine._engine_start_time) * 1000  # noqa: SLF001
 
-    peak_mb: Optional[float] = None
-    if engine._memory_manager and hasattr(engine._memory_manager, "vram_monitor"):  # noqa: SLF001
-        try:
-            snapshot = engine._memory_manager.vram_monitor.get_current_usage()  # noqa: SLF001
-            if snapshot is not None:
-                peak_mb = snapshot.peak_mb
-        except Exception:
-            peak_mb = None
-
     return {
         "startup_to_first_audio_ms": startup_ms,
         "chunks_processed": engine._total_chunks_processed,  # noqa: SLF001
@@ -199,8 +185,6 @@ def get_metrics(engine) -> dict[str, float | int | None]:  # noqa: ANN001
         "chars_per_second": engine._total_chars_processed / elapsed,  # noqa: SLF001
         "average_chunk_time_ms": engine.average_chunk_time_ms,
         "retry_count": engine._retry_count,  # noqa: SLF001
-        "batch_pause_total_ms": engine._batch_pause_total_ms,  # noqa: SLF001
-        "peak_memory_mb": peak_mb,
         "warmup_complete": engine._warmup_complete,  # noqa: SLF001
         "last_warmup_ms": engine._last_warmup_ms,  # noqa: SLF001
     }

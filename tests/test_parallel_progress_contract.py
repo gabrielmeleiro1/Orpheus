@@ -19,7 +19,7 @@ class _Chapter:
     content: str
 
 
-def _finish_chapter(chapter, idx, _manager):
+def _finish_chapter(chapter, idx):
     return ChapterResult(chapter_number=chapter.number, chapter_title=chapter.title, duration_ms=1000)
 
 
@@ -27,7 +27,7 @@ def _run_parallel(tmp_path: Path, total: int) -> tuple[list, list[str]]:
     events: list = []
     messages: list[str] = []
 
-    def on_progress(stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, eta=None, performance=None):
+    def on_progress(stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, performance=None):
         messages.append(message)
         events.append(build_progress_snapshot(
             stage_value=stage.value, chapter_idx=chapter_idx, total_chapters=total_chapters,

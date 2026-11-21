@@ -553,16 +553,11 @@ def _finalize_chapter_audio(
 def build_batch_items(runtime: PipelineRuntimeProtocol, *, chunks: list[str], source: str = ""):
     """Build TTS batch items from cleaned chunks."""
     from modules.tts.strategies.base import SynthesisItem
-    from modules.tts.speech_normalizer import SpeechNormalizationConfig, normalize_for_speech
     from modules.tts.speech_typography import normalize_speech_typography
-
-    speech_config = SpeechNormalizationConfig(
-        enabled=bool(getattr(runtime.config, "speech_normalization", False))
-    )
 
     return [
         SynthesisItem(
-            text=normalize_for_speech(normalize_speech_typography(chunk, source), speech_config),
+            text=normalize_speech_typography(chunk, source),
             voice=runtime.config.voice,
             speed=runtime.config.speed,
             index=i,
@@ -609,8 +604,6 @@ def make_batch_progress_callback(
                 f"[TTS] Progress: {pct}% ({chunk_idx + 1}/{total_chunks} chunks)",
                 "info",
             )
-
-        runtime.add_processed_chars(len(chunks[chunk_idx]))
 
     return on_batch_progress
 
@@ -694,13 +687,9 @@ def _synthesize_chapter_chunks_incrementally(
         pending_results: dict[int, Any] = {}
         next_index_to_consume = 0
 
-        iterator_kwargs = {}
-        if "cancel_requested" in inspect.signature(iter_synthesize_batch).parameters:
-            iterator_kwargs["cancel_requested"] = runtime.check_cancelled
         batch_iterator = iter(iter_synthesize_batch(
             items=batch_items,
             progress_callback=on_batch_progress,
-            **iterator_kwargs,
         ))
         while True:
             if runtime.check_cancelled():
@@ -839,32 +828,3 @@ def synthesize_chapter_chunks(
         total_chunks=total_chunks,
         chapter_result=chapter_result,
     )
-
-
-def clean_and_synthesize_with_overlap(
-    runtime: PipelineRuntimeProtocol,
-    hooks: SynthesisStageHooks,
-    chapter: Any,
-    chapter_idx: int,
-    total_chapters: int,
-    chunks: list[str],
-    output_dir: Path,
-    chapter_result: Any | None = None,
-) -> tuple[Optional[Path | np.ndarray], bool]:
-    """
-    Overlap cleaner production and chunk synthesis with a bounded queue.
-
-    This path is used for multi-chunk chapters when pipelining is enabled.
-    """
-    from .overlap_synthesis import OverlapSynthesisRunner
-
-    return OverlapSynthesisRunner(
-        runtime,
-        hooks,
-        chapter=chapter,
-        chapter_idx=chapter_idx,
-        total_chapters=total_chapters,
-        chunks=chunks,
-        output_dir=output_dir,
-        chapter_result=chapter_result,
-    ).run()

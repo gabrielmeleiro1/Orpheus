@@ -89,7 +89,6 @@ def _worker_config_dict(c):
         "target_dbfs": c.target_dbfs,
         "chunk_size": c.chunk_size,
         "enable_pipelining": c.enable_pipelining,
-        "enable_chunk_overlap": c.enable_chunk_overlap,
         "cleaner_api_global_concurrency": c.cleaner_api_global_concurrency,
         "cleaner_api_global_limiter": c.cleaner_api_global_limiter,
         "shared_worker_pool_manager": c.shared_worker_pool_manager,
@@ -341,7 +340,6 @@ class TestVRAMBudget:
 
         # Should be reduced based on VRAM
         assert config.max_workers <= 4
-        assert config.vram_budget.total_device_memory_gb == config.vram_budget.total_vram_gb
 
     def test_worker_init_uses_active_worker_count_for_mlx_vram_split(self, monkeypatch):
         """Worker memory env should come from serialized provider policy output."""
@@ -507,7 +505,7 @@ class TestParallelPipelineOrchestrator:
             MockChapter(3, "Chapter 3", "Content 3"),
         ]
 
-        def mock_process(chapter, idx, _fm):
+        def mock_process(chapter, idx):
             return ChapterResult(
                 chapter_number=chapter.number,
                 chapter_title=chapter.title,
@@ -516,7 +514,8 @@ class TestParallelPipelineOrchestrator:
 
         progress_calls = []
 
-        def progress_cb(current, total, msg):
+        def progress_cb(current, total, msg, performance=None):
+            _ = performance
             progress_calls.append((current, total, msg))
 
         results = orchestrator.process_chapters_parallel(
@@ -530,21 +529,6 @@ class TestParallelPipelineOrchestrator:
         assert all(isinstance(result, ChapterResult) for result in results)
         assert [result.chapter_number for result in results] == [1, 2, 3]
         assert [result.duration_ms for result in results] == [1, 2, 3]
-
-    def test_orchestrator_cancel_skips_later_processing(self):
-        """A cancelled orchestrator processes no further chapters."""
-        config = ParallelConfig(max_workers=1, use_processes=False)
-        orchestrator = ParallelPipelineOrchestrator(config)
-        processed = []
-
-        orchestrator.cancel()
-        results = orchestrator.process_chapters_parallel(
-            chapters=[MockChapter(1, "One", "alpha")],
-            process_func=lambda ch, idx, _fm: processed.append(idx),  # noqa: ARG005
-        )
-
-        assert results == []
-        assert processed == []
 
 
 class TestPipelineIntegration:
@@ -921,7 +905,7 @@ class TestParallelOrchestratorFacade:
 
         results = orchestrator.process_chapters_parallel(
             chapters=[MockChapter(1, "One", "alpha")],
-            process_func=lambda ch, idx, _fm: {"idx": idx},  # noqa: ARG005
+            process_func=lambda ch, idx: {"idx": idx},  # noqa: ARG005
             cancel_requested=cancel_predicate,
         )
 
@@ -951,7 +935,7 @@ class TestParallelOrchestratorFacade:
 
         results = orchestrator.process_chapters_parallel(
             chapters=[MockChapter(1, "One", "alpha")],
-            process_func=lambda ch, idx, _fm: {"idx": idx},  # noqa: ARG005
+            process_func=lambda ch, idx: {"idx": idx},  # noqa: ARG005
             cancel_requested=lambda: cancelled["value"],
         )
 
@@ -960,7 +944,7 @@ class TestParallelOrchestratorFacade:
         cancelled["value"] = True
         assert orchestrator.process_chapters_parallel(
             chapters=[MockChapter(1, "One", "alpha")],
-            process_func=lambda ch, idx, _fm: {"idx": idx},  # noqa: ARG005
+            process_func=lambda ch, idx: {"idx": idx},  # noqa: ARG005
             cancel_requested=lambda: cancelled["value"],
         ) == []
 
@@ -996,7 +980,7 @@ class TestParallelOrchestratorFacade:
             orchestrator = ParallelPipelineOrchestrator(config)
             results = orchestrator.process_chapters_parallel(
                 chapters=[MockChapter(1, "One", "alpha")],
-                process_func=lambda ch, idx, _fm: {"idx": idx},  # noqa: ARG005
+                process_func=lambda ch, idx: {"idx": idx},  # noqa: ARG005
             )
 
         assert results == ["owned-result"]
@@ -1474,8 +1458,8 @@ class TestPipelineAdaptiveWorkers:
             def shutdown(self, wait: bool = True, cancel_futures: bool = True):  # noqa: ARG002
                 self.release.set()
 
-        def _fake_worker_wrapper(chapter, chapter_idx, _file_manager, process_func):  # noqa: ANN001
-            _ = process_func, _file_manager
+        def _fake_worker_entry(chapter, chapter_idx, output_dir, total_chapters):  # noqa: ANN001
+            _ = output_dir, total_chapters
             return {
                 "chapter_number": chapter.number,
                 "chapter_title": chapter.title,
@@ -1505,7 +1489,7 @@ class TestPipelineAdaptiveWorkers:
         def _run_pipeline() -> None:
             with (
                 patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _AsyncTrackingExecutor),
-                patch("modules.pipeline.parallel._process_chapter_wrapper", _fake_worker_wrapper),
+                patch("modules.pipeline.chapter_runners._process_chapter_worker_entry", _fake_worker_entry),
             ):
                 results.extend(pipeline.stages.process_chapters_parallel(chapters, tmp_path))  # noqa: SLF001
 
@@ -2065,7 +2049,6 @@ class TestWorkerProgressTotals:
             _process_chapter_worker_entry(
                 chapter=chapter,
                 chapter_idx=1,
-                _file_manager=None,
                 output_dir=tmp_path,
                 total_chapters=9,
             )
@@ -2209,6 +2192,28 @@ class TestWeightedEta:
         assert eta == 60.0
 
 
+class TestProgressNotify:
+    def test_type_error_inside_progress_callback_is_not_retried(self):
+        from modules.pipeline.progress import PipelineProgressTracker
+
+        calls = []
+
+        def _callback(
+            stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message,
+            performance=None,
+        ):
+            calls.append((message, performance))
+            raise TypeError("bug inside the progress callback")
+
+        tracker = PipelineProgressTracker(types.SimpleNamespace(total_chars=0))
+        with pytest.raises(TypeError, match="bug inside the progress callback"):
+            tracker.notify(
+                callback=_callback, stage="tts", message="chunk 1/2", performance={"x": 1},
+            )
+
+        assert calls == [("chunk 1/2", {"x": 1})]
+
+
 class TestEdgeCases:
     """Tests for edge cases and error conditions."""
 
@@ -2219,6 +2224,6 @@ class TestEdgeCases:
 
         results = orchestrator.process_chapters_parallel(
             chapters=[],
-            process_func=lambda ch, idx, _fm: None,
+            process_func=lambda ch, idx: None,
         )
         assert results == []

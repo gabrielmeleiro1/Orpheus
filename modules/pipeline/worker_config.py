@@ -66,7 +66,6 @@ def _serialize_pipeline_config_dict(config: PipelineConfig) -> dict[str, Any]:
         "target_dbfs": config.target_dbfs,
         "chunk_size": config.chunk_size,
         "enable_pipelining": config.enable_pipelining,
-        "enable_chunk_overlap": config.enable_chunk_overlap,
         "enable_tts_file_batch_results": config.enable_tts_file_batch_results,
         "tts_file_batch_results_auto_threshold_chunks": (
             config.tts_file_batch_results_auto_threshold_chunks
@@ -75,7 +74,6 @@ def _serialize_pipeline_config_dict(config: PipelineConfig) -> dict[str, Any]:
         "tts_idle_timeout_seconds": config.tts_idle_timeout_seconds,
         "pre_chunk_document_cleanup": config.pre_chunk_document_cleanup,
         "skip_non_prose_sections": config.skip_non_prose_sections,
-        "speech_normalization": config.speech_normalization,
     }
 
 
@@ -155,7 +153,6 @@ def build_worker_pipeline_config(
         chunk_size=serialized_config["chunk_size"],
         enable_parallel=False,
         enable_pipelining=serialized_config["enable_pipelining"],
-        enable_chunk_overlap=serialized_config["enable_chunk_overlap"],
         enable_tts_file_batch_results=serialized_config.get(
             "enable_tts_file_batch_results",
             False,
@@ -182,7 +179,6 @@ def build_worker_pipeline_config(
             "skip_non_prose_sections",
             True,
         ),
-        speech_normalization=serialized_config.get("speech_normalization", False),
     )
 
 

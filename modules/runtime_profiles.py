@@ -47,7 +47,6 @@ class RuntimeProfile:
     requirements_file: Path
     model_groups: tuple[str, ...]
     platform_kind: str = "any"
-    risk: str | None = None
 
     def is_compatible(
         self,
@@ -134,7 +133,6 @@ _RUNTIME_PROFILES = (
         requirements_file=_REQUIREMENTS_DIR / "cuda.txt",
         model_groups=("tts-cpu-cuda", "cleaner-cuda", "cleaner-cuda-large"),
         platform_kind="nvidia-cuda",
-        risk=None,
     ),
 )
 

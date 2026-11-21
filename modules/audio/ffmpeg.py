@@ -206,21 +206,17 @@ def run_ffmpeg_command(
 
         collector = threading.Thread(target=collect_output, daemon=True)
         collector.start()
-        try:
-            while collector.is_alive():
-                if cancel_requested():
-                    kill_ffmpeg_process(process)
-                    raise RuntimeError(f"{failure_message}: cancelled")
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    kill_ffmpeg_process(process)
-                    raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s")
-                collector.join(timeout=min(0.1, remaining))
-            stdout, stderr = communicate_result[0]
-            return_code = int(process.returncode or 0)
-        except subprocess.TimeoutExpired as exc:
-            kill_ffmpeg_process(process)
-            raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s") from exc
+        while collector.is_alive():
+            if cancel_requested():
+                kill_ffmpeg_process(process)
+                raise RuntimeError(f"{failure_message}: cancelled")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                kill_ffmpeg_process(process)
+                raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s")
+            collector.join(timeout=min(0.1, remaining))
+        stdout, stderr = communicate_result[0]
+        return_code = int(process.returncode or 0)
         if return_code != 0:
             raise ffmpeg_failure(failure_message, stderr)
         return subprocess.CompletedProcess(list(cmd), return_code, stdout, stderr)

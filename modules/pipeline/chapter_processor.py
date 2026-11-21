@@ -350,31 +350,6 @@ class ChapterProcessor:
             chapter_result=chapter_result,
         )
 
-    @timed_stage("clean_tts_overlap")
-    def clean_and_synthesize_with_overlap(
-        self,
-        *,
-        chapter: Any,
-        chapter_idx: int,
-        total_chapters: int,
-        chunks: list[str],
-        output_dir: Path,
-        chapter_result: ChapterResult | None = None,
-    ) -> tuple[Optional[Path | np.ndarray], bool]:
-        """Overlap cleaner production and TTS synthesis for a chapter."""
-        from .stages.synthesis import clean_and_synthesize_with_overlap
-
-        return clean_and_synthesize_with_overlap(
-            runtime=self.runtime,
-            hooks=self,
-            chapter=chapter,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            chunks=chunks,
-            output_dir=output_dir,
-            chapter_result=chapter_result,
-        )
-
     def _record_tts_throughput(self, chunks: list[str], elapsed_seconds: float) -> None:
         if elapsed_seconds <= 0:
             return
@@ -402,7 +377,7 @@ class ChapterProcessor:
             if result.error:
                 continue
             timings = result.stage_timings or {}
-            tts_seconds = float(timings.get("tts") or timings.get("clean_tts_overlap") or 0.0)
+            tts_seconds = float(timings.get("tts") or 0.0)
             if tts_seconds > 0:
                 chapter = chapters_by_number.get(int(result.chapter_number))
                 content = str(getattr(chapter, "content", "") or "") if chapter is not None else ""
@@ -419,10 +394,10 @@ class ChapterProcessor:
         chapter_idx: int,
         total_chapters: int,
         output_dir: Path,
-        chapter_wav: Path | np.ndarray,
+        chapter_wav: Path,
         precomputed_rms: float | None = None,
     ) -> tuple[Path, int]:
-        """Encode chapter WAV/audio payload to MP3 and return path plus duration."""
+        """Encode chapter WAV to MP3 and return path plus duration."""
         from .stages.encoding import EncodingStageContext, encode_chapter_audio
 
         sample_rate = self.runtime.tts_sample_rate()
@@ -552,12 +527,12 @@ class ChapterProcessor:
         chapter_idx: int,
         total_chapters: int,
         output_dir: Path,
-    ) -> tuple[ChapterResult, Optional[Path | np.ndarray], bool]:
+    ) -> tuple[ChapterResult, Optional[Path], bool]:
         """
         Prepare chapter audio up to (but excluding) MP3 encoding.
 
         Returns:
-            Tuple of (chapter_result, wav_or_audio, was_cancelled).
+            Tuple of (chapter_result, narrated_wav, was_cancelled).
         """
         result = ChapterResult(
             chapter_number=chapter.number,
@@ -596,32 +571,6 @@ class ChapterProcessor:
                 result.error = "No text content"
                 self.runtime.log_verbose(f"[CHAPTER {chapter.number}] Empty chapter!", "error")
                 return result, None, False
-
-            use_chunk_overlap = self.runtime.config.enable_chunk_overlap and len(chunks) > 1
-            if use_chunk_overlap:
-                tts_started = time.perf_counter()
-                chapter_wav, was_cancelled = self.clean_and_synthesize_with_overlap(
-                    chapter=chapter,
-                    chapter_idx=chapter_idx,
-                    total_chapters=total_chapters,
-                    chunks=chunks,
-                    output_dir=output_dir,
-                    chapter_result=result,
-                )
-                tts_seconds = time.perf_counter() - tts_started
-                if was_cancelled:
-                    result.error = "Cancelled"
-                    return result, None, True
-                if chapter_wav is None:
-                    result.error = "No audio generated"
-                    return result, None, False
-                self._record_tts_throughput(chunks, tts_seconds)
-                from .chapter_narration import add_chapter_narration
-
-                narrated = add_chapter_narration(self.runtime, chapter, chapter_wav, result)
-                if narrated is None:
-                    result.error = "Cancelled"
-                return result, narrated, narrated is None
 
             chunks, was_cancelled = self.clean_chapter_content(
                 chapter=chapter,
@@ -670,40 +619,22 @@ class ChapterProcessor:
         self,
         *,
         result: ChapterResult,
-        chapter_wav: Path | np.ndarray,
+        chapter_wav: Path,
         chapter: Any,
         chapter_idx: int,
         total_chapters: int,
         output_dir: Path,
     ) -> ChapterResult:
-        """Finalize chapter by encoding prepared WAV/audio payload to MP3."""
-        if isinstance(chapter_wav, Path):
-            result.wav_path = chapter_wav
-            encoding_source = chapter_wav
-            self.runtime.track_temp_cleanup_path(chapter_wav)
-        else:
-            from .stages.encoding import write_wav_from_array
-
-            sample_rate = self.runtime.tts_sample_rate()
-            master_dir = self.runtime.config.temp_dir / "chapter_masters"
-            result.wav_path = master_dir / f"chapter_{chapter.number:02d}.wav"
-            write_wav_from_array(
-                chapter_wav,
-                result.wav_path,
-                sample_rate=sample_rate,
-            )
-            self.runtime.track_temp_cleanup_path(master_dir)
-            encoding_source = result.wav_path
+        """Finalize chapter by encoding the narrated chapter WAV."""
+        result.wav_path = chapter_wav
+        encoding_source = chapter_wav
+        self.runtime.track_temp_cleanup_path(chapter_wav)
 
         if not self.runtime.config.emit_chapter_mp3_artifacts:
             from .stages.encoding import _measure_source_duration_ms
 
-            sample_rate = self.runtime.tts_sample_rate()
             encode_started = time.perf_counter()
-            result.duration_ms = _measure_source_duration_ms(
-                encoding_source,
-                sample_rate=sample_rate,
-            )
+            result.duration_ms = _measure_source_duration_ms(encoding_source)
             self._ensure_chapter_aac(
                 result=result,
                 chapter=chapter,

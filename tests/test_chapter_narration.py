@@ -94,13 +94,12 @@ def test_cancelled_intro_does_not_publish_partial_audio(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-@pytest.mark.parametrize("overlap", [False, True])
-def test_processor_includes_introduction_for_both_synthesis_paths(tmp_path, overlap):
+def test_processor_includes_introduction_before_synthesized_body(tmp_path):
     from unittest.mock import patch
     from modules.pipeline import ConversionPipeline, PipelineConfig
 
     pipeline = ConversionPipeline(PipelineConfig(
-        output_dir=tmp_path / "out", temp_dir=tmp_path / "temp", enable_chunk_overlap=overlap,
+        output_dir=tmp_path / "out", temp_dir=tmp_path / "temp",
     ))
     processor = pipeline.stages.chapter_processor
     body = np.full(24000, 0.2, dtype=np.float32)
@@ -109,7 +108,6 @@ def test_processor_includes_introduction_for_both_synthesis_paths(tmp_path, over
         patch.object(processor, "chunk_chapter_content", return_value=["First.", "Second."]),
         patch.object(processor, "clean_chapter_content", return_value=(["First.", "Second."], False)),
         patch.object(processor, "synthesize_chapter_chunks", return_value=body) as strict,
-        patch.object(processor, "clean_and_synthesize_with_overlap", return_value=(body, False)) as overlapped,
         patch.object(type(processor.runtime), "synthesize_speech", return_value=np.ones(12000, dtype=np.float32)) as speak,
     ):
         result, output, cancelled = processor.prepare_chapter_audio(
@@ -122,6 +120,5 @@ def test_processor_includes_introduction_for_both_synthesis_paths(tmp_path, over
     assert sf.info(output).frames == 12000 + int(
         (CHAPTER_HEADING_PAUSE_SECONDS + CHAPTER_END_PAUSE_SECONDS) * 24000
     ) + 24000
-    assert overlapped.called is overlap
-    assert strict.called is not overlap
+    assert strict.called
     assert speak.call_args.kwargs["text"] == "Chapter number 1. Arrival."

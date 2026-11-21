@@ -70,6 +70,11 @@ def ingest_source(runtime: Any, source_path: Path):
             f"{raw_chars} -> {normalized_chars} chars",
             "info",
         )
+        for section in document.skipped_non_prose_sections[:_MAX_LOGGED_CHAPTERS]:
+            runtime.log_verbose(
+                f"[PARSER] Skipped non-prose section: {section['title']} ({section['reason']})",
+                "info",
+            )
 
     readable_chapters = [
         chapter

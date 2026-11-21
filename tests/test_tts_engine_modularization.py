@@ -30,6 +30,14 @@ from tests import test_cleaner_runtime_probes as _runtime_probes
 frozen_spawn = _runtime_probes.frozen_spawn
 
 
+@pytest.fixture(autouse=True)
+def _stub_installed_voice_snapshot(monkeypatch):
+    monkeypatch.setattr(
+        engine_runtime.mlx_compat_backend, "installed_voice_snapshot",
+        lambda model_path: (model_path, model_path),
+    )
+
+
 def _runtime_engine(canonical_key, **metadata):
     tts = SimpleNamespace(
         config=SimpleNamespace(
@@ -185,16 +193,23 @@ def test_model_cache_evicts_least_recently_used_model() -> None:
     assert model_cache.get_cached_model("model-c") is model_c
 
 
-def test_runtime_hard_unload_clears_stale_cache_when_engine_already_detached() -> None:
-    tts = SimpleNamespace(_model_loaded=False)
-    sentinel_mx = object()
+def test_hard_unload_of_a_never_loaded_engine_keeps_the_warm_cached_model(monkeypatch) -> None:
+    # A runtime check whose load fails still hard-unloads its fresh engine; that
+    # must not evict the model a running conversion keeps warm.
+    monkeypatch.setattr(engine, "_ensure_mlx_runtime", lambda: None)
+    monkeypatch.setattr(engine, "_ensure_tqdm_thread_lock", lambda: None)
+    model_cache.clear_model_cache()
+    tts = engine.TTSEngine()
+    warm_model = object()
+    model_cache.set_cached_model(tts._model_cache_key, warm_model)
+    model_cache.set_cached_model("other-runtime", object())
 
-    with patch.object(engine_runtime.model_cache_backend, "clear_model_cache") as mock_clear, \
-         patch.object(engine_runtime.mlx_compat_backend, "MLX_AVAILABLE", True), \
-         patch.object(engine_runtime.mlx_compat_backend, "mx", sentinel_mx):
-        engine_runtime.unload_model(tts, keep_in_cache=False)
-
-    mock_clear.assert_called_once_with(mx_module=sentinel_mx, mlx_available=True)
+    try:
+        tts.unload_model(keep_in_cache=False)
+        assert model_cache.get_cached_model(tts._model_cache_key) is warm_model
+        assert model_cache.get_cached_model("other-runtime") is not None
+    finally:
+        model_cache.clear_model_cache()
 
 
 def test_runtime_hard_unload_preserves_newer_cache_entry_for_same_key() -> None:
@@ -613,9 +628,7 @@ def test_tts_engine_warmup_model_is_idempotent() -> None:
 
 def test_tts_engine_batch_synthesis_uses_sequential_scheduler_for_serial_mlx_runtime() -> None:
     tts = engine.TTSEngine.__new__(engine.TTSEngine)
-    tts.config = SimpleNamespace(use_batching=True, batch_size=4, sample_rate=24000)
-    tts._memory_manager = None
-    tts._batch_pause_total_ms = 0.0
+    tts.config = SimpleNamespace(sample_rate=24000)
 
     from modules.tts.strategies.base import SynthesisItem, SynthesisResult
 
@@ -698,7 +711,7 @@ def test_public_synthesis_methods_clamp_speed_and_default_voice(tmp_path) -> Non
         audio_result = tts.synthesize(
             "hello",
             voice=None,
-            speed=3.0,
+            speed=4.0,
             max_retries=5,
         )
         path_result = tts.synthesize_to_output_file(
@@ -714,7 +727,7 @@ def test_public_synthesis_methods_clamp_speed_and_default_voice(tmp_path) -> Non
     synth_once.assert_called_once_with(
         text="hello",
         voice="af_bella",
-        speed=2.0,
+        speed=3.0,
         output_path=None,
     )
     synth_file.assert_called_once_with(
@@ -723,6 +736,23 @@ def test_public_synthesis_methods_clamp_speed_and_default_voice(tmp_path) -> Non
         speed=0.5,
         output_path=output_path,
     )
+
+
+@pytest.mark.parametrize("schema_path", [
+    "modules.web.schemas.conversions:ConversionRuntimeOptionsRequest",
+    "modules.web.routes.voices:VoicePreviewRequest",
+])
+def test_tts_layers_honor_the_fastest_speed_the_api_accepts(schema_path) -> None:
+    from modules.tts.strategies.base import TTSStrategy
+
+    module_name, class_name = schema_path.split(":")
+    schema = getattr(importlib.import_module(module_name), class_name)
+    api_max = next(
+        rule.le for rule in schema.model_fields["speed"].metadata if getattr(rule, "le", None)
+    )
+
+    assert engine.TTSEngine._clamp_speed(api_max) == api_max
+    assert TTSStrategy._clamp_speed(None, api_max) == api_max
 
 
 def test_engine_runtime_helpers_cover_warmup_and_metrics_contract() -> None:
@@ -739,12 +769,10 @@ def test_engine_runtime_helpers_cover_warmup_and_metrics_contract() -> None:
     tts._last_warmup_ms = None
     tts._engine_start_time = 1.0
     tts._first_audio_time = None
-    tts._memory_manager = None
     tts._total_chunks_processed = 0
     tts._total_chars_processed = 0
     tts._total_time_ms = 0.0
     tts._retry_count = 0
-    tts._batch_pause_total_ms = 0.0
 
     with patch.object(engine_runtime, "_get_cached_model", return_value=None), patch.object(
         engine_runtime.mlx_compat_backend,

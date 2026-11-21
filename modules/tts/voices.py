@@ -116,6 +116,12 @@ _VOICE_OVERRIDES: dict[str, dict[str, object]] = {
 }
 
 
+def kokoro_language_code(voice: str) -> str:
+    """Kokoro G2P language for a voice ID or blend, taken from its first voice."""
+    prefix = voice.split(",")[0].strip()[:1]
+    return prefix if prefix in _LOCALE_BY_PREFIX else "a"
+
+
 def _humanize_name(token: str) -> str:
     parts = [segment for segment in token.split("_") if segment]
     if not parts:

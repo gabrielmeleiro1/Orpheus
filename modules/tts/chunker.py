@@ -67,18 +67,6 @@ class TextChunker:
             start -= 1
         return text[start:end]
 
-    def estimate_tokens(self, text: str) -> int:
-        """
-        Estimate token count for text.
-
-        Args:
-            text: Input text
-
-        Returns:
-            Estimated token count
-        """
-        return int(len(text) / self.config.chars_per_token)
-
     def _find_sentence_boundaries(self, text: str) -> list[int]:
         """
         Find all sentence boundary positions in text.
@@ -163,11 +151,6 @@ class TextChunker:
         boundaries = self._find_sentence_boundaries(text)
 
         if not boundaries:
-            # No sentence boundaries found - split by paragraph or hard limit
-            paragraphs = text.split('\n\n')
-            if len(paragraphs) > 1:
-                return self._split_paragraphs(paragraphs, max_chars)
-            # Last resort: hard split
             return self._hard_split(text, max_chars)
 
         chunks = []
@@ -200,45 +183,6 @@ class TextChunker:
         remaining = text[current_start:].strip()
         if remaining:
             chunks.extend(self._enforce_max_chars(remaining, max_chars))
-
-        return chunks
-
-    def _split_paragraphs(
-        self,
-        paragraphs: list[str],
-        max_chars: int
-    ) -> list[str]:
-        """Split paragraphs into chunks."""
-        chunks = []
-        current_chunk = ""
-
-        for para in paragraphs:
-            para = para.strip()
-            if not para:
-                continue
-
-            if len(current_chunk) + len(para) + 2 <= max_chars:
-                if current_chunk:
-                    current_chunk += "\n\n" + para
-                else:
-                    current_chunk = para
-            else:
-                if current_chunk:
-                    chunks.append(current_chunk)
-
-                if len(para) <= max_chars:
-                    current_chunk = para
-                else:
-                    # Paragraph too long - split by sentences
-                    para_chunks = self._split_at_boundaries(para, max_chars)
-                    if para_chunks:
-                        chunks.extend(para_chunks[:-1])
-                        current_chunk = para_chunks[-1]
-                    else:
-                        current_chunk = ""
-
-        if current_chunk:
-            chunks.append(current_chunk)
 
         return chunks
 
@@ -311,9 +255,7 @@ class TextChunker:
         # Clean up whitespace
         text = ' '.join(text.split())
 
-        # Char ceiling is authoritative for VRAM safety; token estimate alone can
-        # under-count and skip hard-splitting an overlong span.
-        if len(text) <= max_chars and self.estimate_tokens(text) <= max_tokens:
+        if len(text) <= max_chars:
             return [text]
 
         return self._merge_small_chunks(self._split_at_boundaries(text, max_chars), max_chars)

@@ -125,13 +125,12 @@ def test_cleaner_load_generate_and_tokenizer_interfaces(mlx_environment):
         from tokenizers.models import WordLevel
         from transformers import PreTrainedTokenizerFast
 
-        mx, load, generate, make_sampler = ensure_mlx_lm_runtime()
+        mx, load, stream_generate, make_sampler = ensure_mlx_lm_runtime()
         inspect.signature(load).bind('/offline/cleaner')
         sampler = make_sampler(temp=0.0)
         assert callable(sampler)
-        inspect.signature(generate).bind(
-            object(), object(), prompt='Hello', max_tokens=1,
-            sampler=sampler, verbose=False,
+        inspect.signature(stream_generate).bind(
+            object(), object(), prompt='Hello', max_tokens=1, sampler=sampler,
         )
         assert {'max_tokens', 'sampler'} <= inspect.signature(generate_step).parameters.keys()
         tokenizer = TokenizerWrapper(PreTrainedTokenizerFast(

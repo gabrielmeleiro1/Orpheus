@@ -22,7 +22,12 @@ from modules.pipeline.pool_manager import (
     _health_ping,
     _worker_startup_probe,
 )
-from modules.pipeline.worker_errors import WorkerStartupError
+from modules.pipeline.worker_errors import (
+    StartupErrorKind,
+    StartupFailureAction,
+    WorkerStartupError,
+    resolve_startup_failure_action,
+)
 from worker_pool_test_helpers import (
     FakeExecutor as _FakeExecutor,
     NeverCompletingChapterExecutor,
@@ -269,7 +274,7 @@ class _InspectableAsyncExecutor(_AsyncTrackingExecutor):
     instances: list["_InspectableAsyncExecutor"] = []
 
 
-def _process(chapter, chapter_idx, _file_manager):  # noqa: ANN001
+def _process(chapter, chapter_idx):  # noqa: ANN001
     return {
         "chapter_number": chapter.number,
         "chapter_title": chapter.title,
@@ -277,11 +282,7 @@ def _process(chapter, chapter_idx, _file_manager):  # noqa: ANN001
     }
 
 
-def _process_with_real_process_probe(
-    chapter,
-    chapter_idx,
-    _file_manager,
-):  # noqa: ANN001
+def _process_with_real_process_probe(chapter, chapter_idx):  # noqa: ANN001
     start_time = time.time()
     time.sleep(0.75)
     end_time = time.time()
@@ -641,9 +642,9 @@ def test_shared_pool_cancellation_clears_current_job_metrics() -> None:
                     raise AssertionError("executor was not created")
                 time.sleep(0.01)
             executor = _QuiescingCancellationExecutor.instances[0]
-            cancellation_requested.set()
             # Generous bounds: thread start-up is slow on a loaded Windows machine.
             assert executor.worker_started.wait(timeout=10.0)
+            cancellation_requested.set()
             assert executor.shutdown_entered.wait(timeout=10.0)
             executor.release_worker.set()
             runner.join(timeout=2.0)
@@ -689,6 +690,20 @@ def test_shared_pool_progress_callback_includes_performance_snapshot() -> None:
     assert any(snapshot["active_chapter_titles"] for snapshot in progress_snapshots)
     assert progress_snapshots[-1]["completed_chapters"] == 3
     assert progress_snapshots[-1]["failed_chapters"] == 0
+
+
+def test_shared_pool_progress_callback_type_error_is_not_retried() -> None:
+    calls: list[str] = []
+
+    def _progress(_current: int, _total: int, message: str, performance: dict | None = None) -> None:
+        calls.append(message)
+        raise TypeError("bug inside the progress callback")
+
+    manager = SharedWorkerPoolManager(max_workers=2)
+    with pytest.raises(TypeError, match="bug inside the progress callback"):
+        manager._emit_progress(_progress, 1, 2, "Queued chapter 1/2")  # noqa: SLF001
+
+    assert calls == ["Queued chapter 1/2"]
 
 
 def test_shared_pool_bounds_in_flight_futures_to_worker_count() -> None:
@@ -737,6 +752,126 @@ def test_shared_pool_bounds_in_flight_futures_to_worker_count() -> None:
     assert executor.max_in_flight <= 2
 
 
+def _init_worker_with_slow_failing_second(
+    available_vram_gb,
+    active_workers=1,
+    worker_init_config=None,
+    startup_barrier=None,
+):  # noqa: ANN001
+    """Spawned-worker initializer: the first worker is ready at once, the next
+    one finishes loading later and records a startup failure."""
+    from modules.pipeline import worker_runtime
+    from modules.pipeline.worker_errors import StartupErrorKind, WorkerStartupStatus
+
+    worker_runtime._init_worker(
+        available_vram_gb, active_workers, worker_init_config, startup_barrier,
+    )
+    try:
+        Path(os.environ["ORPHEUS_TEST_FIRST_WORKER_MARKER"]).touch(exist_ok=False)
+    except FileExistsError:
+        time.sleep(1.0)
+        worker_runtime._WORKER_INIT_STATUS = WorkerStartupStatus(
+            success=False,
+            provider="test",
+            device=None,
+            error_type=StartupErrorKind.RUNTIME_MEMORY,
+            message="second worker ran out of memory",
+            phase="tts_load",
+        )
+
+
+def test_shared_pool_startup_probes_reach_every_real_worker(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("ORPHEUS_TEST_FIRST_WORKER_MARKER", str(tmp_path / "first-worker"))
+    manager = SharedWorkerPoolManager(max_workers=2, startup_probe_timeout_seconds=20.0)
+
+    try:
+        with patch(
+            "modules.pipeline.pool_manager._init_worker",
+            _init_worker_with_slow_failing_second,
+        ):
+            with pytest.raises(WorkerStartupError, match="second worker ran out of memory"):
+                manager.run_parallel(
+                    chapters=[_Chapter(number=1, title="One")],
+                    process_func=_process,
+                    config_fingerprint="startup-probe-per-worker",
+                    worker_init_config={},
+                )
+    except PermissionError as exc:
+        pytest.skip(f"real process pool unavailable: {exc}")
+    finally:
+        manager.shutdown(timeout_seconds=0.5, cancel_futures=True)
+
+
+def _init_worker_with_fast_failing_first(
+    available_vram_gb,
+    active_workers=1,
+    worker_init_config=None,
+    startup_barrier=None,
+):  # noqa: ANN001
+    """Spawned-worker initializer: the first worker records the failure kind
+    named by the environment at once; its sibling keeps loading far past the
+    startup deadline."""
+    from modules.pipeline import worker_runtime
+    from modules.pipeline.worker_errors import WorkerStartupStatus
+
+    worker_runtime._init_worker(
+        available_vram_gb, active_workers, worker_init_config, startup_barrier,
+    )
+    try:
+        Path(os.environ["ORPHEUS_TEST_FIRST_WORKER_MARKER"]).touch(exist_ok=False)
+    except FileExistsError:
+        time.sleep(60.0)
+    else:
+        worker_runtime._WORKER_INIT_STATUS = WorkerStartupStatus(
+            success=False,
+            provider="test",
+            device=None,
+            error_type=os.environ["ORPHEUS_TEST_FAILURE_KIND"],
+            message="first worker failed fast",
+            phase="tts_load",
+        )
+
+
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_action"),
+    [
+        (StartupErrorKind.RUNTIME_MEMORY, StartupFailureAction.FALLBACK_MEMORY),
+        (StartupErrorKind.RUNTIME_UNAVAILABLE, StartupFailureAction.FAIL_FAST_UNAVAILABLE),
+    ],
+)
+def test_shared_pool_fast_worker_failure_is_not_masked_by_slow_sibling(
+    tmp_path, monkeypatch, failure_kind, expected_action,
+) -> None:
+    monkeypatch.setenv("ORPHEUS_TEST_FIRST_WORKER_MARKER", str(tmp_path / "first-worker"))
+    monkeypatch.setenv("ORPHEUS_TEST_FAILURE_KIND", failure_kind)
+    manager = SharedWorkerPoolManager(
+        max_workers=2, startup_probe_timeout_seconds=5.0, shutdown_timeout_seconds=0.5,
+    )
+
+    try:
+        with patch(
+            "modules.pipeline.pool_manager._init_worker",
+            _init_worker_with_fast_failing_first,
+        ):
+            started_at = time.monotonic()
+            with pytest.raises(WorkerStartupError) as raised:
+                manager.ensure_started("fast-failure", worker_init_config={})
+            elapsed = time.monotonic() - started_at
+    except PermissionError as exc:
+        pytest.skip(f"real process pool unavailable: {exc}")
+    finally:
+        manager.shutdown(timeout_seconds=0.5, cancel_futures=True)
+
+    statuses = raised.value.statuses
+    assert statuses
+    assert {status.error_type for status in statuses} == {failure_kind}
+    assert resolve_startup_failure_action(
+        statuses[0], memory_degrade_allowed=True,
+    ) is expected_action
+    # Reported as soon as the failing worker answers, not at the deadline.
+    assert elapsed < 5.0
+
+
 def test_shared_pool_real_process_pool_runs_worker_tasks_concurrently() -> None:
     chapters = [_Chapter(number=idx + 1, title=f"Chapter {idx + 1}") for idx in range(2)]
     manager = SharedWorkerPoolManager(max_workers=2)
@@ -766,7 +901,8 @@ def test_shared_pool_memory_backpressure_waits_before_submitting_more() -> None:
     results: list[dict] = []
 
     class BackpressurePolicy:
-        def should_submit_more(self, active_workers: int) -> bool:
+        def should_submit_more(self, active_workers: int, *, workers_resident: bool) -> bool:
+            assert workers_resident
             return active_workers == 0
 
     def _run_manager() -> None:
@@ -810,6 +946,70 @@ def test_shared_pool_memory_backpressure_waits_before_submitting_more() -> None:
     assert len(results) == len(chapters)
     assert executor.chapter_submit_calls == len(chapters)
     assert executor.max_in_flight == 1
+
+
+@pytest.mark.parametrize(
+    ("live_available_gib", "expected_in_flight"),
+    [
+        # Above the 4 GiB reserve but less than one worker estimate of headroom:
+        # the resident workers are already reflected in the live sample.
+        (6.0, 2),
+        # Below the reserve floor, the pool keeps a single chapter in flight.
+        (3.5, 1),
+    ],
+)
+def test_shared_pool_memory_backpressure_does_not_charge_resident_workers_twice(
+    live_available_gib: float,
+    expected_in_flight: int,
+) -> None:
+    from modules.pipeline.memory_policy import MemorySnapshot, SafeMemoryPolicy
+
+    _InspectableAsyncExecutor.instances = []
+    chapters = [_Chapter(number=idx + 1, title=f"Chapter {idx + 1}") for idx in range(3)]
+    results: list[dict] = []
+    policy = SafeMemoryPolicy(
+        memory_sampler=lambda: MemorySnapshot(
+            total_bytes=16 * 1024**3,
+            available_bytes=int(live_available_gib * 1024**3),
+        ),
+        estimated_worker_bytes=3 * 1024**3,
+    )
+
+    def _run_manager() -> None:
+        with patch("modules.pipeline.pool_manager.ProcessPoolExecutor", _InspectableAsyncExecutor):
+            manager = SharedWorkerPoolManager(max_workers=2)
+            try:
+                results.extend(
+                    manager.run_parallel(
+                        chapters=chapters,
+                        process_func=_process,
+                        config_fingerprint="resident-memory",
+                        worker_init_config={"voice": "af_bella"},
+                        memory_policy=policy,
+                    )
+                )
+            finally:
+                manager.shutdown()
+
+    thread = threading.Thread(target=_run_manager)
+    thread.start()
+
+    deadline = time.perf_counter() + 2
+    while time.perf_counter() < deadline:
+        instances = _InspectableAsyncExecutor.instances
+        if instances and instances[0].chapter_submit_calls >= expected_in_flight:
+            break
+        time.sleep(0.01)
+    time.sleep(0.05)
+    executor = _InspectableAsyncExecutor.instances[0]
+    in_flight_before_release = executor.max_in_flight
+
+    executor.release.set()
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert in_flight_before_release == expected_in_flight
+    assert len(results) == len(chapters)
 
 
 def test_shared_pool_propagates_executor_startup_failure() -> None:

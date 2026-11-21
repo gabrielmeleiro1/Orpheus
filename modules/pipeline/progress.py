@@ -6,27 +6,6 @@ import time
 from typing import Any, Optional
 
 
-def estimate_eta_from_chars(
-    start_time: float | None,
-    chars_processed: int,
-    total_chars: int,
-) -> Optional[float]:
-    """Estimate remaining seconds from character throughput."""
-    if start_time is None or chars_processed <= 0:
-        return None
-
-    elapsed = time.time() - start_time
-    if elapsed <= 0:
-        return None
-
-    chars_per_second = chars_processed / elapsed
-    if chars_per_second <= 0:
-        return None
-
-    remaining_chars = max(0, total_chars - chars_processed)
-    return remaining_chars / chars_per_second
-
-
 def estimate_eta_from_progress(
     start_time: float | None,
     progress: float | None,
@@ -70,27 +49,9 @@ class PipelineProgressTracker:
     def __init__(self, state: Any):
         self._state = state
 
-    def reset(self) -> None:
-        """Reset counters at the start of a conversion pass."""
-        self._state.start_time = time.time()
-        self._state.chars_processed = 0
-        self._state.total_chars = 0
-
     def set_total_chars(self, total_chars: int) -> None:
-        """Persist total-character estimate used for ETA."""
+        """Persist the total-character count used by the adaptive worker guard."""
         self._state.total_chars = max(0, int(total_chars))
-
-    def add_processed_chars(self, chars: int) -> None:
-        """Increment processed character count."""
-        self._state.chars_processed += max(0, int(chars))
-
-    def estimate_eta(self) -> Optional[float]:
-        """Estimate remaining processing time in seconds."""
-        return estimate_eta_from_chars(
-            self._state.start_time,
-            self._state.chars_processed,
-            self._state.total_chars,
-        )
 
     def notify(
         self,
@@ -104,23 +65,16 @@ class PipelineProgressTracker:
         message: str = "",
         performance: dict[str, Any] | None = None,
     ) -> None:
-        """Emit progress callback with an ETA snapshot."""
+        """Emit a progress callback with the current performance snapshot."""
         if callback is None:
             return
 
-        args = (
+        callback(
             stage,
             chapter_idx,
             total_chapters,
             chunk_idx,
             total_chunks,
             message,
-            self.estimate_eta(),
+            performance,
         )
-        try:
-            callback(*args, performance)
-        except TypeError as original_error:
-            try:
-                callback(*args)
-            except TypeError:
-                raise original_error

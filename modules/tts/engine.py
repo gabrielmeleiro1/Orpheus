@@ -2,7 +2,6 @@
 TTS Engine Module
 =================
 Kokoro-82M TTS engine via mlx-audio framework.
-Integrates with VRAM monitoring for grouped multi-item synthesis sizing.
 """
 
 import time
@@ -10,11 +9,16 @@ import threading
 import logging
 import wave
 from pathlib import Path
-from typing import Any, Callable, Iterator, Optional, TypeVar
+from typing import Callable, Iterator, Optional, TypeVar
 import numpy as np
 
+from modules.contracts.limits import MAX_SPEED, MIN_SPEED
 from modules.errors import TTSInstallationError, TTSModelError, SynthesisError, VRAMOverflowError
-from modules.tts.strategies.base import SynthesisItem, SynthesisResult
+from modules.tts.strategies.base import (
+    SynthesisItem,
+    SynthesisResult,
+    has_no_speakable_text,
+)
 from .engine_config import TTSConfig
 from .cleaner_errors import is_memory_pressure_error
 from . import engine_output, engine_runtime
@@ -26,18 +30,10 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# Import VRAM monitoring
-try:
-    from modules.tts.vram_monitor import DynamicBatchConfig, get_memory_manager
-
-    VRAM_MONITOR_AVAILABLE = True
-except ImportError:
-    VRAM_MONITOR_AVAILABLE = False
-
 # MLX runtime - loaded lazily to avoid long startup imports in TUI mode.
 generate_audio = mlx_compat_backend.generate_audio
 
-# Duration of the silence emitted for a chunk whose text cleans away entirely.
+# Duration of the silence emitted for a chunk with nothing to speak.
 BLANK_TEXT_SILENCE_MS = 50
 
 
@@ -100,32 +96,11 @@ def _wav_duration_ms(path: Path, fallback_sample_rate: int) -> int:
         return 0
 
 
-def _adaptive_batch_pause_seconds(memory_manager: Optional[Any]) -> float:
-    """Derive inter-batch pause from current memory pressure."""
-    if not memory_manager:
-        return 0.0
-
-    try:
-        pressure = memory_manager.get_vram_pressure()
-    except Exception:
-        return 0.0
-
-    pressure_name = getattr(pressure, "name", str(pressure))
-    if pressure_name == "CRITICAL":
-        return 0.20
-    if pressure_name == "HIGH":
-        return 0.10
-    if pressure_name == "ELEVATED":
-        return 0.05
-    return 0.0
-
-
 class TTSEngine:
     """
     Kokoro-82M TTS engine wrapper.
 
     Uses mlx-audio for GPU-accelerated inference on Apple Silicon.
-    Integrates with VRAM monitoring for grouped multi-item synthesis sizing.
     """
 
     supports_incremental_batch_results = True
@@ -144,6 +119,8 @@ class TTSEngine:
         self.config = config or TTSConfig()
         self._model_loaded = False
         self._model = None
+        self._last_cached_model = None
+        self._voice_snapshot: Optional[tuple[str, str]] = None
 
         # Determine model path based on quantization
         self._canonical_quantization = normalize_quantization(self.config.quantization)
@@ -159,18 +136,8 @@ class TTSEngine:
         self._engine_start_time = time.time()
         self._first_audio_time: Optional[float] = None
         self._retry_count = 0
-        self._batch_pause_total_ms = 0.0
         self._warmup_complete = False
         self._last_warmup_ms: Optional[float] = None
-
-        # VRAM monitoring integration
-        self._memory_manager = None
-        if VRAM_MONITOR_AVAILABLE:
-            self._memory_manager = get_memory_manager(
-                dynamic_config=DynamicBatchConfig(
-                    base_tts_batch_size=self.config.batch_size,
-                )
-            )
 
     def _get_model_path(self) -> str:
         """Get the model path based on quantization setting."""
@@ -199,12 +166,13 @@ class TTSEngine:
         return model_cache_backend.get_model_lock(str(key))
 
     def _blank_text_silence(self) -> "np.ndarray":
-        """Audio for a chunk whose text cleaned away to nothing.
+        """Audio for a chunk with nothing to speak.
 
         Chunks such as a horizontal rule or a bare citation marker survive
-        chunking but clean to "". The pipeline requires one audio result per
-        chunk and treats an empty one as a chapter failure, so emit a short
-        silence -- which is also what a scene break should sound like.
+        chunking but clean to "" or to bare symbols that produce no phonemes.
+        The pipeline requires one audio result per chunk and treats an empty
+        one as a chapter failure, so emit a short silence -- which is also what
+        a scene break should sound like.
         """
         frames = max(1, int(self.config.sample_rate * BLANK_TEXT_SILENCE_MS / 1000))
         return np.zeros(frames, dtype=np.float32)
@@ -258,10 +226,6 @@ class TTSEngine:
         self._total_chars_processed += max(0, char_count)
         if self._first_audio_time is None:
             self._first_audio_time = time.time()
-
-    def _adaptive_batch_pause_seconds(self) -> float:
-        """Derive inter-batch pause from VRAM pressure instead of fixed sleep."""
-        return _adaptive_batch_pause_seconds(self._memory_manager)
 
     def _synthesize_to_output_path(
         self,
@@ -345,7 +309,7 @@ class TTSEngine:
     @staticmethod
     def _clamp_speed(speed: float) -> float:
         """Clamp speech speed into runtime-supported range."""
-        return max(0.5, min(2.0, speed))
+        return max(MIN_SPEED, min(MAX_SPEED, speed))
 
     @staticmethod
     def _retry_wait_seconds(attempt: int) -> int:
@@ -412,7 +376,7 @@ class TTSEngine:
             except MemoryError:
                 raise VRAMOverflowError(model_name=self._model_path)
 
-            except TTSInstallationError:
+            except (TTSInstallationError, SynthesisError):
                 raise
 
             except (OSError, IOError) as e:
@@ -471,7 +435,7 @@ class TTSEngine:
         Args:
             text: Text to synthesize
             voice: Voice ID (e.g., 'am_adam', 'af_bella')
-            speed: Speech speed multiplier (0.5-2.0)
+            speed: Speech speed multiplier (MIN_SPEED-MAX_SPEED)
             max_retries: Number of retries for model download failures
             output_path: Optional path to save audio directly (enables streaming)
 
@@ -485,7 +449,7 @@ class TTSEngine:
         """
         start_time = time.time()
 
-        if not text.strip():
+        if has_no_speakable_text(text):
             silence = self._blank_text_silence()
             if output_path is not None:
                 self._write_blank_text_silence(output_path)
@@ -526,7 +490,7 @@ class TTSEngine:
         start_time = time.time()
         output_path = Path(output_path)
 
-        if not text.strip():
+        if has_no_speakable_text(text):
             return self._write_blank_text_silence(output_path)
 
         voice = voice or self.config.default_voice
@@ -550,56 +514,21 @@ class TTSEngine:
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ) -> Iterator[BatchResult]:
         """
-        Incrementally synthesize multiple text chunks through grouped scheduling.
+        Incrementally synthesize multiple text chunks, one at a time.
 
         This is the streaming form of `synthesize_batch()`: each result is yielded
-        as soon as the underlying per-item synthesis finishes.
+        as soon as its synthesis finishes.
         """
-        if not items:
-            return
-
         total = len(items)
-        completed = 0
+        for completed, item in enumerate(items, start=1):
+            try:
+                result = self._synthesize_single(item)
+            except Exception as e:
+                result = BatchResult(audio=None, index=item.index, error=str(e))
 
-        # Determine grouped scheduling width - use dynamic sizing if available.
-        if self.config.use_batching and self._memory_manager:
-            refresh_memory_pressure = getattr(
-                self._memory_manager,
-                "refresh_memory_pressure",
-                None,
-            )
-            if callable(refresh_memory_pressure):
-                refresh_memory_pressure()
-            # Get VRAM-aware chunk group size.
-            batch_size = self._memory_manager.get_tts_batch_size()
-        elif self.config.use_batching:
-            batch_size = self.config.batch_size
-        else:
-            batch_size = 1
-
-        for batch_start in range(0, total, batch_size):
-            batch_end = min(batch_start + batch_size, total)
-            batch = items[batch_start:batch_end]
-
-            for item in batch:
-                try:
-                    result = self._synthesize_single(item)
-                except Exception as e:
-                    result = BatchResult(
-                        audio=None,
-                        index=item.index,
-                        error=str(e),
-                    )
-
-                completed += 1
-                if progress_callback:
-                    progress_callback(completed, total)
-                yield result
-
-            pause_seconds = self._adaptive_batch_pause_seconds()
-            if batch_end < total and pause_seconds > 0:
-                self._batch_pause_total_ms += pause_seconds * 1000
-                time.sleep(pause_seconds)
+            if progress_callback:
+                progress_callback(completed, total)
+            yield result
 
     def _synthesize_single(self, item: BatchItem) -> BatchResult:
         """Synthesize a single batch item."""

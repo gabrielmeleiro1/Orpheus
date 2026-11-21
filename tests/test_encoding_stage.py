@@ -170,38 +170,6 @@ def test_encode_chapter_aac_uses_single_encode_for_short_wav(
     assert encode_args[encode_args.index("-c:a") + 1] == "aac"
 
 
-def test_cancelled_array_encode_does_not_fall_back_to_a_second_encode(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    calls: list[str] = []
-
-    class FakeEncoder:
-        def array_to_mp3(self, *_args, cancel_requested=None, **_kwargs) -> Path:
-            calls.append("array")
-            assert cancel_requested is not None and cancel_requested()
-            raise RuntimeError("FFmpeg encoding from array failed: cancelled")
-
-        def wav_to_mp3(self, *_args, **_kwargs) -> Path:  # pragma: no cover - regression guard
-            calls.append("wav")
-            raise AssertionError("cancelled encode must not retry through a temp WAV")
-
-    monkeypatch.setattr(audio_encoder_module, "AudioEncoder", FakeEncoder)
-
-    with pytest.raises(RuntimeError, match="cancelled"):
-        encoding.encode_chapter_audio(
-            _pipeline(cancel_requested=lambda: True),
-            SimpleNamespace(number=1, title="Chapter 1"),
-            chapter_idx=0,
-            total_chapters=1,
-            output_dir=tmp_path,
-            chapter_wav=np.zeros(2400, dtype=np.float32),
-        )
-
-    assert calls == ["array"]
-    assert list(tmp_path.iterdir()) == []
-
-
 def test_chapter_audio_names_match_the_recovery_inventory(tmp_path: Path) -> None:
     from modules.contracts.recovery_inventory import chapter_audio_path
 

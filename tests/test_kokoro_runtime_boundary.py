@@ -31,7 +31,7 @@ def _isolate_installed_models(monkeypatch, tmp_path):
         "require_local_phonemizer", lambda: None,
     )
     (tmp_path / "voices").mkdir()
-    for voice in ("am_adam", "af_bella"):
+    for voice in ("am_adam", "af_bella", "bf_emma"):
         (tmp_path / "voices" / f"{voice}.pt").write_bytes(b"voice")
     monkeypatch.setattr(
         importlib.import_module("modules.tts.runtimes.kokoro_package"),
@@ -860,3 +860,49 @@ def test_package_kokoro_serializes_calls_into_a_shared_pipeline() -> None:
     assert not errors
     assert all(not thread.is_alive() for thread in threads)
     assert max_in_flight == 1, "shared KPipeline was entered concurrently"
+
+
+def test_package_runtime_phonemizes_each_voice_with_its_own_language(monkeypatch) -> None:
+    from modules.tts import model_cache
+
+    model_cache.clear_model_cache()
+    pipelines: list[Any] = []
+
+    class _LanguagePipeline:
+        def __init__(self, *, lang_code: str, model: object, **_kwargs: object) -> None:
+            self.lang_code = lang_code
+            self.model = model
+            self.calls = 0
+            pipelines.append(self)
+
+        def load_single_voice(self, path: str) -> str:
+            return Path(path).stem
+
+        def __call__(self, text: str, *, voice: object, speed: float):
+            self.calls += 1
+            yield text, "phonemes", np.ones(2, dtype=np.float32)
+
+    monkeypatch.setitem(
+        sys.modules, "kokoro", SimpleNamespace(KPipeline=_LanguagePipeline, KModel=_FakeLocalModel),
+    )
+    runtime = _package_runtime()  # default voice am_adam, as for voice previews
+    runtime.load()
+    runtime.synthesize("hello", voice="bf_emma")
+    runtime.synthesize("hello", voice="am_adam")
+    runtime.synthesize("hello", voice="bf_emma")
+
+    american, british = pipelines
+    assert (american.lang_code, british.lang_code) == ("a", "b")
+    assert british.model is american.model
+    assert (american.calls, british.calls) == (1, 2)
+    model_cache.clear_model_cache()
+
+
+def test_package_kokoro_runtime_returns_silence_for_symbol_only_text(tmp_path: Path) -> None:
+    runtime = _package_runtime()
+    runtime._pipeline = object()  # noqa: SLF001 - synthesis must not reach the pipeline
+
+    audio = runtime.synthesize("* * *", voice="am_adam", output_path=tmp_path / "break.wav")
+
+    assert audio.size > 0
+    assert np.all(audio == 0)

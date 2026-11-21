@@ -48,8 +48,6 @@ class PipelineRuntimeProtocol(Protocol):
 
     def synthesize_batch(self, *, items: list[Any], progress_callback: Any) -> list[Any]: ...
 
-    def add_processed_chars(self, chars: int) -> None: ...
-
     def set_tts_engine(self, tts_engine: Any) -> None: ...
 
     def set_text_cleaner(self, text_cleaner: Any) -> None: ...
@@ -101,7 +99,6 @@ class PipelineRunState:
     stage: PipelineStage = PipelineStage.IDLE
     cancelled: bool = False
     start_time: float | None = None
-    chars_processed: int = 0
     total_chars: int = 0
     tts_engine: Any | None = None
     text_cleaner: Any | None = None
@@ -133,7 +130,6 @@ class PipelineRunState:
             worker for worker in self.background_workers if worker.is_alive()
         }
         self.start_time = time.time()
-        self.chars_processed = 0
         self.total_chars = 0
         self.parallel_execution_active = False
         self.temp_cleanup_paths.clear()
@@ -235,9 +231,7 @@ class PipelineRuntime:
             resolved.relative_to(self.config.temp_dir)
         except (TypeError, ValueError):
             return
-        if resolved.parent.name == "chapter_masters" or resolved.parent.name.startswith(
-            "ch_"
-        ):
+        if resolved.parent.name.startswith("ch_"):
             resolved = resolved.parent
         self.state.temp_cleanup_paths.add(resolved)
 
@@ -275,9 +269,6 @@ class PipelineRuntime:
             items=items,
             progress_callback=progress_callback,
         )
-
-    def add_processed_chars(self, chars: int) -> None:
-        self.progress.add_processed_chars(chars)
 
     def set_tts_engine(self, tts_engine: Any) -> None:
         self.state.tts_engine = tts_engine
@@ -399,10 +390,6 @@ class PipelineRuntime:
                 self.state.performance_encode_chapters
                 / self.state.performance_encode_seconds
             )
-
-        eta_seconds = self.progress.estimate_eta()
-        if eta_seconds is not None:
-            snapshot.setdefault("eta_seconds", eta_seconds)
 
         cleaner = self.state.text_cleaner
         if cleaner is not None:

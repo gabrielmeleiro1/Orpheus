@@ -45,8 +45,6 @@ class MLXKokoroRuntime:
             sample_rate=config.sample_rate,
             default_voice=config.default_voice,
             max_chunk_tokens=config.max_chunk_tokens,
-            batch_size=config.batch_size,
-            use_batching=config.use_batching,
             enable_streaming=config.enable_streaming,
             stream_buffer_size=config.stream_buffer_size,
             runtime_cache_key=identity["runtime_cache_key"],

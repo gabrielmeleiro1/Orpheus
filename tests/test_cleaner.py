@@ -27,7 +27,7 @@ from modules.tts.cleaner_config import CleanerConfig
 from modules.tts.cleaner_mlx import CleanerMLXStrategy
 from modules.tts.cleaner_rules import extract_result
 from modules.tts import cleaner_rules as cleaner_rules_backend
-from tests.fixtures.fake_cleaner_backend import make_partial_text_cleaner
+from tests.fixtures.fake_cleaner_backend import fake_mlx_stream, make_partial_text_cleaner
 
 
 def test_text_cleaner_rejects_unknown_backend():
@@ -144,7 +144,7 @@ def test_cleaner_skip_llm_routes_joined_first_person_words_to_llm(monkeypatch):
         return "I am tired. I would rest."
 
     monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "make_sampler", lambda temp=0.0: ("sampler", temp))
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", fake_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "stream_generate", fake_mlx_stream(fake_generate))
 
     trace = cleaner.clean_with_trace("Iam tired. Iwould rest.")
 
@@ -183,7 +183,7 @@ def test_cleaner_skip_llm_option_uses_rule_only_for_long_clean_text(monkeypatch)
     def fail_generate(*_args, **_kwargs):
         raise AssertionError("LLM generation should not be called")
 
-    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "generate", fail_generate)
+    monkeypatch.setattr(cleaner_module.cleaner_mlx_backend, "stream_generate", fake_mlx_stream(fail_generate))
 
     trace = cleaner.clean_with_trace(text)
 

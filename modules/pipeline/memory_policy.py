@@ -166,7 +166,18 @@ class SafeMemoryPolicy:
         self.selected_worker_count_reason = "requested sequential mode"
         return requested_max
 
-    def should_submit_more(self, active_workers: int) -> bool:
+    def should_submit_more(
+        self,
+        active_workers: int,
+        *,
+        workers_resident: bool = False,
+    ) -> bool:
+        """Return whether another chapter may run alongside ``active_workers``.
+
+        A pool whose workers have already loaded their models passes
+        ``workers_resident=True``: the live sample already reflects their
+        memory, so only the reserve floor applies.
+        """
         if self._force_sequential:
             self.safe_mode_reason = "memory pressure error"
             return active_workers < 1
@@ -178,7 +189,7 @@ class SafeMemoryPolicy:
         if snapshot.available_bytes <= self.reserve_bytes(snapshot):
             self.safe_mode_reason = "memory headroom below safe reserve"
             return active_workers < 1
-        if active_workers <= 0:
+        if active_workers <= 0 or workers_resident:
             self.safe_mode_reason = None
             return True
         if not self.estimated_worker_bytes:

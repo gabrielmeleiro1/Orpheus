@@ -63,7 +63,6 @@ def _stub_lazy_mlx_runtime(monkeypatch, tmp_path, request):
 
     monkeypatch.setattr(tts_engine_module, "_ensure_mlx_runtime", lambda: None)
     monkeypatch.setattr(tts_engine_module.mlx_compat_backend, "MLX_AVAILABLE", False)
-    monkeypatch.setattr(tts_engine_module, "VRAM_MONITOR_AVAILABLE", False)
     monkeypatch.setattr(tts_engine_module, "_ensure_tqdm_thread_lock", lambda: None)
     monkeypatch.setattr(
         tts_engine_module.mlx_compat_backend,

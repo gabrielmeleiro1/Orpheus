@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Iterator, Literal, Optional
 
+from modules.contracts.limits import MAX_SPEED, MIN_SPEED
+
 if TYPE_CHECKING:
     import numpy as np
 
@@ -19,6 +21,11 @@ if TYPE_CHECKING:
 BatchingMode = Literal["none", "threaded", "native"]
 WorkerAutoMode = Literal["sequential", "memory_safe", "cpu_cores"]
 SynthesisProgressCallback = Callable[[int, int], None]
+
+
+def has_no_speakable_text(text: str) -> bool:
+    """True for chunks such as "* * *" that the phonemizer turns into no audio."""
+    return not any(char.isalnum() for char in text)
 
 
 @dataclass(frozen=True)
@@ -85,8 +92,6 @@ class TTSConfig:
     default_speed: float = 1.0
     max_chunk_tokens: int = 700
     quantization: Literal["4bit", "6bit", "8bit", "bf16"] = "bf16"
-    batch_size: int = 4
-    use_batching: bool = True
     runtime_spec: Optional[Any] = None
     runtime_options: Optional[Any] = None
 
@@ -281,7 +286,7 @@ class TTSStrategy(ABC):
         Args:
             text: Text to synthesize
             voice: Voice ID (must be in supported_voices)
-            speed: Speech speed multiplier (0.5-2.0)
+            speed: Speech speed multiplier (MIN_SPEED-MAX_SPEED)
             output_path: Optional path to save audio directly
 
         Returns:
@@ -397,6 +402,6 @@ class TTSStrategy(ABC):
             speed: Requested speed
 
         Returns:
-            Speed clamped to 0.5-2.0 range
+            Speed clamped to MIN_SPEED-MAX_SPEED
         """
-        return max(0.5, min(2.0, speed))
+        return max(MIN_SPEED, min(MAX_SPEED, speed))

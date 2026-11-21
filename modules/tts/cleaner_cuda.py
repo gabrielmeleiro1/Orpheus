@@ -284,7 +284,6 @@ class CleanerCUDAStrategy:
                 logger.info("Text cleaner loaded from cache: %s", cache_key)
                 return
 
-        cleaner._manager.ensure_can_load("text-cleaner")
         logger.info(
             "Loading text cleaner: %s (device=%s, quantization=%s)",
             cleaner.config.model_name,
@@ -301,7 +300,6 @@ class CleanerCUDAStrategy:
         if cleaner.config.cache_model:
             set_cached_cleaner(cache_key, cleaner._model, cleaner._tokenizer)
 
-        cleaner._manager.register_model("text-cleaner", cleaner.unload)
         logger.info("Text cleaner loaded")
 
     async def clean_batch_with_trace_async(self, cleaner: Any, texts: list[str]) -> list[Any]:

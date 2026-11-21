@@ -313,20 +313,48 @@ def test_guard_still_rejects_content_loss_or_substitution(source, cleaned):
     assert _guard_rejects(source, cleaned)
 
 
-@pytest.mark.parametrize("sampler_api", ["sampler", "temp", "temperature"])
-def test_mlx_cleanup_is_greedy_even_with_legacy_temperature(monkeypatch, sampler_api):
+def test_mlx_cleanup_uses_the_chat_template_and_greedy_sampling(monkeypatch):
     import modules.tts.cleaner_mlx as mlx
 
     cleaner = TextCleaner(CleanerConfig(backend="mlx", temperature=0.35))
+    template_calls = []
+
+    def apply_chat_template(messages, **kwargs):
+        template_calls.append(kwargs)
+        return f"<user>{messages[0]['content']}</user><assistant>"
+
+    cleaner._tokenizer = SimpleNamespace(
+        chat_template="{{ messages }}", apply_chat_template=apply_chat_template,
+    )
     calls = []
 
-    def generate(_model, _tokenizer, **kwargs):
-        if sampler_api == "temperature" and "temp" in kwargs:
-            raise TypeError("unexpected keyword argument 'temp'")
+    def stream_generate(_model, _tokenizer, **kwargs):
         calls.append(kwargs)
-        return "The keeper waited."
+        yield SimpleNamespace(text="The keeper ")
+        yield SimpleNamespace(text="waited.")
 
-    monkeypatch.setattr(mlx, "generate", generate)
-    monkeypatch.setattr(mlx, "make_sampler", (lambda temp: ("greedy", temp)) if sampler_api == "sampler" else None)
+    monkeypatch.setattr(mlx, "stream_generate", stream_generate)
+    monkeypatch.setattr(mlx, "make_sampler", lambda temp: ("greedy", temp))
     assert cleaner._generate_mlx_response("prompt") == "The keeper waited."
-    assert calls[0][sampler_api] == (("greedy", 0.0) if sampler_api == "sampler" else 0.0)
+    assert template_calls == [{"add_generation_prompt": True, "tokenize": False}]
+    assert calls[0]["prompt"] == "<user>prompt</user><assistant>"
+    assert calls[0]["sampler"] == ("greedy", 0.0)
+
+
+def test_mlx_cleanup_stops_decoding_once_cancelled(monkeypatch):
+    import modules.tts.cleaner_mlx as mlx
+
+    cleaner = TextCleaner(CleanerConfig(backend="mlx"))
+    cleaner._tokenizer = object()
+    produced = []
+
+    def stream_generate(_model, _tokenizer, **_kwargs):
+        for token in ("a", "b", "c", "d"):
+            produced.append(token)
+            yield SimpleNamespace(text=token)
+
+    monkeypatch.setattr(mlx, "stream_generate", stream_generate)
+    monkeypatch.setattr(mlx, "make_sampler", lambda temp: ("greedy", temp))
+    cleaner.generation_cancel_requested = lambda: len(produced) >= 2
+    assert cleaner._generate_mlx_response("prompt") == "ab"
+    assert produced == ["a", "b"]

@@ -9,8 +9,8 @@ class PermissiveMemoryPolicy:
     def allowed_workers(self, requested_max: int) -> int:
         return requested_max
 
-    def should_submit_more(self, active_workers: int) -> bool:
-        _ = active_workers
+    def should_submit_more(self, active_workers: int, *, workers_resident: bool = False) -> bool:
+        _ = active_workers, workers_resident
         return True
 
 

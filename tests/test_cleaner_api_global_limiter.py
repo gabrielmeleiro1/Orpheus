@@ -319,32 +319,34 @@ async def test_async_limiter_supports_no_timeout_acquire_returning_none() -> Non
     assert semaphore.release_calls == 1
 
 
-def test_global_api_limiter_does_not_retry_internal_type_error() -> None:
-    class _InternalTypeErrorAcquire:
-        def __init__(self) -> None:
-            self.acquire_calls = 0
-
-        def acquire(self, block=True, timeout=None) -> bool:
-            self.acquire_calls += 1
-            raise TypeError("internal acquire failure")
-
-        def release(self) -> None:
-            raise AssertionError("release must not be called")
-
+@pytest.mark.asyncio
+async def test_limiter_snapshot_counts_only_requests_that_waited() -> None:
     limiter = GlobalAPILimiter(max_concurrency=1)
-    semaphore = _InternalTypeErrorAcquire()
-    limiter._semaphore = semaphore
-    with pytest.raises(TypeError, match="internal acquire failure"):
-        limiter.acquire(timeout=0.01)
-    assert semaphore.acquire_calls == 1
-    limiter._semaphore = None
-    limiter.shutdown()
+    semaphore = limiter.semaphore
+    async with acquire_global_limiter_async(semaphore):
+        pass
+    assert limiter.snapshot()["wait_count"] == 0
+
+    assert semaphore.acquire(False) is True
+
+    async def _release_later() -> None:
+        await asyncio.sleep(0.05)
+        semaphore.release()
+
+    releaser = asyncio.create_task(_release_later())
+    async with acquire_global_limiter_async(semaphore):
+        pass
+    await releaser
+
+    snapshot = limiter.snapshot()
+    assert snapshot["wait_count"] == 1
+    assert snapshot["wait_ms_total"] >= 40
 
 
 _SPAWN_HOLD_READY = None
 
 
-def _init_pool_limiter_probe(_memory, _workers, config):
+def _init_pool_limiter_probe(_memory, _workers, config, _startup_barrier=None):
     global _SPAWN_PROBE_SEMAPHORE, _SPAWN_HOLD_READY
     _SPAWN_PROBE_SEMAPHORE = config["cleaner_api_global_limiter"]
     _SPAWN_HOLD_READY = config["ready"]

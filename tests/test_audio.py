@@ -245,27 +245,19 @@ class TestFFmpegBinaryDiscovery:
 
 
 class TestAudioEncoder:
-    @patch("subprocess.Popen")
+    @patch("subprocess.run")
     @patch("shutil.which")
     @pytest.mark.skipif(sys.platform != "darwin", reason="Homebrew fallback is macOS-specific")
-    def test_array_to_mp3_uses_homebrew_ffmpeg_when_path_lookup_misses_it(
+    def test_wav_to_mp3_uses_homebrew_ffmpeg_when_path_lookup_misses_it(
         self,
         mock_which,
-        mock_popen,
+        mock_run,
         tmp_path,
     ):
         mock_which.return_value = None
-        process = MagicMock()
-        process.stdin = MagicMock()
-        process.stderr.read.return_value = b""
-        mock_popen.return_value = process
-
-        def fake_wait(timeout=None):  # noqa: ANN001, ANN202
-            _ = timeout
-            Path(mock_popen.call_args.args[0][-1]).write_bytes(b"mp3")
-            return 0
-
-        process.wait.side_effect = fake_wait
+        mock_run.side_effect = _successful_ffmpeg_run
+        input_path = tmp_path / "input.wav"
+        input_path.write_bytes(b"wav")
 
         def fake_is_file(path):
             return str(path) == "/opt/homebrew/bin/ffmpeg" or Path(path).exists()
@@ -275,200 +267,10 @@ class TestAudioEncoder:
 
         with patch("pathlib.Path.is_file", fake_is_file), patch("os.access", fake_access):
             encoder = AudioEncoder()
-            encoder.array_to_mp3(np.zeros(8, dtype=np.float32), tmp_path / "out.mp3")
+            encoder.wav_to_mp3(input_path, tmp_path / "out.mp3")
 
-        args = mock_popen.call_args.args[0]
+        args = mock_run.call_args.args[0]
         assert args[0] == "/opt/homebrew/bin/ffmpeg"
-        process.stdin.write.assert_called()
-        process.stdin.close.assert_called_once()
-
-    @patch("subprocess.Popen")
-    @patch("shutil.which")
-    def test_array_to_mp3_streams_pcm_chunks_to_ffmpeg(self, mock_which, mock_popen, tmp_path):
-        mock_which.return_value = "/usr/bin/ffmpeg"
-        process = MagicMock()
-        process.stdin = MagicMock()
-        process.stderr.read.return_value = b""
-        mock_popen.return_value = process
-
-        def fake_wait(timeout=None):  # noqa: ANN001, ANN202
-            _ = timeout
-            Path(mock_popen.call_args.args[0][-1]).write_bytes(b"mp3")
-            return 0
-
-        process.wait.side_effect = fake_wait
-
-        encoder = AudioEncoder()
-        encoder.array_to_mp3(
-            np.linspace(-1, 1, 200_000, dtype=np.float32),
-            tmp_path / "out.mp3",
-        )
-
-        args = mock_popen.call_args.args[0]
-        assert args[args.index("-b:a") + 1] == "128k"
-        assert "-q:a" not in args
-        assert process.stdin.write.call_count > 1
-        assert all(isinstance(call.args[0], bytes) for call in process.stdin.write.call_args_list)
-
-    @patch("subprocess.Popen")
-    @patch("shutil.which")
-    def test_array_to_mp3_times_out_blocked_stdin_write_and_cleans_temp(
-        self,
-        mock_which,
-        mock_popen,
-        tmp_path,
-    ):
-        mock_which.return_value = "/usr/bin/ffmpeg"
-        output_path = tmp_path / "out.mp3"
-        output_path.write_bytes(b"existing")
-
-        class _BlockingStdin:
-            def write(self, _data):  # noqa: ANN001, ANN201
-                time.sleep(0.05)
-
-            def close(self) -> None:
-                return None
-
-        process = MagicMock()
-        process.stdin = _BlockingStdin()
-        process.stderr.read.return_value = b""
-        process.wait.return_value = 0
-        process.poll.return_value = None
-        mock_popen.return_value = process
-
-        encoder = AudioEncoder()
-
-        with patch("modules.audio.encoder.ffmpeg_timeout_seconds", return_value=0.001):
-            with pytest.raises(RuntimeError, match="timed out"):
-                encoder.array_to_mp3(np.ones(128, dtype=np.float32), output_path)
-
-        process.kill.assert_called()
-        assert output_path.read_bytes() == b"existing"
-        temp_output = Path(mock_popen.call_args.args[0][-1])
-        assert not temp_output.exists()
-    
-    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
-    def test_array_to_mp3_surfaces_ffmpeg_stderr_when_stdin_write_breaks(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
-        # A fake ffmpeg that dies before reading stdin: the writer thread hits
-        # BrokenPipeError, but the real cause must come from ffmpeg's stderr.
-        fake_ffmpeg = _write_executable(
-            tmp_path / "bin" / "ffmpeg",
-            "#!/bin/sh\necho 'simulated disk full while muxing' >&2\nexit 3\n",
-        )
-        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
-
-        encoder = AudioEncoder()
-
-        with pytest.raises(RuntimeError, match="simulated disk full while muxing"):
-            encoder.array_to_mp3(
-                np.zeros(400_000, dtype=np.float32),
-                tmp_path / "out.mp3",
-            )
-
-    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
-    def test_array_to_mp3_reraises_write_error_when_ffmpeg_exits_cleanly(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
-        # ffmpeg stops reading early but succeeds: the stdin write error is the
-        # only failure left, so it must surface unchanged.
-        fake_ffmpeg = _write_executable(
-            tmp_path / "bin" / "ffmpeg",
-            "#!/bin/sh\n"
-            "for last; do :; done\n"
-            "head -c 1024 > /dev/null\n"
-            'echo audio > "$last"\n'
-            "exit 0\n",
-        )
-        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
-
-        encoder = AudioEncoder()
-
-        with pytest.raises(BrokenPipeError):
-            encoder.array_to_mp3(
-                np.zeros(4_000_000, dtype=np.float32),
-                tmp_path / "out.mp3",
-            )
-
-    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
-    def test_array_to_aac_surfaces_ffmpeg_stderr_when_stdin_write_breaks(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
-        fake_ffmpeg = _write_executable(
-            tmp_path / "bin" / "ffmpeg",
-            "#!/bin/sh\necho 'simulated aac muxer failure' >&2\nexit 4\n",
-        )
-        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
-
-        encoder = AudioEncoder()
-
-        with pytest.raises(RuntimeError, match="simulated aac muxer failure"):
-            encoder.array_to_aac(
-                np.zeros(400_000, dtype=np.float32),
-                tmp_path / "out.m4a",
-            )
-
-    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
-    def test_array_to_mp3_does_not_deadlock_on_chatty_stderr(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
-        # DEFECT 6: an ffmpeg that writes more stderr than the ~64KB pipe buffer
-        # blocks on the full pipe. Reading stderr only after wait() deadlocks the
-        # encode until the timeout. Draining stderr concurrently must let it
-        # finish and preserve the full stderr in the error path.
-        fake_ffmpeg = _write_executable(
-            tmp_path / "bin" / "ffmpeg",
-            "#!/bin/sh\n"
-            "yes 'ffmpeg noise 0123456789012345678901234567890123456789012345'"
-            " | head -n 3000 >&2\n"
-            "exit 5\n",
-        )
-        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
-
-        encoder = AudioEncoder()
-
-        # A short timeout: the buggy (deadlocking) code raises "timed out"
-        # instead of surfacing the stderr, so the match below fails on it.
-        with patch("modules.audio.encoder.ffmpeg_timeout_seconds", return_value=5.0):
-            with pytest.raises(RuntimeError, match="ffmpeg noise"):
-                encoder.array_to_mp3(
-                    np.zeros(4_000, dtype=np.float32),
-                    tmp_path / "out.mp3",
-                )
-
-    @pytest.mark.skipif(os.name == "nt", reason="fake ffmpeg uses a shell script")
-    def test_array_to_aac_does_not_deadlock_on_chatty_stderr(
-        self,
-        monkeypatch,
-        tmp_path,
-    ):
-        # DEFECT 6: same concurrent-stderr-drain requirement for the AAC path.
-        fake_ffmpeg = _write_executable(
-            tmp_path / "bin" / "ffmpeg",
-            "#!/bin/sh\n"
-            "yes 'ffmpeg noise 0123456789012345678901234567890123456789012345'"
-            " | head -n 3000 >&2\n"
-            "exit 5\n",
-        )
-        monkeypatch.setenv("AUDIOBOOK_FFMPEG_PATH", str(fake_ffmpeg))
-
-        encoder = AudioEncoder()
-
-        with patch("modules.audio.encoder.ffmpeg_timeout_seconds", return_value=5.0):
-            with pytest.raises(RuntimeError, match="ffmpeg noise"):
-                encoder.array_to_aac(
-                    np.zeros(4_000, dtype=np.float32),
-                    tmp_path / "out.m4a",
-                )
 
     @patch("subprocess.run")
     @patch("shutil.which")

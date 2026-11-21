@@ -12,7 +12,6 @@ from modules.tts.engine_output import synthesize_to_output_path as synthesize_to
 from modules.tts.engine_output import synthesize_to_output_file as synthesize_to_output_file_helper
 from modules.tts.cleaner import TextCleaner
 from modules.tts.engine import TTSEngine
-from modules.tts.engine_config import TTSConfig
 from modules.errors import SynthesisError
 
 
@@ -29,6 +28,7 @@ def _output_engine(tmp_path, **options):
         _model_lock=threading.RLock(),
         _model_path=str(tmp_path),
         _model=object(),
+        _voice_snapshot=None,
         **options,
     )
 
@@ -68,53 +68,6 @@ class TestTTSEngine:
         engine = TTSEngine()
         assert engine.config.model_name is not None
 
-    def test_init_uses_configured_batch_size_for_memory_manager(self, monkeypatch):
-        configs = []
-
-        monkeypatch.setattr(tts_engine_module, "VRAM_MONITOR_AVAILABLE", True)
-        monkeypatch.setattr(tts_engine_module, "_ensure_mlx_runtime", lambda: None)
-        monkeypatch.setattr(tts_engine_module, "_ensure_tqdm_thread_lock", lambda: None)
-        monkeypatch.setattr(
-            tts_engine_module,
-            "get_memory_manager",
-            lambda dynamic_config=None: configs.append(dynamic_config)
-            or SimpleNamespace(),
-        )
-
-        TTSEngine(TTSConfig(batch_size=9))
-
-        assert configs[0].base_tts_batch_size == 9
-
-    def test_iter_synthesize_batch_refreshes_memory_pressure(self):
-        calls = []
-        engine = TTSEngine.__new__(TTSEngine)
-        engine.config = SimpleNamespace(
-            use_batching=True,
-            batch_size=4,
-            sample_rate=24000,
-        )
-        engine._memory_manager = SimpleNamespace(
-            refresh_memory_pressure=lambda: calls.append("refresh"),
-            get_tts_batch_size=lambda: 2,
-            get_vram_pressure=lambda: SimpleNamespace(name="NORMAL"),
-        )
-        engine._batch_pause_total_ms = 0.0
-        engine._synthesize_single = lambda item: tts_engine_module.BatchResult(
-            audio=np.array([0.1], dtype=np.float32),
-            index=item.index,
-            error=None,
-            duration_ms=1,
-        )
-        items = [
-            tts_engine_module.BatchItem(text="a", voice="af_bella", speed=1.0, index=0),
-            tts_engine_module.BatchItem(text="b", voice="af_bella", speed=1.0, index=1),
-        ]
-
-        results = list(engine.iter_synthesize_batch(items))
-
-        assert len(results) == 2
-        assert calls == ["refresh"]
-    
     def test_quantization_aliases_map_to_expected_model_paths(self):
         engine = TTSEngine.__new__(TTSEngine)
         engine.config = SimpleNamespace(model_name="mlx-community/Kokoro-82M", quantization="q8")
@@ -131,6 +84,8 @@ class TestTTSEngine:
         engine._model_path = engine._get_model_path()
 
         with patch.object(tts_engine_module.engine_runtime, "_get_cached_model", return_value=None), patch.object(
+            tts_engine_module.mlx_compat_backend, "installed_voice_snapshot", return_value=None,
+        ), patch.object(
             tts_engine_module.mlx_compat_backend,
             "load_tts_model",
             side_effect=ValueError("shape mismatch"),
@@ -286,6 +241,70 @@ class TestTTSEngine:
 
         assert generate_calls == []
 
+    @pytest.mark.parametrize(
+        ("voice", "lang_code"),
+        [("am_adam", "a"), ("bf_emma", "b"), ("bm_george,af_bella", "b")],
+    )
+    @pytest.mark.parametrize(
+        "output_helper",
+        [synthesize_to_output_path_helper, synthesize_to_output_file_helper],
+        ids=["samples", "file"],
+    )
+    def test_output_helpers_phonemize_with_the_voice_language(
+        self, tmp_path, output_helper, voice, lang_code,
+    ):
+        output_path = tmp_path / "sample.wav"
+        calls = []
+        write_segment = _segment_generator(output_path)
+
+        def fake_generate_audio(**kwargs):  # noqa: ANN001
+            calls.append(kwargs)
+            write_segment(**kwargs)
+
+        engine = _output_engine(tmp_path, config=SimpleNamespace(sample_rate=24000))
+        output_helper(
+            engine, text="Hello", voice=voice, speed=1.0,
+            output_path=output_path, generate_fn=fake_generate_audio,
+        )
+
+        assert calls[0]["lang_code"] == lang_code
+
+    def test_temp_audio_phonemizes_british_voices_as_british(self, tmp_path):
+        calls = []
+
+        def fake_generate_audio(**kwargs):  # noqa: ANN001
+            calls.append(kwargs)
+            _write_pcm_wav(Path(f"{kwargs['file_prefix']}.wav"), [1])
+
+        tts_engine_module.engine_output.synthesize_to_temp_audio(
+            _output_engine(tmp_path), "Hello", "bf_emma", 1.0, generate_fn=fake_generate_audio,
+        )
+
+        assert calls[0]["lang_code"] == "b"
+
+
+    def test_installed_snapshot_is_verified_once_per_load_not_per_chunk(
+        self, tmp_path, monkeypatch,
+    ):
+        resolved = []
+
+        def installed_model_path(model_path):  # noqa: ANN001
+            resolved.append(model_path)
+            return str(tmp_path)
+
+        def fake_generate_audio(*, model, output_path, file_prefix, **kwargs):  # noqa: ANN001
+            _write_pcm_wav(Path(output_path) / f"{file_prefix}.wav", [1])
+
+        monkeypatch.setattr(tts_engine_module.mlx_compat_backend, "installed_model_path", installed_model_path)
+        monkeypatch.setattr(tts_engine_module.mlx_compat_backend, "load_tts_model", lambda path: object())
+        monkeypatch.setattr(tts_engine_module.engine_runtime, "_get_cached_model", lambda key: None)
+        monkeypatch.setattr(tts_engine_module, "generate_audio", fake_generate_audio)
+        engine = TTSEngine()
+        engine.load_model()
+        for index in range(3):
+            engine.synthesize_to_output_file("Hello.", tmp_path / f"{index}.wav", voice="af_bella")
+
+        assert resolved == [engine._model_path]
 
 class TestBlankChunkSynthesis:
     """A chunk that cleans to nothing must not fail the chapter.
@@ -326,6 +345,29 @@ class TestBlankChunkSynthesis:
             assert wav_file.getnframes() > 0
             assert wav_file.getframerate() == engine.config.sample_rate
 
+
+    @pytest.mark.parametrize("text", ["*", "* * *", "§ ¶"])
+    def test_symbol_only_chunks_synthesize_as_silence(self, tmp_path, text):
+        engine = TTSEngine()
+        output_path = tmp_path / "scene-break.wav"
+
+        audio = engine.synthesize(text)
+        written_path = engine.synthesize_to_output_file(text, output_path)
+
+        assert audio.size > 0 and float(np.abs(audio).max()) == 0.0
+        with wave.open(str(written_path), "rb") as wav_file:
+            assert wav_file.getnframes() > 0
+
+    def test_synthesis_errors_are_not_wrapped_twice(self):
+        engine = TTSEngine()
+
+        def no_audio():
+            raise SynthesisError("No audio file generated")
+
+        with pytest.raises(SynthesisError) as raised:
+            engine._synthesize_with_retries(no_audio, max_retries=1)
+
+        assert str(raised.value).count("Speech synthesis failed") == 1
 
 class TestSharedModelLock:
     """A cached model is handed to several engines, so its lock must be shared."""

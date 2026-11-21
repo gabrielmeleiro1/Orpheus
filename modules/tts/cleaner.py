@@ -30,7 +30,6 @@ try:
 except ImportError:  # pragma: no cover - runtime dependency guard
     aiohttp = None
 
-from .memory import VRAMManager
 from .artifact_scorer import score_text_artifacts
 from . import cleaner_api as cleaner_api_backend
 from . import cleaner_mlx as cleaner_mlx_backend
@@ -82,7 +81,6 @@ class TextCleaner:
         self._model = None
         self._tokenizer = None
         self._loaded = False
-        self._manager = VRAMManager()
         self._model_lock = threading.RLock()
         self.generation_cancel_requested: Callable[[], bool] | None = None
         self._api_ssl_context_cache = None
@@ -272,38 +270,28 @@ class TextCleaner:
     def _generate_mlx_response(self, prompt: str) -> str:
         """Generate cleaned text via local mlx-lm runtime."""
         with self._model_lock:
-            if cleaner_mlx_backend.make_sampler is not None:
-                return cleaner_mlx_backend.generate(
-                    self._model,
-                    self._tokenizer,
-                    prompt=prompt,
-                    max_tokens=self.config.max_tokens,
-                    sampler=cleaner_mlx_backend.make_sampler(
-                        temp=0.0
-                    ),
-                    verbose=False
+            tokenizer = self._tokenizer
+            if getattr(tokenizer, "chat_template", None):
+                # Instruct models need their conversation delimiters and assistant
+                # prefix; a raw completion prompt can produce repeated instructions.
+                prompt = tokenizer.apply_chat_template(
+                    [{"role": "user", "content": prompt}],
+                    add_generation_prompt=True,
+                    tokenize=False,
                 )
-
-            try:
-                return cleaner_mlx_backend.generate(
-                    self._model,
-                    self._tokenizer,
-                    prompt=prompt,
-                    max_tokens=self.config.max_tokens,
-                    temp=0.0,
-                    verbose=False
-                )
-            except TypeError as exc:
-                if "unexpected keyword argument 'temp'" not in str(exc):
-                    raise
-                return cleaner_mlx_backend.generate(
-                    self._model,
-                    self._tokenizer,
-                    prompt=prompt,
-                    max_tokens=self.config.max_tokens,
-                    temperature=0.0,
-                    verbose=False
-                )
+            cancel_requested = getattr(self, "generation_cancel_requested", None)
+            text = ""
+            for response in cleaner_mlx_backend.stream_generate(
+                self._model,
+                tokenizer,
+                prompt=prompt,
+                max_tokens=self.config.max_tokens,
+                sampler=cleaner_mlx_backend.make_sampler(temp=0.0),
+            ):
+                text += response.text
+                if cancel_requested is not None and cancel_requested():
+                    break
+            return text
 
     def _generate_api_response(self, prompt: str) -> str:
         """

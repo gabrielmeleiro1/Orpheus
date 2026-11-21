@@ -151,18 +151,6 @@ class KokoroTTSStrategy(TTSStrategy):
                 "enum": ["bf16"],
                 "default": default_quantization,
             },
-            "batch_size": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 16,
-                "default": self._config.batch_size,
-                "description": "Maximum chunk group size for scheduler-driven multi-item synthesis.",
-            },
-            "use_batching": {
-                "type": "boolean",
-                "default": self._config.use_batching,
-                "description": "Enable grouped multi-item synthesis scheduling for chapter chunks.",
-            },
             "enable_streaming": {
                 "type": "boolean",
                 "default": self._config.enable_streaming,
@@ -225,7 +213,7 @@ class KokoroTTSStrategy(TTSStrategy):
         Args:
             text: Text to synthesize
             voice: Voice ID or blend of supported voice IDs
-            speed: Speech speed multiplier (0.5-2.0)
+            speed: Speech speed multiplier (MIN_SPEED-MAX_SPEED)
             output_path: Optional path to save audio
 
         Returns:

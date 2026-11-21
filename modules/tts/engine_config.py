@@ -15,8 +15,6 @@ class TTSConfig:
     sample_rate: int = 24000
     default_voice: str = "am_adam"
     max_chunk_tokens: int = 700
-    batch_size: int = 4
-    use_batching: bool = True
     enable_streaming: bool = True
     stream_buffer_size: int = 8192
     runtime_cache_key: str | None = None

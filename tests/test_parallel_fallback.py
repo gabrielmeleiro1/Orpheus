@@ -349,10 +349,9 @@ def test_parallel_progress_forwards_worker_performance_snapshot() -> None:
         chunk_idx: int,
         total_chunks: int,
         message: str,
-        eta: float | None,
         performance: dict | None = None,
     ) -> None:
-        _ = stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, eta
+        _ = stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message
         if performance:
             progress_payloads.append(performance)
 
@@ -547,10 +546,9 @@ def test_all_worker_failure_emits_fallback_performance_snapshot() -> None:
         chunk_idx: int,
         total_chunks: int,
         message: str,
-        eta: float | None,
         performance: dict | None = None,
     ) -> None:
-        _ = stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, eta
+        _ = stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message
         if performance:
             progress_payloads.append(performance)
 
@@ -904,7 +902,7 @@ def test_parallel_fallback_helper_emits_snapshot_and_runs_sequential(tmp_path) -
     pipeline = ConversionPipeline(
         config=cfg,
         verbose_callback=lambda message, level: logs.append((message, level)),
-        progress_callback=lambda stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, eta, performance=None: (
+        progress_callback=lambda stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, performance=None: (
             progress_payloads.append(performance or {})
         ),
     )
@@ -995,7 +993,7 @@ def test_parallel_fallback_helper_forwards_safe_mode_reason(tmp_path) -> None:
     )
     pipeline = ConversionPipeline(
         config=cfg,
-        progress_callback=lambda stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, eta, performance=None: (
+        progress_callback=lambda stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, performance=None: (
             progress_payloads.append(performance or {})
         ),
     )
@@ -1125,7 +1123,7 @@ def _test_parallel_orchestrator_does_not_hang_on_error_only_workers() -> None:
     with patch("modules.pipeline.parallel.SharedWorkerPoolManager", _ErrorOnlyManager):
         results = orchestrator.process_chapters_parallel(
             chapters=chapters,
-            process_func=lambda ch, idx, _fm: {"id": idx},  # noqa: ARG005
+            process_func=lambda ch, idx: {"id": idx},  # noqa: ARG005
         )
 
     assert len(results) == 2
@@ -1133,36 +1131,6 @@ def _test_parallel_orchestrator_does_not_hang_on_error_only_workers() -> None:
     assert all(result.error == "simulated worker failure" for result in results)
 
     print("✓ parallel orchestrator exits when workers only return errors")
-
-
-def _test_api_backend_prefers_batch_cleaning() -> None:
-    class _FakeCleaner:
-        def __init__(self):
-            self.config = SimpleNamespace(backend="api")
-            self.batch_calls = 0
-            self.single_calls = 0
-
-        async def clean_batch_async(self, texts):
-            self.batch_calls += 1
-            return [text.replace("## ", "") for text in texts]
-
-        def clean_with_trace(self, text):
-            self.single_calls += 1
-            return _cleaner_trace(text, text)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        cleaner = _FakeCleaner()
-        cleaned, cancelled = _clean_probe_chapter(
-            tmp_path, cleaner
-        )
-
-        assert not cancelled
-        assert cleaned == ["alpha", "beta"]
-        assert cleaner.batch_calls == 1
-        assert cleaner.single_calls == 0
-
-    print("✓ api cleaner path uses batch cleaning")
 
 
 def _test_custom_backend_prefers_trace_batch_cleaning() -> None:
@@ -1216,8 +1184,10 @@ def test_mlx_cleaning_uses_per_chunk_trace_cleaning_for_live_progress() -> None:
 
     progress_events = []
 
-    def _capture_progress(stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, eta):
-        _ = (eta,)
+    def _capture_progress(
+        stage, chapter_idx, total_chapters, chunk_idx, total_chunks, message, performance=None,
+    ):
+        _ = performance
         progress_events.append(
             {
                 "stage": str(getattr(stage, "value", stage)),
@@ -1310,7 +1280,6 @@ def test_parallel_fallback() -> bool:
     _test_shared_manager_infrastructure_errors_retry_sequential_mode()
     _test_shared_manager_mixed_results_retry_failed_chapters()
     _test_parallel_orchestrator_does_not_hang_on_error_only_workers()
-    _test_api_backend_prefers_batch_cleaning()
     _test_custom_backend_prefers_trace_batch_cleaning()
     _test_batch_cleaning_falls_back_to_per_chunk_when_shape_mismatch()
     _test_adaptive_parallel_guard_for_tiny_chapters()

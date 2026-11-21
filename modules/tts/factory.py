@@ -62,24 +62,6 @@ class TTSEngineFactory:
                     "enum": ["bf16"],
                     "default": "bf16",
                 },
-                "batch_size": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 16,
-                    "default": 4,
-                    "description": (
-                        "Maximum chunk group size for scheduler-driven "
-                        "multi-item synthesis."
-                    ),
-                },
-                "use_batching": {
-                    "type": "boolean",
-                    "default": True,
-                    "description": (
-                        "Enable grouped multi-item synthesis scheduling for "
-                        "chapter chunks."
-                    ),
-                },
                 "enable_streaming": {
                     "type": "boolean",
                     "default": True,

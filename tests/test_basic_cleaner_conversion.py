@@ -121,7 +121,7 @@ def test_basic_cleaner_lifecycle_never_loads_or_advertises_a_model(monkeypatch, 
 def test_no_cleaner_setup_keeps_basic_option_even_with_cached_qwen(tmp_path, monkeypatch, downloaded):
     state_path = tmp_path / "runtime-setup.json"
     setup_runtime.write_setup_state(
-        state_path, profile_id="cuda", model_groups=("tts-cpu-cuda",), accepted_risks=(),
+        state_path, profile_id="cuda", model_groups=("tts-cpu-cuda",),
     )
     monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: state_path)
     monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **kwargs: {

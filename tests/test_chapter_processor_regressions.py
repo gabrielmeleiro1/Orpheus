@@ -15,11 +15,8 @@ from modules.pipeline.chapter_narration import (
 from modules.text.document_normalizer import normalize_extracted_document
 
 
-@pytest.mark.parametrize("mode", ["incremental", "overlap"])
 @pytest.mark.parametrize("outcome", ["cancelled", "failed"])
-def test_partial_chapter_wav_is_cleaned_after_interrupted_synthesis(
-    tmp_path, monkeypatch, mode, outcome,
-):
+def test_partial_chapter_wav_is_cleaned_after_interrupted_synthesis(tmp_path, outcome):
     from modules.pipeline import ConversionPipeline, PipelineConfig
     from modules.tts.strategies.base import SynthesisResult
 
@@ -57,25 +54,9 @@ def test_partial_chapter_wav_is_cleaned_after_interrupted_synthesis(
     pipeline._tts_engine = Engine()
     processor = pipeline.stages.chapter_processor
     chapter = SimpleNamespace(number=2, title="Second chapter")
-    if mode == "incremental":
-        audio = processor.synthesize_chapter_chunks(
-            chapter=chapter, chapter_idx=1, total_chapters=2, chunks=["first", "second"],
-        )
-    else:
-        monkeypatch.setattr(processor, "get_text_cleaner_for_chapter", lambda: object())
-        monkeypatch.setattr(
-            processor, "clean_chunk_safely", lambda **kwargs: (kwargs["chunk"], True, None),
-        )
-        for name in (
-            "save_pre_clean_markdown", "maybe_capture_cleaner_stats", "log_cleaner_stats_delta",
-            "save_cleaning_artifacts",
-        ):
-            monkeypatch.setattr(processor, name, lambda *_args, **_kwargs: None)
-        audio, cancelled = processor.clean_and_synthesize_with_overlap(
-            chapter=chapter, chapter_idx=1, total_chapters=2, chunks=["first", "second"],
-            output_dir=tmp_path,
-        )
-        assert cancelled == (outcome == "cancelled")
+    audio = processor.synthesize_chapter_chunks(
+        chapter=chapter, chapter_idx=1, total_chapters=2, chunks=["first", "second"],
+    )
 
     assert audio is None
     partial = pipeline.config.temp_dir / "chapter_02.wav"

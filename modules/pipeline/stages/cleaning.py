@@ -327,47 +327,7 @@ def _run_batch_trace_cleaning(
         )
     except Exception as exc:
         runtime.log_verbose(
-            f"[CLEANER] Batch trace cleaning failed ({exc}); falling back to compatibility paths",
-            "warning",
-        )
-        return None
-
-
-def _run_compat_batch_cleaning(
-    runtime: Any,
-    hooks: CleaningStageHooks,
-    *,
-    cleaner: Any,
-    cleaner_backend: str,
-    chapter_idx: int,
-    total_chapters: int,
-    chunks: list[str],
-) -> Optional[tuple[list[CleanedChunkResult], bool]]:
-    clean_batch_async = getattr(cleaner, "clean_batch_async", None)
-    if not callable(clean_batch_async):
-        return None
-
-    total_chunks = len(chunks)
-    runtime.log_verbose(
-        f"[CLEANER] Batch cleaning compatibility path enabled for backend={cleaner_backend}",
-        "info",
-    )
-    try:
-        batch_cleaned = hooks.run_coroutine_sync(clean_batch_async(chunks))
-        _validate_batch_length(batch_cleaned, total_chunks)
-
-        return _collect_batch_results(
-            runtime,
-            chapter_idx=chapter_idx,
-            total_chapters=total_chapters,
-            chunks=chunks,
-            batch_outputs=batch_cleaned,
-            total_chunks=total_chunks,
-            with_trace=False,
-        )
-    except Exception as exc:
-        runtime.log_verbose(
-            f"[CLEANER] Batch compatibility cleaning failed ({exc}); falling back to per-chunk cleaning",
+            f"[CLEANER] Batch trace cleaning failed ({exc}); falling back to per-chunk cleaning",
             "warning",
         )
         return None
@@ -496,16 +456,6 @@ def clean_chunks_with_trace(
             total_chapters=total_chapters,
             chunks=chunks,
         )
-        if batch_result is None:
-            batch_result = _run_compat_batch_cleaning(
-                runtime,
-                hooks,
-                cleaner=cleaner,
-                cleaner_backend=cleaner_backend,
-                chapter_idx=chapter_idx,
-                total_chapters=total_chapters,
-                chunks=chunks,
-            )
 
     if batch_result is None:
         results, was_cancelled = _run_per_chunk_cleaning(
