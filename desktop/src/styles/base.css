@@ -168,8 +168,7 @@
   padding: 0;
 }
 
-[hidden],
-[x-cloak] {
+[hidden] {
   display: none !important;
 }
 

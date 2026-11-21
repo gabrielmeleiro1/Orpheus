@@ -12,7 +12,6 @@ import {
 } from "./setupModel";
 import { modelDownloadSize, shortIncompatibleReason } from "./setupPageHelpers";
 import { SetupPrecisionChoice } from "./SetupPrecisionChoice";
-import { SetupRiskNotice } from "./SetupRiskNotice";
 import { InfoTip } from "./SetupTips";
 
 const PRECISION_LABELS: Record<string, string> = { "4bit": "4-bit", "8bit": "8-bit", fp16: "FP16" };
@@ -30,8 +29,6 @@ interface SetupPlanSectionProps {
   adopting: boolean;
   showAdvanced: boolean;
   setShowAdvanced: Dispatch<SetStateAction<boolean>>;
-  showRiskBlock: boolean;
-  riskProfile: RuntimeSetupProfile | null;
   configuredReady: boolean;
   installedReady: boolean;
   /** First run chooses models and precision behind the disclosure; Settings manages them in its own list. */
@@ -51,8 +48,6 @@ export function SetupPlanSection({
   adopting,
   showAdvanced,
   setShowAdvanced,
-  showRiskBlock,
-  riskProfile,
   configuredReady,
   installedReady,
   variant,
@@ -170,15 +165,6 @@ export function SetupPlanSection({
           ) : null}
           {onboarding ? <SetupPrecisionChoice selection={selection} disabled={busy || adopting} onChange={(value) => setSelection((current) => ({ ...current, cleanerCudaQuantization: value }))} /> : null}
         </div>
-      ) : null}
-
-      {showRiskBlock && riskProfile?.risk ? (
-        <SetupRiskNotice
-          summary={riskProfile.risk.summary}
-          checked={selection.acceptPytorchRisk}
-          disabled={busy || adopting}
-          onChange={(event) => setSelection((current) => ({ ...current, acceptPytorchRisk: event.target.checked }))}
-        />
       ) : null}
     </>
   );

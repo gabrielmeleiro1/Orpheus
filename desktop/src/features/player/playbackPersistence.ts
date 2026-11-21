@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 
 import { isLibraryReplacedError, type ApiClient } from "../../api/client";
-import { PLAYBACK_SAVE_INTERVAL_SEC } from "../dashboard/dashboardHelpers";
 import type { UseLibraryResult } from "../library/useLibrary";
 import type { LibraryBookDetail } from "../../types/api";
 import { chapterPlaybackAnchor } from "./chapterPositionModel";
@@ -12,10 +11,12 @@ import {
   writePlaybackCheckpoint,
 } from "./playbackCheckpoint";
 
-// Consecutive silent save failures tolerated before telling the user that
-// resume is broken. Automatic saves fire about once a second, so this rides
-// out a brief blip without sitting quiet through a real outage.
-const PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD = 5;
+// Playback position is saved after this much playback, and on pause, seek and book changes.
+const PLAYBACK_SAVE_INTERVAL_SEC = 15;
+// Consecutive save failures tolerated before telling the user that resume is
+// broken. Automatic retries are a save interval apart, so two failures ride out
+// a single blip and still surface a real outage within about half a minute.
+const PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD = 2;
 // A stalled write must release later saves and the library's restore drain.
 const PLAYBACK_SAVE_TIMEOUT_MS = 15_000;
 
@@ -24,7 +25,6 @@ export interface PersistPlaybackOptions {
   bookIdentity?: string;
   positionSec?: number;
   force?: boolean;
-  silent?: boolean;
 }
 
 interface UsePlaybackPersistenceArgs {
@@ -32,12 +32,13 @@ interface UsePlaybackPersistenceArgs {
   library: UseLibraryResult;
   audioRef: RefObject<HTMLAudioElement | null>;
   loadedBookId: number | null;
-  onSaveFailed: () => void;
   positionOffsetRef?: RefObject<number>;
   loadedChapterNumberRef?: RefObject<number | null>;
 }
 
 interface PlaybackPersistence {
+  /** Saves for the loaded book keep failing; cleared by its next successful save. */
+  saveFailing: boolean;
   persistBookPlaybackPosition: (
     bookId: number,
     positionSec: number,
@@ -60,17 +61,16 @@ export function usePlaybackPersistence({
   library,
   audioRef,
   loadedBookId,
-  onSaveFailed,
   positionOffsetRef,
   loadedChapterNumberRef,
 }: UsePlaybackPersistenceArgs): PlaybackPersistence {
   const pendingResumeBookIdRef = useRef<number | null>(null);
   const pendingResumePositionSecRef = useRef(0);
   const lastSavedPlaybackRef = useRef<Map<number, { positionSec: number; token: number }>>(new Map());
-  const committedPlaybackRef = useRef<Map<number, number>>(new Map());
   const saveSequenceRef = useRef(0);
   const saveTailsRef = useRef<Map<number, Promise<number | null>>>(new Map());
   const consecutiveSaveFailuresRef = useRef<Map<number, number>>(new Map());
+  const [saveFailingBookId, setSaveFailingBookId] = useState<number | null>(null);
   const bookIdentityByIdRef = useRef<Map<number, string>>(new Map());
   const playbackDetailByIdRef = useRef<Map<number, LibraryBookDetail>>(new Map());
   const libraryGeneration = library.libraryGeneration ?? 0;
@@ -83,8 +83,8 @@ export function usePlaybackPersistence({
     pendingResumePositionSecRef.current = 0;
     playbackClientIdentityRef.current = apiClient;
     lastSavedPlaybackRef.current.clear();
-    committedPlaybackRef.current.clear();
     consecutiveSaveFailuresRef.current.clear();
+    if (saveFailingBookId !== null) setSaveFailingBookId(null);
     saveTailsRef.current.clear();
     bookIdentityByIdRef.current.clear();
     playbackDetailByIdRef.current.clear();
@@ -182,7 +182,6 @@ export function usePlaybackPersistence({
           }
           const savedPosition = Number(response.position_sec);
           const resolved = Number.isFinite(savedPosition) ? savedPosition : normalizedPosition;
-          committedPlaybackRef.current.set(bookId, resolved);
           const currentMarker = lastSavedPlaybackRef.current.get(bookId);
           if (currentMarker?.token === token) {
             lastSavedPlaybackRef.current.set(bookId, { positionSec: resolved, token });
@@ -191,6 +190,7 @@ export function usePlaybackPersistence({
             }
           }
           consecutiveSaveFailuresRef.current.delete(bookId);
+          setSaveFailingBookId((current) => (current === bookId ? null : current));
           return resolved;
         } catch (error) {
           if (!ownsCurrentClient()) {
@@ -200,24 +200,14 @@ export function usePlaybackPersistence({
             await library.reloadLibrarySession?.();
             return null;
           }
-          const currentMarker = lastSavedPlaybackRef.current.get(bookId);
-          if (currentMarker?.token === token) {
-            const committedPosition = committedPlaybackRef.current.get(bookId);
-            if (committedPosition !== undefined) {
-              lastSavedPlaybackRef.current.set(bookId, { positionSec: committedPosition, token });
-            } else {
-              lastSavedPlaybackRef.current.delete(bookId);
-            }
-          }
+          // The marker stays at the failed position, so the next automatic
+          // save retries one save interval later rather than on every tick.
           const failureCount = (consecutiveSaveFailuresRef.current.get(bookId) ?? 0) + 1;
           consecutiveSaveFailuresRef.current.set(bookId, failureCount);
           // The playing book reports its failures even while another book is viewed.
           const ownsCurrentPlayback = loadedBookIdRef.current === bookId;
-          if (
-            ownsCurrentPlayback &&
-            (!options.silent || failureCount >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD)
-          ) {
-            onSaveFailed();
+          if (ownsCurrentPlayback && failureCount >= PLAYBACK_SAVE_FAILURE_NOTICE_THRESHOLD) {
+            setSaveFailingBookId(bookId);
           }
           return null;
         }
@@ -232,7 +222,7 @@ export function usePlaybackPersistence({
       saveTailsRef.current.set(bookId, trackedTail);
       return trackedTail;
     },
-    [apiClient, library, libraryGeneration, session, loadedChapterNumberRef, onSaveFailed],
+    [apiClient, library, libraryGeneration, session, loadedChapterNumberRef],
   );
 
   const persistLoadedBookPlaybackPosition = useCallback(
@@ -327,7 +317,7 @@ export function usePlaybackPersistence({
 
   useEffect(() => {
     const onBeforeUnload = () => {
-      void persistLoadedBookPlaybackPosition({ force: true, silent: true });
+      void persistLoadedBookPlaybackPosition({ force: true });
     };
 
     window.addEventListener("beforeunload", onBeforeUnload);
@@ -337,6 +327,7 @@ export function usePlaybackPersistence({
   }, [persistLoadedBookPlaybackPosition]);
 
   return {
+    saveFailing: saveFailingBookId !== null && saveFailingBookId === loadedBookId,
     persistBookPlaybackPosition,
     persistLoadedBookPlaybackPosition,
     restorePendingResumePosition,

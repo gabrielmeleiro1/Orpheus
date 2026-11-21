@@ -23,18 +23,12 @@ export function resolvePlayerDurationSec(input: {
   return 0;
 }
 
-/** Seek is ready only when the selected book's audio source is the current loaded source. */
+/** Seek is ready once a book's audio is loaded into the element. */
 export function resolvePlayerCanSeek(input: {
   audioSrc: string | null | undefined;
   loadedBookId: number | null;
-  selectedBookId: number | null;
 }): boolean {
-  return Boolean(
-    input.audioSrc &&
-      input.loadedBookId != null &&
-      input.selectedBookId != null &&
-      input.loadedBookId === input.selectedBookId,
-  );
+  return Boolean(input.audioSrc && input.loadedBookId != null);
 }
 
 type SeekableAudio = {
@@ -44,24 +38,16 @@ type SeekableAudio = {
 };
 
 /**
- * Mutate audio.currentTime only when the selected book matches the loaded source.
+ * Mutate audio.currentTime only when a book's audio is loaded.
  * Returns false (and leaves currentTime unchanged) when seek is not ready.
  */
 export function seekAudioIfReady(input: {
   audio: SeekableAudio | null | undefined;
   loadedBookId: number | null;
-  selectedBookId: number | null;
   positionSeconds: number;
 }): boolean {
   const audio = input.audio;
-  if (
-    !audio ||
-    !resolvePlayerCanSeek({
-      audioSrc: audio.src,
-      loadedBookId: input.loadedBookId,
-      selectedBookId: input.selectedBookId,
-    })
-  ) {
+  if (!audio || !resolvePlayerCanSeek({ audioSrc: audio.src, loadedBookId: input.loadedBookId })) {
     return false;
   }
 

@@ -82,7 +82,7 @@ const modelOptions: ModelOptionsResponse = {
 };
 
 function ConversionProbe({ apiClient }: { apiClient: ApiClient }): null {
-  const result = useConversionOptions({ apiClient, conversionMode: "audiobook" });
+  const result = useConversionOptions({ apiClient });
   (globalThis as typeof globalThis & { conversionProbe?: UseConversionOptionsResult }).conversionProbe =
     result;
   return null;

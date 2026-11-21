@@ -14,7 +14,6 @@ export interface RuntimeSetupRequest {
   cleanerCudaQuantization?: string;
   profile: "base" | "mlx" | "cuda";
   modelGroups: string[];
-  acceptPytorchRisk: boolean;
 }
 
 export interface RuntimeSetupRunnerStatus extends SetupRunnerStatusSnapshot {}

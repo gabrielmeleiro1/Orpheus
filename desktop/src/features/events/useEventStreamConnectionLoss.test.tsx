@@ -19,7 +19,7 @@ class EventConnection {
 }
 
 const running: ActiveConversionResponse = {
-  active: true, job: { id: "job", status: "running", book_id: null, error: null, title: "Book", author: null },
+  active: true, job: { id: "job", status: "running", book_id: null, error: null, title: "Book", author: null, repair: false },
 };
 const progress = (instance: string, sequence: number) => ({
   event_type: "progress", backend_instance_id: instance, event_sequence: sequence, job_id: "job",

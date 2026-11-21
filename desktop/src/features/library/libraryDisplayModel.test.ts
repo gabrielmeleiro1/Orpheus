@@ -1,59 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { LibraryBookDetail } from "../../types/api";
-import { bookAvailabilityAdvice, bookAvailabilityNote, buildBookSummary } from "./libraryDisplayModel";
-
-function detail(overrides: Partial<LibraryBookDetail> = {}): LibraryBookDetail {
-  return {
-    id: 1,
-    title: "Book",
-    author: "Ada",
-    source_path: null,
-    source_type: "epub",
-    conversion_mode: "audiobook",
-    tags: "",
-    favorite: false,
-    source_available: true,
-    total_chapters: 3,
-    playback_path: null,
-    playback_status: "pending",
-    playback_position_sec: 0,
-    chapters: [],
-    playback_url: null,
-    ...overrides,
-  };
-}
-
-describe("buildBookSummary", () => {
-  it("returns placeholder strings when nothing is selected", () => {
-    const view = buildBookSummary(null);
-    expect(view.title).toBe("No book selected");
-    expect(view.meta).toBe("Select a book to inspect details.");
-    expect(view.extra).toBe("—");
-  });
-
-  it("singularizes the chapter count and marks pending playback", () => {
-    const view = buildBookSummary(
-      detail({ chapters: [{ id: 1, number: 1, title: "One", duration_ms: 1000, mp3_path: null }] }),
-    );
-    expect(view.meta).toBe("Ada · 1 chapter");
-    expect(view.extra).toBe("Playback output pending");
-  });
-
-  it("reports a resume offset once playback output exists", () => {
-    const view = buildBookSummary(
-      detail({ playback_path: "/out.mp3", playback_url: "http://x/audio", playback_position_sec: 65 }),
-    );
-    expect(view.extra).toBe("Playback ready · resume 01:05");
-  });
-
-  it("reports plain playback-ready when at the start", () => {
-    const view = buildBookSummary(
-      detail({ playback_path: "/out.mp3", playback_url: "http://x/audio", playback_position_sec: 0 }),
-    );
-    expect(view.extra).toBe("Playback ready");
-  });
-});
+import { bookAvailabilityAdvice, bookAvailabilityNote } from "./libraryDisplayModel";
 
 describe("bookAvailabilityNote", () => {
   it("names what is wrong with a book that is not normally playable", () => {

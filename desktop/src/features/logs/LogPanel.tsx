@@ -39,28 +39,6 @@ const LEVEL_LABELS = {
   error: "Error",
 };
 
-function levelBadgeKey(level: string): keyof typeof LEVEL_LABELS {
-  const normalized = normalizeLogLevel(level);
-  if (normalized === "warn") {
-    return "warn";
-  }
-  if (normalized === "error") {
-    return "error";
-  }
-  return "info";
-}
-
-function lineClass(level: string): string {
-  const badge = levelBadgeKey(level);
-  if (badge === "warn") {
-    return "log-line log-warn";
-  }
-  if (badge === "error") {
-    return "log-line log-error";
-  }
-  return "log-line log-info";
-}
-
 export function LogPanel({ logs }: LogPanelProps) {
   const [level, setLevel] = useState<LogLevelFilter>("all");
   const [category, setCategory] = useState<LogCategoryFilter>("all");
@@ -227,7 +205,7 @@ export function LogPanel({ logs }: LogPanelProps) {
         >
           {visibleLogs.length === 0 ? (
             <div className="empty-state log-empty">
-              <AsciiArt name="idle" className="log-empty-art" />
+              <AsciiArt className="log-empty-art" />
               <span className="empty-state-title">{bufferedLogs.length === 0 ? "No events yet" : "No matches"}</span>
               <span className="empty-state-hint">
                 {bufferedLogs.length === 0
@@ -237,9 +215,9 @@ export function LogPanel({ logs }: LogPanelProps) {
             </div>
           ) : (
             visibleLogs.map((entry) => {
-              const badge = levelBadgeKey(entry.level);
+              const badge = normalizeLogLevel(entry.level);
               return (
-                <div key={entry.id} className={lineClass(entry.level)}>
+                <div key={entry.id} className={`log-line log-${badge}`}>
                   <span className="log-marker" aria-hidden="true" />
                   <span className="log-ts tabular-nums">{entry.ts}</span>
                   <span className={`log-level-badge log-level-${badge}`}>{LEVEL_LABELS[badge]}</span>

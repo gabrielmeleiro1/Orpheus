@@ -12,11 +12,9 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 describe("api client errors", () => {
   it.each([
-    [{ error: "invalid_request", message: "Select the Kokoro voice model." }, "Select the Kokoro voice model."],
-    [{ error: "assets_missing" }, "Required model files are missing. Install or repair the selected models."],
-    [{ error: "download_in_progress", message: "  " }, "A model download is already running. Wait for it to finish or cancel it."],
-    [{ error: "unknown_code", internal: "private data" }, "The request could not be completed. Try again."],
-    [{ error: "constructor" }, "The request could not be completed. Try again."],
+    [{ code: "invalid_request", error: "invalid_request", message: "Select the Kokoro voice model." }, "Select the Kokoro voice model."],
+    [{ code: "download_in_progress", message: "  " }, "The request could not be completed. Try again."],
+    [{ code: "unknown_code", internal: "private data" }, "The request could not be completed. Try again."],
   ])("normalizes structured setup errors: %j", async (detail, message) => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ detail }, 422));
     const client = createApiClient({ baseUrl: "http://127.0.0.1" });
@@ -196,7 +194,6 @@ describe("api client request contracts", () => {
       ready: false,
       restart_required: false,
       profiles: [],
-      risk: null,
       backend: { instance_id: "1".repeat(32), status: "running" },
     };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse(status));

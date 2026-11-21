@@ -4,7 +4,7 @@ const invoke = vi.hoisted(() => vi.fn());
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { waitForDesktopEndpoint } from "./dashboardHelpers";
+import { waitForDesktopEndpoint } from "./desktopBackend";
 
 describe("waitForDesktopEndpoint", () => {
   it.each(["backend_status", "backend_endpoint"])("bounds a hung %s IPC call and ignores its late rejection", async (hungCommand) => {

@@ -8,12 +8,16 @@ import { ConversionActionsView } from "./ConversionActionsView";
 
 afterEach(() => vi.unstubAllGlobals());
 
-const row = (status: string, finished = false) => ({ statusClassName: `queue-item-status status-${status}`, finished });
+const row = (status: string, finished = false, needsCheck = false) => ({ statusClassName: `queue-item-status status-${status}`, finished, needsCheck });
 
 it.each([
   [[row("failed"), row("failed")], "2 books could not start"],
   [[row("failed"), row("ready")], "1 book to convert"],
   [[row("done", true)], "Queue finished"],
+  // Start all skips a row whose start may have made a book; it is not "to convert".
+  [[row("warning", false, true), row("ready")], "1 book to convert"],
+  [[row("done", true), row("warning", false, true)], "1 book may have converted already. Check Library, then select it to start it again."],
+  [[row("warning", false, true), row("warning", false, true)], "2 books may have converted already. Check Library, then select each to start it again."],
 ])("summarizes the queue without counting rows that failed to start as waiting (%#)", async (queueItems, summary) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const container = document.createElement("div");

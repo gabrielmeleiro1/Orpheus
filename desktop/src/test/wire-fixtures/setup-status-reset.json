@@ -21,8 +21,7 @@
       "id": "base",
       "label": "Library only",
       "model_groups": [],
-      "reason": null,
-      "risk": null
+      "reason": null
     },
     {
       "compatible": false,
@@ -34,8 +33,7 @@
         "cleaner-mlx",
         "cleaner-mlx-small"
       ],
-      "reason": "MLX requires macOS 14 or newer on an arm64 Apple Silicon Mac.",
-      "risk": null
+      "reason": "MLX requires macOS 14 or newer on an arm64 Apple Silicon Mac."
     },
     {
       "compatible": true,
@@ -62,14 +60,12 @@
         "cleaner-cuda",
         "cleaner-cuda-large"
       ],
-      "reason": null,
-      "risk": null
+      "reason": null
     }
   ],
   "ready": false,
   "recommended_profile": "cuda",
   "restart_required": false,
-  "risk": null,
   "schema_version": 1,
   "selected_model_groups": [],
   "selected_profile": null,

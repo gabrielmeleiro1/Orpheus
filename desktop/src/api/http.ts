@@ -132,20 +132,6 @@ function summarizeValidationDetails(detail: unknown): string {
     .join("; ");
 }
 
-// Structured setup errors carry a stable code; only these have user copy.
-const STRUCTURED_ERROR_MESSAGES: ReadonlyMap<string, string> = new Map([
-  ["invalid_request", "Check your runtime and model selection."],
-  ["packages_not_ready", "Runtime dependencies are missing. Run runtime setup to repair them."],
-  ["probe_unavailable", "The runtime check could not run. Check runtime and try again."],
-  ["probe_failed", "The selected runtime is unavailable. Check its dependencies and device support."],
-  ["assets_missing", "Required model files are missing. Install or repair the selected models."],
-  ["download_in_progress", "A model download is already running. Wait for it to finish or cancel it."],
-  ["setup_in_progress", "Runtime setup is already running. Wait for it to finish."],
-  ["conversion_in_progress", "Wait for the current conversion to finish before changing runtime data."],
-  ["cache_unavailable", "Model storage could not be read. Try again."],
-  ["invalid_model", "Unknown managed model."],
-  ["model_delete_failed", "The model could not be deleted. Close apps using it and try again."],
-]);
 const STRUCTURED_ERROR_FALLBACK = "The request could not be completed. Try again.";
 
 type JsonObject = Record<string, unknown>;
@@ -175,10 +161,8 @@ function errorDetailFromBody(body: JsonObject | null, bodyText: string): string 
       return trimmedString(detail);
     }
     if (isJsonObject(detail)) {
-      // Unknown structured codes get generic copy rather than leaking fields.
-      return trimmedString(detail.message)
-        || STRUCTURED_ERROR_MESSAGES.get(trimmedString(detail.error))
-        || STRUCTURED_ERROR_FALLBACK;
+      // Structured errors carry a user-facing message; other fields are never shown.
+      return trimmedString(detail.message) || STRUCTURED_ERROR_FALLBACK;
     }
     const validationSummary = summarizeValidationDetails(detail);
     if (validationSummary) {

@@ -52,14 +52,14 @@ const mocks = vi.hoisted(() => {
 vi.mock("./app/useBackendClient", () => ({
   useBackendClient: () => mocks.backend,
 }));
-vi.mock("./app/usePrimaryRuntime", () => ({
-  useRuntimeIdentity: () => ({ ttsLabel: "Library only", cleanerLabel: "—", ttsReady: false }),
+vi.mock("./app/useRuntimeBootstrapRefresh", () => ({
+  useRuntimeBootstrapRefresh: vi.fn(),
 }));
 vi.mock("./app/useGlobalShortcuts", () => ({
   useGlobalShortcuts: vi.fn(),
 }));
 vi.mock("./features/library/useLibrary", () => ({
-  useLibrary: () => ({ items: [], indexedCount: 0, refreshLibrary: vi.fn(async () => undefined) }),
+  useLibrary: () => ({ items: [], unfilteredItems: [], indexedCount: 0, refreshLibrary: vi.fn(async () => undefined) }),
 }));
 vi.mock("./features/player/useAudioPlayer", () => ({
   useAudioPlayer: () => ({
@@ -110,8 +110,7 @@ vi.mock("./features/conversion/useConversionJob", () => ({
 }));
 vi.mock("./features/conversion/ConversionPanel", () => ({
   ConversionPanel: (props: UseConversionPanelStateArgs) => {
-    const { activeTab, onOpenRuntimeSetup } = props;
-    const options = useConversionOptions({ ...props, conversionMode: "audiobook" });
+    const options = useConversionOptions(props);
     const queue = useConversionQueueController({ apiClient: null });
     const [paste, setPaste] = useState("");
     const payload = useConversionSubmitPayload({
@@ -126,7 +125,7 @@ vi.mock("./features/conversion/ConversionPanel", () => ({
       buildStartPayload: payload.buildStartPayload,
     });
     mocks.workspace = { queue, runner, options, paste, setPaste };
-    return activeTab === "config" ? <button type="button" onClick={onOpenRuntimeSetup}>Runtime setup</button> : null;
+    return null;
   },
 }));
 vi.mock("./features/setup/setupBridge", () => ({
@@ -157,7 +156,6 @@ const readyStatus: RuntimeSetupStatusResponse = {
   ready: true,
   restart_required: false,
   profiles: [],
-  risk: null,
   backend: { instance_id: "backend-ready", status: "running" },
 };
 
@@ -238,7 +236,7 @@ describe("App runtime setup integration", () => {
     const status: RuntimeSetupStatusResponse = {
       ...readyStatus, selected_profile: "mlx",
       selected_model_groups: groups.slice(0, 2).map((id) => ({ id, ready: true, runtime_ready: true, assets_ready: true, assets_reason: null })),
-      profiles: [{ id: "mlx", label: "Apple Silicon (MLX)", description: "Local", compatible: true, reason: null, model_groups: groups, risk: null }],
+      profiles: [{ id: "mlx", label: "Apple Silicon (MLX)", description: "Local", compatible: true, reason: null, model_groups: groups }],
       installed_runtime: { profile: "mlx", ready: true, runtime_available: true,
         model_groups: groups.map((id) => ({ id, ready: true, runtime_ready: true, assets_ready: true })) },
     };
@@ -340,7 +338,7 @@ describe("App runtime setup integration", () => {
       await act(async () => root.render(<App />));
       expect(container.querySelector("#setup-heading")).toBeNull();
       expect(container.querySelector(".setup-startup")).toBeNull();
-      expect(container.querySelector('[role="status"][aria-label="Backend error"]')).not.toBeNull();
+      expect(container.querySelector('[role="status"][aria-label="Backend disconnected"]')).not.toBeNull();
     } finally {
       backend.apiClient = original.apiClient;
       backend.connectionState = original.connectionState;
@@ -417,6 +415,23 @@ describe("App runtime setup integration", () => {
       expect(container.querySelector(".setup-startup")).toBeNull();
       expect(container.querySelector("#setup-heading")).toBeNull();
       expect(findButton(container, "Library")).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears the exhausted-check notice once Settings verifies the runtime", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mocks.apiClient.getRuntimeSetupStatus.mockResolvedValue({ ...readyStatus, ready: false, state: "checking", checking: true });
+      await act(async () => root.render(<App />));
+      await act(async () => { await vi.advanceTimersByTimeAsync(120_000); });
+      await act(async () => findButton(container, "Use library only").click());
+      expect(container.querySelector(".runtime-check-notice")?.textContent).toContain("needs more time");
+      mocks.apiClient.getRuntimeSetupStatus.mockResolvedValue(readyStatus);
+      await act(async () => findButton(container, "Settings").click());
+      await act(async () => findButton(container, "Check runtime").click());
+      expect(container.querySelector(".runtime-check-notice")).toBeNull();
     } finally {
       vi.useRealTimers();
     }

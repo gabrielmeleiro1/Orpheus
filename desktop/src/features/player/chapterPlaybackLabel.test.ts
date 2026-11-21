@@ -66,68 +66,26 @@ describe("resolvePlayerDurationSec", () => {
 });
 
 describe("resolvePlayerCanSeek", () => {
-  it("disables seek until the selected book's audio is loaded", () => {
-    expect(
-      resolvePlayerCanSeek({
-        audioSrc: null,
-        loadedBookId: null,
-        selectedBookId: 7,
-      }),
-    ).toBe(false);
-
-    expect(
-      resolvePlayerCanSeek({
-        audioSrc: "http://127.0.0.1/audio?book=7",
-        loadedBookId: 7,
-        selectedBookId: 7,
-      }),
-    ).toBe(true);
-
-    expect(
-      resolvePlayerCanSeek({
-        audioSrc: "http://127.0.0.1/audio?book=3",
-        loadedBookId: 3,
-        selectedBookId: 7,
-      }),
-    ).toBe(false);
+  it("disables seek until a book's audio is loaded", () => {
+    expect(resolvePlayerCanSeek({ audioSrc: null, loadedBookId: null })).toBe(false);
+    expect(resolvePlayerCanSeek({ audioSrc: "http://127.0.0.1/audio?book=7", loadedBookId: null })).toBe(false);
+    expect(resolvePlayerCanSeek({ audioSrc: "http://127.0.0.1/audio?book=7", loadedBookId: 7 })).toBe(true);
   });
 });
 
 describe("seekAudioIfReady", () => {
-  it("does not mutate currentTime when selected and loaded book ids mismatch", () => {
-    const audio = {
-      src: "http://127.0.0.1/audio?book=3",
-      currentTime: 42,
-      duration: 100,
-    };
-
-    const applied = seekAudioIfReady({
-      audio,
-      loadedBookId: 3,
-      selectedBookId: 7,
-      positionSeconds: 10,
-    });
-
-    expect(applied).toBe(false);
+  it("does not mutate currentTime before audio is loaded", () => {
+    const audio = { src: "", currentTime: 42, duration: 100 };
+    expect(seekAudioIfReady({ audio, loadedBookId: 7, positionSeconds: 10 })).toBe(false);
     expect(audio.currentTime).toBe(42);
   });
 
-  it("applies seek once selected and loaded book ids match", () => {
-    const audio = {
-      src: "http://127.0.0.1/audio?book=7",
-      currentTime: 42,
-      duration: 100,
-    };
-
-    const applied = seekAudioIfReady({
-      audio,
-      loadedBookId: 7,
-      selectedBookId: 7,
-      positionSeconds: 10,
-    });
-
-    expect(applied).toBe(true);
+  it("seeks loaded audio, clamped to its duration", () => {
+    const audio = { src: "http://127.0.0.1/audio?book=7", currentTime: 42, duration: 100 };
+    expect(seekAudioIfReady({ audio, loadedBookId: 7, positionSeconds: 10 })).toBe(true);
     expect(audio.currentTime).toBe(10);
+    expect(seekAudioIfReady({ audio, loadedBookId: 7, positionSeconds: 500 })).toBe(true);
+    expect(audio.currentTime).toBe(100);
   });
 });
 

@@ -31,7 +31,7 @@ class EventConnection {
 
 function snapshot(id: string, status: NonNullable<ActiveConversionResponse["job"]>["status"] = "running"): ActiveConversionResponse {
   return { active: status === "running", job: {
-    id, status, book_id: null, error: null, title: `Title ${id}`, author: "Author",
+    id, status, book_id: null, error: null, title: `Title ${id}`, author: "Author", repair: false,
   } };
 }
 

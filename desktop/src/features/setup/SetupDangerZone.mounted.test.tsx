@@ -40,7 +40,7 @@ it.each([
   document.body.append(container);
   const root = createRoot(container);
   try {
-    await act(async () => root.render(<SetupDangerZone apiClient={client} onDeleted={onDeleted} onError={onError} />));
+    await act(async () => root.render(<SetupDangerZone apiClient={client} disabled={false} onDeleted={onDeleted} onError={onError} onBusyChange={vi.fn()} />));
     await act(async () => { container.querySelector("details")!.open = true; });
     await act(async () => container.querySelector<HTMLButtonElement>(".setup-danger-actions button")!.click());
     await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Delete")!.click());

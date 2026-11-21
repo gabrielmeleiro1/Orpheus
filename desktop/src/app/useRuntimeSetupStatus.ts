@@ -34,6 +34,9 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
     setRuntimeSelectionGeneration((previous) => previous + 1);
     setSetupStatusClient(apiClient);
     setSetupStatus(status);
+    // An authoritative status ends any stalled or failed startup check.
+    setSetupError(null);
+    setCheckExhausted(false);
     setLibraryOnly(nextLibraryOnly);
   }, [apiClient]);
 

@@ -7,7 +7,7 @@ import { ProgressBar } from "../../ui/ProgressBar";
 import { Icon } from "../../ui/icons";
 import { StopConversionConfirm, useStopConfirm } from "../../ui/StopConversionConfirm";
 import { chapterStageLabel } from "../events/progressStageModel";
-import { buildProgressTerminalPresentation, formatStageDisplayName } from "./progressTerminalPresentation";
+import { buildProgressTerminalPresentation, formatStageDisplayName, stageLabel } from "./progressTerminalPresentation";
 import "./progress.css";
 
 interface ProgressPanelProps {
@@ -17,7 +17,6 @@ interface ProgressPanelProps {
   etaText: string;
   stages: ProgressStageView[];
   currentStage: string;
-  currentMessage: string;
   performance: PerformanceSnapshot | null;
   activeJobId: string | null;
   isCancelling: boolean;
@@ -38,10 +37,6 @@ function hasJobToShow(uiState: ConversionJobStatus): boolean {
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
-}
-
-function stageLabel(name: string): string {
-  return String(name || "").replace(/_/g, " ");
 }
 
 function stageStatus(stage: ProgressStageView): string {
@@ -89,7 +84,6 @@ export function ProgressPanel({
   etaText,
   stages,
   currentStage,
-  currentMessage,
   performance,
   activeJobId,
   isCancelling,
@@ -104,7 +98,7 @@ export function ProgressPanel({
     return (
       <div className="panel-section progress-empty">
         <div className="empty-state">
-          <AsciiArt name="idle" className="progress-empty-art" />
+          <AsciiArt className="progress-empty-art" />
           <span className="empty-state-title">{unknown ? "Conversion status unavailable" : "No conversion running"}</span>
           <span className="empty-state-hint" role={unknown ? "status" : undefined}>
             {unknown ? statusText || "Waiting to reconnect and check the current conversion."
@@ -121,9 +115,7 @@ export function ProgressPanel({
     uiState,
     stages,
     currentStage,
-    currentMessage,
     performance,
-    progressPct,
   });
   const stageTitle = formatStageDisplayName(presentation.operationTitle);
   const title = running ? chapterStageLabel(stages, stageTitle) : stageTitle;

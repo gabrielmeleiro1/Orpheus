@@ -10,18 +10,18 @@ import type { RuntimeSetupStatusResponse } from "./types/api";
 const mocks = vi.hoisted(() => {
   const apiClient = {
     getRuntimeSetupStatus: vi.fn(),
-    getActiveConversion: vi.fn(async () => ({ active: false, job: { id: "job", status: "completed", book_id: 7 } })),
+    getActiveConversion: vi.fn(async () => ({ active: false, job: { id: "job", status: "completed", book_id: 7, repair: false } })),
   };
 
   return {
     apiClient,
-    conversionPanelProps: null as { hidden?: boolean; apiClient?: unknown; runtimeState?: string; conversionJob?: { uiState: string }; onOpenRuntimeSetup?: () => void } | null,
+    conversionPanelProps: null as { hidden?: boolean; apiClient?: unknown; runtimeState?: string; conversionJob?: { uiState: string } } | null,
     libraryRefresh: vi.fn(async () => undefined),
     selectBook: vi.fn(async () => null),
+    selectBookById: vi.fn(async () => null),
     activeJobId: null as string | null,
     conversionUiState: "idle" as "idle" | "running" | "completed" | "failed" | "cancelled",
     setupPageStatuses: [] as Array<RuntimeSetupStatusResponse | null>,
-    dashboardSetupStatus: null as RuntimeSetupStatusResponse | null,
     backend: {
       apiClient: apiClient as typeof apiClient | null,
       backendBaseUrl: "http://127.0.0.1:48123",
@@ -36,17 +36,15 @@ const mocks = vi.hoisted(() => {
 vi.mock("./app/useBackendClient", () => ({
   useBackendClient: () => mocks.backend,
 }));
-vi.mock("./app/usePrimaryRuntime", () => ({
-  useRuntimeIdentity: (_client: unknown, status: RuntimeSetupStatusResponse | null) => {
-    mocks.dashboardSetupStatus = status;
-    return { ttsLabel: "Library only", cleanerLabel: "—", ttsReady: false };
-  },
+vi.mock("./app/useRuntimeBootstrapRefresh", () => ({
+  useRuntimeBootstrapRefresh: vi.fn(),
 }));
 vi.mock("./app/useGlobalShortcuts", () => ({
   useGlobalShortcuts: vi.fn(),
 }));
 vi.mock("./features/library/useLibrary", () => ({
-  useLibrary: () => ({ items: [{ id: 7 }, { id: 8 }], indexedCount: 2, refreshLibrary: mocks.libraryRefresh, selectBook: mocks.selectBook }),
+  useLibrary: () => ({ items: [{ id: 7 }, { id: 8 }], unfilteredItems: [{ id: 7 }, { id: 8 }], indexedCount: 2,
+    refreshLibrary: mocks.libraryRefresh, selectBook: mocks.selectBook, selectBookById: mocks.selectBookById }),
 }));
 vi.mock("./features/player/useAudioPlayer", () => ({
   useAudioPlayer: () => ({
@@ -138,23 +136,10 @@ vi.mock("./features/conversion/ConversionPanel", () => ({
     runtimeState?: string;
     conversionJob?: { uiState: string };
     activeTab: string;
-    onOpenRuntimeSetup?: () => void;
     onOpenSettings?: () => void;
   }) => {
     mocks.conversionPanelProps = props;
-    const {
-      activeTab,
-      onOpenRuntimeSetup,
-      onOpenSettings,
-    } = props;
-    return (
-      <>
-        <button type="button" onClick={onOpenSettings}>Open Settings</button>
-        {activeTab === "config" ? (
-          <button type="button" onClick={onOpenRuntimeSetup}>Runtime setup</button>
-        ) : null}
-      </>
-    );
+    return <button type="button" onClick={props.onOpenSettings}>Open Settings</button>;
   },
 }));
 vi.mock("./features/library/LibraryPanel", () => ({ LibraryPanel: ({ hidden, albumOpen, onOpenAlbum }: { hidden: boolean; albumOpen: boolean; onOpenAlbum: (index: number) => void }) => <section id="tab-library" role="tabpanel" hidden={hidden} data-album-open={albumOpen}><button onClick={() => onOpenAlbum(0)}>Open album</button></section> }));
@@ -177,7 +162,6 @@ const setupStatus: RuntimeSetupStatusResponse = {
   ready: false,
   restart_required: false,
   profiles: [],
-  risk: null,
   backend: { instance_id: "backend-1", status: "running" },
 };
 
@@ -201,7 +185,7 @@ describe("App runtime setup recovery", () => {
     mocks.libraryRefresh.mockClear();
     mocks.conversionUiState = "idle";
     mocks.activeJobId = null;
-    mocks.apiClient.getActiveConversion.mockReset().mockResolvedValue({ active: false, job: { id: "job", status: "completed", book_id: 7 } });
+    mocks.apiClient.getActiveConversion.mockReset().mockResolvedValue({ active: false, job: { id: "job", status: "completed", book_id: 7, repair: false } });
     mocks.conversionPanelProps = null;
     mocks.setupPageStatuses.length = 0;
     container = document.createElement("div");
@@ -287,16 +271,6 @@ describe("App runtime setup recovery", () => {
     await act(async () => root.render(<App />));
     expect(container.querySelector('[data-testid="setup-page"]')).not.toBeNull();
     expect(mocks.apiClient.getRuntimeSetupStatus).toHaveBeenCalledOnce();
-  });
-
-  it("opens the models section when Create asks for runtime setup", async () => {
-    await act(async () => root.render(<App />));
-    await act(async () => findButton(container, "Continue in library-only mode").click());
-    await act(async () => findButton(container, "Create").click());
-    await act(async () => mocks.conversionPanelProps!.onOpenRuntimeSetup!());
-    expect(container.querySelector("#tab-btn-settings")?.getAttribute("aria-selected")).toBe("true");
-    expect(document.activeElement?.id).toBe("setup-heading");
-    expect(container.querySelector('[data-testid="setup-page"]')).toBeNull();
   });
 
   it("stays in Settings when a model change leaves the runtime unready", async () => {
@@ -425,16 +399,30 @@ describe("App runtime setup recovery", () => {
     expect(container.querySelector("#tab-btn-library")?.getAttribute("aria-selected")).toBe("true");
   });
 
-  it.each([[7, "Updated in your library."], [9, "Added to your library."]])("says a finished book %s was %s", async (bookId, copy) => {
-    mocks.apiClient.getActiveConversion.mockResolvedValueOnce({ active: false, job: { id: "job", status: "completed", book_id: bookId } });
+  it.each([[true, "Updated in your library."], [false, "Added to your library."]])("says a finished job with repair %s was %s", async (repair, copy) => {
+    // Book 9 is not on the loaded shelf: the job, not the shelf, says whether it was repaired.
+    mocks.apiClient.getActiveConversion.mockResolvedValueOnce({ active: false, job: { id: "job", status: "completed", book_id: 9, repair } });
     await act(async () => root.render(<App />));
     await act(async () => findButton(container, "Continue in library-only mode").click());
     mocks.conversionUiState = "running";
     await act(async () => root.render(<App />));
     mocks.conversionUiState = "completed";
     await act(async () => root.render(<App />));
-    // Book 7 is already on the shelf (a repair); book 9 is new.
     expect(container.querySelector(".completion-notice.is-completed")?.textContent).toContain(copy);
+  });
+
+  it("opens a finished book that is not on the loaded shelf", async () => {
+    mocks.apiClient.getActiveConversion.mockResolvedValueOnce({ active: false, job: { id: "job", status: "completed", book_id: 9, repair: true } });
+    await act(async () => root.render(<App />));
+    await act(async () => findButton(container, "Continue in library-only mode").click());
+    await act(async () => findButton(container, "Create").click());
+    mocks.conversionUiState = "running";
+    await act(async () => root.render(<App />));
+    mocks.conversionUiState = "completed";
+    await act(async () => root.render(<App />));
+    await act(async () => findButton(container.querySelector<HTMLElement>(".completion-notice")!, "Open").click());
+    expect(mocks.selectBookById).toHaveBeenCalledExactlyOnceWith(9);
+    expect(container.querySelector("#tab-library")?.getAttribute("data-album-open")).toBe("true");
   });
 
   it("reports a failed conversion with a shortcut to its details", async () => {
@@ -452,7 +440,7 @@ describe("App runtime setup recovery", () => {
   it("keeps a newer completion notice attached to its own job when an older lookup resolves late", async () => {
     let resolveOld!: (value: Awaited<ReturnType<typeof mocks.apiClient.getActiveConversion>>) => void;
     mocks.apiClient.getActiveConversion.mockImplementationOnce(() => new Promise((resolve) => { resolveOld = resolve; }))
-      .mockResolvedValueOnce({ active: false, job: { id: "B", status: "completed", book_id: 8 } });
+      .mockResolvedValueOnce({ active: false, job: { id: "B", status: "completed", book_id: 8, repair: false } });
     await act(async () => root.render(<App />));
     await act(async () => findButton(container, "Continue in library-only mode").click());
     for (const id of ["A", "B"]) {
@@ -463,9 +451,9 @@ describe("App runtime setup recovery", () => {
       mocks.conversionUiState = "completed";
       await act(async () => root.render(<App />));
     }
-    await act(async () => resolveOld({ active: false, job: { id: "A", status: "completed", book_id: 7 } }));
+    await act(async () => resolveOld({ active: false, job: { id: "A", status: "completed", book_id: 7, repair: false } }));
     await act(async () => findButton(container.querySelector<HTMLElement>(".completion-notice")!, "Open").click());
-    expect(mocks.selectBook).toHaveBeenCalledExactlyOnceWith(1);
+    expect(mocks.selectBookById).toHaveBeenCalledExactlyOnceWith(8);
   });
 
   it("dismisses a completion ten seconds after publication even if its book lookup settles later", async () => {
@@ -479,7 +467,7 @@ describe("App runtime setup recovery", () => {
     mocks.conversionUiState = "completed";
     await act(async () => root.render(<App />));
     await act(async () => vi.advanceTimersByTimeAsync(7_000));
-    await act(async () => resolveLookup({ active: false, job: { id: "job", status: "completed", book_id: 7 } }));
+    await act(async () => resolveLookup({ active: false, job: { id: "job", status: "completed", book_id: 7, repair: false } }));
     expect(container.querySelector(".completion-notice")).not.toBeNull();
     await act(async () => vi.advanceTimersByTimeAsync(3_000));
     expect(container.querySelector(".completion-notice")).toBeNull();
@@ -553,9 +541,10 @@ describe("App runtime setup recovery", () => {
     await act(async () => root.render(<App />));
     expect(container.querySelector(".app-frame")).toBe(workspace);
     expect(container.querySelector("#tab-btn-convert")?.getAttribute("aria-selected")).toBe("true");
-    expect(mocks.dashboardSetupStatus).toBeNull();
+    expect(mocks.conversionPanelProps?.runtimeState).toBe("checking");
     await act(async () => resolveStatus(ready));
-    expect(mocks.dashboardSetupStatus).toBe(ready);
+    // Verified for the new client: a status with no voice model cannot convert.
+    expect(mocks.conversionPanelProps?.runtimeState).toBe("unavailable");
     expect(container.querySelector(".app-frame")).toBe(workspace);
   });
 });

@@ -34,6 +34,35 @@ it("ignores an old folder failure after leaving and reopening Settings", async (
   }
 });
 
+it("says the storage paths are loading until they arrive, and unavailable only when loading failed", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  let finish!: (outcome: "loaded" | "failed") => void;
+  const requestJson = vi.fn(() => new Promise((resolve, reject) => {
+    finish = (outcome) => outcome === "loaded"
+      ? resolve({ output_path: "C:/books", app_data_path: "C:/Orpheus" })
+      : reject(new Error("offline"));
+  }));
+  const client = { requestJson, ...createSystemApi(requestJson as unknown as RequestJson) } as unknown as ApiClient;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const render = (active: boolean) => root.render(<SettingsPage active={active} apiClient={client}>{null}</SettingsPage>);
+  const paths = () => [...container.querySelectorAll(".settings-storage-row .settings-path")].map((path) => path.textContent);
+  try {
+    await act(async () => render(true));
+    expect(paths()).toEqual(["Loading…", "Loading…"]);
+    await act(async () => finish("loaded"));
+    expect(paths()).toEqual(["C:/books", "C:/Orpheus"]);
+    await act(async () => render(false));
+    await act(async () => render(true));
+    expect(paths()).toEqual(["Loading…", "Loading…"]);
+    await act(async () => finish("failed"));
+    expect(paths()).toEqual(["Unavailable", "Unavailable"]);
+  } finally {
+    await act(async () => root.unmount());
+    vi.unstubAllGlobals();
+  }
+});
+
 function cleanerViewModel() {
   const model = conversionPanelViewModel();
   return {

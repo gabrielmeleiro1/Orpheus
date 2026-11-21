@@ -115,6 +115,16 @@ describe("playing one book while browsing others", () => {
     expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(1);
   });
 
+  it("continues with the book after the finished one, not after the viewed one", async () => {
+    await act(async () => { await library.selectBook(2); });
+    Object.assign(audio, { currentTime: 120, ended: true, paused: true });
+    await act(async () => player.audioProps.onEnded());
+    expect(apiClient.getLibraryAudioUrl).toHaveBeenLastCalledWith(2, expect.anything());
+    expect(player.playingBookId).toBe(2);
+    expect(library.selectedBookId).toBe(2);
+    expect(audio.play).toHaveBeenCalledTimes(2);
+  });
+
   it("stops cleanly when the playing book is deleted", async () => {
     await act(async () => { await library.deleteSelectedBook(player.releaseBookAudio); });
     expect(audio.pause).toHaveBeenCalled();
@@ -177,6 +187,44 @@ describe("transport on a chaptered book", () => {
       expect(audio.currentTime).toBe(60);
       expect(player.playingBookId).toBe(1);
       expect(library.selectedBookId).toBe(1);
+    } finally {
+      await act(async () => root.unmount());
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("transport on a book without chapters", () => {
+  it("steps through the library from the playing book, not the viewed one", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const singleChapter = (id: number): LibraryBookDetail => ({ ...detail(id), chapters: detail(id).chapters.slice(0, 1) });
+    const apiClient = {
+      getLibrary: vi.fn(async () => ({ items: [1, 2, 3].map(summary), count: 3, library_id: "library", library_epoch: "epoch-1" })),
+      getLibraryCount: vi.fn(async () => ({ count: 3 })),
+      getLibraryBook: vi.fn(async (id: number) => singleChapter(id)),
+      getLibraryAudioUrl: vi.fn(async (id: number) => `http://desktop.test/api/library/${id}/audio?token=t`),
+      updateBookPlaybackPosition: vi.fn(async (id: number, position: number) => ({ book_id: id, position_sec: position })),
+    } as unknown as ApiClient;
+    let library!: UseLibraryResult;
+    let player!: ReturnType<typeof useAudioPlayer>;
+    function Probe() {
+      library = useLibrary({ apiClient });
+      player = useAudioPlayer({ apiClient, library });
+      return null;
+    }
+    const audio = fakeAudio();
+    const root = createRoot(document.createElement("div"));
+    try {
+      await act(async () => root.render(<Probe />));
+      player.audioRef.current = audio as unknown as HTMLAudioElement;
+      await act(async () => { await player.playSelectedBook(); });
+      await act(async () => { await library.selectBook(2); });
+      expect(player.chapterTransport).toBe(false);
+      expect(player.canGoPrevious).toBe(false);
+      expect(player.canGoNext).toBe(true);
+      await act(async () => { await player.playRelative(1); });
+      expect(player.playingBookId).toBe(2);
+      expect(library.selectedBookId).toBe(2);
     } finally {
       await act(async () => root.unmount());
       vi.unstubAllGlobals();

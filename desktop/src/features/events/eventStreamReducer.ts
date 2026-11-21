@@ -211,8 +211,12 @@ function reduceStateEvent(
   // A job id that already reached a terminal state cannot resume. Drop any late
   // non-terminal event for it so a stale progress/running event cannot flip the
   // UI back to "running"; a different (new) job id still transitions normally.
-  if (!isTerminalState && jobId && state.terminalJobIds.includes(jobId)) {
-    return { state, ignored: true };
+  // A repeated terminal state (every reconnect re-reads the finished job) only
+  // settles terminal waiters.
+  if (jobId && state.terminalJobIds.includes(jobId)) {
+    return isTerminalState
+      ? { state, ignored: true, terminalEvent: terminalEventFromStatePayload(payload) }
+      : { state, ignored: true };
   }
 
   if (

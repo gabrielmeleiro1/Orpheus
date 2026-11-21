@@ -15,7 +15,7 @@ import { showDashboardDuringRuntimeCheck } from "./app/runtimeStartup";
 import { conversionRuntimeState, runtimeTtsReady } from "./app/runtimeReadiness";
 import { useVerifiedConversionJob } from "./app/useVerifiedConversionJob";
 import { useGlobalShortcuts } from "./app/useGlobalShortcuts";
-import { useRuntimeIdentity } from "./app/usePrimaryRuntime";
+import { useRuntimeBootstrapRefresh } from "./app/useRuntimeBootstrapRefresh";
 import { useRuntimeSetupStatus } from "./app/useRuntimeSetupStatus";
 import { ConversionPanel } from "./features/conversion/ConversionPanel";
 import type { ConversionRuntimeState } from "./features/conversion/conversionPanelStateTypes";
@@ -124,11 +124,12 @@ function RuntimeSetupChecking({ error, exhausted, onRetry, onContinueLibraryOnly
   );
 }
 
-function ConnectionBadge({ state, announce }: { state: BackendClientState["connectionState"]; announce: boolean }) {
+function ConnectionBadge({ state }: { state: Exclude<BackendClientState["connectionState"], "connected"> }) {
+  const error = state === "error";
   return (
-    <span className={`connection-badge is-${state}`} {...(announce ? { role: "status", "aria-label": `Backend ${state}` } : { "aria-hidden": true })}>
-      <span className={`status-dot${state === "connected" ? " is-connected" : state === "error" ? " is-error" : " is-busy"}`} aria-hidden="true" />
-      {state === "connected" ? "Connected" : state === "error" ? "Disconnected" : "Connecting…"}
+    <span className={`connection-badge is-${state}`} role="status" aria-label={error ? "Backend disconnected" : "Connecting to backend"}>
+      <span className={`status-dot ${error ? "is-error" : "is-busy"}`} aria-hidden="true" />
+      {error ? "Disconnected" : "Connecting…"}
     </span>
   );
 }
@@ -143,7 +144,7 @@ const RailLibrary = memo(function RailLibrary({ items, indexedCount, selectedBoo
   albumOpen: boolean;
   /** The book audibly playing, or null. */
   playingBookId: number | null;
-  onOpenBook: (index: number) => void;
+  onOpenBook: (bookId: number) => void;
 }) {
   return (
     <section className="rail-library" aria-label="Your library">
@@ -152,7 +153,7 @@ const RailLibrary = memo(function RailLibrary({ items, indexedCount, selectedBoo
         <span className="rail-library-count tabular-nums">{indexedCount}</span>
       </div>
       <div className="rail-library-list">
-        {items.map((item, index) => {
+        {items.map((item) => {
           const isCurrent = albumOpen && item.id === selectedBookId;
           const isPlaying = item.id === playingBookId;
           return (
@@ -161,7 +162,7 @@ const RailLibrary = memo(function RailLibrary({ items, indexedCount, selectedBoo
               type="button"
               className={`rail-book${isCurrent ? " is-current" : ""}${isPlaying ? " is-playing" : ""}`}
               aria-current={isCurrent ? "true" : undefined}
-              onClick={() => onOpenBook(index)}
+              onClick={() => onOpenBook(item.id)}
             >
               <BookCover bookId={item.id} sourceKey={item.source_path} title={item.title} author={item.author} size="sm" />
               <span className="rail-book-text">
@@ -209,15 +210,13 @@ function DashboardApp({
     apiClient,
     backendBaseUrl,
     connectionState,
-    health,
-    statusMessage,
   } = backend;
   const startCommandRef = useRef<(() => void) | null>(null);
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const sidebarRef = useRef<HTMLElement | null>(null);
   const showSidebarRef = useRef<HTMLButtonElement | null>(null);
-  const pendingFocusRef = useRef<"heading" | "sidebar" | "toggle" | "models" | null>(null);
+  const pendingFocusRef = useRef<"heading" | "sidebar" | "toggle" | null>(null);
   const lastFocusedRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
@@ -242,10 +241,6 @@ function DashboardApp({
       tabRefs.current[DASHBOARD_TAB_CONFIGS.findIndex((tab) => tab.id === activeTab)]?.focus();
     } else if (target === "toggle") {
       showSidebarRef.current?.focus();
-    } else if (target === "models") {
-      const heading = document.getElementById("setup-heading");
-      heading?.scrollIntoView?.({ block: "start" });
-      heading?.focus({ preventScroll: true });
     } else if (target === "heading" || lastFocusedRef.current?.parentElement?.closest("[hidden]")) {
       // A page change hid the focused control's whole panel. A control hidden
       // on its own (Start giving way to Cancel) is left to the focus rescue,
@@ -259,9 +254,7 @@ function DashboardApp({
     backendDisconnected: connectionState === "error",
   });
 
-  // Nothing shows the identity any more, but the hook pins the runtime bootstrap
-  // cache and polls capabilities while the runtime warms, which Create reads.
-  useRuntimeIdentity(apiClient, setupStatus);
+  useRuntimeBootstrapRefresh(apiClient);
   const player = useAudioPlayer({ apiClient, library });
   const { playbackRate, setPlaybackRate } = usePlaybackRate(player.audioRef, player.audioProps.src);
   const { sleepTimer, sleepRemainingSec, setSleepTimer } = player;
@@ -308,10 +301,6 @@ function DashboardApp({
   const conversionJob = useVerifiedConversionJob(liveConversionJob,
     runtimeTtsReady(setupStatus) === true && !isCheckingConfiguredRuntime(setupStatus));
   const refreshLibrary = library.refreshLibrary;
-  const libraryItemsRef = useRef(library.items);
-  useLayoutEffect(() => {
-    libraryItemsRef.current = library.items;
-  }, [library.items]);
   const jobRunning = conversionJob.uiState === "running";
   const jobPercent = Math.max(0, Math.min(100, Math.round(Number(conversionJob.progressPct) || 0)));
 
@@ -337,8 +326,6 @@ function DashboardApp({
     if (!kind) return;
     const title = conversionJob.activeJobTitle || (kind === "completed" ? "Your audiobook" : "The conversion");
     const id = ++noticeSequenceRef.current;
-    // The shelf as it was when the job ended, before the refresh above lands.
-    const shelfAtCompletion = libraryItemsRef.current;
     setNotice({ id, kind, title, bookId: null });
     if (kind !== "completed" || !apiClient) return;
     // The finished job names its book, so the notice can open it directly.
@@ -346,8 +333,7 @@ function DashboardApp({
       if (noticeClientRef.current === apiClient && noticeSequenceRef.current === id
         && job?.status === "completed" && job.book_id != null
         && (!completedJobId || job.id === completedJobId)) {
-        setNotice((current) => (current?.id === id ? { ...current, bookId: job.book_id ?? null,
-          updated: shelfAtCompletion.some((item) => item.id === job.book_id) } : current));
+        setNotice((current) => (current?.id === id ? { ...current, bookId: job.book_id ?? null, updated: job.repair } : current));
       }
     }).catch(() => undefined);
   }, [apiClient, conversionJob.activeJobId, conversionJob.activeJobTitle, conversionJob.uiState, refreshLibrary]);
@@ -414,38 +400,35 @@ function DashboardApp({
     selectTabAtIndex(nextIndex);
   }, [activeTabIndex, selectTabAtIndex]);
 
-  const { selectBook } = library;
-  const openAlbum = useCallback((index: number) => {
+  const { selectBook, selectBookById } = library;
+  const showAlbum = useCallback((select: () => Promise<unknown>) => {
     setLibraryNavigationGeneration((generation) => generation + 1);
-    void selectBook(index);
+    void select();
     setAlbumOpen(true);
     if (activeTab !== "library") {
       setActiveTab("library");
     }
-  }, [activeTab, selectBook]);
+  }, [activeTab]);
+  const openAlbum = useCallback((index: number) => showAlbum(() => selectBook(index)), [selectBook, showAlbum]);
+  const openAlbumById = useCallback((bookId: number) => showAlbum(() => selectBookById(bookId)), [selectBookById, showAlbum]);
   const closeAlbum = useCallback(() => {
     setAlbumOpen(false);
   }, []);
-  const openRailBook = useCallback((index: number) => {
-    openAlbum(index);
+  const openRailBook = useCallback((bookId: number) => {
+    openAlbumById(bookId);
     if (isCompactViewport()) setSidebarCollapsed(true);
-  }, [openAlbum]);
+  }, [openAlbumById]);
   const openBookById = useCallback((bookId: number | null) => {
-    const index = bookId === null ? -1 : library.items.findIndex((item) => item.id === bookId);
-    if (index >= 0) {
-      openAlbum(index);
+    if (bookId !== null) {
+      openAlbumById(bookId);
     } else {
       setAlbumOpen(false);
       selectTab("library");
     }
-  }, [library.items, openAlbum, selectTab]);
+  }, [openAlbumById, selectTab]);
 
   const openConvert = useCallback(() => selectTab("convert"), [selectTab]);
   const openSettings = useCallback(() => selectTab("settings"), [selectTab]);
-  const openModels = useCallback(() => {
-    pendingFocusRef.current = "models";
-    setActiveTab("settings");
-  }, []);
   const openDetails = useCallback(() => setDetailsOpen(true), []);
   const closeDetails = useCallback(() => setDetailsOpen(false), []);
   const playPrevious = useCallback(() => {
@@ -549,9 +532,9 @@ function DashboardApp({
           })}
         </nav>
 
-        {library.items.length > 0 ? (
+        {library.unfilteredItems.length > 0 ? (
           <RailLibrary
-            items={library.items}
+            items={library.unfilteredItems}
             indexedCount={library.indexedCount}
             selectedBookId={library.selectedBookId}
             albumOpen={activeTab === "library" && albumOpen}
@@ -582,7 +565,7 @@ function DashboardApp({
             ) : null}
             {connectionState !== "connected" ? (
               <div className="rail-status">
-                <ConnectionBadge state={connectionState} announce />
+                <ConnectionBadge state={connectionState} />
               </div>
             ) : null}
           </div>
@@ -602,7 +585,7 @@ function DashboardApp({
                     <span className="tabular-nums">{conversionJob.connectionLost ? "Reconnecting…" : "Converting"} · {jobPercent}%</span>
                   </button>
                 ) : null}
-                {connectionState !== "connected" ? <ConnectionBadge state={connectionState} announce /> : null}
+                {connectionState !== "connected" ? <ConnectionBadge state={connectionState} /> : null}
               </div>
             ) : null}
           </div>
@@ -635,11 +618,8 @@ function DashboardApp({
                 runtimeSelectionGeneration={runtimeSelectionGeneration}
                 runtimeState={conversionRuntime}
                 connectionState={connectionState}
-                health={health}
-                statusMessage={statusMessage}
                 conversionJob={conversionJob}
                 onOpenSettings={openSettings}
-                onOpenRuntimeSetup={openModels}
                 onOpenConversionDetails={openDetails}
                 startCommandRef={startCommandRef}
               />

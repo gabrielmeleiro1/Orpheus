@@ -31,7 +31,7 @@ interface UseAudioElementBindingsArgs {
   markPlaybackSaved: (bookId: number, positionSec: number) => void;
   handleAudioMetadata: (expectedBookId?: number | null) => void;
   updatePlayerStatus: () => void;
-  playRelative: (delta: number) => Promise<void>;
+  playRelative: (delta: number, fromBookId: number | null) => Promise<void>;
   advanceChapter?: () => boolean;
   canFinishBook: boolean;
   onBookCompleted: () => void;
@@ -39,7 +39,6 @@ interface UseAudioElementBindingsArgs {
   setElapsedSec: Dispatch<SetStateAction<number>>;
   setTotalSec: Dispatch<SetStateAction<number>>;
   setVolume: Dispatch<SetStateAction<number>>;
-  setPlayerTitle: Dispatch<SetStateAction<string>>;
   onPlaybackError: () => void;
   onPlaybackHealthy: () => void;
   stopAtChapterEnd?: (ended?: boolean) => boolean;
@@ -70,7 +69,6 @@ export function useAudioElementBindings({
   setElapsedSec,
   setTotalSec,
   setVolume,
-  setPlayerTitle,
   onPlaybackError,
   onPlaybackHealthy,
   stopAtChapterEnd,
@@ -104,7 +102,7 @@ export function useAudioElementBindings({
       const nextElapsedSec = Math.max(0, Number(audio.currentTime) || 0);
       const nextElapsedUiSecond = Math.floor(nextElapsedSec);
       if (!audio.paused) {
-        void persistLoadedBookPlaybackPosition({ force: false, silent: true });
+        void persistLoadedBookPlaybackPosition({ force: false });
       }
       const nowMs = window.performance.now();
       const shouldUpdateUi =
@@ -144,7 +142,7 @@ export function useAudioElementBindings({
       onPause: () => {
         if (!isCurrent()) return;
         setIsPlaying(false);
-        void persistLoadedBookPlaybackPosition({ force: true, silent: true });
+        void persistLoadedBookPlaybackPosition({ force: true });
         updatePlayerStatus();
       },
       onTimeUpdate: handleTimeUpdate,
@@ -168,14 +166,14 @@ export function useAudioElementBindings({
         if (!isCurrent()) return;
         if (stopAtChapterEnd?.(true)) {
           setIsPlaying(false);
-          void persistLoadedBookPlaybackPosition({ force: true, silent: true });
+          void persistLoadedBookPlaybackPosition({ force: true });
           updatePlayerStatus();
           return;
         }
         if (advanceChapter?.()) return;
         setIsPlaying(false);
         if (!canFinishBook) {
-          void persistLoadedBookPlaybackPosition({ force: true, silent: true });
+          void persistLoadedBookPlaybackPosition({ force: true });
           updatePlayerStatus();
           return;
         }
@@ -186,7 +184,6 @@ export function useAudioElementBindings({
             bookId: finishedBookId,
             positionSec: 0,
             force: true,
-            silent: true,
           });
         }
         if (library.selectedBookId === finishedBookId) {
@@ -194,13 +191,12 @@ export function useAudioElementBindings({
         }
         // The finished book reads "Finished" unless the library continues with the next one.
         onBookCompleted();
-        void playRelative(1);
+        void playRelative(1, finishedBookId);
       },
       onSeeking: () => { if (isCurrent()) onSeeking?.(); },
       onSeeked: () => { if (isCurrent()) onSeeked?.(); },
       onError: () => {
         if (!isCurrent()) return;
-        setPlayerTitle("playback failed");
         onPlaybackError();
       },
     };
@@ -223,7 +219,6 @@ export function useAudioElementBindings({
     onBookCompleted,
     setElapsedSec,
     setIsPlaying,
-    setPlayerTitle,
     setTotalSec,
     setVolume,
     updatePlayerStatus,

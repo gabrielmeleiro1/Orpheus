@@ -16,11 +16,15 @@ interface ConversionActionsViewProps {
 
 function queueSummary(sourceQueue: SourceQueueViewModel): string {
   if (sourceQueue.queueStatus) return sourceQueue.queueStatus;
-  // Rows that failed before starting are not waiting to convert; count them apart.
+  // Rows that failed before starting, or that Start all skips because they may
+  // have made a book already, are not waiting to convert; count them apart.
   const unfinished = sourceQueue.queueItems.filter((item) => !item.finished);
   const failed = unfinished.filter((item) => item.statusClassName?.includes("status-failed")).length;
-  const pending = unfinished.length - failed;
+  const unchecked = unfinished.filter((item) => item.needsCheck).length;
+  const pending = unfinished.length - failed - unchecked;
   if (pending > 0) return `${pending} ${pending === 1 ? "book" : "books"} to convert`;
+  if (unchecked === 1) return "1 book may have converted already. Check Library, then select it to start it again.";
+  if (unchecked > 1) return `${unchecked} books may have converted already. Check Library, then select each to start it again.`;
   if (failed > 0) return `${failed} ${failed === 1 ? "book" : "books"} could not start`;
   if (sourceQueue.queueItems.length > 0) return "Queue finished";
   if (sourceQueue.sourceInput === "paste" && sourceQueue.pastedText.trim()) return "Pasted text ready";

@@ -257,6 +257,7 @@ export function conversionQueueReducer(
           preflight: changedSourcePath ? null : item.preflight,
           status: changedSourcePath ? "ready" : item.status,
           error: changedSourcePath ? "" : item.error,
+          startUncertain: changedSourcePath ? false : item.startUncertain,
         };
       });
       return {
@@ -282,7 +283,7 @@ export function conversionQueueReducer(
         preflightStatus: "",
         queueItems: state.queueItems.map((item) =>
           item.id === action.stamp.itemId && hasFreshStamp(state, item, action.stamp) && item.status !== "converting" && item.status !== "done"
-            ? { ...item, status: "preflighting", error: "" }
+            ? { ...item, status: "preflighting", error: "", startUncertain: false }
             : item,
         ),
       };

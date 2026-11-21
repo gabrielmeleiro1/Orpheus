@@ -45,6 +45,7 @@ function activeResponse(id: string): ActiveConversionResponse {
       error: null,
       title: id,
       author: id,
+      repair: false,
     },
   };
 }

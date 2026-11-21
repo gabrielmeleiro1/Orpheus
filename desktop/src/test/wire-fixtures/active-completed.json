@@ -6,6 +6,7 @@
     "client_request_id": "desktop-request_123",
     "error": null,
     "id": "job-1",
+    "repair": false,
     "status": "completed",
     "title": "A small book"
   }

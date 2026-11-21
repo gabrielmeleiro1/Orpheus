@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 import type { ApiClient } from "../../api/client";
 
@@ -10,7 +10,6 @@ import { useTtsOptions, type UseTtsOptionsResult } from "./useTtsOptions";
 
 interface UseConversionOptionsArgs {
   apiClient: ApiClient | null;
-  conversionMode: string;
   runtimeSelectionGeneration?: number;
 }
 
@@ -21,12 +20,10 @@ export interface UseConversionOptionsResult
 
 export function useConversionOptions({
   apiClient,
-  conversionMode,
   runtimeSelectionGeneration = 0,
 }: UseConversionOptionsArgs): UseConversionOptionsResult {
   const persistedSettingsRef = useRef(readPersistedSettings());
   const settingsHydratedRef = useRef(false);
-  const [conversionModeError, setConversionModeError] = useState("");
 
   useEffect(() => {
     settingsHydratedRef.current = false;
@@ -126,20 +123,11 @@ export function useConversionOptions({
     runtimeSelectionGeneration,
   ]);
 
-  useEffect(() => {
-    if (conversionMode !== "audiobook" && conversionMode !== "document_audio") {
-      setConversionModeError("invalid conversion mode");
-    } else {
-      setConversionModeError("");
-    }
-  }, [conversionMode]);
-
   const { modelOptions: _modelOptions, systemCapabilities: _systemCapabilities, ...ttsResult } = ttsOptions;
   const { cleanerOptionsHydrated: _cleanerOptionsHydrated, ...cleanerResult } = cleanerOptions;
 
   return {
     ...ttsResult,
-    error: conversionModeError || ttsOptions.error,
     ...cleanerResult,
     ...parallelWorkers,
   };

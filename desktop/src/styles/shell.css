@@ -367,7 +367,6 @@
   z-index: 5;
 }
 
-/* Connected state stays static so an idle app does not schedule animation frames. */
 .status-dot {
   background: var(--text-tertiary);
   border-radius: 50%;
@@ -375,10 +374,6 @@
   flex-shrink: 0;
   height: var(--dot-size);
   width: var(--dot-size);
-}
-
-.status-dot.is-connected {
-  background: var(--positive);
 }
 
 .status-dot.is-busy {
@@ -423,8 +418,8 @@
   transform: none;
 }
 
-.main-workspace > :is(.panel, .settings-page):not(.page-form),
-.main-workspace > .settings-content > .panel:not(.page-form) {
+.main-workspace > :is(.panel, .settings-page),
+.main-workspace > .settings-content > .panel {
   container-type: inline-size;
   margin-inline: auto;
   max-width: var(--page-max-width);

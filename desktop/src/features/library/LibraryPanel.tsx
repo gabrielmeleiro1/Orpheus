@@ -124,8 +124,9 @@ export function LibraryPanel({
   const showEmpty = !library.loadingList && !library.errorMessage && library.items.length === 0;
   // A search/filter may hide the currently playing book. Keep its detail in
   // the library model for the global player, but do not show stale edit fields
-  // while the book is outside the visible result set.
-  const selected = library.selectedBookIndex >= 0 ? library.selectedBookDetail : null;
+  // on the shelf while the book is outside the visible result set. An open
+  // album shows its book wherever it is, e.g. one opened by id from a notice.
+  const selected = albumOpen || library.selectedBookIndex >= 0 ? library.selectedBookDetail : null;
   const showAlbum = albumOpen && Boolean(selected);
   const chapters = useMemo(() => selected?.chapters ?? [], [selected?.chapters]);
   // Memoized so metadata edits do not re-format every chapter duration.

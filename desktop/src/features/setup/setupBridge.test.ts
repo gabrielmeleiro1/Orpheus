@@ -18,9 +18,9 @@ describe("runtime setup bridge", () => {
   it("serializes only the allowlisted setup request shape", async () => {
     invoke.mockResolvedValue({ lifecycle: "running", profile: "mlx", modelGroups: ["tts-mlx"], restartRequired: false, error: null });
     const { startRuntimeSetup } = await import("./setupBridge");
-    await startRuntimeSetup({ profile: "mlx", modelGroups: ["tts-mlx"], acceptPytorchRisk: false });
+    await startRuntimeSetup({ profile: "mlx", modelGroups: ["tts-mlx"] });
     expect(invoke).toHaveBeenCalledWith("start_runtime_setup", {
-      request: { profile: "mlx", modelGroups: ["tts-mlx"], acceptPytorchRisk: false },
+      request: { profile: "mlx", modelGroups: ["tts-mlx"] },
     });
   });
 

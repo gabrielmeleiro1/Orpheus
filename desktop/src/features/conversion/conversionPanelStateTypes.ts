@@ -12,7 +12,6 @@ import type {
   BackendConnectionState,
   ConversionMode,
   DashboardTab,
-  HealthResponse,
   TermSelectOption,
 } from "../../types/api";
 import type { ConversionJobController } from "./useConversionJob";
@@ -29,11 +28,8 @@ export interface UseConversionPanelStateArgs {
   /** Defaults to "ready"; anything else leaves the page usable but blocks starting. */
   runtimeState?: ConversionRuntimeState;
   connectionState: BackendConnectionState;
-  health: HealthResponse | null;
-  statusMessage: string;
   conversionJob: ConversionJobController;
   onOpenSettings: () => void;
-  onOpenRuntimeSetup: () => void;
   /** Opens the stages-and-log drawer for the running conversion. */
   onOpenConversionDetails?: () => void;
   startCommandRef?: MutableRefObject<(() => void) | null>;
@@ -70,7 +66,6 @@ export interface CleanerOptionsViewModel {
   showCleanerCudaControls: boolean;
   cleanerCudaDevice: string;
   cleanerCudaDevicePlaceholder: string;
-  cleanerCudaQuantization: string;
   requiresApiKey: boolean;
   cleanerApiKey: string;
   openAiModelFetchLoading: boolean;
@@ -142,6 +137,8 @@ export interface QueueItemViewModel {
   canMoveDown: boolean;
   canRemove: boolean;
   finished?: boolean;
+  /** Its start may have made a book: Start all skips it, and only its own Start retries it. */
+  needsCheck?: boolean;
   /** Live progress while this item converts. */
   progressPct?: number;
   progressLabel?: string;
@@ -199,7 +196,6 @@ interface ConversionPanelShellState {
 export interface ConversionPanelActions {
   onRetryRuntimeOptions: () => void;
   onOpenSettings: () => void;
-  onOpenRuntimeSetup: () => void;
   /** Queues a typed file path, the keyboard alternative to the picker. */
   onAddSourcePath: (path: string) => void;
   setTitleOverride: Dispatch<SetStateAction<string>>;

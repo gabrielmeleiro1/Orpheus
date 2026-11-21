@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
-import { createQueueItem, type ConversionQueueItem } from "./conversionPanelModel";
+import { APP_RESTARTED_MESSAGE, createQueueItem, INTERRUPTED_CONVERSION_MESSAGE, type ConversionQueueItem } from "./conversionPanelModel";
 import { useConversionQueueRunner } from "./useConversionQueueRunner";
 import type { ConversionJobController, StartConversionResult } from "./useConversionJob";
 
@@ -91,6 +91,31 @@ describe("mounted conversion queue ownership and admission", () => {
     expect(runner.queueRunning).toBe(false);
   });
 
+  it("leaves a row whose own job ended without an outcome out of a queue run", async () => {
+    initialItems[0] = { ...initialItems[0], status: "warning", jobId: "old-job", error: INTERRUPTED_CONVERSION_MESSAGE };
+    const job = jobMock();
+    await act(async () => root.render(<Probe client={{} as ApiClient} job={job} />));
+    await act(async () => runner.onRunQueue());
+    expect(job.startConversion).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ source_path: "/tmp/second.epub" }), expect.anything());
+    expect(items.map((item) => [item.status, item.error])).toEqual([["warning", INTERRUPTED_CONVERSION_MESSAGE], ["done", ""]]);
+  });
+
+  it("leaves a row whose start may have made a book to its own Start", async () => {
+    initialItems[0] = { ...initialItems[0], status: "warning", error: APP_RESTARTED_MESSAGE, startUncertain: true };
+    const job = jobMock();
+    await act(async () => root.render(<Probe client={{} as ApiClient} job={job} />));
+    await act(async () => runner.onRunQueue());
+    expect(job.startConversion).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ source_path: "/tmp/second.epub" }), expect.anything());
+    expect(items[0]).toMatchObject({ status: "warning", error: APP_RESTARTED_MESSAGE });
+
+    await act(async () => runner.onStartConversion(items[0]));
+    expect(job.startConversion).toHaveBeenLastCalledWith(
+      expect.objectContaining({ source_path: "/tmp/first.epub" }), expect.anything());
+    expect(items[0].status).toBe("done");
+  });
+
   it("rejects queue and single-item starts while a restored job owns the backend", async () => {
     const client = {} as ApiClient;
     const job = jobMock({ activeJobId: "restored-job", uiState: "running" });
@@ -174,7 +199,9 @@ describe("mounted conversion queue ownership and admission", () => {
     expect(oldJob.startConversion).toHaveBeenCalledTimes(1);
     expect(newJob.startConversion).not.toHaveBeenCalled();
     await act(async () => runner.onRunQueue());
-    expect(items.map((item) => item.status)).toEqual(["done", "done"]);
+    // The interrupted row may have reached the old backend, so only its own Start retries it.
+    expect(items.map((item) => [item.status, item.error])).toEqual([["warning", APP_RESTARTED_MESSAGE], ["done", ""]]);
+    expect(items[0].startUncertain).toBe(true);
   });
 
   it.each(["single", "queue"])("cancels %s cleanup backoff without starting the retry", async (command) => {
@@ -265,6 +292,37 @@ describe("mounted conversion queue ownership and admission", () => {
       startReconciliation: { clientRequestId: "request", result } }} />));
     expect(queueStatus).toBe(status);
     expect(items[0].status).toBe(rowStatus);
+  });
+
+  it.each([
+    ["unknown", "Terminal wait cancelled", "warning", "Could not confirm the conversion. Check Library before retrying."],
+    ["failed", "", "failed", "conversion failed"],
+  ] as const)("marks a late-confirmed start that ends %s like any other row", async (terminalStatus, message, rowStatus, rowError) => {
+    const pending = deferred<StartConversionResult>();
+    const client = {} as ApiClient;
+    const job = jobMock({ startConversion: vi.fn(() => pending.promise),
+      waitForTerminalState: vi.fn(async (jobId: string) => ({ jobId, status: terminalStatus, message })) });
+    await act(async () => root.render(<Probe client={client} job={job} />));
+    let run!: Promise<void>;
+    await act(async () => { run = runner.onStartConversion(); });
+    await act(async () => {
+      pending.resolve({ ok: false, ambiguous: true, clientRequestId: "request", error: "Network unavailable" });
+      await run;
+    });
+    await act(async () => root.render(<Probe client={client} job={{ ...job,
+      startReconciliation: { clientRequestId: "request", result: { ok: true, jobId: "late" } } }} />));
+    expect(job.waitForTerminalState).toHaveBeenCalledExactlyOnceWith("late");
+    expect(items[0]).toMatchObject({ jobId: "late", status: rowStatus, error: rowError });
+  });
+
+  it.each([
+    [{ ok: false, ambiguous: true, error: "Network unavailable" } as StartConversionResult, true],
+    [{ ok: false, serverCode: "runtime_options_pending", error: "Wait for runtime options to load before continuing." } as StartConversionResult, false],
+  ])("records whether a paused start may have made a book (%#)", async (result, uncertain) => {
+    const job = jobMock({ startConversion: vi.fn().mockResolvedValue(result) });
+    await act(async () => root.render(<Probe client={{} as ApiClient} job={job} />));
+    await act(async () => runner.onRunQueue());
+    expect(items[0]).toMatchObject({ status: "warning", error: result.ok ? "" : result.error, startUncertain: uncertain });
   });
 
   it("stops cleanup retries on unmount", async () => {

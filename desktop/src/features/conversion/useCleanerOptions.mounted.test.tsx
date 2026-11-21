@@ -10,7 +10,6 @@ import { useCleanerOptions, type UseCleanerOptionsResult } from "./useCleanerOpt
 import { syncSetupPreferences } from "../setup/setupPreferences";
 import { readPersistedSettings } from "./conversionOptionsShared";
 import { buildCleanerRuntimePayloadFields } from "./cleanerBackendHelpers";
-import { buildRuntimeIdentityFromSnapshot } from "../../app/runtimeIdentity";
 import type { RuntimeSetupStatusResponse } from "../../types/api";
 import type { PersistedSettings } from "./conversionOptionsShared";
 
@@ -183,7 +182,6 @@ describe("useCleanerOptions capability transitions", () => {
     expect(options.cleanerBackend).toBe("basic");
     expect(options.cleanerModel).toBe("");
     expect(buildCleanerRuntimePayloadFields({ ...options, selectedBackend: options.selectedCleanerBackend })).toEqual({ cleaner_backend: "basic", cleaner_model: null });
-    expect(buildRuntimeIdentityFromSnapshot({ capabilities: fresh, modelOptions: models, settings: persisted }).cleanerLabel).toBe("Basic cleanup");
     await act(async () => options.setCleanerBackend("cuda"));
     expect(getCleanerProbe().cleanerBackend).toBe("cuda");
     localStorage.clear();

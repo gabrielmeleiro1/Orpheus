@@ -10,7 +10,7 @@ const { waitForDesktopEndpoint, readDesktopBackendStatus } = vi.hoisted(() => ({
   waitForDesktopEndpoint: vi.fn(),
   readDesktopBackendStatus: vi.fn<() => Promise<DesktopBackendStatus>>(),
 }));
-vi.mock("../features/dashboard/dashboardHelpers", () => ({
+vi.mock("./desktopBackend", () => ({
   BACKEND_HEALTH_CHECK_INTERVAL_MS: 60_000,
   describeDesktopBackendStatus: vi.fn(() => "ready"),
   readDesktopBackendStatus,

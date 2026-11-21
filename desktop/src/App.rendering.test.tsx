@@ -12,8 +12,9 @@ const mocks = vi.hoisted(() => {
     getActiveConversion: vi.fn(async () => ({ active: false, job: null })),
   };
   const items = Array.from({ length: 30 }, (_, index) => ({ id: index + 1, title: `Book ${index + 1}`, author: "Author", source_path: null }));
-  const library = { items, indexedCount: items.length, selectedBookId: 1, selectedBookDetail: null, libraryGeneration: 0,
-    loadingList: false, refreshLibrary: vi.fn(async () => undefined), selectBook: vi.fn(async () => null) };
+  const library = { items, unfilteredItems: items, indexedCount: items.length, selectedBookId: 1, selectedBookDetail: null, libraryGeneration: 0,
+    loadingList: false, refreshLibrary: vi.fn(async () => undefined), selectBook: vi.fn(async () => null),
+    selectBookById: vi.fn(async () => null) };
   return {
     apiClient,
     library,
@@ -32,7 +33,7 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("./app/useBackendClient", () => ({ useBackendClient: () => mocks.backend }));
-vi.mock("./app/usePrimaryRuntime", () => ({ useRuntimeIdentity: () => undefined }));
+vi.mock("./app/useRuntimeBootstrapRefresh", () => ({ useRuntimeBootstrapRefresh: vi.fn() }));
 vi.mock("./app/useGlobalShortcuts", () => ({ useGlobalShortcuts: vi.fn() }));
 vi.mock("./features/library/useLibrary", () => ({ useLibrary: () => mocks.library }));
 vi.mock("./features/player/useAudioPlayer", () => ({
@@ -75,7 +76,7 @@ import App from "./App";
 const setupStatus = {
   schema_version: 1, configured: false, state: "unconfigured", state_error: null, selected_profile: null,
   selected_model_groups: [], packages: { ready: false, missing: [], incompatible: [] }, probe: { ready: false, checks: [] },
-  ready: false, restart_required: false, profiles: [], risk: null, backend: { instance_id: "backend-1", status: "running" },
+  ready: false, restart_required: false, profiles: [], backend: { instance_id: "backend-1", status: "running" },
 } as unknown as RuntimeSetupStatusResponse;
 
 describe("App sidebar library rendering", () => {
@@ -110,6 +111,26 @@ describe("App sidebar library rendering", () => {
       await act(async () => root.render(<App />));
       expect(container.querySelector(".rail-book .rail-book-author")?.textContent).toBe("Author");
     } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("lists the whole library in the sidebar while the panel's list is filtered", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const all = mocks.library.items;
+    mocks.library.items = all.slice(2, 3);
+    try {
+      await act(async () => root.render(<App />));
+      await act(async () => [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.includes("Continue in library-only mode"))!.click());
+      expect(container.querySelectorAll(".rail-book")).toHaveLength(30);
+      await act(async () => container.querySelectorAll<HTMLButtonElement>(".rail-book")[4].click());
+      expect(mocks.library.selectBookById).toHaveBeenCalledExactlyOnceWith(5);
+    } finally {
+      mocks.library.items = all;
       await act(async () => root.unmount());
       container.remove();
     }

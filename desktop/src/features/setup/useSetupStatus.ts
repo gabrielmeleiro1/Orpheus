@@ -18,7 +18,7 @@ export function useSetupStatus({ apiClient, initialStatus, initialError, onReady
   const [error, setError] = useState(initialError);
   const [selection, updateSelection] = useState<SetupSelection>(() => initialStatus
     ? createSelection(initialStatus)
-    : { profile: "base", modelGroups: [], acceptPytorchRisk: false });
+    : { profile: "base", modelGroups: [] });
   const statusRef = useRef(status);
   useLayoutEffect(() => {
     statusRef.current = status;

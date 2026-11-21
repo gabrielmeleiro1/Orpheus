@@ -7,12 +7,6 @@ type RuntimeProbeState = "ready" | "unavailable" | "timeout" | "pending";
 
 type RuntimeSetupState = "checking" | "unconfigured" | "error" | "restart_required" | "ready" | "unavailable";
 
-interface RuntimeSetupRisk {
-  id: string;
-  summary: string;
-  accepted: boolean;
-}
-
 export interface RuntimeSetupProfile {
   device?: "cuda" | "cpu";
   group_availability?: Record<string, { available: boolean; unavailable_reason: string | null; state?: RuntimeProbeState }>;
@@ -22,7 +16,6 @@ export interface RuntimeSetupProfile {
   compatible: boolean;
   reason: string | null;
   model_groups: string[];
-  risk: RuntimeSetupRisk | null;
 }
 
 interface RuntimeSetupModelGroupStatus {
@@ -83,7 +76,6 @@ export interface RuntimeSetupAdoptRequest {
   cleaner_cuda_quantization?: string;
   profile: RuntimeSetupProfile["id"];
   model_groups: string[];
-  accept_pytorch_risk: boolean;
 }
 
 export interface RuntimeSetupRuntimeDeleteResponse {
@@ -130,7 +122,6 @@ export interface RuntimeSetupStatusResponse {
   ready: boolean;
   restart_required: boolean;
   profiles: RuntimeSetupProfile[];
-  risk: RuntimeSetupRisk | null;
   backend: {
     instance_id: string;
     status: "running";

@@ -10,6 +10,8 @@ import {
   estimatedAudioNote,
   isFinishedQueueItem,
   isPreflightConvertible,
+  isQueueRunnable,
+  isStartUncertain,
   preflightBlockingReason,
 } from "./conversionPanelModel";
 import { useConversionOptions } from "./useConversionOptions";
@@ -186,7 +188,6 @@ export function useConversionPanelState({
   connectionState,
   conversionJob,
   onOpenSettings,
-  onOpenRuntimeSetup,
   onOpenConversionDetails,
   startCommandRef,
 }: UseConversionPanelStateArgs): ConversionPanelViewModel {
@@ -199,7 +200,6 @@ export function useConversionPanelState({
   const optionState = useConversionOptions({
     apiClient,
     runtimeSelectionGeneration,
-    conversionMode,
   });
   const sourcePathPlaceholder = "Full path to a PDF, EPUB, TXT or Markdown file";
 
@@ -328,12 +328,14 @@ export function useConversionPanelState({
   const canRunQueue = canRunConversionQueue({
     apiClientAvailable: Boolean(apiClient),
     queueRunning: queueRunner.commandRunning || conversionJob.isCheckingStart || Boolean(conversionJob.activeJobId),
-    hasRunnableItems: queueController.queueItems.some((item) => item.status === "ready" || item.status === "warning"),
+    hasRunnableItems: queueController.queueItems.some(isQueueRunnable),
     blocker: conversionBlocker,
   });
+  // A row whose start may already have made a book is, like a finished one, only started on its own.
+  const startedOnItsOwn = (item: ConversionQueueItem) => isFinishedQueueItem(item) || isStartUncertain(item);
   const primaryAction = resolveConversionPrimaryAction({
-    queueItemCount: queueController.queueItems.filter((item) => !isFinishedQueueItem(item)).length,
-    selectedFinished: Boolean(queueController.selectedQueueItem && isFinishedQueueItem(queueController.selectedQueueItem)),
+    queueItemCount: queueController.queueItems.filter((item) => !startedOnItsOwn(item)).length,
+    selectedFinished: Boolean(queueController.selectedQueueItem && startedOnItsOwn(queueController.selectedQueueItem)),
     canStartConversion: !startDisabled,
     canRunQueue,
   });
@@ -446,6 +448,7 @@ export function useConversionPanelState({
       inspecting: item.status === "preflighting",
       converting,
       finished: !converting && isFinishedQueueItem(item),
+      needsCheck: !converting && isStartUncertain(item),
       progressPct: converting && jobRunning ? jobProgressPct : undefined,
       progressLabel: converting && jobRunning ? jobProgressLabel : undefined,
       selected,
@@ -540,7 +543,6 @@ export function useConversionPanelState({
       showCleanerCudaControls,
       cleanerCudaDevice: optionState.cleanerCudaDevice,
       cleanerCudaDevicePlaceholder: selectedCleanerBackend?.default_device?.trim() || "cuda",
-      cleanerCudaQuantization: optionState.cleanerCudaQuantization,
       requiresApiKey: Boolean(selectedCleanerBackend?.requires_api_key),
       cleanerApiKey: optionState.cleanerApiKey,
       openAiModelFetchLoading: optionState.openAiModelFetchLoading,
@@ -595,7 +597,6 @@ export function useConversionPanelState({
       setConversionMode,
       onRetryRuntimeOptions: optionState.retryRuntimeOptions,
       onOpenSettings,
-      onOpenRuntimeSetup,
       onAddSourcePath: sourceQueue.onAddSourcePath,
       setTitleOverride: queueController.setTitleOverride as Dispatch<SetStateAction<string>>,
       setAuthorOverride: queueController.setAuthorOverride as Dispatch<SetStateAction<string>>,

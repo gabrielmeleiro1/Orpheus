@@ -47,7 +47,8 @@ function createClient() {
     repairConversion: vi.fn(async () => ({ job_id: "repair" })),
     cleanupStorage: vi.fn(async () => ({ deleted_files: 0, deleted_rows: 0 })),
     getMaintenanceDiagnostics: vi.fn(async (): Promise<{ library_generation: string | null }> => ({ library_generation: generation })),
-    requestJson: vi.fn(async (path: string) => path.endsWith("/restore") ? restore.promise : { items: [] }),
+    getDatabaseBackups: vi.fn(async () => ({ items: [] })),
+    restoreDatabaseBackup: vi.fn(() => restore.promise),
   };
   return {
     apiClient, restore,
@@ -71,7 +72,7 @@ function Probe({ apiClient, backendDisconnected = false }: { apiClient: ApiClien
   const editor = useLibraryPanelState({ library });
   const player = useAudioPlayer({ apiClient, library });
   const playback = usePlaybackPersistence({
-    apiClient, library, audioRef: player.audioRef, loadedBookId: null, onSaveFailed: vi.fn(),
+    apiClient, library, audioRef: player.audioRef, loadedBookId: null,
   });
   probe = { library, editor, player, playback };
   return <audio ref={player.audioRef} />;
@@ -148,7 +149,9 @@ describe("library backup restore", () => {
     expect(probe.library.items).toEqual([]);
     await act(async () => { client.finishRestore(); await pending; });
     expect(probe.library.items.map((item) => item.title)).toEqual([restored.title]);
-    expect(client.apiClient.getLibrary).toHaveBeenLastCalledWith("Restored", 100, { conversionMode: "", offset: 0 }, expect.anything());
+    // The last request is the sidebar's unfiltered page, so look at the searched ones.
+    expect(client.apiClient.getLibrary.mock.calls.filter(([search]) => search).at(-1))
+      .toEqual(["Restored", 100, { conversionMode: "", offset: 0 }, expect.anything()]);
     expect(probe.library.maintenanceLoading).toBe(false);
     expect(probe.library.maintenanceMessage).toContain("Backup restored");
   });
@@ -171,7 +174,7 @@ describe("library backup restore", () => {
     window.localStorage.setItem("preferences", "keep");
     let pending!: Promise<void>;
     await act(async () => { pending = probe.library.restoreBackup!("saved.db"); });
-    expect(client.apiClient.requestJson).not.toHaveBeenCalled();
+    expect(client.apiClient.restoreDatabaseBackup).not.toHaveBeenCalled();
     await act(async () => {
       await probe.library.updateSelectedBookMetadata({ title: "Blocked", author: "", tags: "" });
       await probe.library.deleteSelectedBook();
@@ -183,9 +186,9 @@ describe("library backup restore", () => {
     expect(client.apiClient.deleteBook).not.toHaveBeenCalled();
     expect(client.apiClient.repairConversion).not.toHaveBeenCalled();
     await act(async () => { metadata.resolve(original); await save; });
-    expect(client.apiClient.requestJson).not.toHaveBeenCalled();
+    expect(client.apiClient.restoreDatabaseBackup).not.toHaveBeenCalled();
     await act(async () => { playback.resolve({ position_sec: 42 }); });
-    expect(client.apiClient.requestJson).toHaveBeenCalledWith("/api/maintenance/backups/saved.db/restore", { method: "POST" });
+    expect(client.apiClient.restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", undefined);
     await act(async () => { client.finishRestore(); await pending; });
     expect(probe.library.selectedBookDetail?.playback_position_sec).toBe(7);
     await act(async () => probe.player.togglePlay());
@@ -319,7 +322,7 @@ describe("library backup restore", () => {
     expect(client.apiClient.updateBookPlaybackPosition).not.toHaveBeenCalled();
     client.commitRestore();
     await act(async () => { verification.reject(new Error("Backend unavailable")); await pending; });
-    expect(probe.library.maintenanceMessage).toContain("Writes are paused");
+    expect(probe.library.maintenanceMessage).toContain("Library changes are paused");
     await act(async () => probe.library.updateSelectedBookMetadata({ title: "Blocked", author: "", tags: "" }));
     expect(client.apiClient.updateLibraryBook).not.toHaveBeenCalled();
     await act(async () => probe.library.loadMaintenanceDiagnostics());
@@ -330,6 +333,26 @@ describe("library backup restore", () => {
     expect(client.apiClient.updateLibraryBook).toHaveBeenCalledWith(1, {
       title: restored.title, author: restored.author, tags: restored.tags,
     }, undefined);
+  });
+
+  it("reports paused writes instead of running cleanup, metadata saves or repairs after an unverified restore", async () => {
+    const client = createClient();
+    await act(async () => root.render(<Probe apiClient={client.apiClient as unknown as ApiClient} />));
+    client.apiClient.getMaintenanceDiagnostics.mockResolvedValueOnce({ library_generation: "backend:0" });
+    client.apiClient.getMaintenanceDiagnostics.mockRejectedValueOnce(new Error("Backend unavailable"));
+    let pending!: Promise<void>;
+    await act(async () => { pending = probe.library.restoreBackup!("saved.db"); });
+    await act(async () => { client.restore.reject(new Error("Restore response lost")); await pending; });
+    expect(probe.library.maintenanceMessage).toContain("Library changes are paused");
+    await act(async () => probe.library.cleanupStorage!(["/out/Old"]));
+    expect(client.apiClient.cleanupStorage).not.toHaveBeenCalled();
+    expect(probe.library.maintenanceMessage).toContain("Library changes are paused");
+    await act(async () => probe.library.updateSelectedBookMetadata({ title: "Blocked", author: "", tags: "" }));
+    expect(client.apiClient.updateLibraryBook).not.toHaveBeenCalled();
+    expect(probe.library.statusMessage).toContain("paused");
+    await act(async () => probe.library.repairSelectedBook());
+    expect(client.apiClient.repairConversion).not.toHaveBeenCalled();
+    expect(probe.library.statusMessage).toContain("paused");
   });
 
   it("keeps writes paused across a disconnect during restore until the reconnected library is verified", async () => {
@@ -374,7 +397,7 @@ describe("library backup restore", () => {
     await act(async () => root.render(<Probe apiClient={null} backendDisconnected />));
     clientB.commitRestore();
     await act(async () => root.render(<Probe apiClient={clientB.apiClient as unknown as ApiClient} />));
-    expect(probe.library.maintenanceMessage).toContain("Writes are paused");
+    expect(probe.library.maintenanceMessage).toContain("Library changes are paused");
     expect(probe.library.selectedBookDetail?.title).toBe(restored.title);
     const write = async () => {
       await probe.library.updateSelectedBookMetadata({ title: "Blocked", author: "", tags: "" });
@@ -447,7 +470,7 @@ describe("library backup restore", () => {
       await probe.library.cleanupStorage();
       await probe.library.restoreBackup!("another.db");
     });
-    expect(client.apiClient.requestJson).toHaveBeenCalledTimes(1);
+    expect(client.apiClient.restoreDatabaseBackup).toHaveBeenCalledTimes(1);
     expect(client.apiClient.getMaintenanceDiagnostics).toHaveBeenCalledTimes(1);
     expect(probe.library.maintenanceLoading).toBe(true);
     await act(async () => { client.finishRestore(); await pending; });
@@ -467,9 +490,9 @@ describe("library backup restore", () => {
       cleaning = probe.library.cleanupStorage();
       pending = probe.library.restoreBackup!("saved.db");
     });
-    expect(client.apiClient.requestJson).not.toHaveBeenCalled();
+    expect(client.apiClient.restoreDatabaseBackup).not.toHaveBeenCalled();
     await act(async () => { cleanup.resolve({ deleted_files: 0, deleted_rows: 0 }); await cleaning; });
-    expect(client.apiClient.requestJson).toHaveBeenCalledWith("/api/maintenance/backups/saved.db/restore", { method: "POST" });
+    expect(client.apiClient.restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", undefined);
     expect(probe.library.maintenanceLoading).toBe(true);
     await act(async () => { client.finishRestore(); await pending; });
     expect(probe.library.selectedBookDetail?.title).toBe(restored.title);

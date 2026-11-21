@@ -462,15 +462,7 @@ export function useConversionSourceQueue({
 
     const selectedQueueItem = queueController.selectedQueueItem;
     if (selectedQueueItem && selectedQueueItem.sourcePath === normalized) {
-      void queueController.runPreflightForItem(
-        {
-          ...selectedQueueItem,
-          title: queueController.titleOverride,
-          author: queueController.authorOverride,
-          preflight: null,
-        },
-        { updateSelected: true },
-      );
+      void queueController.runPreflightForItem({ ...selectedQueueItem, preflight: null }, { updateSelected: true });
       return;
     }
 

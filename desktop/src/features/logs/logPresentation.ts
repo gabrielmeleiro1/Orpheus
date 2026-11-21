@@ -1,6 +1,7 @@
 import type { EventStreamLogEntry } from "../../types/api";
 
-export type LogLevelFilter = "all" | "info" | "warn" | "error";
+export type LogLevelFilter = "all" | LogLevel;
+type LogLevel = "info" | "warn" | "error";
 export type LogCategoryFilter = "all" | "state" | "transport" | "conversion" | "other";
 
 export function inferLogCategory(entry: EventStreamLogEntry): Exclude<LogCategoryFilter, "all"> {
@@ -29,12 +30,13 @@ export function inferLogCategory(entry: EventStreamLogEntry): Exclude<LogCategor
   return "other";
 }
 
-export function normalizeLogLevel(level: string): string {
+/** The pipeline also emits levels such as "success" and "process"; they read as info. */
+export function normalizeLogLevel(level: string): LogLevel {
   const normalized = String(level || "").toLowerCase();
-  if (normalized === "warning") {
+  if (normalized === "warn" || normalized === "warning") {
     return "warn";
   }
-  return normalized;
+  return normalized === "error" ? "error" : "info";
 }
 
 export function filterVisibleLogs(
@@ -67,14 +69,7 @@ interface LogLevelCounts {
 export function countLogLevels(logs: EventStreamLogEntry[]): LogLevelCounts {
   const counts: LogLevelCounts = { all: logs.length, info: 0, warn: 0, error: 0 };
   for (const entry of logs) {
-    const level = normalizeLogLevel(entry.level);
-    if (level === "warn") {
-      counts.warn += 1;
-    } else if (level === "error") {
-      counts.error += 1;
-    } else {
-      counts.info += 1;
-    }
+    counts[normalizeLogLevel(entry.level)] += 1;
   }
   return counts;
 }

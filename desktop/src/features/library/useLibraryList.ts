@@ -3,7 +3,6 @@ import { useMemo } from "react";
 import type { LibrarySession } from "./librarySession";
 import type { ApiClient } from "../../api/client";
 import type { CleaningPreviewResponse, LibraryBookDetail, LibraryBookSummary } from "../../types/api";
-import { buildBookSummary } from "./libraryDisplayModel";
 import type { LibraryModeFilter } from "./libraryRepository";
 import { useLibraryQueries } from "./useLibraryQueries";
 import { useLibraryMutations } from "./useLibraryMutations";
@@ -21,6 +20,7 @@ interface UseLibraryListResult {
   modeFilter: LibraryModeFilter;
   setModeFilter: (value: LibraryModeFilter) => void;
   items: LibraryBookSummary[];
+  unfilteredItems: LibraryBookSummary[];
   indexedCount: number;
   hasMore: boolean;
   selectedBookId: number | null;
@@ -33,18 +33,18 @@ interface UseLibraryListResult {
   savingMetadata: boolean;
   errorMessage: string;
   statusMessage: string;
+  setStatusMessage: (message: string) => void;
   pendingDeletionPath: string | null;
   dismissPendingDeletion: () => void;
   openPendingDeletionFolder: () => Promise<void>;
-  bookSummaryTitle: string;
-  bookSummaryMeta: string;
   bookDetailText: string;
   refreshLibrary: () => Promise<void>;
   reloadCurrentQuery: () => Promise<void>;
   reloadLibrarySession: () => Promise<void>;
   loadMore: () => Promise<void>;
   selectBook: (index: number) => Promise<LibraryBookDetail | null>;
-  selectRelative: (delta: number) => Promise<LibraryBookDetail | null>;
+  selectBookById: (bookId: number) => Promise<LibraryBookDetail | null>;
+  selectRelative: (delta: number, fromBookId?: number | null) => Promise<LibraryBookDetail | null>;
   updateSelectedBookMetadata: (payload: { title: string; author: string; tags: string }) => Promise<void>;
   loadCleaningPreview: (chapterNumber: number) => Promise<CleaningPreviewResponse | null>;
   repairSelectedBook: (releaseBookAudio?: (bookId: number) => void) => Promise<void>;
@@ -63,6 +63,7 @@ export function useLibraryList({ apiClient, backendDisconnected, session }: UseL
     modeFilter,
     setModeFilter,
     items,
+    unfilteredItems,
     indexedCount,
     hasMore,
     selectedBookId,
@@ -77,6 +78,7 @@ export function useLibraryList({ apiClient, backendDisconnected, session }: UseL
     dismissPendingDeletion,
     getReloadContextGeneration,
     selectBook,
+    selectBookById,
     loadMore,
     selectRelative,
     refreshLibrary,
@@ -94,7 +96,10 @@ export function useLibraryList({ apiClient, backendDisconnected, session }: UseL
     setSelectedPlaybackPosition,
   } = useLibraryMutations(apiClient, queries);
 
-  const summaryValues = useMemo(() => buildBookSummary(selectedBookDetail), [selectedBookDetail]);
+  const bookDetailText = useMemo(
+    () => (selectedBookDetail ? JSON.stringify(selectedBookDetail, null, 2) : "Select a book to inspect details."),
+    [selectedBookDetail],
+  );
   // A book whose audio is known to be missing is not offered for playback.
   const selectedBookPlayable = selectedBookDetail?.id === selectedBookId && Boolean(selectedBookDetail?.playback_url)
     && selectedBookDetail?.audio_available !== false;
@@ -106,6 +111,7 @@ export function useLibraryList({ apiClient, backendDisconnected, session }: UseL
     modeFilter,
     setModeFilter,
     items,
+    unfilteredItems,
     indexedCount,
     hasMore,
     selectedBookId,
@@ -118,17 +124,17 @@ export function useLibraryList({ apiClient, backendDisconnected, session }: UseL
     savingMetadata: selectedBookId !== null && metadataSaves.get(selectedBookId)?.repository === repository,
     errorMessage,
     statusMessage,
+    setStatusMessage: queries.setStatusMessage,
     pendingDeletionPath,
     dismissPendingDeletion,
     openPendingDeletionFolder,
-    bookSummaryTitle: summaryValues.title,
-    bookSummaryMeta: summaryValues.meta,
-    bookDetailText: summaryValues.raw,
+    bookDetailText,
     refreshLibrary,
     reloadCurrentQuery,
     reloadLibrarySession,
     loadMore,
     selectBook,
+    selectBookById,
     selectRelative,
     updateSelectedBookMetadata,
     loadCleaningPreview,

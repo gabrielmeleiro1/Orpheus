@@ -97,7 +97,9 @@ export function SettingsPage({
                 return (
                   <div className="settings-row settings-storage-row" key={folder}>
                     <span className="field-label">{FOLDER_LABELS[folder].label}</span>
-                    {path ? <PathText className="settings-path" path={path} /> : <span className="settings-path is-empty">Unavailable</span>}
+                    {path ? <PathText className="settings-path" path={path} /> : (
+                      <span className="settings-path is-empty">{folders || error || !apiClient ? "Unavailable" : "Loading…"}</span>
+                    )}
                     <button
                       className="btn btn-secondary btn-sm"
                       type="button"

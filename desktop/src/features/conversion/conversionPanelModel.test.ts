@@ -3,10 +3,15 @@ import { describe, expect, it } from "vitest";
 import type { SourcePreflight } from "../../types/api";
 import { pastedTextEstimate } from "./conversionPanelHelpers";
 import {
+  APP_RESTARTED_MESSAGE,
   createQueueItem,
   estimatedAudioNote,
+  INTERRUPTED_CONVERSION_MESSAGE,
   isPreflightConvertible,
+  isQueueRunnable,
   preflightBlockingReason,
+  QUEUE_CANCELLED_MESSAGE,
+  START_CHECKING_MESSAGE,
 } from "./conversionPanelModel";
 
 function preflight(overrides: Partial<SourcePreflight> = {}): SourcePreflight {
@@ -147,5 +152,26 @@ describe("estimated audio length", () => {
     expect(estimatedAudioNote(preflight({ estimated_audio_seconds: null }))).toBe("");
     expect(estimatedAudioNote(preflight())).toBe("");
     expect(estimatedAudioNote(null)).toBe("");
+  });
+});
+
+describe("rows a queue run converts", () => {
+  it("takes waiting rows but not a warning row whose own job already ended", () => {
+    const row = createQueueItem("/tmp/source.epub", "audiobook");
+    expect(isQueueRunnable({ ...row, status: "ready" })).toBe(true);
+    expect(isQueueRunnable({ ...row, status: "warning" })).toBe(true);
+    expect(isQueueRunnable({ ...row, status: "warning", jobId: "old-job" })).toBe(false);
+    expect(isQueueRunnable({ ...row, status: "preflighting" })).toBe(false);
+  });
+
+  it("leaves out a row whose start may already have made a book", () => {
+    const row = createQueueItem("/tmp/source.epub", "audiobook");
+    for (const error of [START_CHECKING_MESSAGE, APP_RESTARTED_MESSAGE, QUEUE_CANCELLED_MESSAGE, INTERRUPTED_CONVERSION_MESSAGE]) {
+      expect(isQueueRunnable({ ...row, status: "warning", error, startUncertain: true })).toBe(false);
+      // The row's flag decides, not its text.
+      expect(isQueueRunnable({ ...row, status: "warning", error, startUncertain: false })).toBe(true);
+    }
+    // A pause the backend never admitted is still waiting to start.
+    expect(isQueueRunnable({ ...row, status: "warning", error: "Wait for runtime options to load before continuing." })).toBe(true);
   });
 });

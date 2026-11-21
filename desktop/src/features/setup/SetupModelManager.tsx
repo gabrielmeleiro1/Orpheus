@@ -18,7 +18,7 @@ interface SetupModelManagerProps {
   disabled: boolean;
   downloadingGroup: string | null;
   downloadMessage: string | null;
-  onInstall: (profile: RuntimeSetupProfile["id"], groupId: string) => Promise<void>;
+  onInstall: (profile: RuntimeSetupProfile["id"], groupId: string) => Promise<unknown>;
   onDeleted: () => Promise<void>;
   onBusyChange: (busy: boolean) => void;
 }

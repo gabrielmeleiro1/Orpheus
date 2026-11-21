@@ -30,11 +30,10 @@ function status(overrides: Partial<RuntimeSetupStatusResponse> = {}): RuntimeSet
     ready: false,
     restart_required: false,
     profiles: [
-      { id: "base", label: "Library only", description: "Documents and playback.", compatible: true, reason: null, model_groups: [], risk: null },
-      { id: "mlx", label: "Apple Silicon (MLX)", description: "Local MLX.", compatible: true, reason: null, model_groups: ["tts-mlx", "cleaner-mlx"], risk: null },
-      { id: "cuda", label: "NVIDIA CUDA", description: "Local CUDA.", compatible: false, reason: "Linux or Windows only.", model_groups: ["tts-cpu-cuda", "cleaner-cuda"], risk: { id: "pytorch", summary: "Use trusted models only.", accepted: false } },
+      { id: "base", label: "Library only", description: "Documents and playback.", compatible: true, reason: null, model_groups: [] },
+      { id: "mlx", label: "Apple Silicon (MLX)", description: "Local MLX.", compatible: true, reason: null, model_groups: ["tts-mlx", "cleaner-mlx"] },
+      { id: "cuda", label: "NVIDIA CUDA", description: "Local CUDA.", compatible: false, reason: "Linux or Windows only.", model_groups: ["tts-cpu-cuda", "cleaner-cuda"] },
     ],
-    risk: null,
     backend: { instance_id: "backend-1", status: "running" },
     ...overrides,
   };
@@ -43,7 +42,7 @@ function status(overrides: Partial<RuntimeSetupStatusResponse> = {}): RuntimeSet
 describe("runtime setup selection", () => {
   it.each(["cpu", "cuda"] as const)("defaults to narration on %s without selecting unavailable CUDA cleaners", (device) => {
     const cpuStatus = status({ recommended_profile: "cuda", profiles: status().profiles.map((profile) => profile.id === "cuda" ? {
-      ...profile, compatible: true, reason: null, risk: null, device,
+      ...profile, compatible: true, reason: null, device,
       group_availability: { "cleaner-cuda": { available: false, unavailable_reason: "Needs an NVIDIA GPU with a CUDA 12.6 driver" } },
     } : profile) });
     const selection = createSelection(cpuStatus);
@@ -71,14 +70,13 @@ describe("runtime setup selection", () => {
     expect(selectProfile(mlx, "cuda", status())).toEqual(mlx);
   });
 
-  it("allows base-only setup and requires explicit CUDA risk acceptance", () => {
+  it("allows base-only and CUDA setup", () => {
     const cudaStatus = status({
       profiles: status().profiles.map((profile) => profile.id === "cuda" ? { ...profile, compatible: true, reason: null } : profile),
     });
     expect(canStartSetup(createSelection(status()), status())).toBe(true);
     const cuda = selectProfile(createSelection(cudaStatus), "cuda", cudaStatus);
-    expect(canStartSetup(cuda, cudaStatus)).toBe(false);
-    expect(canStartSetup({ ...cuda, acceptPytorchRisk: true }, cudaStatus)).toBe(true);
+    expect(canStartSetup(cuda, cudaStatus)).toBe(true);
   });
 
   it("blocks a TTS profile with every model group unchecked", () => {

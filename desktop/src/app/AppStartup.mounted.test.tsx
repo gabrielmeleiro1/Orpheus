@@ -14,9 +14,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("./useBackendClient", () => ({ useBackendClient: () => ({
   apiClient: mocks.apiClient, backendBaseUrl: "http://runtime.test", connectionState: "connected",
 }) }));
-vi.mock("./usePrimaryRuntime", () => ({ useRuntimeIdentity: () => ({ ttsReady: false }) }));
+vi.mock("./useRuntimeBootstrapRefresh", () => ({ useRuntimeBootstrapRefresh: vi.fn() }));
 vi.mock("./useGlobalShortcuts", () => ({ useGlobalShortcuts: vi.fn() }));
-vi.mock("../features/library/useLibrary", () => ({ useLibrary: () => ({ items: [], refreshLibrary: vi.fn() }) }));
+vi.mock("../features/library/useLibrary", () => ({ useLibrary: () => ({ items: [], unfilteredItems: [], refreshLibrary: vi.fn() }) }));
 vi.mock("../features/player/useAudioPlayer", () => ({ useAudioPlayer: () => ({ audioProps: {}, audioRef: { current: null }, sleepTimer: { kind: "off" }, sleepRemainingSec: null, setSleepTimer: vi.fn() }) }));
 vi.mock("../features/conversion/useConversionJob", () => ({ useConversionJob: () => ({
   uiState: "idle", startConversion: mocks.submit,
@@ -43,7 +43,7 @@ const ready: RuntimeSetupStatusResponse = {
   selected_profile: "cuda", selected_model_groups: [
     { id: "tts-cpu-cuda", ready: true, runtime_ready: true, assets_ready: true, assets_reason: null },
   ], packages: { ready: true, missing: [], incompatible: [] }, probe: { ready: true, checks: [] },
-  ready: true, restart_required: false, profiles: [], risk: null,
+  ready: true, restart_required: false, profiles: [],
   backend: { instance_id: "new-backend", status: "running" },
 };
 

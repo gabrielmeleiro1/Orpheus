@@ -12,6 +12,7 @@ import type { ApiClient } from "../../api/client";
 import { createLibrarySession, type LibrarySession } from "./librarySession";
 import { useLibraryList } from "./useLibraryList";
 import { useLibraryMaintenance } from "./useLibraryMaintenance";
+import { WRITES_PAUSED_MESSAGE } from "./maintenanceModel";
 
 interface UseLibraryArgs {
   apiClient: ApiClient | null;
@@ -27,6 +28,8 @@ export interface UseLibraryResult {
   modeFilter: "all" | ConversionMode;
   setModeFilter: (value: "all" | ConversionMode) => void;
   items: LibraryBookSummary[];
+  /** The library's first page without the search or mode filter, for the sidebar. */
+  unfilteredItems: LibraryBookSummary[];
   indexedCount: number;
   hasMore: boolean;
   selectedBookId: number | null;
@@ -42,8 +45,6 @@ export interface UseLibraryResult {
   pendingDeletionPath?: string | null;
   dismissPendingDeletion?: () => void;
   openPendingDeletionFolder?: () => Promise<void>;
-  bookSummaryTitle: string;
-  bookSummaryMeta: string;
   bookDetailText: string;
   maintenanceReport: MaintenanceDiagnosticsResponse | null;
   maintenanceBackups?: MaintenanceBackup[];
@@ -54,7 +55,10 @@ export interface UseLibraryResult {
   reloadLibrarySession?: () => Promise<void>;
   loadMore: () => Promise<void>;
   selectBook: (index: number) => Promise<LibraryBookDetail | null>;
-  selectRelative: (delta: number) => Promise<LibraryBookDetail | null>;
+  /** Selects a book whether or not it is on a loaded page. */
+  selectBookById: (bookId: number) => Promise<LibraryBookDetail | null>;
+  /** Steps from `fromBookId` when given, else from the selected book. */
+  selectRelative: (delta: number, fromBookId?: number | null) => Promise<LibraryBookDetail | null>;
   updateSelectedBookMetadata: (payload: { title: string; author: string; tags: string }) => Promise<void>;
   loadCleaningPreview: (chapterNumber: number) => Promise<CleaningPreviewResponse | null>;
   repairSelectedBook: (releaseBookAudio?: (bookId: number) => void) => Promise<void>;
@@ -99,15 +103,21 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     getReloadContextGeneration: list.getReloadContextGeneration,
   });
 
+  // The session holds writes back (returning null) while a restore is running or unverified.
+  const runMutation = useCallback(async <T,>(operation: () => Promise<T>): Promise<T | null> => {
+    const result = await session.runMutation(libraryGeneration, operation);
+    if (result === null) list.setStatusMessage(WRITES_PAUSED_MESSAGE);
+    return result;
+  }, [session, libraryGeneration, list.setStatusMessage]);
   const updateSelectedBookMetadata = useCallback(async (payload: { title: string; author: string; tags: string }) => {
-    await session.runMutation(libraryGeneration, () => list.updateSelectedBookMetadata(payload));
-  }, [session, libraryGeneration, list.updateSelectedBookMetadata]);
+    await runMutation(() => list.updateSelectedBookMetadata(payload));
+  }, [runMutation, list.updateSelectedBookMetadata]);
   const repairSelectedBook = useCallback(async (releaseBookAudio?: (bookId: number) => void) => {
-    await session.runMutation(libraryGeneration, () => list.repairSelectedBook(releaseBookAudio));
-  }, [session, libraryGeneration, list.repairSelectedBook]);
+    await runMutation(() => list.repairSelectedBook(releaseBookAudio));
+  }, [runMutation, list.repairSelectedBook]);
   const deleteSelectedBook = useCallback(async (releaseBookAudio?: (bookId: number) => void) =>
-    await session.runMutation(libraryGeneration, () => list.deleteSelectedBook(releaseBookAudio)) ?? false,
-  [session, libraryGeneration, list.deleteSelectedBook]);
+    await runMutation(() => list.deleteSelectedBook(releaseBookAudio)) ?? false,
+  [runMutation, list.deleteSelectedBook]);
   const setSelectedPlaybackPosition = useCallback((positionSec: number) => {
     if (session.isCurrent(libraryGeneration)) list.setSelectedPlaybackPosition(positionSec);
   }, [session, libraryGeneration, list.setSelectedPlaybackPosition]);
@@ -115,14 +125,20 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
   // Losing the backend clears the live list; keep the last shelf on screen,
   // marked offline, until a reconnected backend has loaded the real one.
   const disconnected = !apiClient || backendDisconnected;
-  const [offlineShelf, setOfflineShelf] = useState<{ items: LibraryBookSummary[]; indexedCount: number } | null>(null);
+  const [offlineShelf, setOfflineShelf] = useState<{
+    items: LibraryBookSummary[];
+    unfilteredItems: LibraryBookSummary[];
+    indexedCount: number;
+  } | null>(null);
   const wasDisconnectedRef = useRef(disconnected);
   useLayoutEffect(() => {
     const dropped = disconnected && !wasDisconnectedRef.current;
     wasDisconnectedRef.current = disconnected;
     // These are this render's values, from before the list resets.
-    if (dropped && list.items.length > 0) setOfflineShelf({ items: list.items, indexedCount: list.indexedCount });
-  }, [disconnected, list.items, list.indexedCount]);
+    if (dropped && list.unfilteredItems.length > 0) {
+      setOfflineShelf({ items: list.items, unfilteredItems: list.unfilteredItems, indexedCount: list.indexedCount });
+    }
+  }, [disconnected, list.items, list.unfilteredItems, list.indexedCount]);
   const reconnectedListLoaded = !disconnected && !list.loadingList;
   useLayoutEffect(() => {
     if (reconnectedListLoaded) setOfflineShelf(null);
@@ -138,6 +154,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     modeFilter: list.modeFilter,
     setModeFilter: list.setModeFilter,
     items: shelf ? shelf.items : list.items,
+    unfilteredItems: shelf ? shelf.unfilteredItems : list.unfilteredItems,
     indexedCount: shelf ? shelf.indexedCount : list.indexedCount,
     hasMore: shelf ? false : list.hasMore,
     offline: Boolean(shelf) || disconnected,
@@ -154,8 +171,6 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     pendingDeletionPath: list.pendingDeletionPath,
     dismissPendingDeletion: list.dismissPendingDeletion,
     openPendingDeletionFolder: list.openPendingDeletionFolder,
-    bookSummaryTitle: list.bookSummaryTitle,
-    bookSummaryMeta: list.bookSummaryMeta,
     bookDetailText: list.bookDetailText,
     maintenanceReport: maintenance.maintenanceReport,
     maintenanceBackups: maintenance.maintenanceBackups,
@@ -166,6 +181,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     reloadLibrarySession: list.reloadLibrarySession,
     loadMore: list.loadMore,
     selectBook: list.selectBook,
+    selectBookById: list.selectBookById,
     selectRelative: list.selectRelative,
     updateSelectedBookMetadata,
     loadCleaningPreview: list.loadCleaningPreview,
@@ -187,6 +203,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     list.modeFilter,
     list.setModeFilter,
     list.items,
+    list.unfilteredItems,
     list.indexedCount,
     list.hasMore,
     shelf,
@@ -203,13 +220,12 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     list.statusMessage,
     list.pendingDeletionPath,
     list.openPendingDeletionFolder,
-    list.bookSummaryTitle,
-    list.bookSummaryMeta,
     list.bookDetailText,
     list.refreshLibrary,
     list.reloadLibrarySession,
     list.loadMore,
     list.selectBook,
+    list.selectBookById,
     list.selectRelative,
     updateSelectedBookMetadata,
     list.loadCleaningPreview,

@@ -75,7 +75,6 @@ export function conversionPanelViewModel(overrides: Partial<ConversionPanelViewM
       showCleanerCudaControls: false,
       cleanerCudaDevice: "",
       cleanerCudaDevicePlaceholder: "cuda:0",
-      cleanerCudaQuantization: "",
       requiresApiKey: false,
       cleanerApiKey: "",
       openAiModelFetchLoading: false,
@@ -105,7 +104,6 @@ export function conversionPanelViewModel(overrides: Partial<ConversionPanelViewM
     actions: {
       onRetryRuntimeOptions: noop,
       onOpenSettings: noop,
-      onOpenRuntimeSetup: noop,
       onAddSourcePath: noop,
       setTitleOverride: noop,
       setAuthorOverride: noop,

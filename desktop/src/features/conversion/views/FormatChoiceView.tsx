@@ -2,8 +2,8 @@ import type { ConversionMode } from "../../../types/api";
 import type { ConversionPanelActions } from "../conversionPanelStateTypes";
 
 const FORMATS: Array<{ mode: ConversionMode; title: string; hint: string }> = [
-  { mode: "audiobook", title: "Audiobook", hint: "An .m4b file with chapter markers. Each part opens with “Chapter 1”." },
-  { mode: "document_audio", title: "Document", hint: "A single .m4a file. Each part opens with “Section 1”." },
+  { mode: "audiobook", title: "Audiobook", hint: "An .m4b file with chapter markers. Each chapter is announced: “Chapter 1”, “Chapter 2”…" },
+  { mode: "document_audio", title: "Document", hint: "A single .m4a file. Each section is announced: “Section 1”, “Section 2”…" },
 ];
 
 interface FormatChoiceViewProps {

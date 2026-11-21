@@ -6,12 +6,16 @@ import { syncSetupPreferences } from "./setupPreferences";
 
 export function SetupDangerZone({
   apiClient,
+  disabled,
   onDeleted,
   onError,
+  onBusyChange,
 }: {
   apiClient: ApiClient | null;
+  disabled: boolean;
   onDeleted: () => Promise<unknown>;
   onError: (message: string | null) => void;
+  onBusyChange: (busy: boolean) => void;
 }) {
   const [deleteArmed, setDeleteArmed] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
@@ -26,11 +30,12 @@ export function SetupDangerZone({
   const disarmDelete = () => setDeleteArmed(false);
 
   const onDeleteClick = async () => {
-    if (!apiClient || deleteLocked.current) return;
+    if (!apiClient || disabled || deleteLocked.current) return;
     if (!deleteArmed) return;
     disarmDelete();
     deleteLocked.current = true;
     setDeletePending(true);
+    onBusyChange(true);
     setDeleteResult(null);
     onError(null);
     try {
@@ -45,6 +50,7 @@ export function SetupDangerZone({
     } finally {
       deleteLocked.current = false;
       setDeletePending(false);
+      onBusyChange(false);
     }
   };
 
@@ -58,7 +64,7 @@ export function SetupDangerZone({
             ref={deleteTrigger}
             className="btn btn-ghost btn-sm btn-quiet-danger setup-delete"
             type="button"
-            disabled={deletePending}
+            disabled={disabled || deletePending}
             onClick={() => setDeleteArmed(true)}
           >
             {deletePending ? "Deleting…" : "Delete local runtime data"}

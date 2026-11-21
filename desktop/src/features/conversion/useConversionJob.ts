@@ -4,6 +4,7 @@ import { ApiError, type ApiClient } from "../../api/client";
 import type { ApiRequestOptions } from "../../api/http";
 import type { ActiveConversionResponse, StartConversionRequest } from "../../types/api";
 import { useEventStream } from "../events/useEventStream";
+import { START_CHECKING_MESSAGE } from "./conversionPanelModel";
 
 interface UseConversionJobArgs {
   apiClient: ApiClient | null;
@@ -21,7 +22,7 @@ function reconcileStart(
 ): StartConversionResult {
   if (!response) {
     return { ok: false, ambiguous: true, clientRequestId: payload.client_request_id ?? undefined,
-      error: "Checking conversion start. Refresh before retrying." };
+      error: START_CHECKING_MESSAGE };
   }
   if (response.job && response.job.client_request_id === payload.client_request_id) {
     return { ok: true, jobId: response.job.id };
@@ -203,7 +204,7 @@ export function useConversionJob({ apiClient, baseUrl }: UseConversionJobArgs) {
         return obsoleteResult;
       }
       if (pendingStartRef.current || isCheckingStart) {
-        return { ok: false, ambiguous: true, error: "Checking conversion start. Refresh before retrying." };
+        return { ok: false, ambiguous: true, error: START_CHECKING_MESSAGE };
       }
       if (startRequestRef.current) {
         const error = "conversion already starting";

@@ -188,14 +188,14 @@ describe("library state across saves and replacement", () => {
     expect(writes.at(-1)?.path).toBe("/api/maintenance/backups/saved.db/restore");
     diagnostics = async () => { throw new TypeError("Backend unavailable"); };
     await act(async () => { response.reject(new TypeError("Restore response lost")); await restoring; });
-    expect(library.maintenanceMessage).toContain("Writes are paused");
+    expect(library.maintenanceMessage).toContain("Library changes are paused");
     expect(container.querySelector("audio")!.getAttribute("src")).toBeNull();
     await mount(null);
     books = [{ ...book(1), library_epoch: "restored", title: "Restored title" }];
     await mount(client());
     await act(async () => editor.saveMetadata());
     expect(writes.filter(({ path }) => path === "/api/library/1")).toHaveLength(0);
-    expect(library.maintenanceMessage).toContain("Writes are paused");
+    expect(library.maintenanceMessage).toContain("Library changes are paused");
     diagnostics = async () => json({ library_generation: "restored" });
     await act(async () => library.loadMaintenanceDiagnostics());
     expect(editor.editTitle).toBe("Restored title");

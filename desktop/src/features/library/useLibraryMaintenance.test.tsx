@@ -110,9 +110,9 @@ describe("useLibraryMaintenance", () => {
   });
 
   it("reloads the library after restore even if diagnostics fail", async () => {
-    const requestJson = vi.fn(async () => ({ restored_id: "saved.db", safety_copy_path: "safety.db" }));
+    const restoreDatabaseBackup = vi.fn(async () => ({ restored_id: "saved.db", safety_copy_path: "safety.db" }));
     const getMaintenanceDiagnostics = vi.fn().mockRejectedValue(new Error("diagnostics unavailable"));
-    const apiClient = { requestJson, getMaintenanceDiagnostics } as unknown as ApiClient;
+    const apiClient = { restoreDatabaseBackup, getMaintenanceDiagnostics } as unknown as ApiClient;
     const reload = vi.fn();
     await act(async () => {
       root = createRoot(container);
@@ -121,14 +121,14 @@ describe("useLibraryMaintenance", () => {
     await act(async () => {
       await (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe.restoreBackup("saved.db");
     });
-    expect(requestJson).toHaveBeenCalledWith("/api/maintenance/backups/saved.db/restore", { method: "POST" });
+    expect(restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", undefined);
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it("loads available backups with maintenance diagnostics", async () => {
     const backup = { id: "saved.db", filename: "saved.db", created_at: "2026-09-01T12:00:00Z", size: 4096, book_count: 2 };
     const apiClient = {
-      requestJson: vi.fn(async () => ({ items: [backup] })),
+      getDatabaseBackups: vi.fn(async () => ({ items: [backup] })),
       getMaintenanceDiagnostics: vi.fn(async () => ({ database_path: "db", output_path: "out", temp_path: "tmp", app_data_path: "app", audit: {} })),
     } as unknown as ApiClient;
     await act(async () => {
@@ -143,7 +143,7 @@ describe("useLibraryMaintenance", () => {
 
   it("ignores a restore completion after the API context changes", async () => {
     const request = deferred<{ restored_id: string; safety_copy_path: string }>();
-    const apiClient = { requestJson: vi.fn(() => request.promise) } as unknown as ApiClient;
+    const apiClient = { restoreDatabaseBackup: vi.fn(() => request.promise) } as unknown as ApiClient;
     const reload = vi.fn();
     await act(async () => {
       root = createRoot(container);
@@ -167,7 +167,7 @@ describe("useLibraryMaintenance", () => {
       database_path: "db", output_path: "out", temp_path: "tmp", app_data_path: "app", audit: {},
     } as MaintenanceDiagnosticsResponse;
     const apiClient = {
-      requestJson: vi.fn(async () => ({ items: [] })),
+      getDatabaseBackups: vi.fn(async () => ({ items: [] })),
       getMaintenanceDiagnostics: vi.fn(() => request.promise),
     } as unknown as ApiClient;
     const probe = () => (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe;
@@ -280,7 +280,7 @@ describe("useLibraryMaintenance", () => {
     });
     const cleanupStorage = vi.fn(async () => ({ deleted_files: 0, deleted_rows: 0 }));
     const onAfterCleanup = vi.fn();
-    const apiClient = { cleanupStorage, getMaintenanceDiagnostics, requestJson: vi.fn(async () => ({ items: [] })) } as unknown as ApiClient;
+    const apiClient = { cleanupStorage, getMaintenanceDiagnostics, getDatabaseBackups: vi.fn(async () => ({ items: [] })) } as unknown as ApiClient;
 
     await act(async () => {
       root = createRoot(container);

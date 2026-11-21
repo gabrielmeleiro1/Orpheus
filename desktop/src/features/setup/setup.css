@@ -593,8 +593,6 @@ label.setup-model-row:has(input:disabled:not(:checked)) { cursor: default; }
 }
 
 .setup-recovery-actions:empty { display: none; }
-.setup-risk .choice { align-items: start; margin-top: var(--space-2); }
-.setup-risk .choice > input { margin-top: var(--space-half); }
 
 .setup-error {
   align-items: center;

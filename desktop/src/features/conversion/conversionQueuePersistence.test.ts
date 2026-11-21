@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { createQueueItem } from "./conversionPanelModel";
-import { INTERRUPTED_CONVERSION_MESSAGE, readStoredQueue, writeStoredQueue } from "./conversionQueuePersistence";
+import {
+  APP_RESTARTED_MESSAGE,
+  INTERRUPTED_CONVERSION_MESSAGE,
+  isStartUncertain,
+  QUEUE_CANCELLED_MESSAGE,
+  START_CHECKING_MESSAGE,
+} from "./conversionPanelModel";
+import { readStoredQueue, writeStoredQueue } from "./conversionQueuePersistence";
 
 function memoryStorage(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));
@@ -30,8 +37,52 @@ describe("conversion queue persistence", () => {
     writeStoredQueue([running, waiting, stopped], null, storage);
     const { items } = readStoredQueue(storage);
     expect(items[0]).toMatchObject({ status: "warning", jobId: "job", error: INTERRUPTED_CONVERSION_MESSAGE });
+    expect(isStartUncertain(items[0])).toBe(false);
     expect(items[1]).toMatchObject({ status: "preflighting", preflight: null, error: "" });
     expect(items[2]).toEqual(stopped);
+  });
+
+  it("keeps a row whose start may have made a book, without a check nothing runs any more", () => {
+    const storage = memoryStorage();
+    const checking = { ...createQueueItem("/start.epub", "audiobook"), status: "warning" as const,
+      error: START_CHECKING_MESSAGE, startUncertain: true };
+    const cancelled = { ...createQueueItem("/cancel.epub", "audiobook"), status: "warning" as const,
+      error: QUEUE_CANCELLED_MESSAGE, startUncertain: true };
+    const starting = { ...createQueueItem("/starting.epub", "audiobook"), status: "converting" as const };
+    writeStoredQueue([checking, cancelled, starting], null, storage);
+    const { items } = readStoredQueue(storage);
+    expect(items[0]).toEqual({ ...checking, error: APP_RESTARTED_MESSAGE });
+    expect(items[1]).toEqual(cancelled);
+    expect(items[2]).toMatchObject({ status: "warning", error: INTERRUPTED_CONVERSION_MESSAGE });
+    expect(items.every(isStartUncertain)).toBe(true);
+  });
+
+  it("re-inspects a paused row whose start never reached the backend", () => {
+    const storage = memoryStorage();
+    const paused = { ...createQueueItem("/pause.epub", "audiobook"), status: "warning" as const,
+      error: "Previous conversion is still finishing cleanup. Try this item again shortly.", startUncertain: false,
+      preflight: { title: "P" } as never };
+    writeStoredQueue([paused], null, storage);
+    expect(readStoredQueue(storage).items[0]).toMatchObject({ status: "preflighting", error: "", preflight: null });
+  });
+
+  it("recognises the rows an earlier build saved with only their text", () => {
+    const legacy = (error: string) => ({ ...createQueueItem(`/${error.length}.epub`, "audiobook"), status: "warning", error });
+    const raw = JSON.stringify({
+      version: 1,
+      selectedQueueId: null,
+      items: [
+        legacy("Checking conversion start. Refresh before retrying."),
+        legacy("The app restarted. Check Library before retrying this item."),
+        legacy("Queue cancelled. Check Library before retrying this item."),
+        legacy("Orpheus closed during this conversion. Check Library before converting it again."),
+        legacy("Wait for runtime options to load before continuing."),
+      ],
+    });
+    const { items } = readStoredQueue(memoryStorage({ "orpheus.conversion.queue.v1": raw }));
+    expect(items.map(isStartUncertain)).toEqual([true, true, true, true, false]);
+    expect(items[0].error).toBe(APP_RESTARTED_MESSAGE);
+    expect(items[4]).toMatchObject({ status: "preflighting", error: "" });
   });
 
   it.each([

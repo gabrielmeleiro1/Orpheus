@@ -759,6 +759,42 @@ describe("useAudioPlayer audio load failures", () => {
     await act(async () => root.unmount());
   });
 
+  it("keeps the save failure notice on screen while playback ticks on", async () => {
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book"),
+      updateBookPlaybackPosition: vi.fn(async () => { throw new Error("disk full"); }),
+    } as unknown as ApiClient;
+    const library = createLibraryMock(createBookDetail());
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() {
+      current = useAudioPlayer({ apiClient, library });
+      return null;
+    }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    current.audioRef.current = audio;
+    await act(async () => current.togglePlay());
+    try {
+      for (const position of [20, 40]) {
+        Object.assign(audio, { paused: false, currentTime: position });
+        await act(async () => current.audioProps.onTimeUpdate({} as never));
+      }
+      expect(current.title).toBe("Could not save playback position");
+
+      Object.assign(audio, { currentTime: 41 });
+      await act(async () => current.audioProps.onTimeUpdate({} as never));
+      expect(current.title).toBe("Could not save playback position");
+
+      vi.mocked(apiClient.updateBookPlaybackPosition).mockResolvedValue({ position_sec: 60 } as never);
+      Object.assign(audio, { currentTime: 60 });
+      await act(async () => current.audioProps.onTimeUpdate({} as never));
+      expect(current.title).toBe("Playing · 01:00");
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it("checkpoints the exact position when playback is paused natively", async () => {
     const apiClient = {
       getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book"),

@@ -1,9 +1,8 @@
-import { backupSavedMessage, cleanupResultMessage, restoreResultMessage } from "./maintenanceModel";
+import { backupSavedMessage, cleanupResultMessage, restoreResultMessage, WRITES_PAUSED_MESSAGE } from "./maintenanceModel";
 import { invoke } from "@tauri-apps/api/core";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { ApiError, type ApiClient } from "../../api/client";
-import { createMaintenanceApi } from "../../api/resources/maintenance";
 import { useGenerationGuard } from "../../state/generationGuard";
 import { useLatestRequest } from "../conversion/useLatestRequest";
 import { isTauriRuntime } from "../../platform/tauriRuntime";
@@ -53,7 +52,6 @@ export function useLibraryMaintenance({
   getReloadContextGeneration,
 }: UseLibraryMaintenanceArgs): UseLibraryMaintenanceResult {
   const repository = useMemo(() => (apiClient ? createLibraryRepository(apiClient) : null), [apiClient]);
-  const maintenanceApi = useMemo(() => (apiClient ? createMaintenanceApi(apiClient.requestJson) : null), [apiClient]);
 
   const [maintenanceReport, setMaintenanceReport] = useState<MaintenanceDiagnosticsResponse | null>(null);
   const [maintenanceBackups, setMaintenanceBackups] = useState<MaintenanceBackup[]>([]);
@@ -89,7 +87,7 @@ export function useLibraryMaintenance({
   useEffect(() => {
     setMaintenanceLoading(false);
     if (uncertainRestoreRef.current) {
-      setMaintenanceMessage("Restore outcome could not be verified. Writes are paused. Reload diagnostics to reconnect.");
+      setMaintenanceMessage(WRITES_PAUSED_MESSAGE);
     }
   }, [maintenanceContextGeneration]);
 
@@ -120,18 +118,16 @@ export function useLibraryMaintenance({
         session?.resume();
       }
       setMaintenanceReport(report);
-      if (maintenanceApi) {
-        const backups = await maintenanceApi.getDatabaseBackups({ timeoutMs: MAINTENANCE_BACKUP_LIST_TIMEOUT_MS });
-        if (!isCurrent()) {
-          return false;
-        }
-        backupsRef.current = backups.items;
-        setMaintenanceBackups(backups.items);
+      const backups = await repository.getDatabaseBackups({ timeoutMs: MAINTENANCE_BACKUP_LIST_TIMEOUT_MS });
+      if (!isCurrent()) {
+        return false;
       }
+      backupsRef.current = backups.items;
+      setMaintenanceBackups(backups.items);
       if (announce) setMaintenanceMessage("Diagnostics loaded");
       return true;
     },
-    [maintenanceApi, repository, session],
+    [repository, session],
   );
 
   const loadMaintenanceDiagnostics = useCallback(async (): Promise<void> => {
@@ -159,10 +155,10 @@ export function useLibraryMaintenance({
   const restoreBackup = useCallback(async (id: string): Promise<void> => {
     if (restoreInFlightRef.current) return;
     if (uncertainRestoreRef.current) {
-      setMaintenanceMessage("Restore outcome could not be verified. Writes are paused. Reload diagnostics to reconnect.");
+      setMaintenanceMessage(WRITES_PAUSED_MESSAGE);
       return;
     }
-    if (!maintenanceApi) {
+    if (!repository) {
       setMaintenanceMessage("Backend disconnected");
       return;
     }
@@ -178,13 +174,13 @@ export function useLibraryMaintenance({
       await session?.suspendAndDrain();
       if (!isCurrent()) return;
       try {
-        if (repository) beforeGeneration = libraryGeneration(await repository.getMaintenanceDiagnostics({ timeoutMs: MAINTENANCE_DIAGNOSTICS_TIMEOUT_MS }));
+        beforeGeneration = libraryGeneration(await repository.getMaintenanceDiagnostics({ timeoutMs: MAINTENANCE_DIAGNOSTICS_TIMEOUT_MS }));
       } catch {
         // A successful restore response still establishes the replacement.
       }
       if (!isCurrent()) return;
       requestSent = true;
-      const response = await maintenanceApi.restoreDatabaseBackup(id);
+      const response = await repository.restoreDatabaseBackup(id);
       if (!isCurrent()) {
         return;
       }
@@ -205,7 +201,7 @@ export function useLibraryMaintenance({
       if (isCurrent() && requestSent && !invalidated && !rejected) {
         canResume = false;
         try {
-          const report = await repository!.getMaintenanceDiagnostics({ timeoutMs: MAINTENANCE_DIAGNOSTICS_TIMEOUT_MS });
+          const report = await repository.getMaintenanceDiagnostics({ timeoutMs: MAINTENANCE_DIAGNOSTICS_TIMEOUT_MS });
           if (!isCurrent()) return;
           const afterGeneration = libraryGeneration(report);
           if (afterGeneration === null) throw new Error("Library generation unavailable");
@@ -222,7 +218,7 @@ export function useLibraryMaintenance({
           clearLibraryPlaybackCheckpoints();
           session?.invalidate();
           if (isCurrent()) {
-            setMaintenanceMessage("Restore outcome could not be verified. Writes are paused. Reload diagnostics to reconnect.");
+            setMaintenanceMessage(WRITES_PAUSED_MESSAGE);
           }
           return;
         }
@@ -243,7 +239,7 @@ export function useLibraryMaintenance({
         setMaintenanceLoading(false);
       }
     }
-  }, [beginOwnedMaintenanceRequest, maintenanceApi, repository, runDiagnostics, session]);
+  }, [beginOwnedMaintenanceRequest, repository, runDiagnostics, session]);
 
   const backupDatabase = useCallback(async (): Promise<void> => {
     if (restoreInFlightRef.current) return;
@@ -293,6 +289,11 @@ export function useLibraryMaintenance({
       const cleanup = () => repository.cleanupStorage(removeUnownedFolders?.length ? { removeUnownedFolders } : undefined);
       const result = session ? await session.runMutation(session.generation, cleanup) : await cleanup();
       if (!isCleanupCurrent()) {
+        return;
+      }
+      // A null result means the session held the write back: nothing was cleaned.
+      if (result === null) {
+        setMaintenanceMessage(WRITES_PAUSED_MESSAGE);
         return;
       }
       setMaintenanceMessage(cleanupResultMessage(result));

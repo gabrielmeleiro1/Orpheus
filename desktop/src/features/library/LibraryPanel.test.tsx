@@ -52,6 +52,7 @@ function libraryModel(): UseLibraryResult {
     modeFilter: "all",
     setModeFilter: vi.fn(),
     items: [selectedSummary],
+    unfilteredItems: [selectedSummary],
     indexedCount: 1,
     hasMore: false,
     selectedBookId: 1,
@@ -63,8 +64,6 @@ function libraryModel(): UseLibraryResult {
     loadingDetail: false,
     errorMessage: "",
     statusMessage: "",
-    bookSummaryTitle: "Book",
-    bookSummaryMeta: "Author",
     bookDetailText: "",
     maintenanceReport: null,
     maintenanceLoading: false,
@@ -73,6 +72,7 @@ function libraryModel(): UseLibraryResult {
     refreshLibrary: asyncNoop,
     loadMore: asyncNoop,
     selectBook: vi.fn(async () => selectedBook),
+    selectBookById: vi.fn(async () => selectedBook),
     selectRelative: vi.fn(async () => selectedBook),
     updateSelectedBookMetadata: asyncNoop,
     loadCleaningPreview: vi.fn(async () => null),
@@ -428,6 +428,19 @@ describe("LibraryPanel", () => {
     const html = renderToString(<LibraryPanel hidden={false} library={model} albumOpen={false} onOpenAlbum={vi.fn()} onCloseAlbum={vi.fn()} />);
     expect(html.match(/book-card is-skeleton/g)).toHaveLength(8);
     expect(html).toContain("Loading library…");
+  });
+
+  it("shows the album of a book opened by id from outside the loaded page", async () => {
+    const model = libraryModel();
+    Object.assign(model, { items: [], selectedBookIndex: -1 });
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<LibraryPanel hidden={false} library={model} {...ALBUM} />));
+      expect(container.querySelector(".album-title")?.textContent).toBe("Book");
+    } finally {
+      await act(async () => root.unmount());
+    }
   });
 
   it("returns from the album to the shelf", async () => {

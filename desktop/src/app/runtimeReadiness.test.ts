@@ -10,7 +10,7 @@ function readyStatus(): RuntimeSetupStatusResponse {
     ],
     packages: { ready: true, missing: [], incompatible: [] },
     probe: { ready: true, checks: [] }, ready: true, restart_required: false,
-    profiles: [], risk: null, backend: { instance_id: "test", status: "running" },
+    profiles: [], backend: { instance_id: "test", status: "running" },
   };
 }
 

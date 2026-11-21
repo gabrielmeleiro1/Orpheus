@@ -421,10 +421,8 @@ describe("useLibrary indexed total", () => {
 
   it("does not repopulate indexedCount from an in-flight count after disconnect", async () => {
     const countRequest = deferred<{ count: number }>();
-    const getLibrary = vi.fn(async (search?: string) => ({
-      items: search ? [] : [book],
-      count: search ? 0 : 1,
-    }));
+    // An empty library leaves no offline shelf to stand in for the reset list.
+    const getLibrary = vi.fn(async () => ({ items: [], count: 0 }));
     let countSignal: AbortSignal | undefined;
     const getLibraryCount = vi.fn((options?: { signal?: AbortSignal }) => {
       countSignal = options?.signal;
@@ -1421,7 +1419,8 @@ describe("useLibrary indexed total", () => {
         await deletePromise;
       });
 
-      expect(getLibrary).toHaveBeenCalledTimes(2);
+      // The initial list, the filtered list and the sidebar's unfiltered page.
+      expect(getLibrary).toHaveBeenCalledTimes(3);
       expect(getLibraryProbe().items).toEqual([]);
       expect(getLibraryProbe().statusMessage).not.toBe("Deleted Indexed book");
       expect(getLibraryProbe().statusMessage).not.toBe("Deleting Indexed book…");
@@ -1684,7 +1683,8 @@ describe("useLibrary indexed total", () => {
       expect(await deletePromise).toBe(true);
     });
 
-    expect(getLibrary).toHaveBeenCalledTimes(3);
+    // The revalidated search, then the sidebar's unfiltered page.
+    expect(getLibrary).toHaveBeenCalledTimes(4);
     expect(newerListSignal?.aborted).toBe(true);
     expect(getLibraryProbe().items).toEqual([newerBook]);
 
@@ -1730,6 +1730,7 @@ describe("useLibrary indexed total", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(220);
     });
+    // The sidebar keeps the unfiltered page it already has.
     expect(getLibrary.mock.calls.map(([query]) => query)).toEqual([undefined, "new"]);
     expect(getLibraryProbe().items).toEqual([book]);
 

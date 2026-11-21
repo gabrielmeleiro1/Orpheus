@@ -21,13 +21,13 @@ function availableStatus(): RuntimeSetupStatusResponse {
     packages: { ready: true, missing: [], incompatible: [] },
     probe: { ready: true, checks: [] }, ready: false, restart_required: false,
     profiles: [
-      { id: "base", label: "Library only", description: "Library", compatible: true, reason: null, model_groups: [], risk: null },
-      { id: "mlx", label: "Apple Silicon (MLX)", description: "Local", compatible: true, reason: null, model_groups: ["tts-mlx"], risk: null },
+      { id: "base", label: "Library only", description: "Library", compatible: true, reason: null, model_groups: [] },
+      { id: "mlx", label: "Apple Silicon (MLX)", description: "Local", compatible: true, reason: null, model_groups: ["tts-mlx"] },
     ],
     installed_runtime: { profile: "mlx", ready: true, runtime_available: true, model_groups: [
       { id: "tts-mlx", runtime_ready: true, assets_ready: true, ready: true },
     ] },
-    risk: null, backend: { instance_id: "backend", status: "running" },
+    backend: { instance_id: "backend", status: "running" },
   };
 }
 
@@ -134,7 +134,7 @@ describe("setup readiness through pending checks", () => {
     expect(onReady).not.toHaveBeenCalled();
     expect(requests.filter(({ path }) => path === "/api/setup/adopt")).toEqual([
       { path: "/api/setup/adopt", body: { profile: "mlx", model_groups: ["tts-mlx"],
-        cleaner_cuda_quantization: "4bit", accept_pytorch_risk: false } },
+        cleaner_cuda_quantization: "4bit" } },
     ]);
     await act(async () => saved.resolve(json(readyStatus())));
     expect(onReady).toHaveBeenCalledExactlyOnceWith(readyStatus());

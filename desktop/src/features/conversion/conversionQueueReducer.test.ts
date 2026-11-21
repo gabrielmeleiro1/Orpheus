@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SourcePreflight } from "../../types/api";
-import { createQueueItem } from "./conversionPanelModel";
+import { createQueueItem, isStartUncertain } from "./conversionPanelModel";
 import {
   conversionQueueReducer,
   createConversionQueueInitialState,
@@ -179,6 +179,29 @@ describe("conversionQueueReducer", () => {
     expect(state.queueItems[0].title).toBe("Original");
     // The shared field state still tracks what the user typed for reuse.
     expect(state.titleOverride).toBe("Next Paste Title");
+  });
+
+  it("starts a row over as a new source when its uncertain start's path changes", () => {
+    const item = { ...createQueueItem("/tmp/book.epub", "audiobook"), status: "warning" as const,
+      error: "The app restarted. Check Library before retrying this item.", startUncertain: true };
+    let state = conversionQueueReducer(createConversionQueueInitialState(), {
+      type: "itemsAdded",
+      items: [item],
+      selectFirst: true,
+    });
+    state = conversionQueueReducer(state, {
+      type: "selectedQueueItemEdited",
+      patch: { sourcePath: "/tmp/other.epub" },
+    });
+    state = conversionQueueReducer(state, {
+      type: "preflightSucceeded",
+      stamp: stamp(item.id, "/tmp/other.epub", 1),
+      preflight: preflight({ warnings: ["Large file"] }),
+      updateSelected: true,
+    });
+
+    expect(state.queueItems[0]).toMatchObject({ status: "warning", error: "" });
+    expect(isStartUncertain(state.queueItems[0])).toBe(false);
   });
 
   it("rejects stale preflight results when source revision changed", () => {

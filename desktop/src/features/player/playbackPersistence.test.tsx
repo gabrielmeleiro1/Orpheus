@@ -71,7 +71,6 @@ describe("playback persistence serialization", () => {
         library,
         audioRef: { current: audio },
         loadedBookId: library.selectedBookId,
-        onSaveFailed: vi.fn(),
       });
       return null;
     }
@@ -84,7 +83,6 @@ describe("playback persistence serialization", () => {
   async function mountWithSelection(
     apiClient: ApiClient,
     library: UseLibraryResult,
-    onSaveFailed: () => void,
   ): Promise<{ selectBook: (bookId: number) => Promise<void> }> {
     let activeLoadedBookId = library.selectedBookId;
     function Probe() {
@@ -93,7 +91,6 @@ describe("playback persistence serialization", () => {
         library,
         audioRef: { current: createAudio() },
         loadedBookId: activeLoadedBookId,
-        onSaveFailed,
       });
       return null;
     }
@@ -113,7 +110,6 @@ describe("playback persistence serialization", () => {
   async function mountWithClientSwap(
     initialApiClient: ApiClient,
     library = createLibrary(),
-    onSaveFailed = vi.fn(),
   ): Promise<{ swapClient: (apiClient: ApiClient) => Promise<void> }> {
     let activeApiClient = initialApiClient;
     function Probe() {
@@ -122,7 +118,6 @@ describe("playback persistence serialization", () => {
         library,
         audioRef: { current: createAudio() },
         loadedBookId: library.selectedBookId,
-        onSaveFailed,
       });
       return null;
     }
@@ -184,7 +179,6 @@ describe("playback persistence serialization", () => {
     await result.persistLoadedBookPlaybackPosition({
       bookId: 1,
       force: true,
-      silent: true,
     });
 
     expect(readPlaybackCheckpoint(1, checkpointIdentity(1))).toBe(180);
@@ -285,17 +279,15 @@ describe("playback persistence serialization", () => {
     expect(updateBookPlaybackPosition).toHaveBeenLastCalledWith(1, 120, { expectedEpoch: "epoch", timeoutMs: 15_000 });
   });
 
-  it("does not throttle against an optimistic marker after queued failures", async () => {
-    const updateBookPlaybackPosition = vi.fn()
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValueOnce({ position_sec: 70 });
+  it("retries a failing automatic save once per save interval, not on every tick", async () => {
+    const updateBookPlaybackPosition = vi.fn().mockRejectedValue(new Error("offline"));
     await mount({ updateBookPlaybackPosition } as unknown as ApiClient);
-    const first = result.persistBookPlaybackPosition(1, 60, { force: true, silent: true });
-    const second = result.persistBookPlaybackPosition(1, 120, { force: true, silent: true });
-    await Promise.all([first, second]);
-    await result.persistBookPlaybackPosition(1, 70, { silent: true });
-    expect(updateBookPlaybackPosition).toHaveBeenNthCalledWith(3, 1, 70, { expectedEpoch: "epoch", timeoutMs: 15_000 });
+    for (let position = 60; position < 75; position += 0.25) {
+      await result.persistBookPlaybackPosition(1, position);
+    }
+    expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(1);
+    await result.persistBookPlaybackPosition(1, 75);
+    expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(2);
   });
 
   it("serializes each book independently", async () => {
@@ -372,7 +364,7 @@ describe("playback persistence serialization", () => {
     await vi.waitFor(() => expect(oldClient.updateBookPlaybackPosition).toHaveBeenCalledTimes(2));
 
     await mounted.swapClient(newClient);
-    const currentSave = result.persistBookPlaybackPosition(1, 65, { silent: true });
+    const currentSave = result.persistBookPlaybackPosition(1, 65);
     await vi.waitFor(() => expect(newClient.updateBookPlaybackPosition).toHaveBeenCalledWith(1, 65, { expectedEpoch: "epoch", timeoutMs: 15_000 }));
     await expect(currentSave).resolves.toBe(65);
 
@@ -410,8 +402,7 @@ describe("playback persistence serialization", () => {
     const newClient = {
       updateBookPlaybackPosition: vi.fn().mockResolvedValue({ position_sec: 90 }),
     } as unknown as ApiClient;
-    const onSaveFailed = vi.fn();
-    const mounted = await mountWithClientSwap(oldClient, createLibrary(1), onSaveFailed);
+    const mounted = await mountWithClientSwap(oldClient, createLibrary(1));
 
     let staleSave!: Promise<number | null>;
     await act(async () => {
@@ -423,10 +414,10 @@ describe("playback persistence serialization", () => {
     await act(async () => rejectOldSave(new Error("backend replaced")));
 
     await expect(staleSave).resolves.toBeNull();
-    expect(onSaveFailed).not.toHaveBeenCalled();
+    expect(result.saveFailing).toBe(false);
   });
 
-  it("ignores deferred silent failures from a book that is no longer selected", async () => {
+  it("ignores deferred failures from a book that is no longer selected", async () => {
     const failureResolvers: Array<(error: Error) => void> = [];
     const updateBookPlaybackPosition = vi.fn(
       () => new Promise<{ position_sec: number }>((_, reject) => {
@@ -434,13 +425,12 @@ describe("playback persistence serialization", () => {
       }),
     );
     const library = createLibrary(1);
-    const onSaveFailed = vi.fn();
-    const mounted = await mountWithSelection({ updateBookPlaybackPosition } as unknown as ApiClient, library, onSaveFailed);
+    const mounted = await mountWithSelection({ updateBookPlaybackPosition } as unknown as ApiClient, library);
 
     let saves!: Array<Promise<number | null>>;
     await act(async () => {
       saves = Array.from({ length: 5 }, (_, index) =>
-        result.persistBookPlaybackPosition(1, 60 + index, { force: true, silent: true }),
+        result.persistBookPlaybackPosition(1, 60 + index, { force: true }),
       );
     });
     await vi.waitFor(() => expect(failureResolvers).toHaveLength(1));
@@ -453,60 +443,35 @@ describe("playback persistence serialization", () => {
       }
     }
     await Promise.all(saves);
+    await mounted.selectBook(1);
 
-    expect(onSaveFailed).not.toHaveBeenCalled();
+    expect(result.saveFailing).toBe(false);
     expect(library.setSelectedPlaybackPosition).not.toHaveBeenCalled();
   });
 
-  it("keeps silent failure thresholds independent for each book", async () => {
+  it("keeps failure thresholds independent for each book", async () => {
     const updateBookPlaybackPosition = vi.fn().mockRejectedValue(new Error("offline"));
     const library = createLibrary(1);
-    const onSaveFailed = vi.fn();
-    const mounted = await mountWithSelection({ updateBookPlaybackPosition } as unknown as ApiClient, library, onSaveFailed);
+    const mounted = await mountWithSelection({ updateBookPlaybackPosition } as unknown as ApiClient, library);
 
-    await Promise.all(
-      Array.from({ length: 4 }, (_, index) =>
-        result.persistBookPlaybackPosition(1, 60 + index, { force: true, silent: true }),
-      ),
-    );
+    await act(async () => { await result.persistBookPlaybackPosition(1, 60, { force: true }); });
     await mounted.selectBook(2);
-    await result.persistBookPlaybackPosition(2, 60, { force: true, silent: true });
+    await act(async () => { await result.persistBookPlaybackPosition(2, 60, { force: true }); });
 
-    expect(onSaveFailed).not.toHaveBeenCalled();
+    expect(result.saveFailing).toBe(false);
   });
 
-  it("notifies when the currently loaded book reaches the silent failure threshold", async () => {
+  it("reports failing saves for the loaded book until a save succeeds", async () => {
     const updateBookPlaybackPosition = vi.fn().mockRejectedValue(new Error("offline"));
-    const onSaveFailed = vi.fn();
-    await mountWithSelection({ updateBookPlaybackPosition } as unknown as ApiClient, createLibrary(1), onSaveFailed);
+    await mountWithSelection({ updateBookPlaybackPosition } as unknown as ApiClient, createLibrary(1));
 
-    await Promise.all(
-      Array.from({ length: 5 }, (_, index) =>
-        result.persistBookPlaybackPosition(1, 60 + index, { force: true, silent: true }),
-      ),
-    );
+    await act(async () => { await result.persistBookPlaybackPosition(1, 60, { force: true }); });
+    expect(result.saveFailing).toBe(false);
+    await act(async () => { await result.persistBookPlaybackPosition(1, 61, { force: true }); });
+    expect(result.saveFailing).toBe(true);
 
-    expect(onSaveFailed).toHaveBeenCalledTimes(1);
-  });
-
-  it("ignores non-silent failures from an old loaded book", async () => {
-    let rejectSave!: (error: Error) => void;
-    const updateBookPlaybackPosition = vi.fn(
-      () => new Promise<{ position_sec: number }>((_, reject) => { rejectSave = reject; }),
-    );
-    const library = createLibrary(1);
-    const onSaveFailed = vi.fn();
-    const mounted = await mountWithSelection({ updateBookPlaybackPosition } as unknown as ApiClient, library, onSaveFailed);
-
-    let save!: Promise<number | null>;
-    await act(async () => {
-      save = result.persistBookPlaybackPosition(1, 60, { force: true });
-    });
-    await vi.waitFor(() => expect(updateBookPlaybackPosition).toHaveBeenCalledTimes(1));
-    await mounted.selectBook(2);
-    rejectSave(new Error("offline"));
-    await save;
-
-    expect(onSaveFailed).not.toHaveBeenCalled();
+    updateBookPlaybackPosition.mockResolvedValue({ position_sec: 62 });
+    await act(async () => { await result.persistBookPlaybackPosition(1, 62, { force: true }); });
+    expect(result.saveFailing).toBe(false);
   });
 });

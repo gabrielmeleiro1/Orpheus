@@ -25,10 +25,10 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("./app/useBackendClient", () => ({ useBackendClient: () => mocks.backend }));
-vi.mock("./app/usePrimaryRuntime", () => ({ useRuntimeIdentity: () => ({ ttsLabel: "", cleanerLabel: "", ttsReady: false }) }));
+vi.mock("./app/useRuntimeBootstrapRefresh", () => ({ useRuntimeBootstrapRefresh: vi.fn() }));
 vi.mock("./app/useGlobalShortcuts", () => ({ useGlobalShortcuts: vi.fn() }));
 vi.mock("./features/library/useLibrary", () => ({
-  useLibrary: () => ({ items: [], indexedCount: 0, refreshLibrary: vi.fn(async () => undefined), selectBook: vi.fn(async () => null), selectedBookDetail: null }),
+  useLibrary: () => ({ items: [], unfilteredItems: [], indexedCount: 0, refreshLibrary: vi.fn(async () => undefined), selectBook: vi.fn(async () => null), selectedBookDetail: null }),
 }));
 vi.mock("./features/player/useAudioPlayer", () => ({
   useAudioPlayer: () => ({
@@ -69,7 +69,7 @@ import App from "./App";
 const setupStatus = {
   schema_version: 1, configured: false, state: "unconfigured", state_error: null, selected_profile: null,
   selected_model_groups: [], packages: { ready: false, missing: [], incompatible: [] }, probe: { ready: false, checks: [] },
-  ready: false, restart_required: false, profiles: [], risk: null, backend: { instance_id: "backend-1", status: "running" },
+  ready: false, restart_required: false, profiles: [], backend: { instance_id: "backend-1", status: "running" },
 } as RuntimeSetupStatusResponse;
 
 let container: HTMLDivElement;

@@ -280,6 +280,8 @@ interface ActiveConversionJob {
   error: string | null;
   title: string | null;
   author: string | null;
+  /** The job rebuilds a book already in the library rather than adding one. */
+  repair: boolean;
 }
 
 export interface ActiveConversionResponse {

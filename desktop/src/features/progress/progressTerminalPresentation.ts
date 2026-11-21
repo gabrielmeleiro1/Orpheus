@@ -1,7 +1,5 @@
 import type { ConversionJobStatus, PerformanceSnapshot, ProgressStageView } from "../../types/api";
 
-type ProgressSnapshotKind = "live" | "final" | "neutral";
-
 /** One measured value for the performance list; unmeasured values are left out, never shown as placeholders. */
 interface ProgressMetric {
   label: string;
@@ -13,13 +11,10 @@ interface ProgressMetric {
 
 interface ProgressTerminalPresentation {
   operationTitle: string;
-  showLiveWorkers: boolean;
   showLiveActiveTask: boolean;
-  activeTaskSummary: string;
   /** Elapsed time ("2m 3s"), or "" before it is reported. */
   elapsed: string;
   metrics: ProgressMetric[];
-  snapshotKind: ProgressSnapshotKind;
 }
 
 const STAGE_ACRONYMS = ["TTS", "API", "CPU", "GPU", "CUDA", "ETA", "M4A", "M4B", "MLX", "ROCm", "PDF", "EPUB", "FP16", "OK"];
@@ -32,7 +27,7 @@ export function formatStageDisplayName(name: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-function stageLabel(name: string): string {
+export function stageLabel(name: string): string {
   return String(name || "").replace(/_/g, " ");
 }
 
@@ -53,16 +48,6 @@ function formatSeconds(value: number): string {
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
   return minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-}
-
-function terminalTaskSummary(uiState: ConversionJobStatus, currentMessage: string): string {
-  if (uiState === "completed") {
-    return "Conversion complete";
-  }
-  if (currentMessage) {
-    return currentMessage;
-  }
-  return uiState === "cancelled" ? "Conversion cancelled" : "Conversion failed";
 }
 
 function hasMeaningfulSnapshot(performance: PerformanceSnapshot | null): boolean {
@@ -176,11 +161,9 @@ export function buildProgressTerminalPresentation(input: {
   uiState: ConversionJobStatus;
   stages: ProgressStageView[];
   currentStage: string;
-  currentMessage: string;
   performance: PerformanceSnapshot | null;
-  progressPct: number;
 }): ProgressTerminalPresentation {
-  const { uiState, stages, currentStage, currentMessage, performance } = input;
+  const { uiState, stages, currentStage, performance } = input;
   const terminal = isTerminal(uiState);
   const activeStage = stages.find((stage) => stage.state === "active") ?? null;
   const elapsed = isFiniteNumber(performance?.elapsed_seconds) ? formatSeconds(performance.elapsed_seconds) : "";
@@ -188,12 +171,9 @@ export function buildProgressTerminalPresentation(input: {
   if (!terminal) {
     return {
       operationTitle: stageLabel(activeStage?.name || currentStage || "waiting"),
-      showLiveWorkers: true,
       showLiveActiveTask: true,
-      activeTaskSummary: currentMessage || "Waiting for updates",
       elapsed,
       metrics: buildMetrics(performance, true),
-      snapshotKind: "live",
     };
   }
 
@@ -203,15 +183,11 @@ export function buildProgressTerminalPresentation(input: {
       : uiState === "cancelled"
         ? "cancelled"
         : "failed";
-  const meaningful = hasMeaningfulSnapshot(performance);
 
   return {
     operationTitle,
-    showLiveWorkers: false,
     showLiveActiveTask: false,
-    activeTaskSummary: terminalTaskSummary(uiState, currentMessage),
     elapsed,
-    metrics: meaningful ? buildMetrics(performance, false) : [],
-    snapshotKind: meaningful ? "final" : "neutral",
+    metrics: hasMeaningfulSnapshot(performance) ? buildMetrics(performance, false) : [],
   };
 }

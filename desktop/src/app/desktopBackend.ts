@@ -1,8 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { DesktopBackendEndpoint, DesktopBackendStatus } from "../../types/api";
+import type { DesktopBackendEndpoint, DesktopBackendStatus } from "../types/api";
 
-export const PLAYBACK_SAVE_INTERVAL_SEC = 15;
 export const BACKEND_HEALTH_CHECK_INTERVAL_MS = 2_000;
 
 const ENDPOINT_WAIT_TIMEOUT_MS = 120_000;

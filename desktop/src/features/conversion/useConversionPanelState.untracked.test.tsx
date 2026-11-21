@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
 import { createProgressStages } from "../events/progressStageModel";
+import { START_CHECKING_MESSAGE } from "./conversionPanelModel";
 import type { ConversionJobController } from "./useConversionJob";
 import { useConversionPanelState } from "./useConversionPanelState";
 
@@ -32,8 +33,8 @@ it("counts a running repair's row and labels it while the connection is lost", a
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe({ conversionJob }: { conversionJob: ConversionJobController }) {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: {} as ApiClient,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -65,8 +66,8 @@ it("ignores the second click of a double-click that lands on Cancel", async () =
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: {} as ApiClient,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -94,8 +95,8 @@ it("ignores a separate fast click that lands on Cancel right after Start, then c
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -139,8 +140,8 @@ it("notes on a queued row that the book is already in the library", async () => 
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -162,8 +163,8 @@ it("shows how long a large paste will be before it is started", async () => {
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: {} as ApiClient,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -207,8 +208,8 @@ it("stops calling a cancelled book Cancelled once a repair from Library complete
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe({ conversionJob }: { conversionJob: ConversionJobController }) {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -265,8 +266,8 @@ it("shows a repair on the row of a book cancelled before its book id was known",
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe({ conversionJob }: { conversionJob: ConversionJobController }) {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -315,8 +316,8 @@ it("keeps one row with one state when the backend is lost mid-conversion", async
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe({ conversionJob }: { conversionJob: ConversionJobController }) {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -370,8 +371,8 @@ it("offers to convert a finished book again instead of an unqualified Start", as
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -404,8 +405,8 @@ it("starts the waiting book, not the finished one that is still selected", async
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client, startCommandRef,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob: conversionJob as unknown as ConversionJobController,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob: conversionJob as unknown as ConversionJobController,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const addPaste = async () => {
@@ -437,6 +438,38 @@ it("starts the waiting book, not the finished one that is still selected", async
   }
 });
 
+it("offers a row whose start may have made a book its own Start, not Start all", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const conversionJob = {
+    clearFormError: vi.fn(), refreshActiveConversion: vi.fn(),
+    startConversion: vi.fn(async () => ({ ok: false, ambiguous: true, error: START_CHECKING_MESSAGE })),
+    waitForTerminalState: vi.fn(),
+  };
+  const client = pasteClient();
+  let current!: ReturnType<typeof useConversionPanelState>;
+  function Probe() {
+    current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
+      startCommandRef: { current: null }, connectionState: "connected",
+      conversionJob: conversionJob as unknown as ConversionJobController, onOpenSettings: vi.fn() });
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(<Probe />));
+    await act(async () => { current.actions.setSourceInput("paste"); });
+    for (const text of ["First source", "Second source"]) {
+      await act(async () => current.actions.setPastedText(text));
+      await act(async () => { await current.actions.onAddPastedText(); });
+      await act(async () => { await current.actions.onStartConversion(); });
+    }
+    expect(conversionJob.startConversion).toHaveBeenCalledTimes(2);
+    expect(current.sourceQueue.queueItems).toHaveLength(2);
+    expect(current.capabilities).toMatchObject({ canRunQueue: false, showStartConversion: true, canStartConversion: true });
+  } finally {
+    await act(async () => root.unmount());
+  }
+});
+
 it.each(["unavailable", "checking"] as const)("keeps Create from starting anything while the runtime is %s", async (runtimeState) => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const conversionJob = {
@@ -449,8 +482,8 @@ it.each(["unavailable", "checking"] as const)("keeps Create from starting anythi
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe({ state }: { state: "ready" | "checking" | "unavailable" }) {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client, runtimeState: state,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob, startCommandRef,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob, startCommandRef,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -490,8 +523,8 @@ it.each(["checking", "error"] as const)("keeps Create from starting anything whi
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe({ state, runtimeState = "ready" }: { state: "connected" | "checking" | "error"; runtimeState?: "ready" | "checking" }) {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client, runtimeState,
-      connectionState: state, health: null, statusMessage: "", conversionJob, startCommandRef,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: state, conversionJob, startCommandRef,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -542,8 +575,8 @@ it("shows a long source's length on its row and a blocked source's reason once",
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));

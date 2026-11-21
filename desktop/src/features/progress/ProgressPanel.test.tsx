@@ -20,7 +20,6 @@ it("leads with one stage-and-percent headline and lists measured performance in 
       { label: "Chunks", value: "1/1", pct: 100 },
     ] }],
     currentStage: "cleaning",
-    currentMessage: "Cleaning chunk 1/1",
     performance: { active_workers: 2, max_workers: 4, completed_chapters: 5, tts_chars_per_second: 40, elapsed_seconds: 12, pipeline_mode: "parallel" },
     activeJobId: "job",
     isCancelling: false,
@@ -57,7 +56,7 @@ it("keeps metrics empty states beside stages and shows the idle state", async ()
   const container = document.createElement("div");
   const root = createRoot(container);
   const props = {
-    statusText: "", progressPct: 0, etaText: "", stages: [], currentStage: "", currentMessage: "",
+    statusText: "", progressPct: 0, etaText: "", stages: [], currentStage: "",
     performance: null, activeJobId: null, isCancelling: false, onCancel: async () => {},
   };
   try {
@@ -85,7 +84,6 @@ it("animates an active stage only while the conversion is running", async () => 
     etaText: "",
     stages: [{ name: "packaging" as const, state: "active" as const, pct: 50, detail: [] }],
     currentStage: "packaging",
-    currentMessage: "",
     performance: null,
     activeJobId: null,
     isCancelling: false,
@@ -110,7 +108,7 @@ vi.mock("../events/useEventStreamTransport", () => ({ useEventStreamTransport: (
 it("does not claim the conversion is idle when its state cannot be verified", () => {
   const container = document.createElement("div");
   container.innerHTML = renderToString(<ProgressPanel uiState="unknown" statusText="Reconnecting to conversion updates"
-    progressPct={40} etaText="" stages={[]} currentStage="" currentMessage="" performance={null}
+    progressPct={40} etaText="" stages={[]} currentStage="" performance={null}
     activeJobId="job" isCancelling={false} onCancel={async () => {}} />);
   expect(container.textContent).toContain("Conversion status unavailable");
   expect(container.querySelector('[role="status"]')?.textContent).toBe("Reconnecting to conversion updates");
@@ -161,7 +159,6 @@ it("heads a running conversion with the chapter and stage, and drops the chapter
       { label: "Chapter", value: "3 of 12", pct: 25 },
     ] }],
     currentStage: "synthesizing",
-    currentMessage: "",
     performance: null,
     activeJobId: "job",
     isCancelling: false,
@@ -180,7 +177,7 @@ it("asks before stopping a running book, and Keep converting or Escape leave it 
   const onCancel = vi.fn(async () => {});
   const props = {
     uiState: "running" as const, statusText: "", progressPct: 20, etaText: "", stages: [], currentStage: "",
-    currentMessage: "", performance: null, activeJobId: "job-1", isCancelling: false, onCancel,
+    performance: null, activeJobId: "job-1", isCancelling: false, onCancel,
   };
   const container = document.createElement("div");
   document.body.append(container);

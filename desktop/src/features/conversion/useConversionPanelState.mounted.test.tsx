@@ -36,8 +36,8 @@ it.each([["Edited title", "Edited author"], ["", ""]])("restarts a finished sour
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -91,9 +91,9 @@ it.each(["single conversion", "queue conversion", "failed reconciliation"])("Cle
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "",
+      connectionState: "connected",
       conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      onOpenSettings: vi.fn() });
     return <SourceQueueView sourceQueue={current.sourceQueue} capabilities={current.capabilities} actions={current.actions} />;
   }
   const container = document.createElement("div");
@@ -144,8 +144,8 @@ it("keeps Convert enabled after repeated conversions and when finished history i
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client as unknown as ApiClient,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return <ConversionActionsView {...current} />;
   }
   const container = document.createElement("div");
@@ -203,8 +203,8 @@ it.each(["direct", "shortcut", "queue", "button", "queue continuation"])("blocks
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client as unknown as ApiClient,
       runtimeSelectionGeneration: hydration.loading ? 1 : 0,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob, startCommandRef,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob, startCommandRef,
+      onOpenSettings: vi.fn() });
     return <ConversionActionsView {...current} />;
   }
   const container = document.createElement("div");
@@ -264,8 +264,8 @@ it.each([false, true])("waits for current runtime options when a pasted source f
   let generation = 0;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client as unknown as ApiClient,
-      runtimeSelectionGeneration: generation, connectionState: "connected", health: null, statusMessage: "",
-      conversionJob, onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      runtimeSelectionGeneration: generation, connectionState: "connected",
+      conversionJob, onOpenSettings: vi.fn() });
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -305,8 +305,8 @@ it("shows a working runtime retry action while conversion is blocked by bootstra
   const conversionJob = {} as ConversionJobController;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return <ConversionActionsView {...current} />;
   }
   const container = document.createElement("div");
@@ -344,8 +344,8 @@ it("lets the visible Cancel action stop a cleanup retry before another conversio
   let current!: ReturnType<typeof useConversionPanelState>;
   function Probe() {
     current = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return <ConversionActionsView {...current} />;
   }
   const container = document.createElement("div");
@@ -387,8 +387,8 @@ it.each(["checking", "unconfirmed"])("shows Refresh for a %s conversion start wi
   const root = createRoot(container);
   function Probe() {
     const state = useConversionPanelState({ activeTab: "convert", hidden: false, apiClient: client,
-      connectionState: "connected", health: null, statusMessage: "", conversionJob,
-      onOpenSettings: vi.fn(), onOpenRuntimeSetup: vi.fn() });
+      connectionState: "connected", conversionJob,
+      onOpenSettings: vi.fn() });
     return <ConversionActionsView sourceQueue={state.sourceQueue} capabilities={state.capabilities}
       conversionActions={state.conversionActions} actions={state.actions} />;
   }

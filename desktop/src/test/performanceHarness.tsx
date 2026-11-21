@@ -30,13 +30,13 @@ function fixture(chapterCount: number, bookCount: number): UseLibraryResult {
   }));
   return {
     searchQuery: "", setSearchQuery: noop, modeFilter: "all", setModeFilter: noop,
-    items, indexedCount: bookCount, hasMore: false, selectedBookId: 1,
+    items, unfilteredItems: items, indexedCount: bookCount, hasMore: false, selectedBookId: 1,
     selectedBookIndex: 0, selectedBookDetail: detail, selectedBookPlayable: false,
     loadingList: false, loadingMore: false, loadingDetail: false,
-    errorMessage: "", statusMessage: "", bookSummaryTitle: detail.title,
-    bookSummaryMeta: "Fixture author", bookDetailText: "", maintenanceReport: null,
+    errorMessage: "", statusMessage: "", bookDetailText: "", maintenanceReport: null,
     maintenanceLoading: false, maintenanceMessage: "", canOpenAppData: false,
     refreshLibrary: asyncNoop, loadMore: asyncNoop, selectBook: async () => detail,
+    selectBookById: async () => detail,
     selectRelative: async () => detail, updateSelectedBookMetadata: asyncNoop,
     loadCleaningPreview: async () => null, repairSelectedBook: asyncNoop,
     loadMaintenanceDiagnostics: asyncNoop, backupDatabase: asyncNoop,

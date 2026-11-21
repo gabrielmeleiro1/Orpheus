@@ -19,7 +19,7 @@ class EventConnection {
 }
 
 function active(id: string): ActiveConversionResponse {
-  return { active: true, job: { id, status: "running", book_id: null, error: null, title: id, author: id } };
+  return { active: true, job: { id, status: "running", book_id: null, error: null, title: id, author: id, repair: false } };
 }
 
 function deferred<T>() {

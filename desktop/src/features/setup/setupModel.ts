@@ -11,7 +11,6 @@ export interface SetupSelection {
   cleanerCudaQuantization?: string;
   profile: RuntimeProfileId;
   modelGroups: string[];
-  acceptPytorchRisk: boolean;
 }
 
 export interface SetupProfileChoice extends RuntimeSetupProfile {
@@ -72,7 +71,7 @@ export const MODEL_GROUP_DETAILS: Record<string, ModelGroupDetail> = {
   "cleaner-mlx": { label: "Llama 3.2 · 3B", description: "Larger text cleaner · 4-bit", model: "mlx-community/Llama-3.2-3B-Instruct-4bit", downloadMB: 1800, diskMB: 2300, kind: "cleaner" },
   "tts-cpu-cuda": { label: "Kokoro TTS", description: "Local speech on CPU or NVIDIA GPU", model: "hexgrad/Kokoro-82M", downloadMB: 500, diskMB: 900, kind: "tts" },
   "cleaner-cuda": { label: "Qwen 2.5 · 1.5B", description: "Balanced size and text cleaning", model: "Qwen/Qwen2.5-1.5B-Instruct", downloadMB: 3100, diskMB: 3200, kind: "cleaner" },
-  "cleaner-cuda-large": { label: "Qwen 2.5 · 3B", description: "More capable · more GPU memory", model: "Qwen/Qwen2.5-3B-Instruct", downloadMB: 6200, diskMB: 6400, kind: "cleaner" },
+  "cleaner-cuda-large": { label: "Qwen 2.5 · 3B", description: "More capable · more GPU memory · non-commercial license", model: "Qwen/Qwen2.5-3B-Instruct", downloadMB: 6200, diskMB: 6400, kind: "cleaner" },
   "cleaner-mlx-small": { label: "Llama 3.2 · 1B", description: "Lightweight text cleaning · 4-bit", model: "mlx-community/Llama-3.2-1B-Instruct-4bit", downloadMB: 713, diskMB: 800, kind: "cleaner" },
 };
 
@@ -127,7 +126,6 @@ export function createSelection(status: RuntimeSetupStatusResponse): SetupSelect
       seen.add(kind);
       return true;
     }),
-    acceptPytorchRisk: Boolean(selected?.risk?.accepted),
     cleanerCudaQuantization: status.cleaner_cuda_quantization ?? "4bit",
   };
 }
@@ -144,7 +142,6 @@ export function selectProfile(
   return {
     profile: profile.id,
     modelGroups: defaultModelGroups(profile),
-    acceptPytorchRisk: Boolean(profile.risk?.accepted),
     cleanerCudaQuantization: selection.cleanerCudaQuantization ?? "4bit",
   };
 }
@@ -171,10 +168,7 @@ export function canStartSetup(selection: SetupSelection, status: RuntimeSetupSta
   if (!profile?.compatible || selection.modelGroups.some((group) => !profile.model_groups.includes(group) || profile.group_availability?.[group]?.available === false)) {
     return false;
   }
-  if (profile.id !== "base" && !selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts")) {
-    return false;
-  }
-  return !profile.risk || selection.acceptPytorchRisk;
+  return profile.id === "base" || selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts");
 }
 
 export function backendInstallProfileId(
@@ -295,7 +289,6 @@ export function isCheckingConfiguredRuntime(status: RuntimeSetupStatusResponse |
   return Boolean(status?.configured && (status.state === "checking" || isCheckingRuntimeSelection(status, {
     profile: status.selected_profile ?? "base",
     modelGroups: status.selected_model_groups.map((group) => group.id),
-    acceptPytorchRisk: false,
   })));
 }
 

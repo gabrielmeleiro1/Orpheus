@@ -51,11 +51,32 @@ export interface ConversionQueueItem {
   jobId: string | null;
   /** The library book this row's job wrote to, once known; links the row to a later repair. */
   bookId?: number | null;
+  /**
+   * A paused start may have reached the backend although the app never saw its
+   * job, so the conversion may already have made a book.
+   */
+  startUncertain?: boolean;
 }
 
 /** A row whose conversion ended, in any way; a row that never started is not finished. */
 export function isFinishedQueueItem(item: ConversionQueueItem): boolean {
   return item.status === "done" || ((item.status === "failed" || item.status === "warning") && item.jobId !== null);
+}
+
+// Texts of a row whose start may have made a book (see `startUncertain`).
+export const START_CHECKING_MESSAGE = "Checking conversion start. Refresh before retrying.";
+export const APP_RESTARTED_MESSAGE = "The app restarted. Check Library before retrying this item.";
+export const QUEUE_CANCELLED_MESSAGE = "Queue cancelled. Check Library before retrying this item.";
+export const INTERRUPTED_CONVERSION_MESSAGE =
+  "Orpheus closed during this conversion. Check Library before converting it again.";
+/** A row with no known job whose start may still have made a book: only the user restarts it, after checking Library. */
+export function isStartUncertain(item: ConversionQueueItem): boolean {
+  return item.status === "warning" && item.jobId === null && item.startUncertain === true;
+}
+
+/** A row "Start all" may convert: waiting, and neither finished nor possibly started already. */
+export function isQueueRunnable(item: ConversionQueueItem): boolean {
+  return (item.status === "ready" || item.status === "warning") && !isFinishedQueueItem(item) && !isStartUncertain(item);
 }
 
 export function createQueueItem(

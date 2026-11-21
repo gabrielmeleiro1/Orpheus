@@ -56,20 +56,16 @@ describe("buildProgressTerminalPresentation", () => {
       uiState: "completed" as ConversionJobStatus,
       stages: doneStages(),
       currentStage: "ingestion",
-      currentMessage: "waiting for updates",
       performance: livePerformance,
-      progressPct: 100,
     });
 
     expect(presentation.operationTitle).toBe("complete");
     expect(presentation.showLiveActiveTask).toBe(false);
-    expect(presentation.showLiveWorkers).toBe(false);
     const values = Object.fromEntries(presentation.metrics.map((metric) => [metric.label, metric.value]));
     // A finished job reports its pool size, never a live "0 of 4".
     expect(values["Parallel chapters"]).toBe("4");
     expect(values.Mode).toBe("Parallel");
     expect(presentation.metrics.some((metric) => metric.value.toLowerCase().includes("waiting"))).toBe(false);
-    expect(presentation.activeTaskSummary).toBe("Conversion complete");
   });
 
   it("preserves last meaningful throughput and elapsed when available on completed", () => {
@@ -77,9 +73,7 @@ describe("buildProgressTerminalPresentation", () => {
       uiState: "completed",
       stages: doneStages(),
       currentStage: "packaging",
-      currentMessage: "done",
       performance: livePerformance,
-      progressPct: 100,
     });
 
     expect(presentation.metrics.map((metric) => [metric.label, metric.value])).toEqual([
@@ -92,7 +86,6 @@ describe("buildProgressTerminalPresentation", () => {
       ["Mode", "Parallel"],
     ]);
     expect(presentation.elapsed).toBe("12s");
-    expect(presentation.snapshotKind).toBe("final");
   });
 
   it("renders a neutral completed summary when performance is unavailable", () => {
@@ -100,18 +93,13 @@ describe("buildProgressTerminalPresentation", () => {
       uiState: "completed",
       stages: doneStages(),
       currentStage: "",
-      currentMessage: "",
       performance: null,
-      progressPct: 100,
     });
 
     expect(presentation.operationTitle).toBe("complete");
-    expect(presentation.showLiveWorkers).toBe(false);
     expect(presentation.showLiveActiveTask).toBe(false);
     expect(presentation.metrics).toEqual([]);
     expect(presentation.elapsed).toBe("");
-    expect(presentation.activeTaskSummary).toBe("Conversion complete");
-    expect(presentation.snapshotKind).toBe("neutral");
   });
 
   it("avoids terminal-style placeholders while running before performance data arrives", () => {
@@ -122,15 +110,12 @@ describe("buildProgressTerminalPresentation", () => {
       uiState: "running",
       stages,
       currentStage: "ingestion",
-      currentMessage: "",
       performance: null,
-      progressPct: 2,
     });
 
     // Nothing measured yet means nothing listed: no "—" or "Not reported" rows.
     expect(presentation.metrics).toEqual([]);
     expect(presentation.elapsed).toBe("");
-    expect(presentation.activeTaskSummary).toBe("Waiting for updates");
   });
 
   it("keeps live metrics while running", () => {
@@ -146,24 +131,19 @@ describe("buildProgressTerminalPresentation", () => {
       uiState: "running",
       stages,
       currentStage: "cleaning",
-      currentMessage: "cleaning chapter 2",
       performance: livePerformance,
-      progressPct: 40,
     });
 
     expect(presentation.operationTitle).toBe("cleaning");
-    expect(presentation.showLiveWorkers).toBe(true);
     expect(presentation.showLiveActiveTask).toBe(true);
     const values = Object.fromEntries(presentation.metrics.map((metric) => [metric.label, metric.value]));
     expect(values["Parallel chapters"]).toBe("0 of 4");
     expect(values.Mode).toBe("Manual, parallel");
     expect(values["Chapters done"]).toBe("3");
     expect(buildProgressTerminalPresentation({
-      uiState: "running", stages, currentStage: "cleaning", currentMessage: "",
-      performance: { ...livePerformance, failed_chapters: 1 }, progressPct: 40,
+      uiState: "running", stages, currentStage: "cleaning",
+      performance: { ...livePerformance, failed_chapters: 1 },
     }).metrics.find((metric) => metric.label === "Chapters done")?.value).toBe("3 · 1 failed");
-    expect(presentation.activeTaskSummary).toBe("cleaning chapter 2");
-    expect(presentation.snapshotKind).toBe("live");
   });
 
   it("treats cancelled and failed as terminal, not live", () => {
@@ -172,13 +152,9 @@ describe("buildProgressTerminalPresentation", () => {
         uiState,
         stages: createProgressStages(),
         currentStage: "synthesis",
-        currentMessage: uiState,
         performance: livePerformance,
-        progressPct: 30,
       });
-      expect(presentation.showLiveWorkers).toBe(false);
       expect(presentation.showLiveActiveTask).toBe(false);
-      expect(presentation.snapshotKind).not.toBe("live");
     }
   });
 });

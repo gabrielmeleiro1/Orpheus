@@ -11,7 +11,7 @@ import {
   readDesktopBackendStatus,
   restartDesktopBackend,
   waitForDesktopEndpoint,
-} from "../features/dashboard/dashboardHelpers";
+} from "./desktopBackend";
 import { isTauriRuntime } from "../platform/tauriRuntime";
 import type {
   BackendConnectionState,

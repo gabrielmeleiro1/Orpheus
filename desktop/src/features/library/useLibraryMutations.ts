@@ -10,6 +10,7 @@ export function useLibraryMutations(apiClient: ApiClient | null, queries: Return
     repository,
     items,
     setItems,
+    patchBook,
     indexedCount,
     setIndexedCount,
     selectedBookId,
@@ -303,19 +304,12 @@ export function useLibraryMutations(apiClient: ApiClient | null, queries: Return
           chapters: current?.chapters ?? updated.chapters ?? [],
           playback_url: current?.playback_url ?? updated.playback_url ?? null,
         }));
-        setItems((current) =>
-          current.map((item) =>
-            item.id === targetBookId
-              ? {
-                  ...item,
-                  title: updated.title,
-                  author: updated.author,
-                  tags: updated.tags,
-                  source_available: updated.source_available,
-                }
-              : item,
-          ),
-        );
+        patchBook(targetBookId, {
+          title: updated.title,
+          author: updated.author,
+          tags: updated.tags,
+          source_available: updated.source_available,
+        });
         setStatusMessage("Metadata saved");
       } catch (error: unknown) {
         if (isCurrentLibrary() && isLibraryReplacedError(error)) {
@@ -335,7 +329,7 @@ export function useLibraryMutations(apiClient: ApiClient | null, queries: Return
         }
       }
     },
-    [beginApiOwnedRequest, beginMutationRequest, beginSelectionOwnedRequest, reloadLibrarySession, repository, selectedBookId, selectedEpoch],
+    [beginApiOwnedRequest, beginMutationRequest, beginSelectionOwnedRequest, patchBook, reloadLibrarySession, repository, selectedBookId, selectedEpoch],
   );
 
   const repairSelectedBook = useCallback(

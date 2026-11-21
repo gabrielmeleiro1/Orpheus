@@ -92,32 +92,7 @@ export function formatEtaLabel(value: unknown): string {
 }
 
 function normalizeStageName(stage: string): ProgressStageName | "" {
-  const stageValue = stage.toLowerCase();
-  if (stageValue in BACKEND_STAGE_NAME_MAP) {
-    return BACKEND_STAGE_NAME_MAP[stageValue];
-  }
-  if (stageValue.includes("ingest")) {
-    return "ingestion";
-  }
-  if (stageValue.includes("chunk")) {
-    return "chunking";
-  }
-  if (stageValue.includes("clean")) {
-    return "cleaning";
-  }
-  if (stageValue.includes("synth")) {
-    return "synthesis";
-  }
-  if (stageValue.includes("encod")) {
-    return "encoding";
-  }
-  if (stageValue.includes("pack")) {
-    return "packaging";
-  }
-  if (stageValue === "complete" || stageValue === "completed") {
-    return "packaging";
-  }
-  return "";
+  return BACKEND_STAGE_NAME_MAP[stage.toLowerCase()] ?? "";
 }
 
 export function resolveStageIndex(stage: string): number {

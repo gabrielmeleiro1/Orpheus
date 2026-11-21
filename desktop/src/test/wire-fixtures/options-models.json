@@ -93,13 +93,6 @@
       "id": "kokoro",
       "name": "Kokoro 82M",
       "options_schema": {
-        "batch_size": {
-          "default": 4,
-          "description": "Maximum chunk group size for scheduler-driven multi-item synthesis.",
-          "maximum": 16,
-          "minimum": 1,
-          "type": "integer"
-        },
         "enable_streaming": {
           "default": true,
           "type": "boolean"
@@ -110,11 +103,6 @@
             "bf16"
           ],
           "type": "string"
-        },
-        "use_batching": {
-          "default": true,
-          "description": "Enable grouped multi-item synthesis scheduling for chapter chunks.",
-          "type": "boolean"
         }
       },
       "supported_quantizations": [

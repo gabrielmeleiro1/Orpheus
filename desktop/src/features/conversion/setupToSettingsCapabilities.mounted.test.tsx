@@ -4,7 +4,7 @@
  * Higher-bound regression for the installed setup→dashboard→Settings path.
  *
  * Hook-only tests mock `getRuntimeBootstrap`, so they never exercise the real
- * WeakMap cache that `useRuntimeIdentity` pins on dashboard entry after
+ * WeakMap cache that `useRuntimeBootstrapRefresh` pins on dashboard entry after
  * Continue. This file uses the real cache + a shared ApiClient identity.
  *
  * Installed failure (7db3bfb): after Continue, dashboard pins a stale
@@ -20,7 +20,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../../api/client";
 import { getRuntimeBootstrap } from "../../app/runtimeBootstrapCache";
-import { useRuntimeIdentity } from "../../app/usePrimaryRuntime";
+import { useRuntimeBootstrapRefresh } from "../../app/useRuntimeBootstrapRefresh";
 import type { ModelOptionsResponse, SystemCapabilitiesResponse } from "../../types/api";
 import { useConversionOptions, type UseConversionOptionsResult } from "./useConversionOptions";
 
@@ -79,13 +79,13 @@ const modelOptions: ModelOptionsResponse = {
   ],
 };
 
-function IdentityProbe({ apiClient }: { apiClient: ApiClient }): null {
-  useRuntimeIdentity(apiClient);
+function DashboardProbe({ apiClient }: { apiClient: ApiClient }): null {
+  useRuntimeBootstrapRefresh(apiClient);
   return null;
 }
 
 function SettingsProbe({ apiClient }: { apiClient: ApiClient }): null {
-  const result = useConversionOptions({ apiClient, conversionMode: "audiobook" });
+  const result = useConversionOptions({ apiClient });
   (globalThis as typeof globalThis & { settingsProbe?: UseConversionOptionsResult }).settingsProbe = result;
   return null;
 }
@@ -148,7 +148,7 @@ describe("setup → dashboard → Settings capability propagation", () => {
 
     // Continue → dashboard: identity label pins the cold/stale bootstrap.
     await act(async () => {
-      root.render(<IdentityProbe apiClient={apiClient} />);
+      root.render(<DashboardProbe apiClient={apiClient} />);
     });
     await act(async () => {
       await Promise.resolve();
@@ -168,7 +168,7 @@ describe("setup → dashboard → Settings capability propagation", () => {
     await act(async () => {
       root.render(
         <>
-          <IdentityProbe apiClient={apiClient} />
+          <DashboardProbe apiClient={apiClient} />
           <SettingsProbe apiClient={apiClient} />
         </>,
       );

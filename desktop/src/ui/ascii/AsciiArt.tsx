@@ -15,23 +15,15 @@ function waveformRows(heights: readonly number[], rows: number): string[] {
   return lines;
 }
 
-// Fixed shapes so empty states never shift between renders.
-const SPEECH = Array.from({ length: 36 }, (_, index) =>
-  0.12 + 0.88 * Math.abs(Math.sin(index * 0.55) * Math.sin(index * 0.17 + 0.6)));
+// A fixed shape so empty states never shift between renders.
 const SILENCE = Array.from({ length: 36 }, (_, index) => 0.04 + 0.05 * Math.abs(Math.sin(index * 0.9)));
-
-const ART = {
-  wave: waveformRows(SPEECH, 3),
-  idle: waveformRows(SILENCE, 1),
-} as const;
-
-type AsciiArtName = keyof typeof ART;
+const IDLE = waveformRows(SILENCE, 1).join("\n");
 
 /** A small block-glyph illustration for empty states. */
-export function AsciiArt({ name, className }: { name: AsciiArtName; className?: string }) {
+export function AsciiArt({ className }: { className?: string }) {
   return (
     <pre className={`ascii-art${className ? ` ${className}` : ""}`} aria-hidden="true">
-      {ART[name].join("\n")}
+      {IDLE}
     </pre>
   );
 }

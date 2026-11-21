@@ -3,7 +3,14 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { useMountedRef } from "../../state/generationGuard";
 import type { ApiClient } from "../../api/client";
 import type { StartConversionRequest } from "../../types/api";
-import { createQueueItem, isPreflightConvertible, type ConversionQueueItem } from "./conversionPanelModel";
+import {
+  APP_RESTARTED_MESSAGE,
+  createQueueItem,
+  isPreflightConvertible,
+  isQueueRunnable,
+  QUEUE_CANCELLED_MESSAGE,
+  type ConversionQueueItem,
+} from "./conversionPanelModel";
 import type { QueueEditPatch } from "./conversionPanelStateTypes";
 import type { ConversionJobController, StartConversionResult } from "./useConversionJob";
 
@@ -30,6 +37,13 @@ function failedRowMessage(status: string, reason: string | undefined): string {
   return message && !/^conversion (failed|cancelled|completed)$/i.test(message) ? message : `conversion ${status}`;
 }
 
+/** How a row reads once its job reached a terminal state. */
+function terminalRow(status: string, reason?: string): Pick<ConversionQueueItem, "status" | "error"> {
+  if (status === "completed") return { status: "done", error: "" };
+  if (status === "unknown") return { status: "warning", error: UNCONFIRMED_CONVERSION_MESSAGE };
+  return { status: "failed", error: failedRowMessage(status, reason) };
+}
+
 function pauseCommand(owner: QueueCommandOwner, delayMs: number): Promise<void> {
   return new Promise((resolve) => {
     if (owner.controller.signal.aborted) {
@@ -51,6 +65,17 @@ function isRetryablePause(result: StartConversionResult): boolean {
     (result.status === 409 && result.serverCode === "conversion_cleanup_pending") ||
     result.ambiguous || result.serverCode === "runtime_options_pending" || result.serverCode === "runtime_check_pending" || result.serverCode === "queue_cancelled"
   );
+}
+
+/** How a row reads after a start that did not return a job. */
+function stoppedRow(result: Extract<StartConversionResult, { ok: false }>): Pick<ConversionQueueItem, "status" | "error" | "startUncertain"> {
+  const paused = isRetryablePause(result);
+  return {
+    status: paused ? "warning" : "failed",
+    error: result.error,
+    // An unanswered or cancelled request may have reached the backend.
+    startUncertain: paused && (result.ambiguous === true || result.serverCode === "queue_cancelled"),
+  };
 }
 
 interface UseConversionQueueRunnerArgs {
@@ -112,7 +137,7 @@ export function useConversionQueueRunner({
     setCommandRunning(false);
     if (owner.itemId) {
       updateQueueItem(owner.itemId, (item) => item.status === "converting" ? {
-        ...item, status: "warning", error: "The app restarted. Check Library before retrying this item.",
+        ...item, status: "warning", error: APP_RESTARTED_MESSAGE, startUncertain: true,
       } : item);
     }
   }, [apiClient, updateQueueItem]);
@@ -164,11 +189,7 @@ export function useConversionQueueRunner({
     if (result.ok) {
       void conversionJob.waitForTerminalState(result.jobId).then((terminal) => {
         if (!mountedRef.current || latestRef.current.apiClient !== pending.client) return;
-        updateQueueItem(pending.itemId, (item) => ({
-          ...item,
-          status: terminal.status === "completed" ? "done" : terminal.status === "unknown" ? "warning" : "failed",
-          error: terminal.status === "completed" ? "" : terminal.message,
-        }));
+        updateQueueItem(pending.itemId, (item) => ({ ...item, ...terminalRow(terminal.status, terminal.message) }));
       });
     }
   }, [apiClient, conversionJob, updateQueueItem]);
@@ -200,8 +221,7 @@ export function useConversionQueueRunner({
     const startedAt = Date.now();
     let attempt = 0;
     let waitingForCleanup = false;
-    const cancelledResult: StartConversionResult = { ok: false, serverCode: "queue_cancelled",
-      error: "Queue cancelled. Check Library before retrying this item." };
+    const cancelledResult: StartConversionResult = { ok: false, serverCode: "queue_cancelled", error: QUEUE_CANCELLED_MESSAGE };
     while (ownsCommand(owner)) {
       if (owner.cancelRequested) return cancelledResult;
       if (waitingForCleanup && Date.now() - startedAt >= CLEANUP_ADMISSION_MAX_WAIT_MS) {
@@ -283,11 +303,7 @@ export function useConversionQueueRunner({
         if (startResult.ambiguous && startResult.clientRequestId) {
           uncertainItemRef.current = { itemId: targetItem.id, clientRequestId: startResult.clientRequestId, client: owner.client };
         }
-        updateQueueItem(targetItem.id, (current) => ({
-          ...current,
-          status: isRetryablePause(startResult) ? "warning" : "failed",
-          error: startResult.error,
-        }));
+        updateQueueItem(targetItem.id, (current) => ({ ...current, ...stoppedRow(startResult) }));
         return;
       }
 
@@ -298,34 +314,8 @@ export function useConversionQueueRunner({
       }));
 
       const terminal = await owner.job.waitForTerminalState(startResult.jobId);
-      const finalStatus = terminal.status;
       if (!ownsCommand(owner)) return;
-      if (finalStatus === "completed") {
-        updateQueueItem(targetItem.id, (current) => ({
-          ...current,
-          status: "done",
-          error: "",
-        }));
-        return;
-      }
-
-      if (finalStatus === "unknown") {
-        // We lost sight of the job rather than seeing it fail; say so.
-        updateQueueItem(targetItem.id, (current) => ({
-          ...current,
-          status: "warning",
-          error: UNCONFIRMED_CONVERSION_MESSAGE,
-        }));
-        return;
-      }
-
-      const message =
-        failedRowMessage(finalStatus, terminal.message);
-      updateQueueItem(targetItem.id, (current) => ({
-        ...current,
-        status: "failed",
-        error: message,
-      }));
+      updateQueueItem(targetItem.id, (current) => ({ ...current, ...terminalRow(terminal.status, terminal.message) }));
     } catch (error: unknown) {
       if (ownsCommand(owner) && targetItem) {
         const message = error instanceof Error ? error.message : "conversion failed";
@@ -357,11 +347,7 @@ export function useConversionQueueRunner({
       return;
     }
 
-    const runnableItems = queueItems.filter(
-      (item) =>
-        Boolean(item.sourcePath.trim()) &&
-        (item.status === "ready" || item.status === "warning"),
-    );
+    const runnableItems = queueItems.filter((item) => Boolean(item.sourcePath.trim()) && isQueueRunnable(item));
     if (runnableItems.length === 0) {
       const hasPendingPreflight = queueItems.some((item) => item.status === "preflighting");
       setQueueStatus(
@@ -398,7 +384,7 @@ export function useConversionQueueRunner({
         remainingIds.delete(item.id);
         attemptedIds.add(item.id);
         if (!item.sourcePath.trim() ||
-          (item.status !== "ready" && item.status !== "warning") ||
+          !isQueueRunnable(item) ||
           (item.preflight && !isPreflightConvertible(item.preflight)) ||
           (runnableItems.some((candidate) => candidate.id === item.id)
             && item.sourcePath !== runnableItems.find((candidate) => candidate.id === item.id)?.sourcePath)) {
@@ -420,7 +406,7 @@ export function useConversionQueueRunner({
               uncertainItemRef.current = { itemId: item.id, clientRequestId: startResult.clientRequestId, client: owner.client };
             }
             if (isRetryablePause(startResult)) {
-              updateQueueItem(item.id, (current) => ({ ...current, status: "warning", error: startResult.error }));
+              updateQueueItem(item.id, (current) => ({ ...current, ...stoppedRow(startResult) }));
               queueCompleted = false;
               setQueueStatus(owner.cancelRequested ? "Queue cancelled." : `Queue paused: ${startResult.error}`);
               break;
@@ -437,7 +423,6 @@ export function useConversionQueueRunner({
           let finalStatus = terminal.status;
           if (!ownsCommand(owner)) return;
           if (finalStatus === "unknown") {
-            const unknownMessage = UNCONFIRMED_CONVERSION_MESSAGE;
             setQueueStatus("Checking backend before continuing the queue…");
             // Losing observation does not release the backend's job slot.
             // Keep the original client until the slot is demonstrably idle.
@@ -461,42 +446,25 @@ export function useConversionQueueRunner({
             }
             if (!ownsCommand(owner)) return;
             if (!reconciled || finalStatus === "unknown") {
-              updateQueueItem(item.id, (current) => ({
-                ...current,
-                status: "warning",
-                error: unknownMessage,
-              }));
+              updateQueueItem(item.id, (current) => ({ ...current, ...terminalRow("unknown") }));
               queueCompleted = false;
-              setQueueStatus(unknownMessage);
-              if (!reconciled) {
-                setQueueStatus("Queue paused: backend status unavailable. Reconnect before running the remaining items.");
-                break;
-              }
+              setQueueStatus(reconciled
+                ? UNCONFIRMED_CONVERSION_MESSAGE
+                : "Queue paused: backend status unavailable. Reconnect before running the remaining items.");
+              if (!reconciled) break;
               continue;
             }
           }
-          if (finalStatus === "completed") {
-            updateQueueItem(item.id, (current) => ({
-              ...current,
-              status: "done",
-              error: "",
-            }));
-            continue;
-          }
-          const message =
-            failedRowMessage(finalStatus, terminal.message);
-          updateQueueItem(item.id, (current) => ({
-            ...current,
-            status: "failed",
-            error: message,
-          }));
+          const row = terminalRow(finalStatus, terminal.message);
+          updateQueueItem(item.id, (current) => ({ ...current, ...row }));
+          if (finalStatus === "completed") continue;
           if (finalStatus === "cancelled") {
             // Cancelling a book stops that book only; the queue goes on to the next one.
             cancelledItems += 1;
             setQueueStatus(`Cancelled ${item.title || item.label}. Continuing with the next book.`);
             continue;
           }
-          setQueueStatus(message);
+          setQueueStatus(row.error);
           queueCompleted = false;
           break;
         } catch (error: unknown) {

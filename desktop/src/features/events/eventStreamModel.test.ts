@@ -524,6 +524,21 @@ describe("event stream terminal job filtering", () => {
     expect(lateRunning.state.uiState).toBe("cancelled");
   });
 
+  it("does not log or reapply a finished job's terminal state again on reconnect", () => {
+    const completedAction = {
+      type: "state" as const,
+      payload: { event_type: "state", state: "completed", job_id: "job-1", message: "conversion completed" },
+      logId: 1,
+    };
+    const completed = eventStreamReducer(runJob("job-1"), completedAction).state;
+    expect(completed.logs.map((entry) => entry.msg)).toEqual(["state completed (job-1)"]);
+
+    const replayed = eventStreamReducer(completed, { ...completedAction, logId: 2 });
+    expect(replayed.ignored).toBe(true);
+    expect(replayed.state).toBe(completed);
+    expect(replayed.terminalEvent).toMatchObject({ jobId: "job-1", status: "completed" });
+  });
+
   it("still honors the start of a different job after cancellation", () => {
     const running = runJob("job-1");
     const cancelled = eventStreamReducer(running, {

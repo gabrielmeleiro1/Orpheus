@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import { AsciiLoader } from "../../ui/ascii/AsciiLoader";
-import type { RuntimeSetupStatusResponse } from "../../types/api";
+import type { RuntimeSetupProfile, RuntimeSetupStatusResponse } from "../../types/api";
 import { invalidateRuntimeBootstrap } from "../../app/runtimeBootstrapCache";
 import {
   cancelRuntimeSetup,
@@ -34,7 +34,6 @@ import {
   type SetupProgressEvent,
   type SetupProgressState,
 } from "./setupModel";
-import { restartAndReconnectSetup } from "./setupLifecycle";
 import {
   EMPTY_PROGRESS,
   safeError,
@@ -45,7 +44,7 @@ import { SetupPlanSection } from "./SetupPlanSection";
 import { SetupPrecisionChoice } from "./SetupPrecisionChoice";
 import { SetupProgressSection } from "./SetupProgressSection";
 import { SetupRecoveryNotice } from "./SetupRecoveryNotice";
-import { useSetupModelDownload, type SetupDownloadPhase } from "./useSetupModelDownload";
+import { useSetupModelDownload, type SetupAttempt, type SetupDownloadPhase } from "./useSetupModelDownload";
 import { useSetupStatus } from "./useSetupStatus";
 
 export interface SetupPageBridge {
@@ -72,6 +71,7 @@ interface SetupPageProps {
   initialError: string | null;
   onReady: (status: RuntimeSetupStatusResponse) => void;
   onContinueLibraryOnly: () => void;
+  /** Settings behaviour; App always passes it together with `embedded`. */
   settingsEntry?: boolean;
   /** Rendered as a section of the Settings page instead of its own screen. */
   embedded?: boolean;
@@ -112,7 +112,9 @@ export function SetupPage({
   const [listenerAttempt, setListenerAttempt] = useState(0);
   const [awaitingReconnect, setAwaitingReconnect] = useState(false);
   const [adopting, setAdopting] = useState(false);
-  const [managingModels, setManagingModels] = useState(false);
+  // Model rows and the local-data reset lock the page while they run.
+  const [managing, setManaging] = useState<"models" | "reset" | null>(null);
+  const managingModels = managing !== null;
   const [downloadingGroup, setDownloadingGroup] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [downloadPhase, setDownloadPhase] = useState<SetupDownloadPhase>("idle");
@@ -125,7 +127,7 @@ export function SetupPage({
   const adoptGeneration = useRef(0);
   const currentApiClient = useRef(apiClient);
   currentApiClient.current = apiClient;
-  const lastAttempt = useRef<"backend" | "bridge" | null>(null);
+  const lastAttempt = useRef<SetupAttempt>(null);
   const statusRefreshLock = useRef(false);
   const preRestartClient = useRef<ApiClient | null>(null);
   const errorRef = useRef<HTMLDivElement>(null);
@@ -137,7 +139,7 @@ export function SetupPage({
     adoptLocked.current = false;
     cancelRequest.current = null;
     setAdopting(false);
-    setManagingModels(false);
+    setManaging(null);
     return () => { adoptGeneration.current += 1; };
   }, [apiClient]);
 
@@ -279,12 +281,6 @@ export function SetupPage({
   }, [busy]);
 
   useEffect(() => {
-    if (settingsEntry && !embedded) {
-      setupHeadingRef.current?.focus();
-    }
-  }, [embedded, progress.lifecycle, settingsEntry, status]);
-
-  useEffect(() => {
     if (!environment?.available || !busy || awaitingReconnect || downloadPhase !== "idle") return undefined;
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -337,15 +333,7 @@ export function SetupPage({
   const installedReady = installedRuntime?.ready === true;
   const runtimeCheck = status ? runtimeCheckResult(status) : null;
   const configuredReady = status?.configured === true && status.ready && status.state === "ready" && !status.restart_required;
-  const installedProfile = installedReady
-    ? status?.profiles.find((profile) => profile.id === installedRuntime?.profile) ?? null
-    : null;
-  const installedIsCuda = installedReady && installedRuntime?.profile === "cuda";
-  const riskProfile = installedReady && !settingsEntry ? installedProfile : selectedProfile;
-  const showRiskBlock = installedReady && !settingsEntry
-    ? Boolean(installedIsCuda && installedProfile?.risk)
-    : selection.profile === "cuda" && Boolean(selectedProfile?.risk);
-  const adoptDisabled = busy || adopting || Boolean(installedProfile?.risk && !selection.acceptPytorchRisk);
+  const adoptDisabled = busy || adopting;
   const readyToStart = Boolean(listenerReady && runnerReconciled && mutationsAvailable && status && canStartSetup(selection, status) && !busy && !adopting && !startLocked.current);
   const packagedMode = environment !== null && !mutationsAvailable;
   const backendInstallProfile = backendInstallProfileId(mutationsAvailable, installedRuntime);
@@ -381,7 +369,6 @@ export function SetupPage({
         profile: selection.profile,
         modelGroups: [...selection.modelGroups],
         cleanerCudaQuantization: selection.cleanerCudaQuantization ?? "4bit",
-        acceptPytorchRisk: selection.acceptPytorchRisk,
       });
       const running = applyRunnerSnapshot(runner);
       if (!running && !runner.restartRequired) await refreshStatus();
@@ -423,11 +410,11 @@ export function SetupPage({
     return true;
   };
 
-  const installModel = async (profile: "base" | "mlx" | "cuda", groupId: string) => {
-    if (!apiClient || busy || adopting || managingModels || !acquireSetupStart(startLocked)) return;
+  const installModel = async (profile: RuntimeSetupProfile["id"], groupId: string): Promise<boolean> => {
+    if (!apiClient || busy || adopting || managingModels || !acquireSetupStart(startLocked)) return false;
     const generation = adoptGeneration.current;
     const ownsRequest = () => generation === adoptGeneration.current && currentApiClient.current === apiClient;
-    lastAttempt.current = null;
+    lastAttempt.current = { profile, groupId };
     setDownloadPhase("starting");
     setBusy(true);
     setError(null);
@@ -435,21 +422,22 @@ export function SetupPage({
     setProgress({ ...EMPTY_PROGRESS, lifecycle: "running", message: "Starting model download…" });
     try {
       await apiClient.startRuntimeModelDownload({ profile, model_groups: [groupId], configure_runtime: false }, { timeoutMs: 15_000 });
-      if (!ownsRequest()) return;
+      if (!ownsRequest()) return true;
       setDownloadPhase("downloading");
     } catch (reason: unknown) {
-      if (!ownsRequest()) return;
+      if (!ownsRequest()) return true;
       startLocked.current = false;
       setBusy(false);
       setError(safeError(reason, "The model download could not start. Try again."));
       setDownloadPhase("idle");
       setProgress(EMPTY_PROGRESS);
     }
+    return true;
   };
 
-  const modelDeleted = async () => {
+  const refreshAfterDelete = async (refreshFailure: string) => {
     const next = await refreshStatus();
-    if (!next) throw new Error("The model was deleted, but its status could not be refreshed. Check runtime to retry.");
+    if (!next) throw new Error(refreshFailure);
     setSelection(createSelection(next));
     setProgress(EMPTY_PROGRESS);
     if (apiClient) invalidateRuntimeBootstrap(apiClient);
@@ -462,11 +450,14 @@ export function SetupPage({
     // freshly-started progress state.
     if (startLocked.current) return;
     setError(null);
-    const retried = lastAttempt.current === "backend"
+    const attempt = lastAttempt.current;
+    const retried = attempt === "backend"
       ? await installFromBackend()
-      : lastAttempt.current === "bridge"
+      : attempt === "bridge"
         ? await start()
-        : false;
+        : attempt
+          ? await installModel(attempt.profile, attempt.groupId)
+          : false;
     if (!retried) {
       setProgress(EMPTY_PROGRESS);
     }
@@ -528,7 +519,8 @@ export function SetupPage({
     setBusy(true);
     setError(null);
     try {
-      await restartAndReconnectSetup(bridge.restart, onReconnectBackend);
+      await bridge.restart();
+      onReconnectBackend();
       // Restart authorization is consumed even if runtime verification fails.
       // Never offer the consumed restart again while checking the new backend.
       setStatus((previous) => previous ? { ...previous, restart_required: false } : previous);
@@ -562,7 +554,6 @@ export function SetupPage({
           profile: selection.profile,
           model_groups: [...selection.modelGroups],
           cleaner_cuda_quantization: selection.cleanerCudaQuantization ?? "4bit",
-          accept_pytorch_risk: Boolean(installedIsCuda && selection.acceptPytorchRisk),
         },
         { timeoutMs: 120_000 },
       );
@@ -589,7 +580,6 @@ export function SetupPage({
       const next = await apiClient.adoptRuntimeSetup({
         profile: selection.profile,
         model_groups: [...selection.modelGroups],
-        accept_pytorch_risk: selection.acceptPytorchRisk,
         cleaner_cuda_quantization: selection.cleanerCudaQuantization ?? "4bit",
       }, { timeoutMs: 120_000 });
       if (generation !== adoptGeneration.current) return;
@@ -615,7 +605,7 @@ export function SetupPage({
     if (!mutationsAvailable && apiClient) {
       try {
         const next = await apiClient.adoptRuntimeSetup(
-          { profile: "base", model_groups: [], accept_pytorch_risk: false },
+          { profile: "base", model_groups: [] },
           { timeoutMs: 15_000 },
         );
         if (!ownsRequest()) return;
@@ -636,7 +626,7 @@ export function SetupPage({
   const resolvePrimaryAction = (): { label: string; disabled: boolean; run: () => void | Promise<unknown>; disabledReason: string | null } => {
     if (checkingHardware && selection.profile !== "base") return { label: "Checking…", disabled: true, disabledReason: null, run: () => undefined };
     if (adopting) return { label: settingsEntry ? "Saving…" : "Continue…", disabled: true, disabledReason: null, run: () => undefined };
-    if (managingModels) return { label: "Updating models…", disabled: true, disabledReason: null, run: () => undefined };
+    if (managing) return { label: managing === "reset" ? "Resetting local data…" : "Updating models…", disabled: true, disabledReason: null, run: () => undefined };
     if (selection.profile !== "base" && !selection.modelGroups.some((id) => MODEL_GROUP_DETAILS[id]?.kind === "tts")) {
       return { label: "Continue", disabled: true, disabledReason: "Select the Kokoro voice model — it's required to create audio", run: () => undefined };
     }
@@ -659,9 +649,7 @@ export function SetupPage({
       return {
         label: "Continue",
         disabled: adoptDisabled,
-        disabledReason: adoptDisabled && installedProfile?.risk && !selection.acceptPytorchRisk
-          ? "Accept the security notice to continue."
-          : null,
+        disabledReason: null,
         run: adoptInstalled,
       };
     }
@@ -710,9 +698,12 @@ export function SetupPage({
   // a packaged build keeps the specific runtime reason.
   const actionHint = action.disabled && !(showEnvironmentNotice && environment?.mode !== "packaged") ? action.disabledReason : null;
   const footerTools = showFailureTools || actionHint;
+  // A restart leaves no setup run to cancel while the new backend is checked.
+  const canCancel = busy && !awaitingReconnect && downloadPhase !== "starting" && downloadPhase !== "adopting"
+    && (mutationsAvailable || downloadPhase === "downloading");
   const footerActions = !hidePrimaryAction
     || (!settingsEntry && (downloadPhase === "stopping" || runnerStopping))
-    || (busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading"))
+    || canCancel
     || (progress.lifecycle === "failed" && !busy);
   const footer = footerTools || footerActions ? (
     <footer className="setup-footer">
@@ -722,7 +713,7 @@ export function SetupPage({
       </div>
       <div className="setup-actions">
         {!settingsEntry && (downloadPhase === "stopping" || runnerStopping) ? <button className="btn btn-ghost" type="button" onClick={onContinueLibraryOnly}>Back to dashboard</button> : null}
-        {busy && downloadPhase !== "starting" && downloadPhase !== "adopting" && (mutationsAvailable || downloadPhase === "downloading") ? <button className="btn btn-secondary" type="button" onClick={() => void cancel()}>Cancel</button> : null}
+        {canCancel ? <button className="btn btn-secondary" type="button" onClick={() => void cancel()}>Cancel</button> : null}
         {progress.lifecycle === "failed" && !busy ? <button className="btn btn-secondary" type="button" onClick={() => void retryFailedAttempt()}>Retry</button> : null}
         {hidePrimaryAction ? null : <button className={`btn btn-primary btn-md setup-primary${adopting ? " is-loading" : ""}`} type="button" disabled={action.disabled} aria-busy={adopting} aria-disabled={adopting || action.disabled} onClick={() => void action.run()}>
           {adopting ? <AsciiLoader active width={4} /> : null}
@@ -740,13 +731,11 @@ export function SetupPage({
           <p className="settings-section-hint">Runs on this computer.</p>
         </div>
       ) : <div className="setup-intro">
-        {!settingsEntry ? (
-          <span className="brand-mark setup-brand" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false"><path d="M6 10v4M10 6v12M14 8.5v7M18 11v2" /></svg>
-          </span>
-        ) : null}
-        <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>{settingsEntry ? "Runtime setup" : "Welcome to Orpheus"}</h1>
-        {!settingsEntry ? <p className="setup-lede">Orpheus narrates your books on this computer.{status ? " You can change this later in Settings." : ""}</p> : null}
+        <span className="brand-mark setup-brand" aria-hidden="true">
+          <svg viewBox="0 0 24 24" focusable="false"><path d="M6 10v4M10 6v12M14 8.5v7M18 11v2" /></svg>
+        </span>
+        <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>Welcome to Orpheus</h1>
+        <p className="setup-lede">Orpheus narrates your books on this computer.{status ? " You can change this later in Settings." : ""}</p>
       </div>}
       <div className="setup-panel-content">
         {checkingHardware ? (
@@ -825,8 +814,6 @@ export function SetupPage({
             adopting={adopting}
             showAdvanced={showAdvanced}
             setShowAdvanced={setShowAdvanced}
-            showRiskBlock={showRiskBlock}
-            riskProfile={riskProfile}
             configuredReady={configuredReady}
             installedReady={installedReady}
             variant={settingsEntry ? "settings" : "onboarding"}
@@ -851,7 +838,8 @@ export function SetupPage({
           disabled={busy || adopting || managingModels || showRestart}
           downloadingGroup={busy ? downloadingGroup : null}
           downloadMessage={busy ? progressMessage : null}
-          onInstall={installModel} onDeleted={modelDeleted} onBusyChange={setManagingModels}
+          onInstall={installModel} onBusyChange={(managingRows) => setManaging(managingRows ? "models" : null)}
+          onDeleted={() => refreshAfterDelete("The model was deleted, but its status could not be refreshed. Check runtime to retry.")}
         /> : null}
 
         {settingsEntry && status ? (
@@ -884,11 +872,13 @@ export function SetupPage({
         {status?.state_error && !["invalid", "unavailable"].includes(status.state_error) ? <p className="setup-model-feedback is-error" role="alert">{status.state_error}</p> : null}
       </div>
       {footer}
-      {settingsEntry && !busy && !adopting && !managingModels ? (
+      {settingsEntry && !busy && !adopting ? (
         <SetupDangerZone
           apiClient={apiClient}
-          onDeleted={modelDeleted}
+          disabled={managingModels}
+          onDeleted={() => refreshAfterDelete("Local runtime data was deleted, but setup status could not be refreshed. Check runtime to retry.")}
           onError={setError}
+          onBusyChange={(resetting) => setManaging(resetting ? "reset" : null)}
         />
       ) : null}
     </section>

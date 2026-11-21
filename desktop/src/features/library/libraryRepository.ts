@@ -10,8 +10,10 @@ import type {
   LibraryBookSummary,
   LibraryBookUpdateRequest,
   MaintenanceBackupResponse,
+  MaintenanceBackupsResponse,
   MaintenanceCleanupResponse,
   MaintenanceDiagnosticsResponse,
+  MaintenanceRestoreResponse,
   OpenBookFolderResponse,
   StartConversionResponse,
 } from "../../types/api";
@@ -63,6 +65,8 @@ export interface LibraryRepository {
   repairBook(bookId: number, options?: LibraryRequestOptions): Promise<StartConversionResponse>;
   getMaintenanceDiagnostics(options?: ApiRequestOptions): Promise<MaintenanceDiagnosticsResponse>;
   backupDatabase(options?: ApiRequestOptions): Promise<MaintenanceBackupResponse>;
+  getDatabaseBackups(options?: ApiRequestOptions): Promise<MaintenanceBackupsResponse>;
+  restoreDatabaseBackup(backupId: string, options?: ApiRequestOptions): Promise<MaintenanceRestoreResponse>;
   cleanupStorage(options?: CleanupStorageOptions): Promise<MaintenanceCleanupResponse>;
 }
 
@@ -116,6 +120,12 @@ export function createLibraryRepository(apiClient: ApiClient): LibraryRepository
     },
     backupDatabase(options) {
       return apiClient.backupDatabase(options);
+    },
+    getDatabaseBackups(options) {
+      return apiClient.getDatabaseBackups(options);
+    },
+    restoreDatabaseBackup(backupId, options) {
+      return apiClient.restoreDatabaseBackup(backupId, options);
     },
     cleanupStorage(options) {
       return apiClient.cleanupStorage(options);

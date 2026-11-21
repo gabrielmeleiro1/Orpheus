@@ -130,7 +130,8 @@ type CleanupKeptGroup =
   | { category: "missing_chapter_audio"; reason: "book_kept"; items: Array<BookReference & { chapters: number }> }
   | { category: "book_without_audio"; reason: "unowned_audio_present" | "other_audio_present" | "interrupted_conversion"; items: BookReference[] }
   | { category: "unowned_output_folder"; reason: "contains_finished_audio" | "interrupted_conversion" | "recently_modified";
-    items: Array<{ name: string; path: string }> };
+    items: Array<{ name: string; path: string }> }
+  | { category: "quarantined_library_files"; reason: "library_quarantined"; items: Array<{ name: string; path: string }> };
 
 export interface CleanupSummary {
   changed: boolean | null;
@@ -160,8 +161,7 @@ export interface MaintenanceBackup {
   created_at: string;
   size: number;
   book_count: number | null;
-  /** Newer backends: a backup or the safety copy taken before a restore, with a display label. */
-  /** "backup" or "safety_copy". */
+  /** "backup", or "safety_copy" for the copy taken before a restore. */
   kind?: string;
   label?: string | null;
 }

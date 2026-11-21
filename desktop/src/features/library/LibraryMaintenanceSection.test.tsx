@@ -77,7 +77,7 @@ describe("LibraryMaintenanceSection", () => {
       },
     } } as unknown as UseLibraryResult;
     await act(async () => root.render(<LibraryMaintenanceSection library={library} selectedDetailId={null} />));
-    expect(container.querySelector(".maintenance-actions")?.textContent).toContain("Clean up would remove 2 leftover output folders and 1 old upload.");
+    expect(container.querySelector(".maintenance-actions")?.textContent).toContain("A cleanup would remove 2 leftover output folders and 1 old upload.");
     expect(container.textContent).not.toContain("Diagnostics loaded");
     expect(container.querySelector(".maintenance-message")).toBeNull();
   });

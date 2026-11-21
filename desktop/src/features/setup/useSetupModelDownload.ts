@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import type { ApiClient } from "../../api/client";
-import type { RuntimeSetupStatusResponse } from "../../types/api";
+import type { RuntimeSetupProfile, RuntimeSetupStatusResponse } from "../../types/api";
 import type { RuntimeSetupEnvironment } from "./setupBridge";
 import {
   applyProgressEvent,
@@ -12,6 +12,9 @@ import {
 import { EMPTY_PROGRESS, safeError } from "./setupPageHelpers";
 
 export type SetupDownloadPhase = "idle" | "starting" | "downloading" | "stopping" | "adopting";
+
+/** What Retry re-runs: a runtime install, or a single model download from Settings. */
+export type SetupAttempt = "bridge" | "backend" | { profile: RuntimeSetupProfile["id"]; groupId: string } | null;
 
 interface UseSetupModelDownloadArgs {
   apiClient: ApiClient | null;
@@ -27,7 +30,7 @@ interface UseSetupModelDownloadArgs {
   setProgress: Dispatch<SetStateAction<SetupProgressState>>;
   setStatus: Dispatch<SetStateAction<RuntimeSetupStatusResponse | null>>;
   startLocked: MutableRefObject<boolean>;
-  lastAttempt: MutableRefObject<"backend" | "bridge" | null>;
+  lastAttempt: MutableRefObject<SetupAttempt>;
 }
 
 /** Resume and monitor packaged model downloads, then verify the runtime. */
@@ -82,7 +85,10 @@ export function useSetupModelDownload({
     let active = true;
     void apiClient.getRuntimeModelDownloadStatus({ timeoutMs: 8_000 }).then((snapshot) => {
       if (!active || !["running", "stopping"].includes(snapshot.lifecycle)) return;
-      lastAttempt.current = "backend";
+      const { profile, model_groups: [groupId] } = snapshot;
+      lastAttempt.current = snapshot.configure_runtime === false && (profile === "base" || profile === "mlx" || profile === "cuda") && groupId
+        ? { profile, groupId }
+        : "backend";
       startLocked.current = true;
       setBusy(true);
       setDownloadPhase(snapshot.lifecycle === "stopping" ? "stopping" : "downloading");
@@ -134,7 +140,6 @@ export function useSetupModelDownload({
           profile: snapshot.profile === "mlx" || snapshot.profile === "cuda" ? snapshot.profile : selected.profile,
           modelGroups: [...snapshot.model_groups],
           cleanerCudaQuantization: snapshot.cleaner_cuda_quantization ?? selected.cleanerCudaQuantization ?? "4bit",
-          acceptPytorchRisk: snapshot.profile === selected.profile && selected.acceptPytorchRisk,
         };
         setDownloadPhase("adopting");
       } else if (snapshot.lifecycle === "cancelled") {
@@ -183,7 +188,6 @@ export function useSetupModelDownload({
       {
         profile: plan.profile,
         model_groups: [...plan.modelGroups],
-        accept_pytorch_risk: plan.acceptPytorchRisk,
         cleaner_cuda_quantization: plan.cleanerCudaQuantization ?? "4bit",
       },
       { timeoutMs: 120_000 },

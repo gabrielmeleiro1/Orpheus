@@ -63,6 +63,12 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
   const [searchQuery, setSearchQuery] = useState("");
   const [modeFilter, setModeFilter] = useState<LibraryModeFilter>("all");
   const [items, setItems] = useState<LibraryBookSummary[]>([]);
+  // The unfiltered first page shown while a search or mode filter narrows
+  // `items`; null means `items` itself is unfiltered.
+  const [unfilteredPage, setUnfilteredPage] = useState<LibraryBookSummary[] | null>(null);
+  // The last unfiltered first page read, and whether the library may have
+  // changed since. A filtered load re-reads it only when it is stale.
+  const shelfRef = useRef<{ items: LibraryBookSummary[]; stale: boolean } | null>(null);
   const [indexedCount, setIndexedCount] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [selectedBookId, setSelectedBookId] = useState<number | null>(null);
@@ -207,7 +213,9 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
     nextOffsetRef.current = 0;
     hasMoreRef.current = false;
     unfilteredTotalRef.current = null;
+    shelfRef.current = null;
     setItems([]);
+    setUnfilteredPage(null);
     setIndexedCount(0);
     setHasMore(false);
     selectedBookIdRef.current = null;
@@ -284,6 +292,8 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
         silentDetailStatus?: boolean;
         preserveMessages?: boolean;
         modeFilter?: LibraryModeFilter;
+        /** Only the query or filter changed, so the known shelf is still current. */
+        sameLibrary?: boolean;
       } = {},
     ): Promise<void> => {
       if (!repository || backendDisconnected) {
@@ -310,6 +320,9 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
       if (!options.preserveMessages) {
         setErrorMessage("");
       }
+      const filtered = Boolean(query) || requestModeFilter !== "all";
+      if (shelfRef.current && !options.sameLibrary) shelfRef.current.stale = true;
+      if (filtered) setUnfilteredPage((page) => page ?? shelfRef.current?.items ?? []);
 
       try {
         const page = await repository.listPage(query, requestModeFilter, 0, {
@@ -323,6 +336,18 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
         if (!acceptIdentity(page)) return;
         const nextItems = page.items;
         setItems(nextItems);
+        if (!filtered) {
+          shelfRef.current = { items: nextItems, stale: false };
+          setUnfilteredPage(null);
+        } else if (!shelfRef.current || shelfRef.current.stale) {
+          // A failed read keeps the last shelf; the next filtered load retries.
+          void repository.listPage("", "all", 0, { signal: controller.signal, timeoutMs: LIBRARY_READ_TIMEOUT_MS })
+            .then((shelf) => {
+              if (!isCurrent()) return;
+              shelfRef.current = { items: shelf.items, stale: false };
+              setUnfilteredPage(shelf.items);
+            }, () => undefined);
+        }
         setHasMore(page.hasMore);
         hasMoreRef.current = page.hasMore;
         nextOffsetRef.current = nextItems.length;
@@ -449,6 +474,15 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
     [acceptIdentity, backendDisconnected, beginDetailRequest, beginListRequest, beginOwnedRequest, beginPreviewRequest, beginSelectionOwnedRequest, loadBookDetail, modeFilter, repository, resetLibraryState],
   );
 
+  /** Apply a local edit to every list that shows the book, the cached shelf included. */
+  const patchBook = useCallback((bookId: number, patch: Partial<LibraryBookSummary>) => {
+    const apply = (list: LibraryBookSummary[]) =>
+      list.map((item) => (item.id === bookId ? { ...item, ...patch } : item));
+    setItems(apply);
+    setUnfilteredPage((page) => page && apply(page));
+    if (shelfRef.current) shelfRef.current = { ...shelfRef.current, items: apply(shelfRef.current.items) };
+  }, []);
+
   const selectBookAtIndex = useCallback((bookId: number, index: number): Promise<LibraryBookDetail | null> => {
     navigationGenerationRef.invalidate();
     setPendingDeletionPath(null);
@@ -461,6 +495,12 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
     setErrorMessage("");
     return loadBookDetail(bookId);
   }, [beginPreviewRequest, loadBookDetail]);
+
+  // A book off the loaded pages is selected at index -1, like a selection a reload kept.
+  const selectBookById = useCallback(
+    (bookId: number) => selectBookAtIndex(bookId, items.findIndex((item) => item.id === bookId)),
+    [items, selectBookAtIndex],
+  );
 
   const selectBook = useCallback(
     async (index: number): Promise<LibraryBookDetail | null> => {
@@ -547,12 +587,14 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
   }, [loadMorePage]);
 
   const selectRelative = useCallback(
-    async (delta: number): Promise<LibraryBookDetail | null> => {
+    async (delta: number, fromBookId: number | null = null): Promise<LibraryBookDetail | null> => {
       if (!items.length || delta === 0) {
         return null;
       }
 
-      const baseIndex = selectedBookIndex >= 0 ? selectedBookIndex : 0;
+      const fromIndex = fromBookId === null ? selectedBookIndex : items.findIndex((item) => item.id === fromBookId);
+      if (fromBookId !== null && fromIndex < 0) return null;
+      const baseIndex = fromIndex >= 0 ? fromIndex : 0;
       const nextIndex = baseIndex + delta;
       if (nextIndex >= 0 && nextIndex < items.length) {
         return selectBook(nextIndex);
@@ -686,7 +728,7 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
     }
 
     const timer = window.setTimeout(() => {
-      void loadLibrary(searchQuery.trim());
+      void loadLibrary(searchQuery.trim(), { sameLibrary: true });
     }, SEARCH_DEBOUNCE_MS);
 
     return () => {
@@ -703,6 +745,8 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
     setModeFilter,
     items,
     setItems,
+    patchBook,
+    unfilteredItems: unfilteredPage ?? items,
     indexedCount,
     setIndexedCount,
     hasMore,
@@ -746,6 +790,7 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
     beginSelectionOwnedRequest,
     loadLibrary,
     selectBook,
+    selectBookById,
     loadMore,
     selectRelative,
     refreshLibrary,

@@ -120,7 +120,6 @@ export function ConversionDetailsDrawer({ open, conversionJob, onClose }: Conver
             etaText={conversionJob.etaText}
             stages={conversionJob.stages}
             currentStage={conversionJob.currentStage}
-            currentMessage={conversionJob.currentMessage}
             performance={conversionJob.performanceSnapshot}
             activeJobId={conversionJob.activeJobId}
             isCancelling={conversionJob.isCancelling}

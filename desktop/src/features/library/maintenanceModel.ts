@@ -6,6 +6,10 @@ import type {
   MaintenanceRestoreResponse,
 } from "../../types/library";
 
+/** Library writes are held after a restore: while it runs, or until a check confirms what it restored. */
+export const WRITES_PAUSED_MESSAGE =
+  "Library changes are paused until the restored library is verified. Press Check under Library in Settings to verify it.";
+
 function plural(count: number, one: string, many: string): string {
   return `${count} ${count === 1 ? one : many}`;
 }
@@ -64,6 +68,9 @@ function keptLines(summary: CleanupSummary): string[] {
           : one ? "it changed recently" : "they changed recently";
         return [`${plural(group.items.length, "folder", "folders")} not in the library kept because ${reason}: ${names(group.items.map((item) => item.name))}`];
       }
+      case "quarantined_library_files":
+        // Source files, upload files and output folders alike.
+        return [`${plural(group.items.length, "item", "items")} kept until a backup replaces the damaged library: ${names(group.items.map((item) => item.name))}`];
     }
   });
 }
@@ -93,7 +100,7 @@ function previewSentences(summary: CleanupSummary): string {
   const books = summary.removable_books ?? [];
   const removes = books.length
     ? `A cleanup would remove ${fileless(books)}.${removable.length ? ` It would also remove ${list(removable)}.` : ""}`
-    : removable.length ? `Clean up would remove ${list(removable)}.` : "Nothing needs cleaning up.";
+    : removable.length ? `A cleanup would remove ${list(removable)}.` : "Nothing needs cleaning up.";
   return withKept(removes, keptLines(summary));
 }
 
@@ -161,13 +168,13 @@ export function backupSavedMessage(backupPath: string, backups: MaintenanceBacku
 /** After a restore: what came back, and what did not. */
 export function restoreResultMessage(response: MaintenanceRestoreResponse): string {
   const summary = response.summary;
-  if (!summary) return `Backup restored. A safety copy of the previous library was saved: ${response.safety_copy_path}`;
+  if (!summary) return "Backup restored. A safety copy of the previous library was saved.";
   const sentences = [`Backup restored with ${plural(summary.books_restored, "book", "books")}.`];
   if (summary.missing_audio.length) {
     sentences.push(`${plural(summary.missing_audio.length, "book has", "books have")} no audio: ${names(summary.missing_audio.map((book) => book.title))}.`);
   }
   if (summary.missing_source.length) {
-    sentences.push(`${plural(summary.missing_source.length, "book is", "books are")} missing its source file: ${names(summary.missing_source.map((book) => book.title))}.`);
+    sentences.push(`${plural(summary.missing_source.length, "book is missing its source file", "books are missing their source files")}: ${names(summary.missing_source.map((book) => book.title))}.`);
   }
   if (summary.unowned_output_folders.length) {
     sentences.push(`${plural(summary.unowned_output_folders.length, "folder on disk is", "folders on disk are")} not in this library: ${names(summary.unowned_output_folders.map((folder) => folder.name))}.`);

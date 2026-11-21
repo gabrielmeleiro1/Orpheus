@@ -21,7 +21,7 @@ describe("library maintenance copy", () => {
   it("says what cleanup would remove and what it keeps and why", () => {
     const text = checkLibrarySummary(report({ cleanup_preview: preview(), checked_at: "2026-11-16T19:46:00Z" }));
     expect(text).toMatch(/^Checked /);
-    expect(text).toContain("Clean up would remove 2 old uploads and 1 temporary work folder.");
+    expect(text).toContain("A cleanup would remove 2 old uploads and 1 temporary work folder.");
     expect(text).toContain("1 folder not in the library kept because it contains finished audio: Old Book");
   });
 
@@ -33,6 +33,15 @@ describe("library maintenance copy", () => {
     expect(kept("interrupted_conversion", 1)).toEqual(["1 folder not in the library kept because it holds an interrupted conversion: A"]);
     expect(kept("interrupted_conversion", 2)).toEqual(["2 folders not in the library kept because they hold an interrupted conversion: A and B"]);
     expect(kept("recently_modified", 1)).toEqual(["1 folder not in the library kept because it changed recently: A"]);
+  });
+
+  it("says that files and folders from a damaged library are kept until a backup is restored", () => {
+    const kept = (count: number) => messageParts(checkLibrarySummary(report({ cleanup_preview: preview({ kept: [{
+      category: "quarantined_library_files", reason: "library_quarantined",
+      items: [{ name: "a.epub", path: "/sources/a.epub" }, { name: "Old Book", path: "/out/Old Book" }].slice(0, count),
+    }] }) }))).items;
+    expect(kept(1)).toEqual(["1 item kept until a backup replaces the damaged library: a.epub"]);
+    expect(kept(2)).toEqual(["2 items kept until a backup replaces the damaged library: a.epub and Old Book"]);
   });
 
   it("names the books whose library entry a cleanup removes: in the check, the confirmation and the result", () => {
@@ -118,6 +127,13 @@ describe("library maintenance copy", () => {
       books_restored: 12, missing_audio: [{ id: 1, title: "Lantern" }], missing_source: [],
       unowned_output_folders: [{ name: "Orchard", path: "/out/Orchard", has_audio: true, has_recovery_inventory: false }],
     } })).toBe("Backup restored with 12 books. 1 book has no audio: Lantern. 1 folder on disk is not in this library: Orchard. A safety copy of the previous library was saved.");
+    expect(restoreResultMessage({ restored_id: "b", safety_copy_path: "/safe.db", summary: {
+      books_restored: 3, missing_audio: [], unowned_output_folders: [],
+      missing_source: [{ id: 1, title: "Lantern" }, { id: 2, title: "Orchard" }],
+    } })).toBe("Backup restored with 3 books. 2 books are missing their source files: Lantern and Orchard. A safety copy of the previous library was saved.");
+    // An older backend sends no summary; the raw safety-copy path is never shown.
+    expect(restoreResultMessage({ restored_id: "b", safety_copy_path: "/safe.db" }))
+      .toBe("Backup restored. A safety copy of the previous library was saved.");
   });
 
   it("names backups by their label", () => {
