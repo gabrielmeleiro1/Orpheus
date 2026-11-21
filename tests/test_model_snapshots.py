@@ -2,6 +2,7 @@
 
 import ast
 import logging
+import re
 import sys
 import threading
 from pathlib import Path
@@ -41,6 +42,7 @@ def mlx_audio_source_modules(monkeypatch):
 
     utils = ModuleType("mlx_audio.utils")
     utils.Path = Path
+    utils.re = re
     load_functions(package / "utils.py", {"get_model_name_parts"}, vars(utils))
     monkeypatch.setitem(sys.modules, "mlx_audio.utils", utils)
 
