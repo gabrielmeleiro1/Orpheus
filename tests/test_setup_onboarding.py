@@ -113,7 +113,6 @@ def test_status_reports_recommended_profile(monkeypatch: pytest.MonkeyPatch) -> 
             "restart_required": False,
             "probe": {"available": False, "checks": []},
             "profiles": [],
-            "risk": None,
             "state_error": None,
         },
     )
@@ -144,7 +143,6 @@ def _unconfigured_absent(**kwargs):
         "restart_required": False,
         "probe": {"available": False, "checks": []},
         "profiles": [],
-        "risk": None,
         "state_error": None,
     }
 
@@ -802,7 +800,6 @@ def test_delete_runtime_endpoint_removes_state_and_reports(
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
     )
     monkeypatch.setattr(
         model_storage_service,
@@ -848,6 +845,56 @@ def test_delete_runtime_endpoint_reports_absent_state(
 
     assert response.status_code == 200
     assert response.json()["state_deleted"] is False
+
+
+@pytest.mark.parametrize("residual", [[], [{"id": "tts-mlx", "downloaded": True}]], ids=["complete", "partial"])
+def test_delete_runtime_endpoint_clears_an_unreadable_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    residual: list[dict],
+) -> None:
+    from modules.web.routes import setup as setup_route
+
+    monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "data"))
+    state_path = _state_path(tmp_path)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text('{"schema_version": 2}', encoding="utf-8")
+    monkeypatch.setattr(model_storage_service, "_delete_runtime_models", lambda **kwargs: ([], 0))
+    monkeypatch.setattr(setup_route, "get_managed_models", lambda request: {"models": residual})
+
+    with _client() as client:
+        response = client.request("DELETE", "/api/setup/runtime")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state_deleted"] is True
+    assert not state_path.exists()
+
+
+@pytest.mark.parametrize("valid", [False, True], ids=["invalid", "valid"])
+def test_delete_runtime_endpoint_clears_state_left_at_the_legacy_location(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    valid: bool,
+) -> None:
+    from modules.runtime_setup import state as setup_state
+
+    monkeypatch.delenv("AUDIOBOOK_DATA_DIR", raising=False)
+    legacy = setup_state._legacy_default_state_path()
+    if valid:
+        setup_state.write_setup_state(legacy, profile_id="base", model_groups=())
+    else:
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text('{"schema_version": 2}', encoding="utf-8")
+    assert not setup_state.default_state_path().exists()
+    monkeypatch.setattr(model_storage_service, "_delete_runtime_models", lambda **kwargs: ([], 0))
+
+    with _client() as client:
+        response = client.request("DELETE", "/api/setup/runtime")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state_deleted"] is True
+    assert not legacy.exists()
+    assert setup_state._read_setup_state(setup_state.default_state_path()) == (None, None)
 
 
 def test_delete_runtime_endpoint_conflicts_when_setup_in_progress(
@@ -1380,6 +1427,7 @@ def test_adoption_rechecks_assets_after_acquiring_ownership(monkeypatch, tmp_pat
 
 @pytest.mark.parametrize("requested", ["4bit", "8bit", "fp16"])
 def test_adoption_validates_the_requested_cleaner_precision(monkeypatch, tmp_path, requested):
+    _stub_combined_probe(monkeypatch)
     import sys
     from types import SimpleNamespace
     from modules.app.services.runtime_capability_service import RuntimeCapabilityService
@@ -1442,7 +1490,7 @@ def test_selected_status_and_installed_discovery_use_the_same_cuda_precision(mon
     })
     routes.setup_runtime.write_setup_state(
         routes.setup_runtime.default_state_path(), profile_id="cuda",
-        model_groups=("tts-cpu-cuda", "cleaner-cuda"), accepted_risks=(),
+        model_groups=("tts-cpu-cuda", "cleaner-cuda"),
         cleaner_cuda_quantization=precision, restart_required=False,
     )
     with _client() as client:

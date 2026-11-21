@@ -11,7 +11,7 @@ import shutil
 import time
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from modules.app.config import AppConfig
 from modules.app.events import make_log_event, make_progress_event
@@ -54,6 +54,9 @@ from modules.storage.repository import IBookRepository
 from modules.storage.sqlite_repo import LibraryReplacedError
 from modules.storage.permissions import ensure_owner_only_directory, owner_only
 from modules.tts.api_rate_limit import GlobalAPILimiter
+
+if TYPE_CHECKING:
+    from modules.app.controller import ConversionJob
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +137,7 @@ class ConversionService:
         *,
         config: AppConfig,
         repository: IBookRepository,
-        job_cls: type,
+        job_cls: type[ConversionJob],
         status_enum: Any,
         cleaner_api_limiter: GlobalAPILimiter,
         runtime_validator: Callable[[str, Optional[str]], None],
@@ -258,21 +261,25 @@ class ConversionService:
             self._job_coordinator.release_reservation(job)
             raise
 
-        return self._start_pipeline_job(
-            job=job,
-            target=self._run_conversion,
-            kwargs={
-                "job": job,
-                "source_path": source_path,
-                "callbacks": callbacks,
-                "conversion_mode": conversion_mode,
-                "title": title,
-                "author": author,
-                "runtime_options": runtime_options,
-            },
-            callbacks=callbacks,
-            started_message="conversion started",
-        )
+        try:
+            return self._start_pipeline_job(
+                job=job,
+                target=self._run_conversion,
+                kwargs={
+                    "job": job,
+                    "source_path": source_path,
+                    "callbacks": callbacks,
+                    "conversion_mode": conversion_mode,
+                    "title": title,
+                    "author": author,
+                    "runtime_options": runtime_options,
+                },
+                callbacks=callbacks,
+                started_message="conversion started",
+            )
+        except Exception:
+            self._remove_unregistered_upload_copy(job, source_path)
+            raise
 
     def _durable_source_path_for_conversion(self, source_path: Path) -> Path:
         upload_root = (self._config.temp_dir / "web_uploads").resolve()
@@ -486,7 +493,6 @@ class ConversionService:
             chunk_idx,
             total_chunks,
             message,
-            _legacy_eta,
             performance=None,
         ):
             nonlocal last_stage_value, last_progress_emit_at, progress_started_at
@@ -629,23 +635,24 @@ class ConversionService:
         return book.id
 
     def _checkpoint_conversion(self, command: ConversionRunCommand, source_path: Path, result: PipelineConversionResult) -> None:
+        # Only this job's thread assigns book_id, so it can be read unlocked.
+        book_id = getattr(command.job, "book_id", None)
+        if book_id is not None:
+            self._update_conversion_library_records(book_id, result)
+            return
         # Hash the (up to MAX_UPLOAD_BYTES) recovery source before taking the
         # job lock, which status reads and cancellation also need.
         prehashed = _prehash_recovery_source(getattr(command.job, "upload_source_path", None), source_path)
         # Registration and reservation share the job lock: deletion must never
         # see the new book before it has become owned by the active job.
         with self._job_lock:
-            book_id = getattr(command.job, "book_id", None)
-            if book_id is None:
-                book_id = self._persist_conversion_library_records(
-                    source_path, result, conversion_mode=command.conversion_mode,
-                    runtime_options=command.runtime_options,
-                )
-                command.job.book_id = book_id
-                self._remove_intermediate_upload_source(command, source_path)
-                self._remove_recoverable_upload(command.job, book_id, prehashed)
-                return
-        self._update_conversion_library_records(book_id, result)
+            book_id = self._persist_conversion_library_records(
+                source_path, result, conversion_mode=command.conversion_mode,
+                runtime_options=command.runtime_options,
+            )
+            command.job.book_id = book_id
+            self._remove_intermediate_upload_source(command, source_path)
+            self._remove_recoverable_upload(command.job, book_id, prehashed)
 
     def _update_conversion_library_records(self, book_id: int, result: PipelineConversionResult) -> None:
         detail = self._repository.get_book_with_chapters(book_id)
@@ -683,36 +690,48 @@ class ConversionService:
     ) -> None:
         book_id = getattr(job, "book_id", None)
         if book_id is None:
+            # No recovery checkpoint registered this run, so its upload is
+            # transferred here; otherwise the checkpoint already did that.
             book_id = self._persist_conversion_library_records(
                 source_path,
                 pipeline_result,
                 conversion_mode=conversion_mode,
                 runtime_options=runtime_options,
             )
+            prehashed = _prehash_recovery_source(getattr(job, "upload_source_path", None), source_path)
+            with self._job_lock:
+                self._remove_recoverable_upload(job, book_id, prehashed)
         else:
             self._update_conversion_library_records(book_id, pipeline_result)
-        prehashed = _prehash_recovery_source(getattr(job, "upload_source_path", None), source_path)
-        with self._job_lock:
-            self._remove_recoverable_upload(job, book_id, prehashed)
         self._job_coordinator.publish_success(job=job, book_id=book_id, callbacks=callbacks)
 
-    def _remove_intermediate_upload_source(self, command: ConversionRunCommand, recovery_source: Path) -> None:
-        upload = getattr(command.job, "upload_source_path", None)
+    def _is_unreferenced_upload_copy(self, job: Any, source: Path | None) -> bool:
+        """Whether ``source`` is start_conversion's data/sources copy of an upload
+        that no library book references."""
+        upload = getattr(job, "upload_source_path", None)
         upload_root = (self._config.temp_dir / "web_uploads").resolve()
         if upload is None or not upload.resolve().is_relative_to(upload_root):
-            return
-        source = getattr(command, "source_path", None)
+            return False
         sources_root = (Path(self._config.db_path).parent / "sources").resolve()
         if source is None or source.is_symlink() or not source.resolve().is_relative_to(sources_root):
+            return False
+        return self.upload_reference_checker is not None and not self.upload_reference_checker(source)
+
+    def _remove_intermediate_upload_source(self, command: ConversionRunCommand, recovery_source: Path) -> None:
+        source = getattr(command, "source_path", None)
+        if not self._is_unreferenced_upload_copy(command.job, source):
             return
         if source.resolve() == recovery_source.resolve() or not recovery_source.is_file():
-            return
-        if self.upload_reference_checker is None or self.upload_reference_checker(source):
             return
         try:
             source.unlink(missing_ok=True)
         except OSError:
             logger.warning("Failed to remove intermediate upload copy: %s", source)
+
+    def _remove_unregistered_upload_copy(self, job: Any, source: Path) -> None:
+        # The upload itself stays queued, so a retry makes a fresh copy.
+        if getattr(job, "book_id", None) is None and self._is_unreferenced_upload_copy(job, source):
+            self._cleanup_partial_durable_source(source)
 
     def resolve_recovered_upload(self, upload_path: Path) -> Path | None:
         """Resolve only uploads transferred to a registered recovery book."""
@@ -787,10 +806,6 @@ class ConversionService:
         except OSError:
             logger.warning("Failed to remove copied upload: %s", source)
 
-    @staticmethod
-    def _deliver_observer(callback: Callable[..., None] | None, *args: Any) -> None:
-        return JobCoordinator._deliver_observer(callback, *args)
-
     def _handle_conversion_failure(
         self,
         *,
@@ -840,12 +855,12 @@ class ConversionService:
         )
         logger.info(message)
         if callbacks and callbacks.on_log:
-            self._deliver_observer(callbacks.on_log, message, "info")
+            JobCoordinator._deliver_observer(callbacks.on_log, message, "info")
         if callbacks and callbacks.on_event:
             # No performance payload here: the pool snapshot describes the idle
             # worker pool (parallel mode, zero counters), and clients treat any
             # attached snapshot as the job's final performance numbers.
-            self._deliver_observer(
+            JobCoordinator._deliver_observer(
                 callbacks.on_event,
                 make_log_event(
                     message=message,
@@ -888,7 +903,7 @@ class ConversionService:
                 if callable(register_recovery):
                     register_recovery(lambda source, result: self._checkpoint_conversion(command, source, result))
             self._tts_session.attach(pipeline)
-            cancel_requested = self._attach_pipeline_to_job(job, pipeline)
+            cancel_requested = job.attach_pipeline(pipeline)
             if cancel_requested:
                 pipeline.cancel()
                 self._handle_conversion_cancelled(job=job, callbacks=callbacks)
@@ -900,7 +915,7 @@ class ConversionService:
                 emit_chapter_mp3_artifacts=pipeline_config.emit_chapter_mp3_artifacts,
                 require_packaged_output=True,
             )
-            self._set_job_result(job, controller_result)
+            job.set_result(controller_result)
 
             if command.is_cancelled_result(pipeline_result):
                 self._handle_conversion_cancelled(
@@ -945,20 +960,8 @@ class ConversionService:
                 pipeline,
                 cleanup_first=bool(pipeline is not None and command.cleanup_first(pipeline)),
             )
-            self._detach_pipeline_from_job(job)
+            job.detach_pipeline()
             self._emit_conversion_summary(callbacks, job_id=getattr(job, "id", None))
-
-    @staticmethod
-    def _attach_pipeline_to_job(job: Any, pipeline: Any) -> bool:
-        return JobCoordinator._attach_pipeline_to_job(job, pipeline)
-
-    @staticmethod
-    def _detach_pipeline_from_job(job: Any) -> None:
-        return JobCoordinator._detach_pipeline_from_job(job)
-
-    @staticmethod
-    def _set_job_result(job: Any, result: Any) -> None:
-        return JobCoordinator._set_job_result(job, result)
 
     def _run_repair(
         self,
@@ -1010,17 +1013,20 @@ class ConversionService:
     ) -> None:
         runtime_options = runtime_options or ConversionRuntimeOptions()
 
-        self._execute_pipeline_job(
-            command=ConversionRunCommand(
-                job=job,
-                callbacks=callbacks,
-                runtime_options=runtime_options,
-                conversion_mode=conversion_mode,
-                failure_message="Unknown error",
-                invalid_artifacts_message="Invalid conversion artifacts",
-                cancel_message_text="conversion cancelled",
-                source_path=source_path,
-                title=title,
-                author=author,
-            ),
-        )
+        try:
+            self._execute_pipeline_job(
+                command=ConversionRunCommand(
+                    job=job,
+                    callbacks=callbacks,
+                    runtime_options=runtime_options,
+                    conversion_mode=conversion_mode,
+                    failure_message="Unknown error",
+                    invalid_artifacts_message="Invalid conversion artifacts",
+                    cancel_message_text="conversion cancelled",
+                    source_path=source_path,
+                    title=title,
+                    author=author,
+                ),
+            )
+        finally:
+            self._remove_unregistered_upload_copy(job, source_path)

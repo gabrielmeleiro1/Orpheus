@@ -14,7 +14,6 @@ from modules.errors import (
     ConversionCleanupPendingError,
     SourceInputError,
     TTSInstallationError,
-    WorkerWarmupUnavailableError,
 )
 from modules.web.events import EventBroker
 
@@ -78,7 +77,7 @@ def call_with_http_errors(action: Callable[[], T], *, runtime_status: int = 500)
     """Translate controller/service errors into consistent HTTP responses."""
     try:
         return action()
-    except (ConversionCleanupPendingError, WorkerWarmupUnavailableError, SourceInputError) as exc:
+    except (ConversionCleanupPendingError, SourceInputError) as exc:
         raise public_http_error(exc.public_error) from exc
     except TTSInstallationError as exc:
         error = exc.public_error

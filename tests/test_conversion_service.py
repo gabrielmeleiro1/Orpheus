@@ -4,7 +4,6 @@ import threading
 import time
 import sqlite3
 from concurrent.futures import Future
-from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -30,14 +29,6 @@ from modules.pipeline.pool_manager import SharedWorkerPoolManager
 from modules.pipeline.worker_errors import WorkerStartupStatus
 from modules.storage.models import Book, Chapter, ConversionMode, PlaybackStatus, SourceType
 from modules.storage.sqlite_repo import SQLiteRepository
-
-
-class _JobStatus(Enum):
-    IDLE = "idle"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
 
 
 class _RepositoryStub:
@@ -177,8 +168,8 @@ def _make_service(
     tmp_path,
     pipeline_cls,
     *,
-    job_cls=SimpleNamespace,
-    status_enum=_JobStatus,
+    job_cls=ConversionJob,
+    status_enum=JobStatus,
     shared_worker_pool_manager=None,
     config=None,
     repository=None,
@@ -1048,7 +1039,7 @@ def test_conversion_service_persists_durable_source_path_for_temp_web_upload(tmp
         ),
     )
 
-    assert job.status == _JobStatus.COMPLETED
+    assert job.status == JobStatus.COMPLETED
     assert repo.created_book.source_path == str(durable_path)
     # Keep the upload handle valid so a failed pipeline can be retried.
     assert upload_source.exists()
@@ -1125,8 +1116,8 @@ def test_conversion_service_uses_unique_durable_paths_for_duplicate_upload_names
     )
     second_durable_path = Path(created_books[1].source_path)
 
-    assert first_job.status == _JobStatus.COMPLETED
-    assert second_job.status == _JobStatus.COMPLETED
+    assert first_job.status == JobStatus.COMPLETED
+    assert second_job.status == JobStatus.COMPLETED
     assert first_durable_path != second_durable_path
     assert first_durable_path.name == "book.epub"
     assert second_durable_path.name == "book_1.epub"
@@ -1644,11 +1635,11 @@ def test_conversion_service_throttles_progress_callbacks_to_stage_boundaries_and
         "modules.app.services.conversion_service.time.monotonic",
         side_effect=[0.0, 0.05, 0.10, 0.35, 0.36],
     ):
-        on_progress(SimpleNamespace(value="cleaning"), 1, 4, 1, 4, "clean start", None)
-        on_progress(SimpleNamespace(value="cleaning"), 1, 4, 2, 4, "clean mid", None)
-        on_progress(SimpleNamespace(value="synthesizing"), 2, 4, 1, 4, "synth start", None)
-        on_progress(SimpleNamespace(value="synthesizing"), 2, 4, 2, 4, "synth mid", None)
-        on_progress(SimpleNamespace(value="complete"), 4, 4, 4, 4, "done", None)
+        on_progress(SimpleNamespace(value="cleaning"), 1, 4, 1, 4, "clean start")
+        on_progress(SimpleNamespace(value="cleaning"), 1, 4, 2, 4, "clean mid")
+        on_progress(SimpleNamespace(value="synthesizing"), 2, 4, 1, 4, "synth start")
+        on_progress(SimpleNamespace(value="synthesizing"), 2, 4, 2, 4, "synth mid")
+        on_progress(SimpleNamespace(value="complete"), 4, 4, 4, 4, "done")
 
     assert [call[0] for call in progress_calls] == [
         "cleaning",
@@ -1686,7 +1677,7 @@ def test_conversion_service_progress_and_logs_include_job_id(tmp_path):
         "modules.app.services.conversion_service.time.monotonic",
         side_effect=[0.0],
     ):
-        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean", None)
+        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean")
     on_verbose("verbose", "info")
 
     assert [event.job_id for event in events] == ["conv-current", "conv-current"]
@@ -1706,7 +1697,7 @@ def test_conversion_service_progress_events_include_explicit_overall_and_stage_p
         "modules.app.services.conversion_service.time.monotonic",
         side_effect=[0.0],
     ):
-        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean start", 12.5)
+        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean start")
 
     event = progress_events[-1]
     assert event.event_type == EventType.PROGRESS
@@ -1730,7 +1721,7 @@ def test_conversion_service_progress_events_include_subtask_counters(tmp_path):
         "modules.app.services.conversion_service.time.monotonic",
         side_effect=[0.0],
     ):
-        on_progress(SimpleNamespace(value="synthesizing"), 1, 4, 2, 8, "synth chunk", None)
+        on_progress(SimpleNamespace(value="synthesizing"), 1, 4, 2, 8, "synth chunk")
 
     event = progress_events[-1]
     assert event.chapter_current == 2
@@ -1758,7 +1749,6 @@ def test_conversion_service_progress_events_forward_performance_payload(tmp_path
             2,
             8,
             "synth chunk",
-            None,
             {
                 "pipeline_mode": "parallel",
                 "active_workers": 2,
@@ -1795,14 +1785,13 @@ def test_conversion_service_progress_events_use_stage_weighted_eta(tmp_path):
         "modules.app.services.conversion_service.time.monotonic",
         side_effect=[10.0, 20.0],
     ):
-        on_progress(SimpleNamespace(value="ingesting"), 0, 1, 0, 0, "parse start", 999.0)
-        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean start", 999.0)
+        on_progress(SimpleNamespace(value="ingesting"), 0, 1, 0, 0, "parse start")
+        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean start")
 
     event = progress_events[-1]
     assert event.event_type == EventType.PROGRESS
     assert event.stage == "cleaning"
     assert event.eta == pytest.approx((10.0 * (1.0 - 0.30)) / 0.30)
-    assert event.eta != 999.0
 
 
 def test_conversion_service_single_chapter_progress_moves_before_packaging(tmp_path):
@@ -1819,9 +1808,9 @@ def test_conversion_service_single_chapter_progress_moves_before_packaging(tmp_p
         "modules.app.services.conversion_service.time.monotonic",
         side_effect=[0.0, 0.3, 0.6],
     ):
-        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean start", None)
-        on_progress(SimpleNamespace(value="synthesizing"), 0, 1, 0, 1, "synth start", None)
-        on_progress(SimpleNamespace(value="encoding"), 0, 1, 0, 0, "encode start", None)
+        on_progress(SimpleNamespace(value="cleaning"), 0, 1, 0, 1, "clean start")
+        on_progress(SimpleNamespace(value="synthesizing"), 0, 1, 0, 1, "synth start")
+        on_progress(SimpleNamespace(value="encoding"), 0, 1, 0, 0, "encode start")
 
     assert [call[0] for call in progress_calls] == ["cleaning", "synthesizing", "encoding"]
     assert all(0.0 < progress < 1.0 for _, progress, _ in progress_calls)
@@ -2506,10 +2495,10 @@ def test_conversion_service_has_active_job_reflects_job_state(tmp_path):
     service = _make_service(tmp_path, _PipelineStub)
     assert service.has_active_job() is False
 
-    service._active_job = SimpleNamespace(status=_JobStatus.RUNNING)  # noqa: SLF001
+    service._active_job = SimpleNamespace(status=JobStatus.RUNNING)  # noqa: SLF001
     assert service.has_active_job() is True
 
-    service._active_job = SimpleNamespace(status=_JobStatus.COMPLETED)  # noqa: SLF001
+    service._active_job = SimpleNamespace(status=JobStatus.COMPLETED)  # noqa: SLF001
     assert service.has_active_job() is False
 
 
@@ -4385,13 +4374,13 @@ def test_repair_success_uses_synchronized_job_transitions(tmp_path):
 
         def complete(self, book_id):  # noqa: ANN001, ANN202
             self.calls.append("complete")
-            self.status = _JobStatus.COMPLETED
+            self.status = JobStatus.COMPLETED
             self.book_id = book_id
 
     job = _SpyJob()
-    service = SimpleNamespace(
-        _repository=SimpleNamespace(apply_repair_result=lambda *args, **kwargs: None),
-        _status=_JobStatus,
+    service = _make_service(
+        tmp_path, _PipelineStub,
+        repository=SimpleNamespace(apply_repair_result=lambda *args, **kwargs: None),
     )
     command = RepairRunCommand(
         job=job,
@@ -4419,7 +4408,7 @@ def test_repair_success_uses_synchronized_job_transitions(tmp_path):
     # Result must be installed via the synchronized setter before the job is
     # marked COMPLETED, so readers never observe COMPLETED with result=None.
     assert job.calls == ["set_result", "complete"]
-    assert job.status == _JobStatus.COMPLETED
+    assert job.status == JobStatus.COMPLETED
     assert job.book_id == 7
     assert job.result is not None and job.result.success is True
 
@@ -4448,7 +4437,7 @@ def test_conversion_service_start_refuses_while_storage_cleanup_in_flight(tmp_pa
 
 def test_conversion_service_begin_storage_cleanup_rejects_active_job(tmp_path):
     service = _make_service(tmp_path, _PipelineStub)
-    service._active_job = SimpleNamespace(status=_JobStatus.RUNNING)  # noqa: SLF001
+    service._active_job = SimpleNamespace(status=JobStatus.RUNNING)  # noqa: SLF001
 
     with pytest.raises(RuntimeError, match="queued or running"):
         service.begin_storage_cleanup()
@@ -4588,10 +4577,7 @@ def test_app_controller_cleanup_storage_guards_conversion_starts_during_prune(
 def test_app_controller_delete_book_rejects_book_with_active_job(tmp_path):
     config = make_app_config(tmp_path)
     controller = AppController(config=config, repository=_RepositoryStub())
-    controller._conversion_service = SimpleNamespace(  # noqa: SLF001 - injected app service
-        get_active_job=lambda: SimpleNamespace(book_id=42),
-        has_active_job=lambda: True,
-    )
+    controller._conversion_service._job_coordinator.reserve_repair(42, None)  # noqa: SLF001
 
     with pytest.raises(RuntimeError, match="converted or repaired"):
         controller.delete_book(42)
@@ -4600,12 +4586,10 @@ def test_app_controller_delete_book_rejects_book_with_active_job(tmp_path):
 def test_app_controller_delete_book_allows_other_books_while_job_active(tmp_path):
     config = make_app_config(tmp_path)
     controller = AppController(config=config, repository=_RepositoryStub())
-    controller._conversion_service = SimpleNamespace(  # noqa: SLF001 - injected app service
-        get_active_job=lambda: SimpleNamespace(book_id=41),
-        has_active_job=lambda: True,
-    )
+    controller._conversion_service._job_coordinator.reserve_repair(41, None)  # noqa: SLF001
     deleted: list[int] = []
     controller._library_service = SimpleNamespace(  # noqa: SLF001 - injected app service
+        book_cleanup_paths=lambda book_id: [],
         delete_book=lambda book_id: deleted.append(book_id) or True,
     )
 

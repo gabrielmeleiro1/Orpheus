@@ -19,7 +19,7 @@ def test_selection_round_trip_and_delete_preserves_precision(tmp_path, monkeypat
     path = tmp_path / "runtime-setup.json"
     monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: path)
     monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True})
-    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", lambda groups, _: {"available": True, "checks": []})
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", lambda groups, _, **__: {"available": True, "checks": []})
     monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **_: {g: {"ready": True, "reason": None} for g in groups})
     monkeypatch.setattr(routes, "build_setup_status_response", lambda _: setup_runtime.read_setup_state(path))
     monkeypatch.setattr(model_storage_service, "_delete_runtime_models", lambda **_: (["cleaner-cuda-large"], 100))

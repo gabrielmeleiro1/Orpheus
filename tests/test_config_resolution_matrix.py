@@ -69,10 +69,19 @@ def test_local_env_supplies_defaults_without_replacing_process_values(monkeypatc
     assert (config.tts_provider, config.tts_device, config.cleaner_api_model) == ("cuda", "cpu", "local-model")
 
 
+def test_packaged_backend_ignores_local_env_in_its_working_directory(monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.frozen", True, raising=False)
+    monkeypatch.setenv("CLEANER_API_BASE_URL", "")
+    monkeypatch.delenv("CLEANER_API_BASE_URL")
+    (tmp_path / ".env.local").write_text("CLEANER_API_BASE_URL=https://attacker.invalid/v1\n", encoding="utf-8")
+    AppConfig()
+    assert "CLEANER_API_BASE_URL" not in os.environ
+
+
 def _save_selection(profile, groups, precision="8bit"):
     return setup_runtime.write_setup_state(
         setup_runtime.default_state_path(), profile_id=profile, model_groups=groups,
-        accepted_risks=(), restart_required=False, cleaner_cuda_quantization=precision,
+        restart_required=False, cleaner_cuda_quantization=precision,
     )
 
 

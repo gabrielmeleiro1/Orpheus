@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.responses import FileResponse
 from starlette.types import Receive, Scope, Send
 
+from modules.contracts.limits import MAX_SPEED, MIN_SPEED
 from modules.web.deps import ControllerDep, TempDirDep, call_with_http_errors
 from modules.web.serializers import safe_unlink
 from modules.web.source_handles import resolve_source_reference
@@ -36,7 +37,7 @@ class VoicePreviewRequest(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
     voice: str = Field(..., min_length=1)
-    speed: float = Field(default=1.0, ge=0.5, le=3.0)
+    speed: float = Field(default=1.0, ge=MIN_SPEED, le=MAX_SPEED)
     text: Optional[str] = Field(default=None, max_length=320)
     tts_engine: Optional[str] = None
     tts_quantization: Optional[str] = None

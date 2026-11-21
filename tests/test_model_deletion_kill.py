@@ -144,7 +144,7 @@ def test_repo_removal_keeps_enough_evidence_to_complete_deletion(storage, kind):
     cache, state_path, repos = storage
     if kind == "unselected":
         setup_runtime.write_setup_state(
-            state_path, profile_id="base", model_groups=(), accepted_risks=()
+            state_path, profile_id="base", model_groups=()
         )
     before = state_path.read_bytes()
     group = "tts-cpu-cuda" if kind == "tts" else "cleaner-cuda"
@@ -194,7 +194,7 @@ def test_deletion_boundaries_restore_or_finish_models_on_restart(storage, kind, 
     cache, state_path, repos = storage
     if kind == "unselected":
         setup_runtime.write_setup_state(
-            state_path, profile_id="base", model_groups=(), accepted_risks=()
+            state_path, profile_id="base", model_groups=()
         )
     before = state_path.read_bytes()
     group = "tts-cpu-cuda" if kind == "tts" else "cleaner-cuda"

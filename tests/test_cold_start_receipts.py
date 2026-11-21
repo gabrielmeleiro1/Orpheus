@@ -94,3 +94,22 @@ def test_corrupt_or_unwritable_cache_falls_back_to_hashing(tmp_path, monkeypatch
     monkeypatch.setattr(receipts, "atomic_write_json", unwritable)
     assert receipts.ModelReceiptVerifier(cache_path=cache_path).verify(root, **identity)
     assert hashed.call_count == 1
+
+
+def test_status_invalidation_keeps_unchanged_fingerprints(tmp_path, monkeypatch):
+    from modules.web.setup_status_cache import RuntimeSetupStatusCache
+
+    root, identity = snapshot(tmp_path, monkeypatch)
+    cache_path = tmp_path / "integrity.json"
+    status = RuntimeSetupStatusCache(
+        receipt_verifier=receipts.ModelReceiptVerifier(cache_path=cache_path),
+    )
+    hashed = Mock(wraps=receipts._validate_parsed_receipt)
+    monkeypatch.setattr(receipts, "_validate_parsed_receipt", hashed)
+    assert status.receipt_verifier.verify(root, **identity)
+    # Adopt, downloads and deletes refresh the status response; unchanged model
+    # files must not be rehashed, in this process or after a restart.
+    status.invalidate()
+    assert status.receipt_verifier.verify(root, **identity)
+    assert receipts.ModelReceiptVerifier(cache_path=cache_path).verify(root, **identity)
+    assert hashed.call_count == 1

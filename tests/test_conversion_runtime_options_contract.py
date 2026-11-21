@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from modules.contracts.conversion_runtime_options import ConversionRuntimeOptions
-from modules.web.routes.options import ParallelWarmupRequest
 from modules.web.schemas.conversions import ConversionRuntimeOptionsRequest
 
 
@@ -69,28 +68,6 @@ def test_conversion_runtime_option_defaults_match_api_contract() -> None:
     assert ConversionRuntimeOptions() == ConversionRuntimeOptionsRequest().to_app_options()
 
 
-def test_parallel_warmup_request_uses_contract_subset() -> None:
-    warmup_names = frozenset(ParallelWarmupRequest.model_fields)
-    expected_names = frozenset(
-        {
-            "voice",
-            "speed",
-            "tts_engine",
-            "tts_quantization",
-            "cleaner_model",
-            "cleaner_backend",
-            "cleaner_cuda_device",
-            "cleaner_cuda_quantization",
-            "cleaner_api_model",
-            "cleaner_api_key",
-            "max_parallel_chapters",
-        }
-    )
-
-    assert warmup_names == expected_names
-    assert warmup_names <= frozenset(ConversionRuntimeOptions.__dataclass_fields__)
-
-
 def test_api_keys_never_appear_in_option_or_request_reprs() -> None:
     from modules.web.routes.options import OpenAIModelListRequest
     from modules.web.schemas.conversions import StartConversionRequest
@@ -100,7 +77,6 @@ def test_api_keys_never_appear_in_option_or_request_reprs() -> None:
         ConversionRuntimeOptions(cleaner_api_key=secret),
         ConversionRuntimeOptionsRequest(cleaner_api_key=secret),
         StartConversionRequest(source_path="book.txt", cleaner_api_key=secret),
-        ParallelWarmupRequest(cleaner_api_key=secret),
         OpenAIModelListRequest(api_key=secret),
     )
     for value in values:

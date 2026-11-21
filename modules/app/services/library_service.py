@@ -33,12 +33,14 @@ from modules.storage.deletion import (
     DELETE_PRESERVE_MARKER,
     LOCAL_DELETE_STAGING,
     UNOWNED_FOLDER_BOOK_ID,
+    apply_delete_staging_decision,
     delete_staging_policy,
     finish_delete_transaction,
     mark_delete_transaction_committed,
     preserve_delete_transaction,
     read_delete_transaction,
     remove_staged_artifacts,
+    remove_unmanifested_staging,
     restore_staged_artifacts,
     sync_directory,
     write_delete_transaction,
@@ -46,6 +48,7 @@ from modules.storage.deletion import (
 from modules.storage.maintenance import (
     _find_ondisk_playback_artifact,
     is_app_owned_durable_source,
+    library_quarantined,
     resolve_app_owned_sources_root,
     resolve_stored_path,
 )
@@ -55,7 +58,6 @@ from modules.storage.permissions import ensure_owner_only_directory, owner_only
 
 MANAGED_UPLOAD_ROOT_NAME = "web_uploads"
 DELETE_STAGING_DIR_NAME = "delete_staging"
-DELETE_COMMIT_MARKER = ".committed"
 UPLOAD_HANDLE_PREFIX = "upload:"
 SUPPORTED_UPLOAD_SUFFIXES = SUPPORTED_SOURCE_SUFFIXES
 UPLOAD_COPY_CHUNK_BYTES = 1024 * 1024
@@ -203,24 +205,11 @@ class LibraryService:
                             database_replaced=getattr(self._repository, "database_replaced", False),
                         )
                         references_checked = True
-                        if decision == "preserve":
-                            preserve_delete_transaction(entry)
-                            continue
-                        if decision == "restore":
-                            preserve_delete_transaction(entry)
-                            self._restore_staged_artifacts(referenced)
-                            if (entry / DELETE_COMMIT_MARKER).is_file():
-                                self._make_delete_durable(entry)
-                                self._commit_staged_artifacts([
-                                    artifact for artifact in artifacts
-                                    if artifact not in referenced and artifact not in protected
-                                ])
-                            if any(staged.exists() for _, staged in artifacts):
-                                continue
-                        else:
-                            self._make_delete_durable(entry)
-                            self._commit_staged_artifacts(artifacts)
-                        removed += int(finish_delete_transaction(entry, artifacts))
+                        removed += int(apply_delete_staging_decision(
+                            entry, artifacts, decision, referenced, protected,
+                            make_durable=self._make_delete_durable,
+                            restore=self._restore_staged_artifacts, remove=self._commit_staged_artifacts,
+                        ))
                 except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error):
                     logger.warning("Failed to reconcile deletion transaction: %s", entry, exc_info=True)
                     try:
@@ -240,17 +229,9 @@ class LibraryService:
                     if (entry / DELETE_MANIFEST).exists() or not _recency_filter([entry], cutoff):
                         continue
                     with self.library_snapshot():
-                        paths = self._other_book_artifact_paths(0)
-                        decision, _, _ = delete_staging_policy(
-                            entry, None, paths, audio_suffixes=AUDIO_ARTIFACT_SUFFIXES,
-                        )
-                        if decision != "remove":
-                            continue
-                        for child in entry.iterdir():
-                            child.unlink()
-                        entry.rmdir()
-                        sync_directory(root)
-                        removed += 1
+                        removed += int(remove_unmanifested_staging(
+                            entry, self._other_book_artifact_paths(0), audio_suffixes=AUDIO_ARTIFACT_SUFFIXES,
+                        ))
                 except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error):
                     logger.debug("Failed to sweep deletion staging: %s", entry, exc_info=True)
         except OSError:
@@ -320,6 +301,9 @@ class LibraryService:
         """
         upload_root = self._upload_root()
         if not upload_root.exists():
+            return 0
+        database = getattr(self._repository, "db_path", None)
+        if database is not None and library_quarantined(database):
             return 0
 
         cutoff = time.time() - max(0.0, float(ttl_seconds))
@@ -487,7 +471,9 @@ class LibraryService:
             book = self._repository.get_book(book_id)
             if book is None:
                 raise FileNotFoundError("Book not found")
-            return extract_cover(self._resolve_stored_path(book.source_path))
+        # Rendering a PDF page or unzipping an EPUB must not hold the repository
+        # lock; a source deleted meanwhile just yields no cover.
+        return extract_cover(self._resolve_stored_path(book.source_path))
 
     def get_book_playback_file(self, book_id: int, chapter_number: int | None = None) -> Optional[Path]:
         detail = self._get_book_record(book_id)

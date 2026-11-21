@@ -5,11 +5,10 @@ from __future__ import annotations
 import ipaddress
 import logging
 import importlib
-import math
 import os
 import threading
 from contextlib import asynccontextmanager
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 import uuid
 
@@ -104,7 +103,12 @@ def _warm_configured_runtime_imports(app: FastAPI, cancelled: threading.Event) -
             status = setup.build_setup_status_response(request)
             if cancelled.is_set():
                 return
-            if status.get("state") == "checking":
+            checks = status.get("probe", {}).get("checks", [])
+            # Wait out the frozen build's placeholder, but a probe that timed
+            # out is never cached: asking again would spawn another probe.
+            if status.get("state") == "checking" and not any(
+                check.get("state") == "timeout" for check in checks
+            ):
                 cancelled.wait(0.25)
                 continue
             if (
@@ -145,31 +149,13 @@ def _cleanup_owned_controller(app: FastAPI) -> None:
     app.state.controller = None
 
 
-def _scrub_non_finite(value: Any) -> Any:
-    """Replace NaN/±Infinity floats with their string form.
-
-    Starlette renders response bodies with ``allow_nan=False``. A validation
-    error whose echoed ``input`` is non-finite (a NaN/Infinity JSON literal,
-    which ``json.loads`` accepts) therefore crashes the 422 renderer into a
-    500. Stringifying non-finite floats keeps the error body JSON-compliant.
-    """
-    if isinstance(value, float) and not math.isfinite(value):
-        return str(value)
-    if isinstance(value, dict):
-        return {key: _scrub_non_finite(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_scrub_non_finite(item) for item in value]
-    return value
-
-
 async def _validation_exception_handler(
     _request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     # ``input`` echoes request values, including API keys sent alongside the
     # invalid field; clients need only ``loc`` and ``msg``.
     errors = [{key: value for key, value in error.items() if key != "input"} for error in exc.errors()]
-    detail = _scrub_non_finite(jsonable_encoder(errors))
-    return JSONResponse(status_code=422, content={"detail": detail})
+    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(errors)})
 
 
 _INTERNAL_ERROR = PublicError(

@@ -8,11 +8,14 @@ import time
 from contextlib import contextmanager
 from itertools import count
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from modules.app.events import JobState, make_state_event
 from modules.errors import ConversionCleanupPendingError
 from modules.storage.models import ConversionResult
+
+if TYPE_CHECKING:
+    from modules.app.controller import ConversionJob
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +28,7 @@ class JobCoordinator:
     def __init__(
         self,
         *,
-        job_cls: type,
+        job_cls: type[ConversionJob],
         status_enum: Any,
         shared_worker_pool_manager: Optional[Any] = None,
     ) -> None:
@@ -51,8 +54,9 @@ class JobCoordinator:
             self._ensure_cleanup_quiesced_locked()
             job = self._active_job
             if job is not None and self._job_is_active_or_pending(job):
-                active_source = getattr(job, "upload_source_path", None)
-                if source_path is None or active_source is None or active_source == source_path.resolve():
+                # A repair has no upload; its book's source is protected by the
+                # library's own reference check.
+                if source_path is None or getattr(job, "upload_source_path", None) == source_path.resolve():
                     raise RuntimeError("An active conversion still references this upload")
             yield
 
@@ -60,45 +64,7 @@ class JobCoordinator:
         thread = getattr(job, "_thread", None)
         if thread is not None and thread.is_alive():
             return True
-        status = getattr(job, "status", None)
-        if status in {self._status.IDLE, self._status.RUNNING}:
-            return True
-        is_active = getattr(job, "is_active", None)
-        if callable(is_active):
-            try:
-                return bool(is_active())
-            except Exception:
-                logger.debug("Failed to inspect active conversion job state", exc_info=True)
-        return False
-
-    def _request_job_cancel(self, job: Any, cancellation: tuple[bool, Any] | None = None) -> bool:
-        if cancellation is not None:
-            cancelled, pipeline = cancellation
-            try:
-                if pipeline is not None:
-                    pipeline.cancel()
-            except Exception:
-                logger.exception("Failed to request conversion job cancellation")
-                return False
-            return cancelled
-        cancel = getattr(job, "cancel", None)
-        if callable(cancel):
-            try:
-                if bool(cancel()):
-                    return True
-            except Exception:
-                logger.exception("Failed to request conversion job cancellation")
-                return False
-
-        if not self._job_is_active_or_pending(job):
-            return False
-
-        setattr(job, "cancel_requested", True)
-        pipeline = getattr(job, "pipeline", None)
-        pipeline_cancel = getattr(pipeline, "cancel", None)
-        if callable(pipeline_cancel):
-            pipeline_cancel()
-        return True
+        return getattr(job, "status", None) in {self._status.IDLE, self._status.RUNNING}
 
     def begin_shutdown(self) -> None:
         """Close admission before waiting for the current conversion to exit."""
@@ -272,12 +238,7 @@ class JobCoordinator:
             kwargs={} if start_gate is not None else kwargs or {},
             daemon=True,
         )
-        begin_running = getattr(job, "begin_running", None)
-        if callable(begin_running):
-            begin_running(thread)
-        else:
-            job._thread = thread
-            job.status = self._status.RUNNING
+        job.begin_running(thread)
         # Publish RUNNING before the worker thread can emit a terminal state;
         # otherwise an instantly-failing job would surface FAILED then RUNNING.
         try:
@@ -319,11 +280,15 @@ class JobCoordinator:
                 or not self._job_is_active_or_pending(job)
             ):
                 return False
-            request_cancel = getattr(job, "request_cancel", None)
-            cancellation = request_cancel() if callable(request_cancel) else None
+            cancelled, pipeline = job.request_cancel()
             self._cancelling_jobs += 1
         try:
-            cancelled = self._request_job_cancel(job, cancellation)
+            if pipeline is not None:
+                try:
+                    pipeline.cancel()
+                except Exception:
+                    logger.exception("Failed to request conversion job cancellation")
+                    return False
             if cancelled:
                 self._shutdown_shared_worker_pool_for_cancel()
             return cancelled
@@ -334,18 +299,8 @@ class JobCoordinator:
     def _shutdown_shared_worker_pool_for_cancel(self) -> None:
         if self._shared_worker_pool_manager is None:
             return
-
-        shutdown = getattr(self._shared_worker_pool_manager, "shutdown", None)
-        if not callable(shutdown):
-            return
-
         try:
-            shutdown(timeout_seconds=0.0, cancel_futures=True)
-        except TypeError:
-            try:
-                shutdown(timeout_seconds=0.0)
-            except TypeError:
-                shutdown()
+            self._shared_worker_pool_manager.shutdown(timeout_seconds=0.0, cancel_futures=True)
         except Exception:
             logger.exception("Failed to shut down shared worker pool during cancellation")
 
@@ -375,21 +330,9 @@ class JobCoordinator:
         deadline = time.monotonic() + timeout
         self.cancel_conversion(expected_job_id=str(job.id))
         timeout = max(0.0, deadline - time.monotonic())
-        if getattr(job, "_thread", None) is None:
+        if job._thread is None:
             return not self._job_is_active_or_pending(job)
-        wait = getattr(job, "wait", None)
-        if callable(wait):
-            try:
-                return bool(wait(timeout=timeout))
-            except Exception:
-                logger.exception("Failed while waiting for conversion job cancellation")
-                return False
-
-        thread = getattr(job, "_thread", None)
-        if thread is None:
-            return True
-        thread.join(timeout=timeout)
-        return not thread.is_alive()
+        return bool(job.wait(timeout=timeout))
 
     @staticmethod
     def _deliver_observer(callback: Callable[..., None] | None, *args: Any) -> None:
@@ -415,15 +358,7 @@ class JobCoordinator:
             chapters_completed=0,
             chapters_total=0,
         )
-        fail = getattr(job, "fail", None)
-        if callable(fail):
-            fail(error_message, failure_result)
-        else:
-            job.status = self._status.FAILED
-            job.error = error_message
-            existing_result = getattr(job, "result", None)
-            if existing_result is None or bool(getattr(existing_result, "success", False)):
-                job.result = failure_result
+        job.fail(error_message, failure_result)
         if callbacks:
             self._deliver_observer(callbacks.on_error, error_message)
             self._deliver_observer(
@@ -437,40 +372,11 @@ class JobCoordinator:
         callbacks: Optional[Any],
         message: str = "conversion cancelled",
     ) -> None:
-        mark_cancelled = getattr(job, "mark_cancelled", None)
-        if callable(mark_cancelled):
-            mark_cancelled(message)
-        else:
-            job.status = self._status.CANCELLED
-            job.error = message
+        job.mark_cancelled(message)
         if callbacks and callbacks.on_event:
             self._deliver_observer(
                 callbacks.on_event, make_state_event(JobState.CANCELLED, job.id, message),
             )
-
-    @staticmethod
-    def _attach_pipeline_to_job(job: Any, pipeline: Any) -> bool:
-        attach_pipeline = getattr(job, "attach_pipeline", None)
-        if callable(attach_pipeline):
-            return bool(attach_pipeline(pipeline))
-        job.pipeline = pipeline
-        return bool(getattr(job, "cancel_requested", False))
-
-    @staticmethod
-    def _detach_pipeline_from_job(job: Any) -> None:
-        detach_pipeline = getattr(job, "detach_pipeline", None)
-        if callable(detach_pipeline):
-            detach_pipeline()
-        else:
-            job.pipeline = None
-
-    @staticmethod
-    def _set_job_result(job: Any, result: Any) -> None:
-        set_result = getattr(job, "set_result", None)
-        if callable(set_result):
-            set_result(result)
-        else:
-            job.result = result
 
     def reserve_conversion(
         self, source_path: Path, title: Optional[str], author: Optional[str],
@@ -509,6 +415,7 @@ class JobCoordinator:
                 status=self._status.IDLE,
                 title=getattr(book, "title", None),
                 author=getattr(book, "author", None),
+                repair=True,
             )
             self._active_job = job
         return job
@@ -518,17 +425,14 @@ class JobCoordinator:
             if self._active_job is job:
                 self._active_job = None
 
-    def publish_success(self, *, job: Any, book_id: int, callbacks: Optional[Any]) -> None:
-        complete = getattr(job, "complete", None)
-        if callable(complete):
-            complete(book_id)
-        else:
-            job.status = self._status.COMPLETED
-            job.book_id = book_id
+    def publish_success(
+        self, *, job: Any, book_id: int, callbacks: Optional[Any], message: str = "conversion completed",
+    ) -> None:
+        job.complete(book_id)
         if callbacks:
             if job.result is not None:
                 self._deliver_observer(callbacks.on_complete, job.result)
             self._deliver_observer(
                 callbacks.on_event,
-                make_state_event(JobState.COMPLETED, job.id, "conversion completed"),
+                make_state_event(JobState.COMPLETED, job.id, message),
             )

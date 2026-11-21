@@ -130,5 +130,4 @@ class RuntimeSetupStatusCache:
             self._key = None
             self._response = None
             self._expires_at = 0.0
-            self.receipt_verifier.invalidate()
             self._condition.notify_all()

@@ -6,6 +6,7 @@ Configuration management for the audiobook creator application.
 
 from dataclasses import dataclass, field, fields
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Optional
@@ -132,8 +133,11 @@ class AppConfig(ConfigValues):
 
     def __post_init__(self):
         """Ensure directories exist and set defaults."""
-        # Load local env defaults so API keys can be tracked in .env.local.
-        _load_env_defaults(Path(".env.local"))
+        # Load local env defaults so API keys can be tracked in .env.local. A
+        # packaged backend inherits whatever working directory launched it, so
+        # only source checkouts read this file.
+        if not getattr(sys, "frozen", False):
+            _load_env_defaults(Path(".env.local"))
 
         defaults = ConfigValues()
         overrides = {

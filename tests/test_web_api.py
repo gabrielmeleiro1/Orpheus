@@ -60,7 +60,26 @@ def test_active_conversion_route_serializes_job_metadata():
         "error": None,
         "title": "Reloaded title",
         "author": "Reloaded author",
+        "repair": False,
     }
+
+
+def test_active_conversion_route_says_whether_the_job_repairs_a_book(tmp_path):
+    from modules.app.controller import ConversionJob, JobStatus
+    from modules.app.services.job_coordinator import JobCoordinator
+
+    coordinator = JobCoordinator(job_cls=ConversionJob, status_enum=JobStatus)
+    controller = SimpleNamespace(
+        config=SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output")),
+        get_active_job=lambda: coordinator._active_job,
+    )
+    client = _make_client_with_controller(controller)
+
+    conversion = coordinator.reserve_conversion(tmp_path / "book.md", None, None)
+    assert client.get("/api/conversions/active").json()["job"]["repair"] is False
+    coordinator.release_reservation(conversion)
+    coordinator.reserve_repair(7, SimpleNamespace(title="Harbor Lights", author=None))
+    assert client.get("/api/conversions/active").json()["job"]["repair"] is True
 
 
 
@@ -248,23 +267,14 @@ def test_options_routes_translate_controller_errors():
             _ = api_key
             raise RuntimeError("provider rejected key")
 
-        def warmup_parallel_worker_recommendation(self, **kwargs):  # noqa: ANN003
-            _ = kwargs
-            raise ValueError("unknown engine")
-
     client = _make_client_with_controller(_Controller())
 
     openai = client.post(
         "/api/options/openai/models", json={"api_key": "sk-invalid"}
     )
-    warmup = client.post(
-        "/api/options/parallel/warmup", json={"tts_engine": "not-an-engine"}
-    )
 
     assert openai.status_code == 502
     assert openai.json() == {"detail": "provider rejected key"}
-    assert warmup.status_code == 400
-    assert warmup.json() == {"detail": "unknown engine"}
 
 
 def test_conversion_routes_forward_full_frontend_selection_payloads_on_start_and_repair():
@@ -853,56 +863,6 @@ def test_system_capabilities_include_parallel_worker_recommendation(monkeypatch)
     assert "available - reserved" in recommendation["calculation"]
 
 
-def test_parallel_warmup_route_forwards_worker_recommendation_payload():
-    class _Controller:
-        def __init__(self):
-            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
-            self.warmup_kwargs = None
-
-        def warmup_parallel_worker_recommendation(self, **kwargs):  # noqa: ANN003
-            self.warmup_kwargs = kwargs
-            return {
-                "memory_measurement_available": True,
-                "requested_parallel_chapters": kwargs["max_parallel_chapters"],
-                "max_safe_parallel_chapters": 3,
-                "recommended_parallel_chapters": 3,
-                "estimated_per_worker_memory_bytes": 2 * 1024**3,
-            }
-
-    controller = _Controller()
-    client = _make_client_with_controller(controller)
-
-    response = client.post(
-        "/api/options/parallel/warmup",
-        json={
-            "voice": "af_bella",
-            "speed": 1.25,
-            "tts_engine": "kokoro",
-            "tts_quantization": "bf16",
-            "cleaner_backend": "api",
-            "cleaner_api_model": "gpt-5-nano",
-            "cleaner_api_key": "sk-test",
-            "max_parallel_chapters": 4,
-        },
-    )
-
-    assert response.status_code == 200
-    assert response.json()["recommended_parallel_chapters"] == 3
-    assert controller.warmup_kwargs == {
-        "voice": "af_bella",
-        "speed": 1.25,
-        "tts_engine": "kokoro",
-        "tts_quantization": "bf16",
-        "cleaner_model": None,
-        "cleaner_backend": "api",
-        "cleaner_cuda_device": None,
-        "cleaner_cuda_quantization": None,
-        "cleaner_api_model": "gpt-5-nano",
-        "cleaner_api_key": "sk-test",
-        "max_parallel_chapters": 4,
-    }
-
-
 def test_model_options_expose_kokoro_conversion_capabilities():
     class _Controller:
         def __init__(self):
@@ -961,37 +921,6 @@ def test_model_options_expose_kokoro_conversion_capabilities():
     cuda_option = next(option for option in backend_options if option["name"] == "cuda")
     assert cuda_option["supported_quantizations"] == ["4bit", "8bit", "fp16"]
     assert cuda_option["default_device"] == "cuda"
-
-
-def test_parallel_warmup_accepts_cuda_cleaner_backend(monkeypatch):
-    captured: dict[str, object] = {}
-
-    class _Controller:
-        def __init__(self):
-            self.config = SimpleNamespace(temp_dir=Path("temp"), output_dir=Path("output"))
-
-        def warmup_parallel_worker_recommendation(self, **kwargs):
-            captured.update(kwargs)
-            return {"recommended_parallel_chapters": 1}
-
-    client = _make_client_with_controller(_Controller())
-    response = client.post(
-        "/api/options/parallel/warmup",
-        json={
-            "voice": "am_adam",
-            "speed": 1.0,
-            "cleaner_backend": "cuda",
-            "cleaner_model": "meta-llama/Llama-3.2-3B-Instruct",
-            "cleaner_cuda_device": "cuda:0",
-            "cleaner_cuda_quantization": "8bit",
-        },
-    )
-
-    assert response.status_code == 200
-    assert captured["cleaner_backend"] == "cuda"
-    assert captured["cleaner_model"] == "meta-llama/Llama-3.2-3B-Instruct"
-    assert captured["cleaner_cuda_device"] == "cuda:0"
-    assert captured["cleaner_cuda_quantization"] == "8bit"
 
 
 def test_start_conversion_nested_runtime_options_forwards_cuda_fields():

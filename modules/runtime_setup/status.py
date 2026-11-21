@@ -119,7 +119,6 @@ def get_setup_status(
             "compatible": profile.is_compatible(),
             "reason": profile.incompatibility_reason(),
             "model_groups": list(profile.model_groups),
-            "risk": None,
         }
         for profile in runtime_profiles()
     ]
@@ -132,7 +131,6 @@ def get_setup_status(
             "restart_required": False,
             "probe": {"available": False, "checks": []},
             "profiles": profiles,
-            "risk": None,
             "state_error": state_error,
         }
 
@@ -149,7 +147,6 @@ def get_setup_status(
         require_voice_model(state["profile"], state["model_groups"])
     except SetupValidationError as exc:
         selection_error = str(exc)
-    risk = None
     return {
         "configured": True,
         "profile": state["profile"],
@@ -159,6 +156,5 @@ def get_setup_status(
         "restart_required": state["restart_required"],
         "probe": probe,
         "profiles": profiles,
-        "risk": risk,
         "state_error": selection_error,
     }

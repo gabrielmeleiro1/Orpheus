@@ -1,7 +1,7 @@
 """
 Application Event Contracts
 ===========================
-Typed events for progress/log/state updates across CLI and TUI surfaces.
+Typed progress, log and state events that the web API streams to the desktop app.
 """
 
 from __future__ import annotations
@@ -51,9 +51,8 @@ class ProgressEvent:
     chunk_current: int = 0
     chunk_total: int = 0
     performance: dict[str, Any] = field(default_factory=dict)
-    # Every asynchronous conversion update is scoped to its owning job. Keep
-    # this optional for compatibility with direct pipeline/TUI callers that do
-    # not have a controller job identifier.
+    # Every asynchronous conversion update is scoped to its owning job. It is
+    # optional for events built without a controller job.
     job_id: str | None = None
 
 

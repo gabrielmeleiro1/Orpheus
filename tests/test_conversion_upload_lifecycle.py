@@ -12,7 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from modules.app.config import AppConfig
-from modules.app.controller import AppController, ConversionJob, JobStatus
+from modules.app.controller import AppController, ConversionCallbacks, ConversionJob, JobStatus
 from modules.pipeline.models import ChapterResult, ConversionResult
 from modules.storage.maintenance import backup_database
 from modules.storage.managed_roots import STORAGE_OWNER_NAME
@@ -327,3 +327,48 @@ def test_failed_recovery_registration_keeps_upload_and_intermediate_copy(control
     assert durable.read_bytes() == original
     assert job.book_id is None
     assert controller.repository.count_books() == 0
+
+
+@pytest.mark.parametrize("outcome", ["failed", "cancelled", "start_failed"])
+def test_unregistered_conversion_leaves_no_durable_upload_copy(controller, monkeypatch, outcome):
+    uploaded = controller.upload_text_source(text="Keep these words.", title="Book", max_bytes=1024)
+    source = controller.config.temp_dir / "web_uploads" / uploaded["source_handle"].removeprefix("upload:")
+    original = source.read_bytes()
+    service = controller._conversion_service
+    monkeypatch.setattr(service, "_validate_requested_tts_runtime", lambda **kwargs: None)
+
+    def ingest(*args):
+        if outcome == "cancelled":
+            service._active_job.pipeline.cancel()
+            return SimpleNamespace(title="Book", author=None, chapters=[])
+        raise RuntimeError("Unreadable source")
+
+    def refuse_start(event):
+        raise RuntimeError("Observer unavailable")
+
+    monkeypatch.setattr("modules.pipeline.pipeline_stages.PipelineStages.ingest", ingest)
+    callbacks = ConversionCallbacks(on_event=refuse_start) if outcome == "start_failed" else None
+    for _attempt in range(2):
+        if outcome == "start_failed":
+            with pytest.raises(RuntimeError, match="Observer unavailable"):
+                service.start_conversion(source, callbacks)
+            job = service._active_job
+        else:
+            job = service.start_conversion(source, callbacks)
+            job._thread.join(timeout=5)
+        assert job.status == (JobStatus.CANCELLED if outcome == "cancelled" else JobStatus.FAILED), job.error
+        assert job.book_id is None
+
+    assert {path.name for path in (controller.config.data_dir / "sources").iterdir()} == {STORAGE_OWNER_NAME}
+    assert source.read_bytes() == original
+    assert controller.repository.count_books() == 0
+
+
+def test_repair_does_not_block_deleting_an_unrelated_upload(controller):
+    uploaded = controller.upload_text_source(text="Keep these words.", title="Book", max_bytes=1024)
+    handle = uploaded["source_handle"]
+    source = controller.config.temp_dir / "web_uploads" / handle.removeprefix("upload:")
+    book = controller.repository.create_book(BookCreate(title="Other", source_path="other.txt", source_type=SourceType.TXT, total_chapters=1))
+    with controller._conversion_service.repair_reservation(book.id):
+        assert controller.delete_upload(handle) == {"deleted": True}
+    assert not source.exists()

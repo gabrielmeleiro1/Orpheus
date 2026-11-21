@@ -1,3 +1,4 @@
+from collections import Counter
 from contextlib import closing
 from pathlib import Path
 import os
@@ -293,6 +294,24 @@ def test_case_variant_sibling_path_does_not_reference_artifact(tmp_path):
     artifacts = [(tmp_path / "Book", tmp_path / "staging" / "Book")]
     references = {tmp_path / "bOOK-other" / "01.mp3"}
     assert delete_staging_policy(entry, artifacts, references) == ("remove", [], [])
+
+
+def test_policy_resolves_each_live_reference_once(tmp_path, monkeypatch):
+    entry = tmp_path / "transaction"
+    entry.mkdir()
+    mark_delete_transaction_committed(entry)
+    artifacts = [(tmp_path / f"Book{index}", tmp_path / "staging" / f"Book{index}") for index in range(3)]
+    references = {tmp_path / "Other" / f"{number:02}.mp3" for number in range(20)}
+    calls = Counter()
+    resolve = Path.resolve
+
+    def counting_resolve(self, *args, **kwargs):
+        calls[self] += 1
+        return resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", counting_resolve)
+    assert delete_staging_policy(entry, artifacts, references) == ("remove", [], [])
+    assert max(calls[path] for path in references) == 1
 
 
 class _ObservedLock:

@@ -430,3 +430,28 @@ def test_repair_reservation_fence_holds_after_epoch_validation(controller, monke
     with pytest.raises(ValueError, match="Stop before launching repair"):
         controller.repair_conversion(book.id, expected_epoch=epoch)
     assert service.get_active_job() is None
+
+
+def test_cover_extraction_runs_outside_the_repository_lock(controller, monkeypatch, tmp_path):
+    source = tmp_path / "book.epub"
+    source.write_bytes(b"not really an epub")
+    book = _book(controller, source)
+    held = []
+
+    def lock_is_free():
+        lock = controller.repository._lock
+        if not lock.acquire(timeout=0.1):
+            return False
+        lock.release()
+        return True
+
+    def extract(path):
+        # The repository lock is reentrant, so probe it from another thread.
+        probe = threading.Thread(target=lambda: held.append(not lock_is_free()))
+        probe.start()
+        probe.join(timeout=5)
+        return None
+
+    monkeypatch.setattr("modules.app.services.library_service.extract_cover", extract)
+    assert controller.get_book_cover(book.id) is None
+    assert held == [False]

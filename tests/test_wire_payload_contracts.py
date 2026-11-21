@@ -186,7 +186,7 @@ def test_http_responses_match_committed_wire_payloads(wire_client, tmp_path, mon
     capture("maintenance-backups", "/api/maintenance/backups")
 
     state.write_setup_state(state.default_state_path(), profile_id="cuda",
-                            model_groups=("tts-cpu-cuda",), accepted_risks=(),
+                            model_groups=("tts-cpu-cuda",),
                             restart_required=False, cleaner_cuda_quantization="4bit")
     client.app.state.runtime_setup_status_cache.invalidate()
     capture("setup-status-configured", "/api/setup/status")

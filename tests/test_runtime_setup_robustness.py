@@ -79,7 +79,7 @@ def test_full_disk_while_saving_setup_state_keeps_the_previous_state(tmp_path, m
     path = tmp_path / "setup-state.json"
     group = next(group for group in MODEL_GROUPS if group.startswith("tts-cpu"))
     profile = "cuda" if "cuda" in group else "base"
-    saved = setup_state.write_setup_state(path, profile_id=profile, model_groups=(group,), accepted_risks=())
+    saved = setup_state.write_setup_state(path, profile_id=profile, model_groups=(group,))
     before = path.read_bytes()
 
     def full_disk(*_args, **_kwargs):
@@ -87,7 +87,7 @@ def test_full_disk_while_saving_setup_state_keeps_the_previous_state(tmp_path, m
 
     monkeypatch.setattr(setup_state, "atomic_write_json", full_disk)
     with pytest.raises(SetupExecutionError, match="Could not write runtime setup state"):
-        setup_state.write_setup_state(path, profile_id=profile, model_groups=(group,), accepted_risks=())
+        setup_state.write_setup_state(path, profile_id=profile, model_groups=(group,))
 
     assert path.read_bytes() == before
     assert setup_state._read_setup_state(path)[0]["installation_id"] == saved["installation_id"]
@@ -195,7 +195,7 @@ def test_standalone_setup_state_lives_in_the_desktop_app_data_directory(tmp_path
     profile, group = _cpu_group()
 
     path = setup_state.default_state_path()
-    setup_state.write_setup_state(path, profile_id=profile, model_groups=(group,), accepted_risks=())
+    setup_state.write_setup_state(path, profile_id=profile, model_groups=(group,))
 
     assert path.parent.name == setup_state.DESKTOP_APP_IDENTIFIER
     assert path.is_file()
@@ -207,7 +207,7 @@ def test_legacy_standalone_state_is_read_but_never_modified(tmp_path, monkeypatc
     _standalone_environment(monkeypatch, tmp_path)
     profile, group = _cpu_group()
     legacy = setup_state._legacy_default_state_path()
-    saved = setup_state.write_setup_state(legacy, profile_id=profile, model_groups=(group,), accepted_risks=())
+    saved = setup_state.write_setup_state(legacy, profile_id=profile, model_groups=(group,))
     legacy_bytes = legacy.read_bytes()
     current = setup_state.default_state_path()
     assert not current.exists()
@@ -216,7 +216,7 @@ def test_legacy_standalone_state_is_read_but_never_modified(tmp_path, monkeypatc
     assert error is None and state["installation_id"] == saved["installation_id"]
     assert setup_state.get_setup_state_cache_key()[0] == "configured"
 
-    rewritten = setup_state.write_setup_state(current, profile_id=profile, model_groups=(group,), accepted_risks=())
+    rewritten = setup_state.write_setup_state(current, profile_id=profile, model_groups=(group,))
     assert setup_state._read_setup_state(current)[0]["installation_id"] == rewritten["installation_id"]
     assert legacy.read_bytes() == legacy_bytes
 
@@ -225,7 +225,7 @@ def test_desktop_data_directory_never_falls_back_to_legacy_state(tmp_path, monke
     _standalone_environment(monkeypatch, tmp_path)
     profile, group = _cpu_group()
     setup_state.write_setup_state(
-        setup_state._legacy_default_state_path(), profile_id=profile, model_groups=(group,), accepted_risks=(),
+        setup_state._legacy_default_state_path(), profile_id=profile, model_groups=(group,),
     )
     monkeypatch.setenv("AUDIOBOOK_DATA_DIR", str(tmp_path / "desktop" / "data"))
 

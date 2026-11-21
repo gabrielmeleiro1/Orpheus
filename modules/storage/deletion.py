@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+from typing import Callable
 
 from modules.contracts.durable_files import atomic_write_json, sync_directory, sync_file as sync_file, unlink_file
 
@@ -20,14 +21,15 @@ UNOWNED_FOLDER_BOOK_ID = 0
 logger = logging.getLogger(__name__)
 
 
-def _contains_reference(original: Path, reference: Path) -> bool:
-    original, reference = original.resolve(), reference.resolve()
-    if reference.is_relative_to(original):
-        return True
+def _reference_key(path: Path) -> str:
     # Conservatively retain case variants even when directory case semantics differ.
-    folded_root = os.path.normcase(str(original)).casefold()
-    folded_path = os.path.normcase(str(reference)).casefold()
-    return folded_path == folded_root or folded_path.startswith(folded_root.rstrip(os.sep) + os.sep)
+    return os.path.normcase(str(path.resolve())).casefold()
+
+
+def _contains_reference(original: Path, reference_keys: list[str]) -> bool:
+    root = _reference_key(original)
+    prefix = root.rstrip(os.sep) + os.sep
+    return any(key == root or key.startswith(prefix) for key in reference_keys)
 
 
 def delete_staging_policy(
@@ -45,10 +47,14 @@ def delete_staging_policy(
     if any(path.is_symlink() or path.is_junction() for path in (entry, marker, preserve)):
         raise ValueError("Invalid deletion marker path")
     committed = marker.is_file()
+    try:
+        reference_keys = [_reference_key(path) for path in live_references]
+    except OSError:
+        return "preserve", [], []
     if artifacts is None:
         known_names = {f"{DELETE_MANIFEST}.tmp", ".committed"}
         try:
-            referenced = any(_contains_reference(entry, path) for path in live_references)
+            referenced = _contains_reference(entry, reference_keys)
         except OSError:
             return "preserve", [], []
         if preserve.exists() or referenced:
@@ -64,14 +70,14 @@ def delete_staging_policy(
     try:
         protected = [
             artifact for artifact in artifacts
-            if any(_contains_reference(artifact[1], path) for path in live_references)
+            if _contains_reference(artifact[1], reference_keys)
         ]
         if protected and not committed:
             return "preserve", [], []
         referenced = [
             artifact for artifact in artifacts
             if artifact not in protected
-            and any(_contains_reference(artifact[0], path) for path in live_references)
+            and _contains_reference(artifact[0], reference_keys)
         ]
     except OSError:
         return "preserve", [], []
@@ -186,6 +192,51 @@ def remove_staged_artifacts(artifacts: list[tuple[Path, Path]]) -> None:
         else:
             unlink_file(staged)
         sync_directory(staged.parent)
+
+
+def apply_delete_staging_decision(
+    entry: Path,
+    artifacts: list[tuple[Path, Path]],
+    decision: str,
+    referenced: list[tuple[Path, Path]],
+    protected: list[tuple[Path, Path]],
+    *,
+    make_durable: Callable[[Path], None] = mark_delete_transaction_committed,
+    restore: Callable[[list[tuple[Path, Path]]], None] = restore_staged_artifacts,
+    remove: Callable[[list[tuple[Path, Path]]], None] = remove_staged_artifacts,
+) -> bool:
+    """Carry out a :func:`delete_staging_policy` decision; return whether ``entry`` finished.
+
+    ``make_durable`` runs before any staged bytes are removed, so the database
+    deletion they belong to can no longer roll back.
+    """
+    if decision == "preserve":
+        preserve_delete_transaction(entry)
+        return False
+    if decision == "restore":
+        preserve_delete_transaction(entry)
+        restore(referenced)
+        if (entry / ".committed").is_file():
+            make_durable(entry)
+            remove([artifact for artifact in artifacts if artifact not in referenced and artifact not in protected])
+        if any(staged.exists() for _, staged in artifacts):
+            return False
+    else:
+        make_durable(entry)
+        remove(artifacts)
+    return finish_delete_transaction(entry, artifacts)
+
+
+def remove_unmanifested_staging(entry: Path, live_references: set[Path], *, audio_suffixes: tuple[str, ...]) -> bool:
+    """Remove a staging folder that never got a manifest when the policy allows it."""
+    decision, _, _ = delete_staging_policy(entry, None, live_references, audio_suffixes=audio_suffixes)
+    if decision != "remove":
+        return False
+    for child in entry.iterdir():
+        child.unlink()
+    entry.rmdir()
+    sync_directory(entry.parent)
+    return True
 
 
 def finish_delete_transaction(entry: Path, artifacts: list[tuple[Path, Path]]) -> bool:

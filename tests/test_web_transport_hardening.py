@@ -167,7 +167,6 @@ def test_query_tokens_never_reach_the_internal_error_log(caplog) -> None:
 @pytest.mark.parametrize("path,body", [
     # A missing field reports the whole request object as its input.
     ("/api/voices/suggest", {"cleaner_api_key": "sk-synthetic-secret"}),
-    ("/api/options/parallel/warmup", {"cleaner_api_key": ["sk-synthetic-secret"]}),
     ("/api/options/openai/models", {"api_key": ["sk-synthetic-secret"]}),
 ])
 def test_validation_errors_do_not_echo_request_values(path: str, body: dict) -> None:

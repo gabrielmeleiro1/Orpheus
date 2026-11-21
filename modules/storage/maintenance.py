@@ -29,13 +29,12 @@ from modules.contracts.book_identity import candidate_book_title_with_suffix, sa
 from modules.contracts.durable_files import atomic_write_json, sync_directory, sync_file
 from modules.storage.deletion import (
     DELETE_MANIFEST,
+    apply_delete_staging_decision,
     delete_staging_policy,
-    finish_delete_transaction,
-    preserve_delete_transaction,
     preserve_delete_transactions,
     read_delete_transaction,
-    remove_staged_artifacts,
-    restore_staged_artifacts,
+    remove_unmanifested_staging,
+    _retry_read_only_removal,
 )
 from modules.storage.maintenance_audit import (
     _newest_mtime,
@@ -99,6 +98,7 @@ __all__ = [
     "recover_restore_artifacts",
     "canonical_sources_dir",
     "is_app_owned_durable_source",
+    "library_quarantined",
     "path_is_within_root",
     "prune_stale_records_and_files",
     "resolve_app_owned_sources_root",
@@ -282,8 +282,10 @@ def backup_database(
 def _remove_backup_sidecars(backup: Path) -> None:
     """Remove WAL files a finished backup left behind.
 
-    The ``.lock`` file stays: retention and restore take it to prove nothing
-    still has the backup open before retiring or reading it.
+    The ``.lock`` file stays: retention takes it to prove nothing still has
+    the backup open before retiring it. Restore reads the backup without it
+    and relies on the controller's storage-maintenance reservation, which
+    keeps backups, cleanup and restore from overlapping.
     """
     for suffix in ("-wal", "-shm"):
         sidecar = backup.with_name(backup.name + suffix)
@@ -663,6 +665,18 @@ def _folder_may_hold_book(folder_name: str, title: str | None) -> bool:
     return os.path.normcase(folder_name) == os.path.normcase(expected)
 
 
+# After a corrupt database is quarantined, the empty replacement references
+# none of the damaged library's files, so until a backup is restored these
+# unreferenced entries may be the only copy of that library's sources. Every
+# automatic sweep of them must check ``library_quarantined`` first.
+_QUARANTINE_KEPT = ("orphan_durable_sources", "orphan_output_dirs", "stale_temp_uploads")
+
+
+def library_quarantined(db_path: Path | str) -> bool:
+    db_file = canonical_database_path(db_path)
+    return db_file.with_name(db_file.name + ".quarantine.json").exists()
+
+
 def storage_cleanup_summary(
     db_path: Path | str,
     output_dir: Path | str,
@@ -744,6 +758,15 @@ def storage_cleanup_summary(
         raw for raw in audit.get("orphan_output_dirs", [])
         if not _dir_contains_finished_audio(Path(raw)) and not _dir_contains_recovery_inventory(Path(raw))
     ]
+    if library_quarantined(db_path):
+        held = [*audit.get("orphan_durable_sources", []), *removable_folders, *audit.get("stale_temp_uploads", [])]
+        if held:
+            kept.append({
+                "category": "quarantined_library_files", "reason": "library_quarantined",
+                "items": [{"name": Path(raw).name, "path": str(raw)} for raw in held],
+            })
+        audit = {**audit, **dict.fromkeys(_QUARANTINE_KEPT, [])}
+        removable_folders = []
     summary: dict[str, Any] = {
         "changed": changed,
         "grace_hours": round(grace_seconds / 3600, 2),
@@ -774,7 +797,7 @@ def storage_cleanup_summary(
 
 
 def _delete_directory_and_verify(path: Path) -> None:
-    rmtree(path)
+    rmtree(path, onexc=_retry_read_only_removal)
     if path.exists():
         raise OSError(f"Failed to delete directory: {path}")
 
@@ -988,6 +1011,66 @@ def _books_cleanup_would_remove(
         )["removable"]
 
 
+def _finish_delete_staging(
+    db_file: Path, entries: list[str], workspace_root: Path, output_root: Path, temp_root: Path,
+    sources_dir: Path, grace_seconds: float,
+) -> list[str]:
+    """Settle stale deletion transactions with the policy the startup sweep uses."""
+    if not entries:
+        return []
+    from time import time
+
+    from modules.storage.db_ownership import acquire_database
+
+    def stored_paths(raws) -> set[Path]:
+        return {
+            path for raw in raws
+            if raw and (path := resolve_stored_path(
+                raw, workspace_root, output_root=output_root, temp_root=temp_root,
+            )) is not None
+        }
+
+    cutoff = time() - max(grace_seconds, DEFAULT_CLEANUP_GRACE_SECONDS)
+    finished = []
+    with acquire_database(db_file) as ownership, closing(_connect(db_file, read_only=True)) as conn:
+        for raw in entries:
+            path = Path(raw)
+            try:
+                # The repository lock keeps every reference current until the staged bytes are settled.
+                with ownership.lock:
+                    if path.is_symlink() or path.is_junction() or not path.is_dir():
+                        continue
+                    references = stored_paths(row[0] for row in conn.execute(
+                        "SELECT source_path FROM books UNION SELECT playback_path FROM books"
+                        " UNION SELECT mp3_path FROM chapters"
+                    ))
+                    if (path / DELETE_MANIFEST).exists():
+                        book_id, artifacts = read_delete_transaction(
+                            path, allowed_roots=(output_root, temp_root, sources_dir),
+                        )
+                        book = conn.execute(
+                            "SELECT source_path, playback_path FROM books WHERE id = ?", (book_id,),
+                        ).fetchone()
+                        book_paths = stored_paths([*book, *(row[0] for row in conn.execute(
+                            "SELECT mp3_path FROM chapters WHERE book_id = ?", (book_id,),
+                        ))]) if book is not None else set()
+                        decision = delete_staging_policy(
+                            path, artifacts, references, book_exists=book is not None,
+                            book_has_paths=bool(book_paths),
+                            database_replaced=library_quarantined(db_file),
+                        )
+                        done = apply_delete_staging_decision(path, artifacts, *decision)
+                    else:
+                        done = bool(_recency_filter([path], cutoff)) and remove_unmanifested_staging(
+                            path, references, audio_suffixes=AUDIO_ARTIFACT_SUFFIXES,
+                        )
+                if done:
+                    finished.append(str(path))
+            except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error):
+                logger.warning("Failed to finish deletion transaction: %s", path, exc_info=True)
+    return finished
+
+
 def prune_stale_records_and_files(
     db_path: Path | str,
     output_dir: Path | str = "output",
@@ -1037,76 +1120,10 @@ def prune_stale_records_and_files(
         "book_rows_kept_for_unclaimed_audio": [],
     }
 
-    staging_entries = audit_before.get("orphan_delete_staging_dirs", [])
-    if staging_entries:
-        from time import time
-
-        from modules.storage.db_ownership import acquire_database
-        from modules.storage.sqlite_repo import SQLiteRepository
-
-        with (
-            acquire_database(db_file) as ownership,
-            ownership.lock,
-            closing(SQLiteRepository(db_file, output_dir=output_root, temp_dir=temp_root)) as repository,
-        ):
-            for raw in staging_entries:
-                path = Path(raw)
-                try:
-                    with repository.library_snapshot():
-                        if path.is_symlink() or path.is_junction() or not path.is_dir():
-                            continue
-                        references = {
-                            resolved for raw_path in repository.list_artifact_paths(0)
-                            if (resolved := resolve_stored_path(
-                                raw_path, workspace_root, output_root=output_root, temp_root=temp_root,
-                            )) is not None
-                        }
-                        if (path / DELETE_MANIFEST).exists():
-                            book_id, artifacts = read_delete_transaction(
-                                path, allowed_roots=(output_root, temp_root, sources_dir),
-                            )
-                            detail = repository.get_book_with_chapters(book_id)
-                            book_paths = []
-                            if detail is not None:
-                                book, chapters = detail
-                                book_paths = [book.source_path, book.playback_path, *(chapter.mp3_path for chapter in chapters)]
-                            decision, referenced, protected = delete_staging_policy(
-                                path, artifacts, references, book_exists=detail is not None,
-                                book_has_paths=any(book_paths), database_replaced=repository.database_replaced,
-                            )
-                            if decision == "preserve":
-                                preserve_delete_transaction(path)
-                                continue
-                            if decision == "restore":
-                                preserve_delete_transaction(path)
-                                restore_staged_artifacts(referenced)
-                                if (path / ".committed").is_file():
-                                    remove_staged_artifacts([
-                                        artifact for artifact in artifacts
-                                        if artifact not in referenced and artifact not in protected
-                                    ])
-                                if any(staged.exists() for _, staged in artifacts):
-                                    continue
-                            else:
-                                remove_staged_artifacts(artifacts)
-                            if finish_delete_transaction(path, artifacts):
-                                actions["deleted_delete_staging_dirs"].append(str(path))
-                        else:
-                            cutoff = time() - max(grace_seconds, DEFAULT_CLEANUP_GRACE_SECONDS)
-                            if not _recency_filter([path], cutoff):
-                                continue
-                            decision, _, _ = delete_staging_policy(
-                                path, None, references, audio_suffixes=AUDIO_ARTIFACT_SUFFIXES,
-                            )
-                            if decision != "remove":
-                                continue
-                            for child in path.iterdir():
-                                child.unlink()
-                            path.rmdir()
-                            sync_directory(path.parent)
-                            actions["deleted_delete_staging_dirs"].append(str(path))
-                except (OSError, ValueError, TypeError, KeyError, AttributeError, RuntimeError, sqlite3.Error):
-                    logger.warning("Failed to finish deletion transaction: %s", path, exc_info=True)
+    actions["deleted_delete_staging_dirs"] = _finish_delete_staging(
+        db_file, audit_before.get("orphan_delete_staging_dirs", []), workspace_root, output_root, temp_root,
+        sources_dir, grace_seconds,
+    )
 
     conn = _connect(db_file)
     conn.row_factory = sqlite3.Row
@@ -1174,6 +1191,8 @@ def prune_stale_records_and_files(
     audit_mid = audit_storage_state(
         db_file, output_dir=output_root, temp_dir=temp_root, grace_seconds=grace_seconds
     )
+    if library_quarantined(db_file):
+        audit_mid = {**audit_mid, **dict.fromkeys(_QUARANTINE_KEPT, [])}
     for raw in audit_mid["orphan_output_dirs"]:
         path = Path(raw)
         # Never rmtree a real directory that still holds finished audio, even when

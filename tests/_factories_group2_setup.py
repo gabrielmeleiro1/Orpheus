@@ -58,7 +58,7 @@ class _RuntimeProbe:
 def _save(profile="base", groups=(), *, restart=False):
     return setup_runtime.write_setup_state(
         setup_runtime.default_state_path(), profile_id=profile, model_groups=groups,
-        accepted_risks=(), restart_required=restart, cleaner_cuda_quantization="8bit",
+        restart_required=restart, cleaner_cuda_quantization="8bit",
     )
 
 

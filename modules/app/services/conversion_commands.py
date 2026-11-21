@@ -176,25 +176,12 @@ class RepairRunCommand(PipelineJobCommand):
             chapters_completed=controller_result.chapters_completed,
             chapters_total=len(pipeline_result.chapters),
         )
-        # Use the synchronized job transitions (result before COMPLETED) so
-        # concurrent readers never observe COMPLETED with a stale/None result.
-        set_result = getattr(self.job, "set_result", None)
-        if callable(set_result):
-            set_result(result)
-        else:
-            self.job.result = result
-        complete = getattr(self.job, "complete", None)
-        if callable(complete):
-            complete(self.book_id)
-        else:
-            self.job.status = service._status.COMPLETED
-            self.job.book_id = self.book_id
-        if self.callbacks and self.callbacks.on_event:
-            from modules.app.events import JobState, make_state_event
-
-            self.callbacks.on_event(
-                make_state_event(JobState.COMPLETED, self.job.id, "repair completed")
-            )
+        # Set the result before COMPLETED so concurrent readers never observe
+        # COMPLETED with a stale or missing result.
+        self.job.set_result(result)
+        service._job_coordinator.publish_success(
+            job=self.job, book_id=self.book_id, callbacks=self.callbacks, message="repair completed",
+        )
 
 
 def resolve_repair_context(

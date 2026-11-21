@@ -2,11 +2,13 @@
 
 import os
 import json
+import stat
 from queue import Empty, Queue
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,6 +34,56 @@ def test_windows_gate_ignores_environment_before_first_native_call(tmp_path):
         assert not gate.is_relative_to(home)
         gates.append(gate)
     assert gates[0] == gates[1]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX account directories")
+def test_posix_gate_ignores_environment_and_other_accounts_cannot_create_it(tmp_path):
+    script = "from modules.storage.managed_roots import _claim_gate_directory; print(_claim_gate_directory())"
+    result = subprocess.run(
+        [sys.executable, "-c", script], check=True, capture_output=True, text=True,
+        env={**os.environ, "HOME": str(tmp_path), "TMPDIR": str(tmp_path), "XDG_CACHE_HOME": str(tmp_path)},
+    )
+    gate = Path(result.stdout.strip())
+    assert gate == managed_roots._claim_gate_directory()
+    assert not gate.is_relative_to(tmp_path)
+    # A world-writable parent such as /tmp would let another account pre-create the gate.
+    existing = next(path for path in gate.parents if path.exists())
+    assert existing.stat().st_uid == os.getuid()
+    assert not existing.stat().st_mode & stat.S_IWOTH
+
+
+@pytest.mark.skipif(os.name == "nt" or os.getuid() == 0, reason="POSIX account directories")
+@pytest.mark.parametrize("home", ["no_passwd_entry", "unwritable", "symlinked_cache"])
+def test_linux_gate_needs_neither_a_passwd_entry_nor_a_writable_home(tmp_path, monkeypatch, home):
+    import pwd
+
+    monkeypatch.setattr(managed_roots.sys, "platform", "linux")
+    account_home = tmp_path / "home"
+    account_home.mkdir()
+    if home == "no_passwd_entry":
+        def lookup(uid):
+            raise KeyError(f"getpwuid(): uid not found: {uid}")
+    else:
+        def lookup(uid):
+            return SimpleNamespace(pw_dir=str(account_home))
+    monkeypatch.setattr(pwd, "getpwuid", lookup)
+    if home == "unwritable":
+        account_home.chmod(0o500)
+    if home == "symlinked_cache":
+        (tmp_path / "real-cache").mkdir()
+        (account_home / ".cache").symlink_to(tmp_path / "real-cache")
+
+    try:
+        gate = managed_roots._claim_gate_directory()
+    finally:
+        account_home.chmod(0o700)
+
+    if home == "symlinked_cache":
+        assert gate == (tmp_path / "real-cache" / "orpheus" / "storage-claims").resolve()
+        assert gate.is_dir()
+        assert not any(path.is_symlink() for path in (gate, *gate.parents))
+    else:
+        assert gate == Path("/tmp").resolve() / f"orpheus-storage-claims-{os.getuid()}"
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows 0700 mkdir ACL")

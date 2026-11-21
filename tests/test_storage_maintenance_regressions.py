@@ -1,8 +1,10 @@
 """Regression coverage for storage maintenance."""
 
 from contextlib import closing
+import os
 from pathlib import Path
 import sqlite3
+import stat
 
 import pytest
 
@@ -104,3 +106,21 @@ def test_repeated_restore_renews_epoch_and_reopen_preserves_it(tmp_path, library
         finally:
             reopened.close()
     assert backup.read_bytes() == backup_bytes
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows refuses to delete read-only files")
+def test_prune_removes_orphan_folders_holding_read_only_files(tmp_path):
+    db = tmp_path / "data" / "library.db"
+    SQLiteRepository(db, output_dir=tmp_path / "output", temp_dir=tmp_path / "temp").close()
+    folder = tmp_path / "output" / "Leftover"
+    folder.mkdir(parents=True)
+    notes = folder / "notes.txt"
+    notes.write_text("synced copy")
+    os.chmod(notes, stat.S_IREAD)
+
+    report = prune_stale_records_and_files(
+        db, tmp_path / "output", tmp_path / "temp", aggressive=True, grace_seconds=0,
+    )
+
+    assert len(report["actions"]["deleted_output_dirs"]) == 1
+    assert not folder.exists()

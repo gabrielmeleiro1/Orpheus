@@ -19,7 +19,6 @@ FRONTEND_ROUTE_CONTRACT = {
     "/api/conversions/{job_id}/cancel": {"POST"},
     "/api/options/models": {"GET"},
     "/api/options/openai/models": {"POST"},
-    "/api/options/parallel/warmup": {"POST"},
     "/api/options/voices": {"GET"},
     "/api/setup/status": {"GET"},
     "/api/setup/models": {"GET"},

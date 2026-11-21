@@ -270,6 +270,24 @@ def test_model_list_says_why_delete_is_unavailable_during_a_conversion(controlle
     assert refused.json()["detail"]["code"] == "conversion_in_progress"
 
 
+@pytest.mark.parametrize("path", ["/api/setup/models/cleaner-cuda", "/api/setup/runtime"])
+def test_model_and_runtime_delete_name_maintenance_rather_than_a_conversion(controller, path) -> None:
+    client = _make_client_with_controller(controller)
+    coordinator = controller._conversion_service._job_coordinator
+    coordinator.begin_book_cleanup(1)
+    try:
+        refused = client.delete(path)
+    finally:
+        coordinator.end_book_cleanup(1)
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"]["code"] == "maintenance_in_progress"
+    if path.startswith("/api/setup/models/"):
+        assert refused.json()["detail"]["message"] == (
+            "Wait for library maintenance to finish before deleting a model."
+        )
+
+
 def test_storage_folders_report_the_log_only_when_it_exists(controller) -> None:
     client = _make_client_with_controller(controller)
     assert client.get("/api/system/storage").json()["log_path"] is None

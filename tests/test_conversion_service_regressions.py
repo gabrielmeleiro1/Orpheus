@@ -200,7 +200,7 @@ def test_conversion_keeps_one_preference_snapshot_after_setup_changes(tmp_path, 
     service = _make_service(tmp_path, _PipelineStub)
     path = tmp_path / "setup.json"
     monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: path)
-    setup_runtime.write_setup_state(path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"), accepted_risks=())
+    setup_runtime.write_setup_state(path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"))
     service._config.apply_setup_preferences()
     source = tmp_path / "book.txt"
     source.write_text("source")
@@ -210,7 +210,7 @@ def test_conversion_keeps_one_preference_snapshot_after_setup_changes(tmp_path, 
         return kwargs["job"]
     monkeypatch.setattr(service._job_coordinator, "_start_pipeline_job", start)
     service.start_conversion(source)
-    setup_runtime.write_setup_state(path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda-large"), accepted_risks=(), cleaner_cuda_quantization="fp16")
+    setup_runtime.write_setup_state(path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda-large"), cleaner_cuda_quantization="fp16")
     service._config.apply_setup_preferences()
     options = service._normalize_runtime_options(captured["runtime_options"])
     assert (options.cleaner_backend, options.cleaner_model, options.cleaner_cuda_quantization) == (

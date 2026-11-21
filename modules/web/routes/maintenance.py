@@ -61,20 +61,16 @@ def get_maintenance_backups(controller: ControllerDep) -> dict:
 
 @router.post("/api/maintenance/backups/{backup_id}/restore")
 def post_maintenance_restore(backup_id: str, controller: ControllerDep) -> dict:
-    report = getattr(controller, "restore_database_backup_report", None)
     try:
-        if callable(report):
-            result = call_with_http_errors(lambda: report(backup_id), runtime_status=409)
-        else:
-            result = {"safety_copy": call_with_http_errors(
-                lambda: controller.restore_database_backup(backup_id), runtime_status=409,
-            )}
+        result = call_with_http_errors(
+            lambda: controller.restore_database_backup_report(backup_id), runtime_status=409,
+        )
     except FileNotFoundError as error:
         raise HTTPException(status_code=404, detail="Database backup not found") from error
     return {
         "restored_id": backup_id,
         "safety_copy_path": str(result["safety_copy"]),
-        **({"summary": result["summary"]} if "summary" in result else {}),
+        "summary": result["summary"],
     }
 
 

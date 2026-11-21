@@ -87,6 +87,29 @@ def test_sweep_preserves_expired_upload_referenced_by_library(tmp_path) -> None:
         repository.close()
 
 
+def test_sweep_keeps_quarantined_library_uploads_until_a_backup_is_restored(tmp_path) -> None:
+    db = tmp_path / "data" / "app.db"
+    output_dir, temp_dir = tmp_path / "output", tmp_path / "temp"
+    repository = SQLiteRepository(db, output_dir=output_dir, temp_dir=temp_dir)
+    upload = temp_dir / "web_uploads" / "legacy.epub"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"the damaged library's only source")
+    repository.create_book(BookCreate(title="Legacy", source_path=str(upload), source_type=SourceType.EPUB))
+    repository.close()
+    expired_mtime = time.time() - WEB_UPLOAD_TTL_SECONDS - 60
+    os.utime(upload, (expired_mtime, expired_mtime))
+    db.write_bytes(b"SQLite format 3\x00" + b"\xde\xad" * 500)
+
+    repository = SQLiteRepository(db, output_dir=output_dir, temp_dir=temp_dir)
+    try:
+        assert repository.quarantine is not None
+        service = LibraryService(repository, output_dir=output_dir, temp_dir=temp_dir)
+        assert service.sweep_stale_uploads() == 0
+    finally:
+        repository.close()
+    assert upload.read_bytes() == b"the damaged library's only source"
+
+
 def test_sweep_handles_missing_upload_root(tmp_path) -> None:
     service = _library_service(tmp_path)
     assert service.sweep_stale_uploads() == 0

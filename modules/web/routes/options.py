@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 from modules.web.deps import ControllerDep, call_with_http_errors
 
 router = APIRouter()
@@ -13,22 +13,6 @@ router = APIRouter()
 
 class OpenAIModelListRequest(BaseModel):
     api_key: str = Field(..., min_length=1, repr=False)
-
-
-class ParallelWarmupRequest(BaseModel):
-    model_config = ConfigDict(allow_inf_nan=False)
-
-    voice: str = "am_adam"
-    speed: float = Field(default=1.0, ge=0.5, le=3.0)
-    tts_engine: str | None = None
-    tts_quantization: str | None = None
-    cleaner_model: str | None = None
-    cleaner_backend: str | None = None
-    cleaner_cuda_device: str | None = None
-    cleaner_cuda_quantization: str | None = None
-    cleaner_api_model: str | None = None
-    cleaner_api_key: str | None = Field(default=None, repr=False)
-    max_parallel_chapters: int = Field(default=4, ge=1)
 
 
 @router.get("/api/options/models")
@@ -92,28 +76,6 @@ def list_openai_models(payload: OpenAIModelListRequest, controller: ControllerDe
     return call_with_http_errors(
         lambda: controller.list_openai_models(api_key=payload.api_key),
         runtime_status=502,
-    )
-
-
-@router.post("/api/options/parallel/warmup")
-def warmup_parallel_workers(
-    payload: ParallelWarmupRequest,
-    controller: ControllerDep,
-) -> dict:
-    return call_with_http_errors(
-        lambda: controller.warmup_parallel_worker_recommendation(
-            voice=payload.voice,
-            speed=payload.speed,
-            tts_engine=payload.tts_engine,
-            tts_quantization=payload.tts_quantization,
-            cleaner_model=payload.cleaner_model,
-            cleaner_backend=payload.cleaner_backend,
-            cleaner_cuda_device=payload.cleaner_cuda_device,
-            cleaner_cuda_quantization=payload.cleaner_cuda_quantization,
-            cleaner_api_model=payload.cleaner_api_model,
-            cleaner_api_key=payload.cleaner_api_key,
-            max_parallel_chapters=payload.max_parallel_chapters,
-        )
     )
 
 

@@ -842,7 +842,7 @@ def test_app_controller_cleans_up_owned_repository_connection(monkeypatch, tmp_p
         def snapshot(self):
             return {"reuse_hits": 0, "restarts": 0}
 
-        def shutdown(self):
+        def shutdown(self, *, timeout_seconds=None):  # noqa: ANN001
             self.shutdown_called = True
             return True
 

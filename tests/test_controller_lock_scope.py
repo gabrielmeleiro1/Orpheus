@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import threading
-from unittest.mock import Mock
-
-import pytest
 
 import modules.app.controller as controller_module
 from modules.storage.models import BookCreate, SourceType
 from tests.test_backup_restore import controller as controller_fixture
-from tests.test_web_api import _make_client_with_controller
 
 controller = controller_fixture
 
@@ -171,70 +167,6 @@ def test_second_deletion_cannot_race_the_unlocked_file_removal(controller, monke
         controller, monkeypatch, lambda book, _source: controller.delete_book_with_identity(book.id),
     )
     assert "already in progress" in str(outcome.get("error")), outcome
-
-
-def _warmup(client):
-    return client.post("/api/options/parallel/warmup", json={"voice": "am_adam"})
-
-
-def test_worker_warmup_is_single_flight_and_blocks_conversion_admission(controller, monkeypatch) -> None:
-    entered = threading.Event()
-    release = threading.Event()
-
-    def blocking_measure(**_options):
-        entered.set()
-        release.wait(5)
-        return {"recommended_workers": 1}
-
-    monkeypatch.setattr(controller, "_measure_parallel_worker_recommendation", blocking_measure)
-    client = _make_client_with_controller(controller)
-    first: dict = {}
-    worker = threading.Thread(target=lambda: first.setdefault("response", _warmup(client)), daemon=True)
-    worker.start()
-    assert entered.wait(5)
-    try:
-        second = _warmup(client)
-        coordinator = controller._conversion_service._job_coordinator
-        with pytest.raises(RuntimeError):
-            coordinator.reserve_conversion(controller.config.temp_dir / "book.txt", "Title", None)
-    finally:
-        release.set()
-        worker.join(5)
-
-    assert second.status_code == 409
-    assert second.json()["detail"]["code"] == "warmup_in_progress"
-    assert first["response"].status_code == 200
-    # The reservation is released, so admission reopens.
-    job = coordinator.reserve_conversion(controller.config.temp_dir / "book.txt", "Title", None)
-    coordinator.release_reservation(job)
-
-
-def test_worker_warmup_refuses_while_a_conversion_is_active(controller, monkeypatch) -> None:
-    measure = Mock()
-    monkeypatch.setattr(controller, "_measure_parallel_worker_recommendation", measure)
-    coordinator = controller._conversion_service._job_coordinator
-    job = coordinator.reserve_conversion(controller.config.temp_dir / "book.txt", "Title", None)
-    try:
-        response = _warmup(_make_client_with_controller(controller))
-    finally:
-        coordinator.release_reservation(job)
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "conversion_in_progress"
-    measure.assert_not_called()
-
-
-def test_worker_warmup_refuses_while_a_cancelled_pool_shuts_down(controller, monkeypatch) -> None:
-    measure = Mock()
-    monkeypatch.setattr(controller, "_measure_parallel_worker_recommendation", measure)
-    coordinator = controller._conversion_service._job_coordinator
-    monkeypatch.setattr(coordinator, "_cancelling_jobs", 1)
-
-    response = _warmup(_make_client_with_controller(controller))
-
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "conversion_cleanup_pending"
-    measure.assert_not_called()
 
 
 def test_storage_diagnostics_still_excludes_restore(controller, monkeypatch) -> None:

@@ -55,6 +55,44 @@ repo.close()
             child.communicate("\n", timeout=10)
 
 
+def test_cleanup_keeps_quarantined_library_files_until_a_backup_is_restored(tmp_path):
+    db = tmp_path / "data" / "audiobooks.db"
+    output, temp = tmp_path / "output", tmp_path / "temp"
+    repo = SQLiteRepository(db, output_dir=output, temp_dir=temp)
+    source = db.parent / "sources" / "novel.epub"
+    source.write_bytes(b"the damaged library's only source")
+    repo.create_book(BookCreate(title="Novel", source_path=str(source), source_type=SourceType.EPUB))
+    repo.close()
+    folder = output / "Novel"
+    folder.mkdir(parents=True)
+    (folder / "notes.txt").write_text("partial conversion")
+    upload = temp / "web_uploads" / "legacy.epub"
+    upload.parent.mkdir(parents=True)
+    upload.write_bytes(b"legacy upload source")
+    old = time.time() - 2 * 86400
+    for path in (source, folder / "notes.txt", folder, upload):
+        os.utime(path, (old, old))
+    db.write_bytes(b"SQLite format 3\x00" + b"\xde\xad" * 500)
+
+    repo = SQLiteRepository(db, output_dir=output, temp_dir=temp)
+    try:
+        assert repo.quarantine is not None
+        report = prune_stale_records_and_files(db, output_dir=output, temp_dir=temp, aggressive=True)
+    finally:
+        repo.close()
+
+    assert source.read_bytes() == b"the damaged library's only source"
+    assert (folder / "notes.txt").exists()
+    assert upload.read_bytes() == b"legacy upload source"
+    summary = report["summary"]
+    assert summary["removable"]["orphan_sources"] == 0
+    assert summary["removable"]["output_folders"] == 0
+    assert summary["removable"]["temp_uploads"] == 0
+    [kept] = [group for group in summary["kept"] if group["category"] == "quarantined_library_files"]
+    assert kept["reason"] == "library_quarantined"
+    assert sorted(item["name"] for item in kept["items"]) == ["Novel", "legacy.epub", "novel.epub"]
+
+
 @pytest.mark.parametrize("shared", ["output", "temp"])
 @pytest.mark.parametrize("live", [False, True])
 def test_separate_database_directories_cannot_reuse_managed_root(tmp_path, shared, live):

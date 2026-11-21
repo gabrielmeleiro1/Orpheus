@@ -59,7 +59,7 @@ def test_setup_errors_preserve_status_message_and_legacy_fields(error_client, mo
     payload = {"profile": "cuda", "model_groups": ["tts-cpu-cuda"]}
     extras = {}
     monkeypatch.setattr(setup, "_check_selected_profile_packages", lambda profile: {"ready": True})
-    monkeypatch.setattr(setup.setup_status, "_probe_profile", lambda *args: {"available": True})
+    monkeypatch.setattr(setup.setup_status, "_probe_profile", lambda *args, **kwargs: {"available": True})
     monkeypatch.setattr(setup.hub_cache, "_check_model_group_assets", lambda groups, **kwargs: {
         group: {"ready": True} for group in groups
     })
@@ -72,7 +72,7 @@ def test_setup_errors_preserve_status_message_and_legacy_fields(error_client, mo
         monkeypatch.setattr(setup.setup_status, "_probe_profile", Mock(side_effect=RuntimeError("private diagnostics")))
     elif code == "probe_failed":
         extras = {"probe": {"checks": [{"id": "tts-cpu-cuda", "ready": False}]}}
-        monkeypatch.setattr(setup.setup_status, "_probe_profile", lambda *args: {
+        monkeypatch.setattr(setup.setup_status, "_probe_profile", lambda *args, **kwargs: {
             "available": False, "checks": [{"id": "tts-cpu-cuda", "available": False, "path": "private"}],
         })
     elif code == "assets_missing":
@@ -92,14 +92,17 @@ def test_setup_errors_preserve_status_message_and_legacy_fields(error_client, mo
         if code == "invalid_model":
             path = "/api/setup/models/unknown"
         elif code == "conversion_in_progress":
-            controller._conversion_service = SimpleNamespace(begin_storage_cleanup=Mock(side_effect=RuntimeError("busy")))
+            controller._conversion_service = SimpleNamespace(
+                begin_storage_cleanup=Mock(side_effect=RuntimeError("busy")),
+                storage_cleanup_blocker=lambda: "conversion_in_progress",
+            )
         elif code == "preview_in_progress":
             monkeypatch.setattr(model_storage_service, "_recover_staged_models", Mock(side_effect=model_storage_service.PreviewInProgress(message)))
         elif code == "model_delete_failed":
             monkeypatch.setattr(model_storage_service, "_recover_staged_models", Mock(side_effect=OSError("private path")))
         elif code == "setup_state_write_failed":
             monkeypatch.setattr(setup.setup_runtime, "_read_setup_state", lambda path: ({
-                "model_groups": ["cleaner-cuda"], "profile": "cuda", "accepted_risks": [], "cleaner_cuda_quantization": "4bit",
+                "model_groups": ["cleaner-cuda"], "profile": "cuda", "cleaner_cuda_quantization": "4bit",
             }, None))
             monkeypatch.setattr(model_storage_service, "_stage_runtime_models", lambda *args, **kwargs: nullcontext({}))
             monkeypatch.setattr(setup.setup_runtime, "write_setup_state", Mock(side_effect=OSError("private path")))
@@ -131,7 +134,7 @@ def test_replaced_library_preserves_conflict_details(error_client, method, path,
 ])
 def test_maintenance_errors_keep_plain_string_details(error_client, error, status):
     client, controller = error_client
-    controller.restore_database_backup = Mock(side_effect=error)
+    controller.restore_database_backup_report = Mock(side_effect=error)
     response = client.post("/api/maintenance/backups/example/restore")
     assert response.status_code == status
     assert response.json() == {"detail": str(error)}
@@ -180,7 +183,10 @@ def test_setup_lock_conflicts_keep_the_exception_message(error_client, monkeypat
 def test_runtime_deletion_keeps_the_conversion_guard_message(error_client):
     client, controller = error_client
     message = "Finish the current conversion first."
-    controller._conversion_service = SimpleNamespace(begin_storage_cleanup=Mock(side_effect=RuntimeError(message)))
+    controller._conversion_service = SimpleNamespace(
+        begin_storage_cleanup=Mock(side_effect=RuntimeError(message)),
+        storage_cleanup_blocker=lambda: "conversion_in_progress",
+    )
     response = client.delete("/api/setup/runtime")
     assert response.status_code == 409
     assert response.json() == {"detail": {

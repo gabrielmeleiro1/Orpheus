@@ -53,7 +53,7 @@ def storage(monkeypatch, tmp_path):
     original_delete = model_storage_service._delete_runtime_models
     monkeypatch.setattr(model_storage_service, "_delete_runtime_models", lambda **kwargs: original_delete(cache_scanner=lambda: scan_cache_dir(cache), cache_root=cache, **kwargs))
     state_path = setup_runtime.default_state_path()
-    setup_runtime.write_setup_state(state_path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"), accepted_risks=())
+    setup_runtime.write_setup_state(state_path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"))
     repos = {group: make_repo(cache, resolve_model_groups((group,))[0]) for group in ("tts-cpu-cuda", "cleaner-cuda")}
     # Deliberately share the same commit hash with the managed models.
     repos["unrelated"] = make_repo(cache, "someone/unrelated")
@@ -265,7 +265,7 @@ def test_delete_then_download_again_preserves_the_active_runtime(storage, monkey
 
 def test_deleting_unselected_model_preserves_configuration(storage):
     _, state_path, _ = storage
-    setup_runtime.write_setup_state(state_path, profile_id="base", model_groups=(), accepted_risks=())
+    setup_runtime.write_setup_state(state_path, profile_id="base", model_groups=())
     before = state_path.read_bytes()
     with TestClient(create_app(controller=object())) as client:
         assert client.delete("/api/setup/models/cleaner-cuda").status_code == 200
@@ -353,7 +353,7 @@ def test_partial_delete_reports_actual_bytes_and_clears_selection(storage, monke
 @requires_shared_blob_store
 def test_deleting_voice_model_leaves_runtime_not_ready(storage, monkeypatch):
     _, state_path, _ = storage
-    setup_runtime.write_setup_state(state_path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"), accepted_risks=(), restart_required=False)
+    setup_runtime.write_setup_state(state_path, profile_id="cuda", model_groups=("tts-cpu-cuda", "cleaner-cuda"), restart_required=False)
     monkeypatch.setattr(routes, "_check_selected_profile_packages", lambda _: {"ready": True, "missing": [], "incompatible": []})
     monkeypatch.setattr("modules.runtime_setup.status._probe_profile", lambda groups, _, **kwargs: {"available": True, "checks": [{"id": g, "available": True} for g in groups]})
     monkeypatch.setattr(routes, "_detect_installed_runtime", lambda *a, **k: None)
@@ -745,7 +745,7 @@ def test_ambiguous_legacy_deletion_is_preserved_and_blocks_state_replacement(sto
     assert manifest.exists()
     assert not original.exists()
     with pytest.raises(setup_runtime.SetupExecutionError, match="deletion"):
-        setup_runtime.write_setup_state(state_path, profile_id="base", model_groups=(), accepted_risks=())
+        setup_runtime.write_setup_state(state_path, profile_id="base", model_groups=())
     assert state_path.read_bytes() == before
 
 
@@ -754,7 +754,7 @@ def test_deletion_commit_is_recorded_before_state_writer_returns(storage):
     installation_id = "c" * 32
     with model_storage_service._stage_runtime_models("cleaner-cuda", installation_id=installation_id) as staged:
         setup_runtime.write_setup_state(state_path, profile_id="cuda", model_groups=("tts-cpu-cuda",),
-                                        accepted_risks=(), installation_id=installation_id)
+                                        installation_id=installation_id)
         for path in staged.values():
             manifest = json.loads(path.with_suffix(".json").read_text())
             assert manifest["settings_committed"] is True

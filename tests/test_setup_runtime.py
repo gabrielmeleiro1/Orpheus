@@ -246,7 +246,6 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
     result = setup_runtime.run_setup(
         profile_id="cuda",
         model_groups=("tts-cpu-cuda",),
-        accept_pytorch_risk=True,
         state_path=state_path,
         command_runner=runner,
         probe_service=_ProbeService(),
@@ -254,17 +253,12 @@ def test_successful_install_uses_shell_false_and_writes_atomic_restart_state(
 
     assert result["restart_required"] is True
     assert [call[0] for call in calls] == [
-        setup_runtime.build_install_plan(
-            "cuda", ("tts-cpu-cuda",), accept_pytorch_risk=True
-        ).pip_command,
-        setup_runtime.build_install_plan(
-            "cuda", ("tts-cpu-cuda",), accept_pytorch_risk=True
-        ).model_command,
+        setup_runtime.build_install_plan("cuda", ("tts-cpu-cuda",)).pip_command,
+        setup_runtime.build_install_plan("cuda", ("tts-cpu-cuda",)).model_command,
     ]
     assert all(call[1]["shell"] is False for call in calls)
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     assert payload == {
-        "accepted_risks": [],
         "installed_at": payload["installed_at"],
         "installation_id": payload["installation_id"],
         "installed_during_backend_instance_id": None,
@@ -373,7 +367,6 @@ def test_status_runs_fresh_probe_and_does_not_trust_installed_state(
         state_path,
         profile_id="mlx",
         model_groups=("tts-mlx",),
-        accepted_risks=(),
     )
     probe = _ProbeService(mlx_available=False)
 
@@ -395,7 +388,6 @@ def test_setup_state_cache_key_tracks_identity_profile_and_model_groups(tmp_path
         state_path,
         profile_id="mlx",
         model_groups=("tts-mlx",),
-        accepted_risks=(),
     )
 
     first = setup_runtime.get_setup_state_cache_key(state_path=state_path)
@@ -403,7 +395,6 @@ def test_setup_state_cache_key_tracks_identity_profile_and_model_groups(tmp_path
         state_path,
         profile_id="mlx",
         model_groups=("cleaner-mlx",),
-        accepted_risks=(),
     )
     second = setup_runtime.get_setup_state_cache_key(state_path=state_path)
 
@@ -437,7 +428,6 @@ def test_status_probes_only_selected_model_groups(
         state_path,
         profile_id=profile,
         model_groups=groups,
-        accepted_risks=(),
     )
     probe = _ProbeService(package_tts_available=False)
 
@@ -455,7 +445,6 @@ def test_base_status_is_ready_without_optional_runtime_probe(tmp_path: Path):
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
     )
     probe = _ProbeService()
 
@@ -478,7 +467,6 @@ def test_same_backend_process_cannot_clear_restart_required(
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
         backend_instance_id=backend_id,
     )
     acknowledged = setup_runtime.acknowledge_backend_startup(backend_id, state_path=state_path)
@@ -504,7 +492,6 @@ def test_new_backend_process_clears_restart_required(
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
         backend_instance_id=old_backend_id,
     )
     setup_runtime.persist_backend_instance(new_backend_id, state_path=state_path)
@@ -528,7 +515,6 @@ def test_missing_install_time_backend_allows_first_real_backend(tmp_path: Path):
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
     )
     backend_id = "3" * 32
     setup_runtime.persist_backend_instance(backend_id, state_path=state_path)
@@ -544,13 +530,11 @@ def test_stale_acknowledgement_never_overwrites_new_install(tmp_path: Path):
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
     )
     new_state = setup_runtime.write_setup_state(
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
     )
 
     assert (
@@ -831,7 +815,6 @@ def test_desktop_backend_lifespan_attempts_restart_acknowledgement(
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
         backend_instance_id="1" * 32,
     )
 
@@ -841,7 +824,7 @@ def test_desktop_backend_lifespan_attempts_restart_acknowledgement(
     assert setup_runtime.read_setup_state(state_path)["restart_required"] is False
 
 
-def test_legacy_cuda_risk_acknowledgement_is_migrated_away(tmp_path: Path):
+def test_legacy_cuda_risk_acknowledgement_still_loads(tmp_path: Path):
     import scripts.setup_runtime as setup_runtime
 
     state_path = tmp_path / "runtime-setup.json"
@@ -849,7 +832,6 @@ def test_legacy_cuda_risk_acknowledgement_is_migrated_away(tmp_path: Path):
         state_path,
         profile_id="cuda",
         model_groups=(),
-        accepted_risks=(),
     )
     payload = json.loads(state_path.read_text(encoding="utf-8"))
     payload["accepted_risks"] = [
@@ -863,8 +845,8 @@ def test_legacy_cuda_risk_acknowledgement_is_migrated_away(tmp_path: Path):
     )
 
     assert status["configured"] is True
-    assert status["risk"] is None
-    assert setup_runtime.read_setup_state(state_path)["accepted_risks"] == []
+    assert "risk" not in status
+    assert "accepted_risks" not in setup_runtime.read_setup_state(state_path)
 
 
 def test_json_cli_errors_are_single_parseable_terminal_events(
@@ -929,7 +911,6 @@ def test_probe_exception_is_wrapped_as_setup_execution_error(tmp_path: Path):
         state_path,
         profile_id="mlx",
         model_groups=("tts-mlx",),
-        accepted_risks=(),
     )
 
     with pytest.raises(setup_runtime.SetupExecutionError, match="Runtime probe failed"):
@@ -983,7 +964,6 @@ def test_state_write_errors_are_wrapped(monkeypatch: pytest.MonkeyPatch, tmp_pat
             tmp_path / "runtime-setup.json",
             profile_id="base",
             model_groups=(),
-            accepted_risks=(),
         )
 
 
@@ -1127,7 +1107,6 @@ def test_write_setup_state_defaults_to_restart_required(tmp_path: Path):
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
     )
     assert payload["restart_required"] is True
     assert setup_runtime.read_setup_state(state_path)["restart_required"] is True
@@ -1141,7 +1120,6 @@ def test_write_setup_state_can_persist_without_restart_for_adopt(tmp_path: Path)
         state_path,
         profile_id="base",
         model_groups=(),
-        accepted_risks=(),
         restart_required=False,
     )
     assert payload["restart_required"] is False

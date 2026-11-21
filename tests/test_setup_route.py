@@ -93,14 +93,12 @@ def test_setup_status_returns_allowlisted_readiness_contract(
                     "compatible": True,
                     "reason": None,
                     "model_groups": [],
-                    "risk": None,
                 },
                 {
                     "id": "mlx",
                     "compatible": True,
                     "reason": None,
                     "model_groups": ["tts-mlx", "cleaner-mlx"],
-                    "risk": None,
                 },
                 {
                     "id": "cuda",
@@ -110,7 +108,6 @@ def test_setup_status_returns_allowlisted_readiness_contract(
                     "risk": {"id": "forged-risk", "summary": "forged summary"},
                 },
             ],
-            "risk": None,
             "state_error": None,
             "commands": [["python", "-m", "pip"]],
             "desktop_api_token": "secret",
@@ -175,7 +172,7 @@ def test_setup_status_returns_allowlisted_readiness_contract(
     else:
         assert cuda["compatible"] is True
         assert cuda["reason"] is None
-    assert cuda["risk"] is None
+    assert "risk" not in cuda
     assert _contains_forbidden_key(payload) is False
 
 
@@ -192,7 +189,6 @@ def test_setup_status_recovers_from_incomplete_or_corrupt_state(monkeypatch) -> 
             "restart_required": False,
             "probe": {"available": False, "checks": []},
             "profiles": [],
-            "risk": None,
             "state_error": "Setup state is invalid: arbitrary local detail",
         },
     )
@@ -218,7 +214,6 @@ def test_setup_status_recovers_from_incomplete_or_corrupt_state(monkeypatch) -> 
         "recommended_profile": payload["recommended_profile"],
         "installed_runtime": None,
         "profiles": [],
-        "risk": None,
         "backend": {
             "instance_id": payload["backend"]["instance_id"],
             "status": "running",
@@ -240,7 +235,6 @@ def test_setup_status_preserves_missing_invalid_and_unavailable_state_errors(
         "restart_required": False,
         "probe": {"available": False, "checks": []},
         "profiles": [],
-        "risk": None,
         "state_error": None,
     }
     with _client() as client:
@@ -902,7 +896,7 @@ def test_frozen_pending_status_preserves_saved_configuration(monkeypatch, tmp_pa
     state_path = tmp_path / "setup.json"
     setup_route.setup_runtime.write_setup_state(
         state_path, profile_id="cuda", model_groups=["tts-cpu-cuda", "cleaner-cuda"],
-        accepted_risks=[], restart_required=True, cleaner_cuda_quantization="8bit",
+        restart_required=True, cleaner_cuda_quantization="8bit",
     )
     monkeypatch.setattr(setup_route.sys, "frozen", True, raising=False)
     monkeypatch.setattr("modules.runtime_setup.state.default_state_path", lambda: state_path)

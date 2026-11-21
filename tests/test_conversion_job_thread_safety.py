@@ -247,13 +247,14 @@ def test_service_cancel_during_pipeline_attach_delivers_cancellation_once(tmp_pa
     job = ConversionJob(id="attaching", book_id=None, status=JobStatus.RUNNING)
     service._active_job = job
     pipeline = _RecordingPipeline()
-    request_cancel = service._job_coordinator._request_job_cancel
+    request_cancel = job.request_cancel
 
-    def attach_before_delivery(selected_job, *args):
-        if selected_job.attach_pipeline(pipeline):
+    def attach_before_delivery():
+        cancellation = request_cancel()
+        if job.attach_pipeline(pipeline):
             pipeline.cancel()
-        return request_cancel(selected_job, *args)
+        return cancellation
 
-    monkeypatch.setattr(service._job_coordinator, "_request_job_cancel", attach_before_delivery)
+    monkeypatch.setattr(job, "request_cancel", attach_before_delivery)
     assert service.cancel_conversion(expected_job_id=job.id)
     assert pipeline.cancel_count == 1

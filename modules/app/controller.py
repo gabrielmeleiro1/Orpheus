@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from modules.app.config import AppConfig
-from modules.errors import ConversionCleanupPendingError, WorkerWarmupUnavailableError
 from modules.app.services import (
     ConversionRuntimeOptions,
     ConversionService,
@@ -27,12 +26,8 @@ from modules.app.services import (
     RuntimeCapabilityService,
     VoiceService,
 )
-from modules.pipeline.orchestrator import ConversionPipeline
 from modules.pipeline.pool_manager import SharedWorkerPoolManager
-from modules.pipeline.worker_recommendation import (
-    build_cpu_core_worker_recommendation,
-    build_parallel_worker_recommendation,
-)
+from modules.pipeline.worker_recommendation import build_parallel_worker_recommendation
 from modules.storage.maintenance import (
     audit_storage_state,
     backup_database as backup_database_file,
@@ -99,6 +94,8 @@ class ConversionJob:
     error: Optional[str] = None
     cancel_requested: bool = False
     client_request_id: Optional[str] = None
+    upload_source_path: Optional[Path] = None
+    repair: bool = False
     _thread: Optional[threading.Thread] = field(default=None, repr=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -205,7 +202,6 @@ class AppController:
         self.config.temp_dir = Path(self.config.temp_dir).expanduser().resolve()
         self._library_generation_id = uuid.uuid4().hex
         self._library_restore_lock = threading.Lock()
-        self._worker_warmup_lock = threading.Lock()
         self._owns_repository = repository is None
         self.repository = repository or SQLiteRepository(
             self.config.db_path,
@@ -344,26 +340,11 @@ class AppController:
 
     @contextmanager
     def _book_cleanup(self, book_id: int):
-        begin_cleanup = getattr(self._conversion_service, "begin_book_cleanup", None)
-        end_cleanup = getattr(self._conversion_service, "end_book_cleanup", None)
-        if callable(begin_cleanup) and callable(end_cleanup):
-            begin_cleanup(book_id)
-            try:
-                yield
-            finally:
-                end_cleanup(book_id)
-            return
-
-        active_job = self._conversion_service.get_active_job()
-        if (
-            active_job is not None
-            and getattr(active_job, "book_id", None) == book_id
-            and self._conversion_service.has_active_job()
-        ):
-            raise RuntimeError(
-                "Cannot delete a book while it is being converted or repaired"
-            )
-        yield
+        self._conversion_service.begin_book_cleanup(book_id)
+        try:
+            yield
+        finally:
+            self._conversion_service.end_book_cleanup(book_id)
 
     def delete_book(self, book_id: int, expected_epoch: str | None = None) -> bool | dict:
         with self._book_cleanup(book_id):
@@ -696,102 +677,6 @@ class AppController:
             "metrics": metrics,
         }
 
-    def warmup_parallel_worker_recommendation(self, **options: Any) -> dict[str, Any]:
-        """Load the conversion models once to measure a worker recommendation.
-
-        Loading runs outside a conversion job, so it reserves the same exclusive
-        maintenance slot as model deletion and storage cleanup: no conversion,
-        repair, model deletion, or cleanup can start meanwhile, and none may be
-        running or still releasing a cancelled worker pool. One warmup at a time.
-        """
-        if not self._worker_warmup_lock.acquire(blocking=False):
-            raise WorkerWarmupUnavailableError("warmup_in_progress", "A worker warmup is already running.")
-        try:
-            try:
-                self._conversion_service.begin_storage_cleanup()
-            except ConversionCleanupPendingError:
-                raise
-            except RuntimeError as exc:
-                if self._conversion_service.has_active_job():
-                    raise WorkerWarmupUnavailableError(
-                        "conversion_in_progress", "Wait for the current conversion to finish before warming up workers.",
-                    ) from exc
-                raise WorkerWarmupUnavailableError(
-                    "maintenance_in_progress", "Wait for library maintenance to finish before warming up workers.",
-                ) from exc
-            try:
-                return self._measure_parallel_worker_recommendation(**options)
-            finally:
-                self._conversion_service.end_storage_cleanup()
-        finally:
-            self._worker_warmup_lock.release()
-
-    def _measure_parallel_worker_recommendation(
-        self,
-        *,
-        voice: str,
-        speed: float,
-        tts_engine: Optional[str] = None,
-        tts_quantization: Optional[str] = None,
-        cleaner_model: Optional[str] = None,
-        cleaner_backend: Optional[str] = None,
-        cleaner_cuda_device: Optional[str] = None,
-        cleaner_cuda_quantization: Optional[str] = None,
-        cleaner_api_model: Optional[str] = None,
-        cleaner_api_key: Optional[str] = None,
-        max_parallel_chapters: int = 4,
-    ) -> dict[str, Any]:
-        pipeline_config = self._conversion_service._create_pipeline_config(  # noqa: SLF001
-            runtime_options=ConversionRuntimeOptions(
-                voice=voice,
-                speed=speed,
-                tts_engine=tts_engine,
-                tts_quantization=tts_quantization,
-                cleaner_model=cleaner_model,
-                cleaner_backend=cleaner_backend,
-                cleaner_cuda_device=cleaner_cuda_device,
-                cleaner_cuda_quantization=cleaner_cuda_quantization,
-                cleaner_api_model=cleaner_api_model,
-                cleaner_api_key=cleaner_api_key,
-                parallel_worker_mode="auto",
-                enable_parallel=True,
-                max_parallel_chapters=max_parallel_chapters,
-            ),
-        )
-        pipeline = ConversionPipeline(config=pipeline_config)
-        try:
-            if str(
-                getattr(pipeline.config, "tts_worker_auto_mode", "") or ""
-            ).strip().lower() == "cpu_cores" and bool(
-                getattr(pipeline.config, "tts_process_safe", False)
-            ):
-                return build_cpu_core_worker_recommendation(
-                    requested_max=pipeline.config.max_parallel_chapters,
-                )
-            pipeline.stages.warmup_models()
-            policy = pipeline.config.memory_policy
-            return build_parallel_worker_recommendation(
-                requested_max=max_parallel_chapters,
-                estimated_worker_bytes=getattr(
-                    policy,
-                    "estimated_per_worker_memory_bytes",
-                    None,
-                ),
-                warmup_delta_bytes=getattr(
-                    policy,
-                    "measured_warmup_delta_bytes",
-                    None,
-                ),
-                selected_worker_count_reason=getattr(
-                    policy,
-                    "selected_worker_count_reason",
-                    None,
-                ),
-                device_memory_policy=pipeline.config.device_memory_policy,
-            )
-        finally:
-            pipeline.stages.cleanup_models(force=True)
-
     # ==================== Cleanup ====================
 
     def _cancel_active_conversion_for_cleanup(self, timeout_seconds: float) -> bool:
@@ -804,14 +689,11 @@ class AppController:
         if self._shared_worker_pool_manager is None:
             return True
 
-        try:
-            return bool(
-                self._shared_worker_pool_manager.shutdown(
-                    timeout_seconds=self._CLEANUP_WORKER_SHUTDOWN_TIMEOUT_SECONDS,
-                )
+        return bool(
+            self._shared_worker_pool_manager.shutdown(
+                timeout_seconds=self._CLEANUP_WORKER_SHUTDOWN_TIMEOUT_SECONDS,
             )
-        except TypeError:
-            return bool(self._shared_worker_pool_manager.shutdown())
+        )
 
     def cleanup(self) -> bool:
         begin_shutdown = getattr(self._conversion_service, "begin_shutdown", None)

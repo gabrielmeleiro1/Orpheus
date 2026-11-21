@@ -14,3 +14,7 @@ MAX_BOOK_TAGS_LENGTH = 500
 
 # Maximum accepted uploaded source size (bytes).
 MAX_UPLOAD_BYTES = 500 * 1024 * 1024
+
+# Narration speed range; the API, the UI and the TTS engines share these bounds.
+MIN_SPEED = 0.5
+MAX_SPEED = 3.0

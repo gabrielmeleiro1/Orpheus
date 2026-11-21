@@ -35,9 +35,6 @@ DEFAULT_LOCK_TIMEOUT_SECONDS = 2.0
 # Process start times and wall-clock lock timestamps come from different
 # clocks; only a clearly later start proves a recorded lock owner's PID was reused.
 _PID_REUSE_CLOCK_TOLERANCE_SECONDS = 5.0
-_LEGACY_PYTORCH_RISK_IDS = frozenset(
-    {"PYSEC-2026-139/CVE-2026-4538,CVE-2025-3000"}
-)
 _setup_gate_handles: set[BinaryIO] = set()
 
 
@@ -296,8 +293,9 @@ def _legacy_default_state_path(environ: Mapping[str, str] | None = None) -> Path
 def _readable_state_path(state_path: Path) -> Path:
     """Read legacy standalone state until the current default is first written.
 
-    The legacy file is never written or removed; the next state write lands at
-    the current default and takes precedence from then on.
+    The legacy file is never written, and only a runtime reset removes it; the
+    next state write lands at the current default and takes precedence from
+    then on.
     """
     if state_path.is_file() or str(os.environ.get("AUDIOBOOK_DATA_DIR", "")).strip():
         return state_path
@@ -355,7 +353,6 @@ def write_setup_state(
     *,
     profile_id: str,
     model_groups: Iterable[str],
-    accepted_risks: Iterable[str],
     installation_id: str | None = None,
     backend_instance_id: str | None = None,
     restart_required: bool = True,
@@ -372,14 +369,10 @@ def write_setup_state(
     validate_model_selection(groups)
     if cleaner_cuda_quantization not in ("4bit", "8bit", "fp16"):
         raise SetupValidationError("Unsupported cleaner quantization.")
-    risks = tuple(accepted_risks)
-    if risks:
-        raise SetupValidationError("Setup state contains an unknown risk acknowledgement.")
     installed_at = datetime.now(timezone.utc)
     if backend_instance_id is not None and not re.fullmatch(r"[0-9a-f]{32}", backend_instance_id):
         raise SetupValidationError("Invalid backend instance identity.")
     payload: dict[str, Any] = {
-        "accepted_risks": list(risks),
         "installed_at": installed_at.isoformat(),
         "installation_id": installation_id or uuid.uuid4().hex,
         "installed_during_backend_instance_id": backend_instance_id,
@@ -414,13 +407,6 @@ def _read_setup_state(state_path: Path) -> tuple[dict[str, Any] | None, str | No
         quantization = raw.get("cleaner_cuda_quantization", "4bit")
         if quantization not in ("4bit", "8bit", "fp16"):
             raise ValueError("unsupported cleaner quantization")
-        risks = tuple(str(value) for value in raw.get("accepted_risks", ()))
-        allowed_risks = _LEGACY_PYTORCH_RISK_IDS
-        if any(risk not in allowed_risks for risk in risks):
-            raise ValueError("unknown risk acknowledgement")
-        # Older CUDA state recorded a now-resolved advisory acknowledgement.
-        # Accept it during upgrades but normalize it out of the current state.
-        risks = ()
         installation_id = str(raw.get("installation_id", ""))
         if not re.fullmatch(r"[0-9a-f]{32}", installation_id):
             raise ValueError("invalid installation identity")
@@ -433,7 +419,6 @@ def _read_setup_state(state_path: Path) -> tuple[dict[str, Any] | None, str | No
         if installed_without_backend != (installed_backend_id is None):
             raise ValueError("inconsistent install-time backend identity")
         return {
-            "accepted_risks": list(risks),
             "installed_at": str(raw.get("installed_at", "")),
             "installation_id": installation_id,
             "installed_during_backend_instance_id": installed_backend_id,

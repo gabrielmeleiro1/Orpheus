@@ -140,7 +140,7 @@ def test_installed_runtime_adoption_succeeds_during_preview_without_staged_model
     env = preview_storage
     monkeypatch.setattr("modules.runtime_profiles.platform.system", lambda: "Windows")
     monkeypatch.setattr(setup_route, "_check_selected_profile_packages", lambda _: {"ready": True})
-    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", lambda *args: {"available": True})
+    monkeypatch.setattr("modules.runtime_setup.status._probe_profile", lambda *args, **kwargs: {"available": True})
     monkeypatch.setattr(hub_cache, "_check_model_group_assets", lambda groups, **kwargs: {
         group: {"ready": True, "reason": None} for group in groups
     })

@@ -227,6 +227,31 @@ def test_import_warmup_requires_verified_ready_selection(monkeypatch, status):
     server._warm_configured_runtime_imports(server.create_app(controller=object()), threading.Event())
 
 
+def test_import_warmup_gives_up_after_a_probe_timeout(monkeypatch):
+    monkeypatch.setattr(server.setup_runtime, "_read_setup_state", lambda _: ({"profile": "cuda"}, None))
+    statuses = iter([
+        # The frozen build's placeholder while the first probe still runs.
+        {"configured": True, "ready": False, "state": "checking", "checking": True, "selected_profile": "cuda",
+         "probe": {"ready": False, "checks": [{"id": "tts-cpu-cuda", "ready": False, "state": "pending"}]}},
+        # A finished probe that timed out is never cached, so asking again
+        # would spawn another torch-importing probe.
+        {"configured": True, "ready": False, "state": "checking", "checking": True, "selected_profile": "cuda",
+         "probe": {"ready": False, "checks": [{"id": "tts-cpu-cuda", "ready": False, "state": "timeout"}]}},
+    ])
+    builds = []
+
+    def status(_):
+        builds.append(1)
+        return next(statuses)
+
+    monkeypatch.setattr(server.setup, "build_setup_status_response", status)
+    monkeypatch.setattr(server.importlib, "import_module", lambda _: pytest.fail("unexpected import"))
+    cancelled = threading.Event()
+    monkeypatch.setattr(cancelled, "wait", lambda _timeout: False)
+    server._warm_configured_runtime_imports(server.create_app(controller=object()), cancelled)
+    assert len(builds) == 2
+
+
 def test_import_warmup_only_imports_and_stops_between_imports(monkeypatch):
     cancelled = threading.Event()
     monkeypatch.setattr(server.setup_runtime, "_read_setup_state", lambda _: ({"profile": "cuda"}, None))

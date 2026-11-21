@@ -29,8 +29,6 @@ class ErrorCode(Enum):
     E001 = "PDF parsing failed"
     E002 = "EPUB structure invalid"
     E003 = "File corrupted"
-    E004 = "Empty chapter detected"
-    E005 = "Chapter too long"
     E007 = "PDF OCR required"
     
     # TTS errors (E100-E199)
@@ -91,26 +89,6 @@ class CorruptedFileError(AudiobookError):
             code=ErrorCode.E003,
             message=message,
             file_path=file_path
-        )
-
-
-class EmptyChapterError(AudiobookError):
-    """Error when chapter has no content."""
-    def __init__(self, chapter_number: int, chapter_title: str = None):
-        super().__init__(
-            code=ErrorCode.E004,
-            message=f"Chapter {chapter_number} is empty",
-            details=chapter_title
-        )
-
-
-class ChapterTooLongError(AudiobookError):
-    """Error when chapter exceeds maximum word count."""
-    def __init__(self, chapter_number: int, word_count: int, max_words: int = 50000):
-        super().__init__(
-            code=ErrorCode.E005,
-            message=f"Chapter {chapter_number} has {word_count:,} words",
-            details=f"Maximum allowed: {max_words:,} words"
         )
 
 
@@ -186,18 +164,6 @@ class UnsupportedSourceTypeError(SourceInputError):
 
     def __init__(self) -> None:
         super().__init__("This file type is not supported. Choose a PDF, EPUB, TXT or Markdown file.")
-
-
-class WorkerWarmupUnavailableError(RuntimeError):
-    """A worker warmup was refused because models or storage are in use."""
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
-
-    @property
-    def public_error(self) -> PublicError:
-        return PublicError(self.code, str(self), 409)
 
 
 class TTSModelError(AudiobookError):

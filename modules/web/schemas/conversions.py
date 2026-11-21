@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from modules.contracts.conversion_runtime import merge_runtime_options
 from modules.contracts.conversion_runtime_options import ConversionRuntimeOptions
-from modules.contracts.limits import MAX_BOOK_AUTHOR_LENGTH, MAX_BOOK_TITLE_LENGTH
+from modules.contracts.limits import MAX_BOOK_AUTHOR_LENGTH, MAX_BOOK_TITLE_LENGTH, MAX_SPEED, MIN_SPEED
 
 
 class _InfNanSafeModel(BaseModel):
@@ -18,7 +18,7 @@ class _InfNanSafeModel(BaseModel):
 
 class ConversionRuntimeOptionsRequest(_InfNanSafeModel):
     voice: str = "am_adam"
-    speed: float = Field(default=1.0, ge=0.5, le=3.0)
+    speed: float = Field(default=1.0, ge=MIN_SPEED, le=MAX_SPEED)
     tts_engine: str | None = None
     tts_quantization: str | None = None
     tts_provider: str | None = None

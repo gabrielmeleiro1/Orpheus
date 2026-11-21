@@ -88,28 +88,6 @@ class EventBroker:
         except queue.Full:
             pass
 
-    def _publish_to_subscriber(
-        self,
-        subscriber: queue.Queue[Any],
-        payload: dict[str, Any],
-    ) -> None:
-        """Deliver ``payload``, dropping the oldest queued event when full."""
-        try:
-            subscriber.put_nowait(payload)
-            return
-        except queue.Full:
-            pass
-
-        try:
-            subscriber.get_nowait()
-        except queue.Empty:
-            pass
-
-        try:
-            subscriber.put_nowait(payload)
-        except queue.Full:
-            pass
-
     def publish(self, event: Any) -> None:
         normalized = normalize_event(event)
         with self._subscribers_lock:
@@ -117,7 +95,7 @@ class EventBroker:
                 return
             payload = self._decorate_payload(normalized)
             for subscriber in self._subscribers:
-                self._publish_to_subscriber(subscriber, payload)
+                self._force_put(subscriber, payload)
 
 
 def normalize_event(event: Any) -> dict[str, Any]:

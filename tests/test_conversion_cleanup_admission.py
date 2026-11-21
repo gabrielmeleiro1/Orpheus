@@ -209,3 +209,24 @@ def test_terminal_cancellation_cleanup_remains_retryable_until_pool_release(tmp_
         release_worker.set()
         canceller.join(3)
         worker.join(3)
+
+
+def test_cancel_survives_a_failing_pool_teardown_without_retrying_it(tmp_path):
+    class Pool:
+        cleanup_pending = False
+
+        def __init__(self):
+            self.calls = []
+
+        def shutdown(self, **kwargs):
+            self.calls.append(kwargs)
+            raise TypeError("teardown bug")
+
+    pool = Pool()
+    coordinator = JobCoordinator(
+        job_cls=ConversionJob, status_enum=JobStatus, shared_worker_pool_manager=pool,
+    )
+    job = coordinator.reserve_conversion(tmp_path / "source.md", None, None)
+
+    assert coordinator.cancel_conversion(job.id) is True
+    assert pool.calls == [{"timeout_seconds": 0.0, "cancel_futures": True}]

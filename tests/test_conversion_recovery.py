@@ -437,7 +437,7 @@ def test_repair_preserves_inventory_audio_mode_across_config_change_and_second_i
 
 @pytest.mark.parametrize(('operation', 'observer'), [
     ('conversion', 'complete'), ('conversion', 'event'), ('conversion', 'log'),
-    ('repair', 'event'), ('repair', 'log'),
+    ('repair', 'complete'), ('repair', 'event'), ('repair', 'log'),
 ])
 def test_completion_observer_failure_preserves_committed_success(tmp_path, caplog, observer, operation):
     from modules.app.controller import ConversionCallbacks
@@ -500,8 +500,7 @@ def test_completion_observer_failure_preserves_committed_success(tmp_path, caplo
         assert sum(getattr(event, 'state', None) == JobState.COMPLETED for event in events) == 1
         assert repo.count_books() == 1
         assert repo.get_book(job.book_id).playback_status == PlaybackStatus.PACKAGED
-        if operation == 'conversion':
-            assert completed == [job.result]
+        assert completed == [job.result]
         assert 'observer delivery failed' in caplog.text
         assert any(getattr(event, 'message', '').startswith('[PERF]') for event in events)
     finally:

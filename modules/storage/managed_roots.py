@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import os
 from pathlib import Path
 import sqlite3
+import sys
 import threading
 from typing import BinaryIO
 
@@ -170,9 +171,33 @@ def _claim_gate():
 
 
 def _claim_gate_directory() -> Path:
-    """Use the OS account's temporary storage, not environment overrides."""
+    """Use storage private to the OS account, not environment overrides.
+
+    A shared directory such as /tmp would let another account create the gate
+    first and lock this account out of its library.
+    """
+    if sys.platform == "darwin":
+        # _CS_DARWIN_USER_TEMP_DIR: the account's own /var/folders temp directory.
+        return Path(os.confstr(65537)).resolve() / "orpheus-storage-claims"
     if os.name != "nt":
-        # macOS exposes the system temp directory through /tmp -> /private/tmp.
+        import pwd
+
+        try:
+            home = pwd.getpwuid(os.getuid()).pw_dir
+        except KeyError:
+            home = ""
+        if os.path.isabs(home):
+            # Resolved so a symlinked ~/.cache is not mistaken for a planted link.
+            directory = (Path(home) / ".cache" / "orpheus" / "storage-claims").resolve()
+            try:
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                return directory
+            except OSError:
+                pass
+        # Containers often run an arbitrary uid with no passwd entry or with an
+        # unwritable home. The caller rejects a gate directory that another
+        # account created, so the worst case here is a refused claim, never a
+        # gate shared with another account.
         return Path("/tmp").resolve() / f"orpheus-storage-claims-{os.getuid()}"
     import ctypes
     from ctypes import wintypes

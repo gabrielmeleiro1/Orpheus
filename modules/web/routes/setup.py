@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import partial
-from types import SimpleNamespace
 from uuid import uuid4
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
@@ -73,11 +72,6 @@ def open_storage_folder(folder: str, request: Request) -> dict[str, str]:
     return {"folder_path": str(path)}
 
 _RUNTIME_SETUP_STATE_FALLBACK_LOCK = threading.RLock()
-# The shared CUDA check replaces these two probes; replaced ones keep their own semantics.
-_SHARED_CUDA_PROBE_METHODS = {
-    "probe_package_tts_runtime": RuntimeCapabilityService.probe_package_tts_runtime,
-    "probe_cleaner_backend": RuntimeCapabilityService.probe_cleaner_backend,
-}
 
 __all__ = [
     "AdoptRuntimeRequest",
@@ -158,7 +152,6 @@ def _profile_payload(
         "compatible": profile.is_compatible() and reason is None,
         "reason": reason,
         "model_groups": list(profile.model_groups),
-        "risk": None,
     }
 
 
@@ -295,7 +288,6 @@ def _empty_status(
             _profile_payload(profile.id, installed_runtime=installed_runtime)
             for profile in runtime_profiles()
         ],
-        "risk": None,
         "backend": {
             "instance_id": str(request.app.state.backend_instance_id),
             "status": "running",
@@ -397,8 +389,6 @@ def _build_uncached_setup_status_response(
     else:
         state = "unavailable"
 
-    risk = None
-
     installed_runtime = _detect_installed_runtime(
         probe_service, receipt_verifier,
         preferred_profile=selected_profile if selected_profile != "base" else None,
@@ -425,7 +415,6 @@ def _build_uncached_setup_status_response(
             _profile_payload(item.id, installed_runtime=installed_runtime)
             for item in runtime_profiles()
         ],
-        "risk": risk,
         "backend": {
             "instance_id": str(request.app.state.backend_instance_id),
             "status": "running",
@@ -524,7 +513,6 @@ class AdoptRuntimeRequest(BaseModel):
 
     profile: str
     model_groups: list[str] = Field(default_factory=list)
-    accept_pytorch_risk: bool = False
     cleaner_cuda_quantization: str = Field(default="4bit", pattern="^(4bit|8bit|fp16)$")
 
 
@@ -568,23 +556,11 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
                 legacy_error=True,
             )
         try:
-            service = cache.probe_service
-            quantization = payload.cleaner_cuda_quantization
-            adapter = SimpleNamespace(
-                probe_mlx_tts_runtime=service.probe_mlx_tts_runtime,
-                probe_package_tts_runtime=service.probe_package_tts_runtime,
-                probe_cleaner_backend=partial(service.probe_cleaner_backend, cleaner_cuda_quantization=quantization),
+            # Results from a just-finished "Check runtime" are reused from the
+            # shared probe service's cache.
+            probe = setup_status._probe_profile(
+                groups, cache.probe_service, cleaner_cuda_quantization=payload.cleaner_cuda_quantization,
             )
-            if all(
-                getattr(getattr(service, name, None), "__func__", None) is original
-                for name, original in _SHARED_CUDA_PROBE_METHODS.items()
-            ):
-                # One child process imports torch for both CUDA checks; results
-                # from a just-finished "Check runtime" are reused from its cache.
-                adapter.probe_package_and_cuda_cleaner_runtime = lambda **_ignored: (
-                    service.probe_package_and_cuda_cleaner_runtime(cleaner_cuda_quantization=quantization)
-                )
-            probe = setup_status._probe_profile(groups, adapter)
         except Exception as exc:
             raise public_http_error(
                 PublicError("probe_unavailable", "The runtime check could not run. Check runtime and try again.", 409),
@@ -628,7 +604,6 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
                 legacy_error=True,
             )
 
-    accepted_risks: tuple[str, ...] = ()
     state_path = setup_runtime.default_state_path()
     try:
         with setup_runtime.SetupLock(state_path):
@@ -657,7 +632,6 @@ def post_setup_adopt(payload: AdoptRuntimeRequest, request: Request) -> dict[str
                 state_path,
                 profile_id=profile.id,
                 model_groups=groups,
-                accepted_risks=accepted_risks,
                 cleaner_cuda_quantization=payload.cleaner_cuda_quantization,
                 backend_instance_id=_adopt_backend_instance_id(request),
                 restart_required=False,
@@ -711,7 +685,7 @@ def post_model_download(payload: ModelDownloadRequest, request: Request) -> dict
     """Start a background model download for packaged builds (no installer).
 
     Only fetches files; adopting the runtime afterwards still runs the full
-    probe/asset/risk validation in ``POST /api/setup/adopt``.
+    probe and asset validation in ``POST /api/setup/adopt``.
     """
     try:
         profile = setup_selection._validated_profile(payload.profile)
@@ -756,7 +730,9 @@ def post_model_download_cancel(request: Request) -> dict[str, Any]:
 def _complete_runtime_uninstall(request: Request, reset_id: str | None = None) -> None:
     config = getattr(get_controller_from_app(request.app), "config", None)
     model_storage_service.reset_setup_preferences(config, request.app.state, reset_id)
-    _get_status_cache(request).invalidate()
+    cache = _get_status_cache(request)
+    cache.receipt_verifier.invalidate()
+    cache.invalidate()
 
 
 @router.get("/api/setup/models")
@@ -838,6 +814,13 @@ def _model_delete_blocker(request: Request) -> dict[str, str] | None:
     return {"code": blocker, "message": _MODEL_DELETE_BLOCKERS[blocker]} if blocker else None
 
 
+def _storage_cleanup_refusal(conversion_service: Any) -> str:
+    """Classify why ``begin_storage_cleanup`` just refused the reservation."""
+    blocker = getattr(conversion_service, "storage_cleanup_blocker", lambda: None)()
+    # Another cleanup (backup, restore, storage cleanup) holds the slot.
+    return blocker or "maintenance_in_progress"
+
+
 @router.delete("/api/setup/models/{group_id}")
 def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
     """Remove exactly one managed model group, preserving other models and settings."""
@@ -856,14 +839,8 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
                 begin()
                 acquired = True
             except RuntimeError as exc:
-                raise public_http_error(
-                    PublicError(
-                        "conversion_in_progress",
-                        "Wait for the current conversion to finish before deleting a model.",
-                        409,
-                    ),
-                    legacy_error=True,
-                ) from exc
+                code = _storage_cleanup_refusal(service)
+                raise public_http_error(PublicError(code, _MODEL_DELETE_BLOCKERS[code], 409), legacy_error=True) from exc
         with setup_runtime.SetupLock(state_path, timeout_seconds=0.5):
             recovered, recovered_bytes = model_storage_service._recover_staged_models(
                 model_groups=(group_id,), on_uninstall_complete=partial(_complete_runtime_uninstall, request),
@@ -880,7 +857,6 @@ def delete_managed_model(group_id: str, request: Request) -> dict[str, Any]:
                             state_path,
                             profile_id=state["profile"] if remaining else "base",
                             model_groups=remaining,
-                            accepted_risks=tuple(state["accepted_risks"]),
                             cleaner_cuda_quantization=state["cleaner_cuda_quantization"],
                             backend_instance_id=_adopt_backend_instance_id(request),
                             restart_required=False,
@@ -944,7 +920,8 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
             begin_cleanup()
             guard_acquired = True
         except RuntimeError as exc:
-            raise public_http_error(PublicError("conversion_in_progress", str(exc), 409), legacy_error=True) from exc
+            code = _storage_cleanup_refusal(conversion_service)
+            raise public_http_error(PublicError(code, str(exc), 409), legacy_error=True) from exc
     try:
         with setup_runtime.SetupLock(state_path):
             recovered, recovered_bytes = model_storage_service._recover_staged_models(
@@ -952,10 +929,19 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
             )
             setup_runtime.pending_model_deletions(state_path)
             previous_state, error = setup_runtime._read_setup_state(state_path)
-            if error:
-                raise setup_runtime.SetupExecutionError(error)
+            stored_path = setup_runtime._readable_state_path(state_path)
+            state_deleted = stored_path.exists()
+            if previous_state is not None and stored_path != state_path:
+                # Adopt an earlier build's state: once this reset removes the
+                # current file, the legacy fallback would be read again.
+                atomic_write_bytes(state_path, stored_path.read_bytes(), permissions=0o600)
+            if error or stored_path != state_path:
+                # An unreadable state (for example from an older build) is what
+                # this reset exists to clear. No journal depends on it, so drop
+                # it first and uninstall what is then an unconfigured runtime.
+                stored_path.unlink()
+                sync_directory(stored_path.parent)
             previous_bytes = state_path.read_bytes() if previous_state is not None else None
-            state_deleted = state_path.exists()
             uninstall_id = uuid4().hex
             with model_storage_service._stage_runtime_models(
                 None, installation_id=uninstall_id, uninstall_runtime=True,
@@ -980,7 +966,7 @@ def delete_setup_runtime(request: Request) -> dict[str, Any]:
                     # preferences; committed journals still own the retry.
                     if previous_bytes is not None:
                         atomic_write_bytes(state_path, previous_bytes, permissions=0o600)
-                    state_deleted = False
+                        state_deleted = False
 
     except setup_runtime.SetupExecutionError as exc:
         raise public_http_error(PublicError("setup_in_progress", str(exc), 409), legacy_error=True) from exc

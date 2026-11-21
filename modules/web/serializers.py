@@ -66,6 +66,7 @@ def job_payload(job) -> dict:
         "error": error,
         "title": getattr(job, "title", None),
         "author": getattr(job, "author", None),
+        "repair": bool(getattr(job, "repair", False)),
     }
 
 
