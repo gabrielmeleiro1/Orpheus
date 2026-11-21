@@ -11,11 +11,10 @@ import string
 from modules.ingestion.models import Chapter, Document
 from modules.ingestion.text_layout import repair_line_break_hyphenation
 from modules.ingestion.content_filter import (
+    ChapterClassifier,
     ContentClassification,
     SkippedSection,
-    classify_chapter_content,
     filter_audiobook_chapters,
-    is_verse_like,
     serialize_skipped_section,
 )
 
@@ -122,7 +121,7 @@ def _is_low_prose_back_matter_title(title: str) -> bool:
     return bool(normalized and _LOW_PROSE_BACK_MATTER_TITLE_RE.match(normalized))
 
 
-def _has_prose_body(chapters: list[Chapter]) -> bool:
+def _has_prose_body(chapters: list[Chapter], classifier: ChapterClassifier) -> bool:
     """True when at least one chapter is genuine narrative prose.
 
     A lone low-prose chapter (a poem/list) is only protected from deletion when
@@ -133,7 +132,7 @@ def _has_prose_body(chapters: list[Chapter]) -> bool:
         content = str(chapter.content)
         if not content.strip():
             continue
-        classification = classify_chapter_content(
+        classification = classifier.classify(
             str(chapter.title).strip(), content, enable_low_prose_density=True
         )
         if not classification.should_skip:
@@ -141,9 +140,12 @@ def _has_prose_body(chapters: list[Chapter]) -> bool:
     return False
 
 
+_STRIP_PUNCTUATION = str.maketrans("", "", string.punctuation)
+
+
 def _normalize_repeated_candidate(line: str) -> str:
     lowered = line.lower().strip()
-    lowered = lowered.translate(str.maketrans("", "", string.punctuation))
+    lowered = lowered.translate(_STRIP_PUNCTUATION)
     lowered = re.sub(r"\d+", "", lowered)
     return re.sub(r"\s+", " ", lowered).strip()
 
@@ -316,8 +318,13 @@ def _detect_repeated_headers(chapters: list[Chapter]) -> set[str]:
 
 
 def _is_heading(line: str) -> bool:
+    # Capitalised only: a wrapped line opening "part of the town" is prose.
     stripped = line.strip()
-    return bool(re.match(r"(?i)^(?:chapter|book|part|section)\b", stripped))
+    return stripped[:1].isupper() and bool(re.match(r"(?i)^(?:chapter|book|part|section)\b", stripped))
+
+
+# Closing punctuation that ends a sentence, optionally inside closing quotes.
+_SENTENCE_END_RE = re.compile(r"[.!?…:;][\"'”’)\]]*$")
 
 
 def _reflow_lines(text: str) -> str:
@@ -330,7 +337,13 @@ def _reflow_lines(text: str) -> str:
         current: list[str] = []
         blocks: list[str] = []
         for line in lines:
-            if _is_heading(line) or re.match(r"^[*#\-]\s+", line) or line.startswith(("\"", "'", "“", "‘")):
+            # A line opening with a quote starts new dialogue only after a
+            # finished sentence; otherwise it is a wrapped quotation.
+            previous = current[-1] if current else (blocks[-1] if blocks else "")
+            opens_dialogue = line.startswith(("\"", "'", "“", "‘")) and (
+                not previous or bool(_SENTENCE_END_RE.search(previous))
+            )
+            if _is_heading(line) or re.match(r"^[*#\-]\s+", line) or opens_dialogue:
                 if current:
                     blocks.append(" ".join(current))
                     current = []
@@ -358,7 +371,8 @@ def _normalize_pdf_chapter(
     text: str, repeated_headers: set[str], *, running_header: str | None = None,
 ) -> str:
     kept_lines: list[str] = []
-    for line in text.splitlines():
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
         stripped = line.strip()
         if not stripped:
             kept_lines.append("")
@@ -366,7 +380,19 @@ def _normalize_pdf_chapter(
         if _is_page_number(stripped):
             continue
         normalized = _normalize_repeated_candidate(stripped)
-        if normalized in repeated_headers:
+        # Only a line shaped like a running header, opening or closing a page
+        # block, goes: the same words as dialogue ("Emma!") or inside a
+        # paragraph are body text.
+        if (
+            normalized in repeated_headers
+            and _is_plausible_page_edge_header(stripped)
+            and (
+                index == 0
+                or index == len(lines) - 1
+                or not lines[index - 1].strip()
+                or not lines[index + 1].strip()
+            )
+        ):
             continue
         # The chapter's own label alone on a line is its running page header;
         # header detection keeps "Chapter N" lines because the number varies
@@ -436,27 +462,31 @@ def _sentences_for_split(paragraph: str) -> list[str]:
 
 def _split_units_for_overlong_chapter(
     paragraphs: list[str], *, max_chapter_words: int
-) -> list[str]:
-    """Return packable units no larger than the cap.
+) -> list[tuple[str, bool]]:
+    """Return packable ``(unit, starts_paragraph)`` pairs no larger than the cap.
 
     An over-cap paragraph splits at sentence boundaries, an over-cap sentence
     at line breaks, and unbroken text (a huge paste without punctuation or
     newlines) into word windows, so oversized input becomes bounded parts
-    instead of failing late in the conversion.
+    instead of failing late in the conversion. Only a unit that opens a
+    source paragraph starts a paragraph when the units are packed again.
     """
-    units: list[str] = []
+    units: list[tuple[str, bool]] = []
     for paragraph in paragraphs:
         if len(paragraph.split()) <= max_chapter_words:
-            units.append(paragraph)
+            units.append((paragraph, True))
             continue
+        first = True
         for sentence in _sentences_for_split(paragraph):
             if len(sentence.split()) <= max_chapter_words:
-                units.append(sentence)
+                units.append((sentence, first))
+                first = False
                 continue
             for line in (line.strip() for line in sentence.splitlines()):
                 words = line.split()
                 for start in range(0, len(words), max_chapter_words):
-                    units.append(" ".join(words[start:start + max_chapter_words]))
+                    units.append((" ".join(words[start:start + max_chapter_words]), first))
+                    first = False
     return units
 
 
@@ -476,17 +506,19 @@ def _split_overlong_chapter(chapter: Chapter, *, max_chapter_words: int) -> list
     parts: list[str] = []
     current: list[str] = []
     current_words = 0
-    for paragraph in split_units:
+    for paragraph, starts_paragraph in split_units:
         paragraph_words = len(paragraph.split())
         if current and current_words + paragraph_words > max_chapter_words:
-            parts.append("\n\n".join(current))
+            parts.append("".join(current))
             current = [paragraph]
             current_words = paragraph_words
         else:
+            if current:
+                current.append("\n\n" if starts_paragraph else " ")
             current.append(paragraph)
             current_words += paragraph_words
     if current:
-        parts.append("\n\n".join(current))
+        parts.append("".join(current))
 
     if len(parts) <= 1:
         return [chapter]
@@ -528,23 +560,25 @@ def normalize_extracted_document(
             return document
 
     repeated_headers = _detect_repeated_headers(chapters) if source_type == "pdf" else set()
+    classifier = ChapterClassifier()
 
     # A verse-heavy book (poetry collection) is a legitimate audiobook. The
     # low-prose-density rule would strip its poems one by one, so disable that
     # single rule when more than half of the readable chapters look like verse.
     enable_low_prose_density = not (
-        skip_non_prose_sections and _is_verse_heavy(chapters)
+        skip_non_prose_sections and _is_verse_heavy(chapters, classifier)
     )
-    has_prose_body = skip_non_prose_sections and _has_prose_body(chapters)
+    has_prose_body = skip_non_prose_sections and _has_prose_body(chapters, classifier)
 
     normalized_chapters, skipped_sections = _normalize_chapters(
         chapters,
         source_type=source_type,
         apply_non_prose_filter=skip_non_prose_sections,
-        apply_epub_non_narrative=True,
+        apply_epub_non_narrative=skip_non_prose_sections,
         enable_low_prose_density=enable_low_prose_density,
         repeated_headers=repeated_headers,
         max_chapter_words=max_chapter_words,
+        classifier=classifier,
         has_prose_body=has_prose_body,
     )
 
@@ -579,6 +613,7 @@ def normalize_extracted_document(
             enable_low_prose_density=True,
             repeated_headers=repeated_headers,
             max_chapter_words=max_chapter_words,
+            classifier=classifier,
         )
 
     for section in skipped_sections:
@@ -592,12 +627,12 @@ def normalize_extracted_document(
     )
 
 
-def _is_verse_heavy(chapters: list[Chapter]) -> bool:
+def _is_verse_heavy(chapters: list[Chapter], classifier: ChapterClassifier) -> bool:
     """True when more than half of the readable chapters look like verse."""
     readable = [chapter for chapter in chapters if str(chapter.content).strip()]
     if len(readable) < 2:
         return False
-    verse = sum(1 for chapter in readable if is_verse_like(str(chapter.content)))
+    verse = sum(1 for chapter in readable if classifier.is_verse_like(str(chapter.content)))
     return verse * 2 > len(readable)
 
 
@@ -610,6 +645,7 @@ def _normalize_chapters(
     enable_low_prose_density: bool,
     repeated_headers: set[str],
     max_chapter_words: int,
+    classifier: ChapterClassifier,
     has_prose_body: bool = False,
 ) -> tuple[list[Chapter], list[SkippedSection]]:
     skipped_sections: list[SkippedSection] = []
@@ -618,7 +654,7 @@ def _normalize_chapters(
         title = str(chapter.title).strip()
         content = str(chapter.content)
         if apply_non_prose_filter:
-            classification = classify_chapter_content(
+            classification = classifier.classify(
                 title, content, enable_low_prose_density=enable_low_prose_density
             )
             # An isolated low-prose chapter (a lone poem/list/screenplay) inside
@@ -696,7 +732,9 @@ def _normalize_chapters(
         # structural back-matter classifiers on normalized content.
         second_pass_low_prose = enable_low_prose_density and not has_prose_body
         retained_chapters, filtered_skipped = filter_audiobook_chapters(
-            renumbered_chapters, enable_low_prose_density=second_pass_low_prose
+            renumbered_chapters,
+            enable_low_prose_density=second_pass_low_prose,
+            classifier=classifier,
         )
         skipped_sections.extend(filtered_skipped)
         renumbered_chapters = retained_chapters

@@ -82,6 +82,12 @@ class EPUBSection:
     content: str
     html_content: str
     source_name: str
+    # Text of the first h1-h3 in ``html_content`` once it is known, so the
+    # parser need not parse the markup again to find it.
+    first_heading: Optional[str] = None
+    first_heading_known: bool = False
+    # Further spine documents whose text this section already holds.
+    span_sources: tuple[str, ...] = ()
 
 
 @dataclass
@@ -144,7 +150,21 @@ def extract_title_from_soup(soup: BeautifulSoup) -> Optional[str]:
 
 
 _EPUB_REMOVED_TAGS = frozenset({"script", "style", "nav", "header", "footer"})
-_EPUB_INLINE_TAGS = frozenset({"a", "span", "b", "strong", "i", "em", "small", "sup", "sub"})
+# HTML phrasing elements: their text belongs to the surrounding sentence.
+_EPUB_INLINE_TAGS = frozenset({
+    "a", "span", "b", "strong", "i", "em", "small", "sup", "sub",
+    "abbr", "bdi", "bdo", "cite", "code", "data", "del", "dfn", "ins", "kbd",
+    "mark", "q", "s", "samp", "time", "u", "var",
+})
+_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
+
+
+def _is_removed_tag(tag: Tag) -> bool:
+    # A sectioning <header> holds the chapter heading and its epigraph; only
+    # a header without a heading is page furniture.
+    if tag.name == "header":
+        return tag.find(_HEADING_TAGS) is None
+    return tag.name in _EPUB_REMOVED_TAGS
 
 
 def _epub_text_runs(soup: Tag) -> list[str]:
@@ -193,7 +213,7 @@ def _epub_text_runs(soup: Tag) -> list[str]:
                 flush()
             continue
         if isinstance(child, Tag):
-            if child.name in _EPUB_REMOVED_TAGS:
+            if child.name in _EPUB_REMOVED_TAGS and _is_removed_tag(child):
                 continue
             retained = child.name not in _EPUB_INLINE_TAGS
             if retained:
@@ -212,6 +232,12 @@ def _epub_text_runs(soup: Tag) -> list[str]:
         else:
             flush()
     return runs
+
+
+def first_heading_text(soup: BeautifulSoup) -> Optional[str]:
+    """Text of the first h1-h3 element, or None when there is none."""
+    heading = soup.find(["h1", "h2", "h3"])
+    return soup_to_epub_text(heading) if heading is not None else None
 
 
 def soup_to_epub_text(soup: BeautifulSoup) -> str:
@@ -469,6 +495,7 @@ class _EPUBSectionBuilder:
             content=text_content,
             html_content=html_content,
             source_name=document.source_name,
+            span_sources=tuple(part.source_name for part in span_documents),
         )
 
     def _read_toc_entries(self) -> list[_TOCEntry]:
@@ -626,9 +653,10 @@ class _EPUBSectionBuilder:
         excluded_fragments: dict[str, set[str]],
     ) -> list[EPUBSection]:
         claimed_sources = {section.source_name for section in toc_sections}
-        claimed_section_markup = [
+        claimed_sources.update(source for section in toc_sections for source in section.span_sources)
+        claimed_section_markup = {
             section.html_content for section in toc_sections if section.html_content
-        ]
+        }
 
         sections = list(toc_sections)
         for document in documents:
@@ -638,10 +666,8 @@ class _EPUBSectionBuilder:
                 continue
             if document.source_name in claimed_sources:
                 continue
-            if document.html_content and any(
-                document.html_content in section_markup
-                for section_markup in claimed_section_markup
-            ):
+            # The same markup under another name (a duplicated spine file).
+            if document.html_content and document.html_content in claimed_section_markup:
                 continue
             if document.source_name in excluded_fragments:
                 sections.extend(self._sections_from_fragment_excluded_document(
@@ -674,6 +700,10 @@ class _EPUBSectionBuilder:
         child_indexes = {id(child): index for index, child in enumerate(children)}
         marker_indexes: list[tuple[str, int]] = []
         for title, marker in markers:
+            if marker is root:
+                # A marker on the wrapping element itself starts at its content.
+                marker_indexes.append((title, len(opening)))
+                continue
             child = _direct_child_under(marker, root)
             index = child_indexes.get(id(child))
             if index is None:
@@ -705,7 +735,11 @@ class _EPUBSectionBuilder:
                 else len(children)
             )
             html_content = "".join(str(child) for child in children[start_index:end_index])
-            text_content = self._text_from_fragment(html_content)
+            fragment_soup = BeautifulSoup(html_content, "lxml")
+            text_content = self.soup_to_text(fragment_soup)
+            # Reading the fragment back parses it the same way unless it looks
+            # like a whole XHTML document.
+            reparsed_alike = not is_xhtml_document(html_content)
             sections.append(
                 EPUBSection(
                     number=0,
@@ -713,6 +747,8 @@ class _EPUBSectionBuilder:
                     content=text_content,
                     html_content=html_content,
                     source_name=document.source_name,
+                    first_heading=first_heading_text(fragment_soup) if reparsed_alike else None,
+                    first_heading_known=reparsed_alike,
                 )
             )
         return self._filter_sections(sections)
@@ -725,10 +761,9 @@ class _EPUBSectionBuilder:
             content=document.text_content,
             html_content=document.html_content,
             source_name=document.source_name,
+            first_heading=first_heading_text(document.soup),
+            first_heading_known=True,
         )
-
-    def _text_from_fragment(self, html_content: str) -> str:
-        return self.soup_to_text(BeautifulSoup(html_content, "lxml"))
 
     def _has_readable_content(self, document: _DocumentPart) -> bool:
         return len(document.text_content.strip()) >= self.min_section_chars

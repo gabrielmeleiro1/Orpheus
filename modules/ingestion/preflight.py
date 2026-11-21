@@ -225,19 +225,24 @@ def _preflight_pdf(
             author: Optional[str] = str(metadata.get("author") or "").strip() or None
             # The chapters the parser will produce, not every outline entry.
             chapter_titles: list[str] = []
+            # Pages already extracted for heading detection also feed the sample.
+            page_texts: list[str] = []
             if text_layer.text_chars > 0 and not text_layer.requires_ocr:
                 toc = document.get_toc(simple=True)
                 pages_data: list[dict[str, str]] = []
                 if not toc and len(document) <= MAX_PDF_HEADING_SCAN_PAGES:
-                    pages_data = normalize_pdf_artifacts([{"text": page.get_text("text")} for page in document])
+                    page_texts = [page.get_text("text") for page in document]
+                    pages_data = normalize_pdf_artifacts([{"text": text} for text in page_texts])
                 chapter_titles = [
                     chapter.title
                     for chapter in PDFParser._extract_chapters(toc, pages_data, len(document), title)
                 ]
             page_samples: list[str] = []
             if not text_layer.requires_ocr:
-                for page in document[: min(len(document), MAX_PDF_PREVIEW_PAGES)]:
-                    page_samples.append(page.get_text("text"))
+                for index in range(min(len(document), MAX_PDF_PREVIEW_PAGES)):
+                    page_samples.append(
+                        page_texts[index] if page_texts else document[index].get_text("text")
+                    )
                     if sum(len(chunk) for chunk in page_samples) >= max_sample_chars:
                         break
     except Exception as exc:

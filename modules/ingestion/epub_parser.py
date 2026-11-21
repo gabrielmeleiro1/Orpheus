@@ -20,6 +20,7 @@ from .epub_sections import (
     EPUBSection,
     build_epub_sections,
     extract_title_from_soup,
+    first_heading_text,
     parse_epub_markup,
     soup_to_epub_text,
 )
@@ -120,6 +121,7 @@ class EPUBParser:
             raise ValueError(f"Not an EPUB file: {self.file_path}")
         
         # Validate EPUB structure
+        self._validated = False
         if validate:
             try:
                 validate_epub(self.file_path)
@@ -129,6 +131,7 @@ class EPUBParser:
                     details=e.details if hasattr(e, 'details') else None,
                     file_path=self.file_path
                 )
+            self._validated = True
         
         self._book: Optional[epub.EpubBook] = None
         self._sections: list[EPUBSection] | None = None
@@ -137,10 +140,11 @@ class EPUBParser:
         """Load the EPUB book if not already loaded."""
         if self._book is None:
             try:
-                # Re-check at the decompression boundary so callers cannot
+                # Check at the decompression boundary so callers cannot
                 # bypass ZIP metadata limits by opting out of constructor
                 # validation.
-                validate_epub(self.file_path)
+                if not self._validated:
+                    validate_epub(self.file_path)
                 raise_if_drm_protected(self.file_path)
                 self._book = read_epub_book(self.file_path)
             except (CorruptedFileError, EPUBParsingError) as e:
@@ -188,10 +192,12 @@ class EPUBParser:
                 continue
 
             heading_text = ""
-            soup = parse_epub_markup(section.html_content)
-            heading = soup.find(["h1", "h2", "h3"])
+            if section.first_heading_known:
+                first_heading = section.first_heading
+            else:
+                first_heading = first_heading_text(parse_epub_markup(section.html_content))
             if (
-                heading and opening_heading_text(soup_to_epub_text(heading), section.title)
+                first_heading is not None and opening_heading_text(first_heading, section.title)
                 or re.match(r"(?i)^part\s+[ivxlcdm\d]+\b", section.title)
             ):
                 heading_text = opening_heading_text(section.content, section.title)

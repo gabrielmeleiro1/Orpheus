@@ -121,8 +121,9 @@ def test_pdf_parser_prefers_numbered_toc_chapters_over_part_containers(tmp_path:
     assert [chapter.title for chapter in document.chapters] == [
         "1. First Essay by A. Writer",
         "2. Second Essay by B. Writer",
+        "Subject Index",
     ]
-    assert [chapter.start_page for chapter in document.chapters] == [3, 4]
+    assert [chapter.start_page for chapter in document.chapters] == [3, 4, 5]
 
 
 def test_pdf_parser_splits_large_no_toc_anthology_on_page_headings(tmp_path: Path) -> None:
@@ -213,7 +214,7 @@ def test_pdf_parser_keeps_parent_opening_pages_before_the_selected_outline_level
 
     document = PDFParser(pdf_path, extraction_backend="fitz").parse()
 
-    assert [chapter.title for chapter in document.chapters] == ["Chapter One", "A section", "C section"]
+    assert [chapter.title for chapter in document.chapters] == ["Chapter One", "A section", "C section", "Index"]
     assert _page_marker_counts(document, 8) == [0, 1, 1, 1, 1, 1, 1, 1]
 
 

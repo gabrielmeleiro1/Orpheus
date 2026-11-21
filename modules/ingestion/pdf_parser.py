@@ -54,7 +54,7 @@ _BOOK_MATTER_TOC_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 _PART_TOC_TITLE_RE = re.compile(r"^part\s+(?:[ivxlcdm]+|\d+)\b.*$", re.IGNORECASE)
-_NUMBERED_TOC_TITLE_RE = re.compile(r"^\s*(?:chapter\s+)?\d{1,3}[.)]?\s+\S", re.IGNORECASE)
+_NUMBERED_TOC_TITLE_RE = re.compile(r"^\s*(?:chapter\s+)?(\d{1,3})[.)]?\s+\S", re.IGNORECASE)
 _INTRO_TOC_TITLE_RE = re.compile(r"^\s*(?:introduction|preface|prologue)\b", re.IGNORECASE)
 _PAGE_NUMBER_RE = re.compile(r"^\s*(?:\d{1,4}|[ivxlcdmIVXLCDM]{1,12})\s*$")
 _DOTTED_LEADER_RE = re.compile(r"\.{3,}|…{2,}")
@@ -380,6 +380,8 @@ class PDFParser:
         # every chapter opens on the title, copyright and contents pages. On
         # the first page it must also open nested entries: a same-level entry
         # there ("Front Matter", the book's title) spans those pages too.
+        # After the first page an outlined entry is content: dropping a parent
+        # chapter's opening pages is worse than narrating a title page.
         first_page = min(page for _, page in selected)
         front_matter_end = max(
             (
@@ -400,12 +402,25 @@ class PDFParser:
             if (
                 front_matter_end < page < first_page
                 and not cls._is_book_matter_toc_title(title)
-                and (front_matter_end or level in body_levels)
-                and (page > 1 or opens_nested_entries)
+                and (
+                    page > 1
+                    or (opens_nested_entries and (front_matter_end or level in body_levels))
+                )
             ):
                 leads.append((title, page))
         lead = min(leads, key=lambda entry: entry[1], default=None)
-        return [lead, *selected] if lead else selected
+        # Outlined back matter after the last chapter (Notes, Bibliography,
+        # Index) gets its own chapters instead of extending the last one, so
+        # the non-prose filter can judge those pages on their own.
+        last_page = max(page for _, page in selected)
+        back_matter = [
+            (str(title).strip(), int(page))
+            for _, title, page in toc
+            if int(page) > last_page
+            and str(title).strip()
+            and _BOOK_MATTER_TOC_TITLE_RE.match(cls._normalize_title_for_structure(str(title)))
+        ]
+        return [*([lead] if lead else []), *selected, *back_matter]
 
     @classmethod
     def _is_book_matter_toc_title(cls, title: str) -> bool:
@@ -423,7 +438,21 @@ class PDFParser:
             for level, title, page in content_entries
             if _NUMBERED_TOC_TITLE_RE.match(title)
         ]
-        if len(numbered_entries) >= 2:
+        # Chapter numbers run in sequence somewhere; titles that merely open
+        # with a number ("10 Days at Sea", "20 Years Later") do not, and must
+        # not drop their unnumbered sibling chapters. Numbered entries below
+        # the top content level are sections of unnumbered chapters, whose
+        # pages they do not cover.
+        numbers = [
+            int(_NUMBERED_TOC_TITLE_RE.match(title).group(1))
+            for _, title, _ in sorted(numbered_entries, key=lambda item: item[2])
+        ]
+        top_level = min((level for level, _, _ in content_entries), default=0)
+        if (
+            len(numbered_entries) >= 2
+            and all(level == top_level for level, _, _ in numbered_entries)
+            and any(b == a + 1 for a, b in zip(numbers, numbers[1:]))
+        ):
             first_numbered_page = min(page for _, _, page in numbered_entries)
             introductory_entries = [
                 (level, title, page)

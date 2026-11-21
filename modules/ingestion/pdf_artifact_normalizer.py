@@ -9,6 +9,7 @@ from typing import Optional, Protocol
 import re
 
 from .content_filter import _CITATION_LINE_RE, is_copyright_notice
+from .text_layout import _SUSPENDED_COMPOUND_WORDS
 from .text_layout import repair_line_break_hyphenation as repair_wrapped_words
 from .text_layout import corroborated_folio_titles, hyphenation_word_forms, numbered_folio_title, strip_page_furniture
 
@@ -18,8 +19,19 @@ PageData = dict[str, object]
 _TRAILING_REFERENCE_ENTRY_RE = re.compile(
     r"^\s*(?:\[(?P<bracket>\d{1,4})\]|(?P<number>\d{1,4})(?:[.)]|\s+))\s*\S"
 )
+# A flattened superscript marker follows punctuation, a closing quote or a
+# lowercase word ("source.15", "theory15"). Digits after a separator that
+# itself follows a digit belong to a number (times "3:15", decimals "1.2",
+# thousands "1,500"), and digits glued to a capital belong to a code ("B12",
+# "F150", "COVID19"). The one exception is a marker after a sentence that
+# ends on a year ("signed in 1918.7 The"): it must be followed by a new
+# sentence or the line end ("1999.99 dollars" and "2019.1 release" are
+# numbers), and both strippers count it only when a trailing note entry with
+# the same number corroborates it.
 _INLINE_REFERENCE_MARKER_RE = re.compile(
-    r"\[(\d{1,4})\]|(?<=[A-Za-z\)\].,;:!?])(\d{1,4})(?!\d)"
+    r"\[(\d{1,4})\]"
+    r"|(?:(?<=[\)\].,;:!?\"\u201d])(?<!\d[.,:])|(?<=[a-z][a-z]))(\d{1,4})(?!\d)"
+    r"|(?<![\d.,$])(?:1[5-9]\d\d|20\d\d)[.!?](\d{1,3})(?=[^\S\n]+[A-Z\"\u201c]|[^\S\n]*(?:\n|$))"
 )
 _PAGE_BOUNDARY_WINDOW = 4
 _PAGE_NUMBER_RE = re.compile(r"^\s*\d{1,4}\s*$")
@@ -291,7 +303,11 @@ def repair_line_break_hyphenation(
             prefix.casefold() in _HYPHENATION_PREFIX_EXCEPTIONS
             or suffix.casefold() in _HYPHENATION_SUFFIX_EXCEPTIONS
         ):
-            return f"{prefix}-\n {suffix}"
+            # Settle the break here: a hyphen left before a line break would
+            # be rejoined by the later chapter-level dehyphenation pass.
+            if suffix.casefold() in _SUSPENDED_COMPOUND_WORDS:
+                return f"{prefix}- {suffix}"
+            return f"{prefix}-{suffix}"
         return repair_wrapped_words(match.group(0), word_forms=word_forms)
 
     text = _KNOWN_HYPHENATED_LINE_BREAK_RE.sub(_repair_known_compound, text)
@@ -357,7 +373,7 @@ def _looks_like_reference_continuation(line: str) -> bool:
 def _extract_inline_reference_markers(text: str) -> set[int]:
     markers: set[int] = set()
     for match in _INLINE_REFERENCE_MARKER_RE.finditer(text):
-        raw = match.group(1) or match.group(2)
+        raw = match.group(1) or match.group(2) or match.group(3)
         if raw is not None:
             markers.add(int(raw))
     return markers
@@ -450,9 +466,9 @@ def _strip_trailing_reference_block(text: str) -> str:
     if len(numbered_indexes) < 2:
         return text
 
+    # Footnotes often follow body text without a blank line, so the block
+    # starts at its first numbered entry, never above it.
     block_start = min(numbered_indexes)
-    while block_start > 0 and lines[block_start - 1].strip():
-        block_start -= 1
 
     body_text = "\n".join(lines[:block_start]).rstrip()
     if not body_text:
@@ -552,13 +568,13 @@ class RepeatedPageBoundaryPolicy:
             }
 
         cleaned_pages: list[PageData] = []
+        split_pages = iter(page_line_indexes)
         for page in pages_data:
             if not isinstance(page, dict):
                 cleaned_pages.append(page)
                 continue
 
-            lines = str(page.get("text", "")).splitlines()
-            boundary_indexes = _page_boundary_line_indexes(lines)
+            _, lines, boundary_indexes = next(split_pages)
             strip_page_numbers = page_count > 1
             kept_lines: list[str] = []
             for idx, line in enumerate(lines):

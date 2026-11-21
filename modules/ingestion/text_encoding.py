@@ -26,10 +26,16 @@ def _decode_with(data: bytes, encoding: str) -> str | None:
         return None
 
 
+# A UTF-16 file shows its NUL pattern from the start; a bounded prefix decides
+# without copying a large file twice.
+_UTF16_SNIFF_BYTES = 64 * 1024
+
+
 def _looks_like_utf16(data: bytes) -> str | None:
     if len(data) < 4:
         return None
 
+    data = data[:_UTF16_SNIFF_BYTES]
     even_bytes = data[0::2]
     odd_bytes = data[1::2]
     if not even_bytes or not odd_bytes:

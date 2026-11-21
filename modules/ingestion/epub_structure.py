@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import posixpath
+import re
 import zipfile
 from pathlib import Path
 from urllib.parse import unquote
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 _CONTAINER_PATH = "META-INF/container.xml"
 _MAX_LISTED = 3
+_READING_MEDIA_TYPES = frozenset({"application/x-dtbncx+xml", "application/xhtml+xml"})
+# EPUB 3 allows some resources (fonts, audio, video) to live outside the package.
+_REMOTE_HREF_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 
 def _safe_parser() -> etree.XMLParser:
@@ -57,8 +61,22 @@ def _package_member(href: str, package_dir: str) -> str | None:
     return resolved
 
 
-def check_epub_package(file_path: Path | str) -> None:
-    """Raise ``EPUBParsingError`` naming the first structural defect, if any."""
+def _is_reading_item(item, spine_ids: set[str]) -> bool:
+    """Documents and the TOC are needed to read the book; the rest is presentation."""
+    return (
+        (item.get("id") or "") in spine_ids
+        or (item.get("media-type") or "") in _READING_MEDIA_TYPES
+        or "nav" in (item.get("properties") or "").split()
+    )
+
+
+def check_epub_package(file_path: Path | str) -> frozenset[str]:
+    """Raise ``EPUBParsingError`` naming the first structural defect, if any.
+
+    Returns the archive paths (as EbookLib resolves them) of listed resources
+    that are absent but not needed to read the book: a missing stylesheet,
+    font or image, or a remote resource.
+    """
     file_path = Path(file_path)
     with zipfile.ZipFile(file_path) as archive:
         members = set(archive.namelist())
@@ -91,17 +109,26 @@ def check_epub_package(file_path: Path | str) -> None:
             file_path,
         )
 
+    spine_ids = {ref.get("idref") or "" for ref in itemrefs}
     hrefs_by_id: dict[str, str] = {}
     unsafe: list[str] = []
     missing: list[str] = []
+    absent_optional: list[str] = []
     for item in items:
         href = item.get("href") or ""
+        hrefs_by_id[item.get("id") or ""] = href
+        required = _is_reading_item(item, spine_ids)
+        if not required and _REMOTE_HREF_RE.match(href):
+            absent_optional.append(href)
+            continue
         member = _package_member(href, package_dir)
         if member is None:
             unsafe.append(href or "(empty)")
         elif member not in members:
-            missing.append(member)
-        hrefs_by_id[item.get("id") or ""] = href
+            if required:
+                missing.append(member)
+            else:
+                absent_optional.append(href)
     if unsafe:
         raise _fail(
             "The EPUB lists files outside its own archive, which is not allowed: "
@@ -126,6 +153,34 @@ def check_epub_package(file_path: Path | str) -> None:
             f"{_listed(unknown)}.",
             file_path,
         )
+    if absent_optional:
+        logger.warning(
+            "EPUB lists resources that are not in the archive (%s); reading without them",
+            _listed(absent_optional),
+        )
+    # EbookLib reads every manifest item at ``unquote(href)`` under the
+    # package directory and fails on any absent one.
+    return frozenset(
+        posixpath.normpath(posixpath.join(package_dir, unquote(href))) for href in absent_optional
+    )
+
+
+def _read_with_ebooklib(file_path: Path, absent: frozenset[str], options: dict | None = None):
+    from ebooklib import epub
+
+    if not absent:
+        return epub.read_epub(str(file_path), options=options)
+
+    class _Reader(epub.EpubReader):
+        def read_file(self, name):
+            if posixpath.normpath(name) in absent:
+                return b""
+            return super().read_file(name)
+
+    reader = _Reader(str(file_path), options)
+    book = reader.load()
+    reader.process()
+    return book
 
 
 def read_epub_book(file_path: Path | str):
@@ -134,16 +189,14 @@ def read_epub_book(file_path: Path | str):
     A broken table of contents (NCX) only costs chapter titles, so the book is
     read again without it rather than refused.
     """
-    from ebooklib import epub
-
     file_path = Path(file_path)
-    check_epub_package(file_path)
+    absent = check_epub_package(file_path)
     try:
-        return epub.read_epub(str(file_path))
+        return _read_with_ebooklib(file_path, absent)
     except Exception as exc:
         first_error = exc
     try:
-        book = epub.read_epub(str(file_path), options={"ignore_ncx": True})
+        book = _read_with_ebooklib(file_path, absent, {"ignore_ncx": True})
     except Exception as exc:
         raise _fail(
             "The EPUB could not be read: its table of contents or package metadata is malformed.",

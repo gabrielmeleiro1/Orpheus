@@ -228,9 +228,9 @@ class TestPDFParser:
         assert "expe-" not in content
         assert "sur-" not in content
         assert "neurophysiol-" not in content
-        assert "body-\n why" in content
-        assert "themselves-\n toward" in content
-        assert "non-\n occurrence" in content
+        assert "body-why" in content
+        assert "themselves-toward" in content
+        assert "non-occurrence" in content
 
     def test_parse_strips_page_number_residue_and_preserves_numbered_text(self, sample_pdf):
         with patch("modules.ingestion.pdf_parser.pymupdf4llm") as mock_llm, \

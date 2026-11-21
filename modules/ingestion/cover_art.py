@@ -48,7 +48,10 @@ def _read_member(archive: zipfile.ZipFile, name: str) -> bytes | None:
         return None
     if info.file_size > MAX_COVER_BYTES:
         return None
-    return archive.read(info)
+    # The header size is only a claim; bound what decompression may produce.
+    with archive.open(info) as member:
+        data = member.read(MAX_COVER_BYTES + 1)
+    return data if len(data) <= MAX_COVER_BYTES else None
 
 
 def _opf_path(archive: zipfile.ZipFile) -> str | None:
@@ -63,12 +66,31 @@ def _opf_path(archive: zipfile.ZipFile) -> str | None:
     return None
 
 
-def _epub_cover_href(opf: ElementTree.Element) -> str | None:
-    items = [element for element in opf.iter() if _local(element.tag) == "item"]
+def _href_path(href: str) -> str:
+    """The archive path part of a manifest href (no query or fragment)."""
+    return unquote(href.split("#", 1)[0].split("?", 1)[0])
+
+
+def _image_media_type(item: ElementTree.Element) -> str | None:
+    """The supported image type of a manifest item, by extension or declared type."""
+    extension = posixpath.splitext(_href_path(item.get("href") or ""))[1].lower()
+    if extension in _IMAGE_MEDIA_TYPES:
+        return _IMAGE_MEDIA_TYPES[extension]
+    declared = (item.get("media-type") or "").strip().lower()
+    return declared if declared in _IMAGE_MEDIA_TYPES.values() else None
+
+
+def _epub_cover_item(opf: ElementTree.Element) -> ElementTree.Element | None:
+    # Every source of the cover must name an image: EPUB 2 books often point
+    # <meta name="cover"> at the XHTML page that wraps the cover image.
+    items = [
+        element for element in opf.iter()
+        if _local(element.tag) == "item" and element.get("href") and _image_media_type(element)
+    ]
     # EPUB 3 marks the cover in the manifest itself.
     for item in items:
         if "cover-image" in (item.get("properties") or "").split():
-            return item.get("href")
+            return item
     # EPUB 2 points at it from <meta name="cover" content="<manifest id>">.
     cover_id = next(
         (element.get("content") for element in opf.iter()
@@ -78,13 +100,13 @@ def _epub_cover_href(opf: ElementTree.Element) -> str | None:
     if cover_id:
         for item in items:
             if item.get("id") == cover_id:
-                return item.get("href")
+                return item
     # Last resort: an image that calls itself the cover.
     for item in items:
         media_type = item.get("media-type") or ""
         label = f"{item.get('id') or ''} {item.get('href') or ''}".lower()
         if media_type.startswith("image/") and "cover" in label:
-            return item.get("href")
+            return item
     return None
 
 
@@ -96,12 +118,15 @@ def _epub_cover(path: Path) -> CoverImage | None:
         opf_bytes = _read_member(archive, opf_path)
         if opf_bytes is None:
             return None
-        href = _epub_cover_href(ElementTree.fromstring(opf_bytes))
-        if not href:
+        item = _epub_cover_item(ElementTree.fromstring(opf_bytes))
+        if item is None:
             return None
-        member = posixpath.normpath(posixpath.join(posixpath.dirname(opf_path), unquote(href)))
-        media_type = _IMAGE_MEDIA_TYPES.get(posixpath.splitext(member)[1].lower())
-        if media_type is None or member.startswith("../"):
+        href = _href_path(item.get("href") or "")
+        # A leading slash means the container root, not the filesystem.
+        base = "" if href.startswith("/") else posixpath.dirname(opf_path)
+        member = posixpath.normpath(posixpath.join(base, href.lstrip("/")))
+        media_type = _image_media_type(item)
+        if media_type is None or member == ".." or member.startswith("../"):
             return None
         data = _read_member(archive, member)
         return CoverImage(data, media_type) if data else None

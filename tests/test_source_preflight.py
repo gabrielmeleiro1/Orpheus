@@ -511,8 +511,8 @@ def test_pdf_preflight_lists_the_chapters_the_parser_produces(tmp_path: Path) ->
     chapters = PDFParser(source, extraction_backend="fitz").parse().chapters
 
     assert payload["chapter_titles"] == [chapter.title for chapter in chapters]
-    assert payload["chapter_titles"] == ["Chapter One", "A section", "C section"]
-    assert payload["chapter_count"] == 3
+    assert payload["chapter_titles"] == ["Chapter One", "A section", "C section", "Index"]
+    assert payload["chapter_count"] == 4
 
 
 @pytest.mark.parametrize(
