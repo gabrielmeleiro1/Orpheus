@@ -64,8 +64,6 @@ pub struct SetupRequest {
     #[serde(default)]
     pub model_groups: Vec<String>,
     #[serde(default)]
-    pub accept_pytorch_risk: bool,
-    #[serde(default)]
     pub cleaner_cuda_quantization: Option<String>,
 }
 
@@ -1124,15 +1122,16 @@ fn process_matches(identity: &ProcessIdentity) -> bool {
 }
 
 #[cfg(unix)]
-fn descendant_processes(root_pid: u32) -> Vec<ProcessIdentity> {
-    // `setup_runtime.py` deliberately gives pip/model downloads their own
-    // sessions. Walk the process tree with a fixed, argument-only OS utility so
-    // cancellation also reaches those detached child groups. The root group
-    // signal below remains the fallback when pgrep is unavailable.
+fn track_descendants(root_pid: u32, tracked: &mut Vec<ProcessIdentity>) {
+    // Supervised stages stay in the root's process group, which the group kill
+    // reaches. This walk is the backstop for a descendant that detaches into
+    // its own session: it is tracked while still reachable from the root, so it
+    // can be killed after the root exits. Only new PIDs are looked up, which
+    // keeps this cheap enough to run on every poll.
     let mut pending = vec![root_pid];
-    let mut descendants = Vec::new();
+    let mut visited = Vec::new();
     while let Some(parent) = pending.pop() {
-        if descendants.len() >= 256 {
+        if visited.len() >= 256 {
             break;
         }
         let Ok(output) = Command::new(pgrep_program())
@@ -1147,25 +1146,13 @@ fn descendant_processes(root_pid: u32) -> Vec<ProcessIdentity> {
             .lines()
             .filter_map(|value| value.trim().parse::<u32>().ok())
         {
-            if pid > 1
-                && pid != root_pid
-                && !descendants
-                    .iter()
-                    .any(|identity: &ProcessIdentity| identity.pid == pid)
-            {
-                descendants.push(process_identity(pid));
+            if pid > 1 && pid != root_pid && !visited.contains(&pid) {
+                visited.push(pid);
+                if !tracked.iter().any(|known| known.pid == pid) {
+                    tracked.push(process_identity(pid));
+                }
                 pending.push(pid);
             }
-        }
-    }
-    descendants
-}
-
-#[cfg(unix)]
-fn merge_identities(target: &mut Vec<ProcessIdentity>, discovered: Vec<ProcessIdentity>) {
-    for identity in discovered {
-        if !target.iter().any(|known| known.pid == identity.pid) {
-            target.push(identity);
         }
     }
 }
@@ -1223,66 +1210,6 @@ fn terminate_process(process: &ActiveProcess) {
     }
     #[cfg(unix)]
     {
-        let root = process_identity(child.id());
-        let mut descendants = descendant_processes(child.id());
-        for identity in descendants.iter().rev() {
-            if !process_matches(identity) {
-                continue;
-            }
-            signal_process_group(identity.pid, libc::SIGTERM);
-            if let Ok(pid) = i32::try_from(identity.pid) {
-                unsafe {
-                    libc::kill(pid, libc::SIGTERM);
-                }
-            }
-        }
-        if process_matches(&root) {
-            signal_process_group(root.pid, libc::SIGTERM);
-        }
-
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            for discovered in descendant_processes(root.pid) {
-                if !descendants
-                    .iter()
-                    .any(|identity| identity.pid == discovered.pid)
-                {
-                    descendants.push(discovered);
-                }
-            }
-            let root_exited = child.try_wait().ok().flatten().is_some();
-            if root_exited
-                && descendants
-                    .iter()
-                    .all(|identity| !process_matches(identity))
-            {
-                return;
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-
-        for discovered in descendant_processes(root.pid) {
-            if !descendants
-                .iter()
-                .any(|identity| identity.pid == discovered.pid)
-            {
-                descendants.push(discovered);
-            }
-        }
-        for identity in descendants.iter().rev() {
-            if !process_matches(identity) {
-                continue;
-            }
-            signal_process_group(identity.pid, libc::SIGKILL);
-            if let Ok(pid) = i32::try_from(identity.pid) {
-                unsafe {
-                    libc::kill(pid, libc::SIGKILL);
-                }
-            }
-        }
-        if process_matches(&root) {
-            signal_process_group(root.pid, libc::SIGKILL);
-        }
         let _ = child.kill();
         let _ = child.wait();
     }
@@ -1435,7 +1362,7 @@ fn spawn_setup(
                 .ok()
                 .and_then(|process| process.as_ref().map(Child::id))
             {
-                merge_identities(&mut tracked_descendants, descendant_processes(root_pid));
+                track_descendants(root_pid, &mut tracked_descendants);
             }
             let exit = process
                 .lock()

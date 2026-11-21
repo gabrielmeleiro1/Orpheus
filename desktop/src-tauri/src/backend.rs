@@ -364,51 +364,15 @@ fn terminate_backend_process(
         if *child_reaped {
             return ShutdownOutcome::AlreadyExited;
         }
-
-        // Observe an exited child without reaping it where the platform offers
-        // waitid(WNOWAIT). That leaves the leader PID reserved while the owned
-        // process group is verified and killed, closing the leader-exit race.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        // Observe an exited child without reaping it (waitid WNOWAIT). That
+        // leaves the leader PID reserved while the owned process group is
+        // verified and killed, closing the leader-exit race.
         if child_exited_without_reap(child).unwrap_or(false) {
-            let verified_owned_pgid =
-                verified_owned_process_group_id(child, process_group_id, *child_reaped);
-            if let Some(pgid) = verified_owned_pgid {
-                let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
-            }
-            if let Ok(Some(_)) = child.try_wait() {
-                *child_reaped = true;
-            }
+            kill_owned_group_and_reap(child, process_group_id, child_reaped);
             return ShutdownOutcome::AlreadyExited;
         }
-
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        {
-            let pid = i32::try_from(child.id()).unwrap_or(-1);
-            let current_pgid = if pid > 0 {
-                unsafe { libc::getpgid(pid) }
-            } else {
-                -1
-            };
-            let verified_owned_pgid =
-                verified_owned_process_group_id(child, process_group_id, *child_reaped);
-
-            if let Some(pgid) = verified_owned_pgid {
-                if current_pgid != pgid {
-                    let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
-                    if let Ok(Some(_)) = child.try_wait() {
-                        *child_reaped = true;
-                    }
-                    return ShutdownOutcome::AlreadyExited;
-                }
-            }
-
-            if let Ok(Some(_)) = child.try_wait() {
-                *child_reaped = true;
-                return ShutdownOutcome::AlreadyExited;
-            }
-        }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     if let Ok(Some(_)) = child.try_wait() {
         return ShutdownOutcome::AlreadyExited;
     }
@@ -429,67 +393,20 @@ fn terminate_backend_process(
             let _ = request_backend_shutdown(endpoint);
         }
     }
-    #[cfg(not(any(unix, windows)))]
+
+    // When the deadline passes but the backend has already acknowledged that
+    // cleanup finished, its exit is imminent; grant a short extension instead
+    // of force-killing a clean shutdown at the deadline.
+    if graceful_signal_sent
+        && (wait_for_graceful_exit(child, timeout)
+            || (shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
+                && wait_for_graceful_exit(child, BACKEND_SHUTDOWN_ACK_EXTENSION)))
     {
-        graceful_signal_sent = false;
-    }
-
-    if graceful_signal_sent {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let graceful_exit = wait_for_child_exit_without_reap(child, timeout).unwrap_or(false);
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let graceful_exit = wait_for_child_exit(child, timeout);
-
-        if graceful_exit {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                // The waitid probe above leaves the leader unreaped. Kill the
-                // verified group before reaping it so inherited descendants do
-                // not survive a clean leader exit.
-                if let Some(pgid) =
-                    verified_owned_process_group_id(child, process_group_id, *child_reaped)
-                {
-                    let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
-                }
-                if let Ok(Some(_)) = child.try_wait() {
-                    *child_reaped = true;
-                }
-            }
-            #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-            {
-                *child_reaped = true;
-            }
-            return ShutdownOutcome::GracefulTerminated;
-        }
-        // The backend acknowledged that cleanup finished, so its exit is
-        // imminent; grant a short extension instead of force-killing a clean
-        // shutdown at the deadline.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        let ack_exit = shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
-            && wait_for_child_exit_without_reap(child, BACKEND_SHUTDOWN_ACK_EXTENSION)
-                .unwrap_or(false);
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        let ack_exit = shutdown_ack.is_some_and(|ack| ack.load(Ordering::SeqCst))
-            && wait_for_child_exit(child, BACKEND_SHUTDOWN_ACK_EXTENSION);
-
-        if ack_exit {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            {
-                if let Some(pgid) =
-                    verified_owned_process_group_id(child, process_group_id, *child_reaped)
-                {
-                    let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
-                }
-                if let Ok(Some(_)) = child.try_wait() {
-                    *child_reaped = true;
-                }
-            }
-            #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-            {
-                *child_reaped = true;
-            }
-            return ShutdownOutcome::GracefulTerminated;
-        }
+        // The leader is still unreaped on Unix. Kill the verified group before
+        // reaping it so inherited descendants do not survive a clean exit.
+        #[cfg(unix)]
+        kill_owned_group_and_reap(child, process_group_id, child_reaped);
+        return ShutdownOutcome::GracefulTerminated;
     }
 
     #[cfg(unix)]
@@ -504,6 +421,31 @@ fn terminate_backend_process(
 
     let _ = child.kill();
     ShutdownOutcome::ForcedKill
+}
+
+#[cfg(unix)]
+fn kill_owned_group_and_reap(
+    child: &mut Child,
+    process_group_id: Option<i32>,
+    child_reaped: &mut bool,
+) {
+    if let Some(pgid) = verified_owned_process_group_id(child, process_group_id, *child_reaped) {
+        let _ = send_signal_to_process_group(pgid, libc::SIGKILL);
+    }
+    if let Ok(Some(_)) = child.try_wait() {
+        *child_reaped = true;
+    }
+}
+
+// Unix leaves the exited leader unreaped; Windows reaps it.
+#[cfg(unix)]
+fn wait_for_graceful_exit(child: &mut Child, timeout: Duration) -> bool {
+    wait_for_child_exit_without_reap(child, timeout).unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn wait_for_graceful_exit(child: &mut Child, timeout: Duration) -> bool {
+    wait_for_child_exit(child, timeout)
 }
 
 // Hidden Windows children have no console, so use the authenticated local API.
@@ -977,73 +919,35 @@ pub fn sidecar_runtime_filename() -> String {
     }
 }
 
+// The bundle ships the onedir sidecar as `binaries/<name>/<name>[.exe]` under
+// the resource directory. The executable's directory is the fallback for
+// Windows app virtualization, which can redirect only the executable.
 pub fn resolve_sidecar_path(
     resource_dir: Option<&Path>,
     current_binary_path: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let filename = sidecar_runtime_filename();
-    let sidecar_dir_name = BACKEND_SIDECAR_NAME;
     let mut candidates: Vec<PathBuf> = Vec::new();
-
-    if let Some(dir) = resource_dir {
-        candidates.push(dir.join(&filename));
-        candidates.push(dir.join("binaries").join(&filename));
-        candidates.push(dir.join(sidecar_dir_name).join(&filename));
-        candidates.push(dir.join("binaries").join(sidecar_dir_name).join(&filename));
-    }
-
-    if let Some(current_binary) = current_binary_path {
-        if let Some(exe_dir) = current_binary.parent() {
-            candidates.push(exe_dir.join(&filename));
-            candidates.push(exe_dir.join("binaries").join(&filename));
-            candidates.push(exe_dir.join(sidecar_dir_name).join(&filename));
-            candidates.push(
-                exe_dir
-                    .join("binaries")
-                    .join(sidecar_dir_name)
-                    .join(&filename),
-            );
-            #[cfg(target_os = "macos")]
-            {
-                candidates.push(exe_dir.join("../Resources").join(&filename));
-                candidates.push(
-                    exe_dir
-                        .join("../Resources")
-                        .join("binaries")
-                        .join(&filename),
-                );
-                candidates.push(
-                    exe_dir
-                        .join("../Resources")
-                        .join(sidecar_dir_name)
-                        .join(&filename),
-                );
-                candidates.push(
-                    exe_dir
-                        .join("../Resources")
-                        .join("binaries")
-                        .join(sidecar_dir_name)
-                        .join(&filename),
-                );
-            }
-        }
-    }
-
-    let mut deduped: Vec<PathBuf> = Vec::new();
-    for candidate in candidates {
-        if deduped.iter().any(|seen| seen == &candidate) {
-            continue;
-        }
+    for dir in [resource_dir, current_binary_path.and_then(Path::parent)]
+        .into_iter()
+        .flatten()
+    {
+        let candidate = dir
+            .join("binaries")
+            .join(BACKEND_SIDECAR_NAME)
+            .join(&filename);
         if candidate.is_file() {
             return Ok(candidate);
         }
-        deduped.push(candidate);
+        if !candidates.contains(&candidate) {
+            candidates.push(candidate);
+        }
     }
 
     Err(format!(
         "desktop backend sidecar not found: expected '{}' in one of [{}]",
         filename,
-        deduped
+        candidates
             .iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>()

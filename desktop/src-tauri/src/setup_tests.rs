@@ -8,7 +8,7 @@ use super::{
     SetupLaunchConfig, SetupLifecycle, SetupProgressEvent, SetupRequest, SetupRunnerState,
     SETUP_PROGRESS_EVENT,
 };
-use crate::backend::{BackendLifecycle, BackendReadyPayload};
+use crate::backend::{BackendLifecycle, BackendReadyPayload, BackendStatus};
 use crate::paths::DesktopRuntimePaths;
 use crate::{
     restart_after_setup_transaction, restart_after_setup_with_readiness, wait_for_backend_ready,
@@ -23,11 +23,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-fn request(profile: &str, groups: &[&str], accept_pytorch_risk: bool) -> SetupRequest {
+fn request(profile: &str, groups: &[&str]) -> SetupRequest {
     SetupRequest {
         profile: profile.to_string(),
         model_groups: groups.iter().map(|value| (*value).to_string()).collect(),
-        accept_pytorch_risk,
         cleaner_cuda_quantization: None,
     }
 }
@@ -73,7 +72,7 @@ fn configured_env(
 
 #[test]
 fn setup_forwards_selected_precision_and_rejects_unknown_modes() {
-    let mut choice = request("cuda", &["tts-cpu-cuda", "cleaner-cuda-large"], false);
+    let mut choice = request("cuda", &["tts-cpu-cuda", "cleaner-cuda-large"]);
     choice.cleaner_cuda_quantization = Some("8bit".to_string());
     let launch = build_for_platform(
         Path::new("/trusted/orpheus"),
@@ -98,7 +97,7 @@ fn setup_launch_is_a_fixed_shell_free_command() {
     let runtime_paths = DesktopRuntimePaths::from_app_data_dir("/trusted/app-data");
     let launch = build_for_platform(
         repo,
-        request("mlx", &["tts-mlx", "cleaner-mlx"], false),
+        request("mlx", &["tts-mlx", "cleaner-mlx"]),
         "macos",
         "aarch64",
     )
@@ -131,7 +130,7 @@ fn setup_launch_overrides_inherited_desktop_paths_with_backend_contract() {
     let launch = build_setup_launch_config(
         Path::new("/trusted/orpheus"),
         "/trusted/python",
-        request("base", &[], false),
+        request("base", &[]),
         "macos",
         "aarch64",
         &runtime_paths,
@@ -163,7 +162,7 @@ fn setup_launch_overrides_inherited_desktop_paths_with_backend_contract() {
 fn setup_launch_drops_inherited_python_overrides() {
     let launch = build_for_platform(
         Path::new("/trusted/orpheus"),
-        request("base", &[], false),
+        request("base", &[]),
         "macos",
         "aarch64",
     )
@@ -227,46 +226,38 @@ fn source_runtime_setup_reports_available_only_for_fixed_repo_assets() {
 fn setup_validation_rejects_unknown_mismatched_and_injection_values() {
     let repo = Path::new("/trusted/orpheus");
     for invalid in [
-        request("unknown", &[], false),
-        request("mlx", &["cleaner-cuda"], false),
-        request("mlx; rm -rf /", &[], false),
-        request("mlx", &["tts-mlx; open /tmp"], false),
-        request("mlx", &["../../model"], false),
+        request("unknown", &[]),
+        request("mlx", &["cleaner-cuda"]),
+        request("mlx; rm -rf /", &[]),
+        request("mlx", &["tts-mlx; open /tmp"]),
+        request("mlx", &["../../model"]),
     ] {
         assert!(build_for_platform(repo, invalid, "macos", "aarch64").is_err());
     }
 
-    assert!(build_for_platform(
-        repo,
-        request("cuda", &["tts-cpu-cuda"], true),
-        "macos",
-        "aarch64"
-    )
-    .is_err());
     assert!(
-        build_for_platform(repo, request("mlx", &["tts-mlx"], false), "linux", "x86_64").is_err()
+        build_for_platform(repo, request("cuda", &["tts-cpu-cuda"]), "macos", "aarch64").is_err()
     );
+    assert!(build_for_platform(repo, request("mlx", &["tts-mlx"]), "linux", "x86_64").is_err());
 }
 
 #[test]
 fn setup_guard_rejects_concurrent_runs_and_clears_on_terminal_state() {
     let state = SetupRunnerState::default();
     let generation = state
-        .begin(request("base", &[], false))
+        .begin(request("base", &[]))
         .expect("first setup should start");
-    assert!(state.begin(request("base", &[], false)).is_err());
+    assert!(state.begin(request("base", &[])).is_err());
 
     state.finish_success(generation, true);
     assert_eq!(state.status().lifecycle, SetupLifecycle::Complete);
-    assert!(state.begin(request("base", &[], false)).is_ok());
+    assert!(state.begin(request("base", &[])).is_ok());
 }
 
 #[test]
 fn running_setup_status_retains_latest_sanitized_progress_snapshot() {
     let state = SetupRunnerState::default();
-    let generation = state
-        .begin(request("mlx", &["tts-mlx"], false))
-        .expect("run");
+    let generation = state.begin(request("mlx", &["tts-mlx"])).expect("run");
 
     assert!(state.record_progress(
         generation,
@@ -295,7 +286,7 @@ fn running_setup_status_retains_latest_sanitized_progress_snapshot() {
 #[test]
 fn new_setup_generation_clears_the_previous_progress_snapshot() {
     let state = SetupRunnerState::default();
-    let first = state.begin(request("base", &[], false)).expect("first run");
+    let first = state.begin(request("base", &[])).expect("first run");
     state.record_progress(
         first,
         SetupProgressEvent {
@@ -311,9 +302,7 @@ fn new_setup_generation_clears_the_previous_progress_snapshot() {
     );
     state.finish_failure(first, SetupLifecycle::Failed, "failed");
 
-    let second = state
-        .begin(request("base", &[], false))
-        .expect("second run");
+    let second = state.begin(request("base", &[])).expect("second run");
     let status = state.status();
     assert_ne!(first, second);
     assert_eq!(status.stage, None);
@@ -324,7 +313,7 @@ fn new_setup_generation_clears_the_previous_progress_snapshot() {
 #[test]
 fn successful_setup_status_owns_terminal_percent_100() {
     let state = SetupRunnerState::default();
-    let generation = state.begin(request("base", &[], false)).expect("run");
+    let generation = state.begin(request("base", &[])).expect("run");
     state.record_progress(
         generation,
         SetupProgressEvent {
@@ -351,18 +340,18 @@ fn restart_authorization_requires_successful_restart_required_setup() {
     assert!(idle.acquire_restart_authorization().is_err());
 
     let running = SetupRunnerState::default();
-    let generation = running.begin(request("base", &[], false)).expect("run");
+    let generation = running.begin(request("base", &[])).expect("run");
     assert!(running.acquire_restart_authorization().is_err());
     assert!(running.finish_failure(generation, SetupLifecycle::Failed, "failed"));
     assert!(running.acquire_restart_authorization().is_err());
 
     let no_restart = SetupRunnerState::default();
-    let generation = no_restart.begin(request("base", &[], false)).expect("run");
+    let generation = no_restart.begin(request("base", &[])).expect("run");
     assert!(no_restart.finish_success(generation, false));
     assert!(no_restart.acquire_restart_authorization().is_err());
 
     let authorized = SetupRunnerState::default();
-    let generation = authorized.begin(request("base", &[], false)).expect("run");
+    let generation = authorized.begin(request("base", &[])).expect("run");
     assert!(authorized.finish_success(generation, true));
     assert!(authorized.acquire_restart_authorization().is_ok());
 }
@@ -370,14 +359,14 @@ fn restart_authorization_requires_successful_restart_required_setup() {
 #[test]
 fn restart_authorization_rejects_every_non_complete_lifecycle() {
     let cancelling = SetupRunnerState::default();
-    let generation = cancelling.begin(request("base", &[], false)).expect("run");
+    let generation = cancelling.begin(request("base", &[])).expect("run");
     cancelling.cancel().expect("cancel request");
     assert!(cancelling.acquire_restart_authorization().is_err());
     assert!(cancelling.finish_failure(generation, SetupLifecycle::Cancelled, "cancelled"));
     assert!(cancelling.acquire_restart_authorization().is_err());
 
     let timed_out = SetupRunnerState::default();
-    let generation = timed_out.begin(request("base", &[], false)).expect("run");
+    let generation = timed_out.begin(request("base", &[])).expect("run");
     assert!(timed_out.finish_failure(generation, SetupLifecycle::TimedOut, "timed out"));
     assert!(timed_out.acquire_restart_authorization().is_err());
 }
@@ -385,7 +374,7 @@ fn restart_authorization_rejects_every_non_complete_lifecycle() {
 #[test]
 fn restart_authorization_is_atomic_and_one_shot() {
     let state = Arc::new(SetupRunnerState::default());
-    let generation = state.begin(request("base", &[], false)).expect("run");
+    let generation = state.begin(request("base", &[])).expect("run");
     assert!(state.finish_success(generation, true));
 
     let handles: Vec<_> = (0..8)
@@ -409,7 +398,7 @@ fn restart_authorization_is_atomic_and_one_shot() {
 #[test]
 fn failed_restart_restores_authorization_for_retry() {
     let state = SetupRunnerState::default();
-    let generation = state.begin(request("base", &[], false)).expect("run");
+    let generation = state.begin(request("base", &[])).expect("run");
     assert!(state.finish_success(generation, true));
     let authorization = state.acquire_restart_authorization().expect("authorized");
     state
@@ -421,7 +410,7 @@ fn failed_restart_restores_authorization_for_retry() {
 #[test]
 fn setup_restart_transaction_restarts_ready_backend_and_consumes_authorization() {
     let state = SetupRunnerState::default();
-    let generation = state.begin(request("base", &[], false)).expect("run");
+    let generation = state.begin(request("base", &[])).expect("run");
     assert!(state.finish_success(generation, true));
     let calls = Arc::new(Mutex::new(Vec::new()));
 
@@ -454,7 +443,7 @@ fn setup_restart_transaction_restarts_ready_backend_and_consumes_authorization()
 fn setup_restart_transaction_restores_authorization_after_stop_or_start_failure() {
     for fail_start in [false, true] {
         let state = SetupRunnerState::default();
-        let generation = state.begin(request("base", &[], false)).expect("run");
+        let generation = state.begin(request("base", &[])).expect("run");
         assert!(state.finish_success(generation, true));
         let result = restart_after_setup_transaction(
             &state,
@@ -483,7 +472,7 @@ fn setup_restart_transaction_restores_authorization_after_stop_or_start_failure(
 #[test]
 fn setup_restart_transaction_rejects_non_ready_backend_without_consuming_authorization() {
     let state = SetupRunnerState::default();
-    let generation = state.begin(request("base", &[], false)).expect("run");
+    let generation = state.begin(request("base", &[])).expect("run");
     assert!(state.finish_success(generation, true));
     let result = restart_after_setup_transaction(
         &state,
@@ -495,6 +484,14 @@ fn setup_restart_transaction_rejects_non_ready_backend_without_consuming_authori
     assert!(state.acquire_restart_authorization().is_ok());
 }
 
+fn backend_status(lifecycle: BackendLifecycle) -> BackendStatus {
+    BackendStatus {
+        lifecycle,
+        endpoint: None,
+        error: None,
+    }
+}
+
 #[test]
 fn backend_restart_waits_for_ready_before_success() {
     let mut states = vec![
@@ -504,7 +501,9 @@ fn backend_restart_waits_for_ready_before_success() {
     ]
     .into_iter();
     let result = wait_for_backend_ready(Duration::from_secs(1), Duration::ZERO, || {
-        Ok(states.next().unwrap_or(BackendLifecycle::Ready))
+        Ok(backend_status(
+            states.next().unwrap_or(BackendLifecycle::Ready),
+        ))
     });
     assert!(result.is_ok());
 }
@@ -512,7 +511,7 @@ fn backend_restart_waits_for_ready_before_success() {
 #[test]
 fn backend_restart_readiness_timeout_is_bounded() {
     let result = wait_for_backend_ready(Duration::ZERO, Duration::ZERO, || {
-        Ok(BackendLifecycle::Starting)
+        Ok(backend_status(BackendLifecycle::Starting))
     });
     assert!(result.expect_err("must time out").contains("timed out"));
 }
@@ -608,8 +607,7 @@ fn request_dto_rejects_arbitrary_execution_fields() {
     for field in ["executable", "script", "path", "args", "modelIds", "env"] {
         let mut value = serde_json::json!({
             "profile": "base",
-            "modelGroups": [],
-            "acceptPytorchRisk": false
+            "modelGroups": []
         });
         value
             .as_object_mut()
@@ -622,7 +620,7 @@ fn request_dto_rejects_arbitrary_execution_fields() {
 #[test]
 fn cancellation_and_timeout_are_terminal_and_release_guard() {
     let state = SetupRunnerState::default();
-    let first = state.begin(request("base", &[], false)).expect("first run");
+    let first = state.begin(request("base", &[])).expect("first run");
     let (cancelled, process) = state.cancel().expect("active run cancels");
     assert_eq!(cancelled, first);
     assert!(process.is_none());
@@ -634,37 +632,33 @@ fn cancellation_and_timeout_are_terminal_and_release_guard() {
     ));
     assert_eq!(state.status().lifecycle, SetupLifecycle::Cancelled);
 
-    let second = state
-        .begin(request("base", &[], false))
-        .expect("second run");
+    let second = state.begin(request("base", &[])).expect("second run");
     assert!(state.finish_failure(second, SetupLifecycle::TimedOut, "timed out"));
     assert_eq!(state.status().lifecycle, SetupLifecycle::TimedOut);
-    assert!(state.begin(request("base", &[], false)).is_ok());
+    assert!(state.begin(request("base", &[])).is_ok());
 }
 
 #[test]
 fn cancelling_holds_run_guard_until_atomic_terminal_cleanup() {
     let state = SetupRunnerState::default();
-    let generation = state.begin(request("base", &[], false)).expect("run");
+    let generation = state.begin(request("base", &[])).expect("run");
     let (_, _) = state.cancel().expect("cancel requested");
     assert_eq!(state.status().lifecycle, SetupLifecycle::Cancelling);
-    assert!(state.begin(request("base", &[], false)).is_err());
+    assert!(state.begin(request("base", &[])).is_err());
     assert!(state.finish_failure(
         generation,
         SetupLifecycle::Cancelled,
         "runtime setup was cancelled"
     ));
-    assert!(state.begin(request("base", &[], false)).is_ok());
+    assert!(state.begin(request("base", &[])).is_ok());
 }
 
 #[test]
 fn terminal_ownership_remains_unique_if_new_run_begins_before_emit() {
     let state = SetupRunnerState::default();
-    let first = state.begin(request("base", &[], false)).expect("first run");
+    let first = state.begin(request("base", &[])).expect("first run");
     assert!(state.finish_success(first, true));
-    let second = state
-        .begin(request("base", &[], false))
-        .expect("second run");
+    let second = state.begin(request("base", &[])).expect("second run");
     assert_ne!(first, second);
     assert!(!state.finish_success(first, true));
     assert_eq!(state.status().generation, second);
@@ -766,6 +760,12 @@ fn setup_python_resolution_ignores_backend_override_and_path() {
         "isolated resolver failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // libtest exits 0 when the filter matches nothing.
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+        "isolated resolver did not run: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]
@@ -852,14 +852,14 @@ fn spawn_failure_clears_guard_and_emits_one_terminal_error() {
     let (sink, events) = collecting_sink();
     let result = supervise(
         state.clone(),
-        request("base", &[], false),
+        request("base", &[]),
         fixture_launch(Path::new("/definitely/missing/orpheus-python"), &[]),
         Duration::from_secs(1),
         sink,
     );
     assert!(result.is_err());
     assert_eq!(state.status().lifecycle, SetupLifecycle::Failed);
-    assert!(state.begin(request("base", &[], false)).is_ok());
+    assert!(state.begin(request("base", &[])).is_ok());
     let terminal = events
         .lock()
         .expect("events")
@@ -890,7 +890,7 @@ fn cancel_between_spawn_and_attach_emits_exactly_one_terminal_event() {
     let hook_sink = Arc::clone(&sink);
     let result = start_supervised(
         state.clone(),
-        request("base", &[], false),
+        request("base", &[]),
         fixture_launch(&program, &args),
         Duration::from_secs(30),
         sink,
@@ -930,7 +930,7 @@ fn successful_real_child_emits_exactly_one_authoritative_terminal_event() {
     let (sink, events) = collecting_sink();
     supervise(
         state.clone(),
-        request("base", &[], false),
+        request("base", &[]),
         fixture_launch(&program, &args),
         Duration::from_secs(2),
         sink,
@@ -970,7 +970,7 @@ fn root_exit_with_pipe_inheriting_detached_child_completes_and_kills_child() {
     let started = Instant::now();
     supervise(
         state.clone(),
-        request("base", &[], false),
+        request("base", &[]),
         fixture_launch(&python, &["-c".into(), code]),
         Duration::from_secs(10),
         sink,
@@ -1018,7 +1018,7 @@ fn noisy_child_is_rate_limited_but_terminal_is_preserved() {
     let (sink, events) = collecting_sink();
     supervise(
         state.clone(),
-        request("base", &[], false),
+        request("base", &[]),
         fixture_launch(&python, &["-c".into(), code.into()]),
         Duration::from_secs(10),
         sink,
@@ -1073,7 +1073,7 @@ fn supervisor_timeout_kills_detached_descendant_and_emits_one_terminal_event() {
     let (sink, events) = collecting_sink();
     supervise(
         state.clone(),
-        request("base", &[], false),
+        request("base", &[]),
         fixture_launch(&python, &["-c".into(), code]),
         Duration::from_millis(1500),
         sink,
@@ -1117,7 +1117,7 @@ fn cancel_and_shutdown_kill_real_children_and_release_guard() {
         let (sink, events) = collecting_sink();
         supervise(
             state.clone(),
-            request("base", &[], false),
+            request("base", &[]),
             fixture_launch(&sleep, &["60".into()]),
             Duration::from_secs(30),
             Arc::clone(&sink),
@@ -1136,7 +1136,7 @@ fn cancel_and_shutdown_kill_real_children_and_release_guard() {
             0,
             "supervised child survived cleanup"
         );
-        assert!(state.begin(request("base", &[], false)).is_ok());
+        assert!(state.begin(request("base", &[])).is_ok());
         if !shutdown {
             assert_eq!(
                 events
@@ -1169,7 +1169,7 @@ fn progress_preserves_every_model_group_accepted_by_setup() {
     ] {
         build_for_platform(
             Path::new("/trusted/orpheus"),
-            request(profile, &groups, true),
+            request(profile, &groups),
             os,
             arch,
         )
@@ -1209,6 +1209,27 @@ fn setup_readiness_rejects_a_replacement_backend() {
             .expect_err("replacement cannot satisfy readiness")
             .contains("replaced"));
     }
+}
+
+#[test]
+fn setup_readiness_reports_the_backend_startup_error() {
+    let cause = "failed to start desktop backend: mlx is not installed";
+    let state = AppState::default();
+    let generation = {
+        let mut manager = state.backend_manager.lock().unwrap();
+        let generation = manager.mark_starting();
+        manager.mark_failed_for_generation(generation, cause);
+        generation
+    };
+    let error = wait_for_backend_ready(Duration::ZERO, Duration::ZERO, || {
+        state.refresh_backend_generation(generation)
+    })
+    .expect_err("a failed backend is not ready");
+    assert_eq!(error, cause);
+    state.fail_backend_generation(generation, &error);
+    let status = state.backend_manager.lock().unwrap().status();
+    assert_eq!(status.lifecycle, BackendLifecycle::Failed);
+    assert_eq!(status.error.as_deref(), Some(cause));
 }
 
 #[test]

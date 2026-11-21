@@ -649,42 +649,37 @@ fn build_dev_launch_config_matches_desktop_runtime_contract() {
 #[cfg(unix)]
 #[test]
 fn dev_backend_ignores_path_and_python_override_for_fixed_checkout_venv() {
-    const CHILD_FLAG: &str = "ORPHEUS_BACKEND_RESOLVER_TEST_CHILD";
-    if std::env::var_os(CHILD_FLAG).is_some() {
-        use std::os::unix::fs::symlink;
+    use std::ffi::OsStr;
+    use std::os::unix::fs::symlink;
 
-        let repo = unique_temp_path("backend-python-env-isolation");
-        std::fs::create_dir_all(repo.join(".venv/bin")).expect("venv bin");
-        symlink("/bin/sh", repo.join(".venv/bin/python")).expect("python symlink");
-        let runtime_paths = DesktopRuntimePaths::from_app_data_dir(repo.join("app-data"));
-        let launch = build_dev_launch_config_for_root(&runtime_paths, &repo)
-            .expect("fixed dev backend launch");
-        let canonical_repo = repo.canonicalize().expect("canonical repo");
-        assert_eq!(
-            launch.program,
-            canonical_repo.join(".venv/bin/python").to_string_lossy()
-        );
-        assert_ne!(launch.program, "/tmp/attacker-python");
-        assert_eq!(launch.cwd, Some(repo.clone()));
-        let _ = std::fs::remove_dir_all(repo);
+    if let Some(output) = rerun_in_child_test_process(
+        "dev_backend_ignores_path_and_python_override_for_fixed_checkout_venv",
+        &[
+            (
+                "AUDIOBOOK_DESKTOP_PYTHON",
+                OsStr::new("/tmp/attacker-python"),
+            ),
+            ("PATH", OsStr::new("/tmp/attacker-bin")),
+        ],
+        false,
+    ) {
+        assert_child_test_passed(&output);
         return;
     }
 
-    let output = std::process::Command::new(std::env::current_exe().expect("test executable"))
-        .args([
-            "--exact",
-            "backend::tests::dev_backend_ignores_path_and_python_override_for_fixed_checkout_venv",
-        ])
-        .env(CHILD_FLAG, "1")
-        .env("AUDIOBOOK_DESKTOP_PYTHON", "/tmp/attacker-python")
-        .env("PATH", "/tmp/attacker-bin")
-        .output()
-        .expect("isolated resolver test");
-    assert!(
-        output.status.success(),
-        "isolated resolver failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+    let repo = unique_temp_path("backend-python-env-isolation");
+    std::fs::create_dir_all(repo.join(".venv/bin")).expect("venv bin");
+    symlink("/bin/sh", repo.join(".venv/bin/python")).expect("python symlink");
+    let runtime_paths = DesktopRuntimePaths::from_app_data_dir(repo.join("app-data"));
+    let launch =
+        build_dev_launch_config_for_root(&runtime_paths, &repo).expect("fixed dev backend launch");
+    let canonical_repo = repo.canonicalize().expect("canonical repo");
+    assert_eq!(
+        launch.program,
+        canonical_repo.join(".venv/bin/python").to_string_lossy()
     );
+    assert_eq!(launch.cwd, Some(repo.clone()));
+    let _ = std::fs::remove_dir_all(repo);
 }
 
 #[test]
@@ -724,38 +719,9 @@ fn read_ready_payload_from_file_accepts_packaged_handoff_json() {
 }
 
 #[test]
-fn resolve_sidecar_path_finds_resource_root_binary() {
-    let temp_root = unique_temp_path("resource-root");
-    std::fs::create_dir_all(&temp_root).expect("expected test temp dir");
-    let sidecar_path = temp_root.join(runtime_sidecar_file_name_for_tests());
-    std::fs::write(&sidecar_path, b"test-sidecar").expect("expected sidecar fixture");
-
-    let resolved = resolve_sidecar_path(Some(&temp_root), None).expect("expected sidecar path");
-    assert_eq!(resolved, sidecar_path);
-
-    let _ = std::fs::remove_file(&sidecar_path);
-    let _ = std::fs::remove_dir_all(&temp_root);
-}
-
-#[test]
-fn resolve_sidecar_path_finds_resource_binaries_subdir() {
-    let temp_root = unique_temp_path("resource-binaries");
-    let binaries_dir = temp_root.join("binaries");
-    std::fs::create_dir_all(&binaries_dir).expect("expected test binaries dir");
-    let sidecar_path = binaries_dir.join(runtime_sidecar_file_name_for_tests());
-    std::fs::write(&sidecar_path, b"test-sidecar").expect("expected sidecar fixture");
-
-    let resolved = resolve_sidecar_path(Some(&temp_root), None).expect("expected sidecar path");
-    assert_eq!(resolved, sidecar_path);
-
-    let _ = std::fs::remove_file(&sidecar_path);
-    let _ = std::fs::remove_dir_all(&temp_root);
-}
-
-#[test]
 fn resolve_sidecar_path_finds_resource_onedir_binary() {
     let temp_root = unique_temp_path("resource-onedir");
-    let sidecar_dir = temp_root.join(BACKEND_SIDECAR_NAME);
+    let sidecar_dir = temp_root.join("binaries").join(BACKEND_SIDECAR_NAME);
     std::fs::create_dir_all(&sidecar_dir).expect("expected test sidecar dir");
     let sidecar_path = sidecar_dir.join(runtime_sidecar_file_name_for_tests());
     std::fs::write(&sidecar_path, b"test-sidecar").expect("expected sidecar fixture");
@@ -763,7 +729,6 @@ fn resolve_sidecar_path_finds_resource_onedir_binary() {
     let resolved = resolve_sidecar_path(Some(&temp_root), None).expect("expected sidecar path");
     assert_eq!(resolved, sidecar_path);
 
-    let _ = std::fs::remove_file(&sidecar_path);
     let _ = std::fs::remove_dir_all(&temp_root);
 }
 

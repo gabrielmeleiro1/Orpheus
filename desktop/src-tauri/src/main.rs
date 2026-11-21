@@ -85,6 +85,7 @@ fn next_exit_action(phase: ExitPhase) -> (ExitAction, ExitPhase) {
 #[derive(Default)]
 struct ExitCoordinator {
     phase: Mutex<ExitPhase>,
+    relaunch_requested: AtomicBool,
 }
 
 impl ExitCoordinator {
@@ -100,13 +101,30 @@ impl ExitCoordinator {
         action
     }
 
+    // A relaunch once exit has begun cannot be served by this instance: its
+    // window is hidden or destroyed and its backend is shutting down. Record it
+    // so the app restarts after cleanup. Returns false while the app is running.
+    fn request_relaunch(&self) -> bool {
+        let phase = self
+            .phase
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *phase == ExitPhase::Running {
+            return false;
+        }
+        self.relaunch_requested.store(true, Ordering::SeqCst);
+        true
+    }
+
     // Mark cleanup complete so the following programmatic exit is allowed.
-    fn mark_finished(&self) {
+    // Returns whether a relaunch was requested while cleanup ran.
+    fn mark_finished(&self) -> bool {
         let mut phase = self
             .phase
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *phase = ExitPhase::Finished;
+        self.relaunch_requested.load(Ordering::SeqCst)
     }
 }
 
@@ -295,7 +313,7 @@ impl AppState {
         process.adopt_ready(&self.backend_manager, payload)
     }
 
-    fn refresh_backend_generation(&self, generation: u64) -> Result<BackendLifecycle, String> {
+    fn refresh_backend_generation(&self, generation: u64) -> Result<BackendStatus, String> {
         let _restart = self
             .restart_lock
             .lock()
@@ -317,7 +335,7 @@ impl AppState {
             .backend_manager
             .lock()
             .map_err(|_| "backend manager lock poisoned".to_string())?;
-        Ok(manager.status().lifecycle)
+        Ok(manager.status())
     }
 
     fn fail_backend_generation(&self, generation: u64, error: &str) {
@@ -538,14 +556,17 @@ fn wait_for_backend_ready<Refresh>(
     mut refresh: Refresh,
 ) -> Result<(), String>
 where
-    Refresh: FnMut() -> Result<BackendLifecycle, String>,
+    Refresh: FnMut() -> Result<BackendStatus, String>,
 {
     let started = Instant::now();
     loop {
-        match refresh()? {
+        let status = refresh()?;
+        match status.lifecycle {
             BackendLifecycle::Ready => return Ok(()),
             BackendLifecycle::Failed => {
-                return Err("the restarted backend failed during startup".to_string())
+                return Err(status
+                    .error
+                    .unwrap_or_else(|| "the restarted backend failed during startup".to_string()))
             }
             BackendLifecycle::Stopped => {
                 return Err("the restarted backend stopped during startup".to_string())
@@ -691,6 +712,12 @@ fn main() {
         // Qualification launches must reach runtime-root validation without
         // activating the production window. Python enforces library ownership.
         builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if app
+                .try_state::<ExitCoordinator>()
+                .is_some_and(|coordinator| coordinator.request_relaunch())
+            {
+                return;
+            }
             if let Some(window) = app.webview_windows().values().next() {
                 let _ = window.unminimize();
                 let _ = window.show();
@@ -758,17 +785,28 @@ fn main() {
                         if let Some(state) = cleanup_handle.try_state::<SetupRunnerState>() {
                             state.shutdown();
                         }
-                        if let Some(coordinator) = cleanup_handle.try_state::<ExitCoordinator>() {
-                            coordinator.mark_finished();
-                        }
+                        let relaunch = cleanup_handle
+                            .try_state::<ExitCoordinator>()
+                            .is_some_and(|coordinator| coordinator.mark_finished());
                         // Allowed through by the coordinator's `Finished` phase.
-                        cleanup_handle.exit(exit_code);
+                        if relaunch {
+                            cleanup_handle.request_restart();
+                        } else {
+                            cleanup_handle.exit(exit_code);
+                        }
                     });
                 }
                 ExitAction::Prevent => {
                     api.prevent_exit();
                 }
                 ExitAction::Allow => {}
+            }
+        }
+        // A Dock click while cleanup runs reaches this instance, not a new one.
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            if let Some(coordinator) = app_handle.try_state::<ExitCoordinator>() {
+                coordinator.request_relaunch();
             }
         }
         // Last-chance backend teardown if ExitRequested cleanup did not drain the
@@ -801,6 +839,23 @@ mod exit_coordinator_tests {
         assert_eq!(coordinator.on_exit_requested(), ExitAction::StartCleanup);
         coordinator.mark_finished();
         // The final programmatic exit is allowed through.
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::Allow);
+    }
+
+    #[test]
+    fn relaunch_while_running_is_left_to_the_live_window() {
+        let coordinator = ExitCoordinator::default();
+        assert!(!coordinator.request_relaunch());
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::StartCleanup);
+        assert!(!coordinator.mark_finished(), "no relaunch was requested");
+    }
+
+    #[test]
+    fn relaunch_during_cleanup_restarts_after_cleanup() {
+        let coordinator = ExitCoordinator::default();
+        assert_eq!(coordinator.on_exit_requested(), ExitAction::StartCleanup);
+        assert!(coordinator.request_relaunch());
+        assert!(coordinator.mark_finished());
         assert_eq!(coordinator.on_exit_requested(), ExitAction::Allow);
     }
 }
