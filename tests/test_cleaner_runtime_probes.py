@@ -161,6 +161,9 @@ def test_setup_status_retry_after_frozen_probe_timeout(frozen_spawn):
 ])
 def test_package_probe_scripts_report_device_and_cleaner_requirement(monkeypatch, gpu, driver_error):
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: driver_error)
+    # The probe scripts really run in a one-shot child, where the kernel launch
+    # happens in-process; here they are executed inside the test process.
+    monkeypatch.setattr("modules.tts.runtime_spec._cuda_probe_runs_in_process", lambda: True)
     tensor = MagicMock()
     tensor.add_.return_value.item.return_value = 2
     ones = MagicMock(return_value=tensor)

@@ -105,13 +105,18 @@ def load_model(engine, quantization: Optional[str] = None) -> None:  # noqa: ANN
         engine._model_cache_key = canonical_cache_key  # noqa: SLF001
 
     voice_snapshot = mlx_compat_backend.installed_voice_snapshot(engine._model_path)  # noqa: SLF001
-    cached_model = _get_cached_model(engine._model_cache_key)  # noqa: SLF001
-    if cached_model is not None:
-        engine._model = cached_model  # noqa: SLF001
-        logger.info("TTS Engine loaded from cache: %s", engine._model_cache_key)  # noqa: SLF001
-    else:
-        engine._model = mlx_compat_backend.load_tts_model(engine._model_path)  # noqa: SLF001
-        logger.info("TTS Engine loaded: %s", engine._model_path)  # noqa: SLF001
+    # Engines sharing a cache key (a voice preview during a conversion) share
+    # one model; holding its use-lock across lookup and load keeps two of them
+    # from loading duplicate copies at once.
+    with model_cache_backend.get_model_lock(engine._model_cache_key):  # noqa: SLF001
+        cached_model = _get_cached_model(engine._model_cache_key)  # noqa: SLF001
+        if cached_model is not None:
+            engine._model = cached_model  # noqa: SLF001
+            logger.info("TTS Engine loaded from cache: %s", engine._model_cache_key)  # noqa: SLF001
+        else:
+            engine._model = mlx_compat_backend.load_tts_model(engine._model_path)  # noqa: SLF001
+            _set_cached_model(engine._model_cache_key, engine._model)  # noqa: SLF001
+            logger.info("TTS Engine loaded: %s", engine._model_path)  # noqa: SLF001
     engine._voice_snapshot = voice_snapshot  # noqa: SLF001
     engine._model_loaded = True  # noqa: SLF001
 
@@ -138,6 +143,7 @@ def warmup_model(
 
 def unload_model(engine, keep_in_cache: bool = True) -> None:  # noqa: ANN001
     """Unload the current model and reset runtime state."""
+    owned_model = None
     if not keep_in_cache:
         # Discard only the model this engine loaded; one that never loaded owns
         # nothing, and other engines may be keeping a model warm under its key.
@@ -148,25 +154,26 @@ def unload_model(engine, keep_in_cache: bool = True) -> None:  # noqa: ANN001
             model_cache_backend.discard_cached_model_if_same(
                 engine._model_cache_key,  # noqa: SLF001
                 owned_model,
-                mx_module=mlx_compat_backend.mx,
-                mlx_available=mlx_compat_backend.MLX_AVAILABLE,
             )
         engine._last_cached_model = None  # noqa: SLF001
 
-    if not engine._model_loaded:  # noqa: SLF001
-        return
+    if engine._model_loaded:  # noqa: SLF001
+        if keep_in_cache and engine._model is not None:  # noqa: SLF001
+            _set_cached_model(engine._model_cache_key, engine._model)  # noqa: SLF001
+            engine._last_cached_model = engine._model  # noqa: SLF001
 
-    if keep_in_cache and engine._model is not None:  # noqa: SLF001
-        _set_cached_model(engine._model_cache_key, engine._model)  # noqa: SLF001
-        engine._last_cached_model = engine._model  # noqa: SLF001
+        engine._model = None  # noqa: SLF001
+        engine._voice_snapshot = None  # noqa: SLF001
+        engine._model_loaded = False  # noqa: SLF001
+        engine._warmup_complete = False  # noqa: SLF001
+        engine._last_warmup_ms = None  # noqa: SLF001
 
-    engine._model = None  # noqa: SLF001
-    engine._voice_snapshot = None  # noqa: SLF001
-    engine._model_loaded = False  # noqa: SLF001
-    engine._warmup_complete = False  # noqa: SLF001
-    engine._last_warmup_ms = None  # noqa: SLF001
+        logger.info("TTS Engine unloaded (cached: %s)", keep_in_cache)
 
-    logger.info("TTS Engine unloaded (cached: %s)", keep_in_cache)
+    if owned_model is not None:
+        # Buffers are only reclaimable once this engine holds no reference.
+        del owned_model
+        model_cache_backend.release_device_memory()
 
 
 def get_metrics(engine) -> dict[str, float | int | None]:  # noqa: ANN001

@@ -22,5 +22,6 @@ def test_tts_cuda_executes_probe_without_cleaner_driver_gate(monkeypatch, failur
     elif failure == "synchronization":
         tensor.add_.return_value.item.side_effect = RuntimeError("async CUDA failure")
     monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setattr("modules.tts.runtime_spec._cuda_probe_runs_in_process", lambda: True)
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is (failure is None)
     torch.ones.assert_called_once_with(1, device="cuda")

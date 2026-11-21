@@ -30,6 +30,7 @@ class TTSEngineFactory:
 
     @staticmethod
     def _static_kokoro_info() -> dict[str, object]:
+        from modules.tts.runtime_spec import TTSRuntimeSpec
         from modules.tts.voices import KOKORO_VOICE_CATALOG
 
         capabilities = {
@@ -42,7 +43,7 @@ class TTSEngineFactory:
             "supports_voice_cloning": False,
             "supports_engine_options": True,
             "is_local": True,
-            "provider": "mlx",
+            "provider": TTSRuntimeSpec.default_provider("kokoro"),
             "supports_conversion": True,
             "worker_auto_mode": "sequential",
             "process_safe": False,

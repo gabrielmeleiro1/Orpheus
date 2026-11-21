@@ -35,10 +35,11 @@ class TextChunker:
         self.config = config or ChunkConfig()
 
         # Sentence boundary patterns
-        # Matches: . ! ? followed by space or end, with optional quotes
+        # Matches: . ! ? followed by space or end, with optional straight or
+        # typographic (EPUB) quotes
         self._sentence_end = re.compile(
-            r'(?<=[.!?])["\']?\s+(?=[A-Z"\'])|'  # Standard sentence end
-            r'(?<=[.!?])["\']?$'  # End of text
+            r'(?<=[.!?])["\'”’]?\s+(?=[A-Z"\'“‘])|'  # Standard sentence end
+            r'(?<=[.!?])["\'”’]?$'  # End of text
         )
         self._abbreviations = {
             "Mr.",

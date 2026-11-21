@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+import gc
 import logging
 import os
 import sys
 import time
 import wave
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterator
 
 import numpy as np
 
-from modules.errors import TTSInstallationError
+from modules.errors import SynthesisError, TTSInstallationError
 from modules.tts import model_cache
 from modules.tts.model_snapshots import installed_model_path, require_local_phonemizer
-from modules.tts.runtimes.errors import TTSRuntimeUnavailable
+from modules.tts.cleaner_errors import is_memory_pressure_error
+from modules.tts.runtimes.errors import TTSRuntimeMemoryError, TTSRuntimeUnavailable
 from modules.tts.runtimes.kokoro_base import KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.strategies.base import (
     SynthesisItem,
@@ -32,6 +35,31 @@ if TYPE_CHECKING:
 
 _TORCH_COMPILE_ENV_VAR = "AUDIOBOOK_TTS_TORCH_COMPILE"
 _BLANK_TEXT_SILENCE_MS = 50
+
+
+@dataclass
+class _SharedKokoroModel:
+    """Cache entry: one loaded KModel and the per-language pipelines over it.
+
+    Runtimes whose default voices differ only in language share the weights;
+    every access happens under the cache key's model lock.
+    """
+
+    model: object
+    pipelines: dict[str, object] = field(default_factory=dict)
+
+
+def _is_out_of_memory(exc: BaseException) -> bool:
+    """Return True for host or CUDA allocation failures."""
+    if isinstance(exc, MemoryError):
+        return True
+    cuda = getattr(sys.modules.get("torch"), "cuda", None)
+    oom_error = getattr(cuda, "OutOfMemoryError", None)
+    if isinstance(oom_error, type) and isinstance(exc, oom_error):
+        return True
+    # CUDA/cuBLAS/allocator messages ("cudaErrorMemoryAllocation",
+    # "CUBLAS_STATUS_ALLOC_FAILED", "std::bad_alloc") as well as "out of memory".
+    return is_memory_pressure_error(str(exc))
 
 
 def _torch_compile_requested(runtime_options: dict[str, object] | None) -> bool:
@@ -52,6 +80,7 @@ class PackageKokoroRuntime:
         self.provider = config.runtime_spec.provider
         self.sample_rate = config.sample_rate
         self._pipeline = None
+        self._shared: _SharedKokoroModel | None = None
         self._language_pipelines: dict[str, object] = {}
         self._last_cached_pipeline = None
         self._model_dir: Path | None = None
@@ -73,9 +102,13 @@ class PackageKokoroRuntime:
         return self._total_chunk_time_ms / self._chunks_processed
 
     def _cache_key(self) -> str:
+        # The language is left out: pipelines for every language share the
+        # loaded weights (see _SharedKokoroModel).
         compiled = _torch_compile_requested(self._config.runtime_options)
+        kwargs = self._pipeline_kwargs()
+        kwargs.pop("lang_code", None)
         return (
-            f"kokoro-package:{self._pipeline_kwargs()!r}:"
+            f"kokoro-package:{kwargs!r}:"
             f"{self._config.runtime_spec.cache_key()!r}:compile={compiled}"
         )
 
@@ -83,16 +116,38 @@ class PackageKokoroRuntime:
         if self._pipeline is not None:
             return
 
-        cached_pipeline = model_cache.get_cached_model(self._cache_key())
-        if cached_pipeline is not None:
-            self._pipeline = cached_pipeline
-            self._last_cached_pipeline = cached_pipeline
-            logger.info("Package Kokoro runtime loaded from cache")
-            return
+        cache_key = self._cache_key()
+        # Hold the use-lock across lookup and load so concurrent runtimes for
+        # the same key cannot load duplicate copies of the weights.
+        with model_cache.get_model_lock(cache_key):
+            shared = model_cache.get_cached_model(cache_key)
+            if shared is not None:
+                self._attach(shared)
+                logger.info("Package Kokoro runtime loaded from cache")
+                return
+            self._load_uncached(cache_key)
 
+    def _attach(self, shared: _SharedKokoroModel) -> None:
+        language_code = kokoro_language_code(self._config.default_voice)
+        pipeline = shared.pipelines.get(language_code)
+        if pipeline is None:
+            from kokoro import KPipeline
+
+            pipeline = KPipeline(lang_code=language_code, model=shared.model)
+            shared.pipelines[language_code] = pipeline
+        self._shared = shared
+        self._language_pipelines = shared.pipelines
+        self._pipeline = pipeline
+        self._last_cached_pipeline = shared
+
+    def _load_uncached(self, cache_key: str) -> None:
         from modules.hf_cache import configure_hf_cache
+        from modules.tts.mlx_compat import patch_espeakng_loader_paths
 
         configure_hf_cache()
+        # Spawned workers must pick up the launcher's speech data location
+        # before kokoro imports the phonemizer and locks in its paths.
+        patch_espeakng_loader_paths()
         try:
             from kokoro import KPipeline
         except ImportError as exc:
@@ -117,10 +172,10 @@ class PackageKokoroRuntime:
         except TTSInstallationError:
             raise
         except Exception as exc:
-            raise TTSRuntimeUnavailable(f"Package Kokoro runtime failed to load: {exc}") from exc
+            raise self._load_error(exc) from exc
 
         try:
-            self._pipeline = KPipeline(**kwargs)
+            pipeline = KPipeline(**kwargs)
         except TypeError:
             dropped_kwargs = [
                 key for key in ("repo_id", "device") if key in kwargs
@@ -133,13 +188,28 @@ class PackageKokoroRuntime:
                     "retrying without them",
                     ", ".join(dropped_kwargs),
                 )
-            self._pipeline = KPipeline(**kwargs)
+            pipeline = KPipeline(**kwargs)
         except Exception as exc:
-            raise TTSRuntimeUnavailable(f"Package Kokoro runtime failed to load: {exc}") from exc
+            raise self._load_error(exc) from exc
 
+        shared = _SharedKokoroModel(
+            model=kwargs["model"],
+            pipelines={kokoro_language_code(self._config.default_voice): pipeline},
+        )
+        self._shared = shared
+        self._language_pipelines = shared.pipelines
+        self._pipeline = pipeline
         self._maybe_compile_pipeline_model()
-        model_cache.set_cached_model(self._cache_key(), self._pipeline)
-        self._last_cached_pipeline = self._pipeline
+        model_cache.set_cached_model(cache_key, shared)
+        self._last_cached_pipeline = shared
+
+    @staticmethod
+    def _load_error(exc: BaseException) -> RuntimeError:
+        # Memory failures must stay distinguishable so worker startup can
+        # retry with fewer workers instead of reporting the runtime missing.
+        if _is_out_of_memory(exc):
+            return TTSRuntimeMemoryError(f"Package Kokoro runtime ran out of memory while loading: {exc}")
+        return TTSRuntimeUnavailable(f"Package Kokoro runtime failed to load: {exc}")
 
     def _maybe_compile_pipeline_model(self) -> None:
         """Optionally torch.compile the vocoder decoder (opt-in, CUDA-oriented).
@@ -236,20 +306,25 @@ class PackageKokoroRuntime:
         sf.write(str(output_path), audio, self.sample_rate)
 
     def unload(self, *, keep_in_cache: bool = True) -> None:
-        pipeline = self._pipeline
-        if pipeline is None:
-            pipeline = self._last_cached_pipeline
-        if not keep_in_cache and pipeline is not None:
+        entry = self._shared if self._shared is not None else self._pipeline
+        if entry is None:
+            entry = self._last_cached_pipeline
+        if not keep_in_cache and entry is not None:
             model_cache.discard_cached_model_if_same(
                 self._cache_key(),
-                pipeline,
+                entry,
             )
             self._last_cached_pipeline = None
-        elif keep_in_cache and pipeline is not None:
-            self._last_cached_pipeline = pipeline
+        elif keep_in_cache and entry is not None:
+            self._last_cached_pipeline = entry
         self._pipeline = None
+        self._shared = None
         self._language_pipelines = {}
         self._model_dir = None
+        if not keep_in_cache and entry is not None:
+            # Buffers are only reclaimable once this runtime holds no reference.
+            del entry
+            model_cache.release_device_memory()
 
     def warmup(
         self,
@@ -287,6 +362,7 @@ class PackageKokoroRuntime:
         # key (e.g. a voice preview raised during a conversion). KPipeline keeps
         # mutable per-call state, so calls into it must not interleave.
         with model_cache.get_model_lock(self._cache_key()):
+            retry_after_oom = False
             try:
                 audio_chunks = self._run_pipeline(text, voice, speed)
             except Exception as exc:
@@ -294,14 +370,25 @@ class PackageKokoroRuntime:
                 # cleaner, so an allocation can fail transiently. Return cached
                 # blocks to the driver and retry the chunk once before failing
                 # the whole chapter.
-                if not self._release_cuda_memory_after_oom(exc):
+                if not self._is_cuda_oom(exc):
                     raise
+                retry_after_oom = True
+            if retry_after_oom:
+                # Outside the except block, so the failed attempt's traceback
+                # no longer pins its intermediate tensors.
+                self._release_cuda_memory()
                 logger.warning("CUDA out of memory during synthesis; retrying chunk once")
-                audio_chunks = self._run_pipeline(text, voice, speed)
-        if audio_chunks:
-            audio = np.concatenate(audio_chunks)
-        else:
-            audio = np.array([], dtype=np.float32)
+                try:
+                    audio_chunks = self._run_pipeline(text, voice, speed)
+                except Exception as exc:
+                    if self._is_cuda_oom(exc):
+                        raise TTSRuntimeMemoryError(
+                            f"CUDA out of memory during synthesis: {exc}"
+                        ) from exc
+                    raise
+        if not audio_chunks:
+            raise SynthesisError("No audio generated")
+        audio = np.concatenate(audio_chunks)
 
         if output_path is not None:
             self._write_output_audio(output_path, audio)
@@ -320,37 +407,42 @@ class PackageKokoroRuntime:
         if pipeline is None:
             from kokoro import KPipeline
 
-            pipeline = KPipeline(lang_code=language_code, model=self._pipeline.model)
+            model = self._shared.model if self._shared is not None else self._pipeline.model
+            pipeline = KPipeline(lang_code=language_code, model=model)
             self._language_pipelines[language_code] = pipeline
         return pipeline
 
     def _run_pipeline(self, text: str, voice: str, speed: float) -> list[np.ndarray]:
-        return [
-            np.asarray(audio, dtype=np.float32)
-            for _graphemes, _phonemes, audio in self._pipeline_for_voice(voice)(
-                text,
-                voice=self._voice_arg(voice),
-                speed=speed,
-            )
-        ]
+        audio_chunks: list[np.ndarray] = []
+        for _graphemes, _phonemes, audio in self._pipeline_for_voice(voice)(
+            text,
+            voice=self._voice_arg(voice),
+            speed=speed,
+        ):
+            if audio is None:
+                continue
+            if hasattr(audio, "detach"):
+                audio = audio.detach().cpu().numpy()
+            audio_chunks.append(np.asarray(audio, dtype=np.float32).reshape(-1))
+        return audio_chunks
 
-    def _release_cuda_memory_after_oom(self, exc: BaseException) -> bool:
-        """Empty the CUDA caching allocator when ``exc`` is a CUDA OOM."""
+    def _is_cuda_oom(self, exc: BaseException) -> bool:
         if self.provider != "cuda":
             return False
-        torch_module = sys.modules.get("torch")
-        cuda = getattr(torch_module, "cuda", None)
+        cuda = getattr(sys.modules.get("torch"), "cuda", None)
         oom_error = getattr(cuda, "OutOfMemoryError", None)
-        if not (
-            (isinstance(oom_error, type) and isinstance(exc, oom_error))
-            or "cuda out of memory" in str(exc).lower()
-        ):
-            return False
+        return (
+            isinstance(oom_error, type) and isinstance(exc, oom_error)
+        ) or is_memory_pressure_error(str(exc))
+
+    def _release_cuda_memory(self) -> None:
+        """Return the CUDA caching allocator's free blocks to the driver."""
+        gc.collect()
+        cuda = getattr(sys.modules.get("torch"), "cuda", None)
         try:
             cuda.empty_cache()
         except Exception:
             logger.debug("torch.cuda.empty_cache failed after OOM", exc_info=True)
-        return True
 
     def iter_synthesize_batch(
         self,

@@ -15,6 +15,72 @@ from . import mlx_compat as mlx_compat_backend
 from .voices import kokoro_language_code
 
 _WAV_COPY_FRAMES = 65_536
+_UPSTREAM_GENERATE_MODULE = "mlx_audio.tts.generate"
+
+
+def _direct_generation_model(engine, generate_fn):  # noqa: ANN001, ANN202
+    """Return the loaded model when synthesis can call it without the wrapper.
+
+    mlx-audio's ``generate_audio`` catches every exception and only prints it,
+    so installation, memory and model failures would surface as a missing
+    output file. Injected generate functions keep the wrapper contract.
+    """
+    model = getattr(engine, "_model", None)
+    if model is None or not callable(getattr(model, "generate", None)):
+        return None
+    active_generate_fn = generate_fn or mlx_compat_backend.generate_audio
+    if (
+        active_generate_fn is not None
+        and getattr(active_generate_fn, "__module__", None) != _UPSTREAM_GENERATE_MODULE
+    ):
+        return None
+    return model
+
+
+def _pcm16(audio) -> np.ndarray:  # noqa: ANN001
+    """Quantize one segment exactly as mlx-audio's WAV writer does."""
+    data = np.array(audio)
+    if data.dtype in (np.float32, np.float64):
+        data = (np.clip(data, -1.0, 1.0) * 32767).astype(np.int16)
+    elif data.dtype != np.int16:
+        data = data.astype(np.int16)
+    return data.reshape(-1)
+
+
+def _generate_pcm16(engine, model, text: str, voice: str, speed: float) -> tuple[np.ndarray, int]:  # noqa: ANN001
+    """Run the loaded model and return joined 16-bit samples and their rate."""
+    segments: list[np.ndarray] = []
+    sample_rate = None
+    with engine._model_lock:  # noqa: SLF001
+        with mlx_compat_backend.use_installed_voices(
+            engine._model_path, engine._voice_snapshot,  # noqa: SLF001
+        ):
+            for result in model.generate(
+                text=text,
+                voice=voice,
+                speed=speed,
+                lang_code=kokoro_language_code(voice),
+            ):
+                segments.append(_pcm16(result.audio))
+                if sample_rate is None:
+                    sample_rate = getattr(result, "sample_rate", None)
+    if not segments:
+        raise SynthesisError("No audio file generated")
+    pcm = segments[0] if len(segments) == 1 else np.concatenate(segments)
+    return pcm, int(sample_rate or engine.config.sample_rate)
+
+
+def _pcm16_to_float(pcm: np.ndarray) -> np.ndarray:
+    """Match soundfile's float32 decoding of 16-bit PCM."""
+    return pcm.astype(np.float32) / 32768.0
+
+
+def _write_pcm16_wav(output_path: Path, pcm: np.ndarray, sample_rate: int) -> None:
+    with wave.open(str(output_path), "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(sample_rate)
+        writer.writeframes(pcm.astype("<i2", copy=False).tobytes())
 
 
 def _inject_generate_audio_model_arg(
@@ -61,6 +127,13 @@ def synthesize_to_output_path(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _remove_stale_generated_files(output_path)
+
+    model = _direct_generation_model(engine, generate_fn)
+    if model is not None:
+        pcm, _sample_rate = _generate_pcm16(engine, model, text, voice, speed)
+        audio = _pcm16_to_float(pcm)
+        sf.write(str(output_path), audio, engine.config.sample_rate, subtype="PCM_16")
+        return audio
 
     with engine._model_lock:  # noqa: SLF001
         gen_kwargs = {
@@ -164,6 +237,12 @@ def synthesize_to_output_file(
     """Synthesize directly to a WAV file and return its path without reading samples."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     _remove_stale_generated_files(output_path)
+
+    model = _direct_generation_model(engine, generate_fn)
+    if model is not None:
+        pcm, sample_rate = _generate_pcm16(engine, model, text, voice, speed)
+        _write_pcm16_wav(output_path, pcm, sample_rate)
+        return output_path
 
     with engine._model_lock:  # noqa: SLF001
         gen_kwargs = {
@@ -288,6 +367,11 @@ def synthesize_to_temp_audio(
 ) -> np.ndarray:
     """Synthesize via temp WAV files and return concatenated audio."""
     import soundfile as sf
+
+    model = _direct_generation_model(engine, generate_fn)
+    if model is not None:
+        pcm, _sample_rate = _generate_pcm16(engine, model, text, voice, speed)
+        return _pcm16_to_float(pcm)
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)

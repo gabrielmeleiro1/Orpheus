@@ -16,6 +16,7 @@ from .model_snapshots import installed_model_path, installed_voice_path, require
 MLX_AVAILABLE = False
 MLX_IMPORT_ERROR: Optional[Exception] = None
 _MLX_RUNTIME_CHECKED = False
+_MLX_RUNTIME_LOCK = threading.Lock()
 mx = None
 generate_audio = None
 _load_tts_model_fn = None
@@ -259,7 +260,9 @@ def patch_espeakng_loader_paths() -> None:
 
     if not getattr(sys, "frozen", False):
         data_path = Path(espeakng_loader.get_data_path()).resolve()
-        if len(os.fsencode(data_path)) < 160:
+        if len(os.fsencode(data_path)) < 160 and (
+            sys.platform != "win32" or str(data_path).isascii()
+        ):
             return
         for name in ("PHONEMIZER_ESPEAK_DATA_PATH", "ESPEAK_DATA_PATH"):
             configured = os.environ.get(name)
@@ -288,7 +291,7 @@ def patch_espeakng_loader_paths() -> None:
         ),
         meipass_dir / "espeakng_loader",
     )
-    library_path = package_dir / "libespeak-ng.dylib"
+    library_path = package_dir / _espeak_library_name()
     data_path = package_dir / "espeak-ng-data"
     if not library_path.is_file() or not data_path.is_dir():
         return
@@ -304,42 +307,56 @@ def patch_espeakng_loader_paths() -> None:
         ):
             data_path = configured_data
     except (OSError, RuntimeError):
-        return
+        # Upstream raises when its own default data directory is missing; the
+        # bundled copy found above replaces it. Any other getter that raises
+        # is the launcher refusing an unsafe path, which must stay in force.
+        if getattr(espeakng_loader.get_data_path, "__module__", None) != "espeakng_loader":
+            return
 
     espeakng_loader.get_library_path = lambda: str(library_path)
     espeakng_loader.get_data_path = lambda: str(data_path)
+
+
+def _espeak_library_name() -> str:
+    """Return the native library file name espeakng_loader ships per platform."""
+    if sys.platform == "win32":
+        return "espeak-ng.dll"
+    if sys.platform.startswith("linux"):
+        return "libespeak-ng.so"
+    return "libespeak-ng.dylib"
 
 
 def ensure_mlx_runtime() -> tuple[Any, Any]:
     """Import MLX/MLX-Audio on demand and return `(mx, generate_audio)`."""
     global MLX_AVAILABLE, MLX_IMPORT_ERROR, _MLX_RUNTIME_CHECKED, mx, generate_audio
 
-    if _MLX_RUNTIME_CHECKED:
-        if not MLX_AVAILABLE:
-            raise ImportError(mlx_runtime_error_message(MLX_IMPORT_ERROR))
-        return mx, generate_audio
+    if not _MLX_RUNTIME_CHECKED:
+        with _MLX_RUNTIME_LOCK:
+            if not _MLX_RUNTIME_CHECKED:
+                os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+                os.environ.setdefault("TQDM_DISABLE", "1")
+                patch_espeakng_loader_paths()
 
-    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-    os.environ.setdefault("TQDM_DISABLE", "1")
-    patch_espeakng_loader_paths()
+                try:
+                    import mlx.core as mx_module
+                    import mlx.nn as nn_module
+                    from mlx_audio.tts.generate import generate_audio as generate_audio_fn
+                    from mlx_audio.tts.models.base import GenerationResult
 
-    try:
-        import mlx.core as mx_module
-        import mlx.nn as nn_module
-        from mlx_audio.tts.generate import generate_audio as generate_audio_fn
-        from mlx_audio.tts.models.base import GenerationResult
+                    from .device_memory import apply_mlx_memory_limit_from_environment
 
-        patch_mlx_load_weights_compat(nn_module.Module)
-        patch_mlx_generation_result_compat(GenerationResult)
-        mx = mx_module
-        generate_audio = generate_audio_fn
-        MLX_AVAILABLE = True
-        MLX_IMPORT_ERROR = None
-    except ImportError as exc:
-        MLX_AVAILABLE = False
-        MLX_IMPORT_ERROR = exc
-    finally:
-        _MLX_RUNTIME_CHECKED = True
+                    patch_mlx_load_weights_compat(nn_module.Module)
+                    patch_mlx_generation_result_compat(GenerationResult)
+                    apply_mlx_memory_limit_from_environment(mx_module)
+                    mx = mx_module
+                    generate_audio = generate_audio_fn
+                    MLX_AVAILABLE = True
+                    MLX_IMPORT_ERROR = None
+                except ImportError as exc:
+                    MLX_AVAILABLE = False
+                    MLX_IMPORT_ERROR = exc
+                finally:
+                    _MLX_RUNTIME_CHECKED = True
 
     if not MLX_AVAILABLE:
         raise ImportError(mlx_runtime_error_message(MLX_IMPORT_ERROR))

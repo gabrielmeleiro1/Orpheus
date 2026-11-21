@@ -717,9 +717,11 @@ def test_configure_espeak_runtime_sets_phonemizer_wrapper_to_packaged_paths(
     """Frozen sidecar must configure phonemizer before TTS uses the dylib default path."""
     from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
+    from modules.tts.mlx_compat import _espeak_library_name
+
     package_dir = tmp_path / "_internal" / "espeakng_loader"
     data_dir = package_dir / "espeak-ng-data"
-    library_path = package_dir / "libespeak-ng.dylib"
+    library_path = package_dir / _espeak_library_name()
     data_dir.mkdir(parents=True)
     (data_dir / "phontab").write_text("phontab", encoding="utf-8")
     library_path.write_bytes(b"dylib")
@@ -756,11 +758,11 @@ def test_configure_espeak_runtime_sets_phonemizer_wrapper_to_packaged_paths(
 @pytest.mark.parametrize("repatch", [False, True])
 def test_frozen_espeak_data_stays_short_after_compatibility_patch(tmp_path, monkeypatch, repatch):
     from apps.launchers import desktop_backend
-    from modules.tts.mlx_compat import patch_espeakng_loader_paths
+    from modules.tts.mlx_compat import _espeak_library_name, patch_espeakng_loader_paths
     from phonemizer.backend.espeak.wrapper import EspeakWrapper
 
     data_dir = _make_overlimit_packaged_data(tmp_path)
-    (data_dir.parent / "libespeak-ng.dylib").write_bytes(b"dylib")
+    (data_dir.parent / _espeak_library_name()).write_bytes(b"dylib")
     (data_dir / "voices").mkdir()
     (data_dir / "voices" / "en").write_text("voice", encoding="utf-8")
     loader = SimpleNamespace(get_library_path=lambda: "missing", get_data_path=lambda: "missing")

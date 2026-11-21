@@ -227,12 +227,16 @@ def _strategy_with_provider(provider: str | None) -> KokoroTTSStrategy:
     return KokoroTTSStrategy(config)
 
 
-def test_file_batch_results_only_for_mlx_provider() -> None:
+def test_file_batch_results_only_for_mlx_provider(monkeypatch) -> None:
     assert _strategy_with_provider("mlx").supports_file_batch_results is True
     assert _strategy_with_provider("cuda").supports_file_batch_results is False
     assert _strategy_with_provider("cpu").supports_file_batch_results is False
-    # Unresolved spec defaults to MLX, matching the capabilities property.
+    # An unresolved spec follows the provider this host would load, matching
+    # the capabilities property.
+    monkeypatch.setattr(TTSRuntimeSpec, "default_provider", staticmethod(lambda _engine: "mlx"))
     assert _strategy_with_provider(None).supports_file_batch_results is True
+    monkeypatch.setattr(TTSRuntimeSpec, "default_provider", staticmethod(lambda _engine: "cuda"))
+    assert _strategy_with_provider(None).supports_file_batch_results is False
 
 
 # ---------------------------------------------------------------------------

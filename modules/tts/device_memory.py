@@ -100,8 +100,32 @@ def _read_byte_count(source: Any, *names: str) -> int:
         try:
             return max(0, int(probe()))
         except Exception:
-            return 0
+            continue
     return 0
+
+
+# Per-worker MLX memory budget in bytes. MLX itself does not read this
+# variable; the worker applies it once MLX is imported.
+MLX_MEMORY_LIMIT_ENV = "MLX_METAL_MEMORY"
+
+
+def apply_mlx_memory_limit_from_environment(mlx_core: Any) -> int | None:
+    """Apply the worker MLX memory budget, returning the limit it set."""
+    raw_limit = os.environ.get(MLX_MEMORY_LIMIT_ENV, "").strip()
+    if not raw_limit:
+        return None
+    try:
+        limit = int(raw_limit)
+    except ValueError:
+        return None
+    set_memory_limit = getattr(mlx_core, "set_memory_limit", None)
+    if limit <= 0 or not callable(set_memory_limit):
+        return None
+    try:
+        set_memory_limit(limit)
+    except Exception:
+        return None
+    return limit
 
 
 class HostMemoryPolicy:
@@ -216,13 +240,16 @@ class MLXDeviceMemoryPolicy(HostMemoryPolicy):
     ) -> dict[str, str]:
         safe_worker_count = max(1, int(active_workers))
         worker_bytes = max(0, int(available_bytes)) / safe_worker_count
-        return {"MLX_METAL_MEMORY": str(int(worker_bytes * 0.9))}
+        return {MLX_MEMORY_LIMIT_ENV: str(int(worker_bytes * 0.9))}
 
     def clear_cache(self) -> None:
         mlx_core = self._resolve_mlx_core()
         clear_cache = getattr(mlx_core, "clear_cache", None)
         if callable(clear_cache):
-            clear_cache()
+            try:
+                clear_cache()
+            except Exception:
+                return
 
     def estimated_worker_bytes(self, runtime_spec: TTSRuntimeSpec) -> int | None:
         if runtime_spec.engine == "kokoro":

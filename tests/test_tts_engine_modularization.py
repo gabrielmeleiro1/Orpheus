@@ -74,12 +74,13 @@ def _worker_init_config():
         "cleaner_api_model": "gpt-5-nano",
         "cleaner_api_global_concurrency": 6,
         "cleaner_api_global_limiter": None,
+        "cleaner_skip_llm_when_not_needed": False,
     }
 
 
 def _frozen_speech_package(tmp_path, monkeypatch, package_dir):
     data_dir = package_dir / "espeak-ng-data"
-    library_path = package_dir / "libespeak-ng.dylib"
+    library_path = package_dir / mlx_compat._espeak_library_name()
     data_dir.mkdir(parents=True)
     library_path.write_bytes(b"dylib")
     fake_loader = SimpleNamespace(
@@ -138,7 +139,8 @@ def test_kokoro_strategy_import_does_not_import_mlx_engine(monkeypatch) -> None:
 
     module = importlib.import_module("modules.tts.strategies.kokoro")
 
-    assert module.KokoroTTSStrategy().capabilities.provider == "mlx"
+    # Before load the strategy reports the provider this host would resolve to.
+    assert module.KokoroTTSStrategy().capabilities.provider == module.TTSRuntimeSpec.default_provider("kokoro")
 
 
 def test_mlx_runtime_import_failure_is_deferred_until_load(monkeypatch) -> None:

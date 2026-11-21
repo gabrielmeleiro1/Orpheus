@@ -73,7 +73,7 @@
         "batching_mode": "threaded",
         "is_local": true,
         "process_safe": false,
-        "provider": "mlx",
+        "provider": "cpu",
         "supported_languages": [
           "en-US",
           "en-GB"

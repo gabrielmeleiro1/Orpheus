@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from modules.tts.runtime_spec import TTSRuntimeSpec
+from modules.tts.runtimes.errors import TTSRuntimeMemoryError
 from modules.tts.runtimes.kokoro_base import KokoroRuntimeConfig
 from modules.tts.runtimes.kokoro_package import PackageKokoroRuntime
 
@@ -66,8 +67,9 @@ def test_repeated_cuda_oom_still_fails_the_chunk(monkeypatch, tmp_path, emptied)
     failures = [torch.cuda.OutOfMemoryError("CUDA out of memory") for _ in range(2)]
     runtime = _runtime(monkeypatch, tmp_path, "cuda", failures)
 
-    with pytest.raises(torch.cuda.OutOfMemoryError):
+    with pytest.raises(TTSRuntimeMemoryError, match="CUDA out of memory") as raised:
         runtime.synthesize("Still no memory.", "am_adam")
+    assert isinstance(raised.value.__cause__, torch.cuda.OutOfMemoryError)
     assert runtime._pipeline.calls == 2
     assert calls == [1]
 

@@ -12,6 +12,7 @@ from typing import Iterator, Optional
 
 import numpy as np
 
+from modules.tts.runtime_spec import TTSRuntimeSpec
 from modules.tts.runtimes import KokoroRuntime, KokoroRuntimeConfig, KokoroRuntimeFactory
 from modules.tts.strategies.base import (
     SynthesisItem,
@@ -109,11 +110,9 @@ class KokoroTTSStrategy(TTSStrategy):
         """
         if self._runtime is not None:
             return bool(getattr(self._runtime, "supports_file_batch_results", False))
-        # Before load, fall back to the provider default; an unresolved spec
-        # defaults to MLX, matching the capabilities property.
-        runtime_spec = self._config.runtime_spec
-        provider = runtime_spec.provider if runtime_spec is not None else "mlx"
-        return provider == "mlx"
+        # Before load, fall back to the provider the runtime would resolve to,
+        # matching the capabilities property.
+        return self._provider() == "mlx"
 
     @property
     def supports_batching(self) -> bool:
@@ -123,10 +122,15 @@ class KokoroTTSStrategy(TTSStrategy):
     def supports_streaming(self) -> bool:
         return self._config.enable_streaming
 
+    def _provider(self) -> str:
+        runtime_spec = self._config.runtime_spec
+        if runtime_spec is not None:
+            return runtime_spec.provider
+        return TTSRuntimeSpec.default_provider("kokoro")
+
     @property
     def capabilities(self) -> TTSCapabilities:
-        runtime_spec = self._config.runtime_spec
-        provider = runtime_spec.provider if runtime_spec is not None else "mlx"
+        provider = self._provider()
         return TTSCapabilities(
             supports_batching=True,
             supports_streaming=self._config.enable_streaming,

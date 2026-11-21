@@ -25,21 +25,27 @@ def test_cuda_available_on_current_platform_contract_with_mocked_torch(
     )
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
+    monkeypatch.setattr("modules.tts.runtime_spec._cuda_probe_runs_in_process", lambda: True)
+    TTSRuntimeSpec.reset_cuda_probe_cache()
 
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is True
 
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: "driver too old")
+    TTSRuntimeSpec.reset_cuda_probe_cache()
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is True
     monkeypatch.setattr("modules.runtime_profiles.cuda_hardware_error", lambda: None)
 
     fake_torch.cuda.is_available = lambda: False
+    TTSRuntimeSpec.reset_cuda_probe_cache()
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
 
     def _raise_cuda_probe_error() -> bool:
         raise RuntimeError("cuda driver unavailable")
 
     fake_torch.cuda.is_available = _raise_cuda_probe_error
+    TTSRuntimeSpec.reset_cuda_probe_cache()
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
+    TTSRuntimeSpec.reset_cuda_probe_cache()
 
 
 def test_cuda_available_on_current_platform_contract_when_torch_missing(
@@ -55,6 +61,8 @@ def test_cuda_available_on_current_platform_contract_when_torch_missing(
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", import_without_torch)
+    monkeypatch.setattr("modules.tts.runtime_spec._cuda_probe_runs_in_process", lambda: True)
+    TTSRuntimeSpec.reset_cuda_probe_cache()
 
     assert TTSRuntimeSpec.cuda_available_on_current_platform() is False
 

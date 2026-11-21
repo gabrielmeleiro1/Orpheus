@@ -397,6 +397,10 @@ class TTSEngine:
 
             except Exception as e:
                 error_str = str(e).lower()
+                # Allocation failures often mention the model being loaded, so
+                # they must be recognized before the broad model-load match.
+                if self._is_memory_pressure_error(error_str):
+                    raise VRAMOverflowError(model_name=self._model_path)
                 if self._is_model_loading_error(error_str):
                     if self._is_network_error(error_str):
                         last_error = e
@@ -410,8 +414,6 @@ class TTSEngine:
                         message=f"Model loading failed: {str(e)}",
                         model_name=self._model_path,
                     )
-                if self._is_memory_pressure_error(error_str):
-                    raise VRAMOverflowError(model_name=self._model_path)
                 raise SynthesisError(message=str(e))
 
         if last_error:
