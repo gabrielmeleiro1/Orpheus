@@ -45,9 +45,9 @@ flowchart TD
 
 | Layer | Module | Role |
 |-------|--------|------|
-| API | `modules/web/routes/conversions.py`, `voices.py` | Accepts `tts_provider`, `tts_device`, nested `runtime_options` |
+| API | `modules/web/schemas/conversions.py`, `modules/web/routes/voices.py` | Accepts `tts_provider`, `tts_device`, nested `runtime_options` |
 | App | `modules/app/services/conversion_runtime.py` | Normalizes user options into `ConversionRuntimeOptions` |
-| Resolution | `modules/tts/runtime_options.py` → `resolve_tts_runtime` | Merges explicit `tts_runtime` with options; fills default provider |
+| Resolution | `modules/tts/runtime_options.py` → `resolve_tts_runtime` | Merges explicit `tts_runtime` with options; fills default provider; rejects provider options no runtime reads (only `torch_compile` is accepted, for CPU, CUDA, or an unspecified provider) |
 | Identity | `modules/tts/runtime_spec.py` → `TTSRuntimeSpec` | Canonical provider, engine, model, quantization, device, options |
 | Pipeline | `modules/pipeline/models.py` → `PipelineConfig` | Derives `tts_engine`, model, quantization from resolved spec |
 | Factory | `modules/tts/factory.py` → `TTSEngineFactory` | Instantiates strategy from engine name + `factory_kwargs()` |

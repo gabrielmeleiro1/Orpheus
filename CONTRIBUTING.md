@@ -5,7 +5,9 @@ improvements are welcome.
 
 ## Set up
 
-1. Follow the source install in the [README](README.md#from-source).
+1. Follow the source install in the [README](README.md#from-source). If
+   Orpheus is also installed on this machine, back up your library first:
+   source setup and `desktop:dev` use the installed app's data.
 2. Read [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
    [Where to change X](docs/ARCHITECTURE.md#where-to-change-x) maps common
    changes to the files that own them.
@@ -15,6 +17,9 @@ improvements are welcome.
    ```bash
    bash scripts/install-git-hooks.sh
    ```
+
+   The installer sets `core.hooksPath`, so Git stops running any hooks in
+   `.git/hooks/`. See [docs/TESTING.md](docs/TESTING.md#pre-push-hook).
 
 ## Branches
 
@@ -71,9 +76,14 @@ python run_tests.py --contract
 cd desktop && npm run typecheck && npm test -- --run
 ```
 
-For Rust or Tauri changes, also run
-`cd desktop/src-tauri && cargo test && cargo check`. To run every source gate
-with retained logs, use `python scripts/check_desktop.py`.
+For Rust or Tauri changes, also run:
+
+```bash
+cd desktop/src-tauri && cargo test --locked -- --test-threads=1 && cargo check --locked
+```
+
+To run every source gate with retained logs, use
+`python scripts/check_desktop.py`.
 [docs/TESTING.md](docs/TESTING.md) lists focused checks for each subsystem.
 
 ## Pull requests

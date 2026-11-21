@@ -21,13 +21,13 @@ Commands below assume an activated virtual environment. On Windows, replace
 | Property | `python -m pytest -m property` | Hypothesis invariants for parsers and the cleaner | Performance or UI behavior |
 | Slow | `python -m pytest -m slow` | Long-running integration paths | Fast feedback |
 | Benchmark | `python -m pytest -m benchmark` | Performance baselines | Correctness |
-| GPU | `python -m pytest --no-cov -m gpu` | Real CUDA or Apple hardware paths | Machines without that hardware |
+| GPU | `python -m pytest --no-cov -m gpu` | Real NVIDIA CUDA paths, with an opt-in variable ([GPU tests](#gpu-tests)) | Machines without that hardware |
 | Frontend | `cd desktop && npm run typecheck && npm test -- --run` | TypeScript contracts and Vitest UI tests | Real WebView rendering |
-| Rust | `cd desktop/src-tauri && cargo test && cargo check` | Shell lifecycle, paths, setup supervision, capabilities | The packaged app |
+| Rust | `cd desktop/src-tauri && cargo test --locked -- --test-threads=1 && cargo check --locked` | Shell lifecycle, paths, setup supervision, capabilities | The packaged app |
 | Browser harness | `npm --prefix tools/frontend_stress test` | Harness unit contracts; the full run drives the real UI and backend | The packaged Tauri app |
 
-A run that selects only `property`, `benchmark`, `slow`, or `ui` skips the
-global coverage floor automatically (see `tests/conftest.py`). Other
+A run that selects only `property`, `benchmark`, or `slow` skips the global
+coverage floor automatically (see `tests/conftest.py`). Other
 marker-only runs, such as `-m gpu`, need `--no-cov`.
 
 Tracked parser fixtures live in `tests/fixtures/`. Tests must not modify them;
@@ -55,10 +55,10 @@ Rust shell, the packaged sidecar, installers, or the optional suites.
 python run_tests.py
 ```
 
-The smoke suite runs each module in `SMOKE_TEST_MODULES` either as a script
-(`python <test_file>.py`) or with pytest
-(`python -m pytest <test_file> -q -o addopts=`). It is useful while iterating,
-but a green smoke run does not mean the contract passes.
+The smoke suite runs each module in `SMOKE_TEST_MODULES` with pytest
+(`python -m pytest <test_file> -q -o addopts=`); a listed module that no longer
+exists fails the run. It is useful while iterating, but a green smoke run does
+not mean the contract passes.
 
 ## Focused Checks
 
@@ -97,7 +97,7 @@ Desktop backend and sidecar:
 python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py tests/test_web_desktop_auth.py
 cd desktop
 ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build
-cd src-tauri && cargo test && cargo check
+cd src-tauri && cargo test --locked -- --test-threads=1 && cargo check --locked
 ```
 
 In PowerShell, set the profile with `$env:ORPHEUS_RUNTIME_PROFILE = "base"`
@@ -149,8 +149,8 @@ npm run typecheck
 npm test -- --run
 npm run build
 cd src-tauri
-cargo test
-cargo check
+cargo test --locked -- --test-threads=1
+cargo check --locked
 ```
 
 These cover TypeScript contracts, the React production build, the Vitest
@@ -231,11 +231,18 @@ pushing.
 
 ### Pre-push hook
 
-`bash scripts/install-git-hooks.sh` copies `scripts/hooks/pre-push` into
-`.git/hooks/`. Before each push it runs Ruff, the Python tests with the
-contract markers, `npm ci`, the frontend type check and Vitest, and
-`cargo test` and `cargo check`. Any failure blocks the push. It needs Python
-3.12 (the checkout's `.venv` is preferred) and FFmpeg.
+`bash scripts/install-git-hooks.sh` sets `git config core.hooksPath
+scripts/hooks`, so Git runs the tracked hook in every worktree of the clone and
+picks up edits to it without reinstalling. Git then ignores `.git/hooks/`, so
+any personal hooks you kept there stop running. Clones that installed the
+earlier copied hook should re-run the installer once.
+
+Before each push the hook runs `npm ci` in `desktop/`, then
+`python scripts/check_desktop.py --only lint python frontend rust`: Ruff,
+`run_tests.py --contract`, the frontend type check, Vitest, `npm run build`,
+`cargo test --locked -- --test-threads=1`, and `cargo check --locked`. Any
+failure blocks the push, and the logs are written to `.artifacts/validation/`.
+It needs Python 3.12 (the checkout's `.venv` is preferred) and FFmpeg.
 
 ## Release Verification
 
@@ -302,9 +309,7 @@ python -m pytest -m slow
 python -m pytest -m benchmark
 ```
 
-The `ui` marker is excluded from coverage gating, but no Python UI tests
-exist, so `pytest -m ui` collects nothing and exits 5. The Vitest suite is the
-UI gate.
+There are no Python UI tests; the Vitest suite is the UI gate.
 
 `tests/test_cleaner_api_trace_multichapter_real.py` needs real API credentials
 and network access.
@@ -312,26 +317,26 @@ and network access.
 ### GPU tests
 
 `pytest.ini` registers `@pytest.mark.gpu` for tests that need real GPU
-hardware (NVIDIA CUDA or Apple hardware, depending on the test).
+hardware.
 
 - CUDA cleaner unit and lifecycle tests (for example
   `tests/test_cleaner_cuda.py` and `tests/test_cleaner_cuda_lifecycle.py`) mock
   PyTorch and run in the contract without hardware.
-- Tests that load models on real hardware carry `@pytest.mark.gpu` and skip
-  when the device is unavailable, for example
-  `@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA GPU required")`.
-- The contract does not exclude `gpu`, so keep real-hardware tests behind
-  explicit skip guards.
+- Real-hardware tests carry both `gpu` and `slow`, so the contract excludes
+  them. They run only when an opt-in environment variable is set, and an
+  opted-in run fails, rather than skips, when the hardware, dependencies, or
+  weights are missing. Do not gate them on `torch.cuda.is_available()`: a
+  silent skip would hide a broken GPU path.
 
-Run them explicitly when the hardware is present:
+The only such test today is `tests/test_cleaner_cuda_real.py`, which runs real
+Qwen inference. It needs `ORPHEUS_TEST_CUDA_CLEANER=1` and
+`ORPHEUS_TEST_HF_HOME` (see
+[ENVIRONMENT.md](ENVIRONMENT.md#test-and-harness-inputs)):
 
 ```bash
-python -m pytest --no-cov -m gpu
+ORPHEUS_TEST_CUDA_CLEANER=1 ORPHEUS_TEST_HF_HOME=/path/to/hf-home \
+  python -m pytest --no-cov -m gpu tests/test_cleaner_cuda_real.py
 ```
-
-`tests/test_cleaner_cuda_real.py` runs real Qwen inference and also needs
-`ORPHEUS_TEST_CUDA_CLEANER=1` and `ORPHEUS_TEST_HF_HOME`; see
-[ENVIRONMENT.md](ENVIRONMENT.md#test-and-harness-inputs).
 
 ## Evidence by Change Area
 
@@ -343,5 +348,5 @@ python -m pytest --no-cov -m gpu
 | API or web payloads | `python -m pytest --no-cov tests/test_web_api.py tests/test_web_events.py tests/test_conversion_service.py` | `cd desktop && npm run typecheck && npm test -- --run` |
 | Storage or library paths | `python -m pytest --no-cov tests/test_storage_*.py tests/test_library_service.py tests/test_book_workspace.py` | [Browser library journeys](../tools/frontend_stress/README.md#scenarios) |
 | Frontend rendering or playback performance | `node tools/frontend_stress/performance.mjs --label=candidate --output-dir=.artifacts/local-performance/frontend-candidate` | Compare serial baseline and candidate runs with the [frontend performance harness](../tools/frontend_stress/README.md#portable-frontend-performance-baseline) |
-| Desktop sidecar or packaging | `python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py` | `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build && cd src-tauri && cargo test` |
+| Desktop sidecar or packaging | `python -m pytest --no-cov tests/test_desktop_backend_launcher.py tests/test_desktop_runtime_contract.py` | `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build && cd src-tauri && cargo test --locked -- --test-threads=1 && cargo check --locked` |
 | Release candidate | `python run_tests.py --contract` | The [release verification](#release-verification) matrix, including lifecycle performance budgets |

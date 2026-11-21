@@ -41,7 +41,9 @@ Cleaner choices:
 
 - **CUDA:** Qwen 2.5 1.5B or 3B. **4-bit**, **8-bit**, and **FP16** share one
   download because quantization is applied when the model loads. 4-bit uses
-  the least GPU memory and FP16 the most; the download size is the same.
+  the least GPU memory and FP16 the most; the download size is the same. The
+  1.5B model is Apache-2.0; the 3B model is under the Qwen Research License,
+  which allows non-commercial use only.
 - **MLX:** Llama 3.2 3B or 1B, supplied as 4-bit models.
 
 ### Managing models
@@ -86,7 +88,9 @@ leaves everything as it is.
   after keeping a safety copy, and then reports any restored books whose audio
   or source file is missing.
 - **Clean up** removes leftover temporary files. A database backup is kept
-  when the cleanup changes the library, and finished audio is kept.
+  when the cleanup changes the library, and finished audio is kept. After
+  Orpheus replaces a damaged library database, Clean up keeps the old
+  library's files until you restore a backup.
 - **Other folders** appears when the output folder holds folders that no book
   in the library owns. They are kept unless you choose **Remove…** and confirm,
   which deletes those folders and any audio inside. This cannot be undone.
@@ -256,12 +260,10 @@ Applications entry.
 
 ### Unsigned macOS releases
 
-Published Apple Silicon DMGs are unsigned and unnotarized. Users should follow
-[UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md): verify `SHA256SUMS`
-with `shasum -a 256` before the first open, then use right-click **Open** or
-**Open Anyway** in System Settings. Maintainers follow
-[RELEASING_MACOS.md](RELEASING_MACOS.md), which runs the full local release
-gate (`scripts/release_qualification.py`). Source CI
+Published Apple Silicon DMGs are unsigned and unnotarized. Users install them
+with [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md). Maintainers
+follow [RELEASING_MACOS.md](RELEASING_MACOS.md), which runs the full local
+release gate (`scripts/release_qualification.py`). Source CI
 (`.github/workflows/source-validation.yml`) validates source only and does not
 publish artifacts.
 

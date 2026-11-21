@@ -12,46 +12,58 @@ screen and Settings choose the runtime and cleaner.
 
 ## Application configuration
 
-`AppConfig` loads `.env.local` from the current working directory before resolving
-settings. Existing process variables win, including empty values. The file accepts
-`KEY=VALUE`, strips whitespace and matching outer quotes, and ignores comments and
-lines without `=`. It does not expand variable references or parse shell commands.
+When the backend runs from a source checkout (`python` from the repository, or
+`npm run desktop:dev`, which starts it in the repository root), `AppConfig` loads
+`.env.local` from the current working directory before resolving settings. The
+packaged backend never reads `.env.local`. Existing process variables win,
+including empty values. The file accepts `KEY=VALUE`, strips whitespace and
+matching outer quotes, and ignores comments and lines without `=`. It does not
+expand variable references or parse shell commands.
 
 The following variables are user-facing for direct Python launches. The desktop
 shell owns the four path variables when launching the backend or setup: it replaces
 inherited values with paths under its resolved app-data root. Ordinary inherited
 `AUDIOBOOK_*` paths do not change that desktop root.
 
-| Variable | Default | Meaning and precedence |
-|----------|---------|------------------------|
-| `AUDIOBOOK_DATA_DIR` | `data` | Application data directory. Nonblank env replaces the constructor path only if it equals `Path("data")`, even when explicitly supplied. Also places setup state beside this directory. |
-| `AUDIOBOOK_OUTPUT_DIR` | `output` | Audiobook output directory; env applies only when the constructor path equals `Path("output")`. |
-| `AUDIOBOOK_TEMP_DIR` | `temp` | Temporary conversion directory; env applies only when the constructor path equals `Path("temp")`. |
-| `AUDIOBOOK_DB_PATH` | `<data_dir>/audiobooks.db` | SQLite database; nonblank env applies only when constructor `db_path` is `None`. |
-| `TTS_PROVIDER` | unset | Provider override. Env wins over constructor; whitespace-only env clears to `None`. Platform selection happens later. |
-| `TTS_DEVICE` | unset | Runtime device override; same precedence and blank handling as `TTS_PROVIDER`. |
-| `TTS_MODEL_NAME` | unset | Model override; env wins over constructor, with blank clearing to `None`. |
-| `CLEANER_BACKEND` | `mlx` | Cleaner backend: `basic`, `mlx`, `cuda`, or `api`. Nonblank env wins over constructor; saved setup can replace it. |
-| `CLEANER_MODEL_NAME` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Nonblank env wins over constructor, then backend model remapping applies. Saved setup can replace it. |
-| `CLEANER_CUDA_DEVICE` | `cuda` | CUDA cleaner device; nonblank env wins over constructor. |
-| `CLEANER_CUDA_QUANTIZATION` | `4bit` | CUDA cleaner precision (`4bit`, `8bit`, `fp16`); nonblank env wins over constructor, then saved setup. Capability probes also read it, lowercasing and falling back to `4bit`. |
-| `CLEANER_API_BASE_URL` | `https://api.openai.com/v1` | Remote cleaner endpoint; nonblank env wins over constructor. |
-| `CLEANER_API_KEY_ENV` | `OPENAI_API_KEY` | Name of the environment variable holding the API key, not the key itself. Nonblank env wins over constructor. |
-| `CLEANER_API_MODEL` | `gpt-5-nano` | API model; env wins over constructor, with blank clearing to `None`. |
-| `CLEANER_API_GLOBAL_CONCURRENCY` | `6` | Global API request concurrency. Valid integer env wins over constructor and is clamped to at least 1; invalid or empty env is ignored. |
-| `WORKER_POOL_REUSE_ENABLED` | `true` | Reuse worker pools; boolean env wins over constructor. |
-| `SAVE_CLEANING_DEBUG` | `false` | Save cleaning debug artifacts; boolean env wins over constructor. |
-| `PDF_EXTRACTION_BACKEND` | `fitz` | Env accepts `fitz`, `pymupdf4llm`, or `auto`, case-insensitively; other values retain the constructor/default. |
-| `AUDIOBOOK_ENABLE_PARALLEL` | `false` | Enable parallel chapter processing; boolean env wins over constructor, but a chapter limit of 1 or less disables it. |
-| `AUDIOBOOK_MAX_PARALLEL_CHAPTERS` | `4` | Chapter limit; integer env wins over constructor and is clamped to at least 1; invalid or empty env is ignored. |
-| `AUDIOBOOK_EMIT_CHAPTER_MP3_ARTIFACTS` | `false` | Emit intermediate chapter MP3s; boolean env wins over constructor. |
-| `AUDIOBOOK_ENABLE_CHAPTER_AAC_PACKAGING` | `true` | Enable chapter AAC packaging; boolean env wins over constructor. |
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `AUDIOBOOK_DATA_DIR` | `data` | Application data directory. Setting it also moves setup state (`runtime-setup.json`) to this directory's parent. |
+| `AUDIOBOOK_OUTPUT_DIR` | `output` | Audiobook output directory. |
+| `AUDIOBOOK_TEMP_DIR` | `temp` | Temporary conversion directory. |
+| `AUDIOBOOK_DB_PATH` | `<data_dir>/audiobooks.db` | SQLite database. |
+| `TTS_PROVIDER` | unset | Kokoro provider override; when unset, the platform default is chosen later ([RUNTIME_SELECTION.md](RUNTIME_SELECTION.md)). |
+| `TTS_DEVICE` | unset | Runtime device override. |
+| `TTS_MODEL_NAME` | unset | Kokoro model override. |
+| `CLEANER_BACKEND` | `mlx` | Cleaner backend: `basic`, `mlx`, `cuda`, or `api`. Saved setup replaces it. |
+| `CLEANER_MODEL_NAME` | `mlx-community/Llama-3.2-3B-Instruct-4bit` | Cleaner model, remapped per backend as described below. Saved setup replaces it. |
+| `CLEANER_CUDA_DEVICE` | `cuda` | CUDA cleaner device. |
+| `CLEANER_CUDA_QUANTIZATION` | `4bit` | CUDA cleaner precision: `4bit`, `8bit`, or `fp16`. Saved setup replaces it. Capability probes also read it, lowercasing and falling back to `4bit`. |
+| `CLEANER_API_BASE_URL` | `https://api.openai.com/v1` | Remote cleaner endpoint. |
+| `CLEANER_API_KEY_ENV` | `OPENAI_API_KEY` | Name of the environment variable holding the API key, not the key itself. |
+| `CLEANER_API_MODEL` | `gpt-5-nano` | API model. |
+| `CLEANER_API_GLOBAL_CONCURRENCY` | `6` | Global API request concurrency (integer, at least 1). |
+| `WORKER_POOL_REUSE_ENABLED` | `true` | Reuse worker pools. |
+| `SAVE_CLEANING_DEBUG` | `false` | Save cleaning debug artifacts. |
+| `PDF_EXTRACTION_BACKEND` | `fitz` | `fitz`, `pymupdf4llm`, or `auto`, case-insensitively; other values are ignored. |
+| `AUDIOBOOK_ENABLE_PARALLEL` | `false` | Process chapters in parallel. A chapter limit of 1 or less turns it off. |
+| `AUDIOBOOK_MAX_PARALLEL_CHAPTERS` | `4` | Parallel chapter limit (integer, at least 1). |
+| `AUDIOBOOK_EMIT_CHAPTER_MP3_ARTIFACTS` | `false` | Also write intermediate chapter MP3s. |
+| `AUDIOBOOK_ENABLE_CHAPTER_AAC_PACKAGING` | `true` | Encode chapter AAC while synthesis continues and package from it. |
 
-Application booleans ignore blank input. After trimming and lowercasing, `0`,
-`false`, `no`, and `off` mean false; any other nonblank value means true. Paths
-ignore blank input and expand `~`; ordinary home-relative paths use `HOME` when
-nonempty, including the `~\` spelling. Other tilde forms use host account lookup.
-Constructor paths are used as supplied.
+Blank values are ignored, except that a whitespace-only `TTS_PROVIDER`,
+`TTS_DEVICE`, `TTS_MODEL_NAME`, or `CLEANER_API_MODEL` clears that setting.
+Invalid integers are ignored, and valid ones are raised to at least 1. For
+booleans, after trimming and lowercasing, `0`, `false`, `no`, and `off` mean
+false; any other nonblank value means true. Paths expand `~`; ordinary
+home-relative paths use `HOME` when nonempty, including the `~\` spelling.
+Other tilde forms use host account lookup.
+
+**Precedence for code that constructs `AppConfig`.** Environment values,
+including `.env.local`, win over constructor arguments, with two exceptions. The
+three directory variables apply only when the constructor path equals its
+default (`Path("data")`, `Path("output")`, or `Path("temp")`), even when that
+default was passed explicitly. `AUDIOBOOK_DB_PATH` applies only when the
+constructor `db_path` is `None`. Constructor paths are used as supplied.
 
 Two model precedence details are intentional:
 
@@ -82,7 +94,7 @@ above.
 | `CLEANER_API_INSECURE_SSL` | false | Disables certificate and hostname verification when `1`, `true`, `yes`, or `on`. Combined with explicit `api_allow_insecure_ssl` using OR. |
 | `AUDIOBOOK_FFMPEG_PATH`, `FFMPEG_PATH` | unset | First usable executable in this order wins; then bundled binaries, `PATH`, and common system binary directories. |
 | `AUDIOBOOK_FFPROBE_PATH`, `FFPROBE_PATH` | unset | Same executable precedence for ffprobe. |
-| `AUDIOBOOK_FFMPEG_TIMEOUT_SECONDS` | `7200` | Subprocess timeout. Explicit function argument wins, then numeric env, then default; minimum is 0.001 seconds. Invalid numeric input is ignored. |
+| `AUDIOBOOK_FFMPEG_TIMEOUT_SECONDS` | max(120 s, 0.5 s per second of audio) when the audio length is known, otherwise 7200 s | Fixed timeout for every FFmpeg-family subprocess; replaces the length-based default, so a low value can stop packaging a long book. An explicit function argument wins over it; minimum is 0.001 seconds. Non-numeric input is ignored. |
 | `AUDIOBOOK_TTS_TORCH_COMPILE` | false | Opt into compilation for package Kokoro. Explicit `torch_compile` runtime option wins in both directions. Only `1`, `true`, `yes` enable it. |
 | `CUDA_VISIBLE_DEVICES` | inherited | `-1` disables the direct CUDA hardware probe. Device visibility is also consumed by the CUDA runtime. |
 | `PHONEMIZER_ESPEAK_DATA_PATH`, `ESPEAK_DATA_PATH` | loader/bundled data | Source MLX compatibility checks these in order when the loader data path is too long; only usable short paths qualify. The desktop launcher sets both to its resolved speech-data path. |

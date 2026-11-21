@@ -64,7 +64,7 @@ Ubuntu 24.04:
 
 ```bash
 sudo apt update
-sudo apt install git python3.12 python3.12-venv ffmpeg nodejs npm \
+sudo apt install git python3.12 python3.12-venv ffmpeg \
   build-essential libwebkit2gtk-4.1-dev libssl-dev librsvg2-dev \
   libayatana-appindicator3-dev libxdo-dev pkg-config curl wget file
 ```
@@ -77,30 +77,22 @@ sudo dnf install git python3.12 ffmpeg-free nodejs npm gcc gcc-c++ make \
   libappindicator-gtk3-devel libxdo-devel pkgconf-pkg-config curl wget file
 ```
 
-Distribution packages can be older than required, so check
-`node --version` (22+) and `rustc --version` (1.88+). Local audio on Linux
-needs an NVIDIA GPU with a driver that supports CUDA 12.6; other machines can
-use the `base` profile for the library only.
+Ubuntu 24.04 ships Node 18, so install Node 22 with
+[nvm](https://github.com/nvm-sh/nvm) or NodeSource instead. Other distribution
+packages can also be older than required, so check `node --version` (22+) and
+`rustc --version` (1.88+). On Linux, the `cuda` profile narrates on CPU; an
+NVIDIA GPU with a driver that supports CUDA 12.6 adds faster narration and the
+local LLM cleaner. Linux is not covered by CI.
 
 ## Python
 
 ### Source setup
 
-macOS and Linux:
-
-```bash
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python scripts/setup_runtime.py --profile base
-python -m pip install -r requirements-dev.txt
-```
-
-Windows PowerShell, from a fresh clone:
+The [README](../README.md#from-source) has the source setup for every
+platform. On Windows, this longer walkthrough also previews the setup plan and
+runs the test gate (from the repository root, in PowerShell):
 
 ```powershell
-git clone https://github.com/gabrielmeleiro1/Orpheus.git
-Set-Location Orpheus
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe scripts/setup_runtime.py --profile base --dry-run
@@ -112,12 +104,11 @@ npm.cmd ci
 npm.cmd run desktop:dev
 ```
 
-Calling the virtual environment's interpreter directly avoids running
-`Activate.ps1`, and `npm.cmd` works even when the execution policy blocks
-`npm.ps1`. Use `npm.cmd` for every npm command in these docs when you are in
-PowerShell.
+The `--dry-run` step prints the fixed operations before anything is
+installed. Calling the virtual environment's interpreter directly avoids
+running `Activate.ps1`, and `npm.cmd` works even when the execution policy
+blocks `npm.ps1`; use it for every npm command in these docs.
 
-The `--dry-run` step prints the fixed operations before anything is installed.
 `requirements-dev.txt` already includes `requirements.txt`, so do not install
 both. Use `requirements.txt` alone if you will not run tests, static analysis,
 or sidecar packaging. Local model weights are optional and are not downloaded
@@ -145,7 +136,7 @@ Model groups are passed with `--group` (`--list-groups` on
 | `cleaner-mlx` | `mlx-community/Llama-3.2-3B-Instruct-4bit` |
 | `cleaner-mlx-small` | `mlx-community/Llama-3.2-1B-Instruct-4bit` |
 | `cleaner-cuda` | `Qwen/Qwen2.5-1.5B-Instruct` |
-| `cleaner-cuda-large` | `Qwen/Qwen2.5-3B-Instruct` |
+| `cleaner-cuda-large` | `Qwen/Qwen2.5-3B-Instruct` (non-commercial license) |
 
 A non-base profile needs a Kokoro voice group. Examples:
 
@@ -153,22 +144,24 @@ A non-base profile needs a Kokoro voice group. Examples:
 # macOS 14+ on Apple Silicon
 python scripts/setup_runtime.py --profile mlx --group tts-mlx --group cleaner-mlx
 
-# Linux with a supported NVIDIA GPU and driver
-python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda --group cleaner-cuda
+# Linux: Kokoro on CPU, or on CUDA when a supported GPU is present
+python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda
 ```
-
-On Windows, run the same from the repository root in PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda --group cleaner-cuda
+# Windows, from the repository root
+.\.venv\Scripts\python.exe scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda
 ```
 
-The `cuda` profile checks the NVIDIA driver before installing. The Kokoro CPU
-path needs no GPU; the CUDA cleaner needs a supported NVIDIA GPU with a CUDA
-12.6 driver. `python -m pip install -r requirements/<profile>.txt` installs the
-packages alone but does not mark setup as ready; for `cuda` it also misses the
-CUDA PyTorch wheel (`torch==2.13.0+cu126`) that the setup script requests from
-the PyTorch index.
+Add `--group cleaner-cuda` (or `cleaner-cuda-large`) for the local LLM
+cleaner. The Kokoro CPU path needs no GPU, but the CUDA cleaner needs a
+supported NVIDIA GPU with a CUDA 12.6 driver: selecting a CUDA cleaner group
+checks the driver before anything is installed.
+
+`python -m pip install -r requirements/<profile>.txt` installs the packages
+alone but does not mark setup as ready; for `cuda` it also misses the CUDA
+PyTorch wheel (`torch==2.13.0+cu126`) that the setup script requests from the
+PyTorch index.
 
 The base profile deliberately leaves out spaCy, Thinc, and the English spaCy
 model, which only local TTS uses. Both local profiles pin the official
@@ -286,8 +279,10 @@ TTS_MODEL_NAME=.artifacts/models/kokoro
 
 ## Environment
 
-Copy the example file when you need local overrides. `AppConfig` loads
-`.env.local` without overriding variables that are already set.
+Copy the example file when you need local overrides. Source runs (`python`
+from the checkout, or `npm run desktop:dev`) load `.env.local` from the working
+directory, the repository root for `desktop:dev`, without overriding variables
+that are already set. The packaged app ignores it.
 
 ```bash
 cp .env.example .env.local

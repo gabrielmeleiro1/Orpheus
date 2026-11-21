@@ -91,13 +91,13 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full design.
 | --- | --- |
 | macOS 14+ on Apple Silicon | Primary release platform. Unsigned DMG builds use the local MLX runtime. |
 | Windows 10/11 | One installer with CPU narration and Basic cleanup on PCs without an NVIDIA GPU. A supported NVIDIA GPU enables local LLM cleaning and faster narration. |
-| Linux | Source only. Core development and NVIDIA CUDA runtimes are supported; no packaged desktop release is published. |
+| Linux | Source only, best effort: not covered by CI, and no packaged release. CPU narration and NVIDIA CUDA runtimes use the `cuda` profile. |
 
 The local LLM cleaner on Windows and Linux needs an NVIDIA GPU with a driver
 that supports CUDA 12.6. The Windows installer is about 1.7 GB and installs
 about 5 GB, because it bundles PyTorch with the CUDA libraries. Models download
-separately on first launch: about 0.7–0.9 GB for the Kokoro voice model, plus
-0.8–6.4 GB for an optional local cleaner.
+separately on first launch and take about 0.7–0.9 GB on disk for the Kokoro
+voice model, plus 0.8–6.4 GB for an optional local cleaner.
 
 ### Windows 11: Smart App Control
 
@@ -118,9 +118,9 @@ Installers are published on the
 [Releases page](https://github.com/gabrielmeleiro1/Orpheus/releases). They are
 unsigned.
 
-- **macOS (Apple Silicon):** verify the DMG against its `SHA256SUMS` file, then
-  follow [docs/UNSIGNED_MACOS_INSTALL.md](docs/UNSIGNED_MACOS_INSTALL.md) for
-  the supported first-open steps.
+- **macOS (Apple Silicon):** follow
+  [docs/UNSIGNED_MACOS_INSTALL.md](docs/UNSIGNED_MACOS_INSTALL.md) to verify
+  the download and allow the first launch.
 - **Windows:** run the installer, then open Orpheus from the Start menu. It
   installs per user under `%LOCALAPPDATA%\Orpheus` and installs Microsoft Edge
   WebView2 if it is missing. The installer includes the CUDA runtime, which
@@ -136,6 +136,12 @@ change models later, and **Settings → Storage** to see where data is kept.
 Install the [system prerequisites](docs/DEPENDENCIES.md#system-prerequisites)
 first: Git, Python 3.12, Node.js 22+, Rust 1.88+, and FFmpeg. Windows also
 needs the [C++ Build Tools and WebView2](docs/DEPENDENCIES.md#windows).
+
+A source checkout shares app data (`com.orpheus.desktop`) with an installed
+Orpheus: `setup_runtime.py` replaces the installed app's runtime and model
+selection, and `npm run desktop:dev` opens your real library. If Orpheus is
+already installed, back up the library first with **Settings → Library → Back
+up**.
 
 macOS and Linux:
 
@@ -178,8 +184,9 @@ your machine from the repository root:
 # macOS 14+ on Apple Silicon (no PyTorch)
 python scripts/setup_runtime.py --profile mlx --group tts-mlx --group cleaner-mlx
 
-# Linux with a supported NVIDIA GPU and driver
-python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda --group cleaner-cuda
+# Linux: CPU narration; add --group cleaner-cuda for the local LLM cleaner
+# on a supported NVIDIA GPU with a CUDA 12.6 driver
+python scripts/setup_runtime.py --profile cuda --group tts-cpu-cuda
 ```
 
 ```powershell
@@ -205,7 +212,7 @@ Windows, use `.\.venv\Scripts\python.exe` and `npm.cmd`).
 | Lint Python | `python -m ruff check .` |
 | Python test gate | `python run_tests.py --contract` |
 | Frontend checks | `cd desktop && npm run typecheck && npm test -- --run` |
-| Rust checks | `cd desktop/src-tauri && cargo test && cargo check` |
+| Rust checks | `cd desktop/src-tauri && cargo test --locked -- --test-threads=1 && cargo check --locked` |
 | All source gates, with logs | `python scripts/check_desktop.py` |
 | Package the app | `cd desktop && ORPHEUS_RUNTIME_PROFILE=base npm run desktop:build` |
 | Install the pre-push hook | `bash scripts/install-git-hooks.sh` |

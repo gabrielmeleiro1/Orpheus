@@ -1,68 +1,60 @@
 # Installing unsigned Orpheus on macOS
 
-Orpheus macOS releases are built for **Apple Silicon** on **macOS 14+**.
-Published GitHub Release DMGs are **unsigned** and **unnotarized**, so macOS
-Gatekeeper warns on first open. That warning is expected; it does not tell you
-whether the download is safe.
+Orpheus macOS releases are built for **Apple Silicon** on **macOS 14 or
+newer**. The DMGs on the GitHub Release page are **unsigned** and
+**unnotarized**, so macOS blocks the first launch until you allow it. That
+warning is expected and says nothing about whether the download is safe; the
+checksum does.
 
-Treat every download as untrusted until you verify its checksum against the
-release's `SHA256SUMS`.
+## 1. Verify the download before you open it
 
-## Before you open the app
+1. From the GitHub Release, download the `.dmg` and `SHA256SUMS`.
+2. Put both files in the same folder and run:
 
-1. Download the Apple Silicon `.dmg` and the matching `SHA256SUMS` from the
-   GitHub Release.
-2. Place both files in the same folder.
-3. Verify the checksum **before first open**:
+   ```bash
+   cd /path/to/download-folder
+   shasum -a 256 -c --ignore-missing SHA256SUMS
+   ```
 
-```bash
-cd /path/to/download-folder
-shasum -a 256 -c SHA256SUMS
-```
+The DMG line must report `OK`, for example `Orpheus_1.0.0_aarch64.dmg: OK`.
+`SHA256SUMS` also lists the release's qualification report;
+`--ignore-missing` skips it unless you downloaded it too.
 
-Every listed file must report `OK`. If verification fails, delete the DMG and
-stop.
+- `FAILED` means the file does not match. Delete the DMG and do not open it.
+- `no file was verified` means the DMG is not in that folder under its
+  original name.
 
-## Supported first-open paths
+## 2. Install and open
 
-After checksum verification:
+1. Open the DMG and drag `Orpheus.app` to **Applications**.
+2. Double-click `Orpheus.app`. macOS reports that it cannot verify the app;
+   close the dialog without moving the app to the Trash (**Done** on macOS 15
+   and later).
+3. Open **System Settings → Privacy & Security** and scroll to **Security**.
+   Next to the message about Orpheus, click **Open Anyway**, then confirm with
+   your password or Touch ID.
 
-1. Open the DMG and drag `Orpheus.app` to **Applications** (or another location
-   you control).
-2. On first launch, use one of the supported Gatekeeper paths:
-   - In Finder, **right-click** `Orpheus.app` and choose **Open**, then confirm
-     **Open** in the dialog; or
-   - Follow the macOS **System Settings** prompt and choose **Open Anyway**
-     when offered for this app.
+macOS remembers this choice, so later launches open normally. On macOS 14 you
+can instead right-click `Orpheus.app`, choose **Open**, and confirm.
 
-These are the supported ways to proceed past the unsigned-app warning.
+Do not turn off Gatekeeper or strip quarantine flags from downloads; that
+weakens protection for every app.
 
-Do **not** turn off Gatekeeper for the whole Mac, or mass-clear quarantine
-flags on downloaded files. Those steps are unsupported and weaken system
-protections for every app.
+## What you are trusting
 
-## Security trade-off
-
-An unsigned, unnotarized build is not Apple-notarized. You are trusting the
-GitHub Release publisher and the checksum match, not Apple's notarization
-pipeline. Prefer releases that also publish `SHA256SUMS` and a qualification
-report, and verify hashes yourself.
-
-macOS reports a complete **ad-hoc** outer seal on the app with
-`TeamIdentifier=not set` and sealed resources. That seal is not a Developer ID
-signature and carries **no distribution identity**; Gatekeeper will still warn
-on first open.
+The app has no Apple Developer ID and is not notarized. You are trusting the
+GitHub Release publisher and the checksum match, not Apple's checks.
 
 ## Uninstall and rollback
 
-- **Uninstall / removal:** quit Orpheus, then move `/Applications/Orpheus.app`
-  to Trash (or delete that bundle). Remove leftover app-support data only if
-  you intend to wipe local library state.
-- **Rollback:** download the previous release's DMG, verify it with that
-  release's `SHA256SUMS`, install it the same way, and replace
-  `/Applications/Orpheus.app`.
+- **Uninstall:** quit Orpheus, then move `/Applications/Orpheus.app` to the
+  Trash. Your library stays in
+  `~/Library/Application Support/com.orpheus.desktop/`; delete that folder
+  only if you want to wipe it.
+- **Rollback:** download the previous release's DMG and `SHA256SUMS`, verify
+  and install it the same way, and replace `/Applications/Orpheus.app`.
 
-## Maintainer / packaging reference
+## Maintainers
 
 Maintainers producing releases should follow
 [RELEASING_MACOS.md](RELEASING_MACOS.md). Building from source is covered in

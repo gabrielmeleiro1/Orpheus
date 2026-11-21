@@ -189,8 +189,9 @@ starts stay blocked while it checks. If confirmation is still unavailable after
 
 ## Web API Surface
 
-All routes are defined in `modules/web/routes/` and
-`modules/web/desktop_auth.py`.
+Routes are defined in `modules/web/routes/` and
+`modules/web/desktop_auth.py`, except `POST /api/desktop/shutdown`, which is
+registered in `modules/web/server.py`.
 
 | Area | Routes |
 | --- | --- |
@@ -198,7 +199,7 @@ All routes are defined in `modules/web/routes/` and
 | Library | `GET /api/library`, `GET /api/library/count`, `GET /api/library/{book_id}`, `PATCH /api/library/{book_id}`, `DELETE /api/library/{book_id}`, `GET /api/library/{book_id}/cover`, `GET`/`HEAD /api/library/{book_id}/audio`, `PUT /api/library/{book_id}/playback-position`, `POST /api/library/{book_id}/open-folder`, `GET /api/library/{book_id}/chapters/{chapter_number}/cleaning-preview` |
 | Conversions | `POST /api/conversions`, `GET /api/conversions/active`, `POST /api/conversions/repair/{book_id}`, `POST /api/conversions/{job_id}/cancel` |
 | Sources and uploads | `POST /api/sources/preflight`, `POST /api/uploads/source`, `POST /api/uploads/text`, `DELETE /api/uploads/{handle}` |
-| Options and voices | `GET /api/options/models`, `GET /api/options/voices` (optional `engine=<id>`), `POST /api/options/openai/models`, `POST /api/options/parallel/warmup`, `POST /api/voices/preview`, `POST /api/voices/suggest` |
+| Options and voices | `GET /api/options/models`, `GET /api/options/voices` (optional `engine=<id>`), `POST /api/options/openai/models`, `POST /api/voices/preview`, `POST /api/voices/suggest` |
 | System | `GET /api/system/capabilities`, `GET /api/system/storage`, `POST /api/system/storage/{folder}/open` |
 | Setup and models | `GET /api/setup/status`, `POST /api/setup/adopt`, `GET /api/setup/models`, `DELETE /api/setup/models/{group_id}`, `GET`/`POST /api/setup/models/download`, `POST /api/setup/models/download/cancel`, `DELETE /api/setup/runtime` |
 | Maintenance | `GET /api/maintenance/diagnostics`, `POST /api/maintenance/backup`, `GET /api/maintenance/backups`, `POST /api/maintenance/backups/{backup_id}/restore`, `POST /api/maintenance/cleanup`, `POST /api/maintenance/delete-staging/open-folder` |
@@ -267,9 +268,8 @@ synthesize, encode, and package. Per-chapter work is split across:
 - `memory_policy.py`: memory limits per worker.
 
 Stage helpers live in `modules/pipeline/stages/`: `ingestion.py`,
-`cleaning.py`, `synthesis.py` (with `overlap_synthesis.py` to pipeline cleaning
-and TTS), `encoding.py`, and `packaging.py`. Audiobook mode packages an M4B
-with chapter markers; Document mode packages a single M4A
+`cleaning.py`, `synthesis.py`, `encoding.py`, and `packaging.py`. Audiobook
+mode packages an M4B with chapter markers; Document mode packages a single M4A
 (`modules/audio/document_packager.py`).
 
 Behavior worth knowing before changing a stage:
@@ -337,11 +337,20 @@ Behavior worth knowing before changing a stage:
 - `M4BPackager.create_m4b(...)` (`modules/audio/packager.py`) accepts an
   optional `chapter_durations_ms: list[int] | None`. When provided, packaging
   uses those durations and skips per-chapter probes. Despite its name, the
-  `mp3_files` parameter is format-neutral: normal packaging passes WAV masters
-  and falls back to MP3 chapter files only for older or incomplete masters.
-- `ChapterResult.wav_path` (`modules/pipeline/orchestrator.py`) is the lossless
-  chapter master used for final M4A/M4B packaging. MP3 chapter files are still
-  produced for compatibility and chapter-level playback fallback.
+  `mp3_files` parameter is format-neutral.
+- `select_packaging_audio_inputs` (`modules/pipeline/result_validation.py`)
+  chooses packaging inputs: per-chapter AAC when every chapter has it, then
+  WAV masters, then MP3, only when every chapter has that format. Audiobook
+  packaging stream-copies AAC chapters into the M4B; Document mode re-encodes
+  in one pass so section seams stay gapless.
+- `ChapterResult` (`modules/pipeline/models.py`) carries `aac_path`,
+  `wav_path`, and `mp3_path`. Chapters are encoded to AAC while synthesis
+  continues (`enable_chapter_aac_packaging`, on by default). Per-chapter MP3s
+  are written only with `AUDIOBOOK_EMIT_CHAPTER_MP3_ARTIFACTS`, or when
+  repairing a book whose existing chapters are MP3s, so the repaired chapters
+  match (`RepairRunCommand` in `modules/app/services/conversion_commands.py`);
+  books from older versions may still have them. In AAC-only runs, `mp3_path`
+  and `chapters.mp3_path` hold the chapter `.m4a`.
 - `TextCleaner.clean_batch_with_trace_async(...)` is the native async API path
   that returns full trace objects. `clean_batch_async(...)` remains as a
   wrapper that returns cleaned strings.
@@ -418,6 +427,13 @@ backup. Loading the library never prunes it. Cleanup reports, per category,
 what it removed and what it kept and why; when nothing changed it keeps no
 backup. Its reports are written to `reports/` in the data directory.
 
+If a corrupt database was quarantined (`audiobooks.db.quarantine.json` beside
+it), the empty replacement references none of the old library's files, so they
+may be the only copy. Until a backup is restored, cleanup keeps orphan durable
+sources, orphan output folders, and stale uploads, and reports them as kept
+under `quarantined_library_files` (`modules/storage/maintenance.py`).
+Restoring a backup removes the status file.
+
 Restore never deletes files. It reports the restored books whose audio or
 source is missing on disk and the output folders that no restored book owns.
 Such a folder is removed only when a cleanup request names it, through the
@@ -449,10 +465,8 @@ persistence.
 
 - Runtime preflight validation is cached per `TTSRuntimeSpec.cache_key()`, and
   the voice-preview engine is reused across requests with the same runtime key.
-- TTS batch synthesis reuses executor pools and pauses adaptively under VRAM
-  pressure.
-- Final M4A/M4B files are encoded once from WAV chapter masters when they
-  exist, so normal conversions never transcode MP3 to AAC.
+- Chapters are encoded to AAC while synthesis continues, and the M4B
+  stream-copies them, so audiobook packaging does not re-encode audio.
 - Packaging reuses known chapter durations to avoid extra probe I/O.
 - Runtime counters are exposed through system capabilities and TTS engine
   metrics.

@@ -34,21 +34,84 @@ run that ends in release state `pass` produces releasable evidence.
 
 ## Local qualification
 
-Replace `<id>` with the report directory that `prepare` prints:
+`prepare` prints the report directory; set `REPORT` to it. Every later
+command takes it as `--report-dir`:
 
 ```bash
 python scripts/release_qualification.py prepare --version 1.0.0 --final
-python scripts/release_qualification.py run --report-dir .artifacts/release-qualification/<id>
-# Walk through the installed-app journeys and the Gatekeeper first-open check.
-# Record every checklist item with notes or evidence before marking it passed.
-python scripts/release_qualification.py finalize --report-dir .artifacts/release-qualification/<id>
+REPORT=.artifacts/release-qualification/<id>
+python scripts/release_qualification.py run --report-dir "$REPORT"
+
+# Lifecycle budgets: one passing observe per scenario (see below).
+python scripts/release_qualification.py observe cold-launch --report-dir "$REPORT" \
+  --action-started-at <t0> --ui-ready-at <t1>
+python scripts/release_qualification.py observe warm-launch --report-dir "$REPORT" \
+  --action-started-at <t0> --ui-ready-at <t1>
+python scripts/release_qualification.py observe idle-dashboard --report-dir "$REPORT"
+python scripts/release_qualification.py observe soak --report-dir "$REPORT"
+python scripts/release_qualification.py observe shutdown --report-dir "$REPORT"
+
+# Walk through the installed-app journeys and the Gatekeeper first-open check,
+# then record each item in manual-checklist.md, for example:
+python scripts/release_qualification.py record-check cold_launch --report-dir "$REPORT" \
+  --result pass --notes "..." --metrics <file>
+
+python scripts/release_qualification.py finalize --report-dir "$REPORT"
 ```
 
-Other subcommands: `status` shows progress, `observe` samples process budgets
-for a lifecycle scenario (`warm-launch`, `idle-dashboard`, `shutdown`, or
-`soak`), and `record-check` records a checklist result.
+`status --report-dir "$REPORT"` shows progress at any point.
+`manual-checklist.md` in the report directory lists which items also need
+`--evidence` or `--metrics`. Record every item with notes or evidence before
+marking it passed.
 
-`finalize` succeeds only when every required phase and checklist item passed.
+### Lifecycle observations
+
+`observe` refuses an app bundle that differs from the qualified build. It uses
+`desktop/src-tauri/target/release/bundle/macos/Orpheus.app` unless you pass
+`--app-bundle` (for example `--app-bundle /Applications/Orpheus.app` for the
+installed copy). Run Orpheus from that same bundle. Each run prints
+`budget_passed=... detail=...` and writes its decision to
+`metrics/<scenario>-decision.json` in the report directory. The budgets are in
+the report's `config/release_qualification.toml`, copied from
+`config/release_qualification.toml` by `prepare`.
+
+- **`cold-launch` and `warm-launch`** require `--action-started-at` and
+  `--ui-ready-at`. The tool does not time the launch: it compares
+  `--ui-ready-at` minus `--action-started-at`, in seconds, with
+  `cold_launch_seconds` or `warm_launch_seconds`. Measure the two moments
+  yourself, on one clock, as decimal seconds: when you open Orpheus, and when
+  the library appears. Any clock works because only the difference is used,
+  for example `0` and a stopwatch reading (`--action-started-at 0
+  --ui-ready-at 7.4`), or two readings of
+  `python3 -c 'import time; print(time.monotonic())'`. Measure `cold-launch`
+  on the first launch after restarting the Mac and `warm-launch` on a relaunch
+  soon after quitting. Run the command while Orpheus is still open, because it
+  also records the running process tree.
+- **`idle-dashboard`** samples the CPU use of the Orpheus processes once a
+  second for 60 seconds (`--seconds` changes this) while the app sits idle,
+  and checks the median and 95th percentile against `idle_cpu_median_percent`
+  and `idle_cpu_p95_percent`.
+- **`soak`** samples their memory for 30 minutes (`--minutes` changes this)
+  and checks the growth against `soak_memory_growth_mib` and
+  `soak_memory_growth_percent`.
+- **`shutdown`** needs Orpheus running when it starts. It waits 12 seconds
+  from its start (`process_exit_seconds`; pass `--seconds` for a longer wait)
+  for Orpheus to quit and exit, so quit Orpheus right after starting it. It
+  checks that the window closes within `window_close_seconds` and every
+  Orpheus process exits within `process_exit_seconds` of the quit request. Without `--action-started-at`, the quit request is taken as the
+  last sample in which the window was still open. Pass `--action-started-at`
+  only with a `time.monotonic()` reading taken on the same Mac, because
+  `observe` compares it with its own `time.monotonic()` samples.
+
+`idle-dashboard` and `soak` fail when no Orpheus backend from that bundle is
+running, and `shutdown` fails when no Orpheus process is running at its start.
+
+### Finalize
+
+`finalize` succeeds only when every required phase and checklist item passed
+and every `observe` scenario has a passing decision recorded against the
+qualified artifact. A decision recorded against an earlier build does not
+count; re-run `observe` for that scenario.
 Failed or incomplete required work blocks the release. Qualification includes
 the `lifecycle_performance` phase and its configured performance budgets; keep
 those measurements and the installed-app checklist evidence in the report.
@@ -107,16 +170,16 @@ uploads, automatic tag creation, or a publishing workflow.
 
 ## End-user install
 
-Point users to [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md). The
-supported first-open paths are right-click **Open** and **Open Anyway** in
-System Settings. Do not document system-wide Gatekeeper switches or quarantine
-stripping.
+Point users to [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md), the
+one place that describes checksum verification and the first-open steps. Link
+to it rather than restating the steps. Do not document system-wide Gatekeeper
+switches or quarantine stripping.
 
 ## Rollback and removal
 
-- **Rollback:** install the previous published DMG the same way: verify its
-  `SHA256SUMS`, then open it through a supported Gatekeeper path so the older
-  bundle replaces `/Applications/Orpheus.app`.
+- **Rollback:** install the previous published DMG by following
+  [UNSIGNED_MACOS_INSTALL.md](UNSIGNED_MACOS_INSTALL.md), so the older bundle
+  replaces `/Applications/Orpheus.app`.
 - **Uninstall:** quit Orpheus, then move `/Applications/Orpheus.app` to the
   Trash. Delete the library data in the app support folder only for a full
   wipe. Qualification fixtures never use the live library.
