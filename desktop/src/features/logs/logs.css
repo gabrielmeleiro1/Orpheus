@@ -289,6 +289,11 @@
   margin: 0;
 }
 
+/* Like the stage rows above: chevron in the icon column, label on the name line. */
+.activity-log-disclosure.disclosure > summary {
+  gap: var(--space-3);
+}
+
 .activity-log-disclosure[open] > summary {
   margin-bottom: var(--space-3);
 }

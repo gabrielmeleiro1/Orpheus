@@ -140,6 +140,15 @@
   margin-top: calc((var(--line-md) - var(--row-h)) / 2);
 }
 
+/* Beside the title (two columns), a first row of small controls also centres
+   on the title's line. */
+@container settings (min-width: 721px) {
+  .settings-section > .card-header + .setup-panel-content,
+  .settings-section > .card-header + .config-layout {
+    margin-top: calc((var(--line-md) - var(--control-h-sm)) / 2);
+  }
+}
+
 .settings-row > .field-label {
   color: var(--text);
   font-size: var(--text-base);

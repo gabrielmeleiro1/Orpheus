@@ -226,7 +226,11 @@
 }
 
 .setup-customize-toggle { flex: none; }
-.setup-customize-toggle > .icon { transition: transform var(--dur-fast) var(--ease-out); }
+.setup-customize-toggle > .icon {
+  /* The chevron's ink, not its padded 16px box, ends on the trailing edge. */
+  margin-inline-end: calc(var(--space-1) * -1);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
 .setup-customize-toggle[aria-expanded="true"] > .icon { transform: rotate(90deg); }
 
 .setup-options {
@@ -676,7 +680,9 @@ label.setup-model-row:has(input:disabled:not(:checked)) { cursor: default; }
 
 /* ---------- Reset local data (Settings) ---------- */
 
-.setup-danger > summary { width: fit-content; }
+/* The chevron sits in the model rows' checkbox column, so the label starts
+   on their name line. */
+.setup-danger.disclosure > summary { gap: var(--space-3); width: fit-content; }
 .setup-danger-box { display: grid; gap: var(--space-3); padding-top: var(--space-2); }
 
 .setup-danger-actions {

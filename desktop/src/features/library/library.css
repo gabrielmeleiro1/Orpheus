@@ -278,10 +278,11 @@
 }
 
 /* Album page: cover and heading, the chapter list, then quiet book actions. */
-/* The icon, not the button's padding, sits on the page's left edge. */
+/* The chevron's ink, not the button's padding or the icon's side bearing,
+   sits on the page's left edge. */
 .album-back {
   justify-self: start;
-  margin-left: calc(var(--space-3) * -1);
+  margin-left: calc((var(--space-3) + var(--space-1-5)) * -1);
 }
 
 .album-hero {
@@ -435,9 +436,12 @@
 /* Fixed columns, not a subgrid of the list: each row is contained (see
    content-visibility below), and contained rows cannot share the list grid.
    The duration column fits "10:00:00" in the monospace digits. */
+/* Rows hang their hover fill into the gutter so the numbers and durations
+   sit on the page's text edges, like the heading and actions around them. */
 .chapter-list {
   --chapter-columns: var(--space-8) minmax(0, 1fr) var(--control-h-sm) 8.5ch;
   display: grid;
+  margin-inline: calc(var(--space-3) * -1);
 }
 
 .chapter-empty {
@@ -453,7 +457,7 @@
   display: grid;
   grid-template-columns: var(--chapter-columns);
   min-height: var(--row-h-compact);
-  padding-inline: var(--space-2) var(--space-3);
+  padding-inline: var(--space-3);
   transition: background var(--dur-fast) var(--ease-out);
   /* Off-screen rows of a long album skip rendering until scrolled near. */
   content-visibility: auto;
@@ -501,12 +505,12 @@
   box-shadow: var(--focus-ring);
 }
 
-/* Number, play glyph and playing bars share one centred slot. */
+/* Number, play glyph and playing bars share one slot that starts on the
+   text edge. */
 .chapter-index {
   display: grid;
   height: var(--line-base);
-  justify-items: center;
-  place-items: center;
+  place-items: center start;
 }
 
 .chapter-index > * {

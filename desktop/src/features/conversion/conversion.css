@@ -205,6 +205,14 @@
   width: max-content;
 }
 
+/* These chevrons stand alone in the text column, so their ink (not the 16px
+   mask box, which has a 6px side bearing) starts on the text edge. */
+.manual-path > summary::before,
+.book-preview > summary::before,
+.voice-sample > summary::before {
+  margin-inline-start: calc(var(--space-1-5) * -1);
+}
+
 .manual-path-row {
   display: grid;
   gap: var(--space-2);
@@ -775,9 +783,11 @@
   white-space: nowrap;
 }
 
+/* A trailing chevron ends its ink, not its mask box, on the trailing edge. */
 .advanced-settings > summary::before {
   grid-column: 3;
   grid-row: 1;
+  margin-inline-end: calc(var(--space-1-5) * -1);
 }
 
 .advanced-settings > summary > span:first-of-type {

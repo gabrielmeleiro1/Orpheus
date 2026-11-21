@@ -120,7 +120,8 @@
   font-size: var(--text-md);
   font-weight: var(--weight-semibold);
   line-height: var(--line-md);
-  padding-bottom: var(--space-3);
+  /* The heading starts on the rows' text edge, inside their hover fill. */
+  padding: 0 var(--space-3) var(--space-3);
 }
 
 .np-chapter-list {
@@ -178,7 +179,6 @@
   display: flex;
   font-family: var(--font-mono);
   font-size: var(--text-sm);
-  justify-content: flex-end;
 }
 
 .np-chapter.is-current .np-chapter-index,
