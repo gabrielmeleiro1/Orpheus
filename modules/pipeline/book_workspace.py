@@ -36,20 +36,18 @@ def prepare_book_workspace(output_root: Path, book_title: str) -> BookWorkspace:
     safe_title = sanitize_book_title(book_title)
     output_root = Path(output_root)
     output_dir = output_root / safe_title
-    if output_dir.exists():
-        suffix = 2
-        candidate_title = candidate_book_title_with_suffix(
-            safe_title,
-            f" ({suffix})",
-        )
-        while (output_root / candidate_title).exists():
+    suffix = 1
+    # Claim the directory by creating it, so two runs can never share one.
+    while True:
+        try:
+            output_dir.mkdir(parents=True, exist_ok=False)
+            break
+        except FileExistsError:
             suffix += 1
-            candidate_title = candidate_book_title_with_suffix(
+            output_dir = output_root / candidate_book_title_with_suffix(
                 safe_title,
                 f" ({suffix})",
             )
-        output_dir = output_root / candidate_title
-    output_dir.mkdir(parents=True, exist_ok=True)
     chapters_dir = output_dir / "chapters"
     chapters_dir.mkdir(exist_ok=True)
     return BookWorkspace(

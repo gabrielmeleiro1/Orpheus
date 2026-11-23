@@ -13,7 +13,7 @@ from typing import Any, Optional
 from .chapter_processor import ChapterProcessor
 from .models import ChapterResult, PipelineStage
 from .result_validation import format_failure_notes
-from .runtime import PipelineRuntimeProtocol
+from .runtime import PipelineRuntimeProtocol, stage_reporting_suppressed
 from .worker_config import build_worker_pipeline_config
 from .worker_errors import (
     WorkerRuntimeLoadError,
@@ -86,10 +86,9 @@ def process_chapter_worker(
             output_dir=output_dir,
         )
         result.stage_timings = stage_timings
-        return result
     except Exception as exc:
         logger.error("Worker failed for chapter %s: %s", chapter_idx, exc)
-        return ChapterResult(
+        result = ChapterResult(
             chapter_number=chapter.number,
             chapter_title=chapter.title,
             error=str(exc),
@@ -97,6 +96,32 @@ def process_chapter_worker(
         )
     finally:
         stages.restore_stage_timing_capture(previous_stage_timings)
+    _discard_worker_scratch(runtime, result)
+    return result
+
+
+def _discard_worker_scratch(runtime: Any, result: ChapterResult) -> None:
+    """Remove this worker's temp scratch, keeping the artifacts it returns."""
+    from .orchestrator import _remove_temp_artifact
+
+    tracked = getattr(getattr(runtime, "state", None), "temp_cleanup_paths", None)
+    if not tracked:
+        return
+    kept = [
+        Path(path).resolve()
+        for path in (result.wav_path, result.aac_path, result.mp3_path)
+        if path is not None
+    ]
+    try:
+        for path in sorted(tracked, key=lambda item: len(item.parts), reverse=True):
+            resolved = path.resolve()
+            if any(keep == resolved or keep.is_relative_to(resolved) for keep in kept):
+                continue
+            _remove_temp_artifact(path)
+    except Exception:
+        logger.debug("Could not discard worker temp scratch", exc_info=True)
+    finally:
+        tracked.clear()
 
 
 def _process_chapter_worker_entry(
@@ -142,6 +167,12 @@ class SequentialChapterRunner:
 
     def _finalize_chapter_encoding(self, **kwargs: Any) -> ChapterResult:
         return self._processor.finalize_chapter_encoding(**kwargs)
+
+    def _finalize_chapter_encoding_overlapped(self, **kwargs: Any) -> ChapterResult:
+        # The next chapter is being prepared on the coordinator thread and owns
+        # the reported stage; this encode must not move it back.
+        with stage_reporting_suppressed():
+            return self._finalize_chapter_encoding(**kwargs)
 
     def _process_chapters_sequential(
         self,
@@ -211,7 +242,11 @@ class SequentialChapterRunner:
                         continue
 
                     future = encode_executor.submit(
-                        self._finalize_chapter_encoding,
+                        (
+                            self._finalize_chapter_encoding_overlapped
+                            if idx < total_chapters - 1
+                            else self._finalize_chapter_encoding
+                        ),
                         result=prepared_result,
                         chapter_wav=chapter_wav,
                         chapter=chapter,
@@ -599,6 +634,12 @@ class ParallelChapterRunner:
                     f"[PARALLEL] Retrying {len(failed_indices)} failed chapter(s) sequentially",
                     "warning",
                 )
+                # Retried chapters are tracked here, which turns off the
+                # end-of-run temp sweep; track what the workers returned too.
+                for result in processed_results:
+                    for path in (result.wav_path, result.aac_path):
+                        if path is not None:
+                            self.runtime.track_temp_cleanup_path(path)
                 previous_parallel_active = self.runtime.parallel_execution_active()
                 self.runtime.set_parallel_execution_active(False)
                 try:
@@ -606,6 +647,8 @@ class ParallelChapterRunner:
 
                     shutdown_shared_worker_pool(self.runtime.config)
                     for idx in failed_indices:
+                        if self.runtime.check_cancelled():
+                            break
                         retry_result = self.process_chapter(
                             chapter=chapters[idx],
                             chapter_idx=idx,

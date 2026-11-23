@@ -5,11 +5,33 @@ from __future__ import annotations
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
 from .models import PipelineStage
+
+_STAGE_REPORTING = threading.local()
+
+
+@contextmanager
+def stage_reporting_suppressed():
+    """Keep this thread from changing the shared stage or emitting progress.
+
+    Overlapped background work for an earlier chapter would otherwise move the
+    reported stage and chapter backwards under the coordinator thread.
+    """
+    previous = getattr(_STAGE_REPORTING, "suppressed", False)
+    _STAGE_REPORTING.suppressed = True
+    try:
+        yield
+    finally:
+        _STAGE_REPORTING.suppressed = previous
+
+
+def _stage_reporting_is_suppressed() -> bool:
+    return bool(getattr(_STAGE_REPORTING, "suppressed", False))
 
 
 class PipelineRuntimeProtocol(Protocol):
@@ -190,6 +212,8 @@ class PipelineRuntime:
         return False
 
     def notify_progress(self, **kwargs: Any) -> None:
+        if _stage_reporting_is_suppressed():
+            return
         performance = kwargs.pop("performance", None)
         self.progress.notify(
             callback=self.get_progress_callback(),
@@ -204,6 +228,8 @@ class PipelineRuntime:
             callback(message, log_type)
 
     def set_stage(self, stage: PipelineStage) -> None:
+        if _stage_reporting_is_suppressed():
+            return
         self.state.stage = stage
 
     def is_tts_engine_loaded(self) -> bool:

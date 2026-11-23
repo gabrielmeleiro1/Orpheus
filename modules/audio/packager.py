@@ -22,9 +22,9 @@ import time
 
 from ..subprocess_utils import background_process_kwargs
 from .ffmpeg import (
+    abandon_ffmpeg_process,
     atomic_output_path,
     ffmpeg_timeout_seconds,
-    kill_ffmpeg_process,
     require_ffmpeg_binary,
     run_ffmpeg_command,
     wait_for_ffmpeg_process,
@@ -99,6 +99,32 @@ def _escape_ffmetadata_value(value: str) -> str:
     )
 
 
+def cover_image_is_usable(
+    cover_path: Path | str, cancel_requested: Callable[[], bool] | None = None,
+) -> bool:
+    """True when FFmpeg can decode the image and re-encode it as the M4B cover.
+
+    Runs the same decode and MJPEG encode the final mux applies to the cover,
+    so an unreadable embedded cover is dropped instead of failing the book.
+    """
+    try:
+        run_ffmpeg_command(
+            [
+                require_ffmpeg_binary("ffmpeg"), "-v", "error",
+                "-i", str(cover_path),
+                "-frames:v", "1", "-c:v", "mjpeg", "-f", "null", "-",
+            ],
+            failure_message="Cover image check failed",
+            cancel_requested=cancel_requested,
+            audio_seconds=0.0,
+        )
+    except RuntimeError as exc:
+        _raise_if_cancelled(cancel_requested)
+        logger.warning("Skipping unusable cover image %s: %s", cover_path, exc)
+        return False
+    return True
+
+
 @dataclass
 class ChapterMarker:
     """Chapter marker for M4B TOC."""
@@ -143,6 +169,7 @@ class M4BPackager:
         output_path: Path | str,
         chapter_durations_ms: Optional[list[int]] = None,
         cancel_requested: Callable[[], bool] | None = None,
+        bitrate: str = "128k",
     ) -> Path:
         """
         Create M4B audiobook from chapter audio files.
@@ -154,7 +181,9 @@ class M4BPackager:
             metadata: Audiobook metadata
             output_path: Path for output M4B file
             chapter_durations_ms: Optional precomputed chapter durations
-            
+            bitrate: AAC bitrate when the chapters must be re-encoded (WAV/MP3
+                inputs); stream-copied AAC chapters keep their encoded rate.
+
         Returns:
             Path to generated M4B file
         """
@@ -260,7 +289,7 @@ class M4BPackager:
                 ]
                 if has_cover:
                     final_cmd.extend(["-i", str(metadata.cover_path)])
-                final_cmd.extend(["-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a", "128k"])
+                final_cmd.extend(["-map_metadata", "1", "-map_chapters", "1", "-c:a", "aac", "-b:a", bitrate])
                 if has_cover:
                     final_cmd.extend([
                         "-map", "0:a",
@@ -401,8 +430,8 @@ class M4BPackager:
         try:
             ffprobe = require_ffmpeg_binary("ffprobe")
 
-            segment_packet_counts = self._probe_segment_packet_counts(
-                ffprobe, audio_files, cancel_requested, self._audio_seconds
+            segment_packet_counts, total_ms = self._segment_packet_counts(
+                ffprobe, concat_path, audio_files, cancel_requested
             )
 
             # One boundary packet index per chapter, in chapter order. A chapter
@@ -426,19 +455,6 @@ class M4BPackager:
             if packet_count == 0 or len(boundary_pts) != len(unique_boundaries):
                 return None
 
-            duration_result = run_ffmpeg_command(
-                [
-                    ffprobe, "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "csv=p=0",
-                    str(concat_path),
-                ],
-                failure_message="FFprobe failed",
-                cancel_requested=cancel_requested,
-                audio_seconds=self._audio_seconds,
-            )
-            total_ms = int(round(float(duration_result.stdout.strip()) * 1000))
-
             starts_ms = [
                 int(round(boundary_pts[index] * 1000))
                 for index in per_chapter_boundaries
@@ -461,19 +477,95 @@ class M4BPackager:
             )
             return None
 
+    def _segment_packet_counts(
+        self,
+        ffprobe: str,
+        concat_path: Path,
+        audio_files: list[Path],
+        cancel_requested: Callable[[], bool] | None,
+    ) -> tuple[list[int], int]:
+        """Per-chapter packet counts as the concat demuxer emitted them, plus
+        the joined audio's length in ms.
+
+        The MP4 sample count in each chapter's header is read without
+        demuxing. Stream copy writes every packet the demuxer emits, so a
+        chapter whose header disagrees with what it demuxes to (edit lists,
+        truncation, fragmented files) changes the joined file's sample count.
+        Header counts are therefore used only when their sum matches it; on
+        any disagreement or missing value every chapter's packets are counted,
+        so a mismatch can never silently move a chapter marker.
+        """
+        header_counts: list[int] | None
+        try:
+            header_counts = self._probe_segment_packet_counts(
+                ffprobe, audio_files, cancel_requested, self._audio_seconds,
+                header_only=True,
+            )
+        except (RuntimeError, ValueError) as exc:
+            _raise_if_cancelled(cancel_requested)
+            logger.info("Chapter packet counts unavailable from headers: %s", exc)
+            header_counts = None
+
+        concat_probe = run_ffmpeg_command(
+            [
+                ffprobe, "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=nb_frames:format=duration",
+                "-of", "csv=p=0",
+                str(concat_path),
+            ],
+            failure_message="FFprobe failed",
+            cancel_requested=cancel_requested,
+            audio_seconds=self._audio_seconds,
+        )
+        # ffprobe prints the stream section before the format section.
+        concat_lines = [
+            line.strip().rstrip(",")
+            for line in concat_probe.stdout.splitlines()
+            if line.strip()
+        ]
+        total_ms = int(round(float(concat_lines[-1]) * 1000))
+        concat_packets = (
+            int(concat_lines[0])
+            if len(concat_lines) >= 2 and concat_lines[0].isdigit()
+            else None
+        )
+
+        if header_counts is not None:
+            if sum(header_counts) == concat_packets:
+                return header_counts, total_ms
+            logger.warning(
+                "Chapter header packet counts (%d) disagree with the joined "
+                "audio (%s packets); counting packets instead",
+                sum(header_counts),
+                concat_packets,
+            )
+        counted = self._probe_segment_packet_counts(
+            ffprobe, audio_files, cancel_requested, self._audio_seconds
+        )
+        return counted, total_ms
+
     @staticmethod
     def _probe_segment_packet_counts(
         ffprobe: str,
         audio_files: list[Path],
         cancel_requested: Callable[[], bool] | None,
         audio_seconds: float | None = None,
+        *,
+        header_only: bool = False,
     ) -> list[int]:
         """Count independently encoded chapters with at most two active probes.
 
         Counts remain in chapter order. Keep only two futures queued so a long
         book does not create an unbounded task list, and stop the sibling probe
         before falling back if a count fails or cancellation is requested.
+        ``header_only`` reads the container's sample count instead of demuxing
+        every packet.
         """
+        count_args = (
+            ["-show_entries", "stream=nb_frames"]
+            if header_only
+            else ["-count_packets", "-show_entries", "stream=nb_read_packets"]
+        )
         stopped = threading.Event()
         parallel_probes = len(audio_files) >= 4
 
@@ -487,7 +579,7 @@ class M4BPackager:
                 result = run_ffmpeg_command(
                     [
                         ffprobe, "-v", "error", "-select_streams", "a",
-                        "-count_packets", "-show_entries", "stream=nb_read_packets",
+                        *count_args,
                         "-of", "csv=p=0", str(audio_file),
                     ],
                     failure_message="FFprobe failed",
@@ -536,7 +628,9 @@ class M4BPackager:
 
         A whole-book packet probe emits one line per AAC packet (hundreds of
         thousands of lines), so parse the CSV stream incrementally instead of
-        materializing a JSON document for every packet.
+        materializing a JSON document for every packet, and stop reading once
+        the last boundary has been seen. The returned count is the number of
+        packets read, which is then a lower bound on the stream's total.
         """
         process = subprocess.Popen(
             [
@@ -554,7 +648,8 @@ class M4BPackager:
             errors="replace",
         )
         boundary_pts: dict[int, float] = {}
-        read_state = {"packet_index": 0}
+        read_state = {"packet_index": 0, "stopped_early": False}
+        last_boundary = max(boundary_indices, default=-1)
         read_error: list[BaseException] = []
 
         def consume_stdout() -> None:
@@ -569,6 +664,9 @@ class M4BPackager:
                     if packet_index in boundary_indices:
                         boundary_pts[packet_index] = float(value)
                     packet_index += 1
+                    if packet_index > last_boundary:
+                        read_state["stopped_early"] = True
+                        break
             except BaseException as exc:  # surfaced on the caller thread below
                 read_error.append(exc)
             finally:
@@ -585,20 +683,22 @@ class M4BPackager:
         deadline = time.monotonic() + timeout
         while reader.is_alive() and time.monotonic() < deadline:
             if cancel_requested is not None and cancel_requested():
-                kill_ffmpeg_process(process)
+                abandon_ffmpeg_process(process, reader)
                 raise RuntimeError("FFprobe failed: cancelled")
             reader.join(timeout=0.1)
         if reader.is_alive():
-            kill_ffmpeg_process(process)
-            reader.join(timeout=timeout)
+            abandon_ffmpeg_process(process, reader)
             raise RuntimeError(
                 f"FFprobe failed: timed out after {timeout:g}s "
                 "while probing concat packet timestamps"
             )
         if read_error:
-            if process.poll() is None:
-                kill_ffmpeg_process(process)
+            abandon_ffmpeg_process(process, reader)
             raise read_error[0]
+        if read_state["stopped_early"]:
+            # Every boundary is captured; the rest of the packet list is unused.
+            abandon_ffmpeg_process(process, reader)
+            return boundary_pts, read_state["packet_index"]
         return_code = wait_for_ffmpeg_process(
             process,
             failure_message="FFprobe failed",

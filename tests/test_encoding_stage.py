@@ -50,6 +50,9 @@ def test_file_backed_normalization_uses_ffmpeg_filter(
     captured: dict[str, object] = {}
 
     class FakeEncoder:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
         def wav_to_mp3(
             self,
             input_path: Path,
@@ -102,6 +105,9 @@ def test_silent_file_backed_normalization_skips_filter(
     captured: dict[str, object] = {}
 
     class FakeEncoder:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
         def wav_to_mp3(
             self,
             input_path: Path,
@@ -177,6 +183,9 @@ def test_chapter_audio_names_match_the_recovery_inventory(tmp_path: Path) -> Non
     expected = chapter_audio_path(chapter, tmp_path, ".mp3")
 
     class FakeEncoder:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
         def wav_to_mp3(self, _input, output_path, **_kwargs) -> Path:
             Path(output_path).write_bytes(b"mp3")
             return Path(output_path)

@@ -334,7 +334,7 @@ class RepairResult(ConversionResult):
 
 
 ProgressCallback = Callable[
-    [PipelineStage, int, int, int, int, str, Optional[float], Optional[dict[str, Any]]],
+    [PipelineStage, int, int, int, int, str, Optional[dict[str, Any]]],
     None,
 ]
 VerboseCallback = Callable[[str, str], None]

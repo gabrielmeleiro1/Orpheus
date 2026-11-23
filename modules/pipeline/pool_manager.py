@@ -562,11 +562,15 @@ class SharedWorkerPoolManager:
                         available_vram_gb=requested_vram,
                         worker_init_config=requested_init,
                     )
+                    started_executor = self._state.executor
                     try:
                         self._run_startup_probes_locked()
-                    except WorkerStartupError as exc:
+                    except Exception as exc:
                         startup_error = exc
-                        failed_executor, _done = self._detach_executor_locked()
+                        failed_executor = None
+                        # A cancelled startup has already detached its executor.
+                        if self._state.executor is started_executor:
+                            failed_executor, _done = self._detach_executor_locked()
                         break
                     else:
                         return
@@ -584,12 +588,13 @@ class SharedWorkerPoolManager:
 
         # Release the lifecycle lock so cleanup can confirm quiescence before
         # the caller decides whether to load sequential models.
-        self._shutdown_executor_bounded(
-            failed_executor,
-            timeout_seconds=self._shutdown_timeout_seconds,
-            cancel_futures=True,
-            on_quiesced=lambda: self._release_stopping_barrier(failed_executor),
-        )
+        if failed_executor is not None:
+            self._shutdown_executor_bounded(
+                failed_executor,
+                timeout_seconds=self._shutdown_timeout_seconds,
+                cancel_futures=True,
+                on_quiesced=lambda: self._release_stopping_barrier(failed_executor),
+            )
         raise startup_error
 
     def run_parallel(
@@ -841,6 +846,11 @@ class SharedWorkerPoolManager:
                         if self._stopping_executor is None:
                             self._stop_requested.clear()
 
+            if not owns_waiter:
+                # Every waiter-lock holder clears the request after releasing
+                # it. If that holder finished after our set() above, no one
+                # would clear it, so become the waiter once the lock is free.
+                owns_waiter = self._shutdown_waiter_lock.acquire(blocking=False)
             if owns_waiter:
                 threading.Thread(
                     target=finish_when_available, name="pending-worker-pool-shutdown", daemon=True,

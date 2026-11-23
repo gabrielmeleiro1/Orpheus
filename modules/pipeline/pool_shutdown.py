@@ -117,6 +117,46 @@ def _terminate_processes(processes: list[Any]) -> None:
                 logger.exception("Failed while joining killed shared worker process")
 
 
+def _is_process_executor(executor: Any) -> bool:
+    return hasattr(executor, "_processes")
+
+
+def _process_is_alive(process: Any) -> bool:
+    is_alive = getattr(process, "is_alive", None)
+    if not callable(is_alive):
+        return True
+    try:
+        return bool(is_alive())
+    except ValueError:
+        # A closed multiprocessing.Process handle has already been reaped.
+        return False
+
+
+def _confirm_worker_processes_stopped(executor: Any, known_processes: list[Any]) -> bool:
+    """Return True once every worker process the executor started has exited.
+
+    Stragglers left by a failed or incomplete ``shutdown()`` are terminated
+    within a bound; any that still survive keep the caller's barrier closed.
+    """
+    processes = {id(process): process for process in known_processes}
+    # Workers spawned after the caller's snapshot (replacements) count too.
+    for process in _executor_processes(executor):
+        processes.setdefault(id(process), process)
+    alive = [process for process in processes.values() if _process_is_alive(process)]
+    if not alive:
+        return True
+    logger.warning("Terminating %d shared worker process(es) left after shutdown", len(alive))
+    _terminate_processes(alive)
+    survivors = [process for process in alive if _process_is_alive(process)]
+    if survivors:
+        logger.error(
+            "Shared worker processes survived termination: %s",
+            ", ".join(str(getattr(process, "pid", "?")) for process in survivors),
+        )
+        return False
+    return True
+
+
 def _shutdown_executor_bounded(
     executor: Any,
     *,
@@ -152,6 +192,11 @@ def _shutdown_executor_bounded(
             )
         except Exception:
             logger.exception("Shared worker executor shutdown failed")
+            # A thread executor's quiescence cannot be observed directly, so
+            # its barrier stays closed. Worker processes can be checked.
+            if not _is_process_executor(executor):
+                return
+        if not _confirm_worker_processes_stopped(executor, worker_processes):
             return
         shutdown_succeeded.set()
         if on_quiesced is not None:

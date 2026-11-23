@@ -336,6 +336,7 @@ class ChapterProcessor:
         total_chapters: int,
         chunks: list[str],
         chapter_result: ChapterResult | None = None,
+        frame: Any = None,
     ) -> Optional[Path | np.ndarray]:
         """Run TTS stage for chapter chunks and return chapter audio payload."""
         from .stages.synthesis import synthesize_chapter_chunks
@@ -348,6 +349,7 @@ class ChapterProcessor:
             total_chapters=total_chapters,
             chunks=chunks,
             chapter_result=chapter_result,
+            frame=frame,
         )
 
     def _record_tts_throughput(self, chunks: list[str], elapsed_seconds: float) -> None:
@@ -583,6 +585,11 @@ class ChapterProcessor:
                 result.error = "Cancelled"
                 return result, None, True
 
+            from .chapter_narration import add_chapter_narration, prepare_chapter_frame
+
+            # The announcement is synthesized first so the body streams into
+            # the narrated WAV once instead of being written and then copied.
+            frame = prepare_chapter_frame(self.runtime, chapter)
             tts_started = time.perf_counter()
             chapter_wav = self.synthesize_chapter_chunks(
                 chapter=chapter,
@@ -590,15 +597,25 @@ class ChapterProcessor:
                 total_chapters=total_chapters,
                 chunks=chunks,
                 chapter_result=result,
+                frame=frame,
             )
             tts_seconds = time.perf_counter() - tts_started
             if chapter_wav is None:
                 result.error = "No audio generated"
                 return result, None, False
             self._record_tts_throughput(chunks, tts_seconds)
-            from .chapter_narration import add_chapter_narration
 
-            narrated = add_chapter_narration(self.runtime, chapter, chapter_wav, result)
+            if (
+                frame is not None
+                and isinstance(chapter_wav, Path)
+                and chapter_wav == frame.output_path
+            ):
+                narrated = None if self.runtime.check_cancelled() else chapter_wav
+            else:
+                narrated = add_chapter_narration(
+                    self.runtime, chapter, chapter_wav, result,
+                    intro=None if frame is None else frame.lead_in[0],
+                )
             if narrated is None:
                 result.error = "Cancelled"
             return result, narrated, narrated is None

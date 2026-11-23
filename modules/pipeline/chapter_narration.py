@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from .stages.synthesis import ChapterAudioAccumulator
+from .stages.synthesis import ChapterAudioAccumulator, ChapterAudioFrame
+
+logger = logging.getLogger(__name__)
 
 # Chapter audio is: announcement, heading pause, body, end pause. Kokoro adds
 # roughly 0.2-0.5 s of its own trailing silence to each clip, so a chapter
@@ -26,6 +29,20 @@ _NUMBER = re.compile(
     r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)"
     r"\b[\s:.\-–—]*", re.I,
 )
+# Words like "Civil", "Mild" or "Mix" are spelled with numeral letters; only a
+# well-formed numeral written in one case ("IV", "xii") counts as a number.
+_CANONICAL_ROMAN = re.compile(
+    r"(?=.)M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})"
+)
+
+
+def _roman_value(word: str) -> int | None:
+    if not (word.isupper() or word.islower()) or not _CANONICAL_ROMAN.fullmatch(word.upper()):
+        return None
+    values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
+    digits = [values[c] for c in word.lower()]
+    return sum(-v if i + 1 < len(digits) and v < digits[i + 1] else v
+               for i, v in enumerate(digits))
 
 
 def _plain_title(title: str) -> str:
@@ -45,13 +62,13 @@ def chapter_announcement(chapter: Any, conversion_mode: str = "audiobook") -> st
         title = title[label.end():]
         numbered = _NUMBER.match(title)
         if numbered:
-            number = numbered.group(1)
-            title = title[numbered.end():]
-            if re.fullmatch(r"[ivxlcdm]+", number, re.I):
-                values = {"i": 1, "v": 5, "x": 10, "l": 50, "c": 100, "d": 500, "m": 1000}
-                digits = [values[c] for c in number.lower()]
-                number = str(sum(-v if i + 1 < len(digits) and v < digits[i + 1] else v
-                                 for i, v in enumerate(digits)))
+            word = numbered.group(1)
+            if re.fullmatch(r"[ivxlcdm]+", word, re.I):
+                roman = _roman_value(word)
+                word = None if roman is None else str(roman)
+            if word is not None:
+                number = word
+                title = title[numbered.end():]
     elif title == number:
         title = ""
     title = normalize_speech_typography(
@@ -70,20 +87,71 @@ def chapter_body(chapter: Any) -> str:
     return content
 
 
-def add_chapter_narration(runtime: Any, chapter: Any, body: Path | np.ndarray, result: Any):
-    """Wrap synthesized body before encoding, including file-backed/overlap paths."""
-    if runtime.check_cancelled():
-        return None
+def _synthesize_introduction(runtime: Any, chapter: Any) -> np.ndarray:
     announcement = chapter_announcement(chapter, runtime.config.conversion_mode)
-    intro = np.asarray(runtime.synthesize_speech(
+    return np.asarray(runtime.synthesize_speech(
         text=announcement, voice=runtime.config.voice, speed=runtime.config.speed,
     ), dtype=np.float32)
+
+
+def _valid_introduction(intro: np.ndarray) -> bool:
+    return intro.ndim == 1 and bool(intro.size) and bool(np.isfinite(intro).all())
+
+
+def _narrated_output_path(runtime: Any, chapter: Any) -> Path:
+    return runtime.config.temp_dir / f"chapter_{chapter.number:02d}_narrated.wav"
+
+
+def prepare_chapter_frame(runtime: Any, chapter: Any) -> ChapterAudioFrame | None:
+    """Synthesize the announcement before the body so the chapter streams once.
+
+    Returns None (and the caller narrates after synthesis exactly as
+    ``add_chapter_narration`` always has) when the run is cancelled or the
+    announcement cannot be produced now; a failure is then retried and
+    reported at the usual point, after the body.
+    """
     if runtime.check_cancelled():
         return None
-    if intro.ndim != 1 or not intro.size or not np.isfinite(intro).all():
+    try:
+        intro = _synthesize_introduction(runtime, chapter)
+    except Exception as exc:  # retried after the body, where it is reported
+        logger.debug("Chapter %s announcement deferred: %s", chapter.number, exc)
+        return None
+    if not _valid_introduction(intro):
+        return None
+    sample_rate = runtime.tts_sample_rate()
+    return ChapterAudioFrame(
+        output_path=_narrated_output_path(runtime, chapter),
+        lead_in=(
+            intro,
+            np.zeros(int(CHAPTER_HEADING_PAUSE_SECONDS * sample_rate), dtype=np.float32),
+        ),
+        tail=(np.zeros(int(CHAPTER_END_PAUSE_SECONDS * sample_rate), dtype=np.float32),),
+    )
+
+
+def add_chapter_narration(
+    runtime: Any,
+    chapter: Any,
+    body: Path | np.ndarray,
+    result: Any,
+    *,
+    intro: np.ndarray | None = None,
+):
+    """Wrap synthesized body before encoding, including file-backed/overlap paths.
+
+    ``intro`` is an announcement already synthesized for this chapter.
+    """
+    if runtime.check_cancelled():
+        return None
+    if intro is None:
+        intro = _synthesize_introduction(runtime, chapter)
+    if runtime.check_cancelled():
+        return None
+    if not _valid_introduction(intro):
         raise ValueError("No valid audio generated for the chapter introduction")
     sample_rate = runtime.tts_sample_rate()
-    output = runtime.config.temp_dir / f"chapter_{chapter.number:02d}_narrated.wav"
+    output = _narrated_output_path(runtime, chapter)
     runtime.track_temp_cleanup_path(output)
     accumulator = ChapterAudioAccumulator(
         output_path=output, sample_rate=sample_rate,

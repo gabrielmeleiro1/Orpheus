@@ -166,6 +166,27 @@ class SafeMemoryPolicy:
         self.selected_worker_count_reason = "requested sequential mode"
         return requested_max
 
+    def sequential_regardless_of_free_memory(self, requested_max: int) -> bool:
+        """True when ``allowed_workers`` returns 1 however much memory is freed.
+
+        Side-effect free. The best case is every byte of the device free
+        (``available == total``); ``allowed_workers`` never grows as available
+        memory shrinks, so a single worker there means a single worker for any
+        live sample taken after releasing memory.
+        """
+        requested_max = max(1, int(requested_max))
+        if requested_max <= 1:
+            return False
+        if self._force_sequential or not self.estimated_worker_bytes:
+            return True
+        snapshot = self._memory_sampler()
+        if snapshot is None:
+            return False
+        best_headroom = snapshot.total_bytes - self.reserve_bytes(snapshot)
+        if best_headroom <= 0:
+            return True
+        return int(best_headroom / max(1, self.estimated_worker_bytes)) == 0
+
     def should_submit_more(
         self,
         active_workers: int,

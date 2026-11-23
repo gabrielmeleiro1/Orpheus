@@ -434,7 +434,7 @@ def test_repair_cancellation_stops_probing_retained_inventory(tmp_path, monkeypa
     cancelled = False
     probed = []
 
-    def probe(encoder, path):
+    def probe(encoder, path, *, cancel_requested=None):
         nonlocal cancelled
         probed.append(path)
         cancelled = True

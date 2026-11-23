@@ -138,7 +138,7 @@ def encode_chapter_audio(
     # Recovery inventories record this same name before synthesis starts.
     chapter_mp3 = chapter_audio_path(chapter, output_dir, ".mp3")
 
-    AudioEncoder().wav_to_mp3(
+    AudioEncoder(sample_rate=int(context.sample_rate or 24000)).wav_to_mp3(
         chapter_wav,
         chapter_mp3,
         bitrate=context.config.mp3_bitrate,

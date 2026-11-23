@@ -1055,8 +1055,9 @@ class TestM4BPackager:
             "modules.audio.packager.ffmpeg_timeout_seconds", return_value=0.1
         ):
             with pytest.raises(RuntimeError, match="timed out"):
+                # The boundary is never reached, so the reader keeps waiting.
                 packager._probe_concat_packet_starts(
-                    "/usr/bin/ffprobe", tmp_path / "concat.m4a", {0}
+                    "/usr/bin/ffprobe", tmp_path / "concat.m4a", {10**9}
                 )
 
         assert proc.killed

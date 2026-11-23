@@ -41,6 +41,20 @@ class ValidBatchSynthesis:
     total_samples: int
 
 
+@dataclass(frozen=True)
+class ChapterAudioFrame:
+    """Audio written around a chapter body (announcement and pauses).
+
+    A framed chapter is always published as a WAV at ``output_path``: the
+    lead-in is written before the first body sample and the tail after the
+    last, so the body is streamed to disk once.
+    """
+
+    output_path: Path
+    lead_in: tuple[np.ndarray, ...]
+    tail: tuple[np.ndarray, ...]
+
+
 class ChapterAudioAccumulator:
     """Accumulate chapter audio in memory until it must spill to WAV."""
 
@@ -50,15 +64,21 @@ class ChapterAudioAccumulator:
         output_path: Path,
         sample_rate: int,
         max_in_memory_samples: int,
+        frame: ChapterAudioFrame | None = None,
     ) -> None:
-        self.output_path = output_path
+        self.output_path = output_path if frame is None else frame.output_path
         self.sample_rate = sample_rate
         self.max_in_memory_samples = max_in_memory_samples
+        self._frame = frame
         self._segments: list[np.ndarray] = []
         self._sample_count = 0
         self._writer: Any = None
         self._pcm16_square_sum = 0.0
         self._pcm16_sample_count = 0
+        # Streamed body samples of a framed chapter are summed in fixed-size
+        # blocks counted from the body start, so the RMS does not depend on
+        # how the body arrived in chunks (matching a block-wise WAV scan).
+        self._pending_body_pcm16 = np.empty(0, dtype=np.int16)
 
     @property
     def is_streaming(self) -> bool:
@@ -78,12 +98,29 @@ class ChapterAudioAccumulator:
         self._pcm16_square_sum += float(np.sum(np.square(pcm16, dtype=np.float64)))
         self._pcm16_sample_count += int(pcm16.size)
 
+    def _track_body_pcm16(self, pcm16: np.ndarray) -> None:
+        if self._frame is None:
+            self._track_pcm16(pcm16)
+            return
+        if pcm16.size == 0:
+            return
+        if self._pending_body_pcm16.size:
+            pcm16 = np.concatenate([self._pending_body_pcm16, pcm16])
+        whole = pcm16.size - pcm16.size % _WAV_COPY_FRAMES
+        for start in range(0, whole, _WAV_COPY_FRAMES):
+            self._track_pcm16(pcm16[start:start + _WAV_COPY_FRAMES])
+        self._pending_body_pcm16 = pcm16[whole:].copy()
+
+    def _write_frame_part(self, segments: tuple[np.ndarray, ...]) -> None:
+        for segment in segments:
+            self._track_pcm16(_write_audio_segment(self._writer, segment))
+
     def add_segment(self, audio: np.ndarray) -> None:
         audio_array = np.asarray(audio, dtype=np.float32)
         if not np.isfinite(audio_array).all():
             raise ValueError("Audio segment contains non-finite samples")
         if self.is_streaming:
-            self._track_pcm16(_write_audio_segment(self._writer, audio_array))
+            self._track_body_pcm16(_write_audio_segment(self._writer, audio_array))
             return
 
         projected_sample_count = self._sample_count + int(len(audio_array))
@@ -93,33 +130,52 @@ class ChapterAudioAccumulator:
             return
 
         self.spill_to_disk()
-        self._track_pcm16(_write_audio_segment(self._writer, audio_array))
+        self._track_body_pcm16(_write_audio_segment(self._writer, audio_array))
 
     def add_file(self, audio_path: Path) -> None:
         if not self.is_streaming:
             self.spill_to_disk()
         for pcm16 in _write_wav_file_segment(self._writer, audio_path, self.sample_rate):
-            self._track_pcm16(pcm16)
+            self._track_body_pcm16(pcm16)
 
     def spill_to_disk(self) -> None:
         if self.is_streaming:
             return
 
         self._writer = _open_chapter_wav_writer(self.output_path, self.sample_rate)
+        if self._frame is not None:
+            self._write_frame_part(self._frame.lead_in)
         for buffered in self._segments:
-            self._track_pcm16(_write_audio_segment(self._writer, buffered))
+            self._track_body_pcm16(_write_audio_segment(self._writer, buffered))
         self._segments.clear()
         self._sample_count = 0
 
     def finalize(self) -> Optional[Path | np.ndarray]:
         if self.is_streaming:
+            if self._frame is not None:
+                self._track_pcm16(self._pending_body_pcm16)
+                self._pending_body_pcm16 = np.empty(0, dtype=np.int16)
+                self._write_frame_part(self._frame.tail)
             self._close_writer()
             return self.output_path
         if not self._segments:
             return None
         if len(self._segments) == 1:
-            return self._segments[0]
-        return np.concatenate(self._segments)
+            body = self._segments[0]
+        else:
+            body = np.concatenate(self._segments)
+        if self._frame is None:
+            return body
+        # A body that fit in memory is written as one segment, after the
+        # concatenation that may raise MemoryError and before any byte lands.
+        self._writer = _open_chapter_wav_writer(self.output_path, self.sample_rate)
+        self._write_frame_part(self._frame.lead_in)
+        self._track_pcm16(_write_audio_segment(self._writer, body))
+        self._segments.clear()
+        self._sample_count = 0
+        self._write_frame_part(self._frame.tail)
+        self._close_writer()
+        return self.output_path
 
     def _close_writer(self) -> None:
         writer, self._writer = self._writer, None
@@ -448,6 +504,17 @@ def _consume_batch_result_audio(accumulator: ChapterAudioAccumulator, batch_resu
         batch_result.audio = None
 
 
+def _discard_pending_results(pending_results: dict[int, Any]) -> None:
+    """Drop buffered chunk audio that will never be consumed."""
+    for batch_result in pending_results.values():
+        batch_result.audio = None
+        audio_path = getattr(batch_result, "audio_path", None)
+        if isinstance(audio_path, Path):
+            audio_path.unlink(missing_ok=True)
+            batch_result.audio_path = None
+    pending_results.clear()
+
+
 def _flush_ordered_incremental_results(
     accumulator: ChapterAudioAccumulator,
     pending_results: dict[int, Any],
@@ -512,13 +579,15 @@ def _create_batch_audio_accumulator(
     chapter_wav: Path,
     sample_rate: int,
     total_samples: int,
+    frame: ChapterAudioFrame | None = None,
 ) -> ChapterAudioAccumulator:
-    runtime.track_temp_cleanup_path(chapter_wav)
     accumulator = ChapterAudioAccumulator(
         output_path=chapter_wav,
         sample_rate=sample_rate,
         max_in_memory_samples=_max_in_memory_chapter_samples(runtime),
+        frame=frame,
     )
+    runtime.track_temp_cleanup_path(accumulator.output_path)
     if total_samples > accumulator.max_in_memory_samples:
         runtime.log_verbose("[TTS] Streaming chapter audio directly to WAV", "info")
         accumulator.spill_to_disk()
@@ -534,7 +603,9 @@ def _finalize_chapter_audio(
     try:
         return accumulator.finalize()
     except MemoryError as exc:
-        if was_streaming:
+        # A framed chapter opens its WAV during finalize; once bytes are
+        # written, a retry would duplicate them.
+        if was_streaming or accumulator.is_streaming:
             raise
         runtime.log_verbose(
             f"[TTS] In-memory concatenation failed ({exc}); streaming to chapter WAV",
@@ -615,6 +686,7 @@ def _synthesize_batch_results_to_chapter_audio(
     batch_results: list[Any],
     total_chunks: int,
     chapter_result: Any | None = None,
+    frame: ChapterAudioFrame | None = None,
 ) -> Optional[Path | np.ndarray]:
     """Validate list-returned batch results and assemble chapter audio."""
     if not _validate_complete_batch_results(
@@ -643,6 +715,7 @@ def _synthesize_batch_results_to_chapter_audio(
             chapter_wav=chapter_wav,
             sample_rate=sample_rate,
             total_samples=valid_batch.total_samples,
+            frame=frame,
         )
         for batch_result in valid_batch.results:
             _consume_batch_result_audio(accumulator, batch_result)
@@ -664,9 +737,14 @@ def _synthesize_chapter_chunks_incrementally(
     total_chunks: int,
     iter_synthesize_batch: Any,
     chapter_result: Any | None = None,
+    frame: ChapterAudioFrame | None = None,
 ) -> Optional[Path | np.ndarray]:
     """Consume iterator-returned TTS results without retaining the full result list."""
-    chapter_wav = runtime.config.temp_dir / f"chapter_{chapter.number:02d}.wav"
+    chapter_wav = (
+        runtime.config.temp_dir / f"chapter_{chapter.number:02d}.wav"
+        if frame is None
+        else frame.output_path
+    )
     # A cancelled or failed chapter never reaches narration/encoding, where
     # completed artifacts are otherwise registered for end-of-run cleanup.
     runtime.track_temp_cleanup_path(chapter_wav)
@@ -678,6 +756,7 @@ def _synthesize_chapter_chunks_incrementally(
             output_path=chapter_wav,
             sample_rate=sample_rate,
             max_in_memory_samples=_max_in_memory_chapter_samples(runtime),
+            frame=frame,
         )
         seen_indexes: set[int] = set()
         valid = True
@@ -724,6 +803,19 @@ def _synthesize_chapter_chunks_incrementally(
             else:
                 batch_result.audio = None
                 valid = False
+            if not valid and any(
+                not getattr(result, "error", None) for result in streamed_results
+            ):
+                # The serial retry below only runs when every chunk errored, so
+                # this chapter can no longer succeed; stop instead of buffering
+                # every later chunk behind the failed one.
+                _discard_pending_results(pending_results)
+                runtime.log_verbose(
+                    "[TTS] Chapter synthesis failed; skipping its remaining chunks",
+                    "error",
+                )
+                accumulator.close()
+                return None
 
         if (
             valid_count == 0
@@ -743,6 +835,7 @@ def _synthesize_chapter_chunks_incrementally(
                 batch_results=retry_results,
                 total_chunks=total_chunks,
                 chapter_result=chapter_result,
+                frame=frame,
             )
 
         valid = _finalize_incremental_batch_validation(
@@ -779,8 +872,13 @@ def synthesize_chapter_chunks(
     total_chapters: int,
     chunks: list[str],
     chapter_result: Any | None = None,
+    frame: ChapterAudioFrame | None = None,
 ) -> Optional[Path | np.ndarray]:
-    """Run TTS stage for chapter chunks and return chapter audio payload."""
+    """Run TTS stage for chapter chunks and return chapter audio payload.
+
+    With a ``frame``, successful audio is always the framed WAV at
+    ``frame.output_path``.
+    """
     _start_tts_stage(runtime, hooks)
     total_chunks = len(chunks)
 
@@ -808,6 +906,7 @@ def synthesize_chapter_chunks(
             total_chunks=total_chunks,
             iter_synthesize_batch=iter_synthesize_batch,
             chapter_result=chapter_result,
+            frame=frame,
         )
 
     batch_results = runtime.synthesize_batch(
@@ -827,4 +926,5 @@ def synthesize_chapter_chunks(
         batch_results=batch_results,
         total_chunks=total_chunks,
         chapter_result=chapter_result,
+        frame=frame,
     )

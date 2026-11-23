@@ -88,7 +88,7 @@ def test_cancelled_segment_probe_never_falls_back_to_duration_probes(monkeypatch
     monkeypatch.setattr("modules.audio.packager.require_ffmpeg_binary", lambda _name: "ffprobe")
     packager = M4BPackager()
 
-    def cancelled_segment_probe(*_args):
+    def cancelled_segment_probe(*_args, **_kwargs):
         requested.set()
         raise RuntimeError("FFprobe failed: cancelled")
 

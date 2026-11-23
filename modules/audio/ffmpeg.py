@@ -197,24 +197,31 @@ def run_ffmpeg_command(
         )
         deadline = time.monotonic() + timeout
         if cancel_requested():
-            kill_ffmpeg_process(process)
+            abandon_ffmpeg_process(process, None)
             raise RuntimeError(f"{failure_message}: cancelled")
         communicate_result: list[tuple[str | None, str | None]] = []
+        collect_error: list[BaseException] = []
 
         def collect_output() -> None:
-            communicate_result.append(process.communicate())
+            try:
+                communicate_result.append(process.communicate())
+            except BaseException as exc:  # surfaced on the caller thread below
+                collect_error.append(exc)
 
         collector = threading.Thread(target=collect_output, daemon=True)
         collector.start()
         while collector.is_alive():
             if cancel_requested():
-                kill_ffmpeg_process(process)
+                abandon_ffmpeg_process(process, collector)
                 raise RuntimeError(f"{failure_message}: cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                kill_ffmpeg_process(process)
+                abandon_ffmpeg_process(process, collector)
                 raise RuntimeError(f"{failure_message}: timed out after {timeout:g}s")
             collector.join(timeout=min(0.1, remaining))
+        if collect_error:
+            abandon_ffmpeg_process(process, collector)
+            raise RuntimeError(f"{failure_message}: {collect_error[0]}") from collect_error[0]
         stdout, stderr = communicate_result[0]
         return_code = int(process.returncode or 0)
         if return_code != 0:
@@ -275,6 +282,26 @@ def kill_ffmpeg_process(process: subprocess.Popen) -> None:
         process.kill()
     with contextlib.suppress(Exception):
         process.wait(timeout=_KILL_WAIT_SECONDS)
+
+
+def abandon_ffmpeg_process(
+    process: subprocess.Popen, reader: threading.Thread | None,
+) -> None:
+    """Kill a process, give its pipe reader a bounded join, then close its pipes.
+
+    Pipes are closed only once no reader thread is still using them; a reader
+    that outlives the bounded join is a daemon and is left to finish on EOF.
+    """
+    kill_ffmpeg_process(process)
+    if reader is not None:
+        reader.join(timeout=_KILL_WAIT_SECONDS)
+        if reader.is_alive():
+            return
+    for name in ("stdin", "stdout", "stderr"):
+        pipe = getattr(process, name, None)
+        if pipe is not None:
+            with contextlib.suppress(Exception):
+                pipe.close()
 
 
 def cleanup_abandoned_atomic_outputs(directory: Path | str) -> None:

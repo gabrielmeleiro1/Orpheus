@@ -346,7 +346,7 @@ def test_repair_probes_checkpoint_duration_instead_of_packaging_zero_length(tmp_
     with patch('modules.audio.encoder.AudioEncoder.get_duration', return_value=1.75) as probe:
         result = _existing_repair_result(stored, audio)
     assert result.duration_ms == 1750
-    probe.assert_called_once_with(audio)
+    probe.assert_called_once_with(audio, cancel_requested=None)
 
 
 def test_empty_recovery_inventory_owns_reserved_folder_for_open_and_delete(tmp_path):

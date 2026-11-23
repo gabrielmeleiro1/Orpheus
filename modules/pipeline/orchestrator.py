@@ -504,10 +504,7 @@ class ConversionPipeline:
             was_cancelled = self._check_cancelled()
             pool_stopped = True
             if was_cancelled:
-                manager = self.config.shared_worker_pool_manager
-                shutdown = getattr(manager, "shutdown", None)
-                if callable(shutdown):
-                    pool_stopped = shutdown() is not False
+                pool_stopped = self._shutdown_shared_worker_pool()
             self._finish_conversion_run()
             if was_cancelled and pool_stopped and workspace is not None:
                 from modules.audio.ffmpeg import cleanup_abandoned_atomic_outputs
@@ -590,6 +587,7 @@ class ConversionPipeline:
                 output_dir=package_output_dir,
             ),
             cancel=self.cancel,
+            shutdown_workers=self._shutdown_shared_worker_pool,
         )
         return execute_repair_plan(runtime, plan)
 
@@ -597,6 +595,14 @@ class ConversionPipeline:
     def stages(self):
         """Pipeline stage execution collaborator."""
         return self._stages
+
+    def _shutdown_shared_worker_pool(self) -> bool:
+        """Stop the shared pool; False while its workers may still be writing."""
+        manager = self.config.shared_worker_pool_manager
+        shutdown = getattr(manager, "shutdown", None)
+        if callable(shutdown):
+            return shutdown() is not False
+        return True
 
     def _cleanup_temp(self) -> None:
         """Best-effort removal of this run's temporary chapter artifacts."""
@@ -622,7 +628,7 @@ class ConversionPipeline:
                 or (
                     item.is_file()
                     and item.name.startswith("chapter_")
-                    and item.suffix.lower() == ".wav"
+                    and item.suffix.lower() in {".wav", ".m4a"}
                 )
             ]
         except OSError:

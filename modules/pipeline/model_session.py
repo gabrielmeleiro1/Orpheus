@@ -61,18 +61,24 @@ class ModelSession:
             self._unload_idle_tts_engine()
             return
 
-        timer = threading.Timer(timeout_seconds, self._unload_idle_tts_engine)
+        timer = threading.Timer(
+            timeout_seconds,
+            lambda: self._unload_idle_tts_engine(from_timer=True),
+        )
         timer.daemon = True
         with self.runtime.state.tts_idle_lock:
             self.runtime.state.tts_idle_timer = timer
         timer.start()
 
-    def _unload_idle_tts_engine(self) -> None:
+    def _unload_idle_tts_engine(self, *, from_timer: bool = False) -> None:
         """Unload retained TTS runtime once the pipeline has been idle long enough."""
-        if self.runtime.is_running:
-            return
-
         with self.runtime.state.tts_idle_lock:
+            # Timer.cancel() cannot stop a timer that already fired, so a run
+            # that cancelled this unload (by clearing the slot) must win here.
+            if from_timer and self.runtime.state.tts_idle_timer is not threading.current_thread():
+                return
+            if self.runtime.is_running:
+                return
             tts_engine = self.runtime.state.tts_engine
             self.runtime.state.tts_engine = None
             self.runtime.state.tts_idle_timer = None

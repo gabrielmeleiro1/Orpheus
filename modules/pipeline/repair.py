@@ -35,6 +35,8 @@ class RepairRuntime:
     process_missing_chapters: Callable[[list[Any], Path, int], list[ChapterResult]]
     package_results: Callable[[list[ChapterResult], str, Optional[str], Path], Path]
     cancel: Callable[[], None]
+    # Returns False when workers may still be writing chapter outputs.
+    shutdown_workers: Optional[Callable[[], bool]] = None
 
 
 def _chapter_number(chapter: Any, fallback: int) -> int:
@@ -44,6 +46,8 @@ def _chapter_number(chapter: Any, fallback: int) -> int:
 def _existing_repair_result(
     stored_chapter: Any,
     chapter_audio: Path,
+    *,
+    cancel_requested: Optional[Callable[[], bool]] = None,
 ) -> ChapterResult:
     # Classify the stored audio by container so packaging homogeneity checks
     # compare kept chapters against repaired ones on the right field.
@@ -57,7 +61,9 @@ def _existing_repair_result(
 
     # A DB duration records the original encode, not the current file's health.
     # Probe retained files even after a checkpoint persisted their duration.
-    probed_duration_ms = round(AudioEncoder().get_duration(chapter_audio) * 1000)
+    probed_duration_ms = round(
+        AudioEncoder().get_duration(chapter_audio, cancel_requested=cancel_requested) * 1000
+    )
     if probed_duration_ms <= 0:
         raise ValueError(f"Chapter audio has no playable duration: {chapter_audio.name}")
     duration_ms = int(getattr(stored_chapter, "duration_ms", 0) or 0)
@@ -96,6 +102,12 @@ def execute_repair_plan(
     plan: RepairPlan,
 ) -> RepairResult:
     """Repair missing chapters and repackage using explicit runtime operations."""
+
+    def cancel_requested() -> bool:
+        if plan.cancel_requested is not None and plan.cancel_requested():
+            return True
+        return bool(runtime.check_cancelled())
+
     runtime.begin_run()
     try:
         if runtime.check_cancelled():
@@ -146,11 +158,17 @@ def execute_repair_plan(
             chapter_audio = plan.resolve_chapter_audio(stored_chapter)
             if chapter_audio is not None and chapter_audio.exists() and chapter_audio.is_file():
                 try:
-                    kept = _existing_repair_result(stored_chapter, chapter_audio)
+                    kept = _existing_repair_result(
+                        stored_chapter, chapter_audio, cancel_requested=cancel_requested,
+                    )
                 except (OSError, RuntimeError, ValueError, KeyError):
+                    if cancel_requested():
+                        # A cancelled probe says nothing about the file's health.
+                        runtime.cancel()
+                        runtime.set_stage(PipelineStage.CANCELLED)
+                        return _cancelled_result(plan)
                     # Unreadable/empty audio is a missing chapter for repair.
                     # Keep it on disk until the encoder atomically replaces it.
-                    pass
                 else:
                     results_by_number[chapter_number] = kept
                     if not getattr(stored_chapter, "duration_ms", None) or not getattr(stored_chapter, "mp3_path", None):
@@ -260,10 +278,24 @@ def execute_repair_plan(
         runtime.set_stage(PipelineStage.COMPLETE)
         return result
     except Exception as exc:
+        if cancel_requested():
+            # Stages abort a cancelled subprocess by raising; that is the
+            # requested cancellation, not a repair failure.
+            runtime.set_stage(PipelineStage.CANCELLED)
+            return _cancelled_result(plan)
         runtime.set_stage(PipelineStage.ERROR)
         return _failure_result(
             plan=plan,
             error=str(exc),
         )
     finally:
+        was_cancelled = cancel_requested()
+        workers_stopped = True
+        if was_cancelled and runtime.shutdown_workers is not None:
+            workers_stopped = runtime.shutdown_workers() is not False
         runtime.finish_run()
+        if was_cancelled and workers_stopped:
+            from modules.audio.ffmpeg import cleanup_abandoned_atomic_outputs
+
+            for directory in (plan.output_dir, plan.chapters_dir):
+                cleanup_abandoned_atomic_outputs(directory)

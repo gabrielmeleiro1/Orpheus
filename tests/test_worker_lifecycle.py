@@ -275,6 +275,7 @@ def _cuda_worker_init_config() -> dict:
         "cleaner_api_model": "gpt-5-nano",
         "cleaner_api_global_concurrency": 6,
         "cleaner_api_global_limiter": None,
+        "cleaner_skip_llm_when_not_needed": False,
     }
 
 

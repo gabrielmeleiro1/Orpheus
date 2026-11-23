@@ -268,13 +268,27 @@ def dispatch_chapters(
             )
             context.set_parallel_execution_active(False)
             runner.warmup_models()
-            runner.cleanup_models(force=True)
-            if context.check_cancelled():
-                return []
-            selected_workers = min(
-                selected_workers,
-                memory_policy.allowed_workers(selected_workers),
+            # The worker count is judged on memory sampled after the parent's
+            # models are released. When even a fully free device could not fit
+            # a second worker, releasing them cannot change the outcome, so the
+            # warm models are kept for the sequential run instead of reloaded.
+            sequential_regardless = getattr(
+                memory_policy, "sequential_regardless_of_free_memory", None,
             )
+            keep_warm_models = callable(sequential_regardless) and bool(
+                sequential_regardless(selected_workers)
+            )
+            allowed_workers = (
+                memory_policy.allowed_workers(selected_workers)
+                if keep_warm_models and not context.check_cancelled()
+                else None
+            )
+            if allowed_workers is None or allowed_workers > 1:
+                runner.cleanup_models(force=True)
+                if context.check_cancelled():
+                    return []
+                allowed_workers = memory_policy.allowed_workers(selected_workers)
+            selected_workers = min(selected_workers, allowed_workers)
             context.set_selected_parallel_chapters(selected_workers)
             use_parallel = selected_workers > 1
             context.set_parallel_execution_active(use_parallel)

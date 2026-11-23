@@ -169,6 +169,9 @@ def _init_worker(
             tts_kwargs.update(
                 {
                     "default_voice": worker_init_config["voice"],
+                    "max_chunk_tokens": (
+                        worker_init_config.get("pipeline_config") or {}
+                    ).get("chunk_size", 700),
                 }
             )
 
@@ -211,12 +214,16 @@ def _init_worker(
                         worker_init_config,
                     )
                     try:
-                        _WORKER_TEXT_CLEANER = TextCleaner(
-                            config=build_cleaner_config_from_worker_init(
-                                worker_init_config,
-                            ),
+                        cleaner_config = build_cleaner_config_from_worker_init(
+                            worker_init_config,
                         )
-                        _WORKER_TEXT_CLEANER.load()
+                        _WORKER_TEXT_CLEANER = TextCleaner(config=cleaner_config)
+                        # Mirror sequential warmup: rule-only gating loads the
+                        # model on the first chunk that needs LLM cleanup.
+                        if cleaner_config.backend != "basic" and not (
+                            cleaner_config.skip_llm_when_not_needed
+                        ):
+                            _WORKER_TEXT_CLEANER.load()
                     except Exception as exc:
                         _record_worker_init_failure(
                             exc,

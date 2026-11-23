@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from modules.pipeline.book_workspace import sanitize_book_title
 from modules.pipeline.result_validation import (
@@ -26,10 +26,17 @@ def narrator_name(voice: str | None) -> str | None:
     return " & ".join(names.get(part, part) for part in parts)
 
 
-def _write_cover_for(source_path: Path | None) -> Path | None:
-    """Write the source's cover (EPUB cover or PDF first page) to a temp file."""
+def _write_cover_for(
+    source_path: Path | None, cancel_requested: Callable[[], bool] | None = None,
+) -> Path | None:
+    """Write the source's cover (EPUB cover or PDF first page) to a temp file.
+
+    Embedded cover bytes are not validated at extraction, so a cover FFmpeg
+    cannot use is dropped here rather than failing the whole book at the mux.
+    """
     if source_path is None:
         return None
+    from modules.audio.packager import cover_image_is_usable
     from modules.ingestion.cover_art import extract_cover
 
     cover = extract_cover(source_path)
@@ -39,6 +46,14 @@ def _write_cover_for(source_path: Path | None) -> Path | None:
     folder = Path(tempfile.mkdtemp(prefix="orpheus-cover-"))
     path = folder / f"cover{suffix.get(cover.media_type, '.img')}"
     path.write_bytes(cover.data)
+    try:
+        usable = cover_image_is_usable(path, cancel_requested)
+    except BaseException:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
+    if not usable:
+        shutil.rmtree(folder, ignore_errors=True)
+        return None
     return path
 
 
@@ -154,6 +169,7 @@ def package_chapters(
         sanitize_book_title(title)[:50] if str(title or "").strip() else "audiobook"
     )
     conversion_mode = getattr(runtime.config, "conversion_mode", "audiobook")
+    bitrate = getattr(runtime.config, "mp3_bitrate", "128k")
     cancel_requested = getattr(runtime, "check_cancelled", None)
 
     if conversion_mode == "document_audio":
@@ -163,13 +179,16 @@ def package_chapters(
             mp3_files=audio_files,
             metadata=metadata,
             output_path=m4a_path,
+            bitrate=bitrate,
             cancel_requested=cancel_requested,
             chapter_durations_ms=chapter_durations_ms,
         )
         return m4a_path
 
     m4b_path = output_dir / f"{safe_title}.m4b"
-    cover_file = _write_cover_for(getattr(getattr(runtime, "state", None), "source_path", None))
+    cover_file = _write_cover_for(
+        getattr(getattr(runtime, "state", None), "source_path", None), cancel_requested,
+    )
     if cover_file is not None:
         metadata.cover_path = cover_file
     try:
@@ -181,6 +200,7 @@ def package_chapters(
             output_path=m4b_path,
             chapter_durations_ms=chapter_durations_ms,
             cancel_requested=cancel_requested,
+            bitrate=bitrate,
         )
         for result, marker in zip(chapter_results, packager.chapter_markers):
             result.packaged_start_ms = marker.start_ms
