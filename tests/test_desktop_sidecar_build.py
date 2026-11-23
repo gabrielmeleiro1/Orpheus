@@ -1237,6 +1237,31 @@ def test_plan_private_lib_copies_uses_original_install_name_basename(
     }
 
 
+def _install_name_rewrites(
+    commands: list[list[str]], target: Path
+) -> tuple[str | None, dict[str, str]]:
+    """Return the -id and -change pairs of the single install_name_tool run on *target*."""
+    runs = [
+        command
+        for command in commands
+        if command[0] == "install_name_tool" and command[-1] == str(target)
+    ]
+    assert len(runs) == 1, runs
+    args = runs[0][1:-1]
+    identity: str | None = None
+    changes: dict[str, str] = {}
+    index = 0
+    while index < len(args):
+        if args[index] == "-id":
+            identity = args[index + 1]
+            index += 2
+        else:
+            assert args[index] == "-change", args
+            changes[args[index + 1]] = args[index + 2]
+            index += 3
+    return identity, changes
+
+
 @pytest.mark.skipif(
     sys.platform != "darwin",
     reason="Requires macOS sidecar packaging tools and Mach-O dependency handling",
@@ -1289,26 +1314,13 @@ def test_package_macho_dependencies_relocatable_rewrites_and_codesigns(
     assert (lib_dir / "libavcodec.62.dylib").stat().st_mode & stat.S_IWUSR
     assert (lib_dir / "libavutil.60.dylib").stat().st_mode & stat.S_IWUSR
 
-    assert [
-        "install_name_tool",
-        "-change",
-        str(lib_av),
-        "@loader_path/lib/libavcodec.62.dylib",
-        str(ffmpeg),
-    ] in commands
-    assert [
-        "install_name_tool",
-        "-change",
-        str(lib_util),
-        "@loader_path/libavutil.60.dylib",
-        str(lib_dir / "libavcodec.62.dylib"),
-    ] in commands
-    assert [
-        "install_name_tool",
-        "-id",
-        "@loader_path/libavcodec.62.dylib",
-        str(lib_dir / "libavcodec.62.dylib"),
-    ] in commands
+    _, ffmpeg_changes = _install_name_rewrites(commands, ffmpeg)
+    assert ffmpeg_changes[str(lib_av)] == "@loader_path/lib/libavcodec.62.dylib"
+    codec_identity, codec_changes = _install_name_rewrites(
+        commands, lib_dir / "libavcodec.62.dylib"
+    )
+    assert codec_changes[str(lib_util)] == "@loader_path/libavutil.60.dylib"
+    assert codec_identity == "@loader_path/libavcodec.62.dylib"
     assert ["codesign", "--force", "--sign", "-", str(ffmpeg)] in commands
     assert [
         "codesign",
@@ -1372,32 +1384,15 @@ def test_package_macho_dependencies_rewrites_symlink_install_names_not_resolved(
     assert dest.read_bytes() == b"avdevice"
     assert not (bin_dir / "lib" / "libavdevice.62.3.101.dylib").exists()
 
-    change_olds = [
-        command[2] for command in commands if command[:2] == ["install_name_tool", "-change"]
-    ]
-    assert cellar_install in change_olds
-    assert opt_install in change_olds
-    assert str(real_lib.resolve()) not in change_olds
-    assert [
-        "install_name_tool",
-        "-change",
-        cellar_install,
-        "@loader_path/lib/libavdevice.62.dylib",
-        str(ffmpeg),
-    ] in commands
-    assert [
-        "install_name_tool",
-        "-change",
-        opt_install,
-        "@loader_path/lib/libavdevice.62.dylib",
-        str(ffmpeg),
-    ] in commands
-    assert [
-        "install_name_tool",
-        "-id",
-        "@loader_path/libavdevice.62.dylib",
-        str(dest),
-    ] in commands
+    _, ffmpeg_changes = _install_name_rewrites(commands, ffmpeg)
+    dest_identity, dest_changes = _install_name_rewrites(commands, dest)
+    for changes in (ffmpeg_changes, dest_changes):
+        assert cellar_install in changes
+        assert opt_install in changes
+        assert str(real_lib.resolve()) not in changes
+    assert ffmpeg_changes[cellar_install] == "@loader_path/lib/libavdevice.62.dylib"
+    assert ffmpeg_changes[opt_install] == "@loader_path/lib/libavdevice.62.dylib"
+    assert dest_identity == "@loader_path/libavdevice.62.dylib"
 
 
 def test_package_macho_dependencies_relocatable_is_noop_off_darwin(tmp_path: Path) -> None:

@@ -75,11 +75,19 @@ class ArtifactInspectionResult:
     detail: str = ""
 
 
+QUALIFIED_RUNTIME_PROFILE = "mlx"
+
+
 def build_sidecar_commands(*, repo_root: Path) -> tuple[CommandSpec, ...]:
+    """Build through the shipped `tauri build` path, then validate its sidecar.
+
+    `tauri build` rebuilds the sidecar from scratch in its beforeBuildCommand,
+    so the sidecar validated here is the one bundled into the app and DMG.
+    """
     root = Path(repo_root)
     python = str(root / ".venv" / "bin" / "python")
-    # Pin to the resource tree that build-sidecar just wrote so a stale
-    # Orpheus.app bundle binary cannot satisfy (or fail) the gate.
+    # Pin to the resource tree that tauri build just wrote and bundled so a
+    # stale Orpheus.app bundle binary cannot satisfy (or fail) the gate.
     sidecar_path = (
         root
         / "desktop"
@@ -90,8 +98,28 @@ def build_sidecar_commands(*, repo_root: Path) -> tuple[CommandSpec, ...]:
     )
     return (
         CommandSpec(
-            label="build-sidecar",
-            argv=(python, "scripts/build_desktop_backend.py", "--runtime-profile", "mlx"),
+            label="tauri-desktop-build",
+            # The runner passes only an allowlisted environment, so the profile
+            # is set on the command line; without it the build would reuse
+            # whatever profile the previous local sidecar had.
+            argv=(
+                "/usr/bin/env",
+                f"ORPHEUS_RUNTIME_PROFILE={QUALIFIED_RUNTIME_PROFILE}",
+                "npm",
+                "run",
+                "desktop:build",
+            ),
+            cwd=str(root / "desktop"),
+        ),
+        CommandSpec(
+            label="validate-sidecar",
+            argv=(
+                python,
+                "scripts/build_desktop_backend.py",
+                "--validate-existing",
+                "--runtime-profile",
+                QUALIFIED_RUNTIME_PROFILE,
+            ),
             cwd=str(root),
         ),
         CommandSpec(
@@ -117,13 +145,9 @@ def build_sidecar_commands(*, repo_root: Path) -> tuple[CommandSpec, ...]:
 
 
 def build_bundle_commands(*, repo_root: Path) -> tuple[CommandSpec, ...]:
+    """Smoke the app and DMG produced by build_sidecar_commands' tauri build."""
     root = Path(repo_root)
     return (
-        CommandSpec(
-            label="tauri-desktop-build",
-            argv=("npm", "run", "desktop:build"),
-            cwd=str(root / "desktop"),
-        ),
         CommandSpec(
             label="bundled-runtime-smoke",
             argv=(str(root / ".venv/bin/python"), "-m", "tools.release_qualification.runtime",
@@ -361,7 +385,38 @@ def default_detach_dmg(mount_point: Path) -> None:
         )
 
 
+# Leading magic of every file `file` can report as Mach-O: thin 32/64-bit in
+# both byte orders, and fat/fat64 headers (which Java class files share, so
+# those still go to `file` for the final word).
+_MACHO_MAGICS = frozenset(
+    bytes.fromhex(magic)
+    for magic in (
+        "feedface",
+        "cefaedfe",
+        "feedfacf",
+        "cffaedfe",
+        "cafebabe",
+        "bebafeca",
+        "cafebabf",
+        "bfbafeca",
+    )
+)
+
+
+def _has_macho_magic(path: Path) -> bool | None:
+    """False when the header rules out Mach-O; None when it cannot be read."""
+    try:
+        with Path(path).open("rb") as handle:
+            head = handle.read(4)
+    except OSError:
+        return None
+    return head in _MACHO_MAGICS
+
+
 def default_classify_macho(path: Path) -> bool:
+    # Bundles hold thousands of non-binary files; skip spawning `file` for them.
+    if _has_macho_magic(path) is False:
+        return False
     completed = subprocess.run(
         ["file", "-b", str(path)],
         check=False,

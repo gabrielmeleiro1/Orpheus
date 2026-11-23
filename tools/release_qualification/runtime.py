@@ -22,6 +22,17 @@ from .artifact import (
 )
 
 SIDECAR_RELATIVE_PATH = Path("Contents/Resources/binaries/orpheus-desktop-backend")
+SIDECAR_EXECUTABLE = "orpheus-desktop-backend"
+
+
+def _tree_record(path: Path, relative: str, file_digest: str | None) -> bytes:
+    if path.is_symlink():
+        record = [relative, "symlink", str(path.readlink())]
+    elif path.is_file():
+        record = [relative, "file", path.stat().st_mode & 0o777, file_digest or sha256_file(path)]
+    else:
+        record = [relative, "directory"]
+    return json.dumps(record, separators=(",", ":")).encode() + b"\n"
 
 
 def sidecar_tree_digest(root: Path) -> str:
@@ -31,13 +42,7 @@ def sidecar_tree_digest(root: Path) -> str:
         relative = path.relative_to(root).as_posix()
         if not path.resolve().is_relative_to(root.resolve()):
             raise ArtifactInspectionError(f"sidecar resource escapes its bundle: {relative}")
-        if path.is_symlink():
-            record = [relative, "symlink", str(path.readlink())]
-        elif path.is_file():
-            record = [relative, "file", path.stat().st_mode & 0o777, sha256_file(path)]
-        else:
-            record = [relative, "directory"]
-        digest.update(json.dumps(record, separators=(",", ":")).encode() + b"\n")
+        digest.update(_tree_record(path, relative, None))
     return digest.hexdigest()
 
 
@@ -45,6 +50,60 @@ def app_tree_digest(app: Path) -> str:
     if not app.is_dir():
         raise ArtifactInspectionError(f"app bundle missing: {app}")
     return sidecar_tree_digest(app)
+
+
+def _reached_without_symlinks(root: Path, nested: Path) -> bool:
+    current = root
+    for part in nested.relative_to(root).parts:
+        current = current / part
+        if current.is_symlink() or not current.is_dir():
+            return False
+    return True
+
+
+def app_and_sidecar_digests(app: Path) -> tuple[str, str, str | None]:
+    """Return app_tree_digest, the sidecar's tree digest and its executable's hash.
+
+    One walk of the app yields all three, identical to what app_tree_digest,
+    sidecar_tree_digest and sha256_file compute; the sidecar subtree keeps its
+    own containment check. The executable hash is None when the walk did not
+    hash it as a regular file (missing, or a symlink).
+    """
+    if not app.is_dir():
+        raise ArtifactInspectionError(f"app bundle missing: {app}")
+    sidecar_root = app / SIDECAR_RELATIVE_PATH
+    executable = sidecar_root / SIDECAR_EXECUTABLE
+    if not _reached_without_symlinks(app, sidecar_root):
+        # rglob from the app root would not descend into this sidecar the way
+        # a walk rooted at the sidecar does, so hash it separately.
+        return app_tree_digest(app), sidecar_tree_digest(sidecar_root), None
+    app_resolved = app.resolve()
+    sidecar_resolved = sidecar_root.resolve()
+    app_digest = hashlib.sha256()
+    sidecar_digest = hashlib.sha256()
+    executable_digest: str | None = None
+    sidecar_escape: str | None = None
+    for path in sorted(app.rglob("*")):
+        relative = path.relative_to(app).as_posix()
+        resolved = path.resolve()
+        if not resolved.is_relative_to(app_resolved):
+            raise ArtifactInspectionError(f"sidecar resource escapes its bundle: {relative}")
+        file_digest = (
+            sha256_file(path) if not path.is_symlink() and path.is_file() else None
+        )
+        app_digest.update(_tree_record(path, relative, file_digest))
+        if not path.is_relative_to(sidecar_root) or path == sidecar_root:
+            continue
+        sidecar_relative = path.relative_to(sidecar_root).as_posix()
+        if sidecar_escape is None and not resolved.is_relative_to(sidecar_resolved):
+            # The separate walks check the whole app before the sidecar.
+            sidecar_escape = sidecar_relative
+        sidecar_digest.update(_tree_record(path, sidecar_relative, file_digest))
+        if path == executable and file_digest is not None:
+            executable_digest = file_digest
+    if sidecar_escape is not None:
+        raise ArtifactInspectionError(f"sidecar resource escapes its bundle: {sidecar_escape}")
+    return app_digest.hexdigest(), sidecar_digest.hexdigest(), executable_digest
 
 
 def artifact_fingerprint(dmg_digest: str, app_digest: str) -> str:
@@ -99,20 +158,22 @@ def qualify_bundled_runtime(
     *, app: Path, dmg: Path, repo_root: Path,
     run=run_bundled_smoke, mount_dmg=default_mount_dmg, detach_dmg=default_detach_dmg,
 ) -> dict[str, str]:
+    # Each checkpoint walks each tree once; the before/after pairs stay separate
+    # because the smoke runs between them.
     image_digest = sha256_file(dmg)
-    app_digest = app_tree_digest(app)
-    source_digest = sidecar_tree_digest(app / SIDECAR_RELATIVE_PATH)
+    app_digest, source_digest, _ = app_and_sidecar_digests(app)
     with tempfile.TemporaryDirectory(prefix="orpheus-qualified-dmg-") as temp:
         mount = mount_dmg(dmg, Path(temp))
         try:
             shipped_app = mount / app.name
-            sidecar_root = shipped_app / SIDECAR_RELATIVE_PATH
-            sidecar = sidecar_root / "orpheus-desktop-backend"
-            executable_digest = sha256_file(sidecar)
-            embedded_digest = sidecar_tree_digest(sidecar_root)
+            sidecar = shipped_app / SIDECAR_RELATIVE_PATH / SIDECAR_EXECUTABLE
+            shipped_app_digest, embedded_digest, executable_digest = (
+                app_and_sidecar_digests(shipped_app)
+            )
+            if executable_digest is None:
+                executable_digest = sha256_file(sidecar)
             if embedded_digest != source_digest:
                 raise ArtifactInspectionError("DMG and app bundle sidecar resources differ")
-            shipped_app_digest = app_tree_digest(shipped_app)
             if shipped_app_digest != app_digest:
                 raise ArtifactInspectionError("DMG and app bundle trees differ")
             run(
@@ -125,11 +186,9 @@ def qualify_bundled_runtime(
                 cwd=repo_root, check=True, timeout=180,
             )
             if (
-                app_tree_digest(shipped_app) != shipped_app_digest
-                or sidecar_tree_digest(sidecar_root) != embedded_digest
-                or sidecar_tree_digest(app / SIDECAR_RELATIVE_PATH) != source_digest
+                app_and_sidecar_digests(shipped_app)[:2] != (shipped_app_digest, embedded_digest)
                 or sha256_file(dmg) != image_digest
-                or app_tree_digest(app) != app_digest
+                or app_and_sidecar_digests(app)[:2] != (app_digest, source_digest)
             ):
                 raise ArtifactInspectionError("packaged runtime changed during qualification")
         finally:

@@ -51,6 +51,11 @@ jobs:
           rustup toolchain install 1.88.0 --profile minimal
           rustup default 1.88.0
 
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+
       - name: Install FFmpeg
         run: brew install ffmpeg
 

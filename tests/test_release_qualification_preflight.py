@@ -28,7 +28,7 @@ class FakeHost:
     macos_version: str = "14.5"
     os_build: str = "23F79"
     python_version: tuple[int, int, int] = (3, 12, 8)
-    node_version: str = "v20.18.0"
+    node_version: str = "v22.11.0"
     rust_version: str = "1.88.0"
     tools_present: frozenset[str] = frozenset(
         {"hdiutil", "otool", "codesign", "file", "ffmpeg", "ffprobe"}
@@ -184,9 +184,9 @@ def test_python_below_3_12_fails():
         _collect(host)
 
 
-def test_node_below_20_fails():
-    host = FakeHost(node_version="v18.20.0")
-    with pytest.raises(PreflightError, match="Node|20"):
+def test_node_below_22_fails():
+    host = FakeHost(node_version="v20.18.0")
+    with pytest.raises(PreflightError, match="Node v20.18.0 is below required 22"):
         _collect(host)
 
 
@@ -364,7 +364,7 @@ def test_matching_tag_and_versions_pass():
     assert facts.release_version == "1.0.0"
     assert facts.rust_version == PINNED_RUST_VERSION
     assert facts.python_version.startswith("3.12")
-    assert facts.node_version.startswith("20") or facts.node_version.startswith("v20")
+    assert facts.node_version.startswith("22") or facts.node_version.startswith("v22")
 
 
 def test_github_actions_workflow_is_informational_not_a_dependency():

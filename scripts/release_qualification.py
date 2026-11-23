@@ -123,18 +123,31 @@ def build_phase_handlers(
                 )
         return PhaseOutcome(PhaseState.PASSED, "source validation ok")
 
-    def sidecar_validation(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
-        commands = build_sidecar_commands(repo_root=REPO_ROOT)
+    # Set once sidecar_validation has built and validated the app in this
+    # invocation; a resumed run that starts at bundle_validation rebuilds first
+    # so it never qualifies an app left over from an earlier invocation.
+    built = {"app": False}
+
+    def build_and_validate_sidecar(path: Path) -> PhaseOutcome:
+        built["app"] = False
         log_dir = path / "commands"
-        for spec in commands:
+        for spec in build_sidecar_commands(repo_root=REPO_ROOT):
             result = run_command_fn(spec, log_dir=log_dir)
             if result.exit_code != 0:
                 return PhaseOutcome(PhaseState.FAILED, f"{spec.label} failed")
+        built["app"] = True
         return PhaseOutcome(PhaseState.PASSED, "sidecar validation ok")
 
+    def sidecar_validation(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
+        return build_and_validate_sidecar(path)
+
     def bundle_validation(name: str, path: Path) -> PhaseOutcome:  # noqa: ARG001
-        # `tauri build` rebuilds the sidecar via beforeBuildCommand, so the copy smoked
-        # in sidecar_validation is not the shipped one; bundled-runtime-smoke covers that.
+        # sidecar_validation's `tauri build` produced both the validated sidecar
+        # and this bundle; bundled-runtime-smoke checks the copy inside the DMG.
+        if not built["app"]:
+            rebuilt = build_and_validate_sidecar(path)
+            if rebuilt.state is not PhaseState.PASSED:
+                return rebuilt
         commands = build_bundle_commands(repo_root=REPO_ROOT)
         log_dir = path / "commands"
         smoke_evidence = None
@@ -669,10 +682,12 @@ def verify_sha256sums(
         if name in seen:
             raise ValueError(f"duplicate SHA256SUMS entry: {name}")
         seen.add(name)
-        target = (report_dir / name).resolve()
+        listed = report_dir / name
+        target = listed.resolve()
         if not target.is_relative_to(report_dir.resolve()):
             raise ValueError(f"SHA256SUMS path escapes report_dir: {name}")
-        if not target.is_file() or target.is_symlink():
+        # resolve() follows links, so the symlink check needs the listed path.
+        if not target.is_file() or listed.is_symlink():
             raise ValueError(f"SHA256SUMS target missing: {name}")
         if sha256_file(target) != digest:
             raise ValueError(f"SHA256SUMS mismatch: {name}")

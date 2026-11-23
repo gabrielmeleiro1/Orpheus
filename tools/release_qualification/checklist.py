@@ -298,10 +298,12 @@ def _revalidate_passed_item(
         digest = item.get("evidence_sha256")
         if not rel or not digest:
             raise ValueError(f"passed item missing evidence hash: {check_id}")
-        path = (report_root / str(rel)).resolve()
+        listed = report_root / str(rel)
+        path = listed.resolve()
         if not path.is_relative_to(report_root):
             raise ValueError(f"evidence path escapes report_dir: {check_id}")
-        if path.is_symlink() or not path.is_file():
+        # resolve() follows links, so the symlink check needs the listed path.
+        if listed.is_symlink() or not path.is_file():
             raise ValueError(f"evidence missing or not a regular file: {check_id}")
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if actual != str(digest):
@@ -312,10 +314,12 @@ def _revalidate_passed_item(
         digest = item.get("metrics_sha256")
         if not rel or not digest:
             raise ValueError(f"passed item missing metrics hash: {check_id}")
-        path = (report_root / str(rel)).resolve()
+        listed = report_root / str(rel)
+        path = listed.resolve()
         if not path.is_relative_to(report_root):
             raise ValueError(f"metrics path escapes report_dir: {check_id}")
-        if path.is_symlink() or not path.is_file():
+        # resolve() follows links, so the symlink check needs the listed path.
+        if listed.is_symlink() or not path.is_file():
             raise ValueError(f"metrics missing or not a regular file: {check_id}")
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if actual != str(digest):

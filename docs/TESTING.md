@@ -55,10 +55,12 @@ Rust shell, the packaged sidecar, installers, or the optional suites.
 python run_tests.py
 ```
 
-The smoke suite runs each module in `SMOKE_TEST_MODULES` with pytest
-(`python -m pytest <test_file> -q -o addopts=`); a listed module that no longer
-exists fails the run. It is useful while iterating, but a green smoke run does
-not mean the contract passes.
+The smoke suite runs the modules in `SMOKE_TEST_MODULES` in one pytest process
+(`-q -o addopts=`) and reports each module separately. A module that fails
+there is re-run on its own, and that run decides its result;
+`python run_tests.py --isolated` runs every module in its own process from the
+start. A listed module that no longer exists fails the run. The suite is useful
+while iterating, but a green smoke run does not mean the contract passes.
 
 ## Focused Checks
 

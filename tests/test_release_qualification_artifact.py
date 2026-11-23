@@ -784,9 +784,11 @@ def test_dmg_detach_failure_is_release_blocking_after_retry(tmp_path: Path):
 
 
 def test_bundle_commands_smoke_the_embedded_runtime_after_tauri_build():
+    # The single tauri build runs first, in build_sidecar_commands.
+    assert build_sidecar_commands(repo_root=REPO_ROOT)[0].label == "tauri-desktop-build"
     commands = build_bundle_commands(repo_root=REPO_ROOT)
-    assert [command.label for command in commands] == ["tauri-desktop-build", "bundled-runtime-smoke"]
-    assert commands[1].argv == (
+    assert [command.label for command in commands] == ["bundled-runtime-smoke"]
+    assert commands[0].argv == (
         str(REPO_ROOT / ".venv/bin/python"), "-m", "tools.release_qualification.runtime",
         "--repo-root", str(REPO_ROOT),
     )

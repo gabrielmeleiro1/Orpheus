@@ -79,7 +79,8 @@ def test_main_smoke_success_mentions_contract_not_checked(
 ) -> None:
     called = {"smoke": 0, "contract": 0}
 
-    def fake_smoke() -> int:
+    def fake_smoke(*, isolated: bool = False) -> int:
+        assert isolated is False
         called["smoke"] += 1
         return 0
 
@@ -101,7 +102,8 @@ def test_main_smoke_success_mentions_contract_not_checked(
 def test_main_contract_mode_runs_contract_suite(monkeypatch) -> None:
     called = {"smoke": 0, "contract": 0}
 
-    def fake_smoke() -> int:
+    def fake_smoke(*, isolated: bool = False) -> int:
+        assert isolated is False
         called["smoke"] += 1
         return 0
 
@@ -164,6 +166,7 @@ def test_smoke_suite_resolves_tests_from_repo_root(monkeypatch, tmp_path) -> Non
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(run_tests, "SMOKE_TEST_MODULES", ["tests/test_run_tests.py"])
     monkeypatch.setattr(run_tests, "run_test", fake_run_test)
+    monkeypatch.setattr(run_tests, "run_smoke_batch", lambda paths: {})
 
     assert run_tests.run_smoke_suite() == 0
     assert calls == ["tests/test_run_tests.py"]
@@ -186,6 +189,10 @@ def test_smoke_suite_fails_when_one_module_is_missing(monkeypatch) -> None:
     monkeypatch.setattr(
         run_tests, "run_test", lambda path: (calls.append(path), (True, 0.0))[1]
     )
+    batches: list[list[str]] = []
+    monkeypatch.setattr(
+        run_tests, "run_smoke_batch", lambda paths: (batches.append(list(paths)), {})[1]
+    )
     monkeypatch.setattr(
         run_tests,
         "SMOKE_TEST_MODULES",
@@ -194,6 +201,7 @@ def test_smoke_suite_fails_when_one_module_is_missing(monkeypatch) -> None:
 
     assert run_tests.run_smoke_suite() == 1
     assert calls == ["tests/test_run_tests.py"]
+    assert batches == [["tests/test_run_tests.py"]]
 
 
 def test_every_smoke_module_runs_all_of_its_tests_through_pytest() -> None:

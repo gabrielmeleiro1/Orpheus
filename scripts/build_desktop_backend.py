@@ -380,6 +380,47 @@ def _resolve_required_binary_paths() -> tuple[dict[str, Path], list[str]]:
     return resolved_bins, missing_bins
 
 
+def _missing_required_modules(python_executable: str, modules: Sequence[str]) -> list[str]:
+    """Return ``"module: detail"`` for each module the interpreter cannot import."""
+    modules = list(modules)
+    if not modules:
+        return []
+    # Fast path: one interpreter imports everything. Any failure (including a
+    # crash) falls back to isolated per-module probes so the report still names
+    # each missing module with its own error.
+    combined_check = subprocess.run(
+        [
+            python_executable,
+            "-c",
+            "import importlib,sys\nfor name in sys.argv[1:]: importlib.import_module(name)",
+            *modules,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if combined_check.returncode == 0:
+        return []
+
+    missing_modules: list[str] = []
+    for module in modules:
+        module_check = subprocess.run(
+            [
+                python_executable,
+                "-c",
+                "import importlib,sys; importlib.import_module(sys.argv[1])",
+                module,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if module_check.returncode != 0:
+            detail = module_check.stderr.strip() or module_check.stdout.strip() or "import failed"
+            missing_modules.append(f"{module}: {detail}")
+    return missing_modules
+
+
 def _validate_runtime_dependencies(
     python_executable: str,
     *,
@@ -406,22 +447,10 @@ def _validate_runtime_dependencies(
             f"Details: {stderr}"
         )
 
-    missing_modules: list[str] = []
-    for module in required_modules(resolved_target, runtime_profile=resolved_profile):
-        module_check = subprocess.run(
-            [
-                python_executable,
-                "-c",
-                "import importlib,sys; importlib.import_module(sys.argv[1])",
-                module,
-            ],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if module_check.returncode != 0:
-            detail = module_check.stderr.strip() or module_check.stdout.strip() or "import failed"
-            missing_modules.append(f"{module}: {detail}")
+    missing_modules = _missing_required_modules(
+        python_executable,
+        required_modules(resolved_target, runtime_profile=resolved_profile),
+    )
 
     resolved_bins, missing_bins = _resolve_required_binary_paths()
 
@@ -853,22 +882,20 @@ def package_macho_dependencies_relocatable(
         shutil.copy2(source, destination)
         destination.chmod(destination.stat().st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
 
-    def _change_install_names(target: Path, mapping: Mapping[str, str]) -> None:
+    def _rewrite_install_names(
+        target: Path, mapping: Mapping[str, str], *, identity: str | None = None
+    ) -> None:
+        # One install_name_tool run per binary: it applies every -change to the
+        # load commands that reference the old name and ignores the rest.
+        command = ["install_name_tool"]
+        if identity is not None:
+            command.extend(["-id", identity])
         for old, new in mapping.items():
-            runner(
-                ["install_name_tool", "-change", old, new, str(target)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-
-    def _set_id(target: Path, identity: str) -> None:
-        runner(
-            ["install_name_tool", "-id", identity, str(target)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+            command.extend(["-change", old, new])
+        if len(command) == 1:
+            return
+        command.append(str(target))
+        runner(command, check=True, capture_output=True, text=True)
 
     def _adhoc_codesign(target: Path) -> None:
         runner(
@@ -879,12 +906,15 @@ def package_macho_dependencies_relocatable(
         )
 
     for root in roots:
-        _change_install_names(root, planned.root_install_name_changes)
+        _rewrite_install_names(root, planned.root_install_name_changes)
         _adhoc_codesign(root)
 
     for destination in planned.copies.values():
-        _set_id(destination, f"@loader_path/{destination.name}")
-        _change_install_names(destination, planned.lib_install_name_changes)
+        _rewrite_install_names(
+            destination,
+            planned.lib_install_name_changes,
+            identity=f"@loader_path/{destination.name}",
+        )
         _adhoc_codesign(destination)
 
     # Final otool validation only when using the real dependency reader. Injected
@@ -903,11 +933,19 @@ def _macho_rpaths(binary_path: Path) -> list[str]:
         text=True,
         check=True,
     )
+    return _parse_otool_rpaths(completed.stdout)
+
+
+def _parse_otool_rpaths(otool_load_commands: str) -> list[str]:
+    """Return LC_RPATH entries from ``otool -l`` text, keeping embedded spaces."""
     rpaths: list[str] = []
-    for line in completed.stdout.splitlines():
+    command = ""
+    for line in otool_load_commands.splitlines():
         stripped = line.strip()
-        if stripped.startswith("path "):
-            rpaths.append(stripped.split()[1])
+        if stripped.startswith("cmd "):
+            command = stripped.removeprefix("cmd ").strip()
+        elif command == "LC_RPATH" and stripped.startswith("path "):
+            rpaths.append(stripped.removeprefix("path ").rsplit(" (offset ", 1)[0])
     return rpaths
 
 

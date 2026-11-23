@@ -129,10 +129,12 @@ TERMINATE_GRACE_SECONDS = 30.0
 
 
 def _kill_process_group(
-    process: subprocess.Popen[bytes], sig: signal.Signals = signal.SIGKILL
+    process: subprocess.Popen[bytes], sig: signal.Signals | None = None
 ) -> None:
+    # SIGKILL is resolved at call time: it does not exist on Windows, where
+    # this module is still imported (the command runner itself is POSIX-only).
     try:
-        os.killpg(process.pid, sig)
+        os.killpg(process.pid, signal.SIGKILL if sig is None else sig)
     except ProcessLookupError:
         pass
 
@@ -185,22 +187,6 @@ def _stream_command_output(
                 select_timeout = None
 
             events = selector.select(select_timeout)
-            now = time.monotonic()
-
-            if not events:
-                if (
-                    not timed_out
-                    and deadline is not None
-                    and now >= deadline
-                    and process.poll() is None
-                ):
-                    timed_out = True
-                    _kill_process_group(process, signal.SIGTERM)
-                    kill_at = time.monotonic() + TERMINATE_GRACE_SECONDS
-                    continue
-                if drain_deadline is not None and now >= drain_deadline:
-                    break
-                continue
 
             for key, _ in events:
                 stream = str(key.data)
@@ -217,6 +203,22 @@ def _stream_command_output(
                 )
                 if redacted:
                     bounded.write(redacted, stream=stream)
+
+            # Deadlines are checked on every pass: a command that never stops
+            # writing would otherwise keep select() busy and outlive both.
+            now = time.monotonic()
+            if (
+                not timed_out
+                and deadline is not None
+                and now >= deadline
+                and process.poll() is None
+            ):
+                timed_out = True
+                _kill_process_group(process, signal.SIGTERM)
+                kill_at = time.monotonic() + TERMINATE_GRACE_SECONDS
+                continue
+            if drain_deadline is not None and now >= drain_deadline:
+                break
 
     for stream_name, redactor in redactors.items():
         pending = redactor.flush()

@@ -15,8 +15,8 @@
     "tauri": "tauri",
     "desktop:dev": "tauri dev",
     "desktop:build": "tauri build",
-    "desktop:install": "python ../scripts/install_desktop_app.py",
-    "desktop:release": "tauri build && python ../scripts/install_desktop_app.py --remove-source-after-install"
+    "desktop:install": "node scripts/run-python.mjs ../scripts/install_desktop_app.py",
+    "desktop:release": "tauri build && node scripts/run-python.mjs ../scripts/install_desktop_app.py --remove-source-after-install"
   },
   "knip": {
     "entry": [

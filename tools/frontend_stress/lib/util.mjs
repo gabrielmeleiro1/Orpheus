@@ -90,17 +90,21 @@ export async function waitForConversion(api, jobId, {
   throw new Error(`Conversion ${jobId} did not finish within ${timeoutMs}ms`);
 }
 
-/** Idempotent SIGTERM-then-SIGKILL stop for a spawned child. */
+/**
+ * Idempotent SIGTERM-then-SIGKILL stop for a spawned child. Every caller gets
+ * the same promise, so none returns before the child has actually exited.
+ */
 export function makeStopFn(proc) {
-  let stopped = false;
-  return async () => {
-    // A child killed by a signal keeps exitCode null and has already emitted "exit".
-    if (stopped || proc.exitCode !== null || proc.signalCode !== null) {
-      stopped = true;
-      return;
+  let stopping = null;
+  return () => {
+    if (stopping) return stopping;
+    // A child killed by a signal keeps exitCode null and has already emitted
+    // "exit"; one that never spawned has no pid and never emits it.
+    if (proc.exitCode !== null || proc.signalCode !== null || proc.pid === undefined) {
+      stopping = Promise.resolve();
+      return stopping;
     }
-    stopped = true;
-    await new Promise((resolve) => {
+    stopping = new Promise((resolve) => {
       const escalate = setTimeout(() => proc.kill("SIGKILL"), 5_000);
       proc.once("exit", () => {
         clearTimeout(escalate);
@@ -108,5 +112,6 @@ export function makeStopFn(proc) {
       });
       proc.kill("SIGTERM");
     });
+    return stopping;
   };
 }

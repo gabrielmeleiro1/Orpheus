@@ -170,8 +170,10 @@ silently drop the local runtime. A first build defaults to `mlx` for an Apple
 Silicon target and `base` elsewhere. Only `base`, `mlx`, and `cuda` are
 accepted.
 
-Tauri's `beforeBuildCommand` runs `python ../scripts/build_desktop_backend.py`
-and then `npm run build`. The sidecar build:
+Tauri's `beforeBuildCommand` runs
+`node scripts/run-python.mjs ../scripts/build_desktop_backend.py` and then
+`npm run build`. The launcher uses the checkout's `.venv` Python when it
+exists and otherwise `python3` or `python` on `PATH`. The sidecar build:
 
 - validates only the selected profile's dependencies, plus PyInstaller and the
   system binaries the sidecar needs;

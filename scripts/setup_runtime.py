@@ -251,8 +251,11 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
             return
         except (OSError, subprocess.TimeoutExpired):
             pass
+    # Signal the whole group only when the child leads its own: a supervised
+    # child shares the supervisor's group, which must never be signalled.
+    leads_group = os.name == "posix" and _leads_own_process_group(process)
     try:
-        if os.name == "posix":
+        if leads_group:
             os.killpg(process.pid, signal.SIGTERM)
         else:
             process.terminate()
@@ -261,13 +264,20 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
     except (OSError, subprocess.TimeoutExpired):
         pass
     try:
-        if os.name == "posix":
+        if leads_group:
             os.killpg(process.pid, signal.SIGKILL)
         else:
             process.kill()
         process.wait(timeout=3)
     except (OSError, subprocess.TimeoutExpired):
         return
+
+
+def _leads_own_process_group(process: subprocess.Popen[bytes]) -> bool:
+    try:
+        return os.getpgid(process.pid) == process.pid
+    except OSError:
+        return False
 
 
 def _supervise_command(
@@ -299,6 +309,10 @@ def _supervise_command(
                     raise SetupExecutionError(
                         f"{stage} timed out after {timeout_seconds:g} seconds.{suffix}"
                     ) from exc
+                finally:
+                    # A detached stage child does not see the terminal's Ctrl+C,
+                    # so any early exit from the wait must stop it explicitly.
+                    _terminate_process_tree(process)
         except SetupExecutionError:
             raise
         except OSError as exc:

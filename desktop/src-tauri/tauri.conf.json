@@ -5,7 +5,7 @@
   "identifier": "com.orpheus.desktop",
   "build": {
     "beforeDevCommand": "npm run dev -- --host localhost --port 5173 --strictPort",
-    "beforeBuildCommand": "python ../scripts/build_desktop_backend.py && npm run build",
+    "beforeBuildCommand": "node scripts/run-python.mjs ../scripts/build_desktop_backend.py && npm run build",
     "devUrl": "http://localhost:5173",
     "frontendDist": "../dist"
   },

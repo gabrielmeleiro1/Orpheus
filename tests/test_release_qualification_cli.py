@@ -907,7 +907,7 @@ def test_bundle_validation_does_not_invoke_the_sidecar_builder_itself(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """bundle_validation runs only the Tauri build and the bundled smoke."""
+    """One tauri build per run: bundle_validation smokes what sidecar_validation built."""
     import importlib.util
 
     prepare = _run_cli(["prepare", "--version", "1.0.0-no-dup-sidecar"])
@@ -967,14 +967,12 @@ def test_bundle_validation_does_not_invoke_the_sidecar_builder_itself(
     handlers = cli.build_phase_handlers(report_dir, run_command_fn=fake_run)
     side = handlers["sidecar_validation"]("sidecar_validation", report_dir)
     assert side.state is PhaseState.PASSED
-    assert calls == ["build-sidecar", "sidecar-runtime-smoke"]
+    assert calls == ["tauri-desktop-build", "validate-sidecar", "sidecar-runtime-smoke"]
 
     calls.clear()
     bundle = handlers["bundle_validation"]("bundle_validation", report_dir)
     assert bundle.state is PhaseState.PASSED
-    assert calls == ["tauri-desktop-build", "bundled-runtime-smoke"]
-    assert "build-sidecar" not in calls
-    assert "sidecar-runtime-smoke" not in calls
+    assert calls == ["bundled-runtime-smoke"]
 
 
 def test_no_publish_or_workflow_mutation_across_qualification_helpers() -> None:

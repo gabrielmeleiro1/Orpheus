@@ -15,7 +15,7 @@ from .model import QualificationConfig, parse_version_tuple
 
 PINNED_RUST_VERSION = "1.88.0"
 MINIMUM_PYTHON = (3, 12)
-MINIMUM_NODE_MAJOR = 20
+MINIMUM_NODE_MAJOR = 22
 REQUIRED_TOOLS: tuple[str, ...] = (
     "hdiutil",
     "otool",
@@ -323,7 +323,7 @@ def collect_preflight(
 
     node_raw = run_version(("node", "--version"))
     if _parse_node_major(node_raw) < MINIMUM_NODE_MAJOR:
-        errors.append(f"Node {node_raw} is below required 20")
+        errors.append(f"Node {node_raw} is below required {MINIMUM_NODE_MAJOR}")
     node_version = node_raw.lstrip("vV")
 
     rust_raw = run_version(("rustc", "--version"))

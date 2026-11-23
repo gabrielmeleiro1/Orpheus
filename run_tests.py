@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -74,15 +76,122 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Allow requested profiles with unavailable hardware to be reported as skipped.",
     )
+    parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help="Run every smoke module in its own pytest process instead of one shared run.",
+    )
     args = parser.parse_args(argv)
     if args.allow_skipped_profiles and not args.verify_profile:
         parser.error("--allow-skipped-profiles requires --verify-profile")
+    if args.isolated and (args.contract or args.verify_profile):
+        parser.error("--isolated applies only to the smoke suite")
     return args
 
 
 def build_smoke_command(test_path: str) -> list[str]:
     """Build the command used for a smoke-suite test module."""
     return [sys.executable, "-m", "pytest", test_path, "-q", "-o", "addopts="]
+
+
+SMOKE_RESULTS_OPTION = "--orpheus-smoke-results"
+_SMOKE_BATCH_ENV = "ORPHEUS_SMOKE_BATCH"
+
+
+def build_smoke_batch_command(test_paths: list[str], results_path: Path) -> list[str]:
+    """Build one pytest run over several smoke modules that records per-module results.
+
+    It matches build_smoke_command's options; ``-p run_tests`` loads this
+    file's hooks, which write each module's outcome to results_path.
+    """
+    return [
+        sys.executable, "-m", "pytest", *test_paths, "-q", "-o", "addopts=",
+        # One module failing to import must not stop the others from running.
+        "--continue-on-collection-errors",
+        "-p", "run_tests", SMOKE_RESULTS_OPTION, str(results_path),
+    ]
+
+
+def pytest_addoption(parser) -> None:
+    """Register the batch smoke results option when pytest loads this module."""
+    parser.addoption(SMOKE_RESULTS_OPTION, default=None, help=argparse.SUPPRESS)
+
+
+def pytest_configure(config) -> None:
+    results_path = config.getoption(SMOKE_RESULTS_OPTION)
+    if results_path:
+        config.pluginmanager.register(_SmokeResultRecorder(Path(results_path)))
+
+
+class _SmokeResultRecorder:
+    """Collect pass/fail and test time per module inside a batch smoke run."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.modules: dict[str, dict[str, object]] = {}
+
+    def _module(self, nodeid: str) -> dict[str, object]:
+        module = nodeid.split("::", 1)[0]
+        return self.modules.setdefault(module, {"failed": False, "duration": 0.0, "reports": 0})
+
+    def pytest_collectreport(self, report) -> None:
+        if report.failed:
+            self._module(report.nodeid)["failed"] = True
+
+    def pytest_runtest_logreport(self, report) -> None:
+        entry = self._module(report.nodeid)
+        entry["reports"] = int(entry["reports"]) + 1
+        entry["duration"] = float(entry["duration"]) + float(report.duration)
+        if report.failed:
+            entry["failed"] = True
+
+    def pytest_sessionfinish(self, exitstatus) -> None:
+        payload = {"exitstatus": int(exitstatus), "modules": self.modules}
+        self.path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def run_smoke_batch(test_paths: list[str]) -> dict[str, tuple[bool, float]] | None:
+    """Run test_paths in one pytest process and return per-module results.
+
+    Modules without a result (no tests reported) are left out. Returns None
+    when the run cannot be attributed to modules -- it crashed, stopped early,
+    or failed without any module failing -- so the caller runs each module on
+    its own instead.
+    """
+    if os.environ.get(_SMOKE_BATCH_ENV):
+        # A smoke run started from inside a batch (the runner's own tests)
+        # must not start another batch, or it would recurse.
+        return None
+    env = os.environ.copy()
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    env[_SMOKE_BATCH_ENV] = "1"
+    with tempfile.TemporaryDirectory(prefix="orpheus-smoke-") as temp:
+        results_path = Path(temp) / "results.json"
+        completed = subprocess.run(
+            build_smoke_batch_command(test_paths, results_path),
+            capture_output=True,
+            env=env,
+            text=True,
+            cwd=REPO_ROOT,
+        )
+        try:
+            payload = json.loads(results_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+    if completed.returncode not in (0, 1) or payload.get("exitstatus") != completed.returncode:
+        return None
+    results: dict[str, tuple[bool, float]] = {}
+    any_failed = False
+    for test_path in test_paths:
+        entry = payload["modules"].get(Path(test_path).as_posix())
+        if not entry:
+            continue
+        any_failed = any_failed or bool(entry["failed"])
+        if entry["reports"]:
+            results[test_path] = (not entry["failed"], float(entry["duration"]))
+    if any_failed != (completed.returncode == 1):
+        return None
+    return results
 
 
 def build_contract_command() -> list[str]:
@@ -140,15 +249,11 @@ def run_test(test_path: str) -> tuple[bool, float]:
     return passed, duration
 
 
-def run_smoke_suite() -> int:
-    """Run the fast local smoke suite."""
-    print("\n" + "=" * 60)
-    print("   ORPHEUS - SMOKE SUITE")
-    print("=" * 60 + "\n")
-
+def _run_smoke_modules(
+    batch: dict[str, tuple[bool, float]],
+) -> list[tuple[str, bool, float]]:
+    """Report each module, running on its own any module batch did not pass."""
     results: list[tuple[str, bool, float]] = []
-    total_start = time.time()
-
     for test_path in SMOKE_TEST_MODULES:
         if not (REPO_ROOT / test_path).exists():
             # A renamed or deleted module means the suite silently stopped
@@ -158,13 +263,55 @@ def run_smoke_suite() -> int:
             results.append((test_path, False, 0.0))
             continue
 
-        print(f"> Running {test_path}...", end=" ", flush=True)
-        passed, duration = run_test(test_path)
-
-        status = "PASS" if passed else "FAIL"
-        print(f"{status} ({duration:.1f}s)")
+        combined = batch.get(test_path)
+        if combined is not None and combined[0]:
+            passed, duration = combined
+            print(f"> {test_path}... PASS ({duration:.1f}s)")
+        else:
+            # Failures (and modules the combined run did not report) run in
+            # their own process, which decides the result and shows the output.
+            print(f"> Running {test_path}...", end=" ", flush=True)
+            passed, duration = run_test(test_path)
+            print(f"{'PASS' if passed else 'FAIL'} ({duration:.1f}s)")
 
         results.append((test_path, passed, duration))
+    return results
+
+
+def run_smoke_suite(*, isolated: bool = False) -> int:
+    """Run the fast local smoke suite.
+
+    Modules share one pytest process unless ``isolated``; any module that
+    fails there is run again on its own, and that run decides its result.
+    """
+    print("\n" + "=" * 60)
+    print("   ORPHEUS - SMOKE SUITE")
+    print("=" * 60 + "\n")
+
+    total_start = time.time()
+
+    batch: dict[str, tuple[bool, float]] = {}
+    present = [path for path in SMOKE_TEST_MODULES if (REPO_ROOT / path).exists()]
+    if present and not isolated:
+        print(f"> Running {len(present)} modules in one pytest process...", flush=True)
+        combined = run_smoke_batch(present)
+        if combined is None:
+            print("  The combined run could not be attributed to modules; "
+                  "running each module on its own.")
+        else:
+            batch = combined
+
+    results = _run_smoke_modules(batch)
+    batch_failures = {path for path, (passed, _) in batch.items() if not passed}
+    if batch_failures and all(
+        passed for path, passed, _ in results if path in batch_failures
+    ):
+        # No module reproduces the combined failure on its own (for example a
+        # session teardown error reported against whichever test ran last), so
+        # fall back to the fully isolated run to find out which module fails.
+        print("\n  No module reproduced the combined run's failure on its own; "
+              "running every module on its own.")
+        results = _run_smoke_modules({})
 
     total_duration = time.time() - total_start
 
@@ -251,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
             print("\nPYTEST CONTRACT FAILED - Fix before commit")
         return exit_code
 
-    exit_code = run_smoke_suite()
+    exit_code = run_smoke_suite(isolated=args.isolated)
     if exit_code == 0:
         print("Local smoke suite passed; strict pytest contract was not checked.")
     else:

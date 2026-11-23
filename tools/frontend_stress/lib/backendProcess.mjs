@@ -96,6 +96,9 @@ export async function startBackend({ repoRoot, stateDir, log, readyTimeoutMs = 6
           settled = true;
           clearTimeout(timer);
           rl.close();
+          // Closing readline pauses stdout; keep draining it so a chatty
+          // backend never blocks on a full pipe.
+          proc.stdout.resume();
           resolve(payload);
         }
       } catch {

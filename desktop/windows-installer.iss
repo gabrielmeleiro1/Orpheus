@@ -452,8 +452,15 @@ end;
 
 procedure DeinitializeSetup;
 begin
-  if not InstallComplete then
-    RestoreInstallation;
+  if not InstallComplete then begin
+    { Setup is closing; a restore failure here has nowhere to surface, and
+      the pending transaction record lets the next setup finish the rollback. }
+    try
+      RestoreInstallation;
+    except
+      Log('Could not restore the previous installation: ' + GetExceptionMessage);
+    end;
+  end;
 end;
 
 procedure InitializeWizard;
