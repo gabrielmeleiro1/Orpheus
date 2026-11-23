@@ -113,16 +113,23 @@ def _check_owner(marker: Path, database: Path, library_id: str | None = None) ->
     )
 
 
-def _check_overlaps(root: Path, database: Path, *, library_id: str | None = None) -> set[Path]:
+def _check_overlaps(
+    root: Path, database: Path, *, library_id: str | None = None, descendants: bool = True,
+    checked: set[Path] | None = None,
+) -> set[Path]:
     # Resolving the root handles directory aliases. Never follow links while
     # inspecting descendants: ownership follows their canonical targets instead.
     rewrites = set()
     for ancestor in (root, *root.parents):
+        if checked is not None:
+            if ancestor in checked:
+                break  # it and all of its ancestors were inspected already
+            checked.add(ancestor)
         marker = ancestor / STORAGE_OWNER_NAME
         if marker.exists() or marker.is_symlink():
             if _check_owner(marker, database, library_id):
                 rewrites.add(marker)
-    if root.is_dir():
+    if descendants and root.is_dir():
         def unreadable(error: OSError) -> None:
             raise StorageOwnershipError(f"Cannot inspect managed storage ownership: {root}") from error
 
@@ -285,14 +292,14 @@ def stored_path_remappings(database: Path, *roots: Path) -> list[tuple[Path, Pat
 def _claim_roots(
     database: Path, roots: tuple[Path, ...], library_id: str | None = None,
     connection: sqlite3.Connection | None = None, *, temp_root: Path | None = None,
-    layout: tuple[Path, ...] | None = None,
+    layout: tuple[Path, ...] | None = None, descendants: bool = True,
 ) -> None:
     # Inspect every requested root before publishing any new claims. The gate
     # prevents another process slipping a nested claim between these checks and
     # publication; a losing claimant therefore never leaves a conflicting record.
     rewrites = set()
     for root in roots:
-        rewrites.update(_check_overlaps(root, database, library_id=library_id))
+        rewrites.update(_check_overlaps(root, database, library_id=library_id, descendants=descendants))
     markers = rewrites | {root / STORAGE_OWNER_NAME for root in roots}
     records = {}
     mappings = []
@@ -340,10 +347,30 @@ def _claim_roots(
             atomic_write_json(marker, records[marker])
         elif library_id is not None and "root" not in json.loads(marker.read_text(encoding="utf-8")):
             atomic_write_json(marker, records[marker])
-        # Every descendant/ancestor was inspected above while holding the
-        # process gate. Publishing our own marker cannot add a conflicting
-        # owner, so verify that record without walking the whole tree again.
+        # Every inspected record was checked above while holding the process
+        # gate. Publishing our own marker cannot add a conflicting owner, so
+        # verify that record without walking the whole tree again.
         _check_owner(marker, database, library_id)
+
+
+def verify_removal_scope(
+    database: Path | str, roots: tuple[Path | str, ...], targets: tuple[Path, ...],
+) -> None:
+    """Refuse removing ``targets`` when that could reach another library's files.
+
+    Checks what :func:`claim_managed_roots` checks for the roots and every
+    ancestor, but walks only the targets' own trees: the removal traverses
+    nothing else, so a record elsewhere in the roots cannot be reached by it.
+    Targets are canonical paths; links inside them are not followed, as the
+    removal does not follow them either.
+    """
+    database = _database_identity(database)
+    resolved = tuple(dict.fromkeys(Path(root).expanduser().resolve() for root in roots))
+    checked: set[Path] = set()
+    with _claim_gate():
+        for target in dict.fromkeys(Path(target) for target in targets):
+            _check_overlaps(target, database, checked=checked)
+        _claim_roots(database, resolved, descendants=False)
 
 
 def claim_managed_roots(database: Path | str, *roots: Path | str, library_id: str | None = None) -> None:

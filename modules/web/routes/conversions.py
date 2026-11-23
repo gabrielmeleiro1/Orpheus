@@ -20,6 +20,18 @@ from modules.web.source_handles import resolve_source_reference
 router = APIRouter()
 
 
+def _started_job_payload(job, *, default_book_id: int | None = None) -> dict:
+    # The worker thread is already running, so read one consistent snapshot.
+    payload = job_payload(job)
+    return {
+        "job_id": payload["id"],
+        "client_request_id": payload["client_request_id"],
+        "status": payload["status"],
+        "book_id": payload["book_id"] if payload["book_id"] is not None else default_book_id,
+        "error": payload["error"],
+    }
+
+
 @router.post("/api/conversions")
 def start_conversion(
     payload: StartConversionRequest,
@@ -55,13 +67,7 @@ def start_conversion(
         ),
         runtime_status=409,
     )
-    return {
-        "job_id": job.id,
-        "client_request_id": getattr(job, "client_request_id", None),
-        "status": job_status_value(job),
-        "book_id": getattr(job, "book_id", None),
-        "error": getattr(job, "error", None),
-    }
+    return _started_job_payload(job)
 
 
 @router.get("/api/conversions/active")
@@ -94,13 +100,7 @@ def repair_conversion(
             raise public_http_error(PublicError(error.code, str(error), 409)) from error
 
     job = call_with_http_errors(start_repair, runtime_status=409)
-    return {
-        "job_id": job.id,
-        "client_request_id": getattr(job, "client_request_id", None),
-        "status": job_status_value(job),
-        "book_id": getattr(job, "book_id", book_id),
-        "error": getattr(job, "error", None),
-    }
+    return _started_job_payload(job, default_book_id=book_id)
 
 
 @router.post("/api/conversions/{job_id}/cancel")

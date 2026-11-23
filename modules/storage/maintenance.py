@@ -21,16 +21,19 @@ import re
 import sqlite3
 import stat
 import tempfile
-from typing import TYPE_CHECKING, Any
+import threading
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import psutil
 
 from modules.contracts.book_identity import candidate_book_title_with_suffix, sanitize_book_title
+from modules.contracts import durable_files
 from modules.contracts.durable_files import atomic_write_json, sync_directory, sync_file
 from modules.storage.deletion import (
     DELETE_MANIFEST,
     apply_delete_staging_decision,
     delete_staging_policy,
+    mark_delete_transaction_committed,
     preserve_delete_transactions,
     read_delete_transaction,
     remove_unmanifested_staging,
@@ -41,6 +44,7 @@ from modules.storage.maintenance_audit import (
     _path_comparison_key,
     _recency_filter,
     audit_storage_state,
+    audit_storage_state_with_unowned,
 )
 from modules.storage.maintenance_paths import (
     APP_OWNED_DB_PARENT_NAMES,
@@ -65,9 +69,14 @@ from modules.storage.maintenance_reconcile import (
     _dir_has_direct_audio,
     _durable_audio_file_in_dir,
     _find_ondisk_playback_artifact,
+    SourceRepair,
+    _apply_source_repair,
     _move_referenced_upload_sources,
+    _plan_relocated_upload_repairs,
     _repair_relocated_upload_sources,
     _referenced_output_dir_keys,
+    _referenced_output_dir_keys_of,
+    _source_repair_still_valid,
     _unclaimed_finished_audio_dirs,
 )
 from modules.storage.permissions import ensure_owner_only_directory, owner_only
@@ -76,7 +85,7 @@ from modules.storage.managed_roots import claim_managed_roots, claim_sources_roo
 from modules.storage.restore_recovery import (
     pending_restore_safety_copies, record_restore_rollback, recover_restore_rollback,
 )
-from modules.storage.db_ownership import canonical_database_path, retire_database_file
+from modules.storage.db_ownership import acquire_database, canonical_database_path, retire_database_file
 from modules.storage.sqlite_uri import readonly_sqlite_uri
 
 if TYPE_CHECKING:
@@ -92,6 +101,8 @@ __all__ = [
     "DURABLE_PLAYBACK_SUFFIXES",
     "RESERVED_OUTPUT_DIR_NAMES",
     "audit_storage_state",
+    "audit_storage_state_with_unowned",
+    "audit_with_unowned_folders",
     "backup_database",
     "list_database_backups",
     "restore_database_backup",
@@ -172,6 +183,7 @@ def recover_restore_artifacts(repository: IBookRepository) -> None:
                     logger.warning("Could not remove database restore staging file", exc_info=True)
         if removed:
             sync_directory(staging_dir)
+        _remove_interrupted_copies(db_path)
         status = repository.quarantine
         if (
             isinstance(status, dict)
@@ -179,6 +191,30 @@ def recover_restore_artifacts(repository: IBookRepository) -> None:
             and [row[0] for row in repository._conn.execute("PRAGMA integrity_check")] == ["ok"]
         ):
             _remove_quarantine_status(db_path)
+
+
+def _remove_interrupted_copies(db_path: Path) -> None:
+    """Remove backup and safety copies an earlier process never finished."""
+    directory = db_path.parent / "backups"
+    if (_RESTORE_PROCESS_STARTED_AT is None or not directory.is_dir()
+            or directory.is_symlink() or directory.is_junction()):
+        return
+    pattern = re.compile(re.escape(f".{db_path.stem}_") + r".+" + re.escape(db_path.suffix + _COPY_TEMPORARY_SUFFIX)
+                         + r"(?:-wal|-shm|-journal)?")
+    removed = False
+    for path in directory.iterdir():
+        if not pattern.fullmatch(path.name):
+            continue
+        try:
+            info = path.lstat()
+            # Newer files can belong to a copy this process is writing now.
+            if stat.S_ISREG(info.st_mode) and max(info.st_mtime, info.st_ctime) < _RESTORE_PROCESS_STARTED_AT:
+                path.unlink()
+                removed = True
+        except OSError:
+            logger.warning("Could not remove incomplete database copy %s", path, exc_info=True)
+    if removed:
+        sync_directory(directory)
 
 
 def _remove_quarantine_status(db_path: Path) -> None:
@@ -260,32 +296,77 @@ def backup_database(
     target_dir = Path(backup_dir) if backup_dir else source.parent / "backups"
     ensure_owner_only_directory(target_dir)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    target = unique_destination_path(target_dir / f"{source.stem}_{stamp}{source.suffix}")
     source_conn = _connect(source)
-    target_conn = _connect(target)
     try:
-        source_conn.backup(target_conn)
-        # A backup is a single self-contained file: leave rollback-journal mode
-        # so closing it does not keep WAL sidecars beside it.
-        target_conn.execute("PRAGMA journal_mode=DELETE")
+        target = _write_database_copy(
+            source_conn, lambda: unique_destination_path(target_dir / f"{source.stem}_{stamp}{source.suffix}"),
+            lockfile=True,
+        )
     finally:
-        target_conn.close()
         source_conn.close()
-    _remove_backup_sidecars(target)
-    owner_only(target)
     # Cap the backups directory so it does not grow without bound; the just-made
     # backup is newest and always retained.
     _enforce_retention(target_dir, f"{source.stem}_*{source.suffix}", databases=True)
     return target
 
 
+# Copies are written under a hidden name that listing, restore and retention
+# ignore, then renamed into place complete.
+_COPY_TEMPORARY_SUFFIX = ".tmp"
+
+
+def _write_database_copy(source_conn: sqlite3.Connection, destination, *, lockfile: bool = False) -> Path:
+    """Copy ``source_conn`` to the path ``destination()`` names, all or nothing.
+
+    ``lockfile`` leaves the copy's ``.lock`` file, which retention takes to
+    prove nothing still has a backup open before retiring it.
+    """
+    first = destination()
+    descriptor, raw = tempfile.mkstemp(
+        prefix=f".{first.stem}.", suffix=first.suffix + _COPY_TEMPORARY_SUFFIX, dir=first.parent,
+    )
+    os.close(descriptor)
+    temporary = Path(raw)
+    try:
+        target_conn = sqlite3.connect(temporary)
+        try:
+            source_conn.backup(target_conn)
+            # A backup is a single self-contained file: leave rollback-journal mode
+            # so closing it does not keep WAL sidecars beside it.
+            target_conn.execute("PRAGMA journal_mode=DELETE")
+        finally:
+            target_conn.close()
+        _remove_backup_sidecars(temporary)
+        durable_files.sync_file(temporary)
+        # The name is chosen again in case another copy took it meanwhile.
+        target = destination()
+        os.replace(temporary, target)
+    except BaseException:
+        _remove_database_files(temporary)
+        raise
+    sync_directory(target.parent)
+    # mkstemp already created it owner-only; this also covers older umasks.
+    owner_only(target)
+    if lockfile:
+        acquire_database(target).close()
+    return target
+
+
+def _remove_database_files(path: Path) -> None:
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        try:
+            path.with_name(path.name + suffix).unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove incomplete database copy %s", path, exc_info=True)
+
+
 def _remove_backup_sidecars(backup: Path) -> None:
     """Remove WAL files a finished backup left behind.
 
-    The ``.lock`` file stays: retention takes it to prove nothing still has
-    the backup open before retiring it. Restore reads the backup without it
-    and relies on the controller's storage-maintenance reservation, which
-    keeps backups, cleanup and restore from overlapping.
+    Retention takes the backup's ``.lock`` file to prove nothing still has the
+    backup open before retiring it. Restore reads the backup without it and
+    relies on the controller's storage-maintenance reservation, which keeps
+    backups, cleanup and restore from overlapping.
     """
     for suffix in ("-wal", "-shm"):
         sidecar = backup.with_name(backup.name + suffix)
@@ -321,6 +402,34 @@ def _backup_path(db_path: Path, backup_id: str) -> Path:
     return path
 
 
+# Backups are written once and renamed into place, so a file with the same
+# identity, size and modification time still has the same book count.
+_backup_book_counts: dict[tuple[str, int, int, int, int], int | None] = {}
+_backup_book_counts_lock = threading.Lock()
+
+
+def _backup_book_count(path: Path, info: os.stat_result) -> int | None:
+    key = (str(path.resolve()), info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+    with _backup_book_counts_lock:
+        if key in _backup_book_counts:
+            return _backup_book_counts[key]
+    book_count = None
+    try:
+        with closing(sqlite3.connect(readonly_sqlite_uri(path.resolve()), uri=True)) as conn:
+            conn.execute(f"PRAGMA busy_timeout = {BUSY_TIMEOUT_MS}")
+            book_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+    except sqlite3.OperationalError:
+        # Busy or unreadable now; try again on the next listing.
+        return None
+    except sqlite3.DatabaseError:
+        pass
+    with _backup_book_counts_lock:
+        if len(_backup_book_counts) >= 4 * DEFAULT_RETENTION_KEEP:
+            _backup_book_counts.clear()
+        _backup_book_counts[key] = book_count
+    return book_count
+
+
 def list_database_backups(db_path: Path | str) -> list[dict[str, Any]]:
     source = canonical_database_path(db_path)
     directory = source.parent / "backups"
@@ -333,12 +442,7 @@ def list_database_backups(db_path: Path | str) -> list[dict[str, Any]]:
             stat = path.stat()
         except (FileNotFoundError, OSError):
             continue
-        book_count = None
-        try:
-            with closing(sqlite3.connect(readonly_sqlite_uri(path.resolve()), uri=True)) as conn:
-                book_count = conn.execute("SELECT COUNT(*) FROM books").fetchone()[0]
-        except sqlite3.DatabaseError:
-            pass
+        book_count = _backup_book_count(path, stat)
         created = datetime.fromtimestamp(stat.st_mtime, timezone.utc)
         items.append({
             "id": path.name, "filename": path.name,
@@ -538,15 +642,10 @@ def restore_database_backup(repository: SQLiteRepository, backup_id: str) -> Pat
 
         with repository._lock:
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safety = unique_destination_path(backup.parent / f"{db_path.stem}_safety_{stamp}{db_path.suffix}")
-            safety_conn = sqlite3.connect(safety)
-            try:
-                repository._conn.backup(safety_conn)
-                safety_conn.execute("PRAGMA journal_mode=DELETE")
-            finally:
-                safety_conn.close()
-            _remove_backup_sidecars(safety)
-            owner_only(safety)
+            safety = _write_database_copy(
+                repository._conn,
+                lambda: unique_destination_path(backup.parent / f"{db_path.stem}_safety_{stamp}{db_path.suffix}"),
+            )
             conflict_message = (
                 "Cannot restore while database files are in use. Close other library connections "
                 f"or applications and retry. The current library safety copy is at {safety}."
@@ -574,7 +673,9 @@ def restore_database_backup(repository: SQLiteRepository, backup_id: str) -> Pat
             repository._conn.close()
             replaced = False
             try:
-                for suffix in ("-wal", "-shm"):
+                # The restored file is in rollback-journal mode, so SQLite would
+                # replay a journal left by the replaced database into it.
+                for suffix in ("-wal", "-shm", "-journal"):
                     db_path.with_name(db_path.name + suffix).unlink(missing_ok=True)
                 sync_file(staging)
                 staging.replace(db_path)
@@ -609,7 +710,7 @@ def restore_database_backup(repository: SQLiteRepository, backup_id: str) -> Pat
             _remove_quarantine_status(db_path)
             return safety
     finally:
-        for suffix in ("", "-wal", "-shm"):
+        for suffix in ("", "-wal", "-shm", "-journal"):
             try:
                 staging.with_name(staging.name + suffix).unlink(missing_ok=True)
             except OSError:
@@ -636,6 +737,19 @@ def unowned_output_folders(
             "has_recovery_inventory": _dir_contains_recovery_inventory(path),
         })
     return folders
+
+
+def audit_with_unowned_folders(
+    db_path: Path | str, output_dir: Path | str, temp_dir: Path | str,
+    *, grace_seconds: float = DEFAULT_CLEANUP_GRACE_SECONDS,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """The graced audit and :func:`unowned_output_folders` from one audit pass."""
+    audit, unowned_dirs = audit_storage_state_with_unowned(
+        db_path, output_dir=output_dir, temp_dir=temp_dir, grace_seconds=grace_seconds,
+    )
+    return audit, unowned_output_folders(
+        db_path, output_dir, temp_dir, audit={"orphan_output_dirs": unowned_dirs},
+    )
 
 
 def _book_titles(db_path: Path | str, book_ids: list[int]) -> dict[int, str]:
@@ -686,6 +800,7 @@ def storage_cleanup_summary(
     actions: dict[str, Any] | None = None,
     changed: bool | None = None,
     grace_seconds: float = DEFAULT_CLEANUP_GRACE_SECONDS,
+    unowned: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Per category, what cleanup removes now and what it leaves, with the reason.
 
@@ -693,6 +808,7 @@ def storage_cleanup_summary(
     ``removable_books`` are exactly what an explicit cleanup would remove.
     Without ``actions`` (diagnostics) this is a preview; after a cleanup it
     also reports what was removed, naming the books in ``removed_books``.
+    ``unowned`` is :func:`unowned_output_folders` when the caller already has it.
     """
     kept: list[dict[str, Any]] = []
     # A book with no audio and nothing to rebuild it from loses its library
@@ -741,7 +857,9 @@ def storage_cleanup_summary(
         kept.append({"category": "book_without_audio", "reason": reason, "items": items})
     graced_keys = {_path_comparison_key(raw) for raw in audit.get("orphan_output_dirs", [])}
     folders_by_reason: dict[str, list[dict[str, Any]]] = {}
-    for folder in unowned_output_folders(db_path, output_dir, temp_dir):
+    if unowned is None:
+        unowned = unowned_output_folders(db_path, output_dir, temp_dir)
+    for folder in unowned:
         if folder["has_audio"]:
             reason = "contains_finished_audio"
         elif folder["has_recovery_inventory"]:
@@ -864,8 +982,95 @@ def _delete_orphan_entry(path: Path, root: Path, *, expect_dir: bool) -> bool:
     return False
 
 
-def _settle_fileless_book_rows(
-    conn: sqlite3.Connection,
+class _PruneRows(NamedTuple):
+    """The library rows cleanup decides on.
+
+    ``books`` are ``(id, title, source_path, playback_path)``; ``chapters`` are
+    ``(book_id, chapter_number, mp3_path)`` for recorded chapter audio, in
+    chapter order.
+    """
+
+    books: tuple[tuple[Any, ...], ...]
+    chapters: tuple[tuple[Any, ...], ...]
+
+
+def _read_prune_rows(conn: sqlite3.Connection) -> _PruneRows:
+    return _PruneRows(
+        tuple(tuple(row) for row in conn.execute(
+            "SELECT id, title, source_path, playback_path FROM books ORDER BY id"
+        ).fetchall()),
+        tuple(tuple(row) for row in conn.execute(
+            """
+            SELECT book_id, chapter_number, mp3_path FROM chapters
+            WHERE mp3_path IS NOT NULL AND mp3_path != ''
+            ORDER BY book_id, chapter_number, id
+            """
+        ).fetchall()),
+    )
+
+
+def _snapshot_prune_rows(db_file: Path) -> _PruneRows:
+    """One consistent read of the rows, without holding any lock afterwards."""
+    with closing(_connect(db_file, read_only=True)) as conn:
+        conn.execute("BEGIN")
+        try:
+            return _read_prune_rows(conn)
+        finally:
+            conn.rollback()
+
+
+def _chapter_paths_by_book(rows: _PruneRows) -> dict[int, list[str]]:
+    paths: dict[int, list[str]] = {}
+    for book_id, _number, mp3_path in rows.chapters:
+        paths.setdefault(int(book_id), []).append(mp3_path)
+    return paths
+
+
+def _recorded_or_ondisk_audio(
+    title: str | None, playback_raw: str | None, chapter_raws: list[str],
+    workspace_root: Path, output_root: Path, temp_root: Path,
+) -> bool | tuple[Path, str]:
+    """``True`` when the recorded audio exists, else an on-disk artifact to relink, else ``False``."""
+    playback_path = resolve_stored_path(
+        playback_raw, workspace_root, output_root=output_root, temp_root=temp_root,
+    )
+    if playback_path and playback_path.exists() and playback_path.is_file():
+        return True
+    for chapter_raw in chapter_raws:
+        chapter_path = resolve_stored_path(
+            chapter_raw, workspace_root, output_root=output_root, temp_root=temp_root,
+        )
+        if chapter_path and chapter_path.exists():
+            return True
+
+    # The DB has no usable playback metadata, but a durable audiobook may
+    # still exist on disk (e.g. a packaged .m4b whose playback_path was
+    # cleared by a schema migration that never probes disk). Refuse to
+    # delete such a book and reconcile its playback metadata so the row is
+    # playable again and its output directory stays referenced (otherwise
+    # the orphan-output-dir sweep would still rmtree the audio).
+    #
+    # The title-derived directory guess is only trusted for books that
+    # carry no stored pointer at all (the genuine post-migration case). A
+    # book whose stored playback/chapter pointer merely failed to resolve
+    # (a rename, or a data-dir move that invalidated absolute paths) must
+    # not be reconciled by title, or it can be cross-wired onto a
+    # different book's audio.
+    has_stored_pointer = bool((playback_raw or "").strip()) or bool(chapter_raws)
+    artifact = _find_ondisk_playback_artifact(
+        title=title,
+        playback_raw=playback_raw,
+        chapter_raw_paths=list(chapter_raws),
+        workspace_root=workspace_root,
+        output_root=output_root,
+        temp_root=temp_root,
+        allow_title_fallback=not has_stored_pointer,
+    )
+    return artifact if artifact is not None else False
+
+
+def _plan_fileless_book_rows(
+    rows: _PruneRows,
     recoverable_book_ids: set[int],
     workspace_root: Path,
     output_root: Path,
@@ -873,108 +1078,55 @@ def _settle_fileless_book_rows(
 ) -> dict[str, Any]:
     """Decide what cleanup does with each book that has no playable audio.
 
-    Audio found on disk is relinked on ``conn``; the caller commits that, or
-    discards it when only previewing. ``removable`` are the rows cleanup
+    Reads only the disk; nothing is written. ``reconciled_playback`` are the
+    rows to relink to audio found on disk, and ``removable`` the rows cleanup
     deletes: no audio anywhere, and nothing left to rebuild it from.
     """
     settled: dict[str, Any] = {
         "reconciled_playback": [], "preserved": [], "held_for_unclaimed_audio": [],
         "unclaimed_audio_dirs": [], "removable": [],
     }
-    for book_row in conn.execute("SELECT id, title, playback_path FROM books").fetchall():
-        playback_path = resolve_stored_path(
-            book_row["playback_path"],
-            workspace_root,
-            output_root=output_root,
-            temp_root=temp_root,
+    chapter_paths = _chapter_paths_by_book(rows)
+    # Playback paths as they stand once the relinks below are applied.
+    playback_paths: list[str | None] = []
+    for book_id, title, _source_path, playback_raw in rows.books:
+        audio = _recorded_or_ondisk_audio(
+            title, playback_raw, chapter_paths.get(int(book_id), []),
+            workspace_root, output_root, temp_root,
         )
-        if playback_path and playback_path.exists() and playback_path.is_file():
+        if audio is True:
+            playback_paths.append(playback_raw)
             continue
-
-        chapter_rows = conn.execute(
-            """
-            SELECT mp3_path FROM chapters
-            WHERE book_id = ? AND mp3_path IS NOT NULL AND mp3_path != ''
-            """,
-            (book_row["id"],),
-        ).fetchall()
-        has_playable_chapter = False
-        for chapter_row in chapter_rows:
-            chapter_path = resolve_stored_path(
-                chapter_row["mp3_path"],
-                workspace_root,
-                output_root=output_root,
-                temp_root=temp_root,
-            )
-            if chapter_path and chapter_path.exists():
-                has_playable_chapter = True
-                break
-        if has_playable_chapter:
-            continue
-
-        # The DB has no usable playback metadata, but a durable audiobook may
-        # still exist on disk (e.g. a packaged .m4b whose playback_path was
-        # cleared by a schema migration that never probes disk). Refuse to
-        # delete such a book and reconcile its playback metadata so the row is
-        # playable again and its output directory stays referenced (otherwise
-        # the orphan-output-dir sweep would still rmtree the audio).
-        #
-        # The title-derived directory guess is only trusted for books that
-        # carry no stored pointer at all (the genuine post-migration case). A
-        # book whose stored playback/chapter pointer merely failed to resolve
-        # (a rename, or a data-dir move that invalidated absolute paths) must
-        # not be reconciled by title, or it can be cross-wired onto a
-        # different book's audio.
-        has_stored_pointer = bool(
-            (book_row["playback_path"] or "").strip()
-        ) or bool(chapter_rows)
-        ondisk_artifact = _find_ondisk_playback_artifact(
-            title=book_row["title"],
-            playback_raw=book_row["playback_path"],
-            chapter_raw_paths=[row["mp3_path"] for row in chapter_rows],
-            workspace_root=workspace_root,
-            output_root=output_root,
-            temp_root=temp_root,
-            allow_title_fallback=not has_stored_pointer,
-        )
-        if ondisk_artifact is not None:
-            artifact_path, playback_status = ondisk_artifact
-            conn.execute(
-                """
-                UPDATE books
-                SET playback_path = ?,
-                    playback_status = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-                """,
-                (str(artifact_path), playback_status, int(book_row["id"])),
-            )
+        if audio:
+            artifact_path, playback_status = audio
+            playback_paths.append(str(artifact_path))
             settled["reconciled_playback"].append(
                 {
-                    "book_id": int(book_row["id"]),
+                    "book_id": int(book_id),
                     "playback_path": str(artifact_path),
                     "playback_status": playback_status,
                 }
             )
             continue
-
-        if int(book_row["id"]) in recoverable_book_ids:
-            settled["preserved"].append(int(book_row["id"]))
+        playback_paths.append(playback_raw)
+        if int(book_id) in recoverable_book_ids:
+            settled["preserved"].append(int(book_id))
             continue
-        settled["removable"].append({"id": int(book_row["id"]), "title": book_row["title"]})
+        settled["removable"].append({"id": int(book_id), "title": title})
 
     # Safety gate before deleting any fileless row: if a finished-audio
-    # directory exists on disk that no surviving book claims (reconciliations
-    # above are already reflected on ``conn``), it may be the audio of a
-    # moved/renamed book we could not link. We are then *not* confident these
-    # rows are truly orphaned, so we keep them rather than destroy library
-    # metadata for a book whose audio still exists. Genuine orphans (no
-    # unclaimed audio anywhere) are still deleted.
+    # directory exists on disk that no surviving book claims (counting the
+    # relinks above), it may be the audio of a moved/renamed book we could
+    # not link. We are then *not* confident these rows are truly orphaned, so
+    # we keep them rather than destroy library metadata for a book whose
+    # audio still exists. Genuine orphans (no unclaimed audio anywhere) are
+    # still deleted.
     if settled["removable"]:
         unclaimed_audio = _unclaimed_finished_audio_dirs(
             output_root,
-            _referenced_output_dir_keys(
-                conn, workspace_root, output_root, temp_root
+            _referenced_output_dir_keys_of(
+                [*playback_paths, *(row[2] for row in rows.chapters)],
+                workspace_root, output_root, temp_root,
             ),
         )
         if unclaimed_audio:
@@ -984,14 +1136,130 @@ def _settle_fileless_book_rows(
     return settled
 
 
+def _relink_playback(conn: sqlite3.Connection, reconciled: dict[str, Any]) -> None:
+    conn.execute(
+        """
+        UPDATE books
+        SET playback_path = ?,
+            playback_status = ?,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+        """,
+        (reconciled["playback_path"], reconciled["playback_status"], reconciled["book_id"]),
+    )
+
+
+class _PrunePlan(NamedTuple):
+    rows: _PruneRows
+    protected_sources: set[Path]
+    source_repairs: list[SourceRepair]
+    settled: dict[str, Any]
+
+
+def _plan_prune(
+    rows: _PruneRows, db_file: Path, workspace_root: Path, output_root: Path, temp_root: Path,
+    sources_dir: Path, recoverable_book_ids,
+) -> _PrunePlan:
+    """Everything cleanup decides about rows, from disk reads alone.
+
+    Source repairs only change ``source_path``, which the settlement does not
+    read, so both are decided on the same rows.
+    """
+    protected, recoverable, repairs = _plan_relocated_upload_repairs(
+        [(book[0], book[2]) for book in rows.books],
+        db_file, workspace_root, output_root, temp_root, sources_dir,
+    )
+    settled = _plan_fileless_book_rows(
+        rows, {*recoverable_book_ids, *recoverable}, workspace_root, output_root, temp_root,
+    )
+    return _PrunePlan(rows, protected, repairs, settled)
+
+
+def _apply_source_repairs(conn: sqlite3.Connection, repairs: list[SourceRepair]) -> None:
+    """Apply planned repairs under the caller's write lock; a stale one is skipped."""
+    if not repairs:
+        return
+    current = dict(conn.execute("SELECT id, source_path FROM books").fetchall())
+    for repair in repairs:
+        if repair.book_id in current and _source_repair_still_valid(repair, current[repair.book_id]):
+            _apply_source_repair(conn, repair)
+
+
+def _apply_prune_plan(
+    conn: sqlite3.Connection, plan: _PrunePlan, db_file: Path, workspace_root: Path, output_root: Path,
+    temp_root: Path, sources_dir: Path,
+) -> dict[str, Any]:
+    """Carry out ``plan`` under the caller's write lock, never on stale evidence.
+
+    A row that changed since the plan was read keeps its old state: its
+    repair or relink is skipped, and any change to the rows skips every
+    deletion. Before a row is deleted, the evidence it depends on is read
+    again here: the rows, its own audio, whether a copy can rebuild it, and
+    whether unclaimed audio exists anywhere in the output folder. Only the
+    hashing of copies and the scans that found nothing to delete stay
+    outside the lock. The next cleanup decides skipped rows again.
+    """
+    current = _read_prune_rows(conn)
+    _apply_source_repairs(conn, plan.source_repairs)
+    planned_books = {int(book[0]): book for book in plan.rows.books}
+    current_books = {int(book[0]): book for book in current.books}
+    planned_chapters = _chapter_paths_by_book(plan.rows)
+    current_chapters = _chapter_paths_by_book(current)
+
+    def unchanged(book_id: int) -> bool:
+        return (planned_books.get(book_id) == current_books.get(book_id)
+                and planned_chapters.get(book_id) == current_chapters.get(book_id))
+
+    settled = dict(plan.settled)
+    relinked = []
+    for reconciled in plan.settled["reconciled_playback"]:
+        if unchanged(reconciled["book_id"]) and Path(reconciled["playback_path"]).is_file():
+            _relink_playback(conn, reconciled)
+            relinked.append(reconciled)
+    settled["reconciled_playback"] = relinked
+    removable = []
+    if current == plan.rows and len(relinked) == len(plan.settled["reconciled_playback"]):
+        candidates = [current_books[book["id"]] for book in plan.settled["removable"]]
+        # A copy of a source that appeared since planning can rebuild its book.
+        _protected, rebuildable, _repairs = _plan_relocated_upload_repairs(
+            [(book[0], book[2]) for book in candidates],
+            db_file, workspace_root, output_root, temp_root, sources_dir,
+        ) if candidates else (set(), set(), [])
+        for book_id, title, _source_path, playback_raw in candidates:
+            if book_id in rebuildable:
+                settled["preserved"] = [*settled["preserved"], int(book_id)]
+            elif _recorded_or_ondisk_audio(
+                title, playback_raw, current_chapters.get(book_id, []), workspace_root, output_root, temp_root,
+            ) is False:
+                removable.append({"id": int(book_id), "title": title})
+    if removable:
+        # The safety gate again, on the rows as they now stand (relinks
+        # included) and the output folder as it is now.
+        relinked_paths = {entry["book_id"]: entry["playback_path"] for entry in relinked}
+        unclaimed_audio = _unclaimed_finished_audio_dirs(
+            output_root,
+            _referenced_output_dir_keys_of(
+                [*(relinked_paths.get(int(book[0]), book[3]) for book in current.books),
+                 *(row[2] for row in current.chapters)],
+                workspace_root, output_root, temp_root,
+            ),
+        )
+        if unclaimed_audio:
+            settled["held_for_unclaimed_audio"] = [book["id"] for book in removable]
+            settled["unclaimed_audio_dirs"] = unclaimed_audio
+            removable = []
+    settled["removable"] = removable
+    return settled
+
+
 def _books_cleanup_would_remove(
     db_path: Path | str, output_dir: Path | str, temp_dir: Path | str, audit: dict[str, Any],
 ) -> list[dict[str, Any]]:
     """The books whose library entry a cleanup would delete now; nothing changes.
 
-    Cleanup's own decision runs against a private in-memory copy of the
-    database, so a preview can neither disagree with the cleanup that follows
-    nor take a write lock on the library.
+    Cleanup plans from the same rows with the same code before it takes the
+    write lock, so a preview agrees with the cleanup that follows (unless the
+    library changes in between) and never takes a write lock itself.
     """
     db_file = canonical_database_path(db_path)
     workspace_root = workspace_root_for_db(db_file)
@@ -999,16 +1267,10 @@ def _books_cleanup_would_remove(
     temp_root = resolve_stored_path(str(temp_dir), workspace_root)
     assert output_root is not None
     assert temp_root is not None
-    with closing(_connect(db_file, read_only=True)) as library, closing(sqlite3.connect(":memory:")) as scratch:
-        library.backup(scratch)
-        scratch.row_factory = sqlite3.Row
-        _protected, recoverable_sources = _repair_relocated_upload_sources(
-            scratch, db_file, workspace_root, output_root, temp_root, canonical_sources_dir(db_file),
-        )
-        return _settle_fileless_book_rows(
-            scratch, {*audit.get("recoverable_book_ids", []), *recoverable_sources},
-            workspace_root, output_root, temp_root,
-        )["removable"]
+    return _plan_prune(
+        _snapshot_prune_rows(db_file), db_file, workspace_root, output_root, temp_root,
+        canonical_sources_dir(db_file), audit.get("recoverable_book_ids", []),
+    ).settled["removable"]
 
 
 def _finish_delete_staging(
@@ -1029,6 +1291,16 @@ def _finish_delete_staging(
                 raw, workspace_root, output_root=output_root, temp_root=temp_root,
             )) is not None
         }
+
+    def make_durable(entry: Path) -> None:
+        if not (entry / ".committed").is_file():
+            # The row's deletion can still be only in the WAL; checkpoint it
+            # before the staged files become unrecoverable.
+            with closing(_connect(db_file)) as writer:
+                busy, log_frames, checkpointed = writer.execute("PRAGMA wal_checkpoint(FULL)").fetchone()
+            if busy or log_frames < 0 or log_frames != checkpointed:
+                raise RuntimeError("Cannot make book deletion durable: checkpoint incomplete")
+        mark_delete_transaction_committed(entry)
 
     cutoff = time() - max(grace_seconds, DEFAULT_CLEANUP_GRACE_SECONDS)
     finished = []
@@ -1059,7 +1331,7 @@ def _finish_delete_staging(
                             book_has_paths=bool(book_paths),
                             database_replaced=library_quarantined(db_file),
                         )
-                        done = apply_delete_staging_decision(path, artifacts, *decision)
+                        done = apply_delete_staging_decision(path, artifacts, *decision, make_durable=make_durable)
                     else:
                         done = bool(_recency_filter([path], cutoff)) and remove_unmanifested_staging(
                             path, references, audio_suffixes=AUDIO_ARTIFACT_SUFFIXES,
@@ -1125,19 +1397,22 @@ def prune_stale_records_and_files(
         sources_dir, grace_seconds,
     )
 
+    # Scanning and hashing happen before the write lock, so library writes
+    # (playback saves, edits) are not held up by them; the lock covers SQL and
+    # cheap re-checks that skip anything the plan no longer describes.
+    plan = _plan_prune(
+        _snapshot_prune_rows(db_file), db_file, workspace_root, output_root, temp_root, sources_dir,
+        audit_before["recoverable_book_ids"],
+    )
+    protected_sources = set(plan.protected_sources)
     conn = _connect(db_file)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("BEGIN IMMEDIATE")
-        protected_sources, recoverable_sources = _repair_relocated_upload_sources(
-            conn, db_file, workspace_root, output_root, temp_root, sources_dir,
-        )
-
         # Delete books without any playable chapter or packaged playback file.
-        fileless = _settle_fileless_book_rows(
-            conn, {*audit_before["recoverable_book_ids"], *recoverable_sources},
-            workspace_root, output_root, temp_root,
+        fileless = _apply_prune_plan(
+            conn, plan, db_file, workspace_root, output_root, temp_root, sources_dir,
         )
         actions["reconciled_playback"] = fileless["reconciled_playback"]
         actions["preserved_book_rows"] = fileless["preserved"] + fileless["held_for_unclaimed_audio"]
@@ -1172,13 +1447,15 @@ def prune_stale_records_and_files(
         canonical_sources_dir=sources_dir,
     )
 
+    protected_after_move, _, repairs = _plan_relocated_upload_repairs(
+        [(book[0], book[2]) for book in _snapshot_prune_rows(db_file).books],
+        db_file, workspace_root, output_root, temp_root, sources_dir,
+    )
+    protected_sources.update(protected_after_move)
     conn = _connect(db_file)
     try:
         conn.execute("BEGIN IMMEDIATE")
-        protected_after_move, _ = _repair_relocated_upload_sources(
-            conn, db_file, workspace_root, output_root, temp_root, sources_dir,
-        )
-        protected_sources.update(protected_after_move)
+        _apply_source_repairs(conn, repairs)
         row_changes += getattr(conn, "total_changes", 1)
         conn.commit()
     except Exception:
@@ -1245,8 +1522,8 @@ def prune_stale_records_and_files(
     if not changed:
         # The backup only protects changes; keep the backup list meaningful.
         retire_database_file(backup_path)
-    audit_after = audit_storage_state(
-        db_file, output_dir=output_root, temp_dir=temp_root, grace_seconds=grace_seconds
+    audit_after, unowned_after = audit_with_unowned_folders(
+        db_file, output_root, temp_root, grace_seconds=grace_seconds,
     )
     report = {
         "timestamp": datetime.now().isoformat(),
@@ -1258,7 +1535,7 @@ def prune_stale_records_and_files(
         "actions": actions,
         "summary": storage_cleanup_summary(
             db_file, output_root, temp_root, audit_after, actions=actions,
-            changed=changed, grace_seconds=grace_seconds,
+            changed=changed, grace_seconds=grace_seconds, unowned=unowned_after,
         ),
     }
 

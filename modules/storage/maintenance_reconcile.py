@@ -15,7 +15,7 @@ import json
 import os
 import re
 import sqlite3
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from modules.contracts.book_identity import sanitize_book_title
 from modules.contracts.durable_files import atomic_write_json, sync_directory, sync_file, unlink_file
@@ -78,6 +78,21 @@ def _source_digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+def _file_identity(path: Path) -> tuple[int, int, int, int]:
+    info = path.stat()
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns
+
+
+class SourceRepair(NamedTuple):
+    """Repoint ``book_id`` from its missing ``raw_source`` to a verified copy."""
+
+    book_id: int
+    raw_source: str
+    source: Path
+    destination: Path
+    destination_identity: tuple[int, int, int, int]
+
+
 def _repair_relocated_upload_sources(
     conn: sqlite3.Connection,
     db_file: Path,
@@ -87,6 +102,50 @@ def _repair_relocated_upload_sources(
     sources_dir: Path,
 ) -> tuple[set[Path], set[int]]:
     """Repoint missing uploads and protect copies whose origin is ambiguous."""
+    protected, recoverable, repairs = _plan_relocated_upload_repairs(
+        conn.execute("SELECT id, source_path FROM books").fetchall(),
+        db_file, workspace_root, output_root, temp_root, sources_dir,
+    )
+    for repair in repairs:
+        _apply_source_repair(conn, repair)
+    return protected, recoverable
+
+
+def _apply_source_repair(conn: sqlite3.Connection, repair: SourceRepair) -> None:
+    cursor = conn.execute(
+        "UPDATE books SET source_path=?, updated_at=CURRENT_TIMESTAMP "
+        "WHERE id=? AND source_path=?",
+        (str(repair.destination), repair.book_id, repair.raw_source),
+    )
+    if cursor.rowcount != 1:
+        raise sqlite3.OperationalError(f"Source repair affected {cursor.rowcount} rows for book {repair.book_id}")
+
+
+def _source_repair_still_valid(repair: SourceRepair, current_source: object) -> bool:
+    """Cheap re-check, under the write lock, of evidence gathered before it."""
+    if current_source != repair.raw_source:
+        return False
+    try:
+        if repair.source.exists():
+            return False
+        return _file_identity(repair.destination) == repair.destination_identity
+    except OSError:
+        return False
+
+
+def _plan_relocated_upload_repairs(
+    book_rows,
+    db_file: Path,
+    workspace_root: Path,
+    output_root: Path,
+    temp_root: Path,
+    sources_dir: Path,
+) -> tuple[set[Path], set[int], list[SourceRepair]]:
+    """What :func:`_repair_relocated_upload_sources` does, without writing.
+
+    ``book_rows`` are ``(id, source_path)``. Reads the disk (hashing copies)
+    and returns the protected copies, the recoverable books and the repairs.
+    """
     records = _read_source_relocations(db_file)
     mappings = stored_path_remappings(db_file, temp_root)
     records = {os.path.normcase(remap_absolute_path(key, mappings)): value for key, value in records.items()}
@@ -96,7 +155,8 @@ def _repair_relocated_upload_sources(
     ] if sources_dir.exists() else []
     protected: set[Path] = set()
     recoverable: set[int] = set()
-    for book_id, raw_source in conn.execute("SELECT id, source_path FROM books").fetchall():
+    repairs: list[SourceRepair] = []
+    for book_id, raw_source in book_rows:
         source = resolve_stored_path(
             raw_source, workspace_root, output_root=output_root, temp_root=temp_root,
         )
@@ -122,23 +182,21 @@ def _repair_relocated_upload_sources(
         if destination in copies:
             protected.add(destination.resolve())
             recoverable.add(book_id)
-        if (destination not in copies or not isinstance(recorded, dict)
-                or _source_digest(destination) != recorded["sha256"]):
+        identity = None
+        if destination in copies and isinstance(recorded, dict):
+            # Identify the bytes before hashing them, so a re-check under the
+            # write lock can tell they are still the bytes that matched.
+            identity = _file_identity(destination)
+        if identity is None or _source_digest(destination) != recorded["sha256"]:
             destination = None
         protected.update(path.resolve() for path in candidates)
         if candidates:
             recoverable.add(book_id)
         if destination is not None:
             protected.add(destination.resolve())
-            cursor = conn.execute(
-                "UPDATE books SET source_path=?, updated_at=CURRENT_TIMESTAMP "
-                "WHERE id=? AND source_path=?",
-                (str(destination), book_id, raw_source),
-            )
-            if cursor.rowcount != 1:
-                raise sqlite3.OperationalError(f"Source repair affected {cursor.rowcount} rows for book {book_id}")
+            repairs.append(SourceRepair(int(book_id), raw_source, source, destination, identity))
             recoverable.add(book_id)
-    return protected, recoverable
+    return protected, recoverable, repairs
 
 
 def _move_referenced_upload_sources(
@@ -172,6 +230,18 @@ def _move_referenced_upload_sources(
 
             destination = unique_destination_path(canonical_sources_dir / source_path.name)
             destination.parent.mkdir(parents=True, exist_ok=True)
+            # Copy, sync and hash before taking the write lock: an upload can
+            # be hundreds of megabytes, and library writes wait on that lock.
+            try:
+                copied_from = _file_identity(source_path)
+                copy2(str(source_path), str(destination))
+                destination.chmod(0o600)
+                sync_file(destination)
+                sync_directory(destination.parent)
+                digest = _source_digest(destination)
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
             try:
                 # Lock before collecting owners so aliases and newly committed
                 # references are repointed together before the upload is removed.
@@ -186,18 +256,21 @@ def _move_referenced_upload_sources(
                     )
                     if owner_path is not None and owner_path.resolve() == source_path:
                         owners.append(owner)
-                if not owners:
+                try:
+                    unchanged = _file_identity(source_path) == copied_from
+                except FileNotFoundError:
+                    unchanged = False
+                if not owners or not unchanged:
+                    # Nobody needs the copy any more, or it may not match the
+                    # upload; the upload stays for a later cleanup.
                     conn.rollback()
+                    destination.unlink(missing_ok=True)
                     continue
 
                 # Keep the upload until every owner's new pointer is committed.
-                copy2(str(source_path), str(destination))
-                destination.chmod(0o600)
-                sync_file(destination)
-                sync_directory(destination.parent)
                 records = _read_source_relocations(db_file)
                 records[os.path.normcase(str(source_path))] = {
-                    "name": destination.name, "sha256": _source_digest(destination),
+                    "name": destination.name, "sha256": digest,
                 }
                 atomic_write_json(
                     _source_relocations_path(db_file), records, sync_parent=sync_directory,
@@ -302,6 +375,21 @@ def _referenced_output_dir_keys(
     keying the audit uses — computed from every book's playback path and every
     chapter's mp3 path (reflecting reconciliations already applied on ``conn``).
     """
+    return _referenced_output_dir_keys_of(
+        [
+            *(row[0] for row in conn.execute("SELECT playback_path FROM books").fetchall()),
+            *(row[0] for row in conn.execute(
+                "SELECT mp3_path FROM chapters WHERE mp3_path IS NOT NULL AND mp3_path != ''"
+            ).fetchall()),
+        ],
+        workspace_root, output_root, temp_root,
+    )
+
+
+def _referenced_output_dir_keys_of(
+    raw_paths, workspace_root: Path, output_root: Path, temp_root: Path,
+) -> set[str]:
+    """:func:`_referenced_output_dir_keys` for stored playback and chapter paths."""
     output_root_resolved = output_root.resolve()
     keys: set[str] = set()
 
@@ -318,12 +406,8 @@ def _referenced_output_dir_keys(
         if relative.parts:
             keys.add(str(output_root_resolved / relative.parts[0]))
 
-    for row in conn.execute("SELECT playback_path FROM books").fetchall():
-        _add(row["playback_path"])
-    for row in conn.execute(
-        "SELECT mp3_path FROM chapters WHERE mp3_path IS NOT NULL AND mp3_path != ''"
-    ).fetchall():
-        _add(row["mp3_path"])
+    for raw in raw_paths:
+        _add(raw)
     return keys
 
 

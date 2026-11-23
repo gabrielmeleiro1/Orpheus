@@ -78,6 +78,7 @@ def test_source_upload_fallback_preflight_matches_frontend_contract(tmp_path, mo
         "size_bytes": len(b"not really epub"),
         "requires_ocr": False,
         "pdf_text_layer": None,
+        "existing_books": [],
     }
     stored_name = payload["source_handle"].removeprefix("upload:")
     assert (upload_root(controller.config.temp_dir) / stored_name).exists()

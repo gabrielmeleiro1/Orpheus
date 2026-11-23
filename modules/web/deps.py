@@ -9,6 +9,7 @@ from typing import Annotated, Callable, TypeVar
 from fastapi import Depends, HTTPException, Request
 from fastapi import FastAPI
 from modules.app import AppController
+from modules.app.services.model_storage_service import ModelDeletionInProgress
 from modules.contracts.public_errors import PublicError, public_error_detail
 from modules.errors import (
     ConversionCleanupPendingError,
@@ -84,6 +85,9 @@ def call_with_http_errors(action: Callable[[], T], *, runtime_status: int = 500)
         raise HTTPException(status_code=error.status, detail=error.message) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ModelDeletionInProgress as exc:
+        # Transient: the model files are being removed, not a backend fault.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=runtime_status, detail=str(exc)) from exc
 

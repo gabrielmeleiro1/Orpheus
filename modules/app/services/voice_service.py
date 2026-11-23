@@ -57,6 +57,9 @@ class VoiceService:
         self._preview_runtime_key: Optional[tuple[object, ...]] = None
         self._validated_tts_runtimes: set[tuple[object, ...]] = set()
         self._runtime_validation_lock = threading.RLock()
+        # Guards the validation cache and metrics for readers that must not
+        # wait behind a model load or synthesis. Only ever taken innermost.
+        self._metrics_lock = threading.Lock()
         self._perf_metrics: dict[str, Any] = {
             "runtime_validation_hits": 0,
             "runtime_validation_misses": 0,
@@ -66,11 +69,11 @@ class VoiceService:
 
     @property
     def runtime_validation_cache_size(self) -> int:
-        with self._runtime_validation_lock:
+        with self._metrics_lock:
             return len(self._validated_tts_runtimes)
 
     def metrics_snapshot(self) -> dict[str, Any]:
-        with self._runtime_validation_lock:
+        with self._metrics_lock:
             return dict(self._perf_metrics)
 
     def ensure_preview_engine(
@@ -130,10 +133,11 @@ class VoiceService:
         )
         runtime_key = spec.cache_key()
         with preview_model_use(self), self._runtime_validation_lock:
-            if runtime_key in self._validated_tts_runtimes:
-                self._perf_metrics["runtime_validation_hits"] += 1
-                return
-            self._perf_metrics["runtime_validation_misses"] += 1
+            with self._metrics_lock:
+                if runtime_key in self._validated_tts_runtimes:
+                    self._perf_metrics["runtime_validation_hits"] += 1
+                    return
+                self._perf_metrics["runtime_validation_misses"] += 1
 
             using_preview_engine = (
                 self._preview_engine is not None
@@ -148,11 +152,12 @@ class VoiceService:
                 voices = strategy.supported_voices
                 probe_voice = voices[0].id if voices else "am_adam"
                 strategy.synthesize("runtime check", voice=probe_voice, speed=1.0)
-                self._validated_tts_runtimes.add(runtime_key)
-                self._perf_metrics["last_runtime_validation_ms"] = round(
-                    (time.perf_counter() - started_at) * 1000,
-                    2,
-                )
+                with self._metrics_lock:
+                    self._validated_tts_runtimes.add(runtime_key)
+                    self._perf_metrics["last_runtime_validation_ms"] = round(
+                        (time.perf_counter() - started_at) * 1000,
+                        2,
+                    )
             except Exception as exc:
                 raise RuntimeError(
                     f"TTS runtime check failed ({spec.label()}): {exc}"
@@ -215,7 +220,8 @@ class VoiceService:
                 except Exception:
                     temp_path.unlink(missing_ok=True)
                     raise
-                self._perf_metrics["preview_generation_count"] += 1
+                with self._metrics_lock:
+                    self._perf_metrics["preview_generation_count"] += 1
                 return temp_path
             finally:
                 self._schedule_preview_idle_unload()
@@ -369,11 +375,31 @@ class VoiceService:
         with preview_model_use(self), self._runtime_validation_lock:
             self._unload_preview_engine()
 
+    def shutdown(self, *, timeout_seconds: float) -> bool:
+        """Unload the preview engine without blocking shutdown indefinitely.
+
+        Returns False when a running preview or a model deletion keeps the
+        engine owned; process exit then releases it instead.
+        """
+        try:
+            with preview_model_use(self):
+                if not self._runtime_validation_lock.acquire(timeout=max(0.0, timeout_seconds)):
+                    return False
+                try:
+                    self._unload_preview_engine()
+                finally:
+                    self._runtime_validation_lock.release()
+        except ModelDeletionInProgress:
+            # The deletion owner discards preview models itself.
+            return False
+        return True
+
     def discard_preview_models(self) -> None:
         """Invalidate runtime state while the caller owns model deletion."""
         with self._runtime_validation_lock:
             self._unload_preview_engine()
-            self._validated_tts_runtimes.clear()
+            with self._metrics_lock:
+                self._validated_tts_runtimes.clear()
 
     def _unload_preview_engine(self) -> None:
         """Retire the engine while holding the runtime lock."""

@@ -93,13 +93,15 @@ class TtsEngineSession:
             self._engine = engine
             self._key = key
             self._idle_timer = None
-        if previous_timer is not None:
-            previous_timer.cancel()
-        if previous_engine is not None and previous_engine is not engine:
-            try:
-                previous_engine.unload(keep_in_cache=False)
-            except Exception:
-                logger.debug("Failed to replace hot TTS engine", exc_info=True)
+            if previous_timer is not None:
+                previous_timer.cancel()
+            if previous_engine is not None and previous_engine is not engine:
+                # Same fence as _unload_idle_engine: no successor may attach
+                # while the retired engine can still evict shared cache state.
+                try:
+                    previous_engine.unload(keep_in_cache=False)
+                except Exception:
+                    logger.debug("Failed to replace hot TTS engine", exc_info=True)
 
         self._schedule_idle_unload(
             float(getattr(config, "tts_idle_timeout_seconds", 300.0) or 0.0),

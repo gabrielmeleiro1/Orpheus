@@ -239,8 +239,9 @@ def test_partial_restore_keeps_uncommitted_unreferenced_source(tmp_path, reconci
         entry, artifacts = _stage(service, book, directory, source)
         repo.delete_book(book.id)
         _reconcile(service, repo, tmp_path, reconcile)
-        retained_audio = audio if reconcile == "sweep" else artifacts[0][1] / audio.relative_to(directory)
-        assert retained_audio.read_bytes() == b"chapter audio"
+        # Cleanup settles an uncommitted deletion as the startup sweep does:
+        # the referenced folder goes back where the other book finds it.
+        assert audio.read_bytes() == b"chapter audio"
         assert artifacts[1][1].read_bytes() == b"source bytes"
         assert entry.exists()
 

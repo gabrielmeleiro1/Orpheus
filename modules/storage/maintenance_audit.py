@@ -13,7 +13,7 @@ import sqlite3
 import time
 from typing import Any, Optional
 
-from modules.storage.deletion import read_delete_transaction
+from modules.storage.deletion import DELETE_MANIFEST, read_delete_transaction
 from modules.storage.maintenance_paths import (
     DEFAULT_CLEANUP_GRACE_SECONDS,
     RESERVED_OUTPUT_DIR_NAMES,
@@ -63,6 +63,20 @@ def audit_storage_state(
     not reported as stale/orphaned: uploads queued for conversion and
     in-flight conversion output exist before any database row references
     them. Pass ``grace_seconds=0`` to disable the recency exemption.
+    """
+    return audit_storage_state_with_unowned(db_path, output_dir, temp_dir, grace_seconds)[0]
+
+
+def audit_storage_state_with_unowned(
+    db_path: Path | str,
+    output_dir: Path | str = "output",
+    temp_dir: Path | str = "temp",
+    grace_seconds: float = DEFAULT_CLEANUP_GRACE_SECONDS,
+) -> tuple[dict[str, Any], list[str]]:
+    """:func:`audit_storage_state` plus every unreferenced output entry.
+
+    The second value is ``orphan_output_dirs`` without the recency exemption,
+    as ``grace_seconds=0`` reports it, from the same pass.
     """
     recency_cutoff = time.time() - grace_seconds if grace_seconds > 0 else None
     db_file = Path(db_path)
@@ -222,14 +236,12 @@ def audit_storage_state(
             else {}
         )
 
-        orphan_output_dirs = _recency_filter(
-            (
-                entry_path
-                for key, entry_path in actual_output_dirs.items()
-                if _path_comparison_key(key) not in referenced_output_dirs
-            ),
-            recency_cutoff,
-        )
+        unreferenced_output_dirs = [
+            entry_path
+            for key, entry_path in actual_output_dirs.items()
+            if _path_comparison_key(key) not in referenced_output_dirs
+        ]
+        orphan_output_dirs = _recency_filter(unreferenced_output_dirs, recency_cutoff)
 
         temp_upload_dir = temp_root / "web_uploads"
         actual_temp_uploads = (
@@ -273,13 +285,17 @@ def audit_storage_state(
         )
 
         delete_staging_root = temp_root / "delete_staging"
+        # A deletion whose row is gone may still lack its commit marker when
+        # making it durable failed; cleanup settles it with the same policy.
         orphan_delete_staging_dirs = _recency_filter(
             (
                 path
                 for path in delete_staging_root.iterdir()
                 if path.is_dir() and not path.is_symlink() and not path.is_junction()
-                and (path / ".committed").is_file()
-                and not (path / ".committed").is_symlink()
+                and any(
+                    (path / name).is_file() and not (path / name).is_symlink()
+                    for name in (".committed", DELETE_MANIFEST)
+                )
             ),
             recency_cutoff,
         ) if delete_staging_root.exists() else []
@@ -298,6 +314,6 @@ def audit_storage_state(
             "referenced_temp_uploads": sorted(str(path) for path in temp_upload_refs),
             "referenced_durable_sources": sorted(str(path) for path in durable_source_refs),
             "orphan_durable_sources": orphan_durable_sources,
-        }
+        }, _recency_filter(unreferenced_output_dirs, None)
     finally:
         conn.close()

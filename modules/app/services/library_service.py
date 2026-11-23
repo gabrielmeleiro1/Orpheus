@@ -68,6 +68,8 @@ logger = logging.getLogger(__name__)
 
 # Delete server-owned uploads left untouched for longer than this (seconds).
 WEB_UPLOAD_TTL_SECONDS = 7 * 24 * 60 * 60
+# Minimum spacing between the opportunistic sweeps new uploads trigger.
+UPLOAD_SWEEP_INTERVAL_SECONDS = 10 * 60
 
 # Re-exported for backward compatibility; canonical definitions live in
 # ``modules.contracts``.
@@ -159,18 +161,23 @@ class LibraryService:
             if storage_root is not None
             else self._output_dir.resolve().parent
         )
-        from modules.storage.managed_roots import claim_managed_roots
-
-        database = getattr(repository, "db_path", None)
-        if database is not None:
-            claim_managed_roots(database, self._output_dir, self._temp_dir)
+        self._last_upload_sweep: float | None = None
+        # One ownership walk covers construction and the startup sweep below;
+        # the repository's opening claim, made just before, is that walk.
+        self._verify_storage_ownership(after_fresh_claim=True)
         ensure_owner_only_directory(self._output_dir)
         ensure_owner_only_directory(self._temp_dir)
         self._folder_opener = folder_opener or _default_folder_opener
-        self.sweep_delete_staging()
+        self._sweep_delete_staging()
 
     def sweep_delete_staging(self) -> int:
-        self._verify_storage_ownership()
+        # After a restore this is the check that reports a failed claim, so
+        # it walks the roots unless that restore's claim just succeeded.
+        self._verify_storage_ownership(after_fresh_claim=True)
+        return self._sweep_delete_staging()
+
+    def _sweep_delete_staging(self) -> int:
+        """Settle leftover deletion transactions; ownership is already verified."""
         from modules.storage.maintenance import (
             AUDIO_ARTIFACT_SUFFIXES, DEFAULT_CLEANUP_GRACE_SECONDS, _recency_filter,
         )
@@ -238,12 +245,30 @@ class LibraryService:
             logger.debug("Failed to list deletion staging", exc_info=True)
         return removed
 
-    def _verify_storage_ownership(self) -> None:
-        from modules.storage.managed_roots import claim_managed_roots
+    def _verify_storage_ownership(
+        self, *, after_fresh_claim: bool = False, removing: tuple[Path, ...] | None = None,
+    ) -> None:
+        """Refuse to act on roots that another library's records reach.
+
+        ``after_fresh_claim`` accepts the repository's claim of the same roots
+        when nothing ran since it (see ``take_fresh_storage_claim``).
+        ``removing`` limits the walk to the trees a removal traverses.
+        """
+        from modules.storage.managed_roots import claim_managed_roots, verify_removal_scope
 
         database = getattr(self._repository, "db_path", None)
-        if database is not None:
-            claim_managed_roots(database, self._output_dir, self._temp_dir, self._app_owned_sources_root())
+        if database is None:
+            return
+        roots = (self._output_dir, self._temp_dir, self._app_owned_sources_root())
+        if after_fresh_claim:
+            take = getattr(self._repository, "take_fresh_storage_claim", None)
+            claimed = take() if callable(take) else ()
+            if claimed and {root.resolve() for root in roots} <= set(claimed):
+                return
+        if removing is not None:
+            verify_removal_scope(database, roots, removing)
+        else:
+            claim_managed_roots(database, *roots)
 
     def _workspace_root(self) -> Path:
         return self._storage_root.resolve()
@@ -266,6 +291,16 @@ class LibraryService:
 
     def _upload_root(self) -> Path:
         return self._temp_dir / MANAGED_UPLOAD_ROOT_NAME
+
+    def _sweep_stale_uploads_when_due(self) -> None:
+        # Uploads call this on every request; the week-long TTL does not need
+        # a directory walk per upload.
+        now = time.monotonic()
+        last = getattr(self, "_last_upload_sweep", None)
+        if last is not None and now - last < UPLOAD_SWEEP_INTERVAL_SECONDS:
+            return
+        self._last_upload_sweep = now
+        self.sweep_stale_uploads()
 
     def sweep_stale_uploads(self, ttl_seconds: float = WEB_UPLOAD_TTL_SECONDS) -> int:
         try:
@@ -389,7 +424,7 @@ class LibraryService:
         file_obj,
         max_bytes: int = MAX_UPLOAD_BYTES,
     ) -> dict:
-        self.sweep_stale_uploads()
+        self._sweep_stale_uploads_when_due()
 
         original_name = Path(filename or "").name
         if not original_name:
@@ -408,19 +443,34 @@ class LibraryService:
             stored_path,
             max(1, int(max_bytes)),
         )
-        owner_only(stored_path)
-
         try:
-            preflight = inspect_source(stored_path, fallback_title=Path(original_name).stem)
-        except Exception as exc:
-            preflight = self._fallback_preflight(original_name, suffix, size_bytes, exc)
+            owner_only(stored_path)
+            try:
+                preflight = inspect_source(stored_path, fallback_title=Path(original_name).stem)
+            except Exception as exc:
+                preflight = self._fallback_preflight(original_name, suffix, size_bytes, exc)
+            return self._upload_response(
+                stored_path, stored_name, original_name, size_bytes, preflight, (preflight or {}).get("title"),
+            )
+        except BaseException:
+            # No handle was returned, so nothing else can reference the file.
+            stored_path.unlink(missing_ok=True)
+            raise
 
+    def _upload_response(
+        self, stored_path: Path, stored_name: str, original_name: str, size_bytes: int, preflight,
+        title: str | None,
+    ) -> dict:
+        existing = self.find_existing_books(stored_path, title)
+        if isinstance(preflight, dict):
+            # Clients read duplicates from the preflight, as POST /api/sources/preflight sends them.
+            preflight = {**preflight, "existing_books": existing}
         return {
             "source_handle": self._source_handle(stored_name),
             "original_name": original_name,
             "size_bytes": size_bytes,
             "preflight": preflight,
-            "existing_books": self.find_existing_books(stored_path, (preflight or {}).get("title")),
+            "existing_books": existing,
         }
 
     def upload_text_source(
@@ -430,7 +480,7 @@ class LibraryService:
         title: str | None = None,
         max_bytes: int = MAX_UPLOAD_BYTES,
     ) -> dict:
-        self.sweep_stale_uploads()
+        self._sweep_stale_uploads_when_due()
 
         normalized_title = (title or "").strip() or DEFAULT_PASTE_TITLE
         normalized_text = text.strip()
@@ -450,17 +500,22 @@ class LibraryService:
             original_name, prefix=f"{int(datetime.now().timestamp())}_{uuid4().hex[:8]}_",
         )
         stored_path = destination_root / stored_name
-        stored_path.write_bytes(source_bytes)
-        owner_only(stored_path)
-        preflight = self.preflight_source(stored_path)
-
-        return {
-            "source_handle": self._source_handle(stored_name),
-            "original_name": original_name,
-            "size_bytes": size_bytes,
-            "preflight": preflight,
-            "existing_books": self.find_existing_books(stored_path, normalized_title),
-        }
+        try:
+            stored_path.write_bytes(source_bytes)
+            owner_only(stored_path)
+            try:
+                preflight = self.preflight_source(stored_path)
+            except Exception as exc:
+                preflight = {
+                    **self._fallback_preflight(original_name, ".md", size_bytes, exc),
+                    "title": normalized_title,
+                }
+            return self._upload_response(
+                stored_path, stored_name, original_name, size_bytes, preflight, normalized_title,
+            )
+        except BaseException:
+            stored_path.unlink(missing_ok=True)
+            raise
 
     @staticmethod
     def preflight_source(source_path: Path | str) -> dict:
@@ -824,26 +879,53 @@ class LibraryService:
             return None
         book, chapters = detail
         if not book.playback_path:
-            artifact = _find_ondisk_playback_artifact(
-                title=None,
-                playback_raw=None,
-                chapter_raw_paths=[chapter.mp3_path for chapter in chapters],
-                workspace_root=self._workspace_root(),
-                output_root=self._output_dir,
-                temp_root=self._temp_dir,
-                allow_title_fallback=False,
-            )
-            if artifact is not None:
-                book.playback_path = str(artifact[0])
-                book.playback_status = PlaybackStatus(artifact[1])
-            else:
-                for chapter in chapters:
-                    path = self._resolve_stored_path(chapter.mp3_path)
-                    if path is not None and self._is_within_output_root(path) and path.is_file():
-                        book.playback_path = str(path)
-                        book.playback_status = PlaybackStatus.CHAPTER_AUDIO
-                        break
+            found = self._ondisk_playback([chapter.mp3_path for chapter in chapters])
+            if found is not None:
+                book.playback_path, book.playback_status = found
         return book, chapters
+
+    def _ondisk_playback(self, chapter_raw_paths: list[Optional[str]]) -> tuple[str, PlaybackStatus] | None:
+        """Audio a book without a recorded playback file can still play from."""
+        artifact = _find_ondisk_playback_artifact(
+            title=None,
+            playback_raw=None,
+            chapter_raw_paths=chapter_raw_paths,
+            workspace_root=self._workspace_root(),
+            output_root=self._output_dir,
+            temp_root=self._temp_dir,
+            allow_title_fallback=False,
+        )
+        if artifact is not None:
+            return str(artifact[0]), PlaybackStatus(artifact[1])
+        for raw in chapter_raw_paths:
+            path = self._resolve_stored_path(raw)
+            if path is not None and self._is_within_output_root(path) and path.is_file():
+                return str(path), PlaybackStatus.CHAPTER_AUDIO
+        return None
+
+    def _playable_audio_available(self, playback_path: Optional[str], chapter_raw_paths: list[Optional[str]]) -> bool:
+        """The detail view's rule: a file ``/audio`` can serve exists."""
+        if not playback_path:
+            found = self._ondisk_playback(chapter_raw_paths)
+            playback_path = found[0] if found is not None else None
+        return self._audio_file_available(playback_path)
+
+    def _chapter_audio_paths(self, book_ids: list[int]) -> dict[int, list[str]]:
+        """Chapter audio paths of several books, in chapter order; call under the snapshot."""
+        if not book_ids:
+            return {}
+        batch = getattr(self._repository, "list_chapter_audio_paths", None)
+        if callable(batch):
+            return batch(book_ids)
+        get_detail = getattr(self._repository, "get_book_with_chapters", None)
+        if not callable(get_detail):
+            return {}
+        paths: dict[int, list[str]] = {}
+        for book_id in book_ids:
+            detail = get_detail(book_id)
+            if detail is not None:
+                paths[book_id] = [chapter.mp3_path for chapter in detail[1] if chapter.mp3_path]
+        return paths
 
     def library_snapshot(self, expected_epoch: str | None = None, *, mutation: bool = False):
         snapshot = getattr(self._repository, "library_snapshot", None)
@@ -871,18 +953,24 @@ class LibraryService:
             conversion_mode=resolved_conversion_mode,
             favorite=favorite,
         )
-        books = self._repository.list_books(filters)
-        for book in books:
-            book.source_available = self._source_path_exists(book.source_path)
-            book.completed_chapters = self._ready_chapter_count(
-                book.completed_chapters or 0, book.total_chapters or 0, book.source_path,
+        with self.library_snapshot():
+            books = self._repository.list_books(filters)
+            chapter_paths = self._chapter_audio_paths(
+                [book.id for book in books if not getattr(book, "playback_path", None)]
             )
-            # Restored or moved rows can outlive their audio; say so instead of
-            # listing a book that cannot play.
-            book.audio_available = (
-                self._audio_file_available(book.playback_path)
-                if getattr(book, "playback_path", None) else bool(book.completed_chapters)
-            )
+        # The rows are read; checking their files on disk does not need the
+        # repository lock, so playback saves and conversion commits proceed.
+        with _memoized_path_resolution():
+            for book in books:
+                book.source_available = self._source_path_exists(book.source_path)
+                book.completed_chapters = self._ready_chapter_count(
+                    book.completed_chapters or 0, book.total_chapters or 0, book.source_path,
+                )
+                # Restored or moved rows can outlive their audio; say so instead of
+                # listing a book that cannot play.
+                book.audio_available = self._playable_audio_available(
+                    getattr(book, "playback_path", None), chapter_paths.get(book.id, []),
+                )
         return books
 
     def get_library_count(self) -> int:
@@ -914,55 +1002,62 @@ class LibraryService:
             except OSError:
                 return None
 
+        def library_rows():
+            # Titles and sources only: the summary query aggregates every chapter.
+            book_sources = getattr(self._repository, "list_book_sources", None)
+            if callable(book_sources):
+                yield from book_sources()
+                return
+            offset = 0
+            while True:
+                page = self._repository.list_books(BookFilters(limit=1000, offset=offset))
+                yield from ((book.id, book.title, book.source_path) for book in page)
+                if len(page) < 1000:
+                    return
+                offset += 1000
+
         matches: list[dict] = []
-        offset = 0
-        while True:
-            page = self._repository.list_books(BookFilters(limit=1000, offset=offset))
-            for book in page:
-                match = None
-                stored = self._resolve_stored_path(book.source_path)
-                if stored is not None and candidate_size is not None:
-                    try:
-                        same_size = stored.is_file() and stored.stat().st_size == candidate_size
-                    except OSError:
-                        same_size = False
-                    if same_size:
-                        if candidate_digest is None:
-                            candidate_digest = digest(candidate) or ""
-                        if candidate_digest and digest(stored) == candidate_digest:
-                            match = "same_file"
-                if match is None and wanted_title and (book.title or "").strip().casefold() == wanted_title:
-                    match = "same_title"
-                if match is not None:
-                    matches.append({"id": book.id, "title": book.title, "match": match})
-            if len(page) < 1000:
-                return matches
-            offset += 1000
+        for book_id, book_title, source_path in library_rows():
+            match = None
+            stored = self._resolve_stored_path(source_path)
+            if stored is not None and candidate_size is not None:
+                try:
+                    same_size = stored.is_file() and stored.stat().st_size == candidate_size
+                except OSError:
+                    same_size = False
+                if same_size:
+                    if candidate_digest is None:
+                        candidate_digest = digest(candidate) or ""
+                    if candidate_digest and digest(stored) == candidate_digest:
+                        match = "same_file"
+            if match is None and wanted_title and (book_title or "").strip().casefold() == wanted_title:
+                match = "same_title"
+            if match is not None:
+                matches.append({"id": book_id, "title": book_title, "match": match})
+        return matches
 
     def books_with_missing_files(self) -> dict:
         """List rows whose audio or source file is gone; nothing is changed."""
         missing_audio: list[dict] = []
         missing_source: list[dict] = []
-        books = 0
+        rows: list[BookSummary] = []
         with self.library_snapshot():
             offset = 0
             while True:
                 page = self._repository.list_books(BookFilters(limit=1000, offset=offset))
-                for summary in page:
-                    detail = self._get_book_record(summary.id)
-                    if detail is None:
-                        continue
-                    books += 1
-                    book, _chapters = detail
-                    entry = {"id": book.id, "title": book.title}
-                    if not self._audio_file_available(book.playback_path):
-                        missing_audio.append(entry)
-                    if not self._source_path_exists(book.source_path):
-                        missing_source.append(entry)
+                rows.extend(page)
                 if len(page) < 1000:
                     break
                 offset += 1000
-        return {"books": books, "missing_audio": missing_audio, "missing_source": missing_source}
+            chapter_paths = self._chapter_audio_paths([book.id for book in rows if not book.playback_path])
+        with _memoized_path_resolution():
+            for book in rows:
+                entry = {"id": book.id, "title": book.title}
+                if not self._playable_audio_available(book.playback_path, chapter_paths.get(book.id, [])):
+                    missing_audio.append(entry)
+                if not self._source_path_exists(book.source_path):
+                    missing_source.append(entry)
+        return {"books": len(rows), "missing_audio": missing_audio, "missing_source": missing_source}
 
     def get_book(self, book_id: int) -> Optional[dict]:
         with self.library_snapshot() as identity:
@@ -1034,24 +1129,9 @@ class LibraryService:
             updated = self._repository.update_book(book_id, **updates)
             if updated is None:
                 return None
-            return {
-                **identity,
-                "id": updated.id,
-                "title": updated.title,
-                "author": updated.author,
-                "source_path": updated.source_path,
-                "source_type": updated.source_type.value,
-                "conversion_mode": updated.conversion_mode.value,
-                "total_chapters": updated.total_chapters,
-                "playback_path": updated.playback_path,
-                "playback_status": updated.playback_status.value,
-                "playback_position_sec": updated.playback_position_sec,
-                "tags": getattr(updated, "tags", "") or "",
-                "favorite": bool(getattr(updated, "favorite", False)),
-                "source_available": self._source_path_exists(updated.source_path),
-                "created_at": updated.created_at,
-                "chapters": [],
-            }
+            # The same detail GET /api/library/{id} returns, read under this snapshot.
+            detail = self.get_book(book_id)
+            return {**detail, **identity} if detail is not None else None
 
     def _read_text_if_exists(self, path: Path) -> str:
         try:
@@ -1267,7 +1347,6 @@ class LibraryService:
         """
         resolutions = self._prefetch_artifact_resolutions(book_id)
         with self.library_snapshot(expected_epoch, mutation=True):
-            self._verify_storage_ownership()
             detail = self._get_book_record(book_id)
             if detail is None:
                 return False
@@ -1287,6 +1366,11 @@ class LibraryService:
                     staged_artifacts, staged_output_files = self._plan_book_deletion(
                         book_id, book, chapters, staging_root,
                     )
+                # Before anything moves: no other library's records may sit in
+                # or above what this deletion moves, stages or removes.
+                self._verify_storage_ownership(removing=(
+                    staging_root, *(path for pair in staged_artifacts for path in pair),
+                ))
                 write_delete_transaction(staging_root, book_id, staged_artifacts)
                 for original, destination in staged_artifacts:
                     self._stage_artifact_for_deletion(original, destination)
@@ -1356,10 +1440,12 @@ class LibraryService:
             folder = output_dir
         else:
             source_path = self._resolve_stored_path(book.source_path)
-            if output_dir is not None and source_path is not None and self._is_managed_source_path(source_path):
+            # A managed source lives in an internal folder shared by every book.
+            if output_dir is not None and source_path is not None and self._is_managed_deletable_source_path(source_path):
                 output_dir.mkdir(parents=True, exist_ok=True)
                 folder = output_dir
-            elif source_path is not None and source_path.exists():
+            elif (source_path is not None and source_path.exists()
+                    and not self._is_managed_deletable_source_path(source_path)):
                 folder = source_path.parent
             elif output_dir is not None:
                 output_dir.mkdir(parents=True, exist_ok=True)

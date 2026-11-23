@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import hashlib
@@ -166,6 +167,7 @@ class ConversionService:
         )
         self._recovered_upload_sources: dict[Path, tuple[int, Path, str, int]] = {}
         self._tts_session = TtsEngineSession()
+        self._durable_sources_restricted = False
         self.upload_reference_checker: Callable[[Path], bool] | None = None
 
     @property
@@ -291,12 +293,16 @@ class ConversionService:
 
         sources_dir = Path(self._config.db_path).parent / "sources"
         ensure_owner_only_directory(sources_dir)
-        try:
-            for existing in sources_dir.iterdir():
-                if not existing.is_symlink() and existing.is_file():
-                    owner_only(existing)
-        except OSError:
-            pass
+        if not self._durable_sources_restricted:
+            # Sources written by older builds predate owner-only copies; new
+            # copies are restricted below, so one pass per process suffices.
+            try:
+                for existing in sources_dir.iterdir():
+                    if not existing.is_symlink() and existing.is_file():
+                        owner_only(existing)
+                self._durable_sources_restricted = True
+            except OSError:
+                pass
         durable_path = sources_dir / source_path.name
         index = 1
         while True:
@@ -703,6 +709,11 @@ class ConversionService:
                 self._remove_recoverable_upload(job, book_id, prehashed)
         else:
             self._update_conversion_library_records(book_id, pipeline_result)
+        result = getattr(job, "result", None)
+        if dataclasses.is_dataclass(result) and getattr(result, "book_id", None) != book_id:
+            # Observers receive the result before reading the job, so it
+            # must name the book this run registered (as repair results do).
+            job.set_result(dataclasses.replace(result, book_id=book_id))
         self._job_coordinator.publish_success(job=job, book_id=book_id, callbacks=callbacks)
 
     def _is_unreferenced_upload_copy(self, job: Any, source: Path | None) -> bool:

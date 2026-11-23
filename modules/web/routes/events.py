@@ -8,7 +8,8 @@ from starlette.responses import StreamingResponse
 from starlette.types import Receive, Scope, Send
 
 from modules.web.deps import EventBrokerDep
-from modules.web.events import close_with_response, event_stream
+# Event-loop driven: no worker thread is pinned per connected client.
+from modules.web.events import async_event_stream as event_stream
 
 router = APIRouter()
 
@@ -35,7 +36,7 @@ def stream_events(
     # Desktop auth middleware validates the optional query token in desktop mode.
     _ = token
     return _ClosingStreamingResponse(
-        close_with_response(event_stream(event_broker, announce_instance=True)),
+        event_stream(event_broker, announce_instance=True),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

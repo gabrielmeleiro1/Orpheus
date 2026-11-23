@@ -251,7 +251,10 @@ def _recover_staged_models(
                     if not data["settings_committed"]:
                         data["settings_committed"] = True
                         setup_runtime._atomic_write_json(manifest_path, data)
-                    committed_entries.append((model_id, stage, original))
+                    # A runtime uninstall retires every loaded model; a single
+                    # model deletion only evicts the runtimes that load its group.
+                    evict = None if data.get("uninstall_runtime") else (group,)
+                    committed_entries.append((model_id, stage, original, evict))
                 else:
                     if stage.exists():
                         if original.exists() or original.is_symlink():
@@ -260,10 +263,12 @@ def _recover_staged_models(
                     manifest_path.unlink(missing_ok=True)
             except (OSError, setup_runtime.SetupExecutionError):
                 continue
-        for model_id, stage, original in committed_entries:
+        for model_id, stage, original, evict in committed_entries:
             # Delete each entry even if another transaction names the same repo.
             try:
-                _, removed = _delete_runtime_models(model_paths={model_id: stage}, failed_files=failed)
+                _, removed = _delete_runtime_models(
+                    model_paths={model_id: stage}, model_groups=evict, failed_files=failed,
+                )
                 freed += removed
                 if not stage.exists() and not original.exists():
                     recovered_groups.add(owners[model_id])

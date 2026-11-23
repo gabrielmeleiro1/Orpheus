@@ -12,6 +12,7 @@ import time
 from fastapi import APIRouter, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from modules.web.deps import get_controller
 
@@ -192,20 +193,37 @@ def create_desktop_query_token(
     return DesktopQueryTokenResponse(token=token, expires_at=expires_at)
 
 
-def add_desktop_auth_middleware(app: FastAPI) -> None:
-    """Add desktop API token checks for local desktop-mode requests."""
+class _DesktopAuthMiddleware:
+    """Require the desktop API token on ``/api/`` HTTP requests.
 
-    @app.middleware("http")
-    async def enforce_desktop_api_token(request: Request, call_next):  # type: ignore[no-untyped-def]
+    Pure ASGI, so streamed audio, SSE and large uploads pass through without
+    the extra task and memory stream ``BaseHTTPMiddleware`` adds per request.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        response = self._rejection(Request(scope))
+        if response is None:
+            await self.app(scope, receive, send)
+            return
+        await response(scope, receive, send)
+
+    @staticmethod
+    def _rejection(request: Request) -> Response | None:
         if not _is_desktop_mode(request):
-            return await call_next(request)
+            return None
 
         if request.method.upper() == "OPTIONS":
-            return await call_next(request)
+            return None
 
         path = request.url.path
         if not _path_requires_auth(path):
-            return await call_next(request)
+            return None
 
         expected_token = getattr(request.app.state, "desktop_api_token", None)
         if not expected_token:
@@ -213,7 +231,7 @@ def add_desktop_auth_middleware(app: FastAPI) -> None:
 
         header_token = _extract_bearer_token(request.headers.get("authorization"))
         if _is_valid_token(header_token, expected_token):
-            return await call_next(request)
+            return None
 
         required_query_scope = _query_token_scope_for_path(path)
         if required_query_scope is not None:
@@ -229,6 +247,11 @@ def add_desktop_auth_middleware(app: FastAPI) -> None:
                 required_query_scope = token_scope
                 request.state.audio_library_epoch = token_scope[len(prefix):]
             if validate_desktop_query_token(query_token, expected_token, required_query_scope):
-                return await call_next(request)
+                return None
 
         return _unauthorized()
+
+
+def add_desktop_auth_middleware(app: FastAPI) -> None:
+    """Add desktop API token checks for local desktop-mode requests."""
+    app.add_middleware(_DesktopAuthMiddleware)

@@ -31,6 +31,7 @@ def test_partial_book_deletion_uses_opaque_folder_handle(controller, monkeypatch
         response = client.post("/api/maintenance/delete-staging/open-folder", json={"path": handle})
         assert response.status_code == 200
         assert response.json() == {"folder_path": handle}
-        assert opened == [controller.config.temp_dir / "delete_staging" / handle]
+        # The staged files, not the folder holding only their record.
+        assert opened == [controller.config.temp_dir / "web_uploads" / ".orpheus-delete-staging" / handle]
         for invalid in (str(opened[0]), "..", "../" + handle):
             assert client.post("/api/maintenance/delete-staging/open-folder", json={"path": invalid}).status_code == 404

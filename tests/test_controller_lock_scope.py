@@ -15,7 +15,7 @@ def test_storage_diagnostics_walk_does_not_hold_the_repository_lock(controller, 
     book = controller.repository.create_book(
         BookCreate(title="Saved", source_path="source.txt", source_type=SourceType.TXT)
     )
-    real_audit = controller_module.audit_storage_state
+    real_audit = controller_module.audit_with_unowned_folders
     saved = threading.Event()
 
     def slow_audit(**kwargs):
@@ -28,7 +28,7 @@ def test_storage_diagnostics_walk_does_not_hold_the_repository_lock(controller, 
         writer.join(timeout=3)
         return real_audit(**kwargs)
 
-    monkeypatch.setattr(controller_module, "audit_storage_state", slow_audit)
+    monkeypatch.setattr(controller_module, "audit_with_unowned_folders", slow_audit)
 
     diagnostics = controller.get_storage_diagnostics()
 
@@ -176,9 +176,9 @@ def test_storage_diagnostics_still_excludes_restore(controller, monkeypatch) -> 
     def blocking_audit(**_kwargs):
         entered.set()
         release.wait(5)
-        return {}
+        return {}, []
 
-    monkeypatch.setattr(controller_module, "audit_storage_state", blocking_audit)
+    monkeypatch.setattr(controller_module, "audit_with_unowned_folders", blocking_audit)
     diagnostics = threading.Thread(target=controller.get_storage_diagnostics, daemon=True)
     diagnostics.start()
     assert entered.wait(5)

@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import queue
 import threading
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from itertools import count
-from typing import Any, AsyncIterator, Iterator
+from typing import Any, AsyncIterator, Callable, Iterator
 from uuid import uuid4
-
-import anyio
 
 # Pushed to every subscriber queue on broker shutdown so streaming generators
 # terminate cleanly instead of looping forever.
 STREAM_CLOSE_SENTINEL = object()
+
+
+class _NotifyingQueue(queue.Queue):
+    """A subscriber queue that wakes an event-loop consumer after each put."""
+
+    def __init__(self, maxsize: int, notify: Callable[[], None]) -> None:
+        super().__init__(maxsize=maxsize)
+        self.notify = notify
 
 
 class EventBroker:
@@ -35,8 +42,17 @@ class EventBroker:
         with self._subscribers_lock:
             return len(self._subscribers)
 
-    def subscribe(self) -> queue.Queue[Any]:
-        subscriber: queue.Queue[Any] = queue.Queue(maxsize=self._max_queue_size)
+    def subscribe(self, notify: Callable[[], None] | None = None) -> queue.Queue[Any]:
+        """Add a bounded subscriber queue.
+
+        ``notify`` runs after every enqueue, from the publishing thread, and
+        must not block.
+        """
+        subscriber: queue.Queue[Any] = (
+            queue.Queue(maxsize=self._max_queue_size)
+            if notify is None
+            else _NotifyingQueue(self._max_queue_size, notify)
+        )
         with self._subscribers_lock:
             self._subscribers.append(subscriber)
             closed = self._closed
@@ -72,6 +88,13 @@ class EventBroker:
     @staticmethod
     def _force_put(subscriber: queue.Queue[Any], item: Any) -> None:
         """Enqueue ``item`` even when the queue is full, evicting the oldest."""
+        EventBroker._put_evicting_oldest(subscriber, item)
+        notify = getattr(subscriber, "notify", None)
+        if notify is not None:
+            notify()
+
+    @staticmethod
+    def _put_evicting_oldest(subscriber: queue.Queue[Any], item: Any) -> None:
         try:
             subscriber.put_nowait(item)
             return
@@ -116,25 +139,51 @@ def sse_frame(payload: dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=True)}\n\n"
 
 
-_STREAM_END = object()
+_PING_FRAME = "event: ping\ndata: {}\n\n"
 
 
-async def close_with_response(frames: Iterator[str]) -> AsyncIterator[str]:
-    """Iterate blocking SSE frames off the event loop and close them on exit.
+async def async_event_stream(
+    broker: EventBroker, heartbeat_seconds: float = 5.0, *, announce_instance: bool = False
+) -> AsyncIterator[str]:
+    """Yield SSE frames for one client on the event loop, without a worker thread.
 
-    Starlette's own thread-pool iteration abandons the generator when the
-    client disconnects, leaving it in a reference cycle: its broker queue stays
-    subscribed until the cyclic collector happens to run. Closing explicitly
-    runs the generator's cleanup as soon as the response ends.
+    Publishers enqueue from any thread exactly as for :func:`event_stream`;
+    each put schedules a wakeup on this loop. Cancellation (a disconnect)
+    interrupts the wait immediately and the ``finally`` unsubscribes.
     """
+    loop = asyncio.get_running_loop()
+    wakeup = asyncio.Event()
+
+    def notify() -> None:
+        try:
+            loop.call_soon_threadsafe(wakeup.set)
+        except RuntimeError:
+            pass  # The loop has closed; the stream is gone with it.
+
+    subscriber = broker.subscribe(notify=notify)
     try:
-        while (frame := await anyio.to_thread.run_sync(next, frames, _STREAM_END)) is not _STREAM_END:
-            yield frame
+        if announce_instance:
+            # Subscribe before announcing identity so events published while the
+            # client reconciles are queued. This message does not advance the
+            # event sequence or replay events from earlier connections.
+            yield sse_frame({"event_type": "stream", "backend_instance_id": broker.instance_id})
+        while True:
+            try:
+                payload = subscriber.get_nowait()
+            except queue.Empty:
+                wakeup.clear()
+                # A put that landed before the clear has its item queued already.
+                if subscriber.empty():
+                    try:
+                        await asyncio.wait_for(wakeup.wait(), heartbeat_seconds)
+                    except asyncio.TimeoutError:
+                        yield _PING_FRAME
+                continue
+            if payload is STREAM_CLOSE_SENTINEL:
+                break
+            yield sse_frame(payload)
     finally:
-        # Cancellation waits for the worker thread, so the generator is idle here.
-        close = getattr(frames, "close", None)
-        if callable(close):
-            close()
+        broker.unsubscribe(subscriber)
 
 
 def event_stream(
@@ -152,7 +201,7 @@ def event_stream(
             try:
                 payload = subscriber.get(timeout=heartbeat_seconds)
             except queue.Empty:
-                yield "event: ping\ndata: {}\n\n"
+                yield _PING_FRAME
                 continue
             if payload is STREAM_CLOSE_SENTINEL:
                 break

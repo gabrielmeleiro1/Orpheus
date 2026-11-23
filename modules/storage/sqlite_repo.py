@@ -134,6 +134,9 @@ def _unique_quarantine_path(base_path: Path) -> Path:
         counter += 1
 
 
+_QUARANTINE_SUFFIXES = ("", "-wal", "-shm", "-journal")
+
+
 def _write_quarantine_record(path: Path, record: dict) -> None:
     atomic_write_json(
         path, record, temporary_path=path.with_name(path.name + ".tmp"),
@@ -239,11 +242,29 @@ class SQLiteRepository(IBookRepository):
             return None
 
     def _claim_storage(self, library_id: str | None) -> None:
+        self._fresh_storage_claim: tuple[Path, ...] = ()
+        sources = self.db_path.parent / "sources"
         claim_sources_root(
-            self.db_path, self.db_path.parent / "sources", library_id=library_id,
+            self.db_path, sources, library_id=library_id,
             connection=self._conn, additional_roots=(self._output_dir, self._temp_dir),
             temp_root=self._temp_dir,
         )
+        self._fresh_storage_claim = tuple(
+            Path(root).expanduser().resolve() for root in (sources, self._output_dir, self._temp_dir)
+        )
+
+    def take_fresh_storage_claim(self) -> tuple[Path, ...]:
+        """The roots the latest claim verified, handed out once.
+
+        That claim inspected every ownership record in and above these roots
+        under the cross-process claim gate. The single caller that runs right
+        after it (the library service being built, or the sweep that follows a
+        restore) may rely on it instead of walking the same trees again; any
+        later check walks them itself.
+        """
+        with self._lock:
+            roots, self._fresh_storage_claim = getattr(self, "_fresh_storage_claim", ()), ()
+        return roots
 
     @property
     def db_path(self) -> Path:
@@ -288,6 +309,7 @@ class SQLiteRepository(IBookRepository):
     def close(self) -> None:
         """Close the persistent database connection."""
         with self._lock:
+            self._fresh_storage_claim = ()
             self._conn.close()
             self._ownership.close()
 
@@ -347,9 +369,10 @@ class SQLiteRepository(IBookRepository):
         if intent.get("version") != 1 or intent.get("phase") not in {"moving", "rollback", "complete"}:
             raise ValueError("Unrecognized database quarantine intent")
         entries = intent.get("files", [])
-        if len(entries) != 3:
+        # Older intents moved only the main, WAL and SHM files.
+        if len(entries) not in (3, len(_QUARANTINE_SUFFIXES)):
             raise ValueError("Incomplete database quarantine intent")
-        for entry, suffix in zip(entries, ("", "-wal", "-shm")):
+        for entry, suffix in zip(entries, _QUARANTINE_SUFFIXES):
             source, target = Path(entry["source"]), Path(entry["destination"])
             if (source != Path(str(db_path) + suffix) or target.parent != db_path.parent
                     or not target.name.startswith(db_path.name + ".corrupt-")
@@ -409,7 +432,9 @@ class SQLiteRepository(IBookRepository):
         )
         preserve_delete_transactions(self._temp_dir / "delete_staging")
         files = []
-        for suffix in ("", "-wal", "-shm"):
+        # A rollback journal left beside the damaged file would be replayed
+        # into the fresh database, so it moves with the database it belongs to.
+        for suffix in _QUARANTINE_SUFFIXES:
             source = self.db_path.with_name(self.db_path.name + suffix)
             destination = _unique_quarantine_path(quarantine_path.with_name(quarantine_path.name + suffix))
             files.append({
@@ -785,6 +810,34 @@ class SQLiteRepository(IBookRepository):
                 (exclude_book_id, exclude_book_id),
             )
             return [row[0] for row in rows if row[0]]
+
+    def list_book_sources(self) -> list[tuple[int, str, str]]:
+        """``(id, title, source_path)`` for every book, in library order."""
+        with self._connection() as conn:
+            return [
+                (row[0], row[1], row[2])
+                for row in conn.execute("SELECT id, title, source_path FROM books ORDER BY created_at DESC, id ASC")
+            ]
+
+    def list_chapter_audio_paths(self, book_ids: list[int]) -> dict[int, list[str]]:
+        """Recorded chapter audio paths per book, in chapter order, in one query per 500 books."""
+        paths: dict[int, list[str]] = {}
+        ids = list(dict.fromkeys(book_ids))
+        with self._connection() as conn:
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                rows = conn.execute(
+                    f"""
+                    SELECT book_id, mp3_path FROM chapters
+                    WHERE book_id IN ({",".join("?" * len(chunk))})
+                      AND mp3_path IS NOT NULL AND mp3_path <> ''
+                    ORDER BY book_id, chapter_number
+                    """,
+                    chunk,
+                )
+                for book_id, mp3_path in rows:
+                    paths.setdefault(book_id, []).append(mp3_path)
+        return paths
 
     def list_artifact_paths(self, exclude_book_id: int) -> list[str]:
         """Read every retained reference in one query under the repository lock."""

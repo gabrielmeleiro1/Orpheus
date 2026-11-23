@@ -23,6 +23,9 @@ from modules.web.serializers import book_summary_to_dict, book_to_dict
 
 router = APIRouter()
 
+# Library reads retried when a restore replaces the library mid-read.
+_LIBRARY_READ_ATTEMPTS = 3
+
 _AUDIO_MEDIA_TYPES = {
     ".aac": "audio/aac",
     ".flac": "audio/flac",
@@ -62,6 +65,7 @@ class FileResponse(BaseFileResponse):
             await send({"type": "http.response.body", "body": chunk, "more_body": True})
 
     async def _handle_simple(self, send, send_header_only, send_pathsend):
+        del send_pathsend  # Always streams the pinned descriptor.
         await send({"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers})
         if not send_header_only:
             await self._send_bytes(send, 0, self.stat_result.st_size)
@@ -154,21 +158,39 @@ def list_library(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    with library_snapshot(controller) as identity:
-        books = controller.get_library_books(
+    def read_books():
+        return controller.get_library_books(
             search=search,
             limit=limit,
             offset=offset,
             conversion_mode=conversion_mode,
             favorite=favorite,
         )
-        return {
-            **identity,
-            "items": [{**book_summary_to_dict(book), **identity} for book in books],
-            "count": len(books),
-            "limit": limit,
-            "offset": offset,
-        }
+
+    def current_identity() -> dict:
+        with library_snapshot(controller) as identity:
+            return dict(identity)
+
+    # The service reads the rows under the repository lock and checks their
+    # files after releasing it. Restore is the only identity change and every
+    # restore gets a new epoch, so an identity unchanged across the read
+    # describes the rows that were read.
+    for _attempt in range(_LIBRARY_READ_ATTEMPTS):
+        identity = current_identity()
+        books = read_books()
+        if current_identity() == identity:
+            break
+    else:
+        with library_snapshot(controller) as identity:
+            identity = dict(identity)
+            books = read_books()
+    return {
+        **identity,
+        "items": [{**book_summary_to_dict(book), **identity} for book in books],
+        "count": len(books),
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.get("/api/library/count")
@@ -217,6 +239,7 @@ def update_library_book(
         )
         if updated is None:
             raise HTTPException(status_code=404, detail="Book not found")
+        updated = book_to_dict(updated)
         updated.update(identity)
         updated["playback_url"] = f"/api/library/{book_id}/audio" if updated.get("playback_path") else None
         return updated

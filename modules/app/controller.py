@@ -29,7 +29,7 @@ from modules.app.services import (
 from modules.pipeline.pool_manager import SharedWorkerPoolManager
 from modules.pipeline.worker_recommendation import build_parallel_worker_recommendation
 from modules.storage.maintenance import (
-    audit_storage_state,
+    audit_with_unowned_folders,
     backup_database as backup_database_file,
     list_database_backups,
     prune_stale_records_and_files,
@@ -186,6 +186,7 @@ class AppController:
     _CLEANUP_CONVERSION_CANCEL_TIMEOUT_SECONDS = 2.0
     _CLEANUP_WORKER_SHUTDOWN_TIMEOUT_SECONDS = 2.0
     _CLEANUP_POST_WORKER_CANCEL_TIMEOUT_SECONDS = 0.5
+    _CLEANUP_VOICE_PREVIEW_TIMEOUT_SECONDS = 0.5
     # Desktop supervisor should allow at least this budget after SIGTERM so cleanup
     # can cancel active conversions, shut down workers, and close SQLite safely.
     DESKTOP_SHUTDOWN_CLEANUP_BUDGET_SECONDS = 5.0
@@ -375,7 +376,8 @@ class AppController:
             with self.library_snapshot() as snapshot:
                 identity = dict(snapshot)
             db_path = Path(self.config.db_path)
-            audit = audit_storage_state(
+            # One audit pass yields both the graced audit and the unowned folders.
+            audit, unowned = audit_with_unowned_folders(
                 db_path=db_path,
                 output_dir=self.config.output_dir,
                 temp_dir=self.config.temp_dir,
@@ -389,7 +391,7 @@ class AppController:
                 "audit": audit,
                 # The same classification cleanup reports, so counts agree.
                 "cleanup_preview": storage_cleanup_summary(
-                    db_path, self.config.output_dir, self.config.temp_dir, audit,
+                    db_path, self.config.output_dir, self.config.temp_dir, audit, unowned=unowned,
                 ),
                 "checked_at": datetime.now(timezone.utc).isoformat(),
                 "quarantine": getattr(self.repository, "quarantine", None),
@@ -480,17 +482,17 @@ class AppController:
                     if removed:
                         # What is kept, and why, depends on the folders that
                         # are still there: classify again without the removed ones.
-                        audit = audit_storage_state(
-                            db_path=self.config.db_path,
-                            output_dir=self.config.output_dir,
-                            temp_dir=self.config.temp_dir,
+                        from modules.storage.maintenance import audit_with_unowned_folders
+
+                        audit, still_unowned = audit_with_unowned_folders(
+                            self.config.db_path, self.config.output_dir, self.config.temp_dir,
                         )
                         report["audit_after"] = audit
                         summary = report["summary"] = {
                             "removed": summary.get("removed", {}),
                             **storage_cleanup_summary(
                                 self.config.db_path, self.config.output_dir, self.config.temp_dir, audit,
-                                actions=report.get("actions"), changed=True,
+                                actions=report.get("actions"), changed=True, unowned=still_unowned,
                             ),
                         }
                     summary.setdefault("removed", {})["unowned_folders"] = len(removed)
@@ -695,6 +697,17 @@ class AppController:
             )
         )
 
+    def release_resident_models(self) -> bool:
+        """Unload the warm conversion engine and stop idle pool workers.
+
+        The caller must hold the storage-cleanup reservation, so no conversion
+        can attach the engine or start the pool meanwhile. Returns False when
+        the workers did not exit within the bounded wait; their model files
+        may then still be open.
+        """
+        self._conversion_service.cleanup()
+        return self._shutdown_shared_worker_pool_for_cleanup()
+
     def cleanup(self) -> bool:
         begin_shutdown = getattr(self._conversion_service, "begin_shutdown", None)
         if callable(begin_shutdown):
@@ -712,16 +725,27 @@ class AppController:
                 conversion_quiesced, workers_quiesced,
             )
             return False
-        cleanup_conversion_service = getattr(self._conversion_service, "cleanup", None)
-        if callable(cleanup_conversion_service):
-            cleanup_conversion_service()
-        self._voice_service.cleanup()
-        self._cleaner_api_limiter.shutdown()
-        if self._owns_repository:
-            close = getattr(self.repository, "close", None)
-            if callable(close):
-                close()
-        self._emit_desktop_shutdown_ack()
+        try:
+            cleanup_conversion_service = getattr(self._conversion_service, "cleanup", None)
+            if callable(cleanup_conversion_service):
+                cleanup_conversion_service()
+            # Bounded: a running voice preview must not hold shutdown past the
+            # supervisor's budget, and SQLite must still close below.
+            if not self._voice_service.shutdown(
+                timeout_seconds=self._CLEANUP_VOICE_PREVIEW_TIMEOUT_SECONDS,
+            ):
+                logger.warning("Voice preview engine still in use at shutdown; leaving it to process exit")
+            self._cleaner_api_limiter.shutdown()
+        except Exception:
+            logger.exception("Model cleanup failed during shutdown")
+        finally:
+            try:
+                if self._owns_repository:
+                    close = getattr(self.repository, "close", None)
+                    if callable(close):
+                        close()
+            finally:
+                self._emit_desktop_shutdown_ack()
         return True
 
     def _emit_desktop_shutdown_ack(self) -> None:
