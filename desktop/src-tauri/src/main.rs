@@ -11,8 +11,9 @@ mod capability_tests;
 
 use backend::{
     emergency_teardown_backend_slot, launch_dev_backend, launch_sidecar_backend, print_diagnostic,
-    read_ready_payload_from_file, replace_running_backend, resolve_sidecar_path, BackendEndpoint,
-    BackendLifecycle, BackendManager, BackendStatus, RunningBackend,
+    read_ready_payload_from_file, replace_running_backend, resolve_sidecar_path,
+    stop_running_backend, BackendEndpoint, BackendLifecycle, BackendManager, BackendStatus,
+    RunningBackend,
 };
 use paths::resolve_desktop_runtime_paths;
 use setup::SetupRunnerState;
@@ -221,9 +222,11 @@ impl AppState {
         }
     }
 
-    // Stop and clear the current child. Takes the child out from under the lock
-    // and stops it outside the lock so status polling isn't blocked for the whole
-    // (multi-second) graceful shutdown. Caller must hold `restart_lock`.
+    // Stop and clear the current child (outside the slot lock, so status
+    // polling isn't blocked for the multi-second graceful shutdown). Fails, with
+    // the child kept in the slot and its generation failed, when the child did
+    // not exit after a forced kill: callers must not start a replacement then.
+    // Caller must hold `restart_lock`.
     fn stop_backend_inner(&self) -> Result<(), String> {
         let ready_file_path = self
             .backend_ready_file
@@ -231,26 +234,12 @@ impl AppState {
             .map_err(|_| "backend ready file lock poisoned".to_string())?
             .take();
 
-        let process = self
-            .backend_process
-            .lock()
-            .map_err(|_| "backend process lock poisoned".to_string())?
-            .take();
-
-        if let Some(process) = process {
-            process.stop(&self.backend_manager);
-        } else {
-            let mut manager = self
-                .backend_manager
-                .lock()
-                .map_err(|_| "backend manager lock poisoned".to_string())?;
-            manager.mark_stopped();
-        }
+        let stopped = stop_running_backend(&self.backend_process, &self.backend_manager);
 
         if let Some(path) = ready_file_path {
             let _ = std::fs::remove_file(path);
         }
-        Ok(())
+        stopped
     }
 
     fn refresh_backend_ready_from_file(&self) -> Result<(), String> {
@@ -510,7 +499,13 @@ where
     Stop: FnOnce() -> Result<(), String>,
     Start: FnOnce() -> Result<(), String>,
 {
-    if backend_lifecycle != BackendLifecycle::Ready {
+    // A failed or stopped backend must stay restartable: a start that failed
+    // after the stop leaves it `Failed` with the authorization restored for a
+    // retry. Only a launch still in progress is refused.
+    if !matches!(
+        backend_lifecycle,
+        BackendLifecycle::Ready | BackendLifecycle::Failed | BackendLifecycle::Stopped
+    ) {
         return Err("backend is not ready for the setup restart".to_string());
     }
 
@@ -814,6 +809,17 @@ fn main() {
         tauri::RunEvent::Exit => {
             if let Some(state) = app_handle.try_state::<AppState>() {
                 emergency_teardown_backend_slot(&state.backend_process);
+                let ready_file = match state.backend_ready_file.lock() {
+                    Ok(mut guard) => guard.take(),
+                    Err(poisoned) => poisoned.into_inner().take(),
+                };
+                if let Some(path) = ready_file {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            // Bounded, and a no-op once ExitRequested cleanup already ran.
+            if let Some(state) = app_handle.try_state::<SetupRunnerState>() {
+                state.shutdown();
             }
         }
         _ => {}

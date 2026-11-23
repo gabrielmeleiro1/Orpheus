@@ -470,18 +470,60 @@ fn setup_restart_transaction_restores_authorization_after_stop_or_start_failure(
 }
 
 #[test]
-fn setup_restart_transaction_rejects_non_ready_backend_without_consuming_authorization() {
+fn setup_restart_transaction_rejects_starting_backend_without_consuming_authorization() {
     let state = SetupRunnerState::default();
     let generation = state.begin(request("base", &[])).expect("run");
     assert!(state.finish_success(generation, true));
     let result = restart_after_setup_transaction(
         &state,
-        BackendLifecycle::Failed,
+        BackendLifecycle::Starting,
         || panic!("must not stop"),
         || panic!("must not start"),
     );
     assert!(result.is_err());
     assert!(state.acquire_restart_authorization().is_ok());
+}
+
+#[test]
+fn setup_restart_can_be_retried_after_the_start_left_the_backend_failed() {
+    for settled in [BackendLifecycle::Failed, BackendLifecycle::Stopped] {
+        let state = SetupRunnerState::default();
+        let generation = state.begin(request("base", &[])).expect("run");
+        assert!(state.finish_success(generation, true));
+        let first = restart_after_setup_transaction(
+            &state,
+            BackendLifecycle::Ready,
+            || Ok(()),
+            || Err("start failed".to_string()),
+        );
+        assert!(first.is_err());
+        assert!(state.status().restart_required);
+
+        // A failed start marks the backend failed; the retry must still run.
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        restart_after_setup_transaction(
+            &state,
+            settled,
+            {
+                let calls = Arc::clone(&calls);
+                move || {
+                    calls.lock().expect("calls").push("stop");
+                    Ok(())
+                }
+            },
+            {
+                let calls = Arc::clone(&calls);
+                move || {
+                    calls.lock().expect("calls").push("start");
+                    Ok(())
+                }
+            },
+        )
+        .expect("retry succeeds");
+        assert_eq!(*calls.lock().expect("calls"), vec!["stop", "start"]);
+        assert!(!state.status().restart_required);
+        assert!(state.acquire_restart_authorization().is_err());
+    }
 }
 
 fn backend_status(lifecycle: BackendLifecycle) -> BackendStatus {
@@ -1259,4 +1301,263 @@ fn setup_readiness_stops_waiting_when_shutdown_begins() {
         .refresh_backend_generation(generation)
         .expect_err("shutdown interrupts readiness");
     assert!(error.contains("shutting down"));
+}
+
+#[cfg(unix)]
+#[test]
+fn process_table_rows_without_a_start_time_are_never_tracked() {
+    let table = super::parse_process_table(
+        "  101     1 Mon Nov 23 10:00:00 2026\n\
+         202   101\n\
+         abc   101 Mon Nov 23 10:00:01 2026\n\
+         303   101 Mon Nov 23 10:00:02 2026   \n",
+    );
+    let pids: Vec<u32> = table.iter().map(|(identity, _)| identity.pid).collect();
+    assert_eq!(pids, vec![101, 303]);
+    assert_eq!(table[1].0.started, "Mon Nov 23 10:00:02 2026");
+    assert_eq!(table[1].1, 101);
+
+    // Only rows reachable from the root are recorded, and a recorded identity
+    // that no longer appears in a later snapshot is forgotten.
+    let tracked = Mutex::new(Vec::new());
+    super::record_descendants(101, &table, &tracked);
+    assert_eq!(tracked.lock().unwrap().len(), 1);
+    super::record_descendants(101, &table[..1], &tracked);
+    assert!(tracked.lock().unwrap().is_empty());
+}
+
+#[cfg(unix)]
+fn spawn_sleeper() -> std::process::Child {
+    Command::new("/bin/sleep")
+        .arg("30")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("sleep fixture")
+}
+
+#[cfg(unix)]
+#[test]
+fn reused_pid_with_a_different_start_time_is_never_signalled() {
+    let mut unrelated = spawn_sleeper();
+    // A tracked descendant whose PID now belongs to an unrelated process.
+    let tracked = Mutex::new(vec![super::ProcessIdentity {
+        pid: unrelated.id(),
+        started: "Thu Jan  1 00:00:00 1970".to_string(),
+    }]);
+    super::terminate_tracked_descendants(&tracked);
+    let survived = unrelated.try_wait().expect("try_wait").is_none();
+    let _ = unrelated.kill();
+    let _ = unrelated.wait();
+    assert!(survived, "a reused PID must not be signalled");
+}
+
+#[cfg(unix)]
+#[test]
+fn tracked_descendant_with_matching_identity_is_terminated() {
+    let mut child = spawn_sleeper();
+    let pid = child.id();
+    let table = super::process_table().expect("process table");
+    let identity = table
+        .into_iter()
+        .map(|(identity, _)| identity)
+        .find(|identity| identity.pid == pid)
+        .expect("sleep fixture is listed");
+    super::terminate_tracked_descendants(&Mutex::new(vec![identity]));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let exited = loop {
+        if child.try_wait().expect("try_wait").is_some() {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    if !exited {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    assert!(exited, "the tracked descendant must be terminated");
+}
+
+#[test]
+fn supervisor_wait_is_bounded() {
+    let state = SetupRunnerState::default();
+    let registration = super::SupervisorRegistration::register(&state);
+    let started = Instant::now();
+    assert!(!state.wait_for_supervisors(Duration::from_millis(100)));
+    assert!(started.elapsed() < Duration::from_secs(2));
+    drop(registration);
+    assert!(state.wait_for_supervisors(Duration::from_millis(100)));
+}
+
+#[cfg(unix)]
+#[test]
+fn shutdown_waits_for_an_in_flight_cancel_to_end_the_tree() {
+    let python = PathBuf::from("/usr/bin/python3");
+    if !python.is_file() {
+        return;
+    }
+    let temp = unique_temp_dir("shutdown-in-flight-cancel");
+    fs::create_dir_all(&temp).expect("temp");
+    let pid_file = temp.join("child.pid");
+    let code = format!(
+        "import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'], start_new_session=True); open({:?},'w').write(str(p.pid)); time.sleep(60)",
+        pid_file
+    );
+    let state = SetupRunnerState::default();
+    let (sink, _events) = collecting_sink();
+    supervise(
+        state.clone(),
+        request("base", &[]),
+        fixture_launch(&python, &["-c".into(), code]),
+        Duration::from_secs(30),
+        sink,
+    )
+    .expect("fixture starts");
+    let root_pid = state.active_pid().expect("supervised child pid") as i32;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let detached_pid: i32 = loop {
+        if let Some(pid) = fs::read_to_string(&pid_file)
+            .ok()
+            .and_then(|text| text.parse().ok())
+        {
+            break pid;
+        }
+        assert!(Instant::now() < deadline, "fixture did not start its child");
+        thread::sleep(Duration::from_millis(20));
+    };
+
+    // A user cancel has claimed the run but not finished signalling it when
+    // the app quits.
+    let (_generation, in_flight) = state.cancel().expect("cancel claims the run");
+    state.shutdown();
+
+    let root_alive = unsafe { libc::kill(root_pid, 0) } == 0;
+    let detached_alive = unsafe { libc::kill(detached_pid, 0) } == 0;
+    if detached_alive {
+        unsafe {
+            libc::kill(detached_pid, libc::SIGKILL);
+        }
+    }
+    drop(in_flight);
+    let _ = fs::remove_dir_all(temp);
+    assert!(!root_alive, "setup root survived shutdown");
+    assert!(
+        !detached_alive,
+        "detached setup descendant survived shutdown"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_output_returns_what_a_quick_command_prints() {
+    let output = super::run_bounded_output(
+        Command::new("/bin/sh").args(["-c", "echo 1 2"]),
+        Duration::from_secs(5),
+    );
+    assert_eq!(output.as_deref(), Some(b"1 2\n".as_slice()));
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_output_gives_up_on_a_stalled_command_and_kills_it() {
+    let pid_file = std::env::temp_dir().join(format!(
+        "orpheus-bounded-output-{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let started = Instant::now();
+    let output = super::run_bounded_output(
+        Command::new("/bin/sh").args([
+            "-c",
+            "echo $$ > \"$1\"; exec sleep 30",
+            "sh",
+            &pid_file.to_string_lossy(),
+        ]),
+        Duration::from_millis(200),
+    );
+    let elapsed = started.elapsed();
+    let pid: i32 = fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0);
+    let _ = fs::remove_file(&pid_file);
+
+    assert_eq!(output, None);
+    assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    assert!(pid > 0, "fixture did not record its pid");
+    assert!(
+        unsafe { libc::kill(pid, 0) } != 0,
+        "the stalled command must be killed"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn terminate_never_signals_the_group_of_an_already_reaped_leader() {
+    use std::os::unix::process::CommandExt;
+
+    // An unrelated process leading its own group, standing in for whatever
+    // reuses the reaped leader's PID (and so its group id).
+    let mut unrelated = Command::new("/bin/sleep")
+        .arg("30")
+        .process_group(0)
+        .spawn()
+        .expect("spawn sleeper");
+    let pid = i32::try_from(unrelated.id()).expect("pid");
+    let process = super::ActiveProcess {
+        child: Arc::new(Mutex::new(None)),
+        process_group_id: pid,
+        descendants: Arc::new(Mutex::new(Vec::new())),
+    };
+
+    super::terminate_process(&process);
+    let still_running = unrelated.try_wait().ok().flatten().is_none();
+    let _ = unrelated.kill();
+    let _ = unrelated.wait();
+
+    assert!(
+        still_running,
+        "a reaped leader's group id must never be signalled"
+    );
+}
+
+#[test]
+fn resuming_a_thread_skips_running_ones_and_drains_suspended_ones() {
+    fn resume(counts: &[u32]) -> (Result<bool, String>, usize) {
+        let mut calls = 0;
+        let result = super::resume_thread_fully(|| {
+            calls += 1;
+            counts[calls - 1]
+        });
+        (result, calls)
+    }
+
+    // Never suspended: skipped, not counted, not resumed again.
+    assert_eq!(resume(&[0]), (Ok(false), 1));
+    // Suspended once: resumed.
+    assert_eq!(resume(&[1]), (Ok(true), 1));
+    // Suspended twice: drained to zero, counted once.
+    assert_eq!(resume(&[2, 1]), (Ok(true), 2));
+    // ResumeThread failure, first call or while draining.
+    assert!(resume(&[u32::MAX]).0.is_err());
+    assert!(resume(&[3, u32::MAX]).0.is_err());
+    // Someone else resumed it mid-drain.
+    assert!(resume(&[2, 0]).0.is_err());
+}
+
+#[test]
+fn a_child_with_no_suspended_thread_is_rejected() {
+    let resumed = [0_u32, 0, 0]
+        .into_iter()
+        .map(|count| super::resume_thread_fully(|| count))
+        .filter(|result| matches!(result, Ok(true)))
+        .count();
+    assert!(super::require_resumed_thread(u32::try_from(resumed).unwrap()).is_err());
+    assert_eq!(super::require_resumed_thread(1), Ok(()));
 }

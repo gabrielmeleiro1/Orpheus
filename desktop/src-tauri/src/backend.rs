@@ -333,6 +333,12 @@ const BACKEND_SHUTDOWN_ACK_EXTENSION: Duration = Duration::from_millis(1500);
 const BACKEND_SHUTDOWN_FORCE_KILL_MAX: Duration = Duration::from_millis(8000);
 const BACKEND_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const BACKEND_EMERGENCY_TEARDOWN_WAIT: Duration = Duration::from_millis(500);
+// How long an ordinary stop waits for the process to be gone after a forced
+// kill. A killed process can take a moment to release GPU memory, but one stuck
+// in an uninterruptible wait must not hold `restart_lock` (and app exit) forever.
+const BACKEND_FORCED_KILL_REAP_WAIT: Duration = Duration::from_secs(5);
+const BACKEND_DID_NOT_EXIT: &str =
+    "desktop backend did not exit after it was stopped; it may still be using its port and library";
 const BACKEND_READER_JOIN_TIMEOUT: Duration = Duration::from_millis(500);
 const BACKEND_READER_JOIN_POLL_INTERVAL: Duration = Duration::from_millis(25);
 // Number of trailing stderr lines quoted in the error when the backend exits.
@@ -530,7 +536,7 @@ fn send_signal_to_process_group(process_group_id: i32, signal: i32) -> std::io::
 ///
 /// After reap, PID reuse makes pgid-only signaling unsafe — return None.
 #[cfg(unix)]
-fn verified_owned_process_group_id(
+pub(crate) fn verified_owned_process_group_id(
     child: &Child,
     process_group_id: Option<i32>,
     child_reaped: bool,
@@ -553,7 +559,7 @@ fn verified_owned_process_group_id(
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn child_exited_without_reap(child: &Child) -> std::io::Result<bool> {
+pub(crate) fn child_exited_without_reap(child: &Child) -> std::io::Result<bool> {
     let pid = i32::try_from(child.id())
         .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid child pid"))?;
     let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
@@ -588,7 +594,7 @@ fn wait_for_child_exit_without_reap(child: &Child, timeout: Duration) -> std::io
     }
 }
 
-fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
+pub(crate) fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
@@ -629,6 +635,7 @@ fn adopt_backend_ready(
     manager: &Mutex<BackendManager>,
     generation: u64,
     payload: BackendReadyPayload,
+    ready_file: Option<&Path>,
     #[cfg(windows)] shutdown_endpoint: &Mutex<Option<BackendReadyPayload>>,
 ) -> Result<(), String> {
     let mut manager = manager
@@ -647,6 +654,13 @@ fn adopt_backend_ready(
         *endpoint = Some(payload.clone());
     }
     manager.mark_ready_for_generation(generation, payload);
+    // The file repeats the token from stdout; it has served its purpose once
+    // this generation is adopted. Removing it under the manager lock means a
+    // newer generation (which must mark itself starting first) cannot have
+    // written it yet.
+    if let Some(path) = ready_file {
+        let _ = fs::remove_file(path);
+    }
     Ok(())
 }
 
@@ -664,6 +678,7 @@ impl RunningBackend {
             manager,
             self.generation,
             payload,
+            None,
             #[cfg(windows)]
             &self.shutdown_endpoint,
         )
@@ -709,12 +724,16 @@ impl RunningBackend {
         self.job.terminate();
 
         let _ = self.child.kill();
-        let _ = wait_for_child_exit(&mut self.child, BACKEND_EMERGENCY_TEARDOWN_WAIT);
-        let _ = self.child.wait();
+        // Bounded: a child stuck in an uninterruptible wait must not hang exit
+        // or the caller's lock. An unreaped leader keeps its PID reserved, so
+        // later group signals and the exit refresh stay safe.
         #[cfg(unix)]
         {
-            self.child_reaped = true;
+            self.child_reaped =
+                wait_for_child_exit(&mut self.child, BACKEND_EMERGENCY_TEARDOWN_WAIT);
         }
+        #[cfg(not(unix))]
+        let _ = wait_for_child_exit(&mut self.child, BACKEND_EMERGENCY_TEARDOWN_WAIT);
     }
 
     pub fn refresh_exit_status(
@@ -798,7 +817,23 @@ impl RunningBackend {
         Ok(())
     }
 
-    pub fn stop(mut self, manager: &Arc<Mutex<BackendManager>>) {
+    /// Stop the backend. Returns it back when its process could not be seen to
+    /// exit within a bound after the forced kill: that generation is then
+    /// marked failed, emergency teardown stays armed, and the caller must keep
+    /// owning it rather than start a replacement while it may still hold the
+    /// port and library. Stopping it again later retries the teardown.
+    #[must_use = "a backend returned by stop() has not exited and must stay owned"]
+    pub fn stop(self, manager: &Arc<Mutex<BackendManager>>) -> Option<RunningBackend> {
+        self.stop_with_reap(manager, |child| {
+            wait_for_child_exit(child, BACKEND_FORCED_KILL_REAP_WAIT)
+        })
+    }
+
+    fn stop_with_reap(
+        mut self,
+        manager: &Arc<Mutex<BackendManager>>,
+        reap: impl FnOnce(&mut Child) -> bool,
+    ) -> Option<RunningBackend> {
         // Tear down first while emergency Drop fallback remains armed. Disarm
         // only after ownership is released so a panic/error mid-stop cannot
         // leave same-group grandchildren behind; getpgid ownership checks keep
@@ -824,7 +859,14 @@ impl RunningBackend {
             endpoint.as_ref(),
         );
 
-        let _ = self.child.wait();
+        // Bounded. An unreaped leader keeps its PID reserved, so the group
+        // ownership checks of a later stop, refresh or Drop stay reuse-safe.
+        if !reap(&mut self.child) {
+            if let Ok(mut guard) = manager.lock() {
+                guard.mark_failed_for_generation(generation, BACKEND_DID_NOT_EXIT);
+            }
+            return Some(self);
+        }
         #[cfg(unix)]
         {
             self.child_reaped = true;
@@ -845,6 +887,7 @@ impl RunningBackend {
         if let Ok(mut guard) = manager.lock() {
             guard.mark_stopped_for_generation(generation);
         }
+        None
     }
 }
 
@@ -883,9 +926,55 @@ pub fn replace_running_backend(
         guard.replace(next)
     };
     if let Some(displaced) = displaced {
-        displaced.stop(manager);
+        if let Some(survivor) = displaced.stop(manager) {
+            // The replacement is already installed, so nothing can own the
+            // survivor any longer; dropping it force-kills it once more.
+            print_diagnostic(format_args!("{BACKEND_DID_NOT_EXIT}"));
+            drop(survivor);
+        }
     }
     Ok(())
+}
+
+// Stop the supervised backend and clear its slot. The stop runs outside the
+// slot lock so status polling is not blocked for the graceful shutdown. A
+// backend that did not exit goes back into the slot, still owned (exit
+// teardown, exit refresh and a later stop all reach it), and the error keeps
+// the caller from starting a replacement beside it. An empty slot marks the
+// manager stopped.
+pub fn stop_running_backend(
+    slot: &Mutex<Option<RunningBackend>>,
+    manager: &Arc<Mutex<BackendManager>>,
+) -> Result<(), String> {
+    stop_running_backend_with(slot, manager, RunningBackend::stop)
+}
+
+fn stop_running_backend_with(
+    slot: &Mutex<Option<RunningBackend>>,
+    manager: &Arc<Mutex<BackendManager>>,
+    stop: impl FnOnce(RunningBackend, &Arc<Mutex<BackendManager>>) -> Option<RunningBackend>,
+) -> Result<(), String> {
+    let process = slot
+        .lock()
+        .map_err(|_| "backend process lock poisoned".to_string())?
+        .take();
+    let Some(process) = process else {
+        manager
+            .lock()
+            .map_err(|_| "backend manager lock poisoned".to_string())?
+            .mark_stopped();
+        return Ok(());
+    };
+    let Some(survivor) = stop(process, manager) else {
+        return Ok(());
+    };
+    let mut guard = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Callers hold `restart_lock`, so nothing refills the slot meanwhile; if
+    // something did, the survivor is dropped (force-killed) instead.
+    if guard.is_none() {
+        *guard = Some(survivor);
+    }
+    Err(BACKEND_DID_NOT_EXIT.to_string())
 }
 
 pub(crate) fn project_root_dir() -> PathBuf {
@@ -1084,7 +1173,8 @@ fn launch_backend(
                 job.terminate();
             }
             let _ = child.kill();
-            let _ = child.wait();
+            // Bounded: this runs under `restart_lock`.
+            let _ = wait_for_child_exit(child, BACKEND_EMERGENCY_TEARDOWN_WAIT);
             if let Ok(mut guard) = manager.lock() {
                 guard.mark_failed_for_generation(generation, error.clone());
             }
@@ -1130,6 +1220,11 @@ fn launch_backend(
             manager: Arc::clone(&manager),
             generation,
             log: Arc::clone(&log),
+            ready_file: launch
+                .env
+                .iter()
+                .find(|(key, _)| key == "AUDIOBOOK_DESKTOP_READY_FILE")
+                .map(|(_, value)| PathBuf::from(value)),
             stderr_lines: Arc::clone(&stderr_lines),
             stderr_done: stderr_done_rx,
             shutdown_ack: Arc::clone(&shutdown_ack),
@@ -1176,6 +1271,7 @@ struct StdoutReaderContext {
     manager: Arc<Mutex<BackendManager>>,
     generation: u64,
     log: Arc<Mutex<Option<BackendLog>>>,
+    ready_file: Option<PathBuf>,
     stderr_lines: Arc<Mutex<Vec<String>>>,
     stderr_done: mpsc::Receiver<()>,
     shutdown_ack: Arc<AtomicBool>,
@@ -1192,6 +1288,7 @@ fn spawn_stdout_reader(stdout: ChildStdout, context: StdoutReaderContext) -> Joi
             manager,
             generation,
             log,
+            ready_file,
             stderr_lines,
             stderr_done,
             shutdown_ack,
@@ -1206,6 +1303,7 @@ fn spawn_stdout_reader(stdout: ChildStdout, context: StdoutReaderContext) -> Joi
                     &manager,
                     generation,
                     payload,
+                    ready_file.as_deref(),
                     #[cfg(windows)]
                     &shutdown_endpoint,
                 );

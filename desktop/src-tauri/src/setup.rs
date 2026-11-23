@@ -25,6 +25,16 @@ const MAX_PROGRESS_EVENTS: usize = 256;
 const MAX_PROGRESS_EVENTS_PER_SECOND: usize = 32;
 const RESERVED_STAGE_EVENTS: usize = 8;
 const READER_JOIN_TIMEOUT: Duration = Duration::from_millis(250);
+// One process-table snapshot per interval finds descendants that left the
+// supervised process group; teardown takes a fresh snapshot of its own.
+#[cfg(unix)]
+const DESCENDANT_SAMPLE_INTERVAL: Duration = Duration::from_secs(1);
+const SETUP_REAP_WAIT: Duration = Duration::from_secs(1);
+// `ps` reads only the kernel process table, but setup teardown runs it on
+// cancel and app exit, so a stalled `ps` must not stall them.
+#[cfg(unix)]
+const PROCESS_TABLE_TIMEOUT: Duration = Duration::from_secs(2);
+const SETUP_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
 #[cfg(windows)]
 const WINDOWS_CREATE_SUSPENDED: u32 = 0x0000_0004;
 #[cfg(windows)]
@@ -168,6 +178,8 @@ struct SetupRunnerInner {
     active_process: Option<ActiveProcess>,
     terminal_emitted: bool,
     restart_in_progress: bool,
+    // Supervisor threads still tearing down a run's process tree.
+    active_supervisors: usize,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -182,9 +194,13 @@ pub(crate) struct RestartAuthorization {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveProcess {
+    // On Unix the child is taken out once reaped: from then on its PID, and so
+    // the group id, may belong to an unrelated process and is never signalled.
     child: Arc<Mutex<Option<Child>>>,
     #[cfg(unix)]
     process_group_id: i32,
+    #[cfg(unix)]
+    descendants: Arc<Mutex<Vec<ProcessIdentity>>>,
     #[cfg(windows)]
     job: Arc<WindowsJob>,
 }
@@ -273,7 +289,10 @@ pub(crate) fn resume_suspended_child_threads(process_id: u32) -> Result<(), Stri
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
     };
-    use windows_sys::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    use windows_sys::Win32::System::Threading::{
+        GetProcessIdOfThread, OpenThread, ResumeThread, THREAD_QUERY_LIMITED_INFORMATION,
+        THREAD_SUSPEND_RESUME,
+    };
 
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
     if snapshot == INVALID_HANDLE_VALUE {
@@ -289,28 +308,58 @@ pub(crate) fn resume_suspended_child_threads(process_id: u32) -> Result<(), Stri
     }
     let mut resumed = 0_u32;
     loop {
-        if entry.th32OwnerProcessID == process_id {
-            let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
-            if thread.is_null() {
-                return Err("failed to open suspended child thread".to_string());
+        // A listed thread that has exited since the snapshot cannot be opened,
+        // and its id may since name a thread of another process; skip both.
+        // The suspended primary thread cannot exit, so `resumed` still proves
+        // it was reached.
+        let thread = (entry.th32OwnerProcessID == process_id)
+            .then(|| unsafe {
+                OpenThread(
+                    THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION,
+                    0,
+                    entry.th32ThreadID,
+                )
+            })
+            .filter(|thread| !thread.is_null())
+            .map(WindowsHandle)
+            .filter(|thread| unsafe { GetProcessIdOfThread(thread.0) } == process_id);
+        if let Some(thread) = thread {
+            if resume_thread_fully(|| unsafe { ResumeThread(thread.0) })? {
+                resumed += 1;
             }
-            let thread = WindowsHandle(thread);
-            let mut previous = unsafe { ResumeThread(thread.0) };
-            if previous == u32::MAX || previous == 0 {
-                return Err("failed to resume contained child thread".to_string());
-            }
-            while previous > 1 {
-                previous = unsafe { ResumeThread(thread.0) };
-                if previous == u32::MAX || previous == 0 {
-                    return Err("failed to fully resume contained child thread".to_string());
-                }
-            }
-            resumed += 1;
         }
         if unsafe { Thread32Next(snapshot.0, &mut entry) } == 0 {
             break;
         }
     }
+    require_resumed_thread(resumed)
+}
+
+// Drive one thread's suspend count to zero with `resume` (`ResumeThread`,
+// which returns the count before the call or `u32::MAX` on failure). Returns
+// whether the thread had been suspended. A count of 0 means it was never
+// suspended (for example one injected by security software), so it is skipped
+// and does not count towards the primary thread that must be resumed.
+#[cfg(any(windows, test))]
+fn resume_thread_fully(mut resume: impl FnMut() -> u32) -> Result<bool, String> {
+    let mut previous = resume();
+    if previous == u32::MAX {
+        return Err("failed to resume contained child thread".to_string());
+    }
+    if previous == 0 {
+        return Ok(false);
+    }
+    while previous > 1 {
+        previous = resume();
+        if previous == u32::MAX || previous == 0 {
+            return Err("failed to fully resume contained child thread".to_string());
+        }
+    }
+    Ok(true)
+}
+
+#[cfg(any(windows, test))]
+fn require_resumed_thread(resumed: u32) -> Result<(), String> {
     if resumed == 0 {
         return Err("suspended child process has no owned thread".to_string());
     }
@@ -532,6 +581,28 @@ impl SetupRunnerState {
                 false,
             );
         }
+        // A cancel already in flight, or the supervisor's own teardown, may
+        // still be ending the process tree. Wait for it, bounded so that exit
+        // can never hang on a wedged child.
+        self.wait_for_supervisors(SETUP_SHUTDOWN_WAIT);
+    }
+
+    fn wait_for_supervisors(&self, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let idle = self
+                .inner
+                .lock()
+                .map(|inner| inner.active_supervisors == 0)
+                .unwrap_or(true);
+            if idle {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
     }
 
     #[cfg(all(test, unix))]
@@ -547,6 +618,26 @@ impl SetupRunnerState {
                     .ok()
                     .and_then(|child| child.as_ref().map(Child::id))
             })
+    }
+}
+
+// Counts a supervisor thread as active until it is dropped, including on unwind.
+struct SupervisorRegistration(SetupRunnerState);
+
+impl SupervisorRegistration {
+    fn register(state: &SetupRunnerState) -> Self {
+        if let Ok(mut inner) = state.inner.lock() {
+            inner.active_supervisors += 1;
+        }
+        Self(state.clone())
+    }
+}
+
+impl Drop for SupervisorRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut inner) = self.0.inner.lock() {
+            inner.active_supervisors = inner.active_supervisors.saturating_sub(1);
+        }
     }
 }
 
@@ -1062,140 +1153,216 @@ fn terminate_owned_process_group(process_group_id: i32) {
 }
 
 #[cfg(unix)]
-fn pgrep_program() -> &'static str {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        "/usr/bin/pgrep"
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        "pgrep"
-    }
+fn ps_program() -> Option<&'static str> {
+    // Not every Linux distribution merges /bin into /usr/bin.
+    ["/bin/ps", "/usr/bin/ps"]
+        .into_iter()
+        .find(|program| Path::new(program).is_file())
 }
 
-#[cfg(unix)]
-fn ps_program() -> &'static str {
-    #[cfg(target_os = "macos")]
-    {
-        "/bin/ps"
-    }
-    #[cfg(target_os = "linux")]
-    {
-        "/usr/bin/ps"
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        "ps"
-    }
-}
-
+// A PID paired with its start time. A PID alone is not an identity: once the
+// process exits the number can be reused by an unrelated process.
 #[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ProcessIdentity {
+pub(crate) struct ProcessIdentity {
     pid: u32,
-    started: Option<String>,
+    started: String,
 }
 
+// Parse `ps -o pid=,ppid=,lstart=` output into (identity, parent PID) rows.
+// Rows without a start time are dropped, so an unidentified process can never
+// be signalled.
 #[cfg(unix)]
-fn process_identity(pid: u32) -> ProcessIdentity {
-    let started = Command::new(ps_program())
-        .args(["-o", "lstart=", "-p", &pid.to_string()])
+fn parse_process_table(text: &str) -> Vec<(ProcessIdentity, u32)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let ppid = fields.next()?.parse().ok()?;
+            let started = fields.collect::<Vec<_>>().join(" ");
+            (!started.is_empty()).then_some((ProcessIdentity { pid, started }, ppid))
+        })
+        .collect()
+}
+
+// One snapshot of every process. `None` when `ps` is unavailable or fails, in
+// which case nothing is tracked or signalled.
+#[cfg(unix)]
+fn process_table() -> Option<Vec<(ProcessIdentity, u32)>> {
+    let mut command = Command::new(ps_program()?);
+    command
+        .args(["-eo", "pid=,ppid=,lstart="])
+        // `lstart` follows the locale; pin it so identities compare reliably.
+        .env("LC_ALL", "C");
+    let stdout = run_bounded_output(&mut command, PROCESS_TABLE_TIMEOUT)?;
+    Some(parse_process_table(&String::from_utf8_lossy(&stdout)))
+}
+
+// Run `command` and return its stdout if it succeeds within `timeout`. On
+// timeout the command is killed and its stdout reader left to finish on its own.
+#[cfg(unix)]
+fn run_bounded_output(command: &mut Command, timeout: Duration) -> Option<Vec<u8>> {
+    let mut child = command
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
-        .filter(|value| !value.is_empty());
-    ProcessIdentity { pid, started }
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take();
+    let (done_tx, done_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut output = Vec::new();
+        let read = stdout.is_some_and(|mut stdout| stdout.read_to_end(&mut output).is_ok());
+        let _ = done_tx.send(read.then_some(output));
+    });
+    let output = done_rx.recv_timeout(timeout).ok().flatten();
+    if output.is_none() {
+        let _ = child.kill();
+    }
+    let exited = crate::backend::wait_for_child_exit(&mut child, SETUP_REAP_WAIT);
+    let succeeded = exited && child.try_wait().ok().flatten().is_some_and(|s| s.success());
+    output.filter(|_| succeeded)
 }
 
 #[cfg(unix)]
-fn process_matches(identity: &ProcessIdentity) -> bool {
-    let Some(started) = &identity.started else {
-        if let Ok(pid) = i32::try_from(identity.pid) {
-            return unsafe { libc::kill(pid, 0) } == 0;
-        }
-        return false;
-    };
-    process_identity(identity.pid).started.as_ref() == Some(started)
-}
-
-#[cfg(unix)]
-fn track_descendants(root_pid: u32, tracked: &mut Vec<ProcessIdentity>) {
+fn track_descendants(root_pid: u32, tracked: &Mutex<Vec<ProcessIdentity>>) {
     // Supervised stages stay in the root's process group, which the group kill
     // reaches. This walk is the backstop for a descendant that detaches into
     // its own session: it is tracked while still reachable from the root, so it
-    // can be killed after the root exits. Only new PIDs are looked up, which
-    // keeps this cheap enough to run on every poll.
+    // can be killed after the root exits.
+    let Some(table) = process_table() else {
+        return;
+    };
+    record_descendants(root_pid, &table, tracked);
+}
+
+#[cfg(unix)]
+fn record_descendants(
+    root_pid: u32,
+    table: &[(ProcessIdentity, u32)],
+    tracked: &Mutex<Vec<ProcessIdentity>>,
+) {
+    let Ok(mut tracked) = tracked.lock() else {
+        return;
+    };
+    // An identity missing from the table has exited and can never return.
+    tracked.retain(|known| table.iter().any(|(identity, _)| identity == known));
     let mut pending = vec![root_pid];
-    let mut visited = Vec::new();
+    let mut visited = 0_usize;
     while let Some(parent) = pending.pop() {
-        if visited.len() >= 256 {
-            break;
+        for (identity, ppid) in table {
+            if *ppid != parent || identity.pid <= 1 || identity.pid == root_pid {
+                continue;
+            }
+            if visited >= 256 {
+                return;
+            }
+            visited += 1;
+            if !tracked.contains(identity) {
+                tracked.push(identity.clone());
+            }
+            pending.push(identity.pid);
         }
-        let Ok(output) = Command::new(pgrep_program())
-            .args(["-P", &parent.to_string()])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-        else {
-            break;
-        };
-        for pid in String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|value| value.trim().parse::<u32>().ok())
-        {
-            if pid > 1 && pid != root_pid && !visited.contains(&pid) {
-                visited.push(pid);
-                if !tracked.iter().any(|known| known.pid == pid) {
-                    tracked.push(process_identity(pid));
-                }
-                pending.push(pid);
+    }
+}
+
+// Tracked descendants that are still the same processes (PID and start time).
+#[cfg(unix)]
+fn live_descendants(descendants: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
+    let Some(table) = process_table() else {
+        return Vec::new();
+    };
+    descendants
+        .iter()
+        .filter(|known| table.iter().any(|(identity, _)| identity == *known))
+        .cloned()
+        .collect()
+}
+
+#[cfg(unix)]
+fn signal_descendants(descendants: &[ProcessIdentity], signal: i32) {
+    for identity in descendants.iter().rev() {
+        signal_process_group(identity.pid, signal);
+        if let Ok(pid) = i32::try_from(identity.pid) {
+            unsafe {
+                libc::kill(pid, signal);
             }
         }
     }
 }
 
 #[cfg(unix)]
-fn terminate_tracked_descendants(descendants: &[ProcessIdentity]) {
-    for identity in descendants.iter().rev() {
-        if !process_matches(identity) {
-            continue;
-        }
-        signal_process_group(identity.pid, libc::SIGTERM);
-        if let Ok(pid) = i32::try_from(identity.pid) {
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
-        }
+fn terminate_tracked_descendants(tracked: &Mutex<Vec<ProcessIdentity>>) {
+    let descendants = tracked
+        .lock()
+        .map(|tracked| tracked.clone())
+        .unwrap_or_default();
+    if descendants.is_empty() {
+        return;
     }
+    signal_descendants(&live_descendants(&descendants), libc::SIGTERM);
     let deadline = Instant::now() + Duration::from_millis(500);
     while Instant::now() < deadline {
-        if descendants
-            .iter()
-            .all(|identity| !process_matches(identity))
-        {
+        if live_descendants(&descendants).is_empty() {
             return;
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(Duration::from_millis(50));
     }
-    for identity in descendants.iter().rev() {
-        if !process_matches(identity) {
-            continue;
+    signal_descendants(&live_descendants(&descendants), libc::SIGKILL);
+}
+
+// Reap the leader once it has exited. While it is exited but unreaped its PID,
+// and so the group id, stays reserved, so the rest of the group is ended first.
+#[cfg(unix)]
+fn reap_exited_leader(process: &ActiveProcess) -> Option<std::process::ExitStatus> {
+    let mut guard = process.child.lock().ok()?;
+    let child = guard.as_mut()?;
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    match crate::backend::child_exited_without_reap(child) {
+        Ok(false) => return None,
+        Ok(true) => {
+            if let Some(process_group_id) = crate::backend::verified_owned_process_group_id(
+                child,
+                Some(process.process_group_id),
+                false,
+            ) {
+                terminate_owned_process_group(process_group_id);
+            }
         }
-        signal_process_group(identity.pid, libc::SIGKILL);
-        if let Ok(pid) = i32::try_from(identity.pid) {
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
+        Err(_) => {}
+    }
+    let status = child.try_wait().ok().flatten()?;
+    *guard = None;
+    Some(status)
+}
+
+#[cfg(unix)]
+fn terminate_process(process: &ActiveProcess) {
+    if let Ok(mut guard) = process.child.lock() {
+        // `None` means another caller already reaped the leader.
+        if let Some(child) = guard.as_mut() {
+            // Record detached descendants while the tree is still connected.
+            track_descendants(child.id(), &process.descendants);
+            if let Some(process_group_id) = crate::backend::verified_owned_process_group_id(
+                child,
+                Some(process.process_group_id),
+                false,
+            ) {
+                terminate_owned_process_group(process_group_id);
+            }
+            let _ = child.kill();
+            // Bounded: an unreaped leader keeps its PID reserved, so leaving it
+            // in place is safe and a later caller can still reap it.
+            if crate::backend::wait_for_child_exit(child, SETUP_REAP_WAIT) {
+                *guard = None;
             }
         }
     }
+    terminate_tracked_descendants(&process.descendants);
 }
 
+#[cfg(not(unix))]
 fn terminate_process(process: &ActiveProcess) {
-    #[cfg(unix)]
-    terminate_owned_process_group(process.process_group_id);
     #[cfg(windows)]
     process.job.terminate();
 
@@ -1208,39 +1375,39 @@ fn terminate_process(process: &ActiveProcess) {
     if child.try_wait().ok().flatten().is_some() {
         return;
     }
-    #[cfg(unix)]
-    {
-        let _ = child.kill();
-        let _ = child.wait();
-    }
     #[cfg(windows)]
     {
         if let Ok(taskkill) = windows_taskkill_path() {
             use std::os::windows::process::CommandExt;
-            let _ = Command::new(taskkill)
+            // Bounded like the waits below: this runs on cancel and app exit.
+            if let Ok(mut taskkill) = Command::new(taskkill)
                 .creation_flags(WINDOWS_CREATE_NO_WINDOW)
                 .args(["/PID", &child.id().to_string(), "/T", "/F"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
-                .status();
+                .spawn()
+            {
+                if !crate::backend::wait_for_child_exit(&mut taskkill, Duration::from_secs(2)) {
+                    let _ = taskkill.kill();
+                }
+            }
         }
     }
-    #[cfg(not(any(unix, windows)))]
+    #[cfg(not(windows))]
     let _ = child.kill();
 
-    #[cfg(not(unix))]
-    {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if child.try_wait().ok().flatten().is_some() {
-                return;
-            }
-            thread::sleep(Duration::from_millis(50));
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        if child.try_wait().ok().flatten().is_some() {
+            return;
         }
-        let _ = child.kill();
-        let _ = child.wait();
+        thread::sleep(Duration::from_millis(50));
     }
+    let _ = child.kill();
+    // Bounded: this runs on cancel and app exit with the child lock held. The
+    // unreaped child stays in place for the supervisor to reap later.
+    let _ = crate::backend::wait_for_child_exit(child, SETUP_REAP_WAIT);
 }
 
 #[cfg(windows)]
@@ -1310,6 +1477,8 @@ fn spawn_setup(
         child: Arc::clone(&process),
         #[cfg(unix)]
         process_group_id,
+        #[cfg(unix)]
+        descendants: Arc::new(Mutex::new(Vec::new())),
         #[cfg(windows)]
         job,
     };
@@ -1322,7 +1491,9 @@ fn spawn_setup(
         return Err(error);
     }
 
+    let registration = SupervisorRegistration::register(&state);
     thread::spawn(move || {
+        let _registration = registration;
         let gate = ProgressGate::new(Arc::clone(&sink));
         let readers_stopped = Arc::new(AtomicBool::new(false));
         let stdout_thread = stdout.map(|reader| {
@@ -1345,7 +1516,7 @@ fn spawn_setup(
         });
         let started = Instant::now();
         #[cfg(unix)]
-        let mut tracked_descendants = Vec::new();
+        let mut last_sample: Option<Instant> = None;
         let result = loop {
             let status = state.status();
             if status.generation != generation || status.lifecycle != SetupLifecycle::Running {
@@ -1357,25 +1528,27 @@ fn spawn_setup(
                 break Err((SetupLifecycle::TimedOut, "runtime setup timed out"));
             }
             #[cfg(unix)]
-            if let Some(root_pid) = process
-                .lock()
-                .ok()
-                .and_then(|process| process.as_ref().map(Child::id))
-            {
-                track_descendants(root_pid, &mut tracked_descendants);
+            if last_sample.is_none_or(|at| at.elapsed() >= DESCENDANT_SAMPLE_INTERVAL) {
+                if let Some(root_pid) = process
+                    .lock()
+                    .ok()
+                    .and_then(|process| process.as_ref().map(Child::id))
+                {
+                    track_descendants(root_pid, &active.descendants);
+                }
+                last_sample = Some(Instant::now());
             }
+            #[cfg(unix)]
+            let exit = reap_exited_leader(&active);
+            #[cfg(not(unix))]
             let exit = process
                 .lock()
                 .ok()
                 .and_then(|mut process| process.as_mut().and_then(|child| child.try_wait().ok()))
                 .flatten();
             if let Some(exit) = exit {
-                #[cfg(unix)]
-                terminate_owned_process_group(active.process_group_id);
                 #[cfg(windows)]
                 active.job.terminate();
-                #[cfg(unix)]
-                terminate_tracked_descendants(&tracked_descendants);
                 break if exit.success() {
                     Ok(())
                 } else {
@@ -1386,7 +1559,7 @@ fn spawn_setup(
         };
 
         #[cfg(unix)]
-        terminate_tracked_descendants(&tracked_descendants);
+        terminate_tracked_descendants(&active.descendants);
         for reader in [stdout_thread, stderr_thread].into_iter().flatten() {
             let (handle, done) = reader;
             if done.recv_timeout(READER_JOIN_TIMEOUT).is_ok() {
@@ -1545,7 +1718,7 @@ pub async fn cancel_runtime_setup(
     state: State<'_, SetupRunnerState>,
 ) -> Result<SetupStatus, String> {
     // `cancel_with_sink` calls `terminate_process`, which blocks for up to a few
-    // seconds (SIGTERM grace + `ps`/`pgrep` subprocess spawns). Run it on the
+    // seconds (SIGTERM grace + `ps` snapshots). Run it on the
     // blocking pool so it never stalls the async runtime worker.
     let state = state.inner().clone();
     let sink = app_event_sink(app_handle);

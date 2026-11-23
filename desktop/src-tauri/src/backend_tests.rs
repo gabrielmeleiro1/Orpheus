@@ -292,7 +292,7 @@ backend.run()
     let acknowledgement = Arc::clone(&running.shutdown_ack);
     // Even if a new generation replaces the manager, stop must target this child.
     manager.lock().unwrap().mark_starting();
-    running.stop(&manager);
+    let _ = running.stop(&manager);
     assert!(
         acknowledgement.load(Ordering::SeqCst),
         "cleanup was not acknowledged"
@@ -408,7 +408,7 @@ fn ready_backend_stdout_eof_marks_unexpected_exit_failed() {
         thread::sleep(Duration::from_millis(25));
     };
 
-    running.stop(&manager);
+    let _ = running.stop(&manager);
 
     assert_eq!(terminal_status.lifecycle, BackendLifecycle::Failed);
     assert!(terminal_status.endpoint.is_none());
@@ -450,7 +450,7 @@ fn run_backend_to_failure(data_dir: &Path, output: &str) -> super::BackendStatus
         assert!(Instant::now() < deadline, "backend did not report its exit");
         std::thread::sleep(Duration::from_millis(10));
     };
-    running.stop(&manager);
+    let _ = running.stop(&manager);
     status
 }
 
@@ -595,7 +595,7 @@ fn ready_backend_shutdown_ack_before_eof_marks_stopped() {
         thread::sleep(Duration::from_millis(25));
     };
 
-    running.stop(&manager);
+    let _ = running.stop(&manager);
 
     assert_eq!(terminal_status.lifecycle, BackendLifecycle::Stopped);
     assert!(terminal_status.error.is_none());
@@ -846,7 +846,7 @@ while True:
         emergency_teardown_armed: true,
     };
     let manager = Arc::new(Mutex::new(BackendManager::default()));
-    running.stop(&manager);
+    let _ = running.stop(&manager);
 
     let marker_contents =
         fs::read_to_string(&marker_path).expect("expected backend stop to trigger SIGTERM");
@@ -1007,7 +1007,7 @@ while True:
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     let started_at = Instant::now();
 
-    running.stop(&manager);
+    let _ = running.stop(&manager);
 
     assert!(
         started_at.elapsed() >= Duration::from_millis(2400),
@@ -1077,7 +1077,7 @@ while True:
     let manager = Arc::new(Mutex::new(BackendManager::default()));
     let started_at = Instant::now();
 
-    running.stop(&manager);
+    let _ = running.stop(&manager);
 
     assert!(
         started_at.elapsed() >= BACKEND_SHUTDOWN_GRACEFUL_TIMEOUT,
@@ -1230,7 +1230,7 @@ while True:
     let (done_tx, done_rx) = mpsc::channel();
     let stop_manager = Arc::clone(&manager);
     thread::spawn(move || {
-        running.stop(&stop_manager);
+        let _ = running.stop(&stop_manager);
         let _ = done_tx.send(());
     });
 
@@ -1443,7 +1443,7 @@ while True:
     }
 
     if let Some(second) = slot.lock().expect("slot lock").take() {
-        second.stop(&manager);
+        let _ = second.stop(&manager);
     }
     let _ = fs::remove_file(&marker_path);
 }
@@ -1738,7 +1738,7 @@ fn refresh_exit_status_kills_same_group_grandchild_before_reap() {
 
     // The subsequent ordinary stop must not signal the stored PGID after the
     // leader was reaped, where PID reuse could target an unrelated process.
-    running.stop(&manager);
+    let _ = running.stop(&manager);
     let _ = fs::remove_dir_all(temp_root);
 }
 
@@ -1780,7 +1780,7 @@ fn ordinary_stop_then_drop_is_safe_and_repeated_emergency_teardown_is_idempotent
 
     let (running, manager, child_pid, grandchild_pid, temp_root) = launch_backend_with_grandchild();
 
-    running.stop(&manager);
+    let _ = running.stop(&manager);
     assert!(wait_until_process_exits(child_pid, Duration::from_secs(3)));
     assert!(wait_until_process_exits(
         grandchild_pid,
@@ -1840,7 +1840,7 @@ fn readiness_adoption_ignores_stale_generations_and_terminal_states() {
     let endpoint = Mutex::new(None);
     let old = manager.lock().unwrap().mark_starting();
     let current = manager.lock().unwrap().mark_starting();
-    super::adopt_backend_ready(&manager, old, payload.clone(), &endpoint).unwrap();
+    super::adopt_backend_ready(&manager, old, payload.clone(), None, &endpoint).unwrap();
     assert!(endpoint.lock().unwrap().is_none());
     assert_eq!(
         manager.lock().unwrap().status().lifecycle,
@@ -1848,7 +1848,7 @@ fn readiness_adoption_ignores_stale_generations_and_terminal_states() {
     );
 
     manager.lock().unwrap().mark_failed("startup timed out");
-    super::adopt_backend_ready(&manager, current, payload, &endpoint).unwrap();
+    super::adopt_backend_ready(&manager, current, payload, None, &endpoint).unwrap();
     assert!(endpoint.lock().unwrap().is_none());
     assert_eq!(
         manager.lock().unwrap().status().lifecycle,
@@ -1992,7 +1992,7 @@ fn rejected_ready_line_is_neither_adopted_nor_logged_with_its_token() {
         assert!(Instant::now() < deadline, "backend did not report its exit");
         std::thread::sleep(Duration::from_millis(10));
     };
-    running.stop(&manager);
+    let _ = running.stop(&manager);
 
     assert_eq!(status.lifecycle, BackendLifecycle::Failed, "{status:?}");
     assert!(status
@@ -2200,7 +2200,7 @@ fn backend_launch_drops_inherited_python_overrides() {
         }
         std::thread::sleep(Duration::from_millis(25));
     };
-    running.stop(&manager);
+    let _ = running.stop(&manager);
     assert_eq!(status.lifecycle, BackendLifecycle::Ready, "{status:?}");
 }
 
@@ -2246,7 +2246,7 @@ fn backend_stderr_is_drained_when_the_shell_stderr_is_closed() {
         }
         std::thread::sleep(Duration::from_millis(25));
     };
-    running.stop(&manager);
+    let _ = running.stop(&manager);
     assert_eq!(status.lifecycle, BackendLifecycle::Failed, "{status:?}");
     assert!(status
         .error
@@ -2268,4 +2268,174 @@ fn exit_detail_is_the_named_startup_cause_alone() {
         backend_exit_detail("desktop backend exited before ready payload", &stderr),
         "failed to start desktop backend: This library was created by a newer version."
     );
+}
+
+#[test]
+fn stdout_readiness_removes_the_ready_file_holding_the_token() {
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    let temp_root = unique_temp_path("stdout-ready-file");
+    std::fs::create_dir_all(&temp_root).unwrap();
+    let ready_file = temp_root.join("backend-ready.json");
+    let payload = r#"{"event":"ready","host":"127.0.0.1","port":9000,"token":"token-1"}"#;
+    // Like the launcher: write the file, then print the same payload, then stay up.
+    let script = format!(
+        "import sys,time\nopen(sys.argv[1],'w').write({payload:?})\nprint({payload:?}, flush=True)\ntime.sleep(30)"
+    );
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let launch = super::ProcessLaunchConfig {
+        program: super::python_program(),
+        args: vec![
+            "-c".to_string(),
+            script,
+            ready_file.to_string_lossy().into_owned(),
+        ],
+        cwd: None,
+        env: vec![(
+            "AUDIOBOOK_DESKTOP_READY_FILE".to_string(),
+            ready_file.to_string_lossy().into_owned(),
+        )],
+    };
+    let running = super::launch_backend(Arc::clone(&manager), launch).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let lifecycle = loop {
+        let lifecycle = manager.lock().unwrap().status().lifecycle;
+        if lifecycle != BackendLifecycle::Starting || Instant::now() >= deadline {
+            break lifecycle;
+        }
+        thread::sleep(Duration::from_millis(20));
+    };
+    let file_left = ready_file.exists();
+    let _ = running.stop(&manager);
+    let _ = std::fs::remove_dir_all(&temp_root);
+
+    assert_eq!(lifecycle, BackendLifecycle::Ready);
+    assert!(
+        !file_left,
+        "the token file must not outlive stdout adoption"
+    );
+}
+
+#[test]
+fn stale_generation_readiness_leaves_the_ready_file_alone() {
+    use std::sync::Mutex;
+
+    let temp_root = unique_temp_path("stale-ready-file");
+    std::fs::create_dir_all(&temp_root).unwrap();
+    let ready_file = temp_root.join("backend-ready.json");
+    std::fs::write(&ready_file, "newer generation").unwrap();
+    let payload =
+        parse_ready_line(r#"{"event":"ready","host":"127.0.0.1","port":9000,"token":"old"}"#)
+            .unwrap();
+    let manager = Mutex::new(BackendManager::default());
+    let old = manager.lock().unwrap().mark_starting();
+    manager.lock().unwrap().mark_starting();
+    #[cfg(windows)]
+    let endpoint = Mutex::new(None);
+
+    super::adopt_backend_ready(
+        &manager,
+        old,
+        payload,
+        Some(ready_file.as_path()),
+        #[cfg(windows)]
+        &endpoint,
+    )
+    .unwrap();
+    let kept = ready_file.exists();
+    let _ = std::fs::remove_dir_all(&temp_root);
+    assert!(
+        kept,
+        "a stale generation must not delete a newer ready file"
+    );
+}
+
+fn launch_sleeping_backend(
+    manager: &std::sync::Arc<std::sync::Mutex<BackendManager>>,
+) -> super::RunningBackend {
+    let launch = super::ProcessLaunchConfig {
+        program: super::python_program(),
+        args: vec!["-c".to_string(), "import time; time.sleep(30)".to_string()],
+        cwd: None,
+        env: Vec::new(),
+    };
+    super::launch_backend(std::sync::Arc::clone(manager), launch).unwrap()
+}
+
+#[test]
+fn stop_hands_back_a_backend_that_did_not_exit_and_fails_its_generation() {
+    use std::sync::{Arc, Mutex};
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let running = launch_sleeping_backend(&manager);
+
+    // Stands in for a child still not gone when the bounded reap gives up.
+    let survivor = running
+        .stop_with_reap(&manager, |_| false)
+        .expect("a backend that did not exit must be handed back");
+    let status = manager.lock().unwrap().status();
+    assert_eq!(status.lifecycle, BackendLifecycle::Failed);
+    assert_eq!(status.error.as_deref(), Some(super::BACKEND_DID_NOT_EXIT));
+    assert!(
+        survivor.emergency_teardown_armed,
+        "exit teardown must still reach the survivor"
+    );
+
+    // A later stop retries the teardown and completes it.
+    assert!(survivor.stop(&manager).is_none());
+    assert_eq!(
+        manager.lock().unwrap().status().lifecycle,
+        BackendLifecycle::Stopped
+    );
+}
+
+#[test]
+fn stopping_a_backend_that_did_not_exit_keeps_it_in_its_slot() {
+    use std::sync::{Arc, Mutex};
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let slot = Mutex::new(Some(launch_sleeping_backend(&manager)));
+
+    let result = super::stop_running_backend_with(&slot, &manager, |backend, manager| {
+        backend.stop_with_reap(manager, |_| false)
+    });
+    assert_eq!(result, Err(super::BACKEND_DID_NOT_EXIT.to_string()));
+    assert!(
+        slot.lock().unwrap().is_some(),
+        "the survivor must stay owned so no replacement starts beside it"
+    );
+
+    assert_eq!(super::stop_running_backend(&slot, &manager), Ok(()));
+    assert!(slot.lock().unwrap().is_none());
+    assert_eq!(
+        manager.lock().unwrap().status().lifecycle,
+        BackendLifecycle::Stopped
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn startup_timeout_kill_reaps_an_exiting_child_within_its_bound() {
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+
+    let manager = Arc::new(Mutex::new(BackendManager::default()));
+    let mut running = launch_sleeping_backend(&manager);
+
+    let started = Instant::now();
+    running.kill_after_startup_timeout();
+    let elapsed = started.elapsed();
+
+    assert!(
+        running.child_reaped,
+        "a child seen to exit after the force-kill must be recorded as reaped"
+    );
+    assert!(
+        elapsed < super::BACKEND_EMERGENCY_TEARDOWN_WAIT + std::time::Duration::from_secs(1),
+        "force-kill took {elapsed:?}"
+    );
+    let _ = running.stop(&manager);
 }
