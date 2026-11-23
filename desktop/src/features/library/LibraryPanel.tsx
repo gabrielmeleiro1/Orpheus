@@ -181,7 +181,8 @@ export function LibraryPanel({
   useEffect(() => {
     if (hidden) return;
     if (showAlbum) {
-      lastAlbumIdRef.current = selected?.id ?? null;
+      // The detail can still be the previous book while the opened one loads.
+      lastAlbumIdRef.current = library.selectedBookId ?? selected?.id ?? null;
       backRef.current?.focus({ preventScroll: true });
       panelRef.current?.closest(".main-workspace")?.scrollTo?.({ top: 0 });
     } else if (lastAlbumIdRef.current !== null) {
@@ -253,7 +254,8 @@ export function LibraryPanel({
   // A bare count beside the heading, as in the sidebar and the queue.
   const bookCountLabel = `${library.items.length}${library.hasMore ? "+" : ""}`;
   // Only a book with listening progress resumes; the player reports chapter one even at 0:00.
-  const savedPositionSec = selected ? readPlaybackResumePosition(selected) : 0;
+  // A loaded book reports its live position, so storage is read only otherwise.
+  const savedPositionSec = !playerLoaded && selected ? readPlaybackResumePosition(selected) : 0;
   const chapterPlaylist = selected?.playback_status === "chapter_audio";
   const loadedBookPositionSec = elapsedSec + (chapterPlaylist && currentChapterNumber != null
     ? chapterStartSeconds(chapters, currentChapterNumber, false) : 0);

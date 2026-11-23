@@ -164,3 +164,19 @@ it("explains truthfully why a local cleaner cannot recommend a voice", async () 
   await act(async () => root.render(<Probe />));
   expect(current.recommendationUnavailableReason).toBe("Add the API cleaner's model and key in Settings to recommend a voice.");
 });
+
+it("bounds the preview request and aborts it when the preview is discarded", async () => {
+  let signal: AbortSignal | undefined;
+  const requestBlob = vi.fn((_path: string, init?: { signal?: AbortSignal; timeoutMs?: number }) => {
+    signal = init?.signal;
+    return new Promise<Blob>(() => undefined);
+  });
+  client = { requestBlob } as unknown as ApiClient;
+  await act(async () => root.render(<Probe />));
+  void current.onPreviewVoice();
+  expect(requestBlob.mock.calls[0][1]).toMatchObject({ timeoutMs: expect.any(Number), signal: expect.any(AbortSignal) });
+  expect(signal?.aborted).toBe(false);
+  hidden = true;
+  await act(async () => root.render(<Probe />));
+  expect(signal?.aborted).toBe(true);
+});

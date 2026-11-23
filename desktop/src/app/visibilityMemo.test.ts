@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { equalWhenHidden, equalWhenInvisible } from "./visibilityMemo";
+import { equalWhenClosed, equalWhenHidden, equalWhenInvisible } from "./visibilityMemo";
 
 describe("visibility-aware memoization", () => {
   it("suppresses changing props while a panel remains hidden", () => {
@@ -37,5 +37,12 @@ describe("visibility-aware memoization", () => {
       invisible,
       { visible: true, elapsedSec: 10 },
     )).toBe(false);
+  });
+
+  it("skips a closed overlay's changes but renders it when it opens", () => {
+    expect(equalWhenClosed({ open: false, elapsedSec: 1 }, { open: false, elapsedSec: 2 })).toBe(true);
+    const closed = { open: false, elapsedSec: 2 } as { open: boolean; elapsedSec: number };
+    expect(equalWhenClosed(closed, { open: true, elapsedSec: 2 })).toBe(false);
+    expect(equalWhenClosed({ open: true, elapsedSec: 2 }, { open: true, elapsedSec: 3 })).toBe(false);
   });
 });

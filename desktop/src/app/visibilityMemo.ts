@@ -29,3 +29,5 @@ function comparatorForVisibilityFlag<K extends string>(
 export const equalWhenHidden = comparatorForVisibilityFlag("hidden", true);
 
 export const equalWhenInvisible = comparatorForVisibilityFlag("visible", false);
+
+export const equalWhenClosed = comparatorForVisibilityFlag("open", false);

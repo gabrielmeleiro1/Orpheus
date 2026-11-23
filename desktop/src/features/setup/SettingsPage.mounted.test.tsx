@@ -142,11 +142,35 @@ it("shows the device as text until changed", async () => {
     expect(device.value).toBe("CUDA");
     expect(device.getAttribute("spellcheck")).toBe("false");
     const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    await act(async () => {
-      setValue.call(device, "CUDA:1");
-      device.dispatchEvent(new Event("input", { bubbles: true }));
+    const type = async (input: HTMLInputElement, value: string) => act(async () => {
+      setValue.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(setDevice).toHaveBeenCalledWith("cuda:1");
+    // Clearing the field keeps it empty while editing instead of refilling the default.
+    await type(device, "");
+    expect(device.value).toBe("");
+    await type(device, "CUDA:1");
+    expect(device.value).toBe("CUDA:1");
+    expect(setDevice).not.toHaveBeenCalled();
+    await act(async () => device.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(setDevice).toHaveBeenCalledExactlyOnceWith("cuda:1");
+    expect(container.querySelector("#cleaner-cuda-device-input")).toBeNull();
+
+    // Escape restores the saved value without committing the draft.
+    await act(async () => container.querySelector<HTMLButtonElement>("#cleaner-cuda-device-change")!.click());
+    const again = container.querySelector<HTMLInputElement>("#cleaner-cuda-device-input")!;
+    await type(again, "cpu");
+    await act(async () => again.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(container.querySelector("#cleaner-cuda-device-input")).toBeNull();
+    expect(setDevice).toHaveBeenCalledOnce();
+
+    // Blur commits; an empty commit leaves the default to the saved setting.
+    await act(async () => container.querySelector<HTMLButtonElement>("#cleaner-cuda-device-change")!.click());
+    const last = container.querySelector<HTMLInputElement>("#cleaner-cuda-device-input")!;
+    await type(last, "  ");
+    await act(async () => last.dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+    expect(setDevice).toHaveBeenLastCalledWith("");
+    expect(setDevice).toHaveBeenCalledTimes(2);
   } finally {
     await act(async () => root.unmount());
     container.remove();

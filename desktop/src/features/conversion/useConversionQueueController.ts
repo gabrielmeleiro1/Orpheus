@@ -253,21 +253,35 @@ export function useConversionQueueController({
     dispatch({ type: "itemMoved", itemId, delta });
   }, []);
 
-  const removeQueueItem = useCallback(
-    (itemId: string) => {
-      const item = stateRef.current.queueItems.find((candidate) => candidate.id === itemId);
-      if (!item || item.status === "converting") return;
-      abortPreflight(itemId);
-      dispatch({ type: "itemRemoved", itemId });
-      if (item.sourcePath.startsWith("upload:") && !stateRef.current.queueItems.some(
-        (candidate) => candidate.id !== itemId && candidate.sourcePath === item.sourcePath,
-      )) {
-        void apiClient?.deleteUpload(item.sourcePath).catch(() => {
+  // stateRef only catches up after a commit, so rows removed together are judged as one
+  // batch: an upload is deleted once, and only when no row that stays still uses it.
+  const removeQueueItems = useCallback(
+    (itemIds: readonly string[]) => {
+      const requested = new Set(itemIds);
+      const removed = stateRef.current.queueItems.filter(
+        (item) => requested.has(item.id) && item.status !== "converting",
+      );
+      if (removed.length === 0) return;
+      const removedIds = new Set(removed.map((item) => item.id));
+      for (const item of removed) {
+        abortPreflight(item.id);
+        dispatch({ type: "itemRemoved", itemId: item.id });
+      }
+      const remaining = stateRef.current.queueItems.filter((item) => !removedIds.has(item.id));
+      const uploads = new Set(removed.map((item) => item.sourcePath).filter((path) => path.startsWith("upload:")));
+      for (const upload of uploads) {
+        if (remaining.some((candidate) => candidate.sourcePath === upload)) continue;
+        void apiClient?.deleteUpload(upload).catch(() => {
           dispatch({ type: "queueStatusSet", status: "Item removed. Its upload could not be deleted yet." });
         });
       }
     },
     [abortPreflight, apiClient],
+  );
+
+  const removeQueueItem = useCallback(
+    (itemId: string) => removeQueueItems([itemId]),
+    [removeQueueItems],
   );
 
   const updateQueueItem = useCallback(
@@ -326,6 +340,7 @@ export function useConversionQueueController({
     applySelectedQueueItem,
     moveQueueItem,
     removeQueueItem,
+    removeQueueItems,
     updateQueueItem,
     noteJobBook,
     syncSelectedQueueEdits,

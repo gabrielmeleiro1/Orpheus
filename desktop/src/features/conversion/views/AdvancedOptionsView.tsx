@@ -1,6 +1,8 @@
 import { ConversionHelp } from "./ConversionHelp";
 import { TermSelect } from "../TermSelect";
 import { normalizeSpeedInput } from "../conversionOptionsShared";
+import { useLiveWorkerRecommendation } from "../liveCapabilities";
+import { parallelWorkerStatusLine } from "../useParallelWorkers";
 import type {
   AdvancedOptionsViewModel,
   ConversionPanelActions,
@@ -21,6 +23,24 @@ function collapsedSummary(advancedOptions: AdvancedOptionsViewModel): string {
   if (workers < requested) return `Speed ${speed} · ${workers} of ${requested} chapters`;
   // One chapter at a time is the default and needs no mention unless more was asked for.
   return workers > 1 ? `Speed ${speed} · ${workers} chapters at once` : `Speed ${speed}`;
+}
+
+// Free memory changes on every capability poll; only this line follows it.
+function ParallelWorkerStatus({ advancedOptions }: { advancedOptions: AdvancedOptionsViewModel }) {
+  const live = useLiveWorkerRecommendation(advancedOptions.liveCapabilities);
+  const status = live
+    ? parallelWorkerStatusLine(live, advancedOptions.selectedParallelWorkerLimit)
+    : advancedOptions.parallelWorkerStatus;
+  const detail = live ? live.calculation ?? "" : advancedOptions.parallelWorkerDetail;
+  return (
+    <span
+      id="parallel-worker-status"
+      className={advancedOptions.parallelWorkerError ? "field-error" : "field-hint"}
+      {...(detail ? { "data-tip": detail } : {})}
+    >
+      {status}
+    </span>
+  );
 }
 
 export function AdvancedOptionsView({
@@ -98,17 +118,7 @@ export function AdvancedOptionsView({
               onChange={(event) => actions.setParallelManualMax(event.target.value)}
               onBlur={(event) => actions.setParallelManualMax(event.target.value.trim() || "1")}
             />
-            {advancedOptions.parallelWorkerStatus ? (
-              <span
-                id="parallel-worker-status"
-                className={advancedOptions.parallelWorkerError ? "field-error" : "field-hint"}
-                {...(advancedOptions.parallelWorkerDetail
-                  ? { "data-tip": advancedOptions.parallelWorkerDetail }
-                  : {})}
-              >
-                {advancedOptions.parallelWorkerStatus}
-              </span>
-            ) : null}
+            {advancedOptions.parallelWorkerStatus ? <ParallelWorkerStatus advancedOptions={advancedOptions} /> : null}
           </div>
         </div>
       </div>

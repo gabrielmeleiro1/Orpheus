@@ -21,6 +21,14 @@ const mocks = vi.hoisted(() => {
     elapsedSec: 0,
     playing: true,
     coverRenders: 0,
+    renders: { setup: 0, maintenance: 0, nowPlaying: 0, drawer: 0 },
+    settingsHidden: [] as boolean[],
+    settingsPageRenders: 0,
+    panelRenders: [] as Array<{ hidden: boolean; progressPct: number }>,
+    conversionJob: {
+      uiState: "idle", activeJobId: null, activeJobTitle: "", isCancelling: false, progressPct: 0, logs: [], stages: [],
+      startConversion: vi.fn(),
+    } as Record<string, unknown>,
     backend: {
       apiClient,
       backendBaseUrl: "http://127.0.0.1:48123",
@@ -46,23 +54,38 @@ vi.mock("./features/player/useAudioPlayer", () => ({
     audioRef: { current: null }, audioProps: {}, currentChapter: null, currentChapterLabel: "", chapterPlaylist: false,
   }),
 }));
-vi.mock("./features/conversion/useConversionJob", () => ({
-  useConversionJob: () => ({
-    uiState: "idle", activeJobId: null, activeJobTitle: "", isCancelling: false, progressPct: 0, logs: [], stages: [],
-    startConversion: vi.fn(),
-  }),
-}));
+// One object per job state, as the real hook memoizes it; an SSE event replaces it.
+vi.mock("./features/conversion/useConversionJob", () => ({ useConversionJob: () => mocks.conversionJob }));
 vi.mock("./features/setup/SetupPage", () => ({
-  SetupPage: ({ onContinueLibraryOnly }: { onContinueLibraryOnly: () => void }) => (
-    <button type="button" onClick={onContinueLibraryOnly}>Continue in library-only mode</button>
-  ),
+  SetupPage: ({ onContinueLibraryOnly, settingsEntry, hidden }: { onContinueLibraryOnly: () => void; settingsEntry?: boolean; hidden?: boolean }) => {
+    if (settingsEntry) {
+      mocks.renders.setup += 1;
+      mocks.settingsHidden.push(hidden === true);
+      return null;
+    }
+    return <button type="button" onClick={onContinueLibraryOnly}>Continue in library-only mode</button>;
+  },
 }));
-vi.mock("./features/conversion/ConversionPanel", () => ({ ConversionPanel: () => null }));
+vi.mock("./features/conversion/ConversionPanel", () => ({
+  ConversionPanel: ({ hidden, conversionJob }: { hidden: boolean; conversionJob: { progressPct: number } }) => {
+    mocks.panelRenders.push({ hidden, progressPct: conversionJob.progressPct });
+    return null;
+  },
+}));
+vi.mock("./features/setup/SettingsPage", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./features/setup/SettingsPage")>();
+  return {
+    SettingsPage: (props: Parameters<typeof actual.SettingsPage>[0]) => {
+      mocks.settingsPageRenders += 1;
+      return actual.SettingsPage(props);
+    },
+  };
+});
 vi.mock("./features/library/LibraryPanel", () => ({ LibraryPanel: () => null }));
-vi.mock("./features/library/LibraryMaintenanceSection", () => ({ LibraryMaintenanceSection: () => null }));
+vi.mock("./features/library/LibraryMaintenanceSection", () => ({ LibraryMaintenanceSection: () => { mocks.renders.maintenance += 1; return null; } }));
 vi.mock("./features/player/PlayerPanel", () => ({ PlayerPanel: () => null }));
-vi.mock("./features/player/NowPlayingView", () => ({ NowPlayingView: () => null }));
-vi.mock("./features/progress/ConversionDetailsDrawer", () => ({ ConversionDetailsDrawer: () => null }));
+vi.mock("./features/player/NowPlayingView", () => ({ NowPlayingView: () => { mocks.renders.nowPlaying += 1; return null; } }));
+vi.mock("./features/progress/ConversionDetailsDrawer", () => ({ ConversionDetailsDrawer: () => { mocks.renders.drawer += 1; return null; } }));
 // An unmemoized stand-in, so any re-render of a sidebar row is counted.
 vi.mock("./ui/BookCover", () => ({
   BookCover: () => {
@@ -111,6 +134,113 @@ describe("App sidebar library rendering", () => {
       await act(async () => root.render(<App />));
       expect(container.querySelector(".rail-book .rail-book-author")?.textContent).toBe("Author");
     } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("does not re-render hidden Settings sections or closed overlays on playback ticks, and updates them once shown", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const tab = (label: string) => container.querySelector<HTMLButtonElement>(`[role="tab"][aria-label="${label}"]`)!;
+    const tick = async (count: number) => {
+      for (let step = 0; step < count; step += 1) {
+        mocks.elapsedSec += 1;
+        await act(async () => root.render(<App />));
+      }
+    };
+    try {
+      await act(async () => root.render(<App />));
+      await act(async () => [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.includes("Continue in library-only mode"))!.click());
+      await act(async () => tab("Settings").click());
+      expect(mocks.settingsHidden.at(-1)).toBe(false);
+      await act(async () => tab("Library").click());
+      expect(mocks.settingsHidden.at(-1)).toBe(true);
+
+      mocks.renders = { setup: 0, maintenance: 0, nowPlaying: 0, drawer: 0 };
+      await tick(10);
+      expect(mocks.renders).toEqual({ setup: 0, maintenance: 0, nowPlaying: 0, drawer: 0 });
+
+      await act(async () => tab("Settings").click());
+      expect(mocks.renders.setup).toBeGreaterThan(0);
+      expect(mocks.settingsHidden.at(-1)).toBe(false);
+      // Visible with unchanged props: ticks still do not reach it.
+      mocks.renders.setup = 0;
+      await tick(3);
+      expect(mocks.renders.setup).toBe(0);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+    }
+  });
+
+  it("keeps playback ticks and progress events out of the hidden Settings sections while Create keeps updating", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const tab = (label: string) => container.querySelector<HTMLButtonElement>(`[role="tab"][aria-label="${label}"]`)!;
+    const tick = async (count: number) => {
+      for (let step = 0; step < count; step += 1) {
+        mocks.elapsedSec += 1;
+        await act(async () => root.render(<App />));
+      }
+    };
+    const progressEvent = async (progressPct: number) => {
+      mocks.conversionJob = { ...mocks.conversionJob, uiState: "running", activeJobId: "job-1", progressPct };
+      await act(async () => root.render(<App />));
+    };
+    const reset = () => {
+      mocks.renders = { setup: 0, maintenance: 0, nowPlaying: 0, drawer: 0 };
+      mocks.settingsPageRenders = 0;
+      mocks.panelRenders = [];
+    };
+    const idleJob = mocks.conversionJob;
+    try {
+      await act(async () => root.render(<App />));
+      await act(async () => [...container.querySelectorAll("button")]
+        .find((button) => button.textContent?.includes("Continue in library-only mode"))!.click());
+      await act(async () => tab("Settings").click());
+      expect(container.querySelector('section[aria-label="Storage"]')).not.toBeNull();
+      await act(async () => tab("Create").click());
+      expect(container.querySelector('section[aria-label="Storage"]')).toBeNull();
+
+      // On Create: ticks reach neither the Settings page nor the panel.
+      reset();
+      await tick(5);
+      expect(mocks.settingsPageRenders).toBe(0);
+      expect(mocks.panelRenders).toEqual([]);
+
+      // A progress event still reaches the visible panel, but no Settings-only section.
+      await progressEvent(40);
+      expect(mocks.panelRenders.at(-1)).toEqual({ hidden: false, progressPct: 40 });
+      expect(mocks.renders.setup).toBe(0);
+      expect(mocks.renders.maintenance).toBe(0);
+
+      // On Library: neither ticks nor progress events reach the Settings sections.
+      await act(async () => tab("Library").click());
+      reset();
+      await tick(5);
+      await progressEvent(55);
+      expect(mocks.renders.setup).toBe(0);
+      expect(mocks.renders.maintenance).toBe(0);
+      // Only the progress event reaches the page, to hand the hidden panel the new job.
+      expect(mocks.settingsPageRenders).toBe(1);
+
+      // Shown again, the sections render and the panel has the newest progress.
+      await act(async () => tab("Settings").click());
+      expect(mocks.renders.setup).toBeGreaterThan(0);
+      expect(mocks.renders.maintenance).toBeGreaterThan(0);
+      expect(mocks.panelRenders.at(-1)).toEqual({ hidden: false, progressPct: 55 });
+      expect(container.querySelector('section[aria-label="Storage"]')).not.toBeNull();
+      // Visible Settings: ticks still do not reach the page.
+      reset();
+      await tick(3);
+      expect(mocks.settingsPageRenders).toBe(0);
+      expect(mocks.renders.maintenance).toBe(0);
+    } finally {
+      mocks.conversionJob = idleJob;
       await act(async () => root.unmount());
       container.remove();
     }

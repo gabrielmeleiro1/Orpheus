@@ -353,3 +353,39 @@ describe("startRuntimeCapabilityPolling", () => {
     poller.stop();
   });
 });
+
+describe("retainUsedCapabilities", () => {
+  it("keeps the previous snapshot only when every value is the same", async () => {
+    const { retainUsedCapabilities } = await import("./runtimeCapabilityPolling");
+    const previous = { default_tts_engine: "kokoro", cleaner_runtime_availability: { mlx: true }, runtime_probe: { state: "fresh", refresh_in_progress: false } } as never;
+    const same = { runtime_probe: { refresh_in_progress: false, state: "fresh" }, cleaner_runtime_availability: { mlx: true }, default_tts_engine: "kokoro" } as never;
+    const changed = { default_tts_engine: "kokoro", cleaner_runtime_availability: { mlx: false }, runtime_probe: { state: "fresh", refresh_in_progress: false } } as never;
+    expect(retainUsedCapabilities(previous, same)).toBe(previous);
+    expect(retainUsedCapabilities(previous, changed)).toBe(changed);
+    expect(retainUsedCapabilities(null, same)).toBe(same);
+  });
+
+  it("ignores counters and live memory readings but not the worker limits derived from them", async () => {
+    const { retainUsedCapabilities } = await import("./runtimeCapabilityPolling");
+    const recommendation = (available: number, maxSafe: number) => ({
+      memory_measurement_available: true, total_memory_bytes: 32e9, available_memory_bytes: available,
+      reserved_memory_bytes: 4e9, headroom_memory_bytes: available - 4e9, static_estimated_worker_bytes: 2e9,
+      warmup_memory_delta_bytes: null, estimated_per_worker_memory_bytes: 2e9, requested_parallel_chapters: 4,
+      max_safe_parallel_chapters: maxSafe, recommended_parallel_chapters: maxSafe, reason: "static estimate with live headroom",
+      calculation: `available - reserved = ${available}`,
+    });
+    const snapshot = (available: number, maxSafe: number, waits: number) => ({
+      default_tts_engine: "kokoro", default_tts_quantization: "", cleaner_runtime_availability: { mlx: true },
+      runtime_probe: { state: "pending", refresh_in_progress: true },
+      runtime_validation_cache_size: waits, global_api_limiter: { wait_count: waits }, worker_pool: { reuse_hits: waits },
+      metrics: { global_api_limiter_wait_count: waits },
+      parallel_worker_recommendation: recommendation(available, maxSafe),
+    }) as never;
+    const previous = snapshot(12e9, 4, 0);
+    expect(retainUsedCapabilities(previous, snapshot(11.5e9, 4, 3))).toBe(previous);
+    const fewerWorkers = snapshot(5e9, 1, 3);
+    expect(retainUsedCapabilities(previous, fewerWorkers)).toBe(fewerWorkers);
+    const settled = { ...(previous as object), runtime_probe: { state: "fresh", refresh_in_progress: false } } as never;
+    expect(retainUsedCapabilities(previous, settled)).toBe(settled);
+  });
+});

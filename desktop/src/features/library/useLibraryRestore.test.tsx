@@ -48,7 +48,7 @@ function createClient() {
     cleanupStorage: vi.fn(async () => ({ deleted_files: 0, deleted_rows: 0 })),
     getMaintenanceDiagnostics: vi.fn(async (): Promise<{ library_generation: string | null }> => ({ library_generation: generation })),
     getDatabaseBackups: vi.fn(async () => ({ items: [] })),
-    restoreDatabaseBackup: vi.fn(() => restore.promise),
+    restoreDatabaseBackup: vi.fn((_id: string, _options?: { signal?: AbortSignal }) => restore.promise),
   };
   return {
     apiClient, restore,
@@ -188,7 +188,7 @@ describe("library backup restore", () => {
     await act(async () => { metadata.resolve(original); await save; });
     expect(client.apiClient.restoreDatabaseBackup).not.toHaveBeenCalled();
     await act(async () => { playback.resolve({ position_sec: 42 }); });
-    expect(client.apiClient.restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", undefined);
+    expect(client.apiClient.restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", expect.objectContaining({ timeoutMs: 600_000 }));
     await act(async () => { client.finishRestore(); await pending; });
     expect(probe.library.selectedBookDetail?.playback_position_sec).toBe(7);
     await act(async () => probe.player.togglePlay());
@@ -492,10 +492,84 @@ describe("library backup restore", () => {
     });
     expect(client.apiClient.restoreDatabaseBackup).not.toHaveBeenCalled();
     await act(async () => { cleanup.resolve({ deleted_files: 0, deleted_rows: 0 }); await cleaning; });
-    expect(client.apiClient.restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", undefined);
+    expect(client.apiClient.restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", expect.objectContaining({ timeoutMs: 600_000 }));
     expect(probe.library.maintenanceLoading).toBe(true);
     await act(async () => { client.finishRestore(); await pending; });
     expect(probe.library.selectedBookDetail?.title).toBe(restored.title);
+  });
+
+  it("aborts a stalled restore on disconnect so Check can verify and resume writes after reconnect", async () => {
+    const client = createClient();
+    let restoreSignal: AbortSignal | undefined;
+    client.apiClient.restoreDatabaseBackup.mockImplementationOnce((_id: string, options?: { signal?: AbortSignal }) => {
+      restoreSignal = options?.signal;
+      return new Promise<{ restored_id: string; safety_copy_path: string }>((_resolve, reject) => {
+        restoreSignal?.addEventListener("abort", () => reject(new ApiError({
+          message: "request aborted", code: "aborted", status: null, detail: "", retriable: false,
+        })));
+      });
+    });
+    const apiClient = client.apiClient as unknown as ApiClient;
+    await act(async () => root.render(<Probe apiClient={apiClient} />));
+    let pending!: Promise<void>;
+    await act(async () => { pending = probe.library.restoreBackup!("saved.db"); });
+    expect(restoreSignal?.aborted).toBe(false);
+    await act(async () => root.render(<Probe apiClient={apiClient} backendDisconnected />));
+    expect(restoreSignal?.aborted).toBe(true);
+    await act(async () => { await pending; });
+    await act(async () => root.render(<Probe apiClient={apiClient} />));
+    expect(probe.library.maintenanceMessage).toContain("Library changes are paused");
+    await act(async () => probe.library.updateSelectedBookMetadata({ title: "Blocked", author: "", tags: "" }));
+    expect(client.apiClient.updateLibraryBook).not.toHaveBeenCalled();
+    client.commitRestore();
+    await act(async () => probe.library.loadMaintenanceDiagnostics());
+    expect(probe.library.maintenanceMessage).toBe("Diagnostics loaded");
+    expect(probe.editor.editTitle).toBe(restored.title);
+    await act(async () => probe.editor.saveMetadata());
+    expect(client.apiClient.updateLibraryBook).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes writes without verification when the backend disconnects before the restore is sent", async () => {
+    const client = createClient();
+    const playback = deferred<{ position_sec: number }>();
+    client.apiClient.updateBookPlaybackPosition.mockImplementationOnce(() => playback.promise);
+    const apiClient = client.apiClient as unknown as ApiClient;
+    await act(async () => root.render(<Probe apiClient={apiClient} />));
+    await act(async () => probe.player.togglePlay());
+    probe.player.audioRef.current!.currentTime = 42;
+    await act(async () => probe.player.audioProps.onPause());
+    let pending!: Promise<void>;
+    await act(async () => { pending = probe.library.restoreBackup!("saved.db"); });
+    await act(async () => root.render(<Probe apiClient={apiClient} backendDisconnected />));
+    await act(async () => { playback.resolve({ position_sec: 42 }); await pending; });
+    await act(async () => root.render(<Probe apiClient={apiClient} />));
+    expect(client.apiClient.restoreDatabaseBackup).not.toHaveBeenCalled();
+    expect(probe.library.maintenanceMessage).not.toContain("Library changes are paused");
+    await act(async () => probe.editor.saveMetadata());
+    expect(client.apiClient.updateLibraryBook).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps writes paused when a restore times out before the library generation changes", async () => {
+    const client = createClient();
+    await act(async () => root.render(<Probe apiClient={client.apiClient as unknown as ApiClient} />));
+    let pending!: Promise<void>;
+    await act(async () => { pending = probe.library.restoreBackup!("saved.db"); });
+    await act(async () => {
+      client.restore.reject(new ApiError({
+        message: "request timed out", code: "timeout", status: null, detail: "", retriable: true,
+      }));
+      await pending;
+    });
+    expect(client.apiClient.getMaintenanceDiagnostics).toHaveBeenCalledTimes(2);
+    expect(probe.library.maintenanceMessage).toContain("Library changes are paused");
+    expect(probe.library.maintenanceLoading).toBe(false);
+    await act(async () => probe.library.updateSelectedBookMetadata({ title: "Blocked", author: "", tags: "" }));
+    expect(client.apiClient.updateLibraryBook).not.toHaveBeenCalled();
+    client.commitRestore();
+    await act(async () => probe.library.loadMaintenanceDiagnostics());
+    expect(probe.editor.editTitle).toBe(restored.title);
+    await act(async () => probe.editor.saveMetadata());
+    expect(client.apiClient.updateLibraryBook).toHaveBeenCalledTimes(1);
   });
 
 });

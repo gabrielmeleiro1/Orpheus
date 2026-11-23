@@ -59,3 +59,37 @@ it.each([
     await act(async () => root.unmount());
   }
 });
+
+it("keeps the offline shelf until the reconnected list has loaded, then shows the live list", async () => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  const api = client();
+  let resolveList!: (page: unknown) => void;
+  const reconnected = client();
+  vi.mocked(reconnected.getLibrary).mockImplementation(() => new Promise((resolve) => { resolveList = resolve as (page: unknown) => void; }));
+  let library!: UseLibraryResult;
+  const rendered: number[][] = [];
+  function Probe({ apiClient, backendDisconnected }: { apiClient: ApiClient | null; backendDisconnected: boolean }) {
+    library = useLibrary({ apiClient, backendDisconnected });
+    rendered.push(library.items.map((item) => item.id));
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(<Probe apiClient={api} backendDisconnected={false} />));
+    await act(async () => root.render(<Probe apiClient={null} backendDisconnected />));
+    rendered.length = 0;
+    await act(async () => root.render(<Probe apiClient={reconnected} backendDisconnected={false} />));
+    expect(reconnected.getLibrary).toHaveBeenCalled();
+    expect(rendered.length).toBeGreaterThan(0);
+    expect(rendered.every((ids) => ids.join() === "1,2")).toBe(true);
+    expect(library.offline).toBe(true);
+
+    await act(async () => {
+      resolveList({ items: [summary(3)], count: 1, library_id: "library", library_epoch: "epoch" });
+    });
+    expect(library.items.map((item) => item.id)).toEqual([3]);
+    expect(library.offline).toBe(false);
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

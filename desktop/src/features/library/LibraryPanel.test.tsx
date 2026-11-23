@@ -832,4 +832,50 @@ describe("LibraryPanel", () => {
     }
   });
 
+  it("returns focus to the opened book's card when its album closes before its detail arrived", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const model = libraryModel();
+    const second = { ...selectedSummary, id: 2, title: "Second" };
+    model.items = [selectedSummary, second];
+    model.unfilteredItems = model.items;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const render = (albumOpen: boolean) => root.render(<LibraryPanel {...ALBUM} albumOpen={albumOpen} hidden={false} library={{ ...model }} />);
+    try {
+      await act(async () => render(false));
+      // Opening the second album selects it at once; its detail is still the first book's.
+      model.selectedBookId = 2;
+      model.selectedBookIndex = 1;
+      await act(async () => render(true));
+      model.selectedBookDetail = { ...selectedBook, id: 2, title: "Second" };
+      await act(async () => render(true));
+      await act(async () => render(false));
+      const cards = container.querySelectorAll<HTMLElement>(".book-card");
+      expect(document.activeElement).toBe(cards[1]);
+    } finally {
+      await act(async () => root.unmount());
+      container.remove();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not read the stored resume position while the book is loaded in the player", () => {
+    const model = libraryModel();
+    const detail = { ...selectedBook, library_id: "library", library_epoch: "current", playback_url: "/audio",
+      chapters: [{ id: 1, number: 1, title: "Chapter", duration_ms: 120_000, mp3_path: "chapter.mp3" }] };
+    model.selectedBookDetail = detail;
+    model.selectedBookPlayable = true;
+    const getItem = vi.spyOn(window.localStorage, "getItem");
+    const checkpointReads = () => getItem.mock.calls.filter(([key]) => String(key).startsWith("orpheus.playback.")).length;
+    try {
+      renderToString(<LibraryPanel {...ALBUM} albumOpen={false} hidden={false} library={model} playerLoaded elapsedSec={12} onTogglePlay={vi.fn()} />);
+      expect(checkpointReads()).toBe(0);
+      renderToString(<LibraryPanel {...ALBUM} albumOpen={false} hidden={false} library={model} onTogglePlay={vi.fn()} />);
+      expect(checkpointReads()).toBeGreaterThan(0);
+    } finally {
+      getItem.mockRestore();
+    }
+  });
+
 });

@@ -84,6 +84,8 @@ export interface RuntimeSetupRuntimeDeleteResponse {
   deleted_model_groups: string[];
   freed_bytes: number;
   state_deleted: boolean;
+  /** Present when nothing residual remains and setup was reset. */
+  setup_reset_id?: string;
 }
 
 export interface RuntimeModelInventory {

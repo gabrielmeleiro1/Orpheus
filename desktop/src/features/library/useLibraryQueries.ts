@@ -76,6 +76,8 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
   const [selectedBookDetail, setSelectedBookDetail] = useState<LibraryBookDetail | null>(null);
 
   const [loadingList, setLoadingList] = useState(false);
+  // Counts list loads that ran to completion, successful or not.
+  const [completedListLoads, setCompletedListLoads] = useState(0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -468,6 +470,7 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
       } finally {
         if (isCurrent()) {
           setLoadingList(false);
+          setCompletedListLoads((count) => count + 1);
         }
       }
     },
@@ -758,6 +761,7 @@ export function useLibraryQueries({ apiClient, backendDisconnected, session }: U
     setSelectedBookDetail,
     loadingList,
     setLoadingList,
+    completedListLoads,
     loadingMore,
     setLoadingMore,
     loadingDetail,

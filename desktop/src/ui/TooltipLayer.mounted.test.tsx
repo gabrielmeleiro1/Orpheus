@@ -160,3 +160,45 @@ it("can be hovered: moving onto the tip keeps it, leaving both hides it", async 
   });
   expect(bubble()).toBeNull();
 });
+
+it("hides the tip when an ancestor is hidden and shows it again when the control is hovered anew", async () => {
+  const section = document.createElement("section");
+  document.body.append(section);
+  const row = document.createElement("button");
+  row.setAttribute("data-tip", "Show stages");
+  section.append(row);
+  row.checkVisibility = () => !row.closest("[hidden]");
+  await hover(row);
+  expect(bubble()?.textContent).toBe("Show stages");
+  await act(async () => { section.hidden = true; });
+  expect(bubble()).toBeNull();
+  await act(async () => { section.hidden = false; });
+  await hover(row);
+  expect(bubble()?.textContent).toBe("Show stages");
+});
+
+it("checks the anchor's visibility only for mutations that can reach it", async () => {
+  const row = document.createElement("button");
+  row.setAttribute("data-tip", "Open");
+  const wrapper = document.createElement("div");
+  wrapper.append(row);
+  document.body.append(wrapper);
+  const spinner = document.createElement("pre");
+  document.body.append(spinner);
+  const checkVisibility = vi.fn(() => true);
+  row.checkVisibility = checkVisibility;
+  await hover(row);
+  expect(bubble()).not.toBeNull();
+  checkVisibility.mockClear();
+  // A busy loader elsewhere on the page redraws many times a second.
+  for (let frame = 0; frame < 5; frame += 1) {
+    await act(async () => {
+      spinner.textContent = `frame ${frame}`;
+      spinner.className = `frame-${frame}`;
+    });
+  }
+  expect(checkVisibility).not.toHaveBeenCalled();
+  await act(async () => { wrapper.className = "collapsed"; });
+  expect(checkVisibility).toHaveBeenCalled();
+  expect(bubble()).not.toBeNull();
+});

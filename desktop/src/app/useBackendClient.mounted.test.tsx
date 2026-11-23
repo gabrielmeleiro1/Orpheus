@@ -52,6 +52,23 @@ describe("useBackendClient explicit reconnect", () => {
     vi.useRealTimers();
   });
 
+  it("cancels the endpoint wait when the hook unmounts", async () => {
+    let signal: AbortSignal | undefined;
+    waitForDesktopEndpoint.mockImplementation((nextSignal?: AbortSignal) => {
+      signal = nextSignal;
+      return new Promise(() => undefined);
+    });
+    function Harness() {
+      latest = useBackendClient();
+      return null;
+    }
+    await act(async () => root.render(<Harness />));
+    expect(signal?.aborted).toBe(false);
+    await act(async () => root.unmount());
+    expect(signal?.aborted).toBe(true);
+    root = createRoot(container);
+  });
+
   it.each(["ready", "failed", "stopped"] as const)("resets exhausted %s recovery when the user explicitly retries", async (lifecycle) => {
     vi.useFakeTimers();
     readDesktopBackendStatus.mockResolvedValue({ lifecycle, endpoint: null, error: null });

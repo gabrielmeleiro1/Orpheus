@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
 import { formatFreedBytes, safeError } from "./setupPageHelpers";
@@ -22,6 +22,16 @@ export function SetupDangerZone({
   const [deleteResult, setDeleteResult] = useState<string | null>(null);
   const deleteLocked = useRef(false);
   const deleteTrigger = useRef<HTMLButtonElement>(null);
+  const generation = useRef(0);
+
+  // A reply from a replaced client must not touch the new client's state. The parent
+  // resets its own busy state on a client change; an unmount alone still releases it below.
+  useEffect(() => {
+    generation.current += 1;
+    deleteLocked.current = false;
+    setDeletePending(false);
+    setDeleteArmed(false);
+  }, [apiClient]);
   const cancelDelete = () => {
     setDeleteArmed(false);
     deleteTrigger.current?.focus();
@@ -33,6 +43,7 @@ export function SetupDangerZone({
     if (!apiClient || disabled || deleteLocked.current) return;
     if (!deleteArmed) return;
     disarmDelete();
+    const current = generation.current;
     deleteLocked.current = true;
     setDeletePending(true);
     onBusyChange(true);
@@ -40,17 +51,20 @@ export function SetupDangerZone({
     onError(null);
     try {
       const result = await apiClient.deleteRuntimeSetupData({ timeoutMs: 20_000 });
-      if ("setup_reset_id" in result && typeof result.setup_reset_id === "string") {
+      if (current !== generation.current) return;
+      if (typeof result.setup_reset_id === "string") {
         syncSetupPreferences({ configured: false, setup_reset_id: result.setup_reset_id });
       }
       setDeleteResult(`${result.message ? `${result.message} ` : ""}Freed ${formatFreedBytes(result.freed_bytes)}.`);
       await onDeleted();
     } catch (reason: unknown) {
-      onError(safeError(reason, "Local runtime data could not be deleted."));
+      if (current === generation.current) onError(safeError(reason, "Local runtime data could not be deleted."));
     } finally {
-      deleteLocked.current = false;
-      setDeletePending(false);
-      onBusyChange(false);
+      if (current === generation.current) {
+        deleteLocked.current = false;
+        setDeletePending(false);
+        onBusyChange(false);
+      }
     }
   };
 

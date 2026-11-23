@@ -91,3 +91,34 @@ describe("useParallelWorkers recommendation defaults", () => {
     expect(current?.selectedParallelWorkerLimit).toBe(Number(expected));
   });
 });
+
+describe("useParallelWorkers hydration", () => {
+  function Controlled({ apiClient, systemCapabilities, persisted }: {
+    apiClient: object; systemCapabilities: SystemCapabilitiesResponse; persisted: { parallel_manual_max?: number };
+  }) {
+    const persistedSettingsRef = useRef(persisted);
+    persistedSettingsRef.current = persisted;
+    current = useParallelWorkers({ apiClient: apiClient as never, systemCapabilities, persistedSettingsRef });
+    return null;
+  }
+
+  it("keeps a cleared field across capability polls and hydrates again for a new client", () => {
+    const client = {};
+    const persisted = { parallel_manual_max: 3 };
+    act(() => root.render(<Controlled apiClient={client} systemCapabilities={capabilities()} persisted={persisted} />));
+    expect(current?.parallelManualMax).toBe("3");
+    act(() => current!.setParallelManualMax(""));
+    // Saving the cleared field persists the clamped limit; a poll must not refill the input.
+    const saved = { parallel_manual_max: 1 };
+    act(() => root.render(<Controlled apiClient={client} systemCapabilities={capabilities()} persisted={saved} />));
+    expect(current?.parallelManualMax).toBe("");
+    // The recommendation itself still follows each poll.
+    const fresher = { parallel_worker_recommendation: { ...recommendation, max_safe_parallel_chapters: 2 } } as unknown as SystemCapabilitiesResponse;
+    act(() => root.render(<Controlled apiClient={client} systemCapabilities={fresher} persisted={saved} />));
+    expect(current?.parallelRecommendation?.max_safe_parallel_chapters).toBe(2);
+    expect(current?.parallelManualMax).toBe("");
+
+    act(() => root.render(<Controlled apiClient={{}} systemCapabilities={capabilities()} persisted={{ parallel_manual_max: 4 }} />));
+    expect(current?.parallelManualMax).toBe("4");
+  });
+});

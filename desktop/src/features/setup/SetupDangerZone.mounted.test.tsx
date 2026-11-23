@@ -61,3 +61,45 @@ it.each([
     localStorage.clear();
   }
 });
+
+it("ignores a delete reply that arrives after the backend client was replaced", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  localStorage.clear();
+  let resolveDelete!: (value: unknown) => void;
+  const oldClient = {
+    deleteRuntimeSetupData: vi.fn(() => new Promise((resolve) => { resolveDelete = resolve; })),
+  } as unknown as ApiClient;
+  const newClient = { deleteRuntimeSetupData: vi.fn(() => new Promise(() => undefined)) } as unknown as ApiClient;
+  const onDeleted = vi.fn(async () => undefined);
+  const onBusyChange = vi.fn();
+  const onError = vi.fn();
+  const container = document.createElement("div");
+  document.body.append(container);
+  const root = createRoot(container);
+  const render = (client: ApiClient) => root.render(
+    <SetupDangerZone apiClient={client} disabled={false} onDeleted={onDeleted} onError={onError} onBusyChange={onBusyChange} />,
+  );
+  const deleteTrigger = () => container.querySelector<HTMLButtonElement>(".setup-danger-actions button")!;
+  try {
+    await act(async () => render(oldClient));
+    await act(async () => { container.querySelector("details")!.open = true; });
+    await act(async () => deleteTrigger().click());
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Delete")!.click());
+    expect(deleteTrigger().disabled).toBe(true);
+    await act(async () => render(newClient));
+    // The new client can be used immediately instead of waiting out the old request.
+    expect(deleteTrigger().disabled).toBe(false);
+    onBusyChange.mockClear();
+    await act(async () => resolveDelete({ deleted_model_groups: [], freed_bytes: 0, state_deleted: true, setup_reset_id: "reset-old" }));
+    expect(onDeleted).not.toHaveBeenCalled();
+    expect(onBusyChange).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("Freed");
+    await act(async () => deleteTrigger().click());
+    await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Delete")!.click());
+    expect(newClient.deleteRuntimeSetupData).toHaveBeenCalledOnce();
+  } finally {
+    await act(async () => root.unmount());
+    container.remove();
+    localStorage.clear();
+  }
+});

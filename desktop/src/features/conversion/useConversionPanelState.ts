@@ -238,7 +238,8 @@ export function useConversionPanelState({
     sourcePath: queueController.sourcePath,
     selectedPreflight: queueController.selectedQueueItem?.preflight ?? null,
     sampleText: queueController.previewText,
-    hidden,
+    // Settings renders only the cleaner options, which unmounts the preview player.
+    hidden: hidden || activeTab === "config",
   });
 
   const selectedPreflight = queueController.selectedQueueItem?.preflight ?? null;
@@ -563,6 +564,7 @@ export function useConversionPanelState({
       parallelWorkerError: optionState.parallelWorkerError,
       parallelWorkerStatus: optionState.parallelWorkerStatus,
       parallelWorkerDetail: optionState.parallelRecommendation?.calculation ?? "",
+      liveCapabilities: optionState.liveCapabilities,
     },
     conversionActions: {
       hasActiveJob: Boolean(conversionJob.activeJobId) || queueRunner.commandRunning,
@@ -639,6 +641,7 @@ export function useConversionPanelState({
       },
       moveQueueItem: queueController.moveQueueItem,
       removeQueueItem: queueController.removeQueueItem,
+      removeQueueItems: queueController.removeQueueItems,
       syncSelectedQueueEdits: (patch: QueueEditPatch) =>
         queueController.syncSelectedQueueEdits(patch),
     },

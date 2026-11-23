@@ -217,3 +217,30 @@ it("asks before stopping a running book, and Keep converting or Escape leave it 
     vi.unstubAllGlobals();
   }
 });
+
+it("updates a stage detail row in place as its counter advances", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  const props = (chunk: number) => ({
+    uiState: "running" as const, statusText: "", progressPct: 10, etaText: "",
+    stages: [{ name: "synthesis" as const, state: "active" as const, pct: 10, detail: [
+      { label: "Chunks", value: `${chunk}/10`, pct: chunk * 10 },
+    ] }],
+    currentStage: "synthesis", performance: null, activeJobId: "job", isCancelling: false, onCancel: async () => {},
+  });
+  try {
+    await act(async () => root.render(<ProgressPanel {...props(1)} />));
+    const row = container.querySelector(".subtask-row");
+    const bar = row?.querySelector('[aria-label="Chunks progress"]');
+    expect(bar?.getAttribute("aria-valuenow")).toBe("10");
+    await act(async () => root.render(<ProgressPanel {...props(2)} />));
+    // Same elements: the bar's resize observer is not torn down on every tick.
+    expect(container.querySelector(".subtask-row")).toBe(row);
+    expect(container.querySelector('[aria-label="Chunks progress"]')).toBe(bar);
+    expect(bar?.getAttribute("aria-valuenow")).toBe("20");
+    expect(row?.querySelector(".subtask-value")?.textContent).toBe("2/10");
+  } finally {
+    await act(async () => root.unmount());
+  }
+});

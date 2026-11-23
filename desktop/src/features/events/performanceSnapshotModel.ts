@@ -6,8 +6,17 @@ function normalizeString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+// `Number(null)` and `Number("")` are 0; treat them as absent so a missing
+// reading does not overwrite the last real one when snapshots are merged.
 function normalizeOptionalNumber(value: unknown): number | undefined {
-  const numeric = Number(value);
+  let numeric: number;
+  if (typeof value === "number") {
+    numeric = value;
+  } else if (typeof value === "string" && value.trim()) {
+    numeric = Number(value);
+  } else {
+    return undefined;
+  }
   if (!Number.isFinite(numeric)) {
     return undefined;
   }

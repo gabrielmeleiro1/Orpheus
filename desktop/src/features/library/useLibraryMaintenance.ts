@@ -15,6 +15,9 @@ import { createLibraryRepository } from "./libraryRepository";
 // disk reads more time than cached state without holding the panel forever.
 const MAINTENANCE_DIAGNOSTICS_TIMEOUT_MS = 30_000;
 const MAINTENANCE_BACKUP_LIST_TIMEOUT_MS = 30_000;
+// Backup, restore and cleanup copy or delete whole databases and book folders,
+// so they get far longer than reads; the bound only ends a stalled request.
+const MAINTENANCE_WRITE_TIMEOUT_MS = 600_000;
 
 interface UseLibraryMaintenanceArgs {
   apiClient: ApiClient | null;
@@ -64,6 +67,7 @@ export function useLibraryMaintenance({
   });
   const backupsRef = useRef<MaintenanceBackup[]>([]);
   const restoreInFlightRef = useRef<symbol | null>(null);
+  const restoreRequestSentRef = useRef(false);
   const uncertainRestoreRef = useRef(false);
   const maintenanceContextGuard = useGenerationGuard();
   const maintenanceContextIdentityRef = useRef({ apiClient, backendDisconnected });
@@ -73,9 +77,21 @@ export function useLibraryMaintenance({
   ) {
     maintenanceContextIdentityRef.current = { apiClient, backendDisconnected };
     maintenanceContextGuard.invalidate();
-    if (restoreInFlightRef.current) uncertainRestoreRef.current = true;
+    if (restoreInFlightRef.current && restoreRequestSentRef.current) uncertainRestoreRef.current = true;
   }
   const maintenanceContextGeneration = maintenanceContextGuard.current;
+  // Long maintenance writes are aborted when their API context goes away, so a
+  // stalled request cannot hold the restore lock past a reconnect or unmount.
+  const contextAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    contextAbortRef.current = controller;
+    return () => controller.abort();
+  }, [maintenanceContextGeneration]);
+  const writeRequestOptions = useCallback(() => ({
+    signal: contextAbortRef.current?.signal,
+    timeoutMs: MAINTENANCE_WRITE_TIMEOUT_MS,
+  }), []);
   const beginMaintenanceRequest = useLatestRequest();
   const beginOpenFolderRequest = useLatestRequest();
   const beginOwnedMaintenanceRequest = useCallback((beginRequest = beginMaintenanceRequest) => {
@@ -165,6 +181,7 @@ export function useLibraryMaintenance({
     const token = Symbol();
     restoreInFlightRef.current = token;
     const isCurrent = beginOwnedMaintenanceRequest();
+    const requestOptions = writeRequestOptions();
     setMaintenanceLoading(true);
     let beforeGeneration: string | null = null;
     let requestSent = false;
@@ -180,7 +197,8 @@ export function useLibraryMaintenance({
       }
       if (!isCurrent()) return;
       requestSent = true;
-      const response = await repository.restoreDatabaseBackup(id);
+      restoreRequestSentRef.current = true;
+      const response = await repository.restoreDatabaseBackup(id, requestOptions);
       if (!isCurrent()) {
         return;
       }
@@ -198,6 +216,8 @@ export function useLibraryMaintenance({
     } catch (error: unknown) {
       const rejected = error instanceof ApiError && error.code === "http" &&
         error.status !== null && error.status >= 400 && error.status < 500;
+      // A timed-out restore may still be running on the backend.
+      const timedOut = error instanceof ApiError && error.code === "timeout";
       if (isCurrent() && requestSent && !invalidated && !rejected) {
         canResume = false;
         try {
@@ -209,6 +229,8 @@ export function useLibraryMaintenance({
             clearLibraryPlaybackCheckpoints();
             session?.invalidate();
             await reloadRef.current();
+          } else if (timedOut) {
+            throw new Error("Restore outcome unknown");
           }
           if (!isCurrent()) return;
           setMaintenanceReport(report);
@@ -234,12 +256,15 @@ export function useLibraryMaintenance({
         canResume = false;
       }
       if (canResume && !uncertainRestoreRef.current) session?.resume();
-      if (restoreInFlightRef.current === token) restoreInFlightRef.current = null;
+      if (restoreInFlightRef.current === token) {
+        restoreInFlightRef.current = null;
+        restoreRequestSentRef.current = false;
+      }
       if (isCurrent()) {
         setMaintenanceLoading(false);
       }
     }
-  }, [beginOwnedMaintenanceRequest, repository, runDiagnostics, session]);
+  }, [beginOwnedMaintenanceRequest, repository, runDiagnostics, session, writeRequestOptions]);
 
   const backupDatabase = useCallback(async (): Promise<void> => {
     if (restoreInFlightRef.current) return;
@@ -251,7 +276,7 @@ export function useLibraryMaintenance({
     const isCurrent = beginOwnedMaintenanceRequest();
     setMaintenanceLoading(true);
     try {
-      const response = await repository.backupDatabase();
+      const response = await repository.backupDatabase(writeRequestOptions());
       if (!isCurrent()) {
         return;
       }
@@ -269,7 +294,7 @@ export function useLibraryMaintenance({
         setMaintenanceLoading(false);
       }
     }
-  }, [beginOwnedMaintenanceRequest, repository, runDiagnostics]);
+  }, [beginOwnedMaintenanceRequest, repository, runDiagnostics, writeRequestOptions]);
 
   const cleanupStorage = useCallback(async (removeUnownedFolders?: string[]): Promise<void> => {
     if (restoreInFlightRef.current) return;
@@ -284,9 +309,13 @@ export function useLibraryMaintenance({
       isCurrent() &&
       reloadRef.current === reload &&
       getReloadContextGeneration() === reloadContextGeneration;
+    const requestOptions = writeRequestOptions();
     setMaintenanceLoading(true);
     try {
-      const cleanup = () => repository.cleanupStorage(removeUnownedFolders?.length ? { removeUnownedFolders } : undefined);
+      const cleanup = () => repository.cleanupStorage({
+        ...(removeUnownedFolders?.length ? { removeUnownedFolders } : {}),
+        ...requestOptions,
+      });
       const result = session ? await session.runMutation(session.generation, cleanup) : await cleanup();
       if (!isCleanupCurrent()) {
         return;
@@ -311,7 +340,7 @@ export function useLibraryMaintenance({
         setMaintenanceLoading(false);
       }
     }
-  }, [beginOwnedMaintenanceRequest, getReloadContextGeneration, onAfterCleanup, repository, runDiagnostics, session]);
+  }, [beginOwnedMaintenanceRequest, getReloadContextGeneration, onAfterCleanup, repository, runDiagnostics, session, writeRequestOptions]);
 
   const openAppDataFolder = useCallback(async (): Promise<void> => {
     if (restoreInFlightRef.current) return;

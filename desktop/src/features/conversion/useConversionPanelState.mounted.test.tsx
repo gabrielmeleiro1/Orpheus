@@ -401,3 +401,55 @@ it.each(["checking", "unconfirmed"])("shows Refresh for a %s conversion start wi
     await act(async () => root.unmount());
   }
 });
+
+it("stops the voice preview when Settings replaces the Create view", async () => {
+  (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  const signals: AbortSignal[] = [];
+  let resolveBlob!: (blob: Blob) => void;
+  const requestBlob = vi.fn((_path: string, init?: { signal?: AbortSignal }) => {
+    if (init?.signal) signals.push(init.signal);
+    return new Promise<Blob>((resolve) => { resolveBlob = resolve; });
+  });
+  const client = { requestBlob } as unknown as ApiClient;
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:preview");
+  const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  const audio = { pause: vi.fn(), play: vi.fn(async () => {}), src: "", currentTime: 0, addEventListener: vi.fn(), removeEventListener: vi.fn() } as unknown as HTMLAudioElement;
+  let activeTab: "convert" | "config" = "convert";
+  let current!: ReturnType<typeof useConversionPanelState>;
+  const conversionJob = { clearFormError: vi.fn(), refreshActiveConversion: vi.fn() } as unknown as ConversionJobController;
+  function Probe() {
+    current = useConversionPanelState({ activeTab, hidden: false, apiClient: client, connectionState: "connected", conversionJob, onOpenSettings: vi.fn() });
+    return null;
+  }
+  const root = createRoot(document.createElement("div"));
+  try {
+    await act(async () => root.render(<Probe />));
+    (current.ttsOptions.previewAudioRef as { current: HTMLAudioElement | null }).current = audio;
+    // An in-flight synthesis is cancelled on the switch.
+    let pending!: Promise<void>;
+    await act(async () => { pending = current.actions.onPreviewVoice(); });
+    expect(signals).toHaveLength(1);
+    activeTab = "config";
+    await act(async () => root.render(<Probe />));
+    expect(signals[0].aborted).toBe(true);
+    resolveBlob(new Blob(["late"]));
+    await act(async () => pending);
+    expect(audio.play).not.toHaveBeenCalled();
+    expect(current.ttsOptions.previewError).toBe(false);
+
+    // A playing preview is stopped and its blob URL released.
+    activeTab = "convert";
+    await act(async () => root.render(<Probe />));
+    await act(async () => { pending = current.actions.onPreviewVoice(); });
+    await act(async () => { resolveBlob(new Blob(["audio"])); await pending; });
+    expect(audio.play).toHaveBeenCalledOnce();
+    vi.mocked(audio.pause).mockClear();
+    activeTab = "config";
+    await act(async () => root.render(<Probe />));
+    expect(audio.pause).toHaveBeenCalled();
+    expect(revoke).toHaveBeenCalledWith("blob:preview");
+  } finally {
+    await act(async () => root.unmount());
+    vi.restoreAllMocks();
+  }
+});

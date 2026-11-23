@@ -41,12 +41,12 @@ it("keeps the Back up and Clean up results on screen after the diagnostics refre
     await act(async () => { await library.cleanupStorage(); });
     expect(library.maintenanceMessage).toBe("Nothing needed cleaning up.");
     // A plain cleanup never names folders; removal is passed through only when asked for.
-    expect(apiClient.cleanupStorage).toHaveBeenLastCalledWith(undefined);
+    expect(apiClient.cleanupStorage).toHaveBeenLastCalledWith(expect.objectContaining({ timeoutMs: 600_000 }));
     vi.mocked(apiClient.cleanupStorage).mockResolvedValueOnce({ backup_path: "/b.db", removed_unowned_folders: ["Old Book"], summary: {
       changed: true, grace_hours: 24, kept: [], removed: { unowned_folders: 1 },
       removable: { output_folders: 0, temp_uploads: 0, temp_stage_folders: 0, pending_deletions: 0, orphan_sources: 0 } } });
     await act(async () => { await library.cleanupStorage(["Old Book"]); });
-    expect(apiClient.cleanupStorage).toHaveBeenLastCalledWith({ removeUnownedFolders: ["Old Book"] });
+    expect(apiClient.cleanupStorage).toHaveBeenLastCalledWith(expect.objectContaining({ removeUnownedFolders: ["Old Book"] }));
     expect(library.maintenanceMessage).toBe("Removed 1 folder not in the library: Old Book. A database backup was saved first.");
   } finally {
     await act(async () => root.unmount());

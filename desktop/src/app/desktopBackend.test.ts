@@ -92,3 +92,35 @@ describe("waitForDesktopEndpoint", () => {
     ]);
   });
 });
+
+describe("waitForDesktopEndpoint cancellation", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    invoke.mockReset();
+  });
+
+  it("stops polling backend_status once its signal aborts", async () => {
+    vi.useFakeTimers();
+    invoke.mockResolvedValue({ lifecycle: "starting", endpoint: null, error: null });
+    const controller = new AbortController();
+    const result = waitForDesktopEndpoint(controller.signal);
+    await vi.advanceTimersByTimeAsync(1_000);
+    const callsBeforeAbort = invoke.mock.calls.length;
+    expect(callsBeforeAbort).toBeGreaterThan(1);
+    controller.abort();
+    await expect(result).resolves.toBeNull();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(invoke.mock.calls.length).toBe(callsBeforeAbort);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("retires a hung IPC call when aborted", async () => {
+    vi.useFakeTimers();
+    invoke.mockImplementation(() => new Promise(() => undefined));
+    const controller = new AbortController();
+    const result = waitForDesktopEndpoint(controller.signal);
+    controller.abort();
+    await expect(result).resolves.toBeNull();
+    expect(invoke).toHaveBeenCalledOnce();
+  });
+});

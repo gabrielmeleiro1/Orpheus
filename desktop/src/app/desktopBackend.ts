@@ -7,19 +7,30 @@ export const BACKEND_HEALTH_CHECK_INTERVAL_MS = 2_000;
 const ENDPOINT_WAIT_TIMEOUT_MS = 120_000;
 const ENDPOINT_WAIT_INTERVAL_MS = 150;
 
-function sleep(ms: number): Promise<void> {
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    globalThis.setTimeout(resolve, ms);
+    const done = () => {
+      globalThis.clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = globalThis.setTimeout(done, ms);
+    signal?.addEventListener("abort", done, { once: true });
   });
 }
 
 // Native IPC cannot be aborted, so retire late replies while bounding each
-// awaited call by the same startup deadline. Both resolutions and rejections
-// remain observed after the deadline.
-function beforeDeadline<T>(request: Promise<T>, timeoutAt: number): Promise<T | null> {
+// awaited call by the same startup deadline (or the caller's abort). Both
+// resolutions and rejections remain observed after the deadline.
+function beforeDeadline<T>(request: Promise<T>, timeoutAt: number, signal?: AbortSignal): Promise<T | null> {
   return new Promise((resolve, reject) => {
-    const timer = globalThis.setTimeout(() => resolve(null), Math.max(0, timeoutAt - Date.now()));
-    request.then(resolve, reject).finally(() => globalThis.clearTimeout(timer));
+    const retire = () => resolve(null);
+    const timer = globalThis.setTimeout(retire, Math.max(0, timeoutAt - Date.now()));
+    signal?.addEventListener("abort", retire, { once: true });
+    request.then(resolve, reject).finally(() => {
+      globalThis.clearTimeout(timer);
+      signal?.removeEventListener("abort", retire);
+    });
   });
 }
 
@@ -45,24 +56,26 @@ export function describeDesktopBackendStatus(status: DesktopBackendStatus): stri
   return status.endpoint?.base_url ? `Backend ready at ${status.endpoint.base_url}` : "Desktop backend ready";
 }
 
-export async function waitForDesktopEndpoint(): Promise<DesktopBackendEndpoint | null> {
+/** Resolves null on timeout or once `signal` aborts, without issuing further IPC. */
+export async function waitForDesktopEndpoint(signal?: AbortSignal): Promise<DesktopBackendEndpoint | null> {
   const timeoutAt = Date.now() + ENDPOINT_WAIT_TIMEOUT_MS;
 
-  while (Date.now() < timeoutAt) {
-    const status = await beforeDeadline(readDesktopBackendStatus(), timeoutAt);
-    if (!status) return null;
+  while (Date.now() < timeoutAt && !signal?.aborted) {
+    const status = await beforeDeadline(readDesktopBackendStatus(), timeoutAt, signal);
+    if (!status || signal?.aborted) return null;
     if (status.lifecycle === "failed" || status.lifecycle === "stopped") {
       throw new Error(describeDesktopBackendStatus(status));
     }
     if (status.endpoint?.base_url) {
-      const endpoint = await beforeDeadline(invoke<DesktopBackendEndpoint | null>("backend_endpoint"), timeoutAt);
+      const endpoint = await beforeDeadline(invoke<DesktopBackendEndpoint | null>("backend_endpoint"), timeoutAt, signal);
+      if (signal?.aborted) return null;
       if (endpoint?.base_url) {
         return endpoint;
       }
     }
     const remainingMs = timeoutAt - Date.now();
     if (remainingMs <= 0) return null;
-    await sleep(Math.min(ENDPOINT_WAIT_INTERVAL_MS, remainingMs));
+    await sleep(Math.min(ENDPOINT_WAIT_INTERVAL_MS, remainingMs), signal);
   }
 
   return null;

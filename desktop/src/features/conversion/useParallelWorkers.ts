@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import type { ApiClient } from "../../api/client";
 import type {
@@ -61,6 +61,13 @@ function shortWorkerLine(recommendation: ParallelWorkerRecommendation, selected:
   return free === "-" ? headline : `${headline} · ${free} memory free`;
 }
 
+export function parallelWorkerStatusLine(
+  recommendation: ParallelWorkerRecommendation | null,
+  selected: number,
+): string {
+  return recommendation ? shortWorkerLine(recommendation, selected) : "Worker recommendation unavailable.";
+}
+
 export function useParallelWorkers({
   apiClient,
   systemCapabilities,
@@ -68,6 +75,9 @@ export function useParallelWorkers({
 }: UseParallelWorkersArgs): UseParallelWorkersResult {
   const [parallelManualMax, setParallelManualMaxState] = useState(String(DEFAULT_PARALLEL_WORKER_LIMIT));
   const [parallelRecommendation, setParallelRecommendation] = useState<ParallelWorkerRecommendation | null>(null);
+  // The field is hydrated once per client; later capability polls must not
+  // overwrite what the user is typing (an empty field saves as the clamped limit).
+  const hydratedClientRef = useRef<ApiClient | null>(null);
 
   const parallelWorkerError = useMemo(() => {
     return parallelRecommendation ? !parallelRecommendation.memory_measurement_available : false;
@@ -90,14 +100,14 @@ export function useParallelWorkers({
     ? Math.min(selectedParallelWorkerLimit, Math.max(1, parallelRecommendation.max_safe_parallel_chapters))
     : selectedParallelWorkerLimit;
 
-  const parallelWorkerStatus = useMemo(() => {
-    return parallelRecommendation
-      ? shortWorkerLine(parallelRecommendation, selectedParallelWorkerLimit)
-      : "Worker recommendation unavailable.";
-  }, [parallelRecommendation, selectedParallelWorkerLimit]);
+  const parallelWorkerStatus = useMemo(
+    () => parallelWorkerStatusLine(parallelRecommendation, selectedParallelWorkerLimit),
+    [parallelRecommendation, selectedParallelWorkerLimit],
+  );
 
   useEffect(() => {
     if (!apiClient) {
+      hydratedClientRef.current = null;
       setParallelManualMaxState(String(DEFAULT_PARALLEL_WORKER_LIMIT));
       setParallelRecommendation(null);
       return;
@@ -109,11 +119,16 @@ export function useParallelWorkers({
 
     const recommendation = systemCapabilities.parallel_worker_recommendation ?? null;
     setParallelRecommendation(recommendation);
+    if (hydratedClientRef.current === apiClient) {
+      return;
+    }
 
     const persisted = persistedSettingsRef.current;
     if (Number.isFinite(persisted.parallel_manual_max) && (persisted.parallel_manual_max ?? 0) > 0) {
+      hydratedClientRef.current = apiClient;
       setParallelManualMaxState(String(persisted.parallel_manual_max));
     } else if (recommendation) {
+      hydratedClientRef.current = apiClient;
       setParallelManualMaxState(String(recommendation.recommended_parallel_chapters));
     }
   }, [apiClient, persistedSettingsRef, systemCapabilities]);

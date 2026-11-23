@@ -142,6 +142,7 @@ export function conversionPanelViewModel(overrides: Partial<ConversionPanelViewM
       selectQueueItem: noop,
       moveQueueItem: noop,
       removeQueueItem: noop,
+      removeQueueItems: noop,
       syncSelectedQueueEdits: noop,
     },
     ...overrides,

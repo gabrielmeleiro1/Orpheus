@@ -16,6 +16,7 @@ import type {
 } from "../../types/api";
 import type { ConversionJobController } from "./useConversionJob";
 import type { ConversionQueueItem } from "./conversionPanelModel";
+import type { LiveCapabilities } from "./liveCapabilities";
 
 /** Whether the local runtime can convert: verified, still being checked, or not set up. */
 export type ConversionRuntimeState = "ready" | "checking" | "unavailable";
@@ -105,6 +106,8 @@ export interface AdvancedOptionsViewModel {
   parallelWorkerError: boolean;
   parallelWorkerStatus: string;
   parallelWorkerDetail: string;
+  /** Newest snapshot; the status line reads its memory figures without re-rendering the panel. */
+  liveCapabilities?: LiveCapabilities;
 }
 
 interface PreflightCardViewModel {
@@ -242,6 +245,7 @@ export interface ConversionPanelActions {
   selectQueueItem: (itemId: string) => void;
   moveQueueItem: (itemId: string, delta: number) => void;
   removeQueueItem: (itemId: string) => void;
+  removeQueueItems: (itemIds: readonly string[]) => void;
   syncSelectedQueueEdits: (patch: QueueEditPatch) => void;
 }
 

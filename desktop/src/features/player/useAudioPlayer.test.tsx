@@ -1158,3 +1158,148 @@ describe("useAudioPlayer audio load failures", () => {
     await act(async () => root.unmount());
   });
 });
+
+describe("useAudioPlayer load ordering", () => {
+  it("keeps the outgoing book's position when the page unloads while a book switch is uncommitted", async () => {
+    vi.useFakeTimers();
+    const detailA = createBookDetail();
+    const detailB = {
+      ...createBookDetail(), id: 8, title: "B", playback_path: "/library/8.m4b",
+      playback_url: "/api/library/8/audio", playback_position_sec: 30,
+    };
+    let authorizeB!: (url: string) => void;
+    const updateBookPlaybackPosition = vi.fn(async (_id: number, position: number) => ({ position_sec: position }));
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn((id: number) => id === 7
+        ? Promise.resolve("http://desktop.test/a")
+        : new Promise<string>((resolve) => { authorizeB = resolve; })),
+      updateBookPlaybackPosition,
+    } as unknown as ApiClient;
+    const library = createLibraryMock(detailA);
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    current.audioRef.current = audio;
+    try {
+      await act(async () => current.togglePlay());
+      Object.assign(audio, { currentTime: 500, paused: false });
+      // A new source has no metadata and starts at 0 until it is resumed.
+      vi.mocked(audio.load).mockImplementation(() => { Object.assign(audio, { currentTime: 0, readyState: 0 }); });
+      Object.assign(library, { selectedBookId: 8, selectedBookDetail: detailB, items: [{ id: 7 }, { id: 8 }] });
+      await act(async () => root.render(<Probe />));
+      let switching!: Promise<void>;
+      await act(async () => {
+        switching = current.playSelectedBook();
+        authorizeB("http://desktop.test/b");
+        for (let i = 0; i < 10 && !audio.src.includes("/b"); i += 1) await Promise.resolve();
+        expect(audio.src).toContain("desktop.test/b");
+        window.dispatchEvent(new Event("beforeunload"));
+      });
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); await switching; });
+      expect(readPlaybackCheckpoint(7, playbackCheckpointBookIdentity(detailA))).toBe(500);
+      expect(updateBookPlaybackPosition).toHaveBeenCalledWith(7, 500, expect.anything());
+      expect(updateBookPlaybackPosition).not.toHaveBeenCalledWith(7, 0, expect.anything());
+      expect(updateBookPlaybackPosition).not.toHaveBeenCalledWith(8, 0, expect.anything());
+      // Opening the new book still resumes at its saved position.
+      expect(audio.currentTime).toBe(30);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("seeks a chapter jump straight to the chapter instead of the saved position", async () => {
+    const detail = { ...createBookDetail(), playback_status: "chapter_audio" as const, playback_position_sec: 85, chapters: [
+      { id: 1, number: 1, title: "One", duration_ms: 60_000, mp3_path: "1.mp3" },
+      { id: 2, number: 2, title: "Two", duration_ms: 60_000, mp3_path: "2.mp3" },
+    ] };
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book"),
+      updateBookPlaybackPosition: vi.fn(async (_id: number, position: number) => ({ position_sec: position })),
+    } as unknown as ApiClient;
+    const library = createLibraryMock(detail);
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    let time = 0;
+    const seeks: number[] = [];
+    Object.defineProperty(audio, "currentTime", {
+      configurable: true, get: () => time, set: (value: number) => { time = value; seeks.push(value); },
+    });
+    current.audioRef.current = audio;
+    try {
+      await act(async () => current.togglePlay());
+      expect(audio.src).toContain("chapter_number=2");
+      expect(seeks).toEqual([25]);
+      seeks.length = 0;
+      await act(async () => current.jumpToChapter(detail.chapters[0]));
+      expect(audio.src).toContain("chapter_number=1");
+      expect(seeks).toEqual([0]);
+      expect(current.currentChapter?.number).toBe(1);
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("does not restart a finished book when a load started before the end resolves", async () => {
+    let resolveReload!: (url: string) => void;
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn()
+        .mockResolvedValueOnce("http://desktop.test/book")
+        .mockImplementationOnce(() => new Promise<string>((resolve) => { resolveReload = resolve; })),
+      updateBookPlaybackPosition: vi.fn(async (_id: number, position: number) => ({ position_sec: position })),
+    } as unknown as ApiClient;
+    const library = createLibraryMock(createBookDetail());
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    current.audioRef.current = audio;
+    try {
+      await act(async () => current.togglePlay());
+      Object.assign(audio, { paused: false });
+      await act(async () => current.audioProps.onError());
+      expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(2);
+      await act(async () => current.audioProps.onEnded());
+      vi.mocked(audio.play).mockClear();
+      await act(async () => { resolveReload("http://desktop.test/book?token=late"); });
+      expect(audio.src).not.toContain("token=late");
+      expect(audio.play).not.toHaveBeenCalled();
+      expect(current.playingBookId).toBeNull();
+    } finally { await act(async () => root.unmount()); }
+  });
+
+  it("stops automatic recovery after repeated media errors until the book plays again", async () => {
+    const apiClient = {
+      getLibraryAudioUrl: vi.fn(async () => "http://desktop.test/book"),
+      updateBookPlaybackPosition: vi.fn(async (_id: number, position: number) => ({ position_sec: position })),
+    } as unknown as ApiClient;
+    const library = createLibraryMock(createBookDetail());
+    let current!: ReturnType<typeof useAudioPlayer>;
+    function Probe() { current = useAudioPlayer({ apiClient, library }); return null; }
+    const root = createRoot(document.createElement("div"));
+    await act(async () => root.render(<Probe />));
+    const audio = createFakeAudio();
+    current.audioRef.current = audio;
+    try {
+      await act(async () => current.togglePlay());
+      expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(1);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        // Each reload seeks back to the resume point, which ticks while paused.
+        await act(async () => { current.audioProps.onError(); });
+        await act(async () => { current.audioProps.onTimeUpdate({} as never); });
+      }
+      expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(4);
+      expect(current.title).toBe("Playback failed");
+      // Play after recovery gave up reloads the failed source.
+      Object.assign(audio, { error: { code: 2 } });
+      await act(async () => current.togglePlay());
+      expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(5);
+      expect(audio.play).toHaveBeenCalled();
+      Object.assign(audio, { error: null, paused: false });
+      await act(async () => { current.audioProps.onTimeUpdate({} as never); });
+      await act(async () => { current.audioProps.onError(); });
+      expect(apiClient.getLibraryAudioUrl).toHaveBeenCalledTimes(6);
+    } finally { await act(async () => root.unmount()); }
+  });
+});

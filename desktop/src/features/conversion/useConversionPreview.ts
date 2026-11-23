@@ -12,6 +12,9 @@ import { isAbortLikeError, useLatestRequest } from "./useLatestRequest";
 
 type ConversionOptionState = ReturnType<typeof useConversionOptions>;
 
+// Covers a cold model load before the first preview can be synthesized.
+const VOICE_PREVIEW_TIMEOUT_MS = 120_000;
+
 interface UseConversionPreviewArgs {
   apiClient: ApiClient | null;
   optionState: ConversionOptionState;
@@ -38,6 +41,7 @@ export function useConversionPreview({
 
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const previewObjectUrlRef = useRef<string | null>(null);
+  const previewRequestRef = useRef<AbortController | null>(null);
   const beginPreviewRequest = useLatestRequest();
   const beginVoiceSuggestRequest = useLatestRequest();
   const voiceSuggestPendingRef = useRef(false);
@@ -53,6 +57,9 @@ export function useConversionPreview({
     setPreviewError(false);
     return () => {
       beginPreviewRequest();
+      // Stop synthesis too: an abandoned preview keeps the model in use on the backend.
+      previewRequestRef.current?.abort();
+      previewRequestRef.current = null;
       previewAudioRef.current?.pause();
       if (previewObjectUrlRef.current) {
         URL.revokeObjectURL(previewObjectUrlRef.current);
@@ -91,9 +98,14 @@ export function useConversionPreview({
     setPreviewStatus("Generating preview…");
     const quantization = normalizeQuantizationValue(optionState.selectedQuantization);
     const isLatest = beginPreviewRequest();
+    previewRequestRef.current?.abort();
+    const request = new AbortController();
+    previewRequestRef.current = request;
 
     try {
       const blob = await apiClient.requestBlob("/api/voices/preview", {
+        signal: request.signal,
+        timeoutMs: VOICE_PREVIEW_TIMEOUT_MS,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -144,6 +156,7 @@ export function useConversionPreview({
         setPreviewStatus(error instanceof Error ? error.message : "Voice preview failed");
       }
     } finally {
+      if (previewRequestRef.current === request) previewRequestRef.current = null;
       if (isLatest()) {
         setPreviewBusy(false);
       }

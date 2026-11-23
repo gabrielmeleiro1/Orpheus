@@ -237,6 +237,11 @@ export function SetupPage({
     };
   }, [bridge, environment?.available, listenerAttempt]);
 
+  // The row badge belongs to one download; any terminal outcome returns the phase to idle.
+  useEffect(() => {
+    if (downloadPhase === "idle") setDownloadingGroup(null);
+  }, [downloadPhase]);
+
   useSetupModelDownload({
     apiClient,
     environment,
@@ -645,7 +650,9 @@ export function SetupPage({
     if (settingsEntry && selectedReadiness.ready) {
       return { label: "Save runtime settings", disabled: !apiClient || busy, disabledReason: null, run: saveSelection };
     }
-    if (selection.profile !== "base" && selection.modelGroups.length > 0 && selection.modelGroups.every((id) => cachedGroups.some((group) => group.id === id && group.ready)) && !settingsEntry) {
+    // Adopting needs a detected installed runtime; the saved selection's groups can report
+    // ready while its packages are missing, which must fall through to Install to repair them.
+    if (selection.profile !== "base" && installedReady && installedRuntime?.profile === selection.profile && selection.modelGroups.length > 0 && selection.modelGroups.every((id) => cachedGroups.some((group) => group.id === id && group.ready)) && !settingsEntry) {
       return {
         label: "Continue",
         disabled: adoptDisabled,

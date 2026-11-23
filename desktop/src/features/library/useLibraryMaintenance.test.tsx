@@ -121,7 +121,7 @@ describe("useLibraryMaintenance", () => {
     await act(async () => {
       await (globalThis as typeof globalThis & { maintenanceProbe: UseLibraryMaintenanceResult }).maintenanceProbe.restoreBackup("saved.db");
     });
-    expect(restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", undefined);
+    expect(restoreDatabaseBackup).toHaveBeenCalledWith("saved.db", expect.objectContaining({ timeoutMs: 600_000 }));
     expect(reload).toHaveBeenCalledTimes(1);
   });
 

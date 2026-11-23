@@ -356,7 +356,7 @@ export function SourceQueueView({
             <button
               className="btn btn-ghost btn-sm btn-flush-end"
               type="button"
-              onClick={() => sourceQueue.queueItems.filter((item) => item.finished).forEach((item) => actions.removeQueueItem(item.id))}
+              onClick={() => actions.removeQueueItems(sourceQueue.queueItems.filter((item) => item.finished).map((item) => item.id))}
             >
               Clear finished
             </button>

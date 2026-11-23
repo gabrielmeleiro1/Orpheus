@@ -28,6 +28,7 @@ interface UseLibraryListResult {
   selectedBookDetail: LibraryBookDetail | null;
   selectedBookPlayable: boolean;
   loadingList: boolean;
+  completedListLoads: number;
   loadingMore: boolean;
   loadingDetail: boolean;
   savingMetadata: boolean;
@@ -70,6 +71,7 @@ export function useLibraryList({ apiClient, backendDisconnected, session }: UseL
     selectedBookIndex,
     selectedBookDetail,
     loadingList,
+    completedListLoads,
     loadingMore,
     loadingDetail,
     errorMessage,
@@ -119,6 +121,7 @@ export function useLibraryList({ apiClient, backendDisconnected, session }: UseL
     selectedBookDetail,
     selectedBookPlayable,
     loadingList,
+    completedListLoads,
     loadingMore,
     loadingDetail,
     savingMetadata: selectedBookId !== null && metadataSaves.get(selectedBookId)?.repository === repository,

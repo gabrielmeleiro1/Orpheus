@@ -123,6 +123,33 @@ describe("useConversionQueueController", () => {
     expect(getController().queueItems).toEqual([]);
   });
 
+  it("deletes a shared upload exactly once when a batch removes every row using it", async () => {
+    const deleteUpload = vi.fn(async () => ({}));
+    await act(async () => root?.render(<Probe apiClient={{ deleteUpload }} />));
+    const first = { ...createQueueItem("upload:paste.md", "audiobook", undefined, preflight()), status: "done" as const, jobId: "a" };
+    const again = { ...createQueueItem("upload:paste.md", "audiobook", undefined, preflight()), status: "done" as const, jobId: "b" };
+    const other = { ...createQueueItem("upload:other.md", "audiobook", undefined, preflight()), status: "done" as const, jobId: "c" };
+    await act(async () => getController().addQueueItems([first, again, other], { skipPreflight: true }));
+    expect(getController().queueItems).toHaveLength(3);
+    await act(async () => getController().removeQueueItems([first.id, again.id, other.id]));
+    expect(getController().queueItems).toEqual([]);
+    expect(deleteUpload.mock.calls.map((call) => (call as unknown[])[0]).sort()).toEqual(["upload:other.md", "upload:paste.md"]);
+  });
+
+  it("keeps a shared upload while a remaining row still uses it", async () => {
+    const deleteUpload = vi.fn(async () => ({}));
+    await act(async () => root?.render(<Probe apiClient={{ deleteUpload }} />));
+    const finished = { ...createQueueItem("upload:paste.md", "audiobook", undefined, preflight()), status: "done" as const, jobId: "a" };
+    const running = { ...createQueueItem("upload:paste.md", "audiobook", undefined, preflight()), status: "converting" as const, jobId: "b" };
+    const waiting = createQueueItem("upload:queued.md", "audiobook", undefined, preflight());
+    const finishedQueued = { ...createQueueItem("upload:queued.md", "audiobook", undefined, preflight()), status: "done" as const, jobId: "c" };
+    await act(async () => getController().addQueueItems([finished, running, waiting, finishedQueued], { skipPreflight: true }));
+    // A converting row is never removed, so its upload stays too.
+    await act(async () => getController().removeQueueItems([finished.id, running.id, finishedQueued.id]));
+    expect(getController().queueItems.map((item) => item.id)).toEqual([running.id, waiting.id]);
+    expect(deleteUpload).not.toHaveBeenCalled();
+  });
+
   it("releases a stalled inspection and can inspect the source again", async () => {
     vi.useFakeTimers();
     const fetch = vi.spyOn(globalThis, "fetch").mockImplementationOnce((_input, init) => new Promise((_resolve, reject) => {

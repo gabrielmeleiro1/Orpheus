@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ApiClient } from "../api/client";
 import { BookCover } from "./BookCover";
-import { CoverClientContext, CoverGenerationContext, CoverRefreshContext } from "./coverArt";
+import { CoverClientContext, CoverGenerationContext, CoverRefreshContext, createCoverRefreshSignal, useCoverArt } from "./coverArt";
 
 describe("BookCover", () => {
   afterEach(() => {
@@ -14,13 +14,15 @@ describe("BookCover", () => {
     vi.unstubAllGlobals();
   });
 
+  const refresh = createCoverRefreshSignal();
+
   async function render(client: ApiClient | null, bookId: number, size: "sm" | "tile" = "tile") {
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     const container = document.createElement("div");
     const root = createRoot(container);
     await act(async () => root.render(
       <CoverClientContext.Provider value={client}>
-        <CoverRefreshContext.Provider value={false}>
+        <CoverRefreshContext.Provider value={refresh}>
         <BookCover bookId={bookId} title="The Odyssey" author="Homer" size={size} />
         </CoverRefreshContext.Provider>
       </CoverClientContext.Provider>,
@@ -33,7 +35,7 @@ describe("BookCover", () => {
     const requestBlob = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
     const { container, root } = await render({ requestBlob } as unknown as ApiClient, 41);
     try {
-      expect(requestBlob).toHaveBeenCalledWith("/api/library/41/cover", { timeoutMs: 20_000 });
+      expect(requestBlob).toHaveBeenCalledWith("/api/library/41/cover", { timeoutMs: 20_000, signal: expect.any(AbortSignal) });
       expect(container.querySelector(".book-cover")?.classList.contains("has-art")).toBe(true);
       expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:cover");
       expect(container.querySelector(".book-cover-bars")).toBeNull();
@@ -76,9 +78,7 @@ describe("BookCover", () => {
       .mockResolvedValue(new Blob(["png"], { type: "image/png" }));
     const client = { requestBlob } as unknown as ApiClient;
     const first = await render(client, 51);
-    await act(async () => first.root.render(<CoverClientContext.Provider value={client}><CoverRefreshContext.Provider value={true}>
-      <BookCover bookId={51} title="The Odyssey" />
-    </CoverRefreshContext.Provider></CoverClientContext.Provider>));
+    await act(async () => refresh.notify());
     expect(first.container.querySelector("img")?.getAttribute("src")).toBe("blob:retried");
     const second = await render(client, 51);
     expect(requestBlob).toHaveBeenCalledTimes(2);
@@ -89,6 +89,50 @@ describe("BookCover", () => {
     expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith("blob:retried");
     createObjectURL.mockRestore();
     revokeObjectURL.mockRestore();
+  });
+
+  it("leaves loaded covers alone when the library reloads", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:steady");
+    const requestBlob = vi.fn(async () => new Blob(["png"], { type: "image/png" }));
+    const client = { requestBlob } as unknown as ApiClient;
+    const signal = createCoverRefreshSignal();
+    let renders = 0;
+    function Probe() {
+      renders += 1;
+      return <span>{useCoverArt(61)}</span>;
+    }
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    await act(async () => root.render(<CoverClientContext.Provider value={client}><CoverRefreshContext.Provider value={signal}><Probe /></CoverRefreshContext.Provider></CoverClientContext.Provider>));
+    expect(container.textContent).toBe("blob:steady");
+    const settled = renders;
+    await act(async () => { signal.notify(); signal.notify(); });
+    expect(renders).toBe(settled);
+    expect(requestBlob).toHaveBeenCalledOnce();
+    await act(async () => root.unmount());
+  });
+
+  it("aborts a cover request once its last cover unmounts, but not while another still waits", async () => {
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    const signals: AbortSignal[] = [];
+    const requestBlob = vi.fn((_path: string, init?: { signal?: AbortSignal }) => {
+      signals.push(init!.signal!);
+      return new Promise<Blob>(() => undefined);
+    });
+    const client = { requestBlob } as unknown as ApiClient;
+    const first = await render(client, 71);
+    const second = await render(client, 71);
+    expect(requestBlob).toHaveBeenCalledOnce();
+    await act(async () => first.root.unmount());
+    expect(signals[0].aborted).toBe(false);
+    await act(async () => second.root.unmount());
+    expect(signals[0].aborted).toBe(true);
+    // A later cover for the same book starts a fresh request.
+    const third = await render(client, 71);
+    expect(requestBlob).toHaveBeenCalledTimes(2);
+    expect(signals[1].aborted).toBe(false);
+    await act(async () => third.root.unmount());
   });
 
   it("refetches a same-ID cover after library replacement and ignores abandoned responses", async () => {

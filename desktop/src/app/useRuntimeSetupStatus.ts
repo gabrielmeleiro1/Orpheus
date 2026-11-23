@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { ApiError, type ApiClient } from "../api/client";
+import { useGenerationGuard } from "../state/generationGuard";
 import { isCheckingConfiguredRuntime, shouldShowRuntimeSetup } from "../features/setup/setupModel";
 import { syncSetupPreferences } from "../features/setup/setupPreferences";
 import type { RuntimeSetupStatusResponse } from "../types/api";
@@ -26,8 +27,15 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
   const [checkAttempt, setCheckAttempt] = useState(0);
   const [libraryOnly, setLibraryOnly] = useState(false);
   const [runtimeSelectionGeneration, setRuntimeSelectionGeneration] = useState(0);
+  const setupStatusRef = useRef(setupStatus);
+  // A status applied after a Settings change is newer than any read already in flight.
+  const appliedGuard = useGenerationGuard();
+  const inFlightReadRef = useRef<AbortController | null>(null);
 
   const applySetupStatus = useCallback((status: RuntimeSetupStatusResponse, nextLibraryOnly: boolean) => {
+    appliedGuard.invalidate();
+    inFlightReadRef.current?.abort();
+    setupStatusRef.current = status;
     rememberReadyRuntime(status);
     syncSetupPreferences(status);
     if (apiClient) invalidateRuntimeBootstrap(apiClient);
@@ -38,7 +46,7 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
     setSetupError(null);
     setCheckExhausted(false);
     setLibraryOnly(nextLibraryOnly);
-  }, [apiClient]);
+  }, [apiClient, appliedGuard]);
 
   const onSetupReady = useCallback(
     (status: RuntimeSetupStatusResponse) => applySetupStatus(status, false),
@@ -55,7 +63,6 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
   const continueLibraryOnly = useCallback(() => setLibraryOnly(true), []);
   const retryCheck = useCallback(() => setCheckAttempt((previous) => previous + 1), []);
 
-  const setupStatusRef = useRef(setupStatus);
   useLayoutEffect(() => {
     setupStatusRef.current = setupStatus;
   }, [setupStatus]);
@@ -64,8 +71,6 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
     if (!apiClient) return undefined;
     let active = true;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    // A status read can wait minutes for a cold probe; release it with its client.
-    const controller = new AbortController();
     setSetupError(null);
     setCheckExhausted(false);
 
@@ -76,9 +81,22 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
         setCheckExhausted(true);
       }
     };
+    // A read superseded by an applied status is dropped; keep verifying only if the
+    // applied status itself is still being checked.
+    const resumeAfterApplied = (attempt: number) => {
+      if (isCheckingConfiguredRuntime(setupStatusRef.current)) retryOrGiveUp(attempt);
+    };
     const loadStatus = (attempt: number) => {
+      const isCurrent = appliedGuard.capture();
+      // A status read can wait minutes for a cold probe; release it with its client.
+      const controller = new AbortController();
+      inFlightReadRef.current = controller;
       void apiClient.getRuntimeSetupStatus({ timeoutMs: SETUP_STATUS_TIMEOUT_MS, signal: controller.signal }).then((status) => {
         if (!active) return;
+        if (!isCurrent()) {
+          resumeAfterApplied(attempt);
+          return;
+        }
         rememberReadyRuntime(status);
         if (syncSetupPreferences(status)) {
           invalidateRuntimeBootstrap(apiClient);
@@ -90,6 +108,10 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
         if (isCheckingConfiguredRuntime(status)) retryOrGiveUp(attempt);
       }).catch((error: unknown) => {
         if (!active) return;
+        if (!isCurrent()) {
+          resumeAfterApplied(attempt);
+          return;
+        }
         // A lost backend is a connection problem, which the dashboard's backend
         // badge reports; reopening setup would misstate it. That holds after a
         // verified load, and for a returning user whose first check never got
@@ -104,15 +126,18 @@ export function useRuntimeSetupStatus(apiClient: ApiClient | null) {
           : "Runtime setup status is temporarily unavailable.";
         setSetupStatus(null);
         setSetupError(message);
+      }).finally(() => {
+        if (inFlightReadRef.current === controller) inFlightReadRef.current = null;
       });
     };
     loadStatus(0);
     return () => {
       active = false;
-      controller.abort();
+      inFlightReadRef.current?.abort();
+      inFlightReadRef.current = null;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [apiClient, readyRuntimeHint, checkAttempt]);
+  }, [apiClient, readyRuntimeHint, checkAttempt, appliedGuard]);
 
   return {
     readyRuntimeHint,

@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -41,12 +42,12 @@ import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKe
 import type { DashboardTab, LibraryBookSummary, RuntimeSetupStatusResponse } from "./types/api";
 import { AsciiLoader } from "./ui/ascii/AsciiLoader";
 import { BookCover } from "./ui/BookCover";
-import { CoverClientContext, CoverGenerationContext, CoverRefreshContext } from "./ui/coverArt";
+import { CoverClientContext, CoverGenerationContext, CoverRefreshContext, createCoverRefreshSignal } from "./ui/coverArt";
 import { Icon } from "./ui/icons";
 import { ProgressBar } from "./ui/ProgressBar";
 import { TooltipLayer } from "./ui/TooltipLayer";
 import { installFocusRescue } from "./ui/focusRescue";
-import { equalWhenHidden, equalWhenInvisible } from "./app/visibilityMemo";
+import { equalWhenClosed, equalWhenHidden, equalWhenInvisible } from "./app/visibilityMemo";
 
 type BackendClientState = ReturnType<typeof useBackendClient>;
 
@@ -75,6 +76,18 @@ const StableConversionPanel = memo(ConversionPanel, (previous, next) =>
 );
 const StableLibraryPanel = memo(LibraryPanel, equalWhenHidden);
 const StablePlayerPanel = memo(PlayerPanel, equalWhenInvisible);
+// Settings wraps the always-mounted conversion panel. Its section elements are
+// built with useMemo below, so playback ticks reach none of them, and an SSE
+// event re-renders the page only to pass the new job to the panel. A replaced
+// client always reaches the setup page, whose request guards are keyed on it.
+const StableSettingsPage = memo(SettingsPage);
+type SetupPageProps = Parameters<typeof SetupPage>[0] & { hidden: boolean };
+const StableSettingsSetupPage = memo(SetupPage, (previous, next) =>
+  previous.apiClient === next.apiClient && equalWhenHidden(previous as SetupPageProps, next as SetupPageProps));
+const StableLibraryMaintenanceSection = memo(LibraryMaintenanceSection);
+const StableConversionDetailsDrawer = memo(ConversionDetailsDrawer, equalWhenClosed);
+const StableNowPlayingView = memo(NowPlayingView, equalWhenClosed);
+const EMPTY_CHAPTERS: never[] = [];
 
 function RuntimeSetupChecking({ error, exhausted, onRetry, onContinueLibraryOnly }: {
   error: string | null;
@@ -253,6 +266,15 @@ function DashboardApp({
     apiClient,
     backendDisconnected: connectionState === "error",
   });
+
+  // Covers whose request failed retry once each library load finishes.
+  const [coverRefresh] = useState(createCoverRefreshSignal);
+  const listWasLoadingRef = useRef(library.loadingList);
+  useEffect(() => {
+    const wasLoading = listWasLoadingRef.current;
+    listWasLoadingRef.current = library.loadingList;
+    if (wasLoading && !library.loadingList) coverRefresh.notify();
+  }, [coverRefresh, library.loadingList]);
 
   useRuntimeBootstrapRefresh(apiClient);
   const player = useAudioPlayer({ apiClient, library });
@@ -455,6 +477,43 @@ function DashboardApp({
     else setNowPlayingOpen(true);
   }, [closeNowPlaying, nowPlayingVisible]);
 
+  const settingsVisited = visitedTabs.has("settings");
+  const settingsHidden = activeTab !== "settings";
+  const { reconnectBackend } = backend;
+  const settingsModels = useMemo(() => (settingsVisited ? (
+    <StableSettingsSetupPage
+      embedded
+      hidden={settingsHidden}
+      apiClient={apiClient}
+      initialStatus={setupStatus}
+      initialError={null}
+      onReady={onSettingsSetupReady}
+      onContinueLibraryOnly={onContinueLibraryOnly}
+      settingsEntry
+      onReconnectBackend={reconnectBackend}
+    />
+  ) : null), [apiClient, onContinueLibraryOnly, onSettingsSetupReady, reconnectBackend, settingsHidden, settingsVisited, setupStatus]);
+  const selectedDetailId = library.selectedBookDetail?.id ?? null;
+  const settingsMaintenance = useMemo(
+    () => <StableLibraryMaintenanceSection library={library} selectedDetailId={selectedDetailId} />,
+    [library, selectedDetailId],
+  );
+  const conversionPanel = useMemo(() => (
+    <StableConversionPanel
+      activeTab={conversionPanelTab}
+      hidden={!isConversionPanelVisible}
+      apiClient={apiClient}
+      runtimeSelectionGeneration={runtimeSelectionGeneration}
+      runtimeState={conversionRuntime}
+      connectionState={connectionState}
+      conversionJob={conversionJob}
+      onOpenSettings={openSettings}
+      onOpenConversionDetails={openDetails}
+      startCommandRef={startCommandRef}
+    />
+  ), [apiClient, connectionState, conversionJob, conversionPanelTab, conversionRuntime, isConversionPanelVisible,
+    openDetails, openSettings, runtimeSelectionGeneration]);
+
   const pageLabel = activeTab === "library" && albumOpen && library.selectedBookDetail
     ? library.selectedBookDetail.title || "Untitled"
     : DASHBOARD_TAB_CONFIGS[activeTabIndex]?.label ?? "Orpheus";
@@ -462,7 +521,7 @@ function DashboardApp({
   return (
     <CoverClientContext.Provider value={apiClient}>
     <CoverGenerationContext.Provider value={library.libraryGeneration ?? 0}>
-    <CoverRefreshContext.Provider value={library.loadingList}>
+    <CoverRefreshContext.Provider value={coverRefresh}>
     <main className={`app-frame${sidebarCollapsed ? " sidebar-collapsed" : ""}`} aria-label="Orpheus" onFocusCapture={(event) => { lastFocusedRef.current = event.target as HTMLElement; }}>
       <a className="skip-link" hidden={nowPlayingVisible} href="#workspace-heading" onClick={(event) => { event.preventDefault(); headingRef.current?.focus(); }}>Skip to content</a>
       <span className="sr-only" role="status" aria-atomic="true">{conversionJob.uiState === "idle" || conversionJob.uiState === "unknown" ? "" : conversionJob.isCancelling ? "Stopping conversion." : `Conversion ${conversionJob.uiState === "running" ? "started" : conversionJob.uiState}.`}</span>
@@ -593,37 +652,14 @@ function DashboardApp({
 
         <div className={`main-workspace${activeTab === "convert" ? " has-conversion" : ""}`}>
           {conversionPanelMounted ? (
-            <SettingsPage
-              active={activeTab === "settings"}
+            <StableSettingsPage
+              active={!settingsHidden}
               apiClient={apiClient}
-              models={visitedTabs.has("settings") ? (
-                <SetupPage
-                  embedded
-                  hidden={activeTab !== "settings"}
-                  apiClient={apiClient}
-                  initialStatus={setupStatus}
-                  initialError={null}
-                  onReady={onSettingsSetupReady}
-                  onContinueLibraryOnly={onContinueLibraryOnly}
-                  settingsEntry
-                  onReconnectBackend={backend.reconnectBackend}
-                />
-              ) : null}
-              maintenance={<LibraryMaintenanceSection library={library} selectedDetailId={library.selectedBookDetail?.id ?? null} />}
+              models={settingsModels}
+              maintenance={settingsMaintenance}
             >
-              <StableConversionPanel
-                activeTab={conversionPanelTab}
-                hidden={!isConversionPanelVisible}
-                apiClient={apiClient}
-                runtimeSelectionGeneration={runtimeSelectionGeneration}
-                runtimeState={conversionRuntime}
-                connectionState={connectionState}
-                conversionJob={conversionJob}
-                onOpenSettings={openSettings}
-                onOpenConversionDetails={openDetails}
-                startCommandRef={startCommandRef}
-              />
-            </SettingsPage>
+              {conversionPanel}
+            </StableSettingsPage>
           ) : null}
           {["tab-convert", "tab-config"].map((panelId) => (
             panelId === renderedConversionPanelId ? null : (
@@ -677,15 +713,15 @@ function DashboardApp({
         </div>
       </div>
 
-      <ConversionDetailsDrawer open={detailsOpen} conversionJob={conversionJob} onClose={closeDetails} />
+      <StableConversionDetailsDrawer open={detailsOpen} conversionJob={conversionJob} onClose={closeDetails} />
 
-      <NowPlayingView
+      <StableNowPlayingView
         open={nowPlayingVisible}
         bookId={player.playbackDetail?.id ?? null}
         bookSourceKey={player.playbackDetail?.source_path ?? null}
         bookTitle={player.playbackDetail?.title}
         bookAuthor={player.playbackDetail?.author}
-        chapters={player.playbackDetail?.chapters ?? []}
+        chapters={player.playbackDetail?.chapters ?? EMPTY_CHAPTERS}
         currentChapterNumber={player.currentChapter?.number ?? null}
         playing={player.playing}
         elapsedSec={player.elapsedSec}

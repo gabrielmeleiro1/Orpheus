@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { ConversionHelp } from "./ConversionHelp";
 import { TermSelect } from "../TermSelect";
@@ -45,7 +45,15 @@ export function CleanerOptionsView({
   // A working runtime needs no badge; its status is still announced.
   const statusClass = health === "ok" ? "sr-only" : `field-hint cleaner-runtime-status${health === "error" ? " is-error" : ""}`;
   const device = formatDevice(cleanerOptions.cleanerCudaDevice.trim() || cleanerOptions.cleanerCudaDevicePlaceholder);
-  const [editingDevice, setEditingDevice] = useState(false);
+  // Edits stay local until committed: the saved value falls back to the default when
+  // empty, so committing each keystroke would refill a field the user just cleared.
+  const [deviceDraft, setDeviceDraft] = useState<string | null>(null);
+  const discardDeviceDraft = useRef(false);
+  const commitDevice = () => {
+    if (discardDeviceDraft.current || deviceDraft === null) return;
+    actions.setCleanerCudaDevice(deviceDraft.trim().toLowerCase());
+    setDeviceDraft(null);
+  };
 
   return (
     <section id="tab-config" className="card config-panel settings-section" role="tabpanel" aria-label="Configuration" aria-labelledby="tab-btn-settings" hidden={hidden}>
@@ -100,7 +108,7 @@ export function CleanerOptionsView({
                   <span className="field-label" id="cleaner-cuda-device-label">Device</span>
                   <ConversionHelp label="Device help" text="CUDA picks the GPU automatically; CUDA:0 is the first NVIDIA GPU." />
                 </div>
-                {editingDevice ? (
+                {deviceDraft !== null ? (
                   <input
                     id="cleaner-cuda-device-input"
                     className="field-input"
@@ -111,11 +119,15 @@ export function CleanerOptionsView({
                     autoFocus
                     aria-label="cleaner CUDA device"
                     placeholder={formatDevice(cleanerOptions.cleanerCudaDevicePlaceholder)}
-                    value={device}
-                    onChange={(event) => actions.setCleanerCudaDevice(event.target.value.toLowerCase())}
-                    onBlur={() => setEditingDevice(false)}
+                    value={deviceDraft}
+                    onChange={(event) => setDeviceDraft(event.target.value)}
+                    onBlur={commitDevice}
                     onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === "Escape") setEditingDevice(false);
+                      if (event.key === "Enter") commitDevice();
+                      if (event.key === "Escape") {
+                        discardDeviceDraft.current = true;
+                        setDeviceDraft(null);
+                      }
                     }}
                   />
                 ) : (
@@ -126,7 +138,10 @@ export function CleanerOptionsView({
                       className="btn btn-ghost btn-sm btn-flush-end"
                       type="button"
                       aria-label="Change cleaner device"
-                      onClick={() => setEditingDevice(true)}
+                      onClick={() => {
+                        discardDeviceDraft.current = false;
+                        setDeviceDraft(device);
+                      }}
                     >
                       Change
                     </button>

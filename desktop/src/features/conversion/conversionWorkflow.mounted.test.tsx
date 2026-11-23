@@ -174,6 +174,7 @@ it("removes a waiting upload during a run and does not submit the removed row", 
 
 it("Clear finished removes only finished rows", async () => {
   const removeQueueItem = vi.fn();
+  const removeQueueItems = vi.fn();
   const rows = ["done", "failed", "cancelled", "warning", "ready", "converting"].map((status) => ({
     id: status, title: status, statusText: status, statusClassName: "", selected: false,
     converting: status === "converting", finished: ["done", "failed", "cancelled", "warning"].includes(status),
@@ -181,10 +182,11 @@ it("Clear finished removes only finished rows", async () => {
   }));
   const sourceQueue = { sourcePath: "", preflightCard: null, pasteStatus: "Idle", queueItems: rows, queueCount: rows.length } as SourceQueueViewModel;
   await act(async () => root.render(<SourceQueueView sourceQueue={sourceQueue} capabilities={{} as never}
-    actions={{ removeQueueItem } as unknown as ConversionPanelActions} />));
+    actions={{ removeQueueItem, removeQueueItems } as unknown as ConversionPanelActions} />));
   const clear = [...container.querySelectorAll("button")].find((button) => button.textContent === "Clear finished")!;
   await act(async () => clear.click());
-  expect(removeQueueItem.mock.calls.flat()).toEqual(["done", "failed", "cancelled", "warning"]);
+  expect(removeQueueItems).toHaveBeenCalledExactlyOnceWith(["done", "failed", "cancelled", "warning"]);
+  expect(removeQueueItem).not.toHaveBeenCalled();
   const removeButtons = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label="Remove"]')];
   expect(removeButtons).toHaveLength(rows.length);
   expect(removeButtons.every((button) => button.dataset.tip === "Remove")).toBe(true);

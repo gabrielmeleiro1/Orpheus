@@ -553,6 +553,22 @@ describe("mounted SetupPage", () => {
     expect(start).toHaveBeenCalledExactlyOnceWith({ profile: "mlx", model_groups: ["cleaner-mlx"], configure_runtime: false }, { timeoutMs: 15_000 });
   });
 
+  it("does not mark a previously downloaded model as downloading during a later install", async () => {
+    const start = vi.fn(async () => { throw new Error("Installer busy"); });
+    const api = { getRuntimeSetupStatus: vi.fn(async () => readySettings(false)), startRuntimeModelDownload: start } as unknown as ApiClient;
+    const runtimeBridge = bridge({ start: vi.fn(() => new Promise<RuntimeSetupRunnerStatus>(() => undefined)) });
+    await renderPage(runtimeBridge, { initialStatus: readySettings(false), ...settingsMount, apiClient: api });
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Download Llama 3.2 · 3B"]')!.click());
+    expect(start).toHaveBeenCalledOnce();
+    const cleaner = [...container.querySelectorAll<HTMLInputElement>("input")]
+      .find((input) => input.parentElement?.textContent?.includes("Llama 3.2 · 3B"))!;
+    await act(async () => cleaner.click());
+    await act(async () => findButton(container, "Install").click());
+    expect(runtimeBridge.start).toHaveBeenCalledOnce();
+    expect(container.querySelector(".is-downloading")).toBeNull();
+    expect(container.textContent).not.toContain("Downloading…");
+  });
+
   it("keeps an installed model and deletion controls visible after a delete failure", async () => {
     const remove = vi.fn(async () => { throw new Error("Wait for the current conversion to finish"); });
     const api = { deleteRuntimeModel: remove } as unknown as ApiClient;
@@ -1209,6 +1225,26 @@ describe("mounted SetupPage", () => {
       { timeoutMs: 120_000 },
     );
     expect(onReady).toHaveBeenCalledWith(readyStatus);
+  });
+
+  it("offers Install instead of a no-op Continue when the saved runtime's packages are missing", async () => {
+    const missingPackages: RuntimeSetupStatusResponse = {
+      ...setupStatus, configured: true, state: "unavailable", ready: false, selected_profile: "mlx",
+      selected_model_groups: [{ id: "tts-mlx", runtime_ready: true, assets_ready: true, assets_reason: null, ready: true }],
+      packages: { ready: false, missing: [{ name: "mlx-audio", expected: ">=0.2", installed: null }], incompatible: [] },
+      installed_runtime: null,
+    };
+    const adopt = vi.fn();
+    const runtimeBridge = bridge();
+    const api = { getRuntimeSetupStatus: vi.fn(async () => missingPackages), adoptRuntimeSetup: adopt } as unknown as ApiClient;
+    await renderPage(runtimeBridge, { apiClient: api, initialStatus: missingPackages });
+
+    const primary = container.querySelector<HTMLButtonElement>(".setup-primary")!;
+    expect(primary.textContent).toContain("Install");
+    expect(primary.disabled).toBe(false);
+    await act(async () => primary.click());
+    expect(adopt).not.toHaveBeenCalled();
+    expect(runtimeBridge.start).toHaveBeenCalledOnce();
   });
 
   it("surfaces an adopt failure without reporting ready", async () => {

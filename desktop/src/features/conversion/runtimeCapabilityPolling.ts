@@ -230,3 +230,59 @@ export function startRuntimeCapabilityPolling({
     },
   };
 }
+
+function sameJsonValue(previous: unknown, next: unknown): boolean {
+  if (Object.is(previous, next)) return true;
+  if (typeof previous !== "object" || typeof next !== "object" || previous === null || next === null) return false;
+  if (Array.isArray(previous) !== Array.isArray(next)) return false;
+  const previousKeys = Object.keys(previous);
+  if (previousKeys.length !== Object.keys(next).length) return false;
+  return previousKeys.every((key) => Object.prototype.hasOwnProperty.call(next, key)
+    && sameJsonValue((previous as Record<string, unknown>)[key], (next as Record<string, unknown>)[key]));
+}
+
+// Counters and live memory readings change on nearly every poll, and no option,
+// availability or worker-limit decision reads them. The worker status line shows
+// the memory figures from the live snapshot instead (see liveCapabilities.ts).
+const VOLATILE_CAPABILITY_FIELDS = new Set([
+  "metrics",
+  "global_api_limiter",
+  "worker_pool",
+  "runtime_validation_cache_size",
+]);
+const VOLATILE_RECOMMENDATION_FIELDS = new Set([
+  "total_memory_bytes",
+  "available_memory_bytes",
+  "reserved_memory_bytes",
+  "headroom_memory_bytes",
+  "warmup_memory_delta_bytes",
+  "estimated_per_worker_memory_bytes",
+  "calculation",
+]);
+
+function withoutFields(value: unknown, fields: ReadonlySet<string>): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return value;
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !fields.has(key)));
+}
+
+function decisionFields(capabilities: SystemCapabilitiesResponse): unknown {
+  const stable = withoutFields(capabilities, VOLATILE_CAPABILITY_FIELDS) as Record<string, unknown>;
+  if ("parallel_worker_recommendation" in stable) {
+    stable.parallel_worker_recommendation = withoutFields(
+      stable.parallel_worker_recommendation,
+      VOLATILE_RECOMMENDATION_FIELDS,
+    );
+  }
+  return stable;
+}
+
+/**
+ * Keep the previous snapshot when a poll changed nothing but counters and live
+ * memory readings, so the option hooks and the panel do not re-render for them.
+ */
+export function retainUsedCapabilities(
+  previous: SystemCapabilitiesResponse | null,
+  next: SystemCapabilitiesResponse,
+): SystemCapabilitiesResponse {
+  return previous !== null && sameJsonValue(decisionFields(previous), decisionFields(next)) ? previous : next;
+}

@@ -403,6 +403,71 @@ describe("useTtsOptions capability probe polling", () => {
     expect(getTtsProbe().modelOptions).toEqual(modelOptions);
   });
 
+  it("keeps the same capabilities object when a poll repeats identical values", async () => {
+    const pending = capabilities({ probeState: "pending", refreshInProgress: true, mlxAvailable: false });
+    getRuntimeBootstrap.mockResolvedValue({ models: modelOptions, capabilities: pending });
+    const getSystemCapabilities = vi.fn(async () => capabilities({ probeState: "pending", refreshInProgress: true, mlxAvailable: false }));
+    const apiClient = { getSystemCapabilities, getVoiceOptions: vi.fn(async () => ({ engine: "kokoro-mlx", voices: [] })) } as unknown as ApiClient;
+    await act(async () => root.render(<TtsProbe apiClient={apiClient} />));
+    // Settle the eager refresh first.
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    const settled = getTtsProbe().systemCapabilities;
+    expect(settled).toEqual(pending);
+    let renders = 0;
+    await act(async () => root.render(<TtsProbe apiClient={apiClient} onRender={() => { renders += 1; }} />));
+    renders = 0;
+    const polls = getSystemCapabilities.mock.calls.length;
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(getSystemCapabilities.mock.calls.length).toBeGreaterThan(polls);
+    expect(getTtsProbe().systemCapabilities).toBe(settled);
+    expect(renders).toBe(0);
+  });
+
+  it("re-renders for a changed worker limit but not for polls that only move memory readings and counters", async () => {
+    const withMemory = (available: number, maxSafe: number, poll: number) => capabilities({
+      probeState: "pending", refreshInProgress: true, mlxAvailable: false,
+      metrics: { global_api_limiter_wait_count: poll }, worker_pool: { reuse_hits: poll }, runtime_validation_cache_size: poll,
+      parallel_worker_recommendation: {
+        memory_measurement_available: true, total_memory_bytes: 32 * 2 ** 30, available_memory_bytes: available,
+        reserved_memory_bytes: 4 * 2 ** 30, headroom_memory_bytes: available - 4 * 2 ** 30,
+        static_estimated_worker_bytes: 2 * 2 ** 30, warmup_memory_delta_bytes: null,
+        estimated_per_worker_memory_bytes: 2 * 2 ** 30, requested_parallel_chapters: 4,
+        max_safe_parallel_chapters: maxSafe, recommended_parallel_chapters: maxSafe,
+        reason: "static estimate with live headroom", calculation: `available ${available}`,
+      },
+    });
+    let next = withMemory(12 * 2 ** 30, 4, 0);
+    let poll = 0;
+    getRuntimeBootstrap.mockResolvedValue({ models: modelOptions, capabilities: next });
+    const getSystemCapabilities = vi.fn(async () => next);
+    const apiClient = { getSystemCapabilities, getVoiceOptions: vi.fn(async () => ({ engine: "kokoro-mlx", voices: [] })) } as unknown as ApiClient;
+    let renders = 0;
+    await act(async () => root.render(<TtsProbe apiClient={apiClient} onRender={() => { renders += 1; }} />));
+    // Settle the eager refresh and the voice-filter debounce first.
+    await act(async () => vi.advanceTimersByTimeAsync(200));
+    const settled = getTtsProbe().systemCapabilities;
+    const live = getTtsProbe().liveCapabilities;
+
+    renders = 0;
+    for (let step = 0; step < 4; step += 1) {
+      poll += 1;
+      next = withMemory((12 - poll * 0.5) * 2 ** 30, 4, poll);
+      const calls = getSystemCapabilities.mock.calls.length;
+      await act(async () => vi.advanceTimersByTimeAsync(6_000));
+      expect(getSystemCapabilities.mock.calls.length).toBeGreaterThan(calls);
+    }
+    expect(renders).toBe(0);
+    expect(getTtsProbe().systemCapabilities).toBe(settled);
+    expect(live.getSnapshot()).toBe(next);
+    expect(live.getSnapshot()?.parallel_worker_recommendation?.available_memory_bytes).toBe(10 * 2 ** 30);
+
+    next = withMemory(5 * 2 ** 30, 1, poll + 1);
+    await act(async () => vi.advanceTimersByTimeAsync(6_000));
+    expect(renders).toBeGreaterThan(0);
+    expect(getTtsProbe().systemCapabilities).toBe(next);
+    expect(getTtsProbe().systemCapabilities?.parallel_worker_recommendation?.max_safe_parallel_chapters).toBe(1);
+  });
+
   it("does not let a late bootstrap snapshot overwrite a fresher poll result", async () => {
     const pending = capabilities({ probeState: "pending", refreshInProgress: true, mlxAvailable: false });
     const fresh = capabilities({ probeState: "fresh", refreshInProgress: false, mlxAvailable: true });

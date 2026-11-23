@@ -129,6 +129,7 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     items: LibraryBookSummary[];
     unfilteredItems: LibraryBookSummary[];
     indexedCount: number;
+    completedListLoads: number;
   } | null>(null);
   const wasDisconnectedRef = useRef(disconnected);
   useLayoutEffect(() => {
@@ -136,10 +137,16 @@ export function useLibrary({ apiClient, backendDisconnected = false }: UseLibrar
     wasDisconnectedRef.current = disconnected;
     // These are this render's values, from before the list resets.
     if (dropped && list.unfilteredItems.length > 0) {
-      setOfflineShelf({ items: list.items, unfilteredItems: list.unfilteredItems, indexedCount: list.indexedCount });
+      setOfflineShelf({
+        items: list.items, unfilteredItems: list.unfilteredItems, indexedCount: list.indexedCount,
+        completedListLoads: list.completedListLoads,
+      });
     }
-  }, [disconnected, list.items, list.unfilteredItems, list.indexedCount]);
-  const reconnectedListLoaded = !disconnected && !list.loadingList;
+  }, [disconnected, list.items, list.unfilteredItems, list.indexedCount, list.completedListLoads]);
+  // The reconnected list starts loading after the reconnect render, so the
+  // shelf stays until a list load made since the disconnect has finished.
+  const reconnectedListLoaded = !disconnected && !list.loadingList &&
+    (offlineShelf === null || list.completedListLoads > offlineShelf.completedListLoads);
   useLayoutEffect(() => {
     if (reconnectedListLoaded) setOfflineShelf(null);
   }, [reconnectedListLoaded]);

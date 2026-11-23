@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { CleanerBackendOption } from "../../types/api";
 import type { UseConversionOptionsResult } from "./useConversionOptions";
 import { buildRuntimeOptions } from "./useConversionSubmitPayload";
+import { createLiveCapabilities } from "./liveCapabilities";
 
 type OptionState = UseConversionOptionsResult;
 
@@ -23,6 +24,7 @@ function optionState(overrides: Partial<OptionState> = {}): OptionState {
     loading: false,
     error: "",
     retryRuntimeOptions: () => undefined,
+    liveCapabilities: createLiveCapabilities(),
     selectedEngine: "kokoro",
     setSelectedEngine: () => undefined,
     selectedVoice: "af_sarah",

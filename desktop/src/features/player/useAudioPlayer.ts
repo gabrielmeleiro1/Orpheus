@@ -17,6 +17,9 @@ import { resolvePlayerCanSeek, resolvePlayerDurationSec, seekAudioIfReady } from
 // loading or streaming the audio so Play can be retried after a stalled read.
 const AUDIO_TOKEN_REQUEST_TIMEOUT_MS = 8_000;
 const VOLUME_STORAGE_KEY = "orpheus.playerVolume";
+// Automatic reloads after media errors, per book, until it plays again. A
+// source that keeps failing stays failed until the user presses Play.
+const MAX_PLAYBACK_RECOVERY_ATTEMPTS = 3;
 
 function readStoredVolume(): number {
   try {
@@ -97,6 +100,11 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     detail: LibraryBookDetail; client: ApiClient | null; owns: () => boolean;
   } | null>(null);
   const playbackRecoveryAttemptsRef = useRef<Map<number, symbol>>(new Map());
+  const playbackRecoveryCountRef = useRef<Map<number, number>>(new Map());
+  const clearPlaybackRecovery = useCallback(() => {
+    playbackRecoveryAttemptsRef.current.clear();
+    playbackRecoveryCountRef.current.clear();
+  }, []);
   const apiClientLatestRef = useRef(apiClient);
   useLayoutEffect(() => {
     apiClientLatestRef.current = apiClient;
@@ -105,7 +113,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   useEffect(() => () => {
     loadGuard.invalidate();
     navigationGuard.invalidate();
-    playbackRecoveryAttemptsRef.current.clear();
+    clearPlaybackRecovery();
   }, []);
   const previousApiClientRef = useRef(apiClient);
   const selectedBookIdLatestRef = useRef<number | null>(library.selectedBookId);
@@ -213,6 +221,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     library,
     audioRef,
     loadedBookId,
+    loadedBookIdRef,
     positionOffsetRef,
     loadedChapterNumberRef,
   });
@@ -243,6 +252,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
 
   const finishLoadedBook = useCallback(() => {
     const bookId = loadedBookIdRef.current;
+    // A load started before the book ended must not restart it.
+    loadGuard.invalidate();
     clearAudioSource();
     setFinishedBookId(bookId);
   }, [clearAudioSource]);
@@ -349,6 +360,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
           playbackCheckpointBookIdentity(detail),
           detail,
         );
+        // A chapter jump seeks to the chapter itself, not to the saved position.
+        if (requestedChapter) clearPendingResume();
         audio.crossOrigin = "anonymous";
         positionOffsetRef.current = chapter ? chapterStartSeconds(detail.chapters, chapter.number, false) : 0;
         loadedChapterNumberRef.current = chapter?.number ?? null;
@@ -393,6 +406,7 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       loadedBookId,
       restorePendingResumePosition,
       setPendingResume,
+      clearPendingResume,
       waitForAudioReady,
       persistLoadedBookPlaybackPosition,
     ],
@@ -460,6 +474,13 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
       return;
     }
 
+    // After automatic recovery gave up, Play reloads the failed source.
+    if (audio.error && playbackDetail?.id === loadedBookId) {
+      playbackRecoveryCountRef.current.delete(loadedBookId);
+      await loadBookAudio(loadedBookId, playbackDetail, true, true);
+      return;
+    }
+
     if (audio.paused) {
       setPlaybackError("");
       try {
@@ -473,6 +494,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     audio.pause();
   }, [
     playbackBookId,
+    playbackDetail,
+    loadBookAudio,
     loadSelectedBookAudio,
     loadedBookId,
     playerDismissedBookId,
@@ -647,12 +670,12 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
   useEffect(() => session?.subscribe(() => {
     navigationGuard.invalidate();
     loadGuard.invalidate();
-    playbackRecoveryAttemptsRef.current.clear();
+    clearPlaybackRecovery();
     setPlayerDismissedBookId(null);
     const bookId = loadedBookIdRef.current;
     if (bookId !== null) releaseBookAudio(bookId);
     else clearAudioSource();
-  }), [session, releaseBookAudio, clearAudioSource]);
+  }), [session, releaseBookAudio, clearAudioSource, clearPlaybackRecovery]);
 
   const handlePlaybackError = useCallback(() => {
     setPlaybackError("Playback failed");
@@ -665,6 +688,11 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     if (playbackRecoveryAttemptsRef.current.has(bookId)) {
       return;
     }
+    const recoveryCount = playbackRecoveryCountRef.current.get(bookId) ?? 0;
+    if (recoveryCount >= MAX_PLAYBACK_RECOVERY_ATTEMPTS) {
+      return;
+    }
+    playbackRecoveryCountRef.current.set(bookId, recoveryCount + 1);
 
     const recoveryToken = Symbol("playback-recovery");
     playbackRecoveryAttemptsRef.current.set(bookId, recoveryToken);
@@ -687,6 +715,8 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     const bookId = loadedBookIdRef.current ?? selectedBookIdLatestRef.current;
     if (bookId !== null) {
       playbackRecoveryAttemptsRef.current.delete(bookId);
+      // Loading and resume seeks also tick while paused; only playback proves the source works.
+      if (audioRef.current && !audioRef.current.paused) playbackRecoveryCountRef.current.delete(bookId);
     }
   }, []);
 
@@ -697,9 +727,9 @@ export function useAudioPlayer({ apiClient, library }: UseAudioPlayerArgs) {
     previousApiClientRef.current = apiClient;
     navigationGuard.invalidate();
     loadGuard.invalidate();
-    playbackRecoveryAttemptsRef.current.clear();
+    clearPlaybackRecovery();
     clearAudioSource();
-  }, [apiClient, clearAudioSource]);
+  }, [apiClient, clearAudioSource, clearPlaybackRecovery]);
 
   // Only the loaded book losing its audio (for example a repair rebuilding it)
   // unloads the player; browsing to an unplayable book does not.

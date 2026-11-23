@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 type Placement = "top" | "bottom" | "left" | "right";
@@ -125,15 +125,21 @@ export function TooltipLayer() {
   const [tip, setTip] = useState<ActiveTip | null>(null);
   const [position, setPosition] = useState<{ left: number; top: number } | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
+  // The control a tip is shown or about to be shown for.
+  const pendingRef = useRef<Element | null>(null);
+  // Drops a tip whose anchor went away, so hovering that control again shows it anew.
+  const dismiss = useCallback((anchor: Element) => {
+    if (pendingRef.current === anchor) pendingRef.current = null;
+    setTip(null);
+  }, []);
 
   useEffect(() => {
     let timer: number | undefined;
     let hideTimer: number | undefined;
-    let pending: Element | null = null;
     const hide = () => {
       window.clearTimeout(timer);
       window.clearTimeout(hideTimer);
-      pending = null;
+      pendingRef.current = null;
       setTip(null);
     };
     const inBubble = (node: EventTarget | null) => node instanceof Node && Boolean(bubbleRef.current?.contains(node));
@@ -160,7 +166,7 @@ export function TooltipLayer() {
     // after the pointer arrives; both must move the tip, not dismiss it. A tip
     // whose anchor scrolled out from under the pointer is dropped.
     const onScroll = () => {
-      const anchor = pending;
+      const anchor = pendingRef.current;
       if (anchor && (anchor.contains(document.activeElement) || anchor.matches(":hover"))) {
         const box = anchor.getBoundingClientRect();
         if (box.bottom > 0 && box.top < window.innerHeight && box.right > 0 && box.left < window.innerWidth) {
@@ -172,13 +178,14 @@ export function TooltipLayer() {
     };
     const show = ({ anchor, text }: { anchor: Element; text: string }, delay: number, viaFocus = false) => {
       window.clearTimeout(timer);
-      pending = anchor;
+      pendingRef.current = anchor;
       timer = window.setTimeout(() => {
-        if (pending !== anchor || !anchor.isConnected) return;
+        if (pendingRef.current !== anchor || !anchor.isConnected) return;
         setTip({ anchor, text, preferred: preferredPlacement(anchor), viaFocus });
       }, delay);
     };
     const onPointerOver = (event: PointerEvent) => {
+      const pending = pendingRef.current;
       if (inBubble(event.target) || (pending && event.target instanceof Node && pending.contains(event.target))) {
         keep();
         return;
@@ -190,6 +197,7 @@ export function TooltipLayer() {
       if (found) show(found, HOVER_DELAY_MS);
     };
     const onPointerOut = (event: PointerEvent) => {
+      const pending = pendingRef.current;
       const fromTip = inBubble(event.target) || (pending && event.target instanceof Node && pending.contains(event.target));
       if (!fromTip) return;
       const into = event.relatedTarget;
@@ -234,7 +242,7 @@ export function TooltipLayer() {
       return;
     }
     if (!tip.anchor.isConnected) {
-      setTip(null);
+      dismiss(tip.anchor);
       return;
     }
     setPosition(resolveTipPosition(
@@ -242,24 +250,31 @@ export function TooltipLayer() {
       tip.anchor.getBoundingClientRect(),
       bubbleRef.current.getBoundingClientRect(),
     ));
-  }, [tip]);
+  }, [tip, dismiss]);
 
   // A tip must not outlive its control: when the anchor is removed or hidden
   // (a job's rail button unmounting as the job ends), no pointer or focus
-  // event fires for it, so watch the document instead.
+  // event fires for it, so watch the document instead. Only mutations that
+  // can reach the anchor (on it, an ancestor, or, for a focus tip, inside it)
+  // are checked, so busy unrelated parts of the page cost no layout reads.
   useEffect(() => {
     if (!tip) return undefined;
+    const { anchor } = tip;
     const check = () => {
-      const shown = typeof tip.anchor.checkVisibility === "function" ? tip.anchor.checkVisibility() : true;
+      const shown = typeof anchor.checkVisibility === "function" ? anchor.checkVisibility() : true;
       // A focused control removed from inside its (surviving) tip anchor fires
       // no focusout either.
-      const focusGone = tip.viaFocus && !tip.anchor.contains(document.activeElement) && !tip.anchor.matches(":hover");
-      if (!tip.anchor.isConnected || !shown || focusGone) setTip(null);
+      const focusGone = tip.viaFocus && !anchor.contains(document.activeElement) && !anchor.matches(":hover");
+      if (!anchor.isConnected || !shown || focusGone) dismiss(anchor);
     };
-    const observer = new MutationObserver(check);
+    const affectsAnchor = (record: MutationRecord) =>
+      record.target.contains(anchor) || (tip.viaFocus && anchor.contains(record.target));
+    const observer = new MutationObserver((records) => {
+      if (!anchor.isConnected || records.some(affectsAnchor)) check();
+    });
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "class", "style"] });
     return () => observer.disconnect();
-  }, [tip]);
+  }, [tip, dismiss]);
 
   if (!tip) return null;
   return createPortal(

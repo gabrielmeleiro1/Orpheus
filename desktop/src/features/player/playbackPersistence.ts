@@ -32,6 +32,8 @@ interface UsePlaybackPersistenceArgs {
   library: UseLibraryResult;
   audioRef: RefObject<HTMLAudioElement | null>;
   loadedBookId: number | null;
+  /** The player's loaded book, updated together with the audio element's source. */
+  loadedBookIdRef?: RefObject<number | null>;
   positionOffsetRef?: RefObject<number>;
   loadedChapterNumberRef?: RefObject<number | null>;
 }
@@ -61,6 +63,7 @@ export function usePlaybackPersistence({
   library,
   audioRef,
   loadedBookId,
+  loadedBookIdRef: playerLoadedBookIdRef,
   positionOffsetRef,
   loadedChapterNumberRef,
 }: UsePlaybackPersistenceArgs): PlaybackPersistence {
@@ -93,10 +96,13 @@ export function usePlaybackPersistence({
   useLayoutEffect(() => {
     selectedBookIdRef.current = library.selectedBookId;
   });
-  const loadedBookIdRef = useRef(loadedBookId);
+  // React state trails the audio element while a new book loads, so the
+  // player's ref, when given, decides which book the element is playing.
+  const committedLoadedBookIdRef = useRef(loadedBookId);
   useLayoutEffect(() => {
-    loadedBookIdRef.current = loadedBookId;
+    committedLoadedBookIdRef.current = loadedBookId;
   });
+  const loadedBookIdRef = playerLoadedBookIdRef ?? committedLoadedBookIdRef;
 
   const setPendingResume = useCallback((bookId: number, positionSec: number, bookIdentity: string, detail?: LibraryBookDetail) => {
     if (session && !session.isCurrent(libraryGeneration)) return;
@@ -227,7 +233,8 @@ export function usePlaybackPersistence({
 
   const persistLoadedBookPlaybackPosition = useCallback(
     async (options: PersistPlaybackOptions = {}): Promise<number | null> => {
-      const bookId = options.bookId ?? loadedBookId;
+      const currentLoadedBookId = loadedBookIdRef.current;
+      const bookId = options.bookId ?? currentLoadedBookId;
       if (!bookId) {
         return null;
       }
@@ -236,11 +243,15 @@ export function usePlaybackPersistence({
       const hasExplicitPosition = typeof options.positionSec === "number";
       const ownsLoadedAudio = Boolean(
         audio &&
-        loadedBookId === bookId &&
+        currentLoadedBookId === bookId &&
         audio.src &&
         bookIdentityByIdRef.current.has(bookId)
       );
       if (!hasExplicitPosition && !ownsLoadedAudio) {
+        return null;
+      }
+      // A freshly loaded source reads 0 until its resume position is applied.
+      if (!hasExplicitPosition && pendingResumeBookIdRef.current === bookId && audio!.readyState < 1) {
         return null;
       }
       const resolvedPosition = hasExplicitPosition
@@ -251,7 +262,7 @@ export function usePlaybackPersistence({
     },
     [
       audioRef,
-      loadedBookId,
+      loadedBookIdRef,
       persistBookPlaybackPosition,
       positionOffsetRef,
     ],
@@ -292,7 +303,7 @@ export function usePlaybackPersistence({
   const restorePendingResumePosition = useCallback(
     (audio: HTMLAudioElement | null, expectedBookId?: number | null) => {
       if (session && !session.isCurrent(libraryGeneration)) return;
-      const resolvedBookId = expectedBookId ?? loadedBookId;
+      const resolvedBookId = expectedBookId ?? loadedBookIdRef.current;
       if (!audio || pendingResumeBookIdRef.current !== resolvedBookId) {
         return;
       }
@@ -312,7 +323,7 @@ export function usePlaybackPersistence({
       pendingResumeBookIdRef.current = null;
       pendingResumePositionSecRef.current = 0;
     },
-    [loadedBookId, positionOffsetRef, session, libraryGeneration],
+    [loadedBookIdRef, positionOffsetRef, session, libraryGeneration],
   );
 
   useEffect(() => {

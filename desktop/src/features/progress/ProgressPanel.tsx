@@ -215,7 +215,7 @@ export function ProgressPanel({
                   {details.length > 0 ? (
                     <div className="subtask-section" aria-label="Active stage detail">
                       {details.map((detail) => (
-                        <div className="subtask-row" key={`${detail.label}-${detail.value}`}>
+                        <div className="subtask-row" key={detail.label}>
                           <span aria-hidden="true" />
                           <span className="subtask-label">{formatStageDisplayName(detail.label)}</span>
                           <ProgressBar pct={detail.pct} tone={running ? "active" : "neutral"} size="hairline" variant="ascii" cells="fit" label={`${detail.label} progress`} />

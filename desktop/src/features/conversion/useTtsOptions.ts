@@ -18,11 +18,13 @@ import {
   invalidateRuntimeBootstrap,
   updateRuntimeBootstrapCapabilities,
 } from "../../app/runtimeBootstrapCache";
+import { subscribeRuntimeCapabilities } from "../../app/runtimeCapabilityHub";
 import {
   CAPABILITIES_PROBE_REQUEST_TIMEOUT_MS,
+  retainUsedCapabilities,
   shouldPollRuntimeCapabilities,
-  startRuntimeCapabilityPolling,
 } from "./runtimeCapabilityPolling";
+import { createLiveCapabilities, type LiveCapabilities } from "./liveCapabilities";
 
 const VOICE_FILTER_DEBOUNCE_MS = 180;
 // Bootstrap reads the model catalog and cached capability snapshot, without
@@ -41,7 +43,10 @@ export interface UseTtsOptionsResult {
   error: string;
   retryRuntimeOptions: () => void;
   modelOptions: ModelOptionsResponse | null;
+  /** Changes only when a field an option, availability or worker-limit decision reads changes. */
   systemCapabilities: SystemCapabilitiesResponse | null;
+  /** Every snapshot as it arrives, for the few displays of live memory readings. */
+  liveCapabilities: LiveCapabilities;
   selectedEngine: string;
   setSelectedEngine: (value: string) => void;
   selectedVoice: string;
@@ -73,6 +78,7 @@ export function useTtsOptions({
 
   const [modelOptions, setModelOptions] = useState<ModelOptionsResponse | null>(null);
   const [systemCapabilities, setSystemCapabilities] = useState<SystemCapabilitiesResponse | null>(null);
+  const [liveCapabilities] = useState(createLiveCapabilities);
   const [allVoiceOptions, setAllVoiceOptions] = useState<TermSelectOption[]>([]);
   const [loadedVoices, setLoadedVoices] = useState<{
     client: ApiClient; generation: number; attempt: number; engine: string; catalog: ModelOptionsResponse;
@@ -133,6 +139,7 @@ export function useTtsOptions({
       setError(null);
       setModelOptions(null);
       setSystemCapabilities(null);
+      liveCapabilities.publish(null);
       setAllVoiceOptions([]);
       return;
     }
@@ -140,6 +147,10 @@ export function useTtsOptions({
     let cancelled = false;
     let optionsLoaded = false;
     let latestCapabilities: SystemCapabilitiesResponse | null = null;
+    const applyCapabilities = (next: SystemCapabilitiesResponse) => {
+      liveCapabilities.publish(next);
+      setSystemCapabilities((previous) => retainUsedCapabilities(previous, next));
+    };
 
     const reconcileTimeout = (capabilities: SystemCapabilitiesResponse) => {
       const primaryRuntime = String(capabilities.primary_runtime ?? "").trim().toLowerCase();
@@ -168,8 +179,8 @@ export function useTtsOptions({
     // Shared bootstrap can resolve with a cold-start pending/stale snapshot
     // after a live poll has already observed a fresher probe. Never let that
     // late cache result clobber Local MLX availability in Settings.
-    const poller = startRuntimeCapabilityPolling({
-      getSystemCapabilities: (signal) => apiClient.getSystemCapabilities({ signal }),
+    // One poller per client is shared with the dashboard's bootstrap refresh.
+    const poller = subscribeRuntimeCapabilities(apiClient, {
       onError: (pollError) => {
         if (!cancelled) {
           setError((current) => current ?? pollError);
@@ -178,7 +189,7 @@ export function useTtsOptions({
       onCapabilities: (capabilities) => {
         if (!cancelled) {
           latestCapabilities = capabilities;
-          setSystemCapabilities(capabilities);
+          applyCapabilities(capabilities);
           updateRuntimeBootstrapCapabilities(apiClient, capabilities);
           reconcileTimeout(capabilities);
         }
@@ -199,7 +210,7 @@ export function useTtsOptions({
         // bootstrap still completes the catalog needed to recover readiness.
         reconcileTimeout(latestCapabilities ?? capabilities);
         if (!poller.pollApplied) {
-          setSystemCapabilities(capabilities);
+          applyCapabilities(capabilities);
           poller.noteCapabilities(capabilities);
           // Dashboard may have pinned a stale mlx=false bootstrap during setup.
           // Refresh immediately when Settings/Convert mounts so the Cleaner
@@ -208,11 +219,12 @@ export function useTtsOptions({
             void apiClient
               .getSystemCapabilities({ timeoutMs: CAPABILITIES_PROBE_REQUEST_TIMEOUT_MS })
               .then((fresh) => {
-                if (cancelled) {
+                // A live poll that landed meanwhile is at least as new as this read.
+                if (cancelled || poller.pollApplied) {
                   return;
                 }
                 latestCapabilities = fresh;
-                setSystemCapabilities(fresh);
+                applyCapabilities(fresh);
                 updateRuntimeBootstrapCapabilities(apiClient, fresh);
                 poller.noteCapabilities(fresh);
                 reconcileTimeout(fresh);
@@ -246,6 +258,7 @@ export function useTtsOptions({
 
         setModelOptions(null);
         setSystemCapabilities(null);
+        liveCapabilities.publish(null);
         setAllVoiceOptions([]);
         setError(loadError instanceof Error ? loadError : new Error("failed to load conversion options"));
       } finally {
@@ -262,9 +275,9 @@ export function useTtsOptions({
     return () => {
       cancelled = true;
       window.clearTimeout(bootstrapTimer);
-      poller.stop();
+      poller.unsubscribe();
     };
-  }, [apiClient, persistedSettingsRef, settingsHydratedRef, runtimeSelectionGeneration, reloadAttempt]);
+  }, [apiClient, liveCapabilities, persistedSettingsRef, settingsHydratedRef, runtimeSelectionGeneration, reloadAttempt]);
 
   useEffect(() => {
     setVoiceError("");
@@ -350,6 +363,7 @@ export function useTtsOptions({
     // Cleaner hydration must wait for the catalog belonging to the saved selection.
     modelOptions: runtimeLoaded ? modelOptions : null,
     systemCapabilities,
+    liveCapabilities,
     selectedEngine,
     setSelectedEngine,
     selectedVoice: voicesLoaded ? selectedVoice : "",

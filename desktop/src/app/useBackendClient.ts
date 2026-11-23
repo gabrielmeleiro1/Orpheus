@@ -193,6 +193,8 @@ export function useBackendClient() {
 
   useEffect(() => {
     let cancelled = false;
+    // Stops the endpoint wait's IPC polling when this attempt is superseded or unmounted.
+    const endpointWait = new AbortController();
 
     const bootstrap = async () => {
       setConnectionState("checking");
@@ -215,7 +217,7 @@ export function useBackendClient() {
       }
 
       try {
-        const endpoint = await waitForDesktopEndpoint();
+        const endpoint = await waitForDesktopEndpoint(endpointWait.signal);
         if (cancelled) {
           return;
         }
@@ -244,6 +246,7 @@ export function useBackendClient() {
 
     return () => {
       cancelled = true;
+      endpointWait.abort();
     };
   }, [bootstrapAttempt]);
 
