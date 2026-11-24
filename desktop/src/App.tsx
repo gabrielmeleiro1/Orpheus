@@ -42,6 +42,7 @@ import { nextTabIndexAfterKeyboard, tabButtonTabIndex } from "./navigation/tabKe
 import type { DashboardTab, LibraryBookSummary, RuntimeSetupStatusResponse } from "./types/api";
 import { AsciiLoader } from "./ui/ascii/AsciiLoader";
 import { BookCover } from "./ui/BookCover";
+import { BrandMark } from "./ui/BrandMark";
 import { CoverClientContext, CoverGenerationContext, CoverRefreshContext, createCoverRefreshSignal } from "./ui/coverArt";
 import { Icon } from "./ui/icons";
 import { ProgressBar } from "./ui/ProgressBar";
@@ -541,9 +542,7 @@ function DashboardApp({
         }}
       >
         <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" focusable="false"><path d="M6 10v4M10 6v12M14 8.5v7M18 11v2" /></svg>
-          </span>
+          <BrandMark />
           <span className="brand-name">Orpheus</span>
           <button type="button" className="btn btn-ghost btn-sm btn-icon sidebar-toggle" aria-label="Hide sidebar" aria-controls="app-sidebar" aria-expanded="true" data-tip="Hide sidebar" data-tip-pos="right" onClick={() => { pendingFocusRef.current = "toggle"; setSidebarCollapsed(true); }}>
             <Icon name="sidebar" />

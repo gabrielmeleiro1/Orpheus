@@ -59,8 +59,14 @@
   height: var(--icon-size);
   stroke: currentColor;
   stroke-linecap: round;
-  stroke-width: 2.2;
+  stroke-width: 1.5;
   width: var(--icon-size);
+}
+
+.brand-mark-body {
+  fill: currentColor;
+  stroke-linejoin: round;
+  stroke-width: .7;
 }
 
 .brand-name {

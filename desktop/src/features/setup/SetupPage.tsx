@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ApiClient } from "../../api/client";
+import { BrandMark } from "../../ui/BrandMark";
 import { AsciiLoader } from "../../ui/ascii/AsciiLoader";
 import type { RuntimeSetupProfile, RuntimeSetupStatusResponse } from "../../types/api";
 import { invalidateRuntimeBootstrap } from "../../app/runtimeBootstrapCache";
@@ -738,9 +739,7 @@ export function SetupPage({
           <p className="settings-section-hint">Runs on this computer.</p>
         </div>
       ) : <div className="setup-intro">
-        <span className="brand-mark setup-brand" aria-hidden="true">
-          <svg viewBox="0 0 24 24" focusable="false"><path d="M6 10v4M10 6v12M14 8.5v7M18 11v2" /></svg>
-        </span>
+        <BrandMark className="setup-brand" />
         <h1 id="setup-heading" ref={setupHeadingRef} tabIndex={-1}>Welcome to Orpheus</h1>
         <p className="setup-lede">Orpheus narrates your books on this computer.{status ? " You can change this later in Settings." : ""}</p>
       </div>}
