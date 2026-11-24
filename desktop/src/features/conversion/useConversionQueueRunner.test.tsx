@@ -201,6 +201,43 @@ describe("useConversionQueueRunner", () => {
     cleanup();
   });
 
+  it.each([
+    ["has no readable chapters", { chapter_count: 0 }],
+    ["needs OCR", { requires_ocr: true }],
+  ])("does not start a just-queued paste that %s", async (_reason, inspection) => {
+    const pastedItem = createQueueItem("upload:1_hash_paste.md", "document_audio", "paste.md", {
+      title: "Paste",
+      author: null,
+      chapter_count: 1,
+      source_type: "md",
+      sample: "",
+      warnings: [],
+      size_bytes: 10,
+      requires_ocr: false,
+      pdf_text_layer: null,
+      ...inspection,
+    });
+    const conversionJob = createConversionJobMock();
+    const updateQueueItem = vi.fn();
+    const { result, cleanup } = renderRunner({
+      apiClient: {} as never,
+      conversionJob,
+      queueItems: [pastedItem],
+      selectedQueueItem: null,
+      buildStartPayload: () => payload(pastedItem.sourcePath),
+      updateQueueItem,
+      syncSelectedQueueEdits: vi.fn(),
+      setQueueStatus: vi.fn(),
+    });
+
+    await result.current?.onStartConversion(pastedItem);
+
+    expect(conversionJob.startConversion).not.toHaveBeenCalled();
+    expect(updateQueueItem).not.toHaveBeenCalled();
+    expect(result.current?.commandRunning).toBe(false);
+    cleanup();
+  });
+
   it("marks the selected queue item failed when a single start fails to launch", async () => {
     const item = createQueueItem("/tmp/book.epub", "audiobook");
     item.status = "ready";

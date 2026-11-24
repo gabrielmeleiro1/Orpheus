@@ -259,11 +259,14 @@ export function useConversionQueueRunner({
   }, [ownsCommand, setQueueStatus]);
 
   const onStartConversion = useCallback(async (itemOverride?: ConversionQueueItem) => {
+    let targetItem = itemOverride ?? selectedQueueItem;
+    // A just-queued paste reaches this callback before the Start button has
+    // re-rendered as disabled, so apply its inspection result here.
+    if (targetItem?.preflight && !isPreflightConvertible(targetItem.preflight)) return;
     const owner = beginCommand();
     if (!owner) return;
     // A previous queue outcome ("Queue cancelled.") does not describe this run.
     setQueueStatus("");
-    let targetItem = itemOverride ?? selectedQueueItem;
     const restarting = targetItem?.status === "done";
     try {
       const payload = latestRef.current.buildStartPayload(restarting && !itemOverride ? undefined : targetItem ?? undefined);
